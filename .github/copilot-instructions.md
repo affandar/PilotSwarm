@@ -262,7 +262,7 @@ or embedder behavior changes.
 
 It ships three repo-root entry-point scripts; all three must keep working:
 
-- `scripts/run-horizon-harvester-sample.sh` — harvest and/or ask (`HARVESTER_SCENARIO=full|harvest|ask`)
+- `scripts/run-horizon-harvester-sample.sh` — harvest, delete/reconcile, and/or ask (`HARVESTER_SCENARIO=full|harvest|delete|ask`)
 - `scripts/export-horizon-harvester-graph.sh` — export the graph to a Markdown/Mermaid file (`examples/horizon-harvester/scripts/graph-to-mermaid.mjs`)
 - `scripts/clean-horizon-harvester-sample.sh` — clean up; `--facts` / `--drop` escalate to HorizonDB teardown (`examples/horizon-harvester/scripts/cleanup-local-db.js`)
 
@@ -275,6 +275,8 @@ When you change harvester-relevant behavior, keep these in sync in the same chan
 Load-bearing conventions to preserve:
 
 - **Namespaces are not interchangeable.** The harvester writes raw source captures under its own `corpus/*` namespace; `intake/*` is the system Facts Manager's curation queue for short task-agent observations. Never route harvester documents through `intake/*`.
+- **Crawl receipts are `{ scopeKey, etag }`.** Harvesters must pass both values from `facts_read_uncrawled` into `facts_mark_crawled`. A skipped mark means the fact changed after it was read, was already marked, or no longer exists; re-read before declaring the backlog drained.
+- **Deleted crawl rows reconcile graph evidence.** A row with `deletedAt` set is a tombstone, not source content to rebuild. Call `graph_remove_evidence(scopeKey, namespace)` for that row before marking it crawled so only that source fact's graph anchors/evidence are removed.
 - **Embedder/search text wiring.** `HORIZON_EMBED_*` (in repo-root `.env`) configures the durable in-DB embed loop; without it the `embedding` column stays NULL and `facts_similar` returns nothing. The embed input is `key + value::text` (horizon-store migration `0007`), and lexical `search_text` uses the same broad `key + value::text` source (migration `0009`), so any JSON value shape remains embeddable and lexically searchable.
 - **The durable embed loop survives a schema drop.** Any teardown must cancel it first (the `--drop` path does); never leave a stale loop running against a dropped schema.
 

@@ -1,4 +1,4 @@
-// §2.1a Crawl tracking (C1–C7) — last_crawled_at and scopeKey receipts.
+// §2.1a Crawl tracking (C1–C7) — last_crawled_at and scopeKey + etag receipts.
 // Tests run sequentially and build on each other's state (C1→C2→C3→C4).
 
 import { describe, it, beforeAll, afterAll } from "vitest";
@@ -28,10 +28,10 @@ describe.skipIf(!HAS_DB)("crawl tracking (C1–C7)", () => {
         assert.ok(f, "new fact must be in the queue");
     });
 
-    it("C2 markFactsCrawled with scopeKey stamps and drains", async () => {
+    it("C2 markFactsCrawled with scopeKey + etag stamps and drains", async () => {
         const { facts } = await store.readUncrawledFacts({ limit: 100 });
         const f = facts.find((x) => x.scopeKey === "shared:arch/c1");
-        const res = await store.markFactsCrawled([{ scopeKey: f.scopeKey }]);
+        const res = await store.markFactsCrawled([{ scopeKey: f.scopeKey, etag: f.etag }]);
         assert.deepEqual(res, { marked: 1, skipped: 0 });
         assert.ok(!(await uncrawledKeys()).includes("shared:arch/c1"));
     });
@@ -44,7 +44,7 @@ describe.skipIf(!HAS_DB)("crawl tracking (C1–C7)", () => {
     it("C4 identical-content write does NOT reset the stamp", async () => {
         const { facts } = await store.readUncrawledFacts({ limit: 100 });
         const f = facts.find((x) => x.scopeKey === "shared:arch/c1");
-        await store.markFactsCrawled([{ scopeKey: f.scopeKey }]);
+        await store.markFactsCrawled([{ scopeKey: f.scopeKey, etag: f.etag }]);
         await store.storeFact({ key: "arch/c1", value: { text: "hello CHANGED" }, shared: true }); // same content
         assert.ok(!(await uncrawledKeys()).includes("shared:arch/c1"), "no-op write must not re-queue");
     });
@@ -92,12 +92,12 @@ describe.skipIf(!HAS_DB)("crawl tracking (C1–C7)", () => {
         assert.equal(rows[0].embed_pending, true, "edit marks embedding pending");
     });
 
-    it("C7 scopeKey-only mark skips facts already marked", async () => {
+    it("C7 mark with current etag skips facts already marked", async () => {
         await store.storeFact({ key: "arch/c7", value: { text: "v1" }, shared: true });
         const { facts } = await store.readUncrawledFacts({ namespace: "arch", limit: 100 });
         const f = facts.find((x) => x.scopeKey === "shared:arch/c7");
-        assert.deepEqual(await store.markFactsCrawled([{ scopeKey: f.scopeKey }]), { marked: 1, skipped: 0 });
-        const res = await store.markFactsCrawled([{ scopeKey: f.scopeKey }]);
+        assert.deepEqual(await store.markFactsCrawled([{ scopeKey: f.scopeKey, etag: f.etag }]), { marked: 1, skipped: 0 });
+        const res = await store.markFactsCrawled([{ scopeKey: f.scopeKey, etag: f.etag }]);
         assert.deepEqual(res, { marked: 0, skipped: 1 });
         assert.ok(!(await uncrawledKeys("arch")).includes("shared:arch/c7"), "already-marked fact stays drained");
     });

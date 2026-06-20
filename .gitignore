@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .env
+.env.horizondb
 .env.remote
 .env.local.docker
 .env.pilotswarm*

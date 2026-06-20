@@ -380,13 +380,18 @@ export class HorizonDBFactStore implements EnhancedFactStore {
 
     async markFactsCrawled(stamps: CrawledFactStamp[]): Promise<{ marked: number; skipped: number }> {
         if (!Array.isArray(stamps) || stamps.length === 0) return { marked: 0, skipped: 0 };
-        for (const st of stamps) {
-            if (!st?.scopeKey || typeof st.etag !== "number" || !Number.isFinite(st.etag)) {
+        // Coerce etag like the SQL does (numeric strings accepted): LLM tool JSON
+        // frequently serializes numbers as strings. Reject only genuinely missing
+        // / non-numeric receipts so harvester bugs still surface loudly.
+        const normalized = stamps.map((st) => {
+            const etag = Number(st?.etag);
+            if (!st?.scopeKey || !Number.isInteger(etag) || etag <= 0) {
                 throw new Error("markFactsCrawled: every stamp requires { scopeKey, etag } (the receipt from readUncrawledFacts)");
             }
-        }
+            return { scopeKey: st.scopeKey, etag };
+        });
         const { rows } = await withDbRetry<{ rows: any[] }>("facts_mark_crawled", () => this.pool.query(
-            `SELECT * FROM ${this.s}.facts_mark_crawled($1::jsonb)`, [JSON.stringify(stamps)]));
+            `SELECT * FROM ${this.s}.facts_mark_crawled($1::jsonb)`, [JSON.stringify(normalized)]));
         return { marked: Number(rows[0]?.marked ?? 0), skipped: Number(rows[0]?.skipped ?? 0) };
     }
 

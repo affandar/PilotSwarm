@@ -689,18 +689,23 @@ export class PgFactStore implements FactStore {
     async markFactsCrawled(
         stamps: CrawledFactStamp[],
     ): Promise<{ marked: number; skipped: number }> {
-        for (const s of stamps) {
-            if (!s || typeof s.scopeKey !== "string" || typeof s.etag !== "number" || !Number.isFinite(s.etag)) {
+        // Coerce etag like the SQL does (it accepts numeric strings): LLM tool
+        // JSON frequently serializes numbers as strings. Reject only genuinely
+        // missing / non-numeric receipts so harvester bugs still surface loudly.
+        const normalized = stamps.map((s) => {
+            const etag = Number(s?.etag);
+            if (!s || typeof s.scopeKey !== "string" || !Number.isInteger(etag) || etag <= 0) {
                 throw new Error(
                     "markFactsCrawled: every stamp requires { scopeKey, etag } " +
                     "(the receipt returned by readUncrawledFacts).",
                 );
             }
-        }
-        if (stamps.length === 0) return { marked: 0, skipped: 0 };
+            return { scopeKey: s.scopeKey, etag };
+        });
+        if (normalized.length === 0) return { marked: 0, skipped: 0 };
         const { rows } = await this.pool.query(
             `SELECT * FROM ${this.sql.fn.markFactsCrawled}($1::jsonb)`,
-            [JSON.stringify(stamps)],
+            [JSON.stringify(normalized)],
         );
         return {
             marked: Number(rows[0]?.marked) || 0,

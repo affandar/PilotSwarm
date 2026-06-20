@@ -126,12 +126,20 @@ export async function dropSchemaAndGraph(schema, graph) {
                 if (!/access to library "age" is not allowed/i.test(String(err?.message ?? ""))) throw err;
             }
             await pool.query(`SET search_path = ag_catalog, "$user", public`);
-            await pool.query(`SELECT drop_graph($1, true)`, [graph]);
+            await pool.query("SELECT pg_advisory_lock($1)", [graphBootstrapLockKey()]);
+            try { await pool.query(`SELECT drop_graph($1, true)`, [graph]); }
+            finally { await pool.query("SELECT pg_advisory_unlock($1)", [graphBootstrapLockKey()]).catch(() => {}); }
         } catch { /* graph may not exist */ }
         await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
     } finally {
         await pool.end();
     }
+}
+
+function graphBootstrapLockKey() {
+    let hash = 0x48_5a_46;
+    for (const ch of "horizon-graph-bootstrap") hash = ((hash << 5) - hash + ch.charCodeAt(0)) | 0;
+    return hash;
 }
 
 /** Raw pool for direct catalog/table assertions (test code is exempt from the

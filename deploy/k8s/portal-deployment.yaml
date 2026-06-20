@@ -67,8 +67,6 @@ spec:
         app.kubernetes.io/component: portal
     spec:
       serviceAccountName: pilotswarm-portal
-      imagePullSecrets:
-        - name: acr-pull
       containers:
         - name: portal
           image: pilotswarmacr.azurecr.io/pilotswarm-portal:latest

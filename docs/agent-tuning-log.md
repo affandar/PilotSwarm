@@ -83,6 +83,8 @@ Timer context: {seconds}s timer (reason: "{reason}"), {elapsed}s elapsed, {remai
 
 - 2026-05-19: Tuned default summary guidance so `update_session_summary` stays concise and scannable, uses compact bullets or short Markdown tables for structured progress/comparisons/rankings/decisions/result sets, and avoids long transcripts, raw logs, or bulky JSON in summary fields. Expected behavior: Summary tab content carries structure without becoming transcript-sized. Not model-specific; helper/contract tests updated.
 
+- 2026-06-20: Tightened the sub-agent lifecycle test fixture agents after the default model sometimes closed an `echoer` child despite the test prompt saying not to call close tools. Added `schemaVersion`/`version` frontmatter and explicit lifecycle-coordinator guidance to leave children alive unless the current user message asks for `complete_agent`, `cancel_agent`, or `delete_agent`. Expected behavior: keep-alive lifecycle regression test exercises runtime behavior without prompt ambiguity. Not model-specific; `keep-alive-after-task` passed standalone.
+
 ### Other Options Considered (not implemented)
 - **Option A (dual-action):** "You MUST do BOTH: 1. Reply with text. 2. Call wait." — Not tried, likely same result with GPT-5.1.
 - **Option C (role-based):** "You are in a conversation — respond naturally." — Not tried.

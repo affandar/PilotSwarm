@@ -109,13 +109,28 @@ describe("horizonConfigFromEnv", () => {
     });
 
     it("defaults to reading process.env when no arg is passed", () => {
-        const saved = process.env.HORIZON_DATABASE_URL;
+        const keys = [
+            "HORIZON_DATABASE_URL",
+            "HORIZON_FACTS_SCHEMA",
+            "HORIZON_GRAPH_DATABASE_URL",
+            "HORIZON_GRAPH_SCHEMA",
+            "HORIZON_EMBED_URL",
+            "HORIZON_EMBED_MODEL",
+            "HORIZON_EMBED_DIM",
+            "HORIZON_EMBED_API_KEY",
+            "HORIZON_EMBED_API_KEY_HEADER",
+            "HORIZON_EMBED_BEARER",
+        ];
+        const saved = new Map(keys.map((key) => [key, process.env[key]]));
         try {
-            delete process.env.HORIZON_DATABASE_URL;
+            for (const key of keys) delete process.env[key];
             expect(horizonConfigFromEnv()).toEqual({});
         } finally {
-            if (saved === undefined) delete process.env.HORIZON_DATABASE_URL;
-            else process.env.HORIZON_DATABASE_URL = saved;
+            for (const key of keys) {
+                const value = saved.get(key);
+                if (value === undefined) delete process.env[key];
+                else process.env[key] = value;
+            }
         }
     });
 });

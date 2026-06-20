@@ -121,16 +121,6 @@ GH_TOKEN="${GITHUB_TOKEN:-}"
     ${PORTAL_AUTH_ENTRA_USER_GROUPS:+--from-literal=PORTAL_AUTH_ENTRA_USER_GROUPS="$PORTAL_AUTH_ENTRA_USER_GROUPS"} \
     ${K8S_CONTEXT:+--from-literal=K8S_CONTEXT="$K8S_CONTEXT"}
 
-echo "🔐 Refreshing ACR pull secret..."
-ACR_SERVER="${ACR_NAME}.azurecr.io"
-ACR_REFRESH_TOKEN="$(az acr login --name "$ACR_NAME" --expose-token --output tsv --query accessToken)"
-"${KUBECTL[@]}" delete secret acr-pull -n "$NAMESPACE" --ignore-not-found >/dev/null 2>&1 || true
-"${KUBECTL[@]}" create secret docker-registry acr-pull \
-    -n "$NAMESPACE" \
-    --docker-server="$ACR_SERVER" \
-    --docker-username="00000000-0000-0000-0000-000000000000" \
-    --docker-password="$ACR_REFRESH_TOKEN"
-
 # ─── Step 3: Build and push Docker image ─────────────────────────
 
 if [ "$SKIP_BUILD" = false ]; then

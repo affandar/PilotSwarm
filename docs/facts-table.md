@@ -316,10 +316,10 @@ Every base fact carries a `scopeKey` and a `last_crawled_at` stamp. Facts with
 **harvester work queue**:
 
 - `facts_read_uncrawled({ namespace?, limit? })` — returns queued facts, each with
-  its `scopeKey` receipt.
-- `facts_mark_crawled({ stamps: [{ scopeKey }] })` — stamps facts as incorporated
-  so they leave the queue. A skipped stamp means the fact was already marked or no
-  longer exists.
+  its `scopeKey` + `etag` receipt (and `deletedAt` when the fact is a tombstone).
+- `facts_mark_crawled({ stamps: [{ scopeKey, etag }] })` — stamps facts as
+  incorporated so they leave the queue. A skipped stamp means the fact was already
+  marked, changed since your read (etag mismatch), or no longer exists.
 
 ### The harvester role
 

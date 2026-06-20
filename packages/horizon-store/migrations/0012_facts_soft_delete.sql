@@ -334,7 +334,10 @@ BEGIN
             last_crawled_at IS NOT NULL
             OR deleted_at < now() - make_interval(secs => GREATEST(p_ttl_seconds, 0))
           )
-        ORDER BY deleted_at, id
+        -- Prefer already-reconciled tombstones within a batch so a lagging (not
+        -- dead) crawler's unreconciled tombstones get maximum time before the TTL
+        -- backstop reclaims them and strands their graph evidence.
+        ORDER BY (last_crawled_at IS NULL), deleted_at, id
         LIMIT GREATEST(p_limit, 1)
         FOR UPDATE SKIP LOCKED
     ), del AS (

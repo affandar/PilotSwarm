@@ -655,14 +655,23 @@ export class GraphQueries {
             }
 
             for (const nodeKey of nodeKeys) {
+                // Only delete a node that is now FULLY orphaned. A node can lose its
+                // own EVIDENCED_BY anchors while still being an endpoint of edges that
+                // other live facts evidence — a bare DETACH DELETE would silently
+                // destroy those still-evidenced edges (H2). The edge pass above has
+                // already removed edges that became evidence-less, so any REL edge
+                // that survives here is still validly evidenced: keep the node.
                 const remaining = await this.cypher(c,
                     `MATCH (n:GraphNode { node_key: ${cypherStr(nodeKey)} })-[:EVIDENCED_BY]->(f:Fact)
                      RETURN f.scope_key LIMIT 1`, ["scope_key"]);
-                if (remaining.length === 0) {
-                    await this.cypher(c,
-                        `MATCH (n:GraphNode { node_key: ${cypherStr(nodeKey)} }) DETACH DELETE n`, []);
-                    nodesDeleted += 1;
-                }
+                if (remaining.length > 0) continue;
+                const stillLinked = await this.cypher(c,
+                    `MATCH (n:GraphNode { node_key: ${cypherStr(nodeKey)} })-[r:REL]-()
+                     RETURN r.predicate_key LIMIT 1`, ["predicate_key"]);
+                if (stillLinked.length > 0) continue;
+                await this.cypher(c,
+                    `MATCH (n:GraphNode { node_key: ${cypherStr(nodeKey)} }) DETACH DELETE n`, []);
+                nodesDeleted += 1;
             }
 
             return { scopeKey, nodeEvidenceRemoved, edgeEvidenceRemoved, nodesDeleted, edgesDeleted };

@@ -58,7 +58,7 @@ describe.skipIf(!HAS_DB)("graph add-on fill modes", () => {
             evidence: [fact.scopeKey],
             agentId: "code-harvest",
         });
-        assert.deepEqual(await factStore.markFactsCrawled([{ scopeKey: fact.scopeKey }]), { marked: 1, skipped: 0 });
+        assert.deepEqual(await factStore.markFactsCrawled([{ scopeKey: fact.scopeKey, etag: fact.etag }]), { marked: 1, skipped: 0 });
 
         const edges = await graphStore.searchGraphEdges({ fromKey: service.nodeKey, namespace: "corpus/fill" }, { unrestricted: true });
         assert.ok(edges.some((edge) => edge.toKey === team.nodeKey && edge.evidence.includes(fact.scopeKey)),
@@ -113,7 +113,7 @@ describe.skipIf(!HAS_DB)("graph add-on fill modes", () => {
             namespace: "corpus/fill",
             evidence: [fact.scopeKey],
         }, { sessionId: "harvester-session" });
-        assert.deepEqual(await markQueue.handler({ stamps: [{ scopeKey: fact.scopeKey }] }, { sessionId: "harvester-session" }),
+        assert.deepEqual(await markQueue.handler({ stamps: [{ scopeKey: fact.scopeKey, etag: fact.etag }] }, { sessionId: "harvester-session" }),
             { marked: 1, skipped: 0 });
 
         const edges = await searchEdges.handler({ fromKey: inventory.nodeKey, namespace: "corpus/fill" }, { sessionId: "harvester-session" });

@@ -50,13 +50,21 @@ function uniqueNames(tag) {
     return { schema: `e3_${tag}_${r}`, graph: `e3g_${tag}_${r}` };
 }
 
+function graphBootstrapLockKey() {
+    let hash = 0x48_5a_46;
+    for (const ch of "horizon-graph-bootstrap") hash = ((hash << 5) - hash + ch.charCodeAt(0)) | 0;
+    return hash;
+}
+
 async function dropGraph(graph) {
     const { default: pg } = await import("pg");
     const pool = new pg.Pool({ connectionString: HDB_URL, max: 1 });
     try {
         try { await pool.query(`LOAD 'age'`); } catch {}
         await pool.query(`SET search_path = ag_catalog, "$user", public`);
+        await pool.query("SELECT pg_advisory_lock($1)", [graphBootstrapLockKey()]);
         try { await pool.query(`SELECT drop_graph($1, true)`, [graph]); } catch {}
+        finally { await pool.query("SELECT pg_advisory_unlock($1)", [graphBootstrapLockKey()]).catch(() => {}); }
     } finally {
         await pool.end();
     }
@@ -217,5 +225,79 @@ describe.skipIf(!HAS_HDB)("E3: base PgFactStore + real graph composition (live H
         assert(childHit.evidence.includes(ownerScopeKey),
             "a reader granted ownerSession via NON-SELF lineage sees the private scopeKey (grantedSessionIds honored)");
         assert(childHit.evidence.includes(sharedScopeKey), "and still sees the shared evidence");
+    });
+
+    it("soft-delete reconciliation removes evidence but spares still-evidenced edges (H1/H2)", { timeout: 120_000 }, async () => {
+        const runId = Math.random().toString(36).slice(2, 8);
+        const ns = `intake/e3del-${runId}/`;
+        const storeFact = byName(createFactTools({ factStore }), "store_fact");
+        const harvesterTools = createGraphTools({
+            factStore, graphStore, agentIdentity: "app-harvester", isHarvester: true, agentId: "app-harvester",
+            resolveAccess: async (sid) => ({ readerSessionId: sid ?? null, grantedSessionIds: [] }),
+        });
+        const readUncrawled = byName(harvesterTools, "facts_read_uncrawled");
+        const markCrawled = byName(harvesterTools, "facts_mark_crawled");
+        const upsertNode = byName(harvesterTools, "graph_upsert_node");
+        const upsertEdge = byName(harvesterTools, "graph_upsert_edge");
+        const searchEdges = byName(harvesterTools, "graph_search_edges");
+        const removeEvidence = byName(harvesterTools, "graph_remove_evidence");
+        assert(storeFact && upsertEdge && removeEvidence, "store_fact + harvester delete-reconcile tools present");
+
+        // Two source facts: X evidences node A; Y evidences node B AND edge A→B.
+        const xKey = `${ns}xfact`;
+        const yKey = `${ns}yfact`;
+        await storeFact.handler({ key: xKey, value: { name: "Ayla" }, shared: true }, { sessionId: "harv1" });
+        await storeFact.handler({ key: yKey, value: { name: "Borin", rel: "Ayla mentors Borin" }, shared: true }, { sessionId: "harv1" });
+        const queue = await readUncrawled.handler({ namespace: ns, limit: 50 }, { sessionId: "harv1" });
+        const xRow = queue.facts.find((f) => f.key === xKey);
+        const yRow = queue.facts.find((f) => f.key === yKey);
+        assert(xRow && yRow, "both intake facts are queued with receipts");
+
+        const a = await upsertNode.handler({ kind: "person", name: `Ayla-${runId}`, evidence: [xRow.scopeKey] }, { sessionId: "harv1" });
+        const b = await upsertNode.handler({ kind: "person", name: `Borin-${runId}`, evidence: [yRow.scopeKey] }, { sessionId: "harv1" });
+        assert(a.nodeKey && b.nodeKey, "nodes A and B created");
+        const edge = await upsertEdge.handler(
+            { fromKey: a.nodeKey, toKey: b.nodeKey, predicate: "mentors", evidence: [yRow.scopeKey] },
+            { sessionId: "harv1" },
+        );
+        assert(!edge.error, `edge A→B created (${edge.error ?? ""})`);
+        await markCrawled.handler({ stamps: [
+            { scopeKey: xRow.scopeKey, etag: xRow.etag },
+            { scopeKey: yRow.scopeKey, etag: yRow.etag },
+        ] }, { sessionId: "harv1" });
+
+        // Soft-delete X → its tombstone re-enters the queue with a fresh etag.
+        await factStore.deleteFact({ key: xKey, shared: true });
+        const delQueue = await readUncrawled.handler({ namespace: ns, limit: 50 }, { sessionId: "harv1" });
+        const xTomb = delQueue.facts.find((f) => f.key === xKey);
+        assert(xTomb && xTomb.deletedAt, "deleted fact reappears as a tombstone with deletedAt");
+
+        // Reconcile X: node A loses its only anchor, but A is an endpoint of edge
+        // A→B which is still evidenced by Y — so A and the edge MUST survive (H2).
+        const res = await removeEvidence.handler({ scopeKey: xTomb.scopeKey }, { sessionId: "harv1" });
+        assert(res.nodeEvidenceRemoved >= 1, "X's node evidence anchor was removed");
+        assertEqual(res.edgesDeleted, 0, "no edge deleted — A→B is still evidenced by Y");
+        assertEqual(res.nodesDeleted, 0, "node A is spared because it still anchors a live edge (H2)");
+        const stillEdges = await searchEdges.handler({ fromKey: a.nodeKey, toKey: b.nodeKey }, { sessionId: "harv1" });
+        assert(Array.isArray(stillEdges) && stillEdges.length >= 1, "edge A→B survives X's deletion");
+
+        const stamp = await markCrawled.handler({ stamps: [{ scopeKey: xTomb.scopeKey, etag: xTomb.etag }] }, { sessionId: "harv1" });
+        assertEqual(stamp.marked, 1, "tombstone reconciliation marks crawled with the current etag");
+
+        // Now delete Y too: edge A→B becomes evidence-less → edge removed; node B
+        // (only evidenced by Y, now edge-less) is reaped.
+        await factStore.deleteFact({ key: yKey, shared: true });
+        const delQueue2 = await readUncrawled.handler({ namespace: ns, limit: 50 }, { sessionId: "harv1" });
+        const yTomb = delQueue2.facts.find((f) => f.key === yKey);
+        const res2 = await removeEvidence.handler({ scopeKey: yTomb.scopeKey }, { sessionId: "harv1" });
+        assertEqual(res2.edgesDeleted, 1, "edge A→B is deleted once its last evidence (Y) is gone");
+        assert(res2.nodesDeleted >= 1, "node B is reaped once it is fully orphaned");
+        const goneEdges = await searchEdges.handler({ fromKey: a.nodeKey, toKey: b.nodeKey }, { sessionId: "harv1" });
+        assertEqual(Array.isArray(goneEdges) ? goneEdges.length : 0, 0, "edge A→B is no longer present");
+
+        // Reconciliation is idempotent: a second call removes nothing.
+        const again = await removeEvidence.handler({ scopeKey: yTomb.scopeKey }, { sessionId: "harv1" });
+        assertEqual(again.edgeEvidenceRemoved, 0, "second reconcile removes no edge evidence");
+        assertEqual(again.nodesDeleted, 0, "second reconcile deletes no nodes");
     });
 });

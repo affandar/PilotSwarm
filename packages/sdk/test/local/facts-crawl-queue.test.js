@@ -324,6 +324,119 @@ async function testIdempotentDeleteAndTtlBackstop(env) {
     }
 }
 
+// M3: the mark path coerces a numeric-string etag exactly like the SQL does
+// (LLM tool JSON often serializes numbers as strings), but still rejects junk.
+async function testStringEtagMarkCoercion(env) {
+    const factStore = await PgFactStore.create(env.store, env.factsSchema);
+    await factStore.initialize();
+    try {
+        const ns = `etagstr-${Math.random().toString(36).slice(2, 8)}`;
+        const key = `${ns}/coerce`;
+        await factStore.storeFact({ key, value: { v: 1 }, shared: true });
+        const queued = (await factStore.readUncrawledFacts({ namespace: `${ns}/` })).facts[0];
+        assert(typeof queued.etag === "number" && queued.etag > 0, "queued fact has a numeric etag");
+
+        const marked = await factStore.markFactsCrawled([{ scopeKey: queued.scopeKey, etag: String(queued.etag) }]);
+        assertEqual(marked.marked, 1, "numeric-string etag marks the fact crawled");
+        assertEqual(marked.skipped, 0, "numeric-string etag is not skipped");
+
+        let threwJunk = false;
+        try { await factStore.markFactsCrawled([{ scopeKey: queued.scopeKey, etag: "not-a-number" }]); }
+        catch { threwJunk = true; }
+        assert(threwJunk, "non-numeric etag is still rejected loudly");
+
+        let threwMissing = false;
+        try { await factStore.markFactsCrawled([{ scopeKey: queued.scopeKey }]); }
+        catch { threwMissing = true; }
+        assert(threwMissing, "missing etag is still rejected loudly");
+    } finally {
+        await factStore.close();
+    }
+}
+
+// M4: operator force-purge is selective — onlyUnreconciled spares reconciled
+// tombstones, keyPrefix is a literal prefix (starts_with), and the cutoff is an
+// exclusive lower bound on tombstone age.
+async function testForcePurgeSelectivity(env) {
+    const factStore = await PgFactStore.create(env.store, env.factsSchema);
+    await factStore.initialize();
+    try {
+        const ns = `force-${Math.random().toString(36).slice(2, 8)}`;
+        const reconciledKey = `${ns}/reconciled`;
+        const strandedKey = `${ns}/stranded`;
+        await factStore.storeFact({ key: reconciledKey, value: { v: 1 }, shared: true });
+        await factStore.storeFact({ key: strandedKey, value: { v: 2 }, shared: true });
+
+        // Soft-delete both → both become unreconciled tombstones in the queue.
+        await factStore.deleteFact({ key: reconciledKey, shared: true });
+        await factStore.deleteFact({ key: strandedKey, shared: true });
+
+        // Reconcile ONLY the first tombstone (a harvester marks it crawled).
+        const tombstones = (await factStore.readUncrawledFacts({ namespace: `${ns}/` })).facts;
+        const recon = tombstones.find((f) => f.key === reconciledKey);
+        const stranded = tombstones.find((f) => f.key === strandedKey);
+        await factStore.markFactsCrawled([{ scopeKey: recon.scopeKey, etag: recon.etag }]);
+
+        const future = new Date(Date.now() + 60_000);
+        const purgedUnrecon = await factStore.forcePurgeFacts({ cutoff: future, onlyUnreconciled: true });
+        assertEqual(purgedUnrecon, 1, "onlyUnreconciled purges just the unreconciled tombstone");
+        assert(await rawFact(env, recon.scopeKey), "reconciled tombstone survives an onlyUnreconciled purge");
+        assertEqual(await rawFact(env, stranded.scopeKey), null, "unreconciled tombstone is purged");
+
+        const purgedNoMatch = await factStore.forcePurgeFacts({ cutoff: future, keyPrefix: `${ns}/zzz` });
+        assertEqual(purgedNoMatch, 0, "a keyPrefix that matches nothing purges nothing");
+        const purgedPrefix = await factStore.forcePurgeFacts({ cutoff: future, keyPrefix: `${ns}/` });
+        assertEqual(purgedPrefix, 1, "a matching literal keyPrefix purges the remaining tombstone");
+        assertEqual(await rawFact(env, recon.scopeKey), null, "prefix-purged tombstone row is gone");
+
+        // A cutoff in the past spares fresh tombstones (cutoff is exclusive).
+        const freshKey = `${ns}/fresh`;
+        await factStore.storeFact({ key: freshKey, value: { v: 3 }, shared: true });
+        await factStore.deleteFact({ key: freshKey, shared: true });
+        const past = new Date(Date.now() - 60_000);
+        assertEqual(await factStore.forcePurgeFacts({ cutoff: past }), 0, "a past cutoff spares fresh tombstones");
+    } finally {
+        await factStore.close();
+    }
+}
+
+// M5: the TTL backstop reclaims reconciled (safe) tombstones before unreconciled
+// ones, so a lagging crawler's evidence is not stranded prematurely. The
+// unreconciled row is stored FIRST (lower id) so the old `deleted_at, id` order
+// would have purged it first — this test fails without the reconciled-first order.
+async function testPurgePrefersReconciled(env) {
+    const factStore = await PgFactStore.create(env.store, env.factsSchema);
+    await factStore.initialize();
+    try {
+        const ns = `m5-${Math.random().toString(36).slice(2, 8)}`;
+        const unreconKey = `${ns}/unrecon`;
+        const reconKey = `${ns}/recon`;
+        await factStore.storeFact({ key: unreconKey, value: { v: 1 }, shared: true });
+        await factStore.storeFact({ key: reconKey, value: { v: 2 }, shared: true });
+        await factStore.deleteFact({ key: unreconKey, shared: true });
+        await factStore.deleteFact({ key: reconKey, shared: true });
+
+        // Age BOTH tombstones equally and past the TTL (one UPDATE → identical
+        // deleted_at; the trigger re-nulls last_crawled_at, so reconcile AFTER).
+        await withPgClient(env, (client) => client.query(
+            `UPDATE "${env.factsSchema}".facts SET deleted_at = now() - interval '7 hours' WHERE scope_key = ANY($1)`,
+            [[unreconKey, reconKey].map((k) => `shared:${k}`)],
+        ));
+
+        const aged = (await factStore.readUncrawledFacts({ namespace: `${ns}/` })).facts;
+        const recon = aged.find((f) => f.key === reconKey);
+        await factStore.markFactsCrawled([{ scopeKey: recon.scopeKey, etag: recon.etag }]);
+
+        // A single-row backstop pass must reclaim the reconciled tombstone first.
+        const purged = await factStore.purgeExpiredFacts(21_600, 1);
+        assertEqual(purged, 1, "exactly one tombstone purged in the capped batch");
+        assertEqual(await rawFact(env, `shared:${reconKey}`), null, "reconciled tombstone is reclaimed first");
+        assert(await rawFact(env, `shared:${unreconKey}`), "unreconciled tombstone is spared in the capped batch");
+    } finally {
+        await factStore.close();
+    }
+}
+
 describe("P1: base-store crawl queue + EnhancedFactStore guard", () => {
     beforeAll(async () => { await preflightChecks(); });
 
@@ -353,6 +466,18 @@ describe("P1: base-store crawl queue + EnhancedFactStore guard", () => {
 
     it("soft delete: idempotent delete and TTL backstop purge", { timeout: TIMEOUT }, async () => {
         await testIdempotentDeleteAndTtlBackstop(getEnv());
+    });
+
+    it("mark crawled: numeric-string etag receipt is coerced, junk is rejected", { timeout: TIMEOUT }, async () => {
+        await testStringEtagMarkCoercion(getEnv());
+    });
+
+    it("force purge: onlyUnreconciled / keyPrefix / cutoff are selective", { timeout: TIMEOUT }, async () => {
+        await testForcePurgeSelectivity(getEnv());
+    });
+
+    it("TTL backstop reclaims reconciled tombstones before unreconciled ones", { timeout: TIMEOUT }, async () => {
+        await testPurgePrefersReconciled(getEnv());
     });
 
     it("isEnhancedFactStore(PgFactStore) is false (no throwing stubs)", { timeout: TIMEOUT }, async () => {

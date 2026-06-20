@@ -39,13 +39,21 @@ function uniqueNames(tag) {
     return { schema: `p3_${tag}_${r}`, graph: `p3g_${tag}_${r}` };
 }
 
+function graphBootstrapLockKey() {
+    let hash = 0x48_5a_46;
+    for (const ch of "horizon-graph-bootstrap") hash = ((hash << 5) - hash + ch.charCodeAt(0)) | 0;
+    return hash;
+}
+
 async function dropHdb(schema, graph) {
     const { default: pg } = await import("pg");
     const pool = new pg.Pool({ connectionString: HDB_URL, max: 1 });
     try {
         try { await pool.query(`LOAD 'age'`); } catch {}
         await pool.query(`SET search_path = ag_catalog, "$user", public`);
+        await pool.query("SELECT pg_advisory_lock($1)", [graphBootstrapLockKey()]);
         try { await pool.query(`SELECT drop_graph($1, true)`, [graph]); } catch {}
+        finally { await pool.query("SELECT pg_advisory_unlock($1)", [graphBootstrapLockKey()]).catch(() => {}); }
         await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
     } finally {
         await pool.end();

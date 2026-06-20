@@ -21,7 +21,7 @@ import type {
 } from "./types.js";
 import type { HorizonFactsConfig } from "./config.js";
 import { resolveConfig, buildPoolConfig } from "./config.js";
-import { loadMigrations } from "./horizon-migrator.js";
+import { loadMigrations, HORIZON_FACTS_LOCK_SEED, hashSchemaName } from "./horizon-migrator.js";
 import { assertGraphExtensions } from "./preconditions.js";
 import { GraphQueries } from "./graph-queries.js";
 
@@ -78,11 +78,32 @@ export class HorizonDBGraphStore implements GraphStore {
         if (!bootstrap) {
             throw new Error(`horizon-graph: graph bootstrap migration ${GRAPH_BOOTSTRAP_VERSION} not found`);
         }
-        // Idempotent: the bootstrap migration guards the extension with an
-        // IF-NOT-EXISTS clause and create_graph() with an ag_graph existence
-        // check, so a direct run is safe under concurrent boots against distinct
-        // graph names.
-        await this.pool.query(bootstrap.sql);
+        const lockKey = hashSchemaName("horizon-graph-bootstrap", HORIZON_FACTS_LOCK_SEED);
+        const client = await this.pool.connect();
+        try {
+            for (let attempt = 1; attempt <= 10; attempt++) {
+                try {
+                    await client.query("BEGIN");
+                    await client.query("SELECT pg_advisory_xact_lock($1)", [lockKey]);
+                    await client.query(bootstrap.sql);
+                    await client.query("COMMIT");
+                    break;
+                } catch (err: any) {
+                    await client.query("ROLLBACK").catch(() => {});
+                    const transient = /tuple concurrently updated|already exists/i.test(String(err?.message ?? err));
+                    if (!transient) throw err;
+                    const { rows } = await client.query(
+                        "SELECT 1 FROM ag_catalog.ag_graph WHERE name = $1 LIMIT 1",
+                        [this.cfg.graphName!],
+                    );
+                    if (rows.length > 0) break;
+                    if (attempt === 10) throw err;
+                    await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
+                }
+            }
+        } finally {
+            client.release();
+        }
         this.initialized = true;
     }
 

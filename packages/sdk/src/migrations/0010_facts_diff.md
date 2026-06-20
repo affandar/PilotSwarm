@@ -162,7 +162,10 @@ are deleted, revived, or edited while a crawler batch is in flight.
 
 Hard-deletes tombstones that are either reconciled (`last_crawled_at IS NOT
 NULL`) or older than the TTL. Uses `FOR UPDATE SKIP LOCKED` for concurrent Facts
-Manager passes.
+Manager passes. Within a batch the candidates are ordered
+`(last_crawled_at IS NULL), deleted_at, id` so already-reconciled tombstones are
+reclaimed first — a lagging (but not dead) crawler's unreconciled tombstones get
+maximum time before the TTL backstop reclaims them and strands graph evidence.
 
 ### `facts_tombstone_stats(p_ttl_seconds int)`
 
