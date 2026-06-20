@@ -110,6 +110,14 @@ export interface GraphEdgeRef {
     reinforced: boolean;
 }
 
+export interface GraphEvidenceRemovalResult {
+    scopeKey: string;
+    nodeEvidenceRemoved: number;
+    edgeEvidenceRemoved: number;
+    nodesDeleted: number;
+    edgesDeleted: number;
+}
+
 export interface GraphEdgeHit {
     fromKey: string;
     toKey: string;
@@ -147,6 +155,9 @@ export interface GraphStore {
     // delete (no cross-store cascade)
     deleteGraphNode(nodeKey: string, opts?: GraphNamespaceQuery): Promise<boolean>;
     deleteGraphEdge(fromKey: string, toKey: string, predicateKey: string, opts?: GraphNamespaceQuery): Promise<boolean>;
+    /** Remove a deleted fact's scopeKey from graph evidence, deleting graph
+     * edges and nodes that become evidence-less as a result. */
+    removeGraphEvidence(scopeKey: string, opts?: GraphNamespaceQuery): Promise<GraphEvidenceRemovalResult>;
 
     /**
      * OPTIONAL cheap aggregate for `graph_stats` (enhancedfactstore 07 P4):
@@ -167,7 +178,8 @@ export interface GraphStore {
  */
 export function isGraphStore(s: unknown): s is GraphStore {
     return typeof (s as any)?.searchGraphNodes === "function"
-        && typeof (s as any)?.upsertGraphNode === "function";
+    && typeof (s as any)?.upsertGraphNode === "function"
+    && typeof (s as any)?.removeGraphEvidence === "function";
 }
 
 // ─── ACL helper (syntactic scope_key check) ──────────────────────────────────

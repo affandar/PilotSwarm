@@ -24,6 +24,8 @@ export interface FactRecord {
     tags: string[];
     createdAt: Date;
     updatedAt: Date;
+    deletedAt: Date | null;
+    etag: number;
 }
 
 export interface StoreFactInput {
@@ -87,9 +89,25 @@ export interface AccessContext {
     unrestricted?: boolean;
 }
 
-/** Crawl-queue receipt: the scope key returned by readUncrawledFacts. */
+/** Crawl-queue receipt: the scope key + etag returned by readUncrawledFacts. */
 export interface CrawledFactStamp {
     scopeKey: string;
+    etag: number;
+}
+
+export interface FactsTombstoneStats {
+    pendingTotal: number;
+    unreconciled: number;
+    ttlBlocked: number;
+    oldestUnreconciledAgeSeconds: number | null;
+    reconciledUnswept: number;
+}
+
+export interface ForcePurgeFactsInput {
+    cutoff: Date;
+    onlyUnreconciled?: boolean;
+    keyPrefix?: string | null;
+    limit?: number;
 }
 
 /** Knowledge-namespace bucket used by facts stats aggregations. */
@@ -138,6 +156,9 @@ export interface FactStore {
     * remain uncrawled because writes reset `last_crawled_at` to NULL again.
      */
     markFactsCrawled(stamps: CrawledFactStamp[]): Promise<{ marked: number; skipped: number }>;
+    purgeExpiredFacts(ttlSeconds: number, limit?: number): Promise<number>;
+    getFactsTombstoneStats(ttlSeconds?: number): Promise<FactsTombstoneStats>;
+    forcePurgeFacts(input: ForcePurgeFactsInput): Promise<number>;
     close(): Promise<void>;
 }
 
@@ -304,6 +325,9 @@ function sqlForSchema(schema: string) {
             getSharedFactsStats:       `${schema}.facts_get_shared_facts_stats`,
             readUncrawledFacts:        `${schema}.facts_read_uncrawled`,
             markFactsCrawled:          `${schema}.facts_mark_crawled`,
+            purgeExpiredFacts:         `${schema}.facts_purge_expired`,
+            factsTombstoneStats:       `${schema}.facts_tombstone_stats`,
+            forcePurgeFacts:           `${schema}.facts_force_purge`,
         },
     };
 }
@@ -666,9 +690,9 @@ export class PgFactStore implements FactStore {
         stamps: CrawledFactStamp[],
     ): Promise<{ marked: number; skipped: number }> {
         for (const s of stamps) {
-            if (!s || typeof s.scopeKey !== "string") {
+            if (!s || typeof s.scopeKey !== "string" || typeof s.etag !== "number" || !Number.isFinite(s.etag)) {
                 throw new Error(
-                    "markFactsCrawled: every stamp requires { scopeKey } " +
+                    "markFactsCrawled: every stamp requires { scopeKey, etag } " +
                     "(the receipt returned by readUncrawledFacts).",
                 );
             }
@@ -682,6 +706,36 @@ export class PgFactStore implements FactStore {
             marked: Number(rows[0]?.marked) || 0,
             skipped: Number(rows[0]?.skipped) || 0,
         };
+    }
+
+    async purgeExpiredFacts(ttlSeconds: number, limit = 1000): Promise<number> {
+        const { rows } = await this.pool.query(
+            `SELECT ${this.sql.fn.purgeExpiredFacts}($1, $2) AS purged`,
+            [Math.max(0, Math.floor(ttlSeconds)), Math.max(1, Math.floor(limit))],
+        );
+        return Number(rows[0]?.purged) || 0;
+    }
+
+    async getFactsTombstoneStats(ttlSeconds = 21_600): Promise<FactsTombstoneStats> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.factsTombstoneStats}($1)`,
+            [Math.max(0, Math.floor(ttlSeconds))],
+        );
+        return mapTombstoneStatsRow(rows[0] ?? {});
+    }
+
+    async forcePurgeFacts(input: ForcePurgeFactsInput): Promise<number> {
+        const cutoff = input.cutoff instanceof Date ? input.cutoff : new Date(input.cutoff);
+        const { rows } = await this.pool.query(
+            `SELECT ${this.sql.fn.forcePurgeFacts}($1, $2, $3, $4) AS purged`,
+            [
+                cutoff,
+                input.onlyUnreconciled === true,
+                input.keyPrefix ?? null,
+                Math.max(1, Math.floor(input.limit ?? 1000)),
+            ],
+        );
+        return Number(rows[0]?.purged) || 0;
     }
 
     async close(): Promise<void> {
@@ -703,6 +757,19 @@ function mapFactRow(row: any): FactRecord {
         tags: Array.isArray(row.tags) ? row.tags : [],
         createdAt: row.created_at,
         updatedAt: row.updated_at,
+        deletedAt: row.deleted_at ? new Date(row.deleted_at) : null,
+        etag: Number(row.etag ?? 0),
+    };
+}
+
+function mapTombstoneStatsRow(row: any): FactsTombstoneStats {
+    const age = row.oldest_unreconciled_age_seconds;
+    return {
+        pendingTotal: Number(row.pending_total ?? 0),
+        unreconciled: Number(row.unreconciled ?? 0),
+        ttlBlocked: Number(row.ttl_blocked ?? 0),
+        oldestUnreconciledAgeSeconds: age == null ? null : Number(age),
+        reconciledUnswept: Number(row.reconciled_unswept ?? 0),
     };
 }
 

@@ -30,6 +30,7 @@ async function listFactRows(env) {
         const { rows } = await client.query(
             `SELECT key, session_id, shared
              FROM "${env.factsSchema}".facts
+               WHERE deleted_at IS NULL
              ORDER BY key ASC, session_id ASC NULLS LAST`,
         );
         return rows;

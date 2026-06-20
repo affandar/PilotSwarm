@@ -66,6 +66,10 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
 - Summary markdown tables must render as real HTML tables in the portal. If summary text arrives with escaped newline sequences (`\\n`) in otherwise tabular markdown, normalize and render the table structure instead of showing raw pipe-delimited text.
 - In the sessions pane, `V` toggles multi-select mode (seeded with the active session). `Space` toggles selection on the active row, `Ctrl+G` moves every selected top-level non-system session through the move-to-group picker, `c` cancels every selected session in one confirmation (system sessions and groups are skipped), `d` completes selected sessions, `D` hard-deletes selected sessions, and `Esc` exits select mode. The portal mirrors selection with Cmd/Ctrl-click and Shift-click on session rows; the panel header reveals `Clear`, `Group (n)`, and `Terminate (n)`. `Terminate (n)` opens the same three-disposition picker for Complete, Cancel, and Hard Delete.
 - In the stats inspector, `f` cycles between the session, fleet, and users views; keep terminal and portal behavior aligned.
+- The fleet stats view shows a compact `Fact Tombstones` card when facts tombstone
+	backlog is nonzero. The card is fed by `getFactsTombstoneStats` through the shared
+	transport/controller/reducer path and renders pending, unreconciled, TTL-blocked,
+	oldest, and reconciled counts in `packages/ui-core/src/selectors.js`.
 - In the files inspector, `x` deletes the selected artifact after confirmation; keep terminal and portal behavior aligned.
 - In the native TUI, the files inspector should render inside the standard outer inspector shell rather than introducing a second files-specific top-level shell.
 - In the portal inspector, reserve a consistent header row height so tabs with header actions and tabs without them start their tab strip at the same vertical position; keep inspector tab/action buttons compact rather than oversized.

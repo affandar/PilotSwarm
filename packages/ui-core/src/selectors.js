@@ -4594,6 +4594,19 @@ function buildFactsBody(rows) {
     return formatColumnTable(tableRows);
 }
 
+function buildFactsTombstoneBody(stats) {
+    const oldest = stats.oldestUnreconciledAgeSeconds == null
+        ? "-"
+        : formatHumanDurationSeconds(Math.max(0, Number(stats.oldestUnreconciledAgeSeconds) || 0));
+    return formatColumnTable([
+        ["pending", String(Number(stats.pendingTotal) || 0)],
+        ["unreconciled", String(Number(stats.unreconciled) || 0)],
+        ["ttl-blocked", String(Number(stats.ttlBlocked) || 0)],
+        ["oldest", oldest],
+        ["reconciled", String(Number(stats.reconciledUnswept) || 0)],
+    ]);
+}
+
 function buildFleetStatsLines(state, maxWidth) {
     const fleet = state.fleetStats;
     if (!fleet || (fleet.loading && !fleet.data)) {
@@ -4716,6 +4729,19 @@ function buildFleetStatsLines(state, maxWidth) {
             body: buildFactsBody(sharedFacts.rows),
             width: w,
             titleColor: "blue",
+            borderColor: "gray",
+            fitToContent: true,
+        }));
+    }
+
+    const tombstones = fleet.factsTombstoneStats;
+    if (tombstones && Number(tombstones.pendingTotal) > 0) {
+        lines.push(plainInspectorLine(""));
+        lines.push(...buildMessageCardLines({
+            title: `Fact Tombstones (${Number(tombstones.pendingTotal) || 0})`,
+            body: buildFactsTombstoneBody(tombstones),
+            width: w,
+            titleColor: "yellow",
             borderColor: "gray",
             fitToContent: true,
         }));

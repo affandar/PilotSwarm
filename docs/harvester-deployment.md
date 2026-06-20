@@ -160,7 +160,10 @@ cron_at(minute=0, hour=2, tz="America/Los_Angeles", reason="nightly harvest")
 ```
 
 The harvester wakes on its timer, drains `facts_read_uncrawled` into the graph, marks
-each fact crawled with its exact `scopeKey` receipt, and returns dormant.
+each processed row crawled with its exact `{ scopeKey, etag }` receipt, and returns
+dormant. Live rows are incorporated into the graph. Soft-deleted rows (`deletedAt`
+set) are reconciled with `graph_remove_evidence(scopeKey, namespace)` before marking,
+so only that source fact's graph anchors/evidence are removed.
 
 **Where should a harvester write its raw captures?** Use a dedicated namespace like
 `corpus/<source>/...` for source documents — it is the harvester's own input corpus.

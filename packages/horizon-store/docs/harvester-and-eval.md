@@ -172,7 +172,7 @@ flowchart TD
     E --> F[graph_upsert_node per entity<br/>+ evidence scopeKey]
     F --> G[graph_upsert_edge per relationship<br/>resolved nodeKeys + predicate + evidence]
     G --> H[similarity refinement:<br/>facts_similar k=5 → cross-email edges]
-    H --> I[facts_mark_crawled<br/>scopeKey]
+    H --> I[facts_mark_crawled<br/>scopeKey + etag]
     I --> C
     C -->|count 0| Z[done]
 ```
@@ -195,8 +195,12 @@ Key disciplines encoded in the prompt:
 - **Re-assert, never merge evidence.** A follow-up email restating a relationship
   asserts it **again** with the new email's evidence, reusing the **exact same
   predicate**. Same verb reinforces an edge; a synonym fragments it.
-- **Mark last.** `facts_mark_crawled` only after incorporation; marking without
-  incorporating permanently loses that email's knowledge.
+- **Delete rows reconcile evidence.** A queue row with `deletedAt` set is a
+  tombstone, not source content to re-incorporate. Call `graph_remove_evidence`
+  for its `scopeKey`, then mark it with the same `{ scopeKey, etag }` receipt.
+- **Mark last.** `facts_mark_crawled` only after incorporation or delete
+  reconciliation; marking without doing the work permanently loses that email's
+  graph update.
 
 ### III.3 The embedding gate (defer, don't drop)
 

@@ -97,7 +97,7 @@ harmlessly ignored).
 
 | Role | `harvester` frontmatter | Gets | Responsibility |
 |------|------------------------|------|----------------|
-| **Harvester** | `harvester: true` | crawl queue (`facts_read_uncrawled` / `facts_mark_crawled`) + graph writes (`graph_upsert_node` / `graph_upsert_edge` / `graph_merge_nodes` / `graph_delete_node` / `graph_delete_edge`) | Crawl sources into a dedicated `corpus/*` (source-capture) namespace, build the graph, mark facts crawled |
+| **Harvester** | `harvester: true` | crawl queue (`facts_read_uncrawled` / `facts_mark_crawled`) + graph reconciliation (`graph_remove_evidence`) + graph writes (`graph_upsert_node` / `graph_upsert_edge` / `graph_merge_nodes` / `graph_delete_node` / `graph_delete_edge`) | Crawl sources into a dedicated `corpus/*` (source-capture) namespace, build/reconcile the graph, mark facts crawled |
 | **Reader** | (none) | `facts_search` / `facts_similar` + graph reads (`graph_search_nodes` / `graph_search_edges` / `graph_neighbourhood`) + graph writes (`graph_upsert_*` / `graph_merge_nodes` / `graph_delete_*`) | Retrieve knowledge; pivot fact↔graph; may also incorporate into the shared graph |
 | **Facts Manager** | system agent (dormant) | crawl + graph writes, but **does not crawl** unless an operator explicitly asks | Curate `intake/*` (task-agent observations) into reusable skills |
 
@@ -145,8 +145,12 @@ deliberately and idempotently.
 1. **Capture sources.** Write each raw source item as a fact under your own
    `corpus/<source>/...` namespace (NOT `intake/*` — see Boundaries). `scope: shared`.
 2. **Pull the backlog.** `facts_read_uncrawled(namespace="corpus/<source>/", limit=20)`
-   returns facts that have never been crawled or whose content changed since the last
-  crawl. Each carries a `scopeKey` receipt.
+  returns facts that have never been crawled, whose content changed since the last
+  crawl, or that were soft-deleted. Each row carries a `scopeKey`, `etag`, and
+  possibly `deletedAt`.
+  - Live row (`deletedAt` missing/null): incorporate it into the graph.
+  - Deleted row (`deletedAt` set): call `graph_remove_evidence(scopeKey, namespace)`
+    to remove that fact's graph anchors/evidence, then include it in the mark batch.
 3. **Resolve before you create (similarity search).** For each fact, use
    `facts_similar(scopeKey)` to find related captures and `graph_search_nodes(kind,
    nameLike)` to check whether an entity already exists. Reuse the existing node key
@@ -154,8 +158,10 @@ deliberately and idempotently.
 4. **Build the graph.** For each entity: `graph_upsert_node(...)` with the fact's
    `scopeKey` as evidence. For each relationship: `graph_upsert_edge(...)`. Upserts
    are idempotent — re-running the same crawl converges, it does not duplicate.
-5. **Mark crawled.** `facts_mark_crawled` takes a `stamps` array of `{ scopeKey }`.
-  A skipped stamp means the fact was already marked or no longer exists.
+5. **Mark crawled.** `facts_mark_crawled` takes a `stamps` array of
+  `{ scopeKey, etag }` from the exact rows you processed. A skipped stamp means the
+  fact changed since your read, was already marked, or no longer exists; re-read
+  before declaring the backlog empty.
 6. Repeat until `facts_read_uncrawled` returns empty, then stop.
 
 ## Recurring Harvest
@@ -173,6 +179,9 @@ wall-clock. Cancel with `cron(action="cancel")`.
 - Resolve before you create: a `graph_search_nodes` / `facts_similar` check first
   keeps the graph deduplicated.
 - Do not delete graph nodes/edges unless reconciling a confirmed source deletion.
+- For a confirmed source deletion, prefer `graph_remove_evidence(scopeKey,
+  namespace)` over broad node/edge deletes; it removes only that fact's evidence and
+  deletes graph entities that become evidence-less.
 - Keep each crawl turn bounded; large backlogs drain across multiple cycles.
 ```
 
@@ -218,5 +227,6 @@ seed and navigate by graph topology alone (`graph_search_nodes` → `graph_neigh
 - [ ] Worker, client, and management client all spread `horizonConfigFromEnv()`.
 - [ ] Exactly the harvester agent(s) declare `harvester: true`; readers do not.
 - [ ] Recurring crawl uses `cron` / `cron_at`, not a polling loop.
-- [ ] `facts_mark_crawled` passes the unmodified `scopeKey` receipt in `stamps`.
+- [ ] `facts_mark_crawled` passes the unmodified `{ scopeKey, etag }` receipt in `stamps`.
+- [ ] Deleted crawl rows (`deletedAt` set) call `graph_remove_evidence` before marking.
 - [ ] Gating + composition tests added; composition test auto-skips without HDB.

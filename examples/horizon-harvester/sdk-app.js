@@ -17,6 +17,7 @@
  * Usage:
  *   node --env-file=.env examples/horizon-harvester/sdk-app.js            # full: harvest then ask
  *   HARVESTER_SCENARIO=harvest node --env-file=.env .../sdk-app.js        # just harvest
+ *   HARVESTER_SCENARIO=delete  node --env-file=.env .../sdk-app.js        # harvest, delete one source, reconcile graph
  *   HARVESTER_SCENARIO=ask     node --env-file=.env .../sdk-app.js        # just ask (after a harvest)
  *
  * Requires:
@@ -57,7 +58,7 @@ if (!horizon.graphDatabaseUrl) {
 }
 
 const SCENARIO = process.env.HARVESTER_SCENARIO || "full";
-const VALID = new Set(["full", "harvest", "ask"]);
+const VALID = new Set(["full", "harvest", "delete", "ask"]);
 if (!VALID.has(SCENARIO)) {
     console.error(`Unknown HARVESTER_SCENARIO="${SCENARIO}". Available: ${[...VALID].join(", ")}`);
     process.exit(1);
@@ -71,8 +72,16 @@ const HARVEST_PROMPT =
     "extract services, teams, and people into graph nodes and OWNED_BY / LED_BY / " +
     "DEPENDS_ON edges (anchored to each fact's scopeKey and stamped with namespace " +
     "'corpus/northwind'), and mark each fact crawled with " +
-    "its exact scopeKey. Finish with a short summary of documents ingested and " +
+    "its exact scopeKey and etag. Finish with a short summary of documents ingested and " +
     "nodes/edges created.";
+
+const DELETE_PROMPT =
+    "Run the source-deletion reconciliation scenario for corpus/northwind/svc-telemetry. " +
+    "First call delete_fact for key 'corpus/northwind/svc-telemetry' with shared=true. " +
+    "Then drain facts_read_uncrawled(namespace='corpus/northwind/', limit=20). " +
+    "For every row with deletedAt set, call graph_remove_evidence(scopeKey=row.scopeKey, namespace='corpus/northwind') " +
+    "to remove that source's node anchors and edge evidence. For live rows, do not rebuild unless they are uncrawled for another reason. " +
+    "Finally mark every processed row crawled with its exact scopeKey and etag, and summarize what evidence was removed.";
 
 const ASK_PROMPT =
     "Question: if telemetry-pipeline has an outage, which services are affected, and which " +
@@ -162,6 +171,10 @@ await client.start();
 // ─── Scenario runner ─────────────────────────────────────────────
 
 try {
+    if (SCENARIO === "delete") {
+        await runAgent("Harvest", "source-harvester", HARVEST_PROMPT, HARVEST_TIMEOUT_MS);
+        await runAgent("Delete/Reconcile", "source-harvester", DELETE_PROMPT, HARVEST_TIMEOUT_MS);
+    }
     if (SCENARIO === "full" || SCENARIO === "harvest") {
         await runAgent("Harvest", "source-harvester", HARVEST_PROMPT, HARVEST_TIMEOUT_MS);
     }

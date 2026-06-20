@@ -244,7 +244,7 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
         tools.push(defineTool("facts_read_uncrawled", {
             description:
                 "PRIVILEGED harvester work queue: facts not yet incorporated into the graph (new or edited since the " +
-                "last crawl), across ALL scopes. Keep each fact's scopeKey — it is the receipt facts_mark_crawled needs.",
+                "last crawl), across ALL scopes. Keep each fact's scopeKey and etag — both are the receipt facts_mark_crawled needs.",
             parameters: {
                 type: "object" as const,
                 properties: {
@@ -257,8 +257,8 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
 
         tools.push(defineTool("facts_mark_crawled", {
             description:
-                "Stamp facts as incorporated so they leave the queue. Pass each fact's scopeKey. " +
-                "A skipped stamp means the fact was already marked or no longer exists; just move on.",
+                "Stamp facts as incorporated so they leave the queue. Pass each fact's scopeKey and etag from facts_read_uncrawled. " +
+                "A skipped stamp means the fact was already marked, changed since your read, or no longer exists; re-read if needed.",
             parameters: {
                 type: "object" as const,
                 properties: {
@@ -268,14 +268,31 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
                             type: "object",
                             properties: {
                                 scopeKey: { type: "string" },
+                                etag: { type: "number" },
                             },
-                            required: ["scopeKey"],
+                            required: ["scopeKey", "etag"],
                         },
                     },
                 },
                 required: ["stamps"] as const,
             },
             handler: (a: any) => factStore.markFactsCrawled(a.stamps),
+        }));
+
+        tools.push(defineTool("graph_remove_evidence", {
+            description:
+                "Reconcile a soft-deleted fact with the graph: remove this fact scopeKey from node EVIDENCED_BY anchors " +
+                "and edge evidence arrays, deleting graph nodes/edges that become evidence-less. Call this for " +
+                "facts_read_uncrawled rows where deletedAt/deleted_at is set, then mark the fact crawled with its scopeKey and etag.",
+            parameters: {
+                type: "object" as const,
+                properties: {
+                    scopeKey: { type: "string", description: "Deleted fact scopeKey from facts_read_uncrawled." },
+                    namespace: { type: "string", description: "Optional graph namespace guard, e.g. corpus/northwind." },
+                },
+                required: ["scopeKey"] as const,
+            },
+            handler: (a: any) => graphStore.removeGraphEvidence(a.scopeKey, { namespace: a.namespace }),
         }));
     }
 

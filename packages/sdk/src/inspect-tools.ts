@@ -738,6 +738,25 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
             },
         }));
 
+        factsTools.push(defineTool("read_facts_tombstone_stats", {
+            description:
+                "Read soft-deleted fact tombstone backlog stats. Use to diagnose graph crawler lag: " +
+                "unreconciled tombstones still have last_crawled_at NULL and may strand graph evidence if TTL-purged.",
+            parameters: {
+                type: "object" as const,
+                properties: {
+                    ttl_seconds: { type: "number", description: "Tombstone TTL in seconds. Default 21600 (6h)." },
+                },
+            },
+            handler: async (args: { ttl_seconds?: number }) => {
+                try {
+                    return await factStore.getFactsTombstoneStats(args.ttl_seconds);
+                } catch (err: any) {
+                    return { error: `read_facts_tombstone_stats: ${err?.message || String(err)}` };
+                }
+            },
+        }));
+
         // Durable embedder status (07 P5) — semantic/hybrid search only returns
         // semantic hits while the in-DB embed loop is running. Base PgFactStore
         // (or an enhanced store with no embedding endpoint) reports unsupported.

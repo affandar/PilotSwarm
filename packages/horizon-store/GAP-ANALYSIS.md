@@ -27,7 +27,7 @@ crawl tracking, SQL-in-TS setup). The specs supersede it. Gaps, by area:
 | A2 | `relatedFacts` / `lineageFacts` / `LineageOpts` / `RelatedOpts` exist | removed — compose via graph seeds / base `readFacts(descendants)` | delete; add `similarFacts(scopeKey, SimilarOpts, access)` |
 | A3 | `FactRecord` lacks `scopeKey`; `ReadFactsQuery` lacks `scopeKeys` | 02 §1c base-API prerequisite | add both |
 | A4 | `GraphCrawlerInterface` (searchEntities / assertRelationship / linkEvidence / mergeEntities); no deletes | 02 §5 `GraphInterface`: `searchGraphNodes(q, access)` (with `seeds[]`+`depth`), `searchGraphEdges(q, access)`, `graphNeighbourhood(k, d, access)`, `upsertGraphNode`, `upsertGraphEdge` (absorbs linkEvidence), `mergeGraphNodes`, `deleteGraphNode`, `deleteGraphEdge` | full rewrite; `Entity`→`GraphNode` label, `entity_key`→`node_key` |
-| A5 | no crawl-tracking API | `readUncrawledFacts({namespace,limit})`, `markFactsCrawled(CrawledFactStamp[])` → `{marked, skipped}` | add (privileged, hash receipts) |
+| A5 | no crawl-tracking API | `readUncrawledFacts({namespace,limit})`, `markFactsCrawled(CrawledFactStamp[])` → `{marked, skipped}` | add (privileged `{ scopeKey, etag }` receipts) |
 | A6 | graph hits don't carry `evidence` | `GraphNodeHit.evidence` / `GraphEdgeHit.evidence`, ACL-filtered | assemble + filter |
 
 ## B. Behaviour (horizon-store.ts vs 01/03)

@@ -18,7 +18,7 @@
 
 import type {
     AccessContext, CrawledFactStamp, DeletedFactResult, DeletedFactsResult, DeleteFactInput, EmbedderLoopStatus, EmbedderStatus,
-    EmbeddingEndpointConfig, EnhancedFactStore, FactRecord, FactsStatsRow,
+    EmbeddingEndpointConfig, EnhancedFactStore, FactRecord, FactsStatsRow, FactsTombstoneStats, ForcePurgeFactsInput,
     ReadFactsQuery, ScoredFact, SearchOpts, SearchResult, SimilarOpts,
     StoreFactInput, StoredFactResult,
 } from "./types.js";
@@ -381,13 +381,43 @@ export class HorizonDBFactStore implements EnhancedFactStore {
     async markFactsCrawled(stamps: CrawledFactStamp[]): Promise<{ marked: number; skipped: number }> {
         if (!Array.isArray(stamps) || stamps.length === 0) return { marked: 0, skipped: 0 };
         for (const st of stamps) {
-            if (!st?.scopeKey) {
-                throw new Error("markFactsCrawled: every stamp requires { scopeKey } (the receipt from readUncrawledFacts)");
+            if (!st?.scopeKey || typeof st.etag !== "number" || !Number.isFinite(st.etag)) {
+                throw new Error("markFactsCrawled: every stamp requires { scopeKey, etag } (the receipt from readUncrawledFacts)");
             }
         }
         const { rows } = await withDbRetry<{ rows: any[] }>("facts_mark_crawled", () => this.pool.query(
             `SELECT * FROM ${this.s}.facts_mark_crawled($1::jsonb)`, [JSON.stringify(stamps)]));
         return { marked: Number(rows[0]?.marked ?? 0), skipped: Number(rows[0]?.skipped ?? 0) };
+    }
+
+    async purgeExpiredFacts(ttlSeconds: number, limit = 1000): Promise<number> {
+        const { rows } = await withDbRetry<{ rows: any[] }>("facts_purge_expired", () => this.pool.query(
+            `SELECT ${this.s}.facts_purge_expired($1, $2) AS purged`,
+            [Math.max(0, Math.floor(ttlSeconds)), Math.max(1, Math.floor(limit))],
+        ));
+        return Number(rows[0]?.purged ?? 0);
+    }
+
+    async getFactsTombstoneStats(ttlSeconds = 21_600): Promise<FactsTombstoneStats> {
+        const { rows } = await withDbRetry<{ rows: any[] }>("facts_tombstone_stats", () => this.pool.query(
+            `SELECT * FROM ${this.s}.facts_tombstone_stats($1)`,
+            [Math.max(0, Math.floor(ttlSeconds))],
+        ));
+        return mapTombstoneStatsRow(rows[0] ?? {});
+    }
+
+    async forcePurgeFacts(input: ForcePurgeFactsInput): Promise<number> {
+        const cutoff = input.cutoff instanceof Date ? input.cutoff : new Date(input.cutoff);
+        const { rows } = await withDbRetry<{ rows: any[] }>("facts_force_purge", () => this.pool.query(
+            `SELECT ${this.s}.facts_force_purge($1, $2, $3, $4) AS purged`,
+            [
+                cutoff,
+                input.onlyUnreconciled === true,
+                input.keyPrefix ?? null,
+                Math.max(1, Math.floor(input.limit ?? 1000)),
+            ],
+        ));
+        return Number(rows[0]?.purged ?? 0);
     }
 
     // ─── embedder lifecycle (02 §4) ──────────────────────────────────────────
@@ -627,5 +657,18 @@ function mapFactRow(r: any): FactRecord {
         scopeKey: r.scope_key,
         key: r.key, value: r.value, agentId: r.agent_id ?? null, sessionId: r.session_id ?? null,
         shared: !!r.shared, tags: r.tags ?? [], createdAt: r.created_at, updatedAt: r.updated_at,
+        deletedAt: r.deleted_at ? new Date(r.deleted_at) : null,
+        etag: Number(r.etag ?? 0),
+    };
+}
+
+function mapTombstoneStatsRow(row: any): FactsTombstoneStats {
+    const age = row.oldest_unreconciled_age_seconds;
+    return {
+        pendingTotal: Number(row.pending_total ?? 0),
+        unreconciled: Number(row.unreconciled ?? 0),
+        ttlBlocked: Number(row.ttl_blocked ?? 0),
+        oldestUnreconciledAgeSeconds: age == null ? null : Number(age),
+        reconciledUnswept: Number(row.reconciled_unswept ?? 0),
     };
 }

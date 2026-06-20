@@ -26,7 +26,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { mkdtempSync, rmSync } from "node:fs";
 import { SessionManager } from "../../src/session-manager.ts";
-import { isEnhancedFactStore } from "../../src/index.ts";
+import { createInspectTools, isEnhancedFactStore } from "../../src/index.ts";
 import { assert, assertEqual } from "../helpers/assertions.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -54,6 +54,9 @@ function baseFactSurface() {
         async getSharedFactsStats() { return []; },
         async readUncrawledFacts() { return { count: 0, facts: [] }; },
         async markFactsCrawled() { return { marked: 0, skipped: 0 }; },
+        async purgeExpiredFacts() { return 0; },
+        async getFactsTombstoneStats() { return { pendingTotal: 0, unreconciled: 0, ttlBlocked: 0, oldestUnreconciledAgeSeconds: null, reconciledUnswept: 0 }; },
+        async forcePurgeFacts() { return 0; },
     };
 }
 
@@ -86,6 +89,7 @@ function fakeGraphStore() {
         async mergeGraphNodes() {},
         async deleteGraphNode() { return true; },
         async deleteGraphEdge() { return true; },
+        async removeGraphEvidence(scopeKey) { return { scopeKey, nodeEvidenceRemoved: 0, edgeEvidenceRemoved: 0, nodesDeleted: 0, edgesDeleted: 0 }; },
     };
 }
 
@@ -152,7 +156,9 @@ async function register({ factStore, graphStore, agentIdentity, isHarvester, wor
 const SEARCH_TOOLS = ["facts_search", "facts_similar", "search_skills"];
 const GRAPH_READS = ["graph_search_nodes", "graph_search_edges", "graph_neighbourhood"];
 const GRAPH_WRITES = ["graph_upsert_node", "graph_upsert_edge", "graph_merge_nodes", "graph_delete_node", "graph_delete_edge"];
-const CRAWL_TOOLS = ["facts_read_uncrawled", "facts_mark_crawled"];
+const CRAWL_TOOLS = ["facts_read_uncrawled", "facts_mark_crawled", "graph_remove_evidence"];
+const TOMBSTONE_READS = ["facts_tombstone_stats"];
+const TOMBSTONE_MUTATIONS = ["facts_purge_tombstones", "facts_force_purge"];
 
 const hasAll = (set, names) => names.every((n) => set.has(n));
 const hasNone = (set, names) => names.every((n) => !set.has(n));
@@ -163,11 +169,29 @@ describe("E4: isEnhancedFactStore guard distinguishes the fakes", () => {
         assertEqual(isEnhancedFactStore(fakeBaseStore()), false, "base fake must read as a plain FactStore");
         assertEqual(isEnhancedFactStore(fakeEnhancedStore()), true, "enhanced fake must read as an EnhancedFactStore");
     });
+
+    it("read_facts_tombstone_stats inspect tool delegates to the fact store", async () => {
+        let seenTtl;
+        const factStore = {
+            ...fakeBaseStore(),
+            async getFactsTombstoneStats(ttlSeconds) {
+                seenTtl = ttlSeconds;
+                return { pendingTotal: 3, unreconciled: 2, ttlBlocked: 1, oldestUnreconciledAgeSeconds: 42, reconciledUnswept: 1 };
+            },
+        };
+        const catalog = noopCatalog();
+        const tools = createInspectTools({ catalog, factStore, agentIdentity: "agent-tuner" });
+        const tool = tools.find((t) => t.name === "read_facts_tombstone_stats");
+        assert(tool, "tombstone stats inspect tool is registered when factStore is provided");
+        const result = await tool.handler({ ttl_seconds: 123 });
+        assertEqual(seenTtl, 123, "ttl forwarded to fact store");
+        assertEqual(result.pendingTotal, 3, "stats payload returned");
+    });
 });
 
 // ─── E4: base store, no graph — today's surface, nothing new ─────────────────
 describe("E4: base store + no graph (capability-limited)", () => {
-    it("every role gets base KV tools and NONE of search/graph/crawl", async () => {
+    it("every role gets base KV tools; facts-manager alone gets tombstone maintenance", async () => {
         for (const role of ["default", "facts-manager", "agent-tuner"]) {
             const { names } = await register({ factStore: fakeBaseStore(), agentIdentity: role });
             // read_facts is always present; store/delete are stripped for the
@@ -181,6 +205,11 @@ describe("E4: base store + no graph (capability-limited)", () => {
             assert(hasNone(names, SEARCH_TOOLS), `${role}: no enhanced search tools on a base store`);
             assert(hasNone(names, [...GRAPH_READS, ...GRAPH_WRITES, ...CRAWL_TOOLS, "graph_stats"]),
                 `${role}: no graph tools without a graphStore`);
+            if (role === "facts-manager") {
+                assert(hasAll(names, [...TOMBSTONE_READS, ...TOMBSTONE_MUTATIONS]), "facts-manager gets tombstone maintenance tools");
+            } else {
+                assert(hasNone(names, [...TOMBSTONE_READS, ...TOMBSTONE_MUTATIONS]), `${role}: no tombstone maintenance tools`);
+            }
         }
     });
 
@@ -363,7 +392,7 @@ describe("E1: base facts + graph (composition tier)", () => {
 // any of these onto the tuner would be a privilege escalation, so this is an
 // explicit, named invariant rather than a side-assertion.
 describe("E1c: agent-tuner is strictly read-only (never a mutating tool)", () => {
-    const FACT_WRITES = ["store_fact", "delete_fact"];
+    const FACT_WRITES = ["store_fact", "delete_fact", ...TOMBSTONE_MUTATIONS];
     const MUTATING_SYSTEM = ["update_session_summary", "send_session_message", "reply_session_message"];
     // Sub-agent / lifecycle controls the tuner must NEVER receive. The tuner is
     // allowed ONLY the read members check_agents + list_sessions (session-manager
@@ -507,6 +536,7 @@ describe("E2: graph reads honor read_facts lineage (SessionManager → AccessCon
             async graphNeighbourhood(nodeKey, depth, access) { seen.neigh = access; seen.neighKey = nodeKey; seen.neighDepth = depth; return { nodes: [], edges: [] }; },
             async upsertGraphNode() { return {}; }, async upsertGraphEdge() { return {}; },
             async mergeGraphNodes() {}, async deleteGraphNode() { return true; }, async deleteGraphEdge() { return true; },
+            async removeGraphEvidence(scopeKey) { return { scopeKey, nodeEvidenceRemoved: 0, edgeEvidenceRemoved: 0, nodesDeleted: 0, edgesDeleted: 0 }; },
         };
     }
 

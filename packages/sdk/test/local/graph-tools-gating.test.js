@@ -25,7 +25,11 @@ function fakeEnhancedStore(caps = { search: true, embedder: true }) {
         deleteFact: async () => ({}), deleteSessionFactsForSession: async () => 0,
         getSessionFactsStats: async () => [], getFactsStatsForSessions: async () => [],
         getSharedFactsStats: async () => [], readUncrawledFacts: async () => ({ count: 0, facts: [] }),
-        markFactsCrawled: async () => ({ marked: 0, skipped: 0 }), initialize: async () => {}, close: async () => {},
+        markFactsCrawled: async () => ({ marked: 0, skipped: 0 }),
+        purgeExpiredFacts: async () => 0,
+        getFactsTombstoneStats: async () => ({ pendingTotal: 0, unreconciled: 0, ttlBlocked: 0, oldestUnreconciledAgeSeconds: null, reconciledUnswept: 0 }),
+        forcePurgeFacts: async () => 0,
+        initialize: async () => {}, close: async () => {},
     };
 }
 function fakeBaseStore() {
@@ -34,7 +38,11 @@ function fakeBaseStore() {
         deleteFact: async () => ({}), deleteSessionFactsForSession: async () => 0,
         getSessionFactsStats: async () => [], getFactsStatsForSessions: async () => [],
         getSharedFactsStats: async () => [], readUncrawledFacts: async () => ({ count: 0, facts: [] }),
-        markFactsCrawled: async () => ({ marked: 0, skipped: 0 }), initialize: async () => {}, close: async () => {},
+        markFactsCrawled: async () => ({ marked: 0, skipped: 0 }),
+        purgeExpiredFacts: async () => 0,
+        getFactsTombstoneStats: async () => ({ pendingTotal: 0, unreconciled: 0, ttlBlocked: 0, oldestUnreconciledAgeSeconds: null, reconciledUnswept: 0 }),
+        forcePurgeFacts: async () => 0,
+        initialize: async () => {}, close: async () => {},
     };
 }
 function fakeGraphStore() {
@@ -44,6 +52,7 @@ function fakeGraphStore() {
         graphNeighbourhood: async () => ({ nodes: [], edges: [] }),
         upsertGraphNode: async () => ({}), upsertGraphEdge: async () => ({}),
         mergeGraphNodes: async () => {}, deleteGraphNode: async () => true, deleteGraphEdge: async () => true,
+        removeGraphEvidence: async (scopeKey) => ({ scopeKey, nodeEvidenceRemoved: 0, edgeEvidenceRemoved: 0, nodesDeleted: 0, edgesDeleted: 0 }),
     };
 }
 
@@ -135,21 +144,21 @@ describe("P4: graph tool gating (createGraphTools)", () => {
         assert(n.has("graph_search_nodes") && n.has("graph_search_edges") && n.has("graph_neighbourhood"), "graph read tools present");
         assert(n.has("graph_upsert_node") && n.has("graph_upsert_edge") && n.has("graph_merge_nodes")
             && n.has("graph_delete_node") && n.has("graph_delete_edge"), "graph write/delete now available to every non-tuner session");
-        assert(!n.has("facts_read_uncrawled") && !n.has("facts_mark_crawled"), "crawl queue stays harvester/facts-manager only");
+        assert(!n.has("facts_read_uncrawled") && !n.has("facts_mark_crawled") && !n.has("graph_remove_evidence"), "crawl/reconcile tools stay harvester/facts-manager only");
         assert(!n.has("graph_stats"), "no graph_stats for an ordinary reader");
     });
 
     it("harvester role → read + crawl-queue + write/delete", () => {
         const n = names(createGraphTools({ ...base(), agentIdentity: "app-harvester", isHarvester: true }));
         assert(n.has("graph_search_nodes"), "reads present");
-        assert(n.has("facts_read_uncrawled") && n.has("facts_mark_crawled"), "crawl queue present for harvester");
+        assert(n.has("facts_read_uncrawled") && n.has("facts_mark_crawled") && n.has("graph_remove_evidence"), "crawl/reconcile tools present for harvester");
         assert(n.has("graph_upsert_node") && n.has("graph_upsert_edge") && n.has("graph_merge_nodes")
             && n.has("graph_delete_node") && n.has("graph_delete_edge"), "graph write/delete present for harvester");
     });
 
     it("facts-manager → harvester tools (dormant) + graph_stats", () => {
         const n = names(createGraphTools({ ...base(), agentIdentity: "facts-manager" }));
-        assert(n.has("facts_read_uncrawled") && n.has("graph_upsert_node"), "facts-manager holds harvester tools");
+        assert(n.has("facts_read_uncrawled") && n.has("graph_remove_evidence") && n.has("graph_upsert_node"), "facts-manager holds harvester tools");
         assert(n.has("graph_stats"), "facts-manager gets graph_stats");
     });
 
@@ -158,7 +167,7 @@ describe("P4: graph tool gating (createGraphTools)", () => {
         assert(n.has("graph_search_nodes") && n.has("graph_neighbourhood"), "tuner gets graph reads");
         assert(n.has("graph_stats"), "tuner gets graph_stats");
         assert(!n.has("graph_upsert_node") && !n.has("graph_delete_node") && !n.has("graph_merge_nodes"), "tuner gets NO graph writes");
-        assert(!n.has("facts_read_uncrawled") && !n.has("facts_mark_crawled"), "tuner gets NO crawl queue (even with isHarvester)");
+        assert(!n.has("facts_read_uncrawled") && !n.has("facts_mark_crawled") && !n.has("graph_remove_evidence"), "tuner gets NO crawl/reconcile tools (even with isHarvester)");
     });
 
     it("namespace is forwarded through every graph read/write/delete/stat tool", async () => {
@@ -174,6 +183,7 @@ describe("P4: graph tool gating (createGraphTools)", () => {
             mergeGraphNodes: async (_fromKey, _intoKey, _reason, opts) => { seen.mergeNodes = opts; },
             deleteGraphNode: async (_nodeKey, opts) => { seen.deleteNode = opts; return true; },
             deleteGraphEdge: async (_fromKey, _toKey, _predicateKey, opts) => { seen.deleteEdge = opts; return true; },
+            removeGraphEvidence: async (_scopeKey, opts) => { seen.removeEvidence = opts; return { scopeKey: _scopeKey, nodeEvidenceRemoved: 0, edgeEvidenceRemoved: 0, nodesDeleted: 0, edgesDeleted: 0 }; },
             graphStats: async (opts) => { seen.graphStats = opts; return { nodeCount: 1, edgeCount: 2 }; },
         };
         const factStore = {
@@ -192,6 +202,7 @@ describe("P4: graph tool gating (createGraphTools)", () => {
         await byName(tools, "graph_merge_nodes").handler({ namespace: ns, fromKey: "service:checkout-old", intoKey: "service:checkout", reason: "same" }, { sessionId: "s1" });
         await byName(tools, "graph_delete_node").handler({ namespace: ns, nodeKey: "service:checkout-old" }, { sessionId: "s1" });
         await byName(tools, "graph_delete_edge").handler({ namespace: ns, fromKey: "service:checkout", toKey: "service:inventory", predicateKey: "depends_on" }, { sessionId: "s1" });
+        await byName(tools, "graph_remove_evidence").handler({ namespace: ns, scopeKey: "shared:corpus/acme/source" }, { sessionId: "s1" });
 
         assertEqual(seen.searchNodes.namespace, ns, "graph_search_nodes forwards namespace");
         assertEqual(seen.searchEdges.namespace, ns, "graph_search_edges forwards namespace");
@@ -203,6 +214,7 @@ describe("P4: graph tool gating (createGraphTools)", () => {
         assertEqual(seen.mergeNodes.namespace, ns, "graph_merge_nodes forwards namespace guard");
         assertEqual(seen.deleteNode.namespace, ns, "graph_delete_node forwards namespace guard");
         assertEqual(seen.deleteEdge.namespace, ns, "graph_delete_edge forwards namespace guard");
+        assertEqual(seen.removeEvidence.namespace, ns, "graph_remove_evidence forwards namespace guard");
     });
 
     it("BLOCKER#1: with no resolveAccess, a reader's graph search FAILS CLOSED (own session only, never unrestricted)", async () => {

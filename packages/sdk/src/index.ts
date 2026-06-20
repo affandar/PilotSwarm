@@ -55,6 +55,8 @@ export type {
     DeletedFactResult,
     DeletedFactsResult,
     FactsStatsRow,
+    FactsTombstoneStats,
+    ForcePurgeFactsInput,
     FactsNamespace,
     AccessContext,
     CrawledFactStamp,
@@ -83,6 +85,7 @@ export type {
     GraphNodeHit,
     GraphEdgeRef,
     GraphEdgeHit,
+    GraphEvidenceRemovalResult,
     SubGraph,
 } from "./graph-store.js";
 export type {

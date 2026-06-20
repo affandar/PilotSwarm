@@ -342,6 +342,10 @@ export class BrowserPortalTransport {
         return this.rpc("getSharedFactsStats", {});
     }
 
+    async getFactsTombstoneStats(opts = {}) {
+        return this.rpc("getFactsTombstoneStats", { ttlSeconds: opts.ttlSeconds });
+    }
+
     async pruneDeletedSummaries(olderThan) {
         return this.rpc("pruneDeletedSummaries", {
             olderThan: olderThan instanceof Date ? olderThan.toISOString() : olderThan,

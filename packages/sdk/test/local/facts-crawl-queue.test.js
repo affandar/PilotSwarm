@@ -18,6 +18,29 @@ import { PgFactStore, isEnhancedFactStore } from "../../src/index.ts";
 const TIMEOUT = 60_000;
 const getEnv = useSuiteEnv(import.meta.url);
 
+async function withPgClient(env, fn) {
+    const { default: pg } = await import("pg");
+    const client = new pg.Client({ connectionString: env.store });
+    try {
+        await client.connect();
+        return await fn(client);
+    } finally {
+        try { await client.end(); } catch {}
+    }
+}
+
+async function rawFact(env, scopeKey) {
+    return withPgClient(env, async (client) => {
+        const { rows } = await client.query(
+            `SELECT scope_key, key, deleted_at, last_crawled_at, etag
+             FROM "${env.factsSchema}".facts
+             WHERE scope_key = $1`,
+            [scopeKey],
+        );
+        return rows[0] ?? null;
+    });
+}
+
 async function testScopeKeyExposedAndBulkRead(env) {
     const factStore = await PgFactStore.create(env.store, env.factsSchema);
     await factStore.initialize();
@@ -55,15 +78,16 @@ async function testCrawlQueueRoundTrip(env) {
         await factStore.storeFact({ key: `${ns}/a`, value: { v: "a1" }, shared: true });
         await factStore.storeFact({ key: `${ns}/b`, value: { v: "b1" }, shared: true });
 
-        // 1. New facts are uncrawled and carry scopeKey receipts.
+        // 1. New facts are uncrawled and carry scopeKey + etag receipts.
         const q1 = await factStore.readUncrawledFacts({ namespace: ns });
         assertEqual(q1.count, 2, "both new facts are uncrawled");
         for (const f of q1.facts) {
             assert(typeof f.scopeKey === "string", "uncrawled fact carries scopeKey");
+            assert(typeof f.etag === "number" && f.etag > 0, "uncrawled fact carries etag receipt");
         }
 
         // 2. Mark both crawled with valid receipts → they leave the queue.
-        const stamps = q1.facts.map((f) => ({ scopeKey: f.scopeKey }));
+        const stamps = q1.facts.map((f) => ({ scopeKey: f.scopeKey, etag: f.etag }));
         const m1 = await factStore.markFactsCrawled(stamps);
         assertEqual(m1.marked, 2, "both facts marked crawled");
         assertEqual(m1.skipped, 0, "no skips with valid receipts");
@@ -77,11 +101,11 @@ async function testCrawlQueueRoundTrip(env) {
         assertEqual(q3.count, 1, "edited fact re-enters the queue");
         assertEqual(q3.facts[0].key, `${ns}/a`, "the edited fact is the one re-queued");
 
-        // 4. A scopeKey receipt marks the queued fact; a second mark is skipped.
-        const marked = await factStore.markFactsCrawled([{ scopeKey: q3.facts[0].scopeKey }]);
-        assertEqual(marked.marked, 1, "scopeKey receipt marks queued fact");
+        // 4. A current scopeKey + etag receipt marks the queued fact; a second mark is skipped.
+        const marked = await factStore.markFactsCrawled([{ scopeKey: q3.facts[0].scopeKey, etag: q3.facts[0].etag }]);
+        assertEqual(marked.marked, 1, "current receipt marks queued fact");
         assertEqual(marked.skipped, 0, "valid queued receipt is not skipped");
-        const stale = await factStore.markFactsCrawled([{ scopeKey: q3.facts[0].scopeKey }]);
+        const stale = await factStore.markFactsCrawled([{ scopeKey: q3.facts[0].scopeKey, etag: q3.facts[0].etag }]);
         assertEqual(stale.marked, 0, "already-marked receipt marks nothing");
         assertEqual(stale.skipped, 1, "already-marked receipt is counted as skipped");
         const q4 = await factStore.readUncrawledFacts({ namespace: ns });
@@ -90,7 +114,7 @@ async function testCrawlQueueRoundTrip(env) {
         // 5. markFactsCrawled validates receipt shape.
         let threw = false;
         try {
-            await factStore.markFactsCrawled([{ contentHash: "old" }]);
+            await factStore.markFactsCrawled([{ scopeKey: q3.facts[0].scopeKey }]);
         } catch {
             threw = true;
         }
@@ -194,6 +218,112 @@ async function testUncrawledNamespaceLiteral(env) {
     }
 }
 
+async function testSoftDeleteEtagConcurrency(env) {
+    const factStore = await PgFactStore.create(env.store, env.factsSchema);
+    await factStore.initialize();
+    try {
+        const ns = `soft-${Math.random().toString(36).slice(2, 8)}`;
+        const key = `${ns}/race`;
+        await factStore.storeFact({ key, value: { v: 1 }, shared: true });
+
+        const q1 = await factStore.readUncrawledFacts({ namespace: `${ns}/` });
+        const live = q1.facts.find((f) => f.key === key);
+        assert(live, "live fact is initially uncrawled");
+        assertEqual(live.deletedAt, null, "live uncrawled fact has no deletedAt");
+        const liveEtag = live.etag;
+
+        const deleted = await factStore.deleteFact({ key, shared: true });
+        assertEqual(deleted.deleted, true, "deleteFact soft-deletes live fact");
+        const hidden = await factStore.readFacts({ scope: "shared", keyPattern: key }, { unrestricted: true });
+        assertEqual(hidden.count, 0, "soft-deleted fact is hidden from reads");
+        const tombstone = await rawFact(env, live.scopeKey);
+        assert(tombstone?.deleted_at, "soft-deleted row remains as a tombstone");
+        assertEqual(tombstone.last_crawled_at, null, "delete re-enters crawl queue");
+        assert(Number(tombstone.etag) > liveEtag, "delete bumps etag");
+
+        const staleLiveMark = await factStore.markFactsCrawled([{ scopeKey: live.scopeKey, etag: liveEtag }]);
+        assertEqual(staleLiveMark.marked, 0, "stale live mark is skipped after delete");
+        assertEqual(staleLiveMark.skipped, 1, "stale live mark counted as skipped");
+
+        const q2 = await factStore.readUncrawledFacts({ namespace: `${ns}/` });
+        const deletedQueued = q2.facts.find((f) => f.key === key);
+        assert(deletedQueued?.deletedAt instanceof Date, "tombstone is visible to crawl queue with deletedAt");
+        const markDelete = await factStore.markFactsCrawled([{ scopeKey: deletedQueued.scopeKey, etag: deletedQueued.etag }]);
+        assertEqual(markDelete.marked, 1, "delete reconciliation mark succeeds with current etag");
+
+        const purged = await factStore.purgeExpiredFacts(21_600);
+        assertEqual(purged, 1, "reconciled tombstone is hard-deleted before TTL");
+        assertEqual(await rawFact(env, live.scopeKey), null, "purged tombstone row is gone");
+    } finally {
+        await factStore.close();
+    }
+}
+
+async function testReviveAndStaleEtag(env) {
+    const factStore = await PgFactStore.create(env.store, env.factsSchema);
+    await factStore.initialize();
+    try {
+        const ns = `revive-${Math.random().toString(36).slice(2, 8)}`;
+        const key = `${ns}/same`;
+        const value = { v: "same" };
+        await factStore.storeFact({ key, value, shared: true });
+        const initial = (await factStore.readUncrawledFacts({ namespace: `${ns}/` })).facts[0];
+        await factStore.markFactsCrawled([{ scopeKey: initial.scopeKey, etag: initial.etag }]);
+
+        await factStore.deleteFact({ key, shared: true });
+        const tombstone = (await factStore.readUncrawledFacts({ namespace: `${ns}/` })).facts[0];
+        await factStore.markFactsCrawled([{ scopeKey: tombstone.scopeKey, etag: tombstone.etag }]);
+        const reconciled = await rawFact(env, initial.scopeKey);
+        assert(reconciled?.deleted_at && reconciled?.last_crawled_at, "tombstone is reconciled before revive");
+
+        await factStore.storeFact({ key, value, shared: true });
+        const revived = await rawFact(env, initial.scopeKey);
+        assertEqual(revived.deleted_at, null, "revive clears deleted_at");
+        assertEqual(revived.last_crawled_at, null, "identical-value revive re-enters crawl queue");
+        assert(Number(revived.etag) > Number(reconciled.etag), "identical-value revive bumps etag");
+
+        const queued = (await factStore.readUncrawledFacts({ namespace: `${ns}/` })).facts[0];
+        await factStore.storeFact({ key, value: { v: "edited" }, shared: true });
+        const stale = await factStore.markFactsCrawled([{ scopeKey: queued.scopeKey, etag: queued.etag }]);
+        assertEqual(stale.marked, 0, "stale etag after edit is skipped");
+        assertEqual(stale.skipped, 1, "stale etag counted as skipped");
+    } finally {
+        await factStore.close();
+    }
+}
+
+async function testIdempotentDeleteAndTtlBackstop(env) {
+    const factStore = await PgFactStore.create(env.store, env.factsSchema);
+    await factStore.initialize();
+    try {
+        const ns = `ttl-${Math.random().toString(36).slice(2, 8)}`;
+        const key = `${ns}/old`;
+        await factStore.storeFact({ key, value: { v: 1 }, shared: true });
+        const queued = (await factStore.readUncrawledFacts({ namespace: `${ns}/` })).facts[0];
+
+        assertEqual((await factStore.deleteFact({ key, shared: true })).deleted, true, "first delete affects live row");
+        const first = await rawFact(env, queued.scopeKey);
+        assertEqual((await factStore.deleteFact({ key, shared: true })).deleted, false, "second delete is a no-op");
+        const second = await rawFact(env, queued.scopeKey);
+        assertEqual(String(second.deleted_at), String(first.deleted_at), "idempotent delete does not refresh deleted_at");
+        assertEqual(Number(second.etag), Number(first.etag), "idempotent delete does not bump etag");
+        assertEqual(second.last_crawled_at, null, "idempotent delete does not mark crawled");
+
+        await withPgClient(env, (client) => client.query(
+            `UPDATE "${env.factsSchema}".facts SET deleted_at = now() - interval '7 hours' WHERE scope_key = $1`,
+            [queued.scopeKey],
+        ));
+        const stats = await factStore.getFactsTombstoneStats(21_600);
+        assertEqual(stats.pendingTotal, 1, "tombstone stats count pending tombstone");
+        assertEqual(stats.unreconciled, 1, "tombstone stats count unreconciled tombstone");
+        assertEqual(stats.ttlBlocked, 0, "expired tombstone is not ttl-blocked");
+        assert(stats.oldestUnreconciledAgeSeconds >= 6 * 60 * 60, "oldest unreconciled age is reported");
+        assertEqual(await factStore.purgeExpiredFacts(21_600), 1, "TTL backstop purges old unreconciled tombstone");
+    } finally {
+        await factStore.close();
+    }
+}
+
 describe("P1: base-store crawl queue + EnhancedFactStore guard", () => {
     beforeAll(async () => { await preflightChecks(); });
 
@@ -211,6 +341,18 @@ describe("P1: base-store crawl queue + EnhancedFactStore guard", () => {
 
     it("crawl queue: read uncrawled → mark crawled → edit re-queues → stale skipped", { timeout: TIMEOUT }, async () => {
         await testCrawlQueueRoundTrip(getEnv());
+    });
+
+    it("soft delete: stale live mark skips, delete mark succeeds, purge removes reconciled tombstone", { timeout: TIMEOUT }, async () => {
+        await testSoftDeleteEtagConcurrency(getEnv());
+    });
+
+    it("soft delete: identical-value revive requeues and stale etag after edit skips", { timeout: TIMEOUT }, async () => {
+        await testReviveAndStaleEtag(getEnv());
+    });
+
+    it("soft delete: idempotent delete and TTL backstop purge", { timeout: TIMEOUT }, async () => {
+        await testIdempotentDeleteAndTtlBackstop(getEnv());
     });
 
     it("isEnhancedFactStore(PgFactStore) is false (no throwing stubs)", { timeout: TIMEOUT }, async () => {

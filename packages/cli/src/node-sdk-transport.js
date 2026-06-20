@@ -714,6 +714,10 @@ export class NodeSdkTransport {
         return this.mgmt.getSharedFactsStats();
     }
 
+    async getFactsTombstoneStats(opts) {
+        return this.mgmt.getFactsTombstoneStats(opts);
+    }
+
     async pruneDeletedSummaries(olderThan) {
         return this.mgmt.pruneDeletedSummaries(olderThan);
     }

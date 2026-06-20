@@ -140,7 +140,8 @@ describe.skipIf(!HAS_HDB)("E3: base PgFactStore + real graph composition (live H
         const queue = await readUncrawled.handler({ namespace: ns, limit: 50 }, { sessionId: "harv1" });
         const queued = queue.facts.find((f) => f.key === factKey);
         assert(queued, "the new intake fact is in the uncrawled queue");
-        assert(typeof queued.scopeKey === "string", "queued fact carries scopeKey receipt");
+        assert(typeof queued.scopeKey === "string", "queued fact carries scopeKey");
+        assert(typeof queued.etag === "number" && queued.etag > 0, "queued fact carries etag receipt");
 
         // 4. Harvest it into the graph: a node evidenced by the fact's scopeKey.
         const node = await upsertNode.handler(
@@ -150,7 +151,7 @@ describe.skipIf(!HAS_HDB)("E3: base PgFactStore + real graph composition (live H
         assert(node.nodeKey, "graph node created");
 
         // 5. The receipt stamps it crawled → it leaves the queue.
-        const marked = await markCrawled.handler({ stamps: [{ scopeKey: queued.scopeKey }] }, { sessionId: "harv1" });
+        const marked = await markCrawled.handler({ stamps: [{ scopeKey: queued.scopeKey, etag: queued.etag }] }, { sessionId: "harv1" });
         assertEqual(marked.marked, 1, "exactly the one fact is stamped crawled");
 
         const after = await readUncrawled.handler({ namespace: ns, limit: 50 }, { sessionId: "harv1" });

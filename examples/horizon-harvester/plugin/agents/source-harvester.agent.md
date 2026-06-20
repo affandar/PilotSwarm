@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.2.0
+version: 1.3.0
 name: source-harvester
 title: Source Harvester
 description: Crawls the Northwind Robotics knowledge source into durable facts and builds the knowledge graph.
@@ -40,8 +40,13 @@ When asked to harvest, run this loop end to end:
 ### 2. Drain the crawl queue
 3. Call `facts_read_uncrawled(namespace="corpus/northwind/", limit=20)`. It returns
    facts under that prefix that have never been crawled or whose content changed since
-  the last crawl. Each carries a `scopeKey` receipt. If it returns nothing, the
-  harvest is complete.
+  the last crawl. Each carries a `scopeKey`, `etag`, and possibly `deletedAt`. If it
+  returns nothing, the harvest is complete.
+
+If a row has `deletedAt` set, it is a source deletion tombstone. Do **not** rebuild
+the graph from its old value. Call `graph_remove_evidence(scopeKey=<row.scopeKey>,
+namespace="corpus/northwind")` to remove that source's graph evidence, then include
+`{ scopeKey: <row.scopeKey>, etag: <row.etag> }` in the mark-crawled batch.
 
 ### 3. Resolve entities before creating them (similarity search)
 4. For each uncrawled fact, FIRST pull related context so you reconcile entities
@@ -55,7 +60,8 @@ When asked to harvest, run this loop end to end:
      than creating a near-duplicate.
 
 ### 4. Build the graph
-5. Extract entities and relationships from the content, reusing resolved nodes:
+5. For each live uncrawled fact, extract entities and relationships from the content,
+   reusing resolved nodes:
    - **Services** (e.g. `checkout-api`) → `graph_upsert_node` with `kind: "service"`.
    - **Teams** (e.g. `Platform`) → `graph_upsert_node` with `kind: "team"`.
    - **People** (e.g. `Dana Reyes`) → `graph_upsert_node` with `kind: "person"`.
@@ -69,9 +75,9 @@ When asked to harvest, run this loop end to end:
    duplicates nodes or edges.
 
 ### 5. Mark crawled
-7. Call `facts_mark_crawled` with a `stamps` array of `{ scopeKey }` for each fact.
-  If a stamp is skipped, the fact was already marked or no longer exists; continue
-  with the next item.
+7. Call `facts_mark_crawled` with a `stamps` array of `{ scopeKey, etag }` for each
+  row you processed (live or deleted). If a stamp is skipped, the fact changed after
+  you read it or no longer exists; re-read the queue before deciding it is complete.
 
 ### 6. Repeat
 8. Go back to step 2 until `facts_read_uncrawled` returns empty, then summarize what
@@ -83,7 +89,8 @@ When asked to harvest, run this loop end to end:
   (the Facts Manager's curation queue) and never curate facts into skills yourself.
 - Resolve before you create: a `graph_search_nodes` / `facts_similar` check first
   keeps the graph deduplicated.
-- Do not delete graph nodes/edges unless reconciling a confirmed source removal.
+- Do not delete graph nodes/edges except through `graph_remove_evidence` for a
+  confirmed source removal, or when an operator explicitly asks for graph cleanup.
 - Keep each turn bounded. If the source grows large, drain the queue across multiple
   cycles rather than one giant turn.
 

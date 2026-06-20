@@ -62,7 +62,7 @@ mutating tool calls.
   with `tgl` as an alias (never two person nodes); Andres Freund distinct;
   Tom connected within 2 hops; the 1001/1002 restatement is ONE edge with
   `observations == 2` and evidence from both messages; every edge evidenced;
-  queue drained with hash receipts.
+  queue drained with `{ scopeKey, etag }` receipts.
 - **SC1b — cold harvest, real corpus (derived from `corpus.metadata`):** every
   multi-message author resolves to exactly one person node and reaches a
   non-person node ≤2 hops; ≥1 edge reinforced from ≥2 distinct messages;

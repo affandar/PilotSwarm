@@ -23,7 +23,7 @@
 
 import type {
     AccessContext, GraphEdgeHit, GraphEdgeInput, GraphEdgeQuery,
-    GraphNodeHit, GraphNodeInput, GraphNodeQuery, GraphNodeRef, GraphEdgeRef, SubGraph,
+    GraphNodeHit, GraphNodeInput, GraphNodeQuery, GraphNodeRef, GraphEdgeRef, GraphEvidenceRemovalResult, SubGraph,
 } from "./types.js";
 import { scopeKeyAccessible } from "./types.js";
 import { cypherStr, cypherNum, cypherStrList } from "./sql-util.js";
@@ -598,6 +598,74 @@ export class GraphQueries {
             if (exists.length === 0) return false;
             await this.cypher(c, `${MATCH}${where} DELETE r`, []);
             return true;
+        });
+    }
+
+    async removeGraphEvidence(scopeKey: string, opts: { namespace?: string } = {}): Promise<GraphEvidenceRemovalResult> {
+        if (!scopeKey?.trim()) throw new Error("removeGraphEvidence requires scopeKey");
+        return this.withAge(async (c) => {
+            let nodeEvidenceRemoved = 0;
+            let edgeEvidenceRemoved = 0;
+            let nodesDeleted = 0;
+            let edgesDeleted = 0;
+
+            const nodeNs = namespacePredicate("n", opts.namespace);
+            const nodeRows = await this.cypher(c,
+                `MATCH (n:GraphNode)-[:EVIDENCED_BY]->(f:Fact { scope_key: ${cypherStr(scopeKey)} })
+                 ${nodeNs ? `WHERE ${nodeNs}` : ""}
+                 RETURN DISTINCT n.node_key`, ["node_key"]);
+            const nodeKeys = [...new Set(nodeRows.map((r) => ag(r.node_key)).filter(Boolean))];
+
+            if (nodeKeys.length > 0) {
+                const removed = await this.cypher(c,
+                    `MATCH (n:GraphNode)-[ev:EVIDENCED_BY]->(f:Fact { scope_key: ${cypherStr(scopeKey)} })
+                     WHERE n.node_key IN ${cypherStrList(nodeKeys)}
+                     DELETE ev
+                     RETURN count(ev) AS c`, ["c"]);
+                nodeEvidenceRemoved = Number(ag(removed[0]?.c) ?? 0);
+            }
+
+            const edgeNs = edgeNamespacePredicate(opts.namespace);
+            const edgeRows = await this.cypher(c,
+                `MATCH (a:GraphNode)-[r:REL]->(b:GraphNode)
+                 WHERE ${edgeNs ? `${edgeNs} AND ` : ""}${cypherStr(scopeKey)} IN r.evidence
+                 RETURN a.node_key, b.node_key, r.predicate_key, r.evidence`,
+                ["from_key", "to_key", "predicate_key", "evidence"]);
+
+            for (const row of edgeRows) {
+                const fromKey = ag(row.from_key);
+                const toKey = ag(row.to_key);
+                const predicateKey = ag(row.predicate_key);
+                const evidence = agArr(row.evidence);
+                const nextEvidence = evidence.filter((sk) => sk !== scopeKey);
+                edgeEvidenceRemoved += evidence.length - nextEvidence.length;
+                if (nextEvidence.length === 0) {
+                    const ns = edgeNamespacePredicate(opts.namespace);
+                    await this.cypher(c,
+                        `MATCH (a:GraphNode { node_key: ${cypherStr(fromKey)} })-[r:REL { predicate_key: ${cypherStr(predicateKey)} }]->(b:GraphNode { node_key: ${cypherStr(toKey)} })
+                         ${ns ? `WHERE ${ns}` : ""}
+                         DELETE r`, []);
+                    edgesDeleted += 1;
+                } else {
+                    await this.cypher(c,
+                        `MATCH (a:GraphNode { node_key: ${cypherStr(fromKey)} })-[r:REL { predicate_key: ${cypherStr(predicateKey)} }]->(b:GraphNode { node_key: ${cypherStr(toKey)} })
+                         SET r.evidence = ${cypherStrList(nextEvidence)}
+                         RETURN r.predicate_key`, ["predicate_key"]);
+                }
+            }
+
+            for (const nodeKey of nodeKeys) {
+                const remaining = await this.cypher(c,
+                    `MATCH (n:GraphNode { node_key: ${cypherStr(nodeKey)} })-[:EVIDENCED_BY]->(f:Fact)
+                     RETURN f.scope_key LIMIT 1`, ["scope_key"]);
+                if (remaining.length === 0) {
+                    await this.cypher(c,
+                        `MATCH (n:GraphNode { node_key: ${cypherStr(nodeKey)} }) DETACH DELETE n`, []);
+                    nodesDeleted += 1;
+                }
+            }
+
+            return { scopeKey, nodeEvidenceRemoved, edgeEvidenceRemoved, nodesDeleted, edgesDeleted };
         });
     }
 }

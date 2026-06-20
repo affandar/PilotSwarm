@@ -23,7 +23,7 @@ builder skill.
   source-capture namespace, kept separate from the Facts Manager's `intake/*` curation
   queue), drain the
   crawl queue, extract entities/edges into the graph anchored to fact `scopeKey`
-  evidence, mark facts crawled with their `scopeKey` receipt, then retrieve.
+  evidence, mark facts crawled with their `{ scopeKey, etag }` receipt, then retrieve.
 - **The reader role** — `librarian` has no harvester frontmatter; it gets
   `facts_search` / `facts_similar` and the graph **read** tools (plus, like any
   non-tuner session, the graph-write tools), and pivots from a seed fact into the
@@ -76,6 +76,9 @@ From the repo root:
 # just build the knowledge base
 HARVESTER_SCENARIO=harvest ./scripts/run-horizon-harvester-sample.sh
 
+# harvest, soft-delete one source fact, and reconcile its graph evidence
+HARVESTER_SCENARIO=delete ./scripts/run-horizon-harvester-sample.sh
+
 # just answer (after a harvest has populated the store + graph)
 HARVESTER_SCENARIO=ask ./scripts/run-horizon-harvester-sample.sh
 ```
@@ -126,7 +129,7 @@ The three repo-root entry points for this sample:
 
 | Script | Does |
 |--------|------|
-| `scripts/run-horizon-harvester-sample.sh` | Harvest and/or ask (`HARVESTER_SCENARIO=full\|harvest\|ask`) |
+| `scripts/run-horizon-harvester-sample.sh` | Harvest, delete/reconcile, and/or ask (`HARVESTER_SCENARIO=full\|harvest\|delete\|ask`) |
 | `scripts/export-horizon-harvester-graph.sh` | Export the graph to a Markdown/Mermaid file |
 | `scripts/clean-horizon-harvester-sample.sh` | Clean up (`--facts` / `--drop` escalate to HorizonDB) |
 

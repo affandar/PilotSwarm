@@ -39,7 +39,7 @@ import type {
     SessionGroupRow,
     ChildOutcomeRow,
 } from "./cms.js";
-import type { FactStore, FactsStatsRow } from "./facts-store.js";
+import type { FactStore, FactsStatsRow, FactsTombstoneStats } from "./facts-store.js";
 import { createFactStoreForUrl, resolveFactsTarget, isEnhancedFactStore } from "./facts-store.js";
 import { createDuroxidePostgresProvider } from "./duroxide-provider-factory.js";
 import { SessionDumper } from "./session-dumper.js";
@@ -1522,6 +1522,19 @@ export class PilotSwarmManagementClient {
             totalCount: rows.reduce((acc, r) => acc + r.factCount, 0),
             totalBytes: rows.reduce((acc, r) => acc + r.totalValueBytes, 0),
         };
+    }
+
+    /**
+     * Soft-deleted facts waiting for graph reconciliation or TTL purge.
+     * Used by operator/tuner inspect tools to spot crawler lag before the TTL
+     * backstop strands graph evidence.
+     */
+    async getFactsTombstoneStats(opts?: { ttlSeconds?: number }): Promise<FactsTombstoneStats> {
+        this._ensureStarted();
+        if (!this._factStore) {
+            return { pendingTotal: 0, unreconciled: 0, ttlBlocked: 0, oldestUnreconciledAgeSeconds: null, reconciledUnswept: 0 };
+        }
+        return this._factStore.getFactsTombstoneStats(opts?.ttlSeconds);
     }
 
     /**

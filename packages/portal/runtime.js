@@ -240,6 +240,8 @@ export class PortalRuntime {
                 return this.transport.getSessionTreeFactsStats(safeParams.sessionId);
             case "getSharedFactsStats":
                 return this.transport.getSharedFactsStats();
+            case "getFactsTombstoneStats":
+                return this.transport.getFactsTombstoneStats({ ttlSeconds: safeParams.ttlSeconds });
             case "pruneDeletedSummaries":
                 return this.transport.pruneDeletedSummaries(new Date(safeParams.olderThan));
             case "getExecutionHistory":

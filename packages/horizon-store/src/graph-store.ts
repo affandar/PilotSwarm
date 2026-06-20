@@ -116,6 +116,9 @@ export class HorizonDBGraphStore implements GraphStore {
     deleteGraphEdge(fromKey: string, toKey: string, predicateKey: string, opts?: GraphNamespaceQuery): Promise<boolean> {
         return this.graphQueries.deleteGraphEdge(fromKey, toKey, predicateKey, opts);
     }
+    removeGraphEvidence(scopeKey: string, opts?: GraphNamespaceQuery) {
+        return this.graphQueries.removeGraphEvidence(scopeKey, opts);
+    }
 
     /** Cheap whole-graph counts for graph_stats (07 P5) — single count() Cypher
      * per axis, no client-side fan-out. The SDK tool adds the crawl backlog. */

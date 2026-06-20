@@ -19,6 +19,8 @@ export type {
     DeletedFactsResult,
     FactsNamespace,
     FactsStatsRow,
+    FactsTombstoneStats,
+    ForcePurgeFactsInput,
     AccessContext,
     FactStore,
     CrawledFactStamp,
@@ -45,6 +47,7 @@ export type {
     GraphNodeHit,
     GraphEdgeRef,
     GraphEdgeHit,
+    GraphEvidenceRemovalResult,
     SubGraph,
 } from "pilotswarm-sdk";
 

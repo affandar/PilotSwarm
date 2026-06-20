@@ -380,6 +380,72 @@ export function createFactTools(opts: {
         },
     });
 
+    const managerTools: Tool<any>[] = [];
+    if (agentIdentity === FACTS_MANAGER_AGENT_ID) {
+        managerTools.push(defineTool("facts_tombstone_stats", {
+            description:
+                "Read soft-deleted fact tombstone backlog stats. Use during Facts Manager maintenance to monitor " +
+                "whether graph reconciliation is keeping up before the TTL backstop purges unresolved tombstones.",
+            parameters: {
+                type: "object" as const,
+                properties: {
+                    ttlSeconds: { type: "number", description: "Tombstone TTL in seconds. Default 21600 (6h)." },
+                },
+            },
+            handler: async (a: { ttlSeconds?: number }) => factStore.getFactsTombstoneStats(a.ttlSeconds),
+        }));
+
+        managerTools.push(defineTool("facts_purge_tombstones", {
+            description:
+                "Hard-delete soft-deleted facts that are either already reconciled (last_crawled_at set) or older than the TTL. " +
+                "Use during the Facts Manager maintenance pass. ttlSeconds=0 purges all tombstones on this pass.",
+            parameters: {
+                type: "object" as const,
+                properties: {
+                    ttlSeconds: { type: "number", description: "Tombstone TTL in seconds. Default 21600 (6h). Use 0 only when no crawler is running." },
+                    limit: { type: "number", description: "Maximum rows to purge in this call. Default 1000." },
+                },
+            },
+            handler: async (a: { ttlSeconds?: number; limit?: number }) => ({
+                purged: await factStore.purgeExpiredFacts(a.ttlSeconds ?? 21_600, a.limit),
+            }),
+        }));
+
+        managerTools.push(defineTool("facts_force_purge", {
+            description:
+                "Dangerous operator-directed cleanup: hard-delete soft-deleted facts older than a cutoff, regardless of TTL or graph reconciliation. " +
+                "This can strand graph evidence for unreconciled tombstones. Requires confirm=true and never deletes live facts.",
+            parameters: {
+                type: "object" as const,
+                properties: {
+                    cutoff: { type: "string", description: "ISO timestamp. Tombstones older than this are eligible." },
+                    onlyUnreconciled: { type: "boolean", description: "If true, purge only tombstones with last_crawled_at IS NULL." },
+                    keyPrefix: { type: "string", description: "Optional literal fact-key prefix to bound the purge." },
+                    limit: { type: "number", description: "Maximum rows to purge in this call. Default 1000." },
+                    confirm: { type: "boolean", description: "Must be true to execute this destructive bypass." },
+                },
+                required: ["cutoff", "confirm"] as const,
+            },
+            handler: async (a: { cutoff: string; onlyUnreconciled?: boolean; keyPrefix?: string; limit?: number; confirm?: boolean }) => {
+                if (a.confirm !== true) {
+                    return { error: "facts_force_purge requires confirm=true because it can strand graph evidence." };
+                }
+                const cutoff = new Date(a.cutoff);
+                if (!Number.isFinite(cutoff.getTime())) {
+                    return { error: "facts_force_purge cutoff must be a valid ISO timestamp." };
+                }
+                return {
+                    purged: await factStore.forcePurgeFacts({
+                        cutoff,
+                        onlyUnreconciled: a.onlyUnreconciled,
+                        keyPrefix: a.keyPrefix,
+                        limit: a.limit,
+                    }),
+                };
+            },
+        }));
+    }
+
     const enhancedTools: Tool<any>[] = [];
     if (enhancedFactStore && enhancedFactStore.capabilities.search) {
         const isTuner = agentIdentity === TUNER_AGENT_ID;
@@ -632,7 +698,7 @@ export function createFactTools(opts: {
         }));
     }
 
-    return [storeTool, readTool, deleteTool, ...enhancedTools];
+    return [storeTool, readTool, deleteTool, ...managerTools, ...enhancedTools];
 }
 
 function safeParse(s: string): any {
