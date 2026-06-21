@@ -12,6 +12,12 @@
       "types": "./dist/src/index.d.ts"
     }
   },
+  "files": [
+    "dist/**/*",
+    "migrations/**/*",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",

@@ -432,7 +432,7 @@ export async function createFactStoreForUrl(
 export async function createGraphStoreForUrl(
     graphUrl: string | undefined,
     schema?: string,
-    opts: { useManagedIdentity?: boolean; aadUser?: string } = {},
+    opts: { useManagedIdentity?: boolean; aadUser?: string; registrySchema?: string; namespaceCacheTtlMs?: number } = {},
 ): Promise<import("./graph-store.js").GraphStore | undefined> {
     if (!graphUrl) return undefined;
     if (!(graphUrl.startsWith("postgres://") || graphUrl.startsWith("postgresql://"))) {
@@ -468,6 +468,8 @@ export async function createGraphStoreForUrl(
         connectionString: graphUrl,
         schema,
         graphName: schema,
+        registrySchema: opts.registrySchema,
+        namespaceCacheTtlMs: opts.namespaceCacheTtlMs,
     });
 }
 

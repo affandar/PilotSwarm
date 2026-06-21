@@ -347,7 +347,9 @@ new PilotSwarmWorker({
     // ── GraphStore (optional, opt-in) ──
     // Unset ⇒ no graph, no graph tools. May reuse the enhanced facts URL.
     graphDatabaseUrl: process.env.HORIZON_GRAPH_DATABASE_URL,
-    graphSchema: "horizon_graph",         // default: "horizon_graph"
+    graphSchema: "horizon_graph",         // AGE graph name; default: "horizon_graph"
+    graphRegistrySchema: "horizon_graph_registry", // sidecar schema; default: `${graphSchema}_registry`
+    graphNamespaceCacheTtlMs: 60000,       // namespace-list cache; 0 disables
 });
 ```
 
@@ -355,7 +357,9 @@ new PilotSwarmWorker({
 > graph. When `graphDatabaseUrl` is the **same** database as the facts store, the
 > `graphSchema` MUST differ from the facts schema — the worker fails fast at start
 > if they collide. The defaults (`horizon_facts` vs `horizon_graph`) are already
-> distinct.
+  > distinct. The graph namespace registry is a separate relational sidecar schema
+  > (`graphRegistrySchema` / `HORIZON_GRAPH_REGISTRY_SCHEMA`) and must also differ
+  > from the AGE graph name. By default it is `${graphSchema}_registry`.
 
 > **Env shortcut.** The shipped worker entrypoints (the CLI/portal embedded worker
 > and the standalone K8s worker) wire all of the above from the canonical

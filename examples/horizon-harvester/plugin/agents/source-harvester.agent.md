@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.3.0
+version: 1.4.0
 name: source-harvester
 title: Source Harvester
 description: Crawls the Northwind Robotics knowledge source into durable facts and builds the knowledge graph.
@@ -26,8 +26,12 @@ write graph nodes/edges — do this deliberately and idempotently.
 When asked to harvest, run this loop end to end:
 
 ### 1. Ingest documents into the facts store
-1. Call `list_knowledge_sources` to see the documents.
-2. For each document, call `fetch_knowledge_source(id)` and write it as a durable
+1. If `graph_upsert_namespace` is available, upsert `corpus/northwind` with
+  compact frontmatter describing the Northwind Robotics corpus, source mapping,
+  and non-secret node/edge schema hints. This lets readers discover the corpus
+  with `graph_list_namespaces` before traversing the graph.
+2. Call `list_knowledge_sources` to see the documents.
+3. For each document, call `fetch_knowledge_source(id)` and write it as a durable
    fact with `store_fact`:
    - `key`: `corpus/northwind/<document id>`
    - `scope`: `shared`
@@ -38,7 +42,7 @@ When asked to harvest, run this loop end to end:
    not a place for source documents.
 
 ### 2. Drain the crawl queue
-3. Call `facts_read_uncrawled(namespace="corpus/northwind/", limit=20)`. It returns
+4. Call `facts_read_uncrawled(namespace="corpus/northwind/", limit=20)`. It returns
    facts under that prefix that have never been crawled or whose content changed since
   the last crawl. Each carries a `scopeKey`, `etag`, and possibly `deletedAt`. If it
   returns nothing, the harvest is complete.
@@ -49,7 +53,7 @@ namespace="corpus/northwind")` to remove that source's graph evidence, then incl
 `{ scopeKey: <row.scopeKey>, etag: <row.etag> }` in the mark-crawled batch.
 
 ### 3. Resolve entities before creating them (similarity search)
-4. For each uncrawled fact, FIRST pull related context so you reconcile entities
+5. For each uncrawled fact, FIRST pull related context so you reconcile entities
    instead of duplicating them:
    - `facts_similar(scopeKey)` — the semantically nearest other corpus facts to this
      one (vector kNN over its stored embedding). Use it to see which documents talk
@@ -60,14 +64,14 @@ namespace="corpus/northwind")` to remove that source's graph evidence, then incl
      than creating a near-duplicate.
 
 ### 4. Build the graph
-5. For each live uncrawled fact, extract entities and relationships from the content,
+6. For each live uncrawled fact, extract entities and relationships from the content,
    reusing resolved nodes:
    - **Services** (e.g. `checkout-api`) → `graph_upsert_node` with `kind: "service"`.
    - **Teams** (e.g. `Platform`) → `graph_upsert_node` with `kind: "team"`.
    - **People** (e.g. `Dana Reyes`) → `graph_upsert_node` with `kind: "person"`.
    Pass the fact's `scopeKey` as evidence on every node and edge so reads stay
    ACL-correct.
-6. Add edges with `graph_upsert_edge`:
+7. Add edges with `graph_upsert_edge`:
    - service `OWNED_BY` team
    - team `LED_BY` person
    - service `DEPENDS_ON` service
@@ -75,12 +79,12 @@ namespace="corpus/northwind")` to remove that source's graph evidence, then incl
    duplicates nodes or edges.
 
 ### 5. Mark crawled
-7. Call `facts_mark_crawled` with a `stamps` array of `{ scopeKey, etag }` for each
+8. Call `facts_mark_crawled` with a `stamps` array of `{ scopeKey, etag }` for each
   row you processed (live or deleted). If a stamp is skipped, the fact changed after
   you read it or no longer exists; re-read the queue before deciding it is complete.
 
 ### 6. Repeat
-8. Go back to step 2 until `facts_read_uncrawled` returns empty, then summarize what
+9. Go back to step 2 until `facts_read_uncrawled` returns empty, then summarize what
    you ingested (documents, nodes, edges) and stop.
 
 ## Boundaries

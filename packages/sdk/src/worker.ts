@@ -423,7 +423,12 @@ export class PilotSwarmWorker {
                 candidate = await createGraphStoreForUrl(
                     this.config.graphDatabaseUrl,
                     graphSchema,
-                    { useManagedIdentity: useMi, aadUser },
+                    {
+                        useManagedIdentity: useMi,
+                        aadUser,
+                        registrySchema: this.config.graphRegistrySchema,
+                        namespaceCacheTtlMs: this.config.graphNamespaceCacheTtlMs,
+                    },
                 );
                 if (candidate) await candidate.initialize();
                 this.graphStore = candidate ?? null;

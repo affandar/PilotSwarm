@@ -60,11 +60,44 @@ export interface HorizonFactsConfig {
     /** AAD / managed-identity auth (mirrors PilotSwarm's PgFactStore). */
     useManagedIdentity?: boolean;
     aadUser?: string;
+    /**
+     * Relational schema OWNED BY THE GRAPH PROVIDER for the namespace registry
+     * sidecar (graph-fact-search enhancements). MUST differ from the AGE graph
+     * name (`graphName`) — `create_graph()` creates a Postgres schema named after
+     * the graph, so reusing it would put the sidecar INSIDE the AGE-managed
+     * schema (droppable by drop_graph). Also distinct from the facts `schema`,
+     * since the graph store may run against a database with no facts schema at
+     * all. Defaults to `${graphName}_registry`. Override with
+     * HORIZON_GRAPH_REGISTRY_SCHEMA.
+     */
+    registrySchema?: string;
+    /**
+     * TTL (ms) for the in-provider namespace-list cache. The namespace set is
+     * small and changes rarely; the provider caches a single full snapshot and
+     * filters in memory. Writes invalidate the snapshot in-process; other
+     * workers converge within the TTL. Default 60000 (one minute). Set 0 to
+     * disable caching (always reload) — useful in tests.
+     */
+    namespaceCacheTtlMs?: number;
 }
 
 export const DEFAULT_SCHEMA = "horizon_facts";
 export const DEFAULT_GRAPH = "horizon_facts";
 export const DEFAULT_POOL_MAX = 10;
+export const DEFAULT_NAMESPACE_CACHE_TTL_MS = 60_000;
+
+/** Resolve + validate the namespace cache TTL (ms). Rejects NaN / negative. */
+function resolveNamespaceCacheTtl(explicit?: number): number {
+    const envRaw = process.env.HORIZON_NAMESPACE_CACHE_TTL_MS;
+    const raw = explicit ?? (envRaw != null && envRaw !== "" ? Number(envRaw) : undefined);
+    if (raw == null) return DEFAULT_NAMESPACE_CACHE_TTL_MS;
+    if (!Number.isFinite(raw) || raw < 0) {
+        throw new Error(
+            `namespaceCacheTtlMs / HORIZON_NAMESPACE_CACHE_TTL_MS must be a non-negative number, got ${JSON.stringify(envRaw ?? explicit)}`,
+        );
+    }
+    return raw;
+}
 
 /** Resolve config from explicit values, falling back to HORIZON_* env vars. */
 export function resolveConfig(partial: Partial<HorizonFactsConfig> = {}): HorizonFactsConfig {
@@ -80,10 +113,13 @@ export function resolveConfig(partial: Partial<HorizonFactsConfig> = {}): Horizo
     // dimension, and config provenance should be the host's choice (02 §1b).
     const embedding = partial.embedding;
 
+    const graphName = partial.graphName ?? DEFAULT_GRAPH;
+
     return {
         connectionString,
         schema: partial.schema ?? DEFAULT_SCHEMA,
-        graphName: partial.graphName ?? DEFAULT_GRAPH,
+        graphName,
+        registrySchema: partial.registrySchema ?? process.env.HORIZON_GRAPH_REGISTRY_SCHEMA ?? `${graphName}_registry`,
         embedding,
         embeddingDim: partial.embeddingDim ?? embedding?.dim ?? 1536,
         annIndex: partial.annIndex
@@ -92,6 +128,7 @@ export function resolveConfig(partial: Partial<HorizonFactsConfig> = {}): Horizo
         poolMax: partial.poolMax
             ?? (process.env.HORIZON_POOL_MAX ? Number(process.env.HORIZON_POOL_MAX) : undefined)
             ?? DEFAULT_POOL_MAX,
+        namespaceCacheTtlMs: resolveNamespaceCacheTtl(partial.namespaceCacheTtlMs),
         useManagedIdentity: partial.useManagedIdentity,
         aadUser: partial.aadUser,
     };

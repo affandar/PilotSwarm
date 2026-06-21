@@ -17,7 +17,7 @@ export * from "./graph-store.js";
 export * from "./agent-tools.js";
 export { isTransientDbError, withDbRetry, setDbRetryHooks } from "./db-retry.js";
 export { GraphQueries, prepareAgeSession } from "./graph-queries.js";
-export { loadMigrations, runMigrations, migrationsDir, HORIZON_FACTS_LOCK_SEED } from "./horizon-migrator.js";
+export { loadMigrations, runMigrations, migrationsDir, HORIZON_FACTS_LOCK_SEED, GRAPH_OWNED_MIGRATIONS, isGraphOwnedMigration } from "./horizon-migrator.js";
 export {
     assertExtensionsAvailable, assertFactExtensions, assertGraphExtensions,
     assertDurableHttpUsable,

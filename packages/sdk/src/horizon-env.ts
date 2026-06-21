@@ -27,6 +27,9 @@
  *   HORIZON_FACTS_SCHEMA        → enhancedFactsSchema (default "horizon_facts")
  *   HORIZON_GRAPH_DATABASE_URL  → graphDatabaseUrl (opt-in graph; unset ⇒ no graph)
  *   HORIZON_GRAPH_SCHEMA        → graphSchema (default "horizon_graph")
+ *   HORIZON_GRAPH_REGISTRY_SCHEMA → graphRegistrySchema (default
+ *                                 `${graphSchema}_registry`; MUST differ from graphSchema)
+ *   HORIZON_NAMESPACE_CACHE_TTL_MS → graphNamespaceCacheTtlMs (default 60000; 0 disables cache)
  *   HORIZON_EMBED_URL/MODEL/DIM → horizonEmbed (durable embedder; all three
  *                                 required, else the embedder is omitted and
  *                                 search runs lexical-only)
@@ -47,6 +50,8 @@ export interface HorizonEnvConfig {
     horizonEmbed?: EmbeddingEndpointConfig;
     graphDatabaseUrl?: string;
     graphSchema?: string;
+    graphRegistrySchema?: string;
+    graphNamespaceCacheTtlMs?: number;
 }
 
 const TRUE_VALUES = new Set(["1", "true", "yes", "on"]);
@@ -119,6 +124,16 @@ export function horizonConfigFromEnv(
         config.graphDatabaseUrl = graphUrl;
         const graphSchema = trimmed(env.HORIZON_GRAPH_SCHEMA);
         if (graphSchema) config.graphSchema = graphSchema;
+        const registrySchema = trimmed(env.HORIZON_GRAPH_REGISTRY_SCHEMA);
+        if (registrySchema) config.graphRegistrySchema = registrySchema;
+        const namespaceCacheTtl = trimmed(env.HORIZON_NAMESPACE_CACHE_TTL_MS);
+        if (namespaceCacheTtl !== undefined) {
+            const parsed = Number(namespaceCacheTtl);
+            if (!Number.isFinite(parsed) || parsed < 0) {
+                throw new Error(`HORIZON_NAMESPACE_CACHE_TTL_MS must be a non-negative number, got ${JSON.stringify(namespaceCacheTtl)}`);
+            }
+            config.graphNamespaceCacheTtlMs = parsed;
+        }
     }
 
     return config;

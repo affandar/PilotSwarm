@@ -280,9 +280,14 @@ the tools the model sees *are* the provider's descriptors.
 | `facts_read` | reader + harvester | `readFacts` (full email by scopeKey) |
 | `facts_read_uncrawled` | harvester | gated queue read |
 | `facts_mark_crawled` | harvester | stamp `last_crawled_at` |
+| `graph_list_namespaces` | reader + harvester | compact namespace/frontmatter discovery |
+| `graph_get_namespace` | reader + harvester | full namespace descriptor |
 | `graph_search_nodes` | reader + harvester | `searchGraphNodes` (namespace + seeds + depth) |
 | `graph_search_edges` | reader + harvester | `searchGraphEdges` (namespace-aware) |
 | `graph_neighbourhood` | reader | `graphNeighbourhood(nodeKey, depth, namespace?)` |
+| `graph_upsert_namespace` | harvester | register/update static corpus descriptor |
+| `graph_archive_namespace` | harvester | non-destructive corpus retirement |
+| `graph_delete_namespace` | facts-manager only | destructive exact-namespace graph delete |
 | `graph_upsert_node` | harvester | idempotent node MERGE + optional namespace stamp |
 | `graph_upsert_edge` | harvester | idempotent edge MERGE + optional namespace stamp |
 

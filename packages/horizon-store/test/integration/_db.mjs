@@ -67,7 +67,8 @@ export function realEmbedding(overrides = {}) {
  * create_graph creates a Postgres schema named after the graph). */
 export function uniqueNames(tag = "t") {
     const r = Math.random().toString(36).slice(2, 8);
-    return { schema: `hzt_${tag}_${r}`, graph: `hzg_${tag}_${r}` };
+    const graph = `hzg_${tag}_${r}`;
+    return { schema: `hzt_${tag}_${r}`, graph, registrySchema: `${graph}_registry` };
 }
 
 /** Build + initialize a store on a fresh per-run schema. Constructs the two
@@ -81,6 +82,7 @@ export async function makeStore({ tag = "t", embeddingDim = 4, embedding = undef
         connectionString: DB_URL,
         schema: names.schema,
         graphName: names.graph,
+        registrySchema: names.registrySchema,
         embeddingDim,
         embedding,
     };
@@ -116,7 +118,7 @@ function combinedStore(factStore, graphStore) {
 }
 
 /** Drop a test schema + AGE graph. Safe to call in teardown. */
-export async function dropSchemaAndGraph(schema, graph) {
+export async function dropSchemaAndGraph(schema, graph, registrySchema = `${graph}_registry`) {
     const pool = new pg.Pool({ connectionString: DB_URL, max: 1 });
     try {
         try {
@@ -131,6 +133,10 @@ export async function dropSchemaAndGraph(schema, graph) {
             finally { await pool.query("SELECT pg_advisory_unlock($1)", [graphBootstrapLockKey()]).catch(() => {}); }
         } catch { /* graph may not exist */ }
         await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+        // The graph provider derives its namespace-registry schema as
+        // `${graphName}_registry` (graph-fact-search); drop it too so test runs
+        // do not leak registry schemas.
+        await pool.query(`DROP SCHEMA IF EXISTS "${registrySchema}" CASCADE`);
     } finally {
         await pool.end();
     }

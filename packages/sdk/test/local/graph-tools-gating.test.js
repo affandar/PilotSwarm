@@ -55,9 +55,28 @@ function fakeGraphStore() {
         removeGraphEvidence: async (scopeKey) => ({ scopeKey, nodeEvidenceRemoved: 0, edgeEvidenceRemoved: 0, nodesDeleted: 0, edgesDeleted: 0 }),
     };
 }
+function fakeNamespaceGraphStore(seen = {}) {
+    return {
+        ...fakeGraphStore(),
+        listGraphNamespaces: async (q = {}) => { seen.list = q; return [{ namespace: "default", archived: false, frontmatter: { description: "d" } }]; },
+        getGraphNamespace: async (namespace) => { seen.get = namespace; return { namespace, archived: false, frontmatter: { description: "d" } }; },
+        upsertGraphNamespace: async (input) => { seen.upsert = input; return { namespace: input.namespace, archived: input.archived === true, frontmatter: input.frontmatter }; },
+        archiveGraphNamespace: async (namespace) => { seen.archive = namespace; return true; },
+        deleteGraphNamespace: async (namespace) => { seen.delete = namespace; return { deleted: true, nodesDeleted: 1, edgesDeleted: 0 }; },
+    };
+}
 
 const names = (tools) => new Set(tools.map((t) => t.name));
 const byName = (tools, n) => tools.find((t) => t.name === n);
+async function expectReject(fn, pattern, message) {
+    try {
+        await fn();
+    } catch (err) {
+        assert(pattern.test(String(err?.message ?? err)), message ?? `expected rejection to match ${pattern}, got ${err?.message ?? err}`);
+        return;
+    }
+    assert(false, message ?? `expected rejection to match ${pattern}`);
+}
 
 describe("P4: enhanced facts tool gating (createFactTools)", () => {
     it("base store → only store_fact/read_facts/delete_fact (no search tools)", () => {
@@ -293,6 +312,102 @@ describe("P4: graph tool gating (createGraphTools)", () => {
         const res = await byName(tools, "graph_stats").handler({}, {});
         assert(res.uncrawledFacts >= 500, "reports at least the probe depth");
         assertEqual(res.uncrawledFactsCapped, true, "flags that the real backlog exceeds the probe");
+    });
+});
+
+describe("graph namespace registry tool gating (createGraphTools)", () => {
+    const base = (seen = {}) => ({ graphStore: fakeNamespaceGraphStore(seen), factStore: fakeBaseStore() });
+
+    it("role matrix: reader/tuner get namespace reads only; harvester adds upsert/archive; facts-manager adds delete", () => {
+        const reader = names(createGraphTools({ ...base(), agentIdentity: "default" }));
+        assert(reader.has("graph_list_namespaces") && reader.has("graph_get_namespace"), "reader gets namespace read tools");
+        assert(!reader.has("graph_upsert_namespace") && !reader.has("graph_archive_namespace") && !reader.has("graph_delete_namespace"), "reader gets no namespace mutations");
+
+        const harvester = names(createGraphTools({ ...base(), agentIdentity: "app-harvester", isHarvester: true }));
+        assert(harvester.has("graph_upsert_namespace") && harvester.has("graph_archive_namespace"), "harvester gets namespace upsert/archive");
+        assert(!harvester.has("graph_delete_namespace"), "harvester cannot delete namespaces");
+
+        const manager = names(createGraphTools({ ...base(), agentIdentity: "facts-manager" }));
+        assert(manager.has("graph_upsert_namespace") && manager.has("graph_archive_namespace") && manager.has("graph_delete_namespace"), "facts-manager gets all namespace mutation tools");
+
+        const tuner = names(createGraphTools({ ...base(), agentIdentity: "agent-tuner", isHarvester: true }));
+        assert(tuner.has("graph_list_namespaces") && tuner.has("graph_get_namespace"), "tuner gets namespace reads");
+        assert(!tuner.has("graph_upsert_namespace") && !tuner.has("graph_archive_namespace") && !tuner.has("graph_delete_namespace"), "tuner gets no namespace mutations even if isHarvester is forged");
+    });
+
+    it("provider without namespace methods still gets normal graph tools and no namespace tools", () => {
+        const n = names(createGraphTools({ graphStore: fakeGraphStore(), factStore: fakeBaseStore(), agentIdentity: "default" }));
+        assert(n.has("graph_search_nodes") && n.has("graph_search_edges") && n.has("graph_neighbourhood"), "ordinary graph reads remain present");
+        assert(![...n].some((name) => name.includes("namespace")), "no namespace registry tools without provider support");
+    });
+
+    it("partial provider semantics are explicit: read tools require list+get; mutators are independent", () => {
+        const listOnly = { ...fakeGraphStore(), listGraphNamespaces: async () => [] };
+        assert(!names(createGraphTools({ graphStore: listOnly, factStore: fakeBaseStore(), agentIdentity: "default" })).has("graph_list_namespaces"), "list without get does not expose read pair");
+
+        const getOnly = { ...fakeGraphStore(), getGraphNamespace: async () => null };
+        assert(!names(createGraphTools({ graphStore: getOnly, factStore: fakeBaseStore(), agentIdentity: "default" })).has("graph_get_namespace"), "get without list does not expose read pair");
+
+        const upsertOnly = { ...fakeGraphStore(), upsertGraphNamespace: async () => ({}) };
+        assert(names(createGraphTools({ graphStore: upsertOnly, factStore: fakeBaseStore(), agentIdentity: "app-harvester", isHarvester: true })).has("graph_upsert_namespace"), "upsert mutator can stand alone");
+
+        const deleteOnly = { ...fakeGraphStore(), deleteGraphNamespace: async () => ({ deleted: true }) };
+        assert(names(createGraphTools({ graphStore: deleteOnly, factStore: fakeBaseStore(), agentIdentity: "facts-manager" })).has("graph_delete_namespace"), "delete mutator can stand alone for facts-manager");
+    });
+
+    it("namespace handlers forward normalized args and project upsert fields", async () => {
+        const seen = {};
+        const tools = createGraphTools({ ...base(seen), agentIdentity: "facts-manager" });
+        await byName(tools, "graph_list_namespaces").handler({ prefix: "corpus/a", includeArchived: true, includeDetails: 1 }, {});
+        assertEqual(seen.list.prefix, "corpus/a", "list prefix forwarded");
+        assertEqual(seen.list.includeArchived, true, "includeArchived normalized to true");
+        assertEqual(seen.list.includeDetails, false, "includeDetails requires literal true");
+
+        await byName(tools, "graph_get_namespace").handler({ namespace: "corpus/a" }, {});
+        assertEqual(seen.get, "corpus/a", "get namespace forwarded");
+
+        await byName(tools, "graph_upsert_namespace").handler({
+            namespace: "corpus/a",
+            frontmatter: { description: "A" },
+            source: "source",
+            nodeSchema: { kinds: ["x"] },
+            edgeSchema: { predicates: ["p"] },
+            harvestConfig: { mode: "m" },
+            archived: true,
+            secretValue: "must-not-forward",
+        }, {});
+        assertEqual(seen.upsert.namespace, "corpus/a", "upsert namespace forwarded");
+        assertEqual(seen.upsert.frontmatter.description, "A", "upsert frontmatter forwarded");
+        assertEqual(seen.upsert.secretValue, undefined, "unknown fields are not forwarded");
+        assertEqual(seen.upsert.harvestConfig.mode, "m", "known detail fields forwarded");
+    });
+
+    it("archive/delete namespace handlers guard default and delete requires explicit confirmation", async () => {
+        const seen = {};
+        const tools = createGraphTools({ ...base(seen), agentIdentity: "facts-manager" });
+        await expectReject(
+            () => byName(tools, "graph_archive_namespace").handler({ namespace: "default" }, {}),
+            /default.*cannot be archived/i,
+        );
+        assertEqual(seen.archive, undefined, "archive default rejected before provider call");
+
+        await expectReject(
+            () => byName(tools, "graph_delete_namespace").handler({ namespace: "corpus/a", reason: "cleanup" }, {}),
+            /confirmDestructiveDelete=true/i,
+        );
+        await expectReject(
+            () => byName(tools, "graph_delete_namespace").handler({ namespace: "corpus/a", confirmDestructiveDelete: true, reason: " " }, {}),
+            /non-empty reason/i,
+        );
+        await expectReject(
+            () => byName(tools, "graph_delete_namespace").handler({ namespace: "default", confirmDestructiveDelete: true, reason: "cleanup" }, {}),
+            /default.*cannot be deleted/i,
+        );
+        assertEqual(seen.delete, undefined, "delete rejected cases did not call provider");
+
+        const ok = await byName(tools, "graph_delete_namespace").handler({ namespace: "corpus/a/", confirmDestructiveDelete: true, reason: "user asked" }, {});
+        assertEqual(ok.deleted, true, "confirmed delete forwards to provider");
+        assertEqual(seen.delete, "corpus/a", "delete trims trailing slash before provider call");
     });
 });
 

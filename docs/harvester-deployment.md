@@ -124,7 +124,9 @@ GITHUB_TOKEN=…
 HORIZON_DATABASE_URL=postgres://…@my-horizondb…/postgres?sslmode=require
 HORIZON_GRAPH_DATABASE_URL=postgres://…@my-horizondb…/postgres?sslmode=require
 HORIZON_FACTS_SCHEMA=horizon_facts        # optional; default horizon_facts
-HORIZON_GRAPH_SCHEMA=horizon_graph        # optional; default horizon_graph — MUST differ from facts schema
+HORIZON_GRAPH_SCHEMA=horizon_graph        # AGE graph name; default horizon_graph — MUST differ from facts schema
+HORIZON_GRAPH_REGISTRY_SCHEMA=horizon_graph_registry  # optional; default ${HORIZON_GRAPH_SCHEMA}_registry
+HORIZON_NAMESPACE_CACHE_TTL_MS=60000       # optional namespace-list cache; 0 disables
 
 # Embedder — REQUIRED for semantic/hybrid; omit ⇒ lexical-only (see Operating)
 HORIZON_EMBED_URL=https://…/embeddings
@@ -262,6 +264,7 @@ store versions so their migrations converge.
       same schemas, same embedding endpoint/model/dim.
 - [ ] Exactly the harvester agent declares `harvester: true`; readers do not.
 - [ ] `HORIZON_GRAPH_SCHEMA` differs from `HORIZON_FACTS_SCHEMA` when sharing one DB.
+- [ ] `HORIZON_GRAPH_REGISTRY_SCHEMA` differs from `HORIZON_GRAPH_SCHEMA` (AGE owns the graph schema).
 - [ ] Recurring crawl uses `cron` / `cron_at`, not a polling loop.
 - [ ] One deployment owns Facts-Manager curation of `intake/*`.
 - [ ] Images built for the target node architecture.

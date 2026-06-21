@@ -97,8 +97,8 @@ harmlessly ignored).
 
 | Role | `harvester` frontmatter | Gets | Responsibility |
 |------|------------------------|------|----------------|
-| **Harvester** | `harvester: true` | crawl queue (`facts_read_uncrawled` / `facts_mark_crawled`) + graph reconciliation (`graph_remove_evidence`) + graph writes (`graph_upsert_node` / `graph_upsert_edge` / `graph_merge_nodes` / `graph_delete_node` / `graph_delete_edge`) | Crawl sources into a dedicated `corpus/*` (source-capture) namespace, build/reconcile the graph, mark facts crawled |
-| **Reader** | (none) | `facts_search` / `facts_similar` + graph reads (`graph_search_nodes` / `graph_search_edges` / `graph_neighbourhood`) + graph writes (`graph_upsert_*` / `graph_merge_nodes` / `graph_delete_*`) | Retrieve knowledge; pivot fact↔graph; may also incorporate into the shared graph |
+| **Harvester** | `harvester: true` | crawl queue (`facts_read_uncrawled` / `facts_mark_crawled`) + graph reconciliation (`graph_remove_evidence`) + namespace registry (`graph_upsert_namespace` / `graph_archive_namespace`) + graph writes (`graph_upsert_node` / `graph_upsert_edge` / `graph_merge_nodes` / `graph_delete_node` / `graph_delete_edge`) | Register the corpus, crawl sources into a dedicated `corpus/*` (source-capture) namespace, build/reconcile the graph, mark facts crawled |
+| **Reader** | (none) | `facts_search` / `facts_similar` + namespace discovery (`graph_list_namespaces` / `graph_get_namespace`) + graph reads (`graph_search_nodes` / `graph_search_edges` / `graph_neighbourhood`) + graph writes (`graph_upsert_*` / `graph_merge_nodes` / `graph_delete_*`) | Discover relevant corpora, retrieve knowledge, pivot fact↔graph; may also incorporate into the shared graph |
 | **Facts Manager** | system agent (dormant) | crawl + graph writes, but **does not crawl** unless an operator explicitly asks | Curate `intake/*` (task-agent observations) into reusable skills |
 
 The harvester role is **authoritative per turn** — the runtime derives it from the
@@ -142,27 +142,31 @@ deliberately and idempotently.
 
 ## Crawl Cycle
 
-1. **Capture sources.** Write each raw source item as a fact under your own
+1. **Register the corpus.** If `graph_upsert_namespace` is available, upsert the
+  corpus descriptor before crawling: compact frontmatter, source mapping, and
+  non-secret node/edge schema hints. This helps readers discover when the corpus
+  is relevant with `graph_list_namespaces`.
+2. **Capture sources.** Write each raw source item as a fact under your own
    `corpus/<source>/...` namespace (NOT `intake/*` — see Boundaries). `scope: shared`.
-2. **Pull the backlog.** `facts_read_uncrawled(namespace="corpus/<source>/", limit=20)`
+3. **Pull the backlog.** `facts_read_uncrawled(namespace="corpus/<source>/", limit=20)`
   returns facts that have never been crawled, whose content changed since the last
   crawl, or that were soft-deleted. Each row carries a `scopeKey`, `etag`, and
   possibly `deletedAt`.
   - Live row (`deletedAt` missing/null): incorporate it into the graph.
   - Deleted row (`deletedAt` set): call `graph_remove_evidence(scopeKey, namespace)`
     to remove that fact's graph anchors/evidence, then include it in the mark batch.
-3. **Resolve before you create (similarity search).** For each fact, use
+4. **Resolve before you create (similarity search).** For each fact, use
    `facts_similar(scopeKey)` to find related captures and `graph_search_nodes(kind,
    nameLike)` to check whether an entity already exists. Reuse the existing node key
    (add an alias when the surface form differs) instead of creating a near-duplicate.
-4. **Build the graph.** For each entity: `graph_upsert_node(...)` with the fact's
+5. **Build the graph.** For each entity: `graph_upsert_node(...)` with the fact's
    `scopeKey` as evidence. For each relationship: `graph_upsert_edge(...)`. Upserts
    are idempotent — re-running the same crawl converges, it does not duplicate.
-5. **Mark crawled.** `facts_mark_crawled` takes a `stamps` array of
+6. **Mark crawled.** `facts_mark_crawled` takes a `stamps` array of
   `{ scopeKey, etag }` from the exact rows you processed. A skipped stamp means the
   fact changed since your read, was already marked, or no longer exists; re-read
   before declaring the backlog empty.
-6. Repeat until `facts_read_uncrawled` returns empty, then stop.
+7. Repeat until `facts_read_uncrawled` returns empty, then stop.
 
 ## Recurring Harvest
 
@@ -193,6 +197,7 @@ read tools automatically:
 
 - `facts_search(query, mode="hybrid")` — fused lexical + semantic retrieval. **Enhanced fact store only.**
 - `facts_similar(scopeKey)` — semantic kNN of a known fact. **Enhanced fact store only.**
+- `graph_list_namespaces` / `graph_get_namespace` — corpus discovery. Present when the graph provider supports the namespace registry.
 - `graph_search_nodes` / `graph_search_edges` / `graph_neighbourhood` — topology. Present whenever a graph store exists.
 - `graph_stats` — graph size + crawl backlog health.
 

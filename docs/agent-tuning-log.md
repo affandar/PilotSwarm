@@ -85,6 +85,8 @@ Timer context: {seconds}s timer (reason: "{reason}"), {elapsed}s elapsed, {remai
 
 - 2026-06-20: Tightened the sub-agent lifecycle test fixture agents after the default model sometimes closed an `echoer` child despite the test prompt saying not to call close tools. Added `schemaVersion`/`version` frontmatter and explicit lifecycle-coordinator guidance to leave children alive unless the current user message asks for `complete_agent`, `cancel_agent`, or `delete_agent`. Expected behavior: keep-alive lifecycle regression test exercises runtime behavior without prompt ambiguity. Not model-specific; `keep-alive-after-task` passed standalone.
 
+- 2026-06-21: Added graph namespace-registry guidance to the base graph prompt, Facts Manager, Agent Tuner, graph-debug skill, builder harvester skill, and Horizon Harvester sample agents. Expected behavior: agents first discover relevant graph corpora with `graph_list_namespaces`/frontmatter when available, use `graph_get_namespace` lazily for details, keep `facts_search` mode selection separate from graph discovery, and use namespace filters consistently across facts and graph tools. Bumped affected PilotSwarm-authored agent versions (facts-manager 1.7.0, agent-tuner 1.2.0; sample harvester 1.4.0, librarian 1.1.0). Not model-specific; SDK graph-tool gating tests passed.
+
 ### Other Options Considered (not implemented)
 - **Option A (dual-action):** "You MUST do BOTH: 1. Reply with text. 2. Call wait." — Not tried, likely same result with GPT-5.1.
 - **Option C (role-based):** "You are in a conversation — respond naturally." — Not tried.

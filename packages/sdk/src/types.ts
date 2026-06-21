@@ -655,6 +655,19 @@ export interface PilotSwarmWorkerOptions {
      * `graphSchema` collides with the facts schema on the same `graphDatabaseUrl`.
      */
     graphSchema?: string;
+    /**
+     * Graph-owned relational schema for namespace registry discovery metadata.
+     * Default (provider): `${graphSchema}_registry`. Must differ from
+     * `graphSchema`, because Apache AGE owns a Postgres schema named after the
+     * graph. Env: `HORIZON_GRAPH_REGISTRY_SCHEMA`.
+     */
+    graphRegistrySchema?: string;
+    /**
+     * TTL (ms) for graph namespace list caching inside the graph provider.
+     * Default 60000; set 0 to disable caching. Env:
+     * `HORIZON_NAMESPACE_CACHE_TTL_MS`.
+     */
+    graphNamespaceCacheTtlMs?: number;
 
     // ─── Building Blocks ─────────────────────────────────────
     // Workers own the building blocks. Clients are thin proxies.

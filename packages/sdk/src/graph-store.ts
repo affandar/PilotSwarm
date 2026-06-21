@@ -19,6 +19,15 @@
 
 import type { AccessContext } from "./facts-store.js";
 
+/**
+ * Reserved namespace token for the unscoped graph partition. Graph records with
+ * no namespace property (NULL) are the `default` partition: writes of `default`
+ * (or empty) store no namespace, and reads of `default` match `namespace IS
+ * NULL`. `default` is always present in the registry and cannot be archived or
+ * deleted (graph-fact-search enhancements).
+ */
+export const DEFAULT_GRAPH_NAMESPACE = "default";
+
 // ─── Write inputs ────────────────────────────────────────────────────────────
 
 export interface GraphNodeInput {
@@ -135,6 +144,62 @@ export interface SubGraph {
     edges: { fromKey: string; toKey: string; predicate: string; namespace?: string; confidence: number }[];
 }
 
+// ─── Namespace registry (graph-fact-search enhancements) ─────────────────────
+
+/**
+ * Minimal, skill-file-style discovery frontmatter for a graph namespace. Kept
+ * deliberately small: a short name and a `description` that lets an LLM decide
+ * whether the corpus is relevant before loading details or searching the graph.
+ */
+export interface GraphNamespaceFrontmatter {
+    /** Short label. Defaults to the namespace when omitted. */
+    name?: string;
+    /** When to use this corpus — the discovery hint a reader agent reads. */
+    description: string;
+}
+
+/** A registered graph namespace (corpus) descriptor. */
+export interface GraphNamespaceInfo {
+    namespace: string;
+    archived: boolean;
+    frontmatter: GraphNamespaceFrontmatter;
+    // Detail fields — populated only when listed/fetched with details.
+    source?: string;
+    nodeSchema?: unknown;
+    edgeSchema?: unknown;
+    harvestConfig?: unknown;
+    createdAt?: string;
+    updatedAt?: string;
+}
+
+/** Upsert input for a namespace registry row (graph-owned, relational). */
+export interface GraphNamespaceInput {
+    namespace: string;
+    frontmatter: GraphNamespaceFrontmatter;
+    source?: string;
+    nodeSchema?: unknown;
+    edgeSchema?: unknown;
+    harvestConfig?: unknown;
+    /** Upsert may clear `archived` back to false; defaults to false on create. */
+    archived?: boolean;
+}
+
+export interface GraphNamespaceListQuery {
+    /** String-prefix filter over registry namespace keys (not an AGE subtree). */
+    prefix?: string;
+    /** Include archived rows. Default false. */
+    includeArchived?: boolean;
+    /** Include detail fields (source/schemas/harvestConfig). Default false. */
+    includeDetails?: boolean;
+}
+
+/** Result of a destructive namespace delete. */
+export interface GraphNamespaceDeleteResult {
+    deleted: boolean;
+    nodesDeleted: number;
+    edgesDeleted: number;
+}
+
 // ─── The graph store ─────────────────────────────────────────────────────────
 
 export interface GraphStore {
@@ -168,7 +233,26 @@ export interface GraphStore {
      * exact edge count. `uncrawledFacts` is optional here — the tool reads the
      * crawl backlog from the base FactStore when the provider omits it.
      */
-    graphStats?(): Promise<{ nodeCount: number; edgeCount: number; uncrawledFacts?: number }>;
+    graphStats?(opts?: GraphNamespaceQuery): Promise<{ nodeCount: number; edgeCount: number; uncrawledFacts?: number }>;
+
+    // ─── namespace registry (OPTIONAL; graph-fact-search enhancements) ───────
+    // Relational, graph-owned discovery surface. A provider that implements
+    // these lights up the namespace discovery + harvester-registration tools;
+    // a provider without them simply does not expose those tools.
+
+    /** List registered namespaces. Compact by default (namespace, archived,
+     * frontmatter); detail fields only with `includeDetails`. Excludes archived
+     * rows unless `includeArchived`. No pagination — the set is small. */
+    listGraphNamespaces?(q?: GraphNamespaceListQuery): Promise<GraphNamespaceInfo[]>;
+    /** Full descriptor for one namespace (regardless of archived), or null. */
+    getGraphNamespace?(namespace: string): Promise<GraphNamespaceInfo | null>;
+    /** Upsert a namespace registry row (ON CONFLICT (namespace) DO UPDATE). */
+    upsertGraphNamespace?(input: GraphNamespaceInput): Promise<GraphNamespaceInfo>;
+    /** Non-destructive: set archived = true. `default` cannot be archived. */
+    archiveGraphNamespace?(namespace: string): Promise<boolean>;
+    /** Destructive: drop graph data for the exact namespace, then the registry
+     * row. Re-runnable. Never deletes source facts. `default` cannot be deleted. */
+    deleteGraphNamespace?(namespace: string): Promise<GraphNamespaceDeleteResult>;
 }
 
 /**

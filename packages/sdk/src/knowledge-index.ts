@@ -136,7 +136,9 @@ export function buildEnhancedRetrievalPromptBlock(opts: { semantic: boolean } = 
     const recallLine = opts.semantic
         ? `Beyond skills, you can recall your OWN facts/memory with facts_search (lexical / semantic\n` +
           `/ hybrid) and facts_similar — semantic and hybrid recall over your whole accessible\n` +
-          `corpus is often more effective than a literal read_facts key-pattern scan.\n\n`
+                    `corpus is often more effective than a literal read_facts key-pattern scan. Use semantic\n` +
+                    `for natural-language questions, hybrid as a one-shot recheck when semantic hits are weak,\n` +
+                    `and lexical for exact identifiers, error codes, proper nouns, or quoted phrases.\n\n`
         : `Beyond skills, you can recall your OWN facts/memory with facts_search (use mode "lexical"\n` +
           `or "hybrid"; no embedder is configured, so semantic mode is unavailable and hybrid runs\n` +
           `as lexical) — ranked full-text recall is often better than a literal read_facts scan.\n\n`;
@@ -171,8 +173,12 @@ export function buildGraphReaderPromptBlock(opts: { semanticSeed: boolean }): st
         : ``;
     return (
         `[KNOWLEDGE GRAPH — read access]\n` +
-        `A shared knowledge graph of entities and relationships is available. Explore it with\n` +
-        `graph_search_nodes (by name/kind/seed), graph_search_edges, and graph_neighbourhood.\n` +
+        `A shared knowledge graph of entities and relationships is available. If graph_list_namespaces\n` +
+        `is present and the task may benefit from corpus/domain enrichment, list namespaces first and\n` +
+        `use compact frontmatter to choose whether graph search is relevant. Call graph_get_namespace\n` +
+        `only when frontmatter is insufficient. Explore selected graph data with graph_search_nodes\n` +
+        `(by name/kind/seed), graph_search_edges, and graph_neighbourhood. Use the same namespace\n` +
+        `consistently across graph tools and any follow-up facts_search/read_facts calls.\n` +
         seedLine +
         `Graph reads honour the same visibility as your facts — you only see nodes/edges your\n` +
         `accessible facts evidence.`

@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.1.0
+version: 1.2.0
 name: agent-tuner
 description: |
   Read-only diagnostic agent. Investigates why a session, agent, or
@@ -197,9 +197,16 @@ is unchanged.
   just literal keys — e.g. "find facts semantically similar to this failure".
   `read_facts` stays your tool for exact-key lookups; reach for semantic search
   when the operator's question is conceptual.
+- **Graph namespace discovery.** With `graph_list_namespaces`, inspect compact
+  frontmatter first when an investigation may be corpus/domain-specific; call
+  `graph_get_namespace` only when frontmatter is insufficient. Namespace
+  discovery is graph enrichment, not a replacement for choosing `facts_search`
+  mode.
 - **Graph reads.** With `graph_search_nodes` / `graph_search_edges` /
   `graph_neighbourhood` you can traverse what an incident connects to, and
-  `graph_stats` gives node/edge counts and the crawl backlog. All read-only.
+  `graph_stats` gives node/edge counts and the crawl backlog. Use the selected
+  namespace consistently across graph tools and any follow-up `facts_search` /
+  `read_facts` grounding. All read-only.
 - **Graph-search forensics.** `read_session_graph_searches(session_id)` returns
   the graph searches a session actually ran (kind, query, result count) — use it
   to answer "what did this agent search for in the graph, and what came back".

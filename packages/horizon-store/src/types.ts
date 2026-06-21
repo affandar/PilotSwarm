@@ -49,6 +49,12 @@ export type {
     GraphEdgeHit,
     GraphEvidenceRemovalResult,
     SubGraph,
+    // graph namespace registry
+    GraphNamespaceFrontmatter,
+    GraphNamespaceInfo,
+    GraphNamespaceInput,
+    GraphNamespaceListQuery,
+    GraphNamespaceDeleteResult,
 } from "pilotswarm-sdk";
 
 // scopeKeyAccessible is a tiny pure helper. We keep a provider-LOCAL copy rather

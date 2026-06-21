@@ -73,7 +73,7 @@ export type {
     EmbeddingEndpointConfig,
 } from "./facts-store.js";
 // Graph store contract (optional, separately injected — enhancedfactstore 07 D2)
-export { isGraphStore, scopeKeyAccessible } from "./graph-store.js";
+export { isGraphStore, scopeKeyAccessible, DEFAULT_GRAPH_NAMESPACE } from "./graph-store.js";
 export type {
     GraphStore,
     GraphNodeInput,
@@ -87,6 +87,11 @@ export type {
     GraphEdgeHit,
     GraphEvidenceRemovalResult,
     SubGraph,
+    GraphNamespaceFrontmatter,
+    GraphNamespaceInfo,
+    GraphNamespaceInput,
+    GraphNamespaceListQuery,
+    GraphNamespaceDeleteResult,
 } from "./graph-store.js";
 export type {
     SessionStateStore,

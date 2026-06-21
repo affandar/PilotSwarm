@@ -32,18 +32,38 @@ import { nodeKeyOf, predicateKey as makePredicateKey, mergeAliases, decideEdgeUp
 
 const FACT_SEED = /^(shared|session):/;
 
+/**
+ * Reserved namespace token for the unscoped partition (graph-fact-search
+ * enhancements). `default` is NOT a literal namespace: it maps to "no namespace"
+ * (NULL) on writes and to `namespace IS NULL` on reads. Matched case-insensitively
+ * as a whole token, so a real corpus like `corpus/default-config` is unaffected.
+ */
+const DEFAULT_GRAPH_NAMESPACE = "default";
+
+function isDefaultNamespaceToken(namespace?: string): boolean {
+    return namespace?.trim().replace(/\/+$/g, "").toLowerCase() === DEFAULT_GRAPH_NAMESPACE;
+}
+
 function normalizeNamespace(namespace?: string): string | null {
     const clean = namespace?.trim().replace(/\/+$/g, "") ?? "";
-    return clean.length > 0 ? clean : null;
+    if (clean.length === 0) return null;
+    // `default` is the reserved unscoped/NULL partition, never a stored namespace.
+    if (clean.toLowerCase() === DEFAULT_GRAPH_NAMESPACE) return null;
+    return clean;
 }
 
 function namespacePredicate(alias: string, namespace?: string): string | null {
+    if (isDefaultNamespaceToken(namespace)) return `${alias}.namespace IS NULL`;
     const ns = normalizeNamespace(namespace);
     if (!ns) return null;
     return `(${alias}.namespace = ${cypherStr(ns)} OR ${alias}.namespace STARTS WITH ${cypherStr(`${ns}/`)})`;
 }
 
 function namespaceMatches(value: unknown, namespace?: string): boolean {
+    if (isDefaultNamespaceToken(namespace)) {
+        // default == unscoped: the record matches only when it has no namespace.
+        return value == null || (typeof value === "string" && normalizeNamespace(value) === null);
+    }
     const ns = normalizeNamespace(namespace);
     if (!ns) return true;
     const current = typeof value === "string" ? normalizeNamespace(value) : null;
@@ -56,11 +76,22 @@ function namespaceProp(namespace?: string): string {
 }
 
 function namespaceSet(alias: string, namespace?: string): string {
+    // A PROVIDED-but-unscoped namespace (`default` / empty / whitespace) clears
+    // the property, re-homing the record into the NULL/default partition. An
+    // OMITTED namespace (undefined) leaves the existing property untouched.
+    if (namespace !== undefined && normalizeNamespace(namespace) === null) {
+        return `, ${alias}.namespace = NULL`;
+    }
     const ns = normalizeNamespace(namespace);
     return ns ? `, ${alias}.namespace = ${cypherStr(ns)}` : "";
 }
 
 function edgeNamespacePredicate(namespace?: string): string | null {
+    if (isDefaultNamespaceToken(namespace)) {
+        // Mirror the concrete edge semantics (edge OR either endpoint) for the
+        // unscoped partition: match when the edge or either endpoint is NULL.
+        return `(r.namespace IS NULL OR a.namespace IS NULL OR b.namespace IS NULL)`;
+    }
     const ns = normalizeNamespace(namespace);
     if (!ns) return null;
     const exact = cypherStr(ns);
@@ -143,7 +174,18 @@ export class GraphQueries {
         // AGE requires a non-empty column list even for write-only queries
         // (DELETE/DETACH DELETE return no rows) — use a dummy column then.
         const colDefs = (columns.length > 0 ? columns : ["_ok"]).map((c) => `${c} agtype`).join(", ");
-        const sql = `SELECT * FROM cypher(${cypherStr(this.graphName)}, $$ ${query} $$) AS (${colDefs})`;
+        // Wrap the generated Cypher in a dollar-quoted SQL literal whose tag is
+        // GUARANTEED absent from the query. cypherStr() escapes quotes/backslashes
+        // INSIDE Cypher string literals, but it does not (and cannot) escape the
+        // SQL `$$` delimiter — a value containing `$$` would otherwise terminate
+        // a fixed `$$ ... $$` wrapper early and inject SQL. A computed tag closes
+        // that hole.
+        let tag = "$cy$";
+        if (query.includes(tag)) {
+            let i = 0;
+            do { tag = `$cy${i++}$`; } while (query.includes(tag));
+        }
+        const sql = `SELECT * FROM cypher(${cypherStr(this.graphName)}, ${tag} ${query} ${tag}) AS (${colDefs})`;
         // AGE creates a label's backing table LAZILY on the first CREATE/MERGE
         // that references it. Concurrent first-references to the same label race
         // that internal CREATE TABLE; the loser aborts the whole statement
@@ -399,7 +441,12 @@ export class GraphQueries {
             let ref: GraphNodeRef;
             if (existing.length > 0) {
                 const merged = mergeAliases(agArr(existing[0].aliases), incomingAliases);
-                const namespace = normalizeNamespace(n.namespace) ?? normalizeNamespace(ag(existing[0].namespace));
+                // An explicitly provided namespace wins (including `default`/empty,
+                // which normalizes to null = unscoped); only when OMITTED do we
+                // preserve the node's existing namespace.
+                const namespace = n.namespace !== undefined
+                    ? normalizeNamespace(n.namespace)
+                    : normalizeNamespace(ag(existing[0].namespace));
                 await this.cypher(c,
                     `MATCH (e:GraphNode { node_key: ${cypherStr(key)} })
                      SET e.aliases = ${cypherStrList(merged)}, e.updated_at = timestamp()${namespaceSet("e", n.namespace)}
@@ -675,6 +722,47 @@ export class GraphQueries {
             }
 
             return { scopeKey, nodeEvidenceRemoved, edgeEvidenceRemoved, nodesDeleted, edgesDeleted };
+        });
+    }
+
+    /**
+     * Drop graph data for an EXACT namespace (graph-fact-search enhancements,
+     * `deleteGraphNamespace`). NOT subtree: only records whose own namespace
+     * equals `namespace` are removed — child namespaces are deleted explicitly.
+     * Edges with this namespace are removed first; then nodes with this
+     * namespace are DETACH DELETEd (which also clears their remaining edges and
+     * EVIDENCED_BY anchors). Idempotent / re-runnable. Refuses the reserved
+     * `default` token / empty (the NULL partition is never bulk-deleted).
+     */
+    async deleteNamespaceData(namespace: string): Promise<{ nodesDeleted: number; edgesDeleted: number }> {
+        const ns = normalizeNamespace(namespace);
+        if (!ns) {
+            throw new Error("deleteNamespaceData requires a concrete namespace (not 'default' or empty)");
+        }
+        const exact = cypherStr(ns);
+        return this.withAge(async (c) => {
+            // Edges removed = edges whose OWN namespace is exactly this namespace
+            // OR edges incident to a node in this namespace (those vanish when the
+            // node is DETACH DELETEd). Counting both keeps edgesDeleted honest:
+            // deleting a namespace's nodes also drops edges that reach into other
+            // namespaces — an unavoidable consequence of removing an endpoint.
+            const edgeMatch =
+                `MATCH (a:GraphNode)-[r:REL]->(b:GraphNode) ` +
+                `WHERE r.namespace = ${exact} OR a.namespace = ${exact} OR b.namespace = ${exact}`;
+            const edgeCountRows = await this.cypher(c, `${edgeMatch} RETURN count(r) AS c`, ["c"]);
+            const edgesDeleted = Number(ag(edgeCountRows[0]?.c) ?? 0);
+            if (edgesDeleted > 0) {
+                await this.cypher(c, `${edgeMatch} DELETE r`, []);
+            }
+            // Nodes whose namespace is EXACTLY this namespace (not subtree).
+            const nodeCountRows = await this.cypher(c,
+                `MATCH (n:GraphNode) WHERE n.namespace = ${exact} RETURN count(n) AS c`, ["c"]);
+            const nodesDeleted = Number(ag(nodeCountRows[0]?.c) ?? 0);
+            if (nodesDeleted > 0) {
+                await this.cypher(c,
+                    `MATCH (n:GraphNode) WHERE n.namespace = ${exact} DETACH DELETE n`, []);
+            }
+            return { nodesDeleted, edgesDeleted };
         });
     }
 }

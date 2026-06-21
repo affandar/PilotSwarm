@@ -25,7 +25,7 @@ import type {
 import type { HorizonFactsConfig } from "./config.js";
 import { resolveConfig, buildPoolConfig } from "./config.js";
 import { EmbeddingClient, toVectorLiteral } from "./embedding-client.js";
-import { loadMigrations, runMigrations, HORIZON_FACTS_LOCK_SEED, hashSchemaName } from "./horizon-migrator.js";
+import { loadMigrations, runMigrations, HORIZON_FACTS_LOCK_SEED, hashSchemaName, isGraphOwnedMigration } from "./horizon-migrator.js";
 import { assertFactExtensions, assertDurableHttpUsable } from "./preconditions.js";
 import { ident } from "./sql-util.js";
 import { withDbRetry } from "./db-retry.js";
@@ -116,14 +116,16 @@ export class HorizonDBFactStore implements EnhancedFactStore {
         await runMigrations(
             this.pool,
             this.schema,
-            // Facts provider runs the facts migrations only — the 0003 AGE
-            // bootstrap belongs to HorizonDBGraphStore (07 D2). graphName is
-            // still passed for token validation; the filtered set excludes it.
+            // Facts provider runs the facts migrations only — the graph-owned
+            // migrations (AGE bootstrap + namespace registry) belong to
+            // HorizonDBGraphStore (07 D2). graphName/registrySchema are still passed
+            // for token validation; the filtered set excludes graph-owned files.
             loadMigrations({
                 schema: this.schema,
                 graphName: this.cfg.graphName!,
+                registrySchema: this.cfg.registrySchema!,
                 embeddingDim: this.cfg.embeddingDim,
-            }).filter((m) => m.version !== "0003"),
+            }).filter((m) => !isGraphOwnedMigration(m.version)),
             HORIZON_FACTS_LOCK_SEED,
         );
         await assertDurableHttpUsable(this.pool);

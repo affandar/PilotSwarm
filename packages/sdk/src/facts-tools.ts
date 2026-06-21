@@ -498,14 +498,15 @@ export function createFactTools(opts: {
         enhancedTools.push(defineTool("facts_search", {
             description:
                 "Search your durable facts/memory by relevance (lexical / semantic / hybrid) — often more effective " +
-                "than read_facts, which only matches literal keys. The query shape depends on mode: lexical = BM25 " +
-                "keyword terms (not a sentence); semantic = natural language; hybrid = a short keyword-rich phrase. " +
-                "Returned scopeKey values seed graph_search_nodes.",
+                "than read_facts, which only matches literal keys. Mode selection is independent of graph namespace " +
+                "discovery: semantic = natural-language questions; hybrid = a one-shot recheck when semantic hits " +
+                "are weak; lexical = exact identifiers, error codes, proper nouns, quoted phrases, or single exact terms. " +
+                "If a namespace is already known, pass it here. Returned scopeKey values can seed graph_search_nodes.",
             parameters: {
                 type: "object" as const,
                 properties: {
                     query: { type: "string", description: "Keywords for lexical, natural language for semantic, keyword-rich phrase for hybrid." },
-                    mode: { type: "string", enum: ["lexical", "semantic", "hybrid"], description: "Default hybrid." },
+                    mode: { type: "string", enum: ["lexical", "semantic", "hybrid"], description: "Default semantic when semantic search is available; use hybrid as a weak-semantic recheck and lexical for exact tokens." },
                     namespace: { type: "string", description: "Key-prefix filter over fact keys, matched as '<prefix>/%'. Accepts ANY number of '/'-delimited segments: a reserved namespace ('skills', 'asks') or a domain root ('acme', 'acme/services') to scope a multi-domain corpus to one domain/sub-domain before lexical/semantic/hybrid ranking." },
                     tags: { type: "array", items: { type: "string" } },
                     limit: { type: "number", description: "Max results (default 20)." },

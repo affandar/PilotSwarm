@@ -11,6 +11,16 @@ import type { GraphStore } from "./graph-store.js";
 // non-tuner session (the knowledge graph is shared).
 const TUNER_AGENT_ID = "agent-tuner";
 const FACTS_MANAGER_AGENT_ID = "facts-manager";
+const DEFAULT_GRAPH_NAMESPACE = "default";
+
+function namespaceKey(namespace: unknown): string {
+    const clean = String(namespace ?? "").trim().replace(/\/+$/g, "");
+    return clean.length === 0 ? DEFAULT_GRAPH_NAMESPACE : clean;
+}
+
+function isDefaultNamespace(namespace: unknown): boolean {
+    return namespaceKey(namespace).toLowerCase() === DEFAULT_GRAPH_NAMESPACE;
+}
 
 export interface CreateGraphToolsOptions {
     graphStore: GraphStore;
@@ -76,6 +86,13 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
     // agent can incorporate into the SHARED knowledge graph. The only exception
     // is the read-only agent-tuner, which never receives a mutating tool.
     const canWriteGraph = !isTuner;
+    // Namespace registry tools are optional: older/third-party GraphStore
+    // providers may implement graph search but not the registry sidecar.
+    const canReadNamespaces = typeof graphStore.listGraphNamespaces === "function"
+        && typeof graphStore.getGraphNamespace === "function";
+    const canUpsertNamespace = typeof graphStore.upsertGraphNamespace === "function";
+    const canArchiveNamespace = typeof graphStore.archiveGraphNamespace === "function";
+    const canDeleteNamespace = typeof graphStore.deleteGraphNamespace === "function";
 
     const tools: Tool<any>[] = [];
 
@@ -90,7 +107,54 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
         }).catch(() => { /* swallow */ });
     };
 
+    const recordNamespaceMutation = (sessionId: string | undefined, action: string, namespace: string, data: unknown = {}) => {
+        if (!recordEvent || !sessionId) return;
+        recordEvent(sessionId, "graph.namespace_mutated", {
+            action,
+            namespace,
+            ...((data && typeof data === "object") ? data as Record<string, unknown> : {}),
+            at: new Date().toISOString(),
+        }).catch(() => { /* swallow */ });
+    };
+
     // ── Reader tools (every session) ─────────────────────────────────────────
+
+    if (canReadNamespaces) {
+        tools.push(defineTool("graph_list_namespaces", {
+            description:
+                "List registered graph knowledge-base namespaces. Use this FIRST when a task may benefit from " +
+                "graph/domain enrichment: inspect each row's compact frontmatter (name + description) to decide " +
+                "which corpus is relevant before deeper graph traversal. Compact by default; set includeDetails " +
+                "only when frontmatter is insufficient.",
+            parameters: {
+                type: "object" as const,
+                properties: {
+                    prefix: { type: "string", description: "Optional string-prefix filter over registered namespace keys." },
+                    includeArchived: { type: "boolean", description: "Include archived namespaces. Default false." },
+                    includeDetails: { type: "boolean", description: "Include source/schema/harvest details. Default false." },
+                },
+            },
+            handler: (a: any = {}) => graphStore.listGraphNamespaces!({
+                prefix: a.prefix,
+                includeArchived: a.includeArchived === true,
+                includeDetails: a.includeDetails === true,
+            }),
+        }));
+
+        tools.push(defineTool("graph_get_namespace", {
+            description:
+                "Get the full descriptor for one graph namespace after graph_list_namespaces frontmatter suggests it is relevant. " +
+                "Do not call this for every namespace by default; use it lazily when details are needed.",
+            parameters: {
+                type: "object" as const,
+                properties: {
+                    namespace: { type: "string", description: "Registered graph namespace key, e.g. 'default' or 'corpus/acme'." },
+                },
+                required: ["namespace"] as const,
+            },
+            handler: (a: any) => graphStore.getGraphNamespace!(a.namespace),
+        }));
+    }
 
     tools.push(defineTool("graph_search_nodes", {
         description:
@@ -293,6 +357,105 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
                 required: ["scopeKey"] as const,
             },
             handler: (a: any) => graphStore.removeGraphEvidence(a.scopeKey, { namespace: a.namespace }),
+        }));
+    }
+
+    // ── Namespace registry writes — harvester-capable sessions + facts-manager
+    // only. These mutate corpus discovery metadata, not graph data itself.
+    if (canHarvest && canUpsertNamespace) {
+        tools.push(defineTool("graph_upsert_namespace", {
+            description:
+                "Register or update a graph namespace/corpus descriptor. Harvester/facts-manager only. " +
+                "Use when a corpus starts, before first crawl, or when static source/schema/harvest details change. " +
+                "frontmatter must be compact name/description discovery text; do not write per-crawl stats or secrets.",
+            parameters: {
+                type: "object" as const,
+                properties: {
+                    namespace: { type: "string", description: "Namespace key. Use 'default' only for the unscoped/NULL partition." },
+                    frontmatter: {
+                        type: "object",
+                        properties: {
+                            name: { type: "string", description: "Short display label. Defaults to namespace if omitted." },
+                            description: { type: "string", description: "Compact when-to-use-this-corpus hint. Required." },
+                        },
+                        required: ["description"],
+                    },
+                    source: { type: "string", description: "How source fact keys map/link to this graph namespace. No secrets." },
+                    nodeSchema: { type: "object", description: "Expected node kinds/properties/examples. Details only." },
+                    edgeSchema: { type: "object", description: "Expected predicates/direction/semantics. Details only." },
+                    harvestConfig: { type: "object", description: "Static, non-secret harvest shape/config handles. No per-crawl stats." },
+                    archived: { type: "boolean", description: "Set archived state. Upsert normally clears archived to false." },
+                },
+                required: ["namespace", "frontmatter"] as const,
+            },
+            handler: async (a: any, ctx: any) => {
+                const result = await graphStore.upsertGraphNamespace!({
+                    namespace: a.namespace,
+                    frontmatter: a.frontmatter,
+                    source: a.source,
+                    nodeSchema: a.nodeSchema,
+                    edgeSchema: a.edgeSchema,
+                    harvestConfig: a.harvestConfig,
+                    archived: a.archived,
+                });
+                recordNamespaceMutation(ctx?.sessionId, "upsert", result.namespace, { archived: result.archived });
+                return result;
+            },
+        }));
+    }
+
+    if (canHarvest && canArchiveNamespace) {
+        tools.push(defineTool("graph_archive_namespace", {
+            description:
+                "Archive a graph namespace so it disappears from ordinary discovery. Non-destructive: graph data remains searchable when directly targeted. Harvester/facts-manager only. 'default' cannot be archived.",
+            parameters: {
+                type: "object" as const,
+                properties: {
+                    namespace: { type: "string", description: "Registered namespace key to archive." },
+                },
+                required: ["namespace"] as const,
+            },
+            handler: async (a: any, ctx: any) => {
+                if (isDefaultNamespace(a.namespace)) {
+                    throw new Error("graph_archive_namespace: the 'default' namespace cannot be archived");
+                }
+                const key = namespaceKey(a.namespace);
+                const archived = await graphStore.archiveGraphNamespace!(key);
+                recordNamespaceMutation(ctx?.sessionId, "archive", key, { archived });
+                return { archived };
+            },
+        }));
+    }
+
+    if (isFactsManager && canDeleteNamespace) {
+        tools.push(defineTool("graph_delete_namespace", {
+            description:
+                "DESTRUCTIVE facts-manager-only deletion. Deletes graph data for the exact namespace and then the registry row. " +
+                "Does not delete source facts and does not delete child namespaces. Use only on explicit user request. 'default' cannot be deleted.",
+            parameters: {
+                type: "object" as const,
+                properties: {
+                    namespace: { type: "string", description: "Exact namespace key to delete. Child namespaces are not deleted." },
+                    confirmDestructiveDelete: { type: "boolean", description: "Must be true to confirm the destructive delete was explicitly requested by the user." },
+                    reason: { type: "string", description: "Short reason / user request summary for auditability." },
+                },
+                required: ["namespace", "confirmDestructiveDelete", "reason"] as const,
+            },
+            handler: async (a: any, ctx: any) => {
+                const key = namespaceKey(a.namespace);
+                if (key.toLowerCase() === DEFAULT_GRAPH_NAMESPACE) {
+                    throw new Error("graph_delete_namespace: the 'default' namespace cannot be deleted");
+                }
+                if (a.confirmDestructiveDelete !== true) {
+                    throw new Error("graph_delete_namespace requires confirmDestructiveDelete=true");
+                }
+                if (!String(a.reason ?? "").trim()) {
+                    throw new Error("graph_delete_namespace requires a non-empty reason");
+                }
+                const result = await graphStore.deleteGraphNamespace!(key);
+                recordNamespaceMutation(ctx?.sessionId, "delete", key, { reason: String(a.reason).trim(), result });
+                return result;
+            },
         }));
     }
 

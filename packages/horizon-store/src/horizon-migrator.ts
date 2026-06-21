@@ -24,6 +24,20 @@ export interface MigrationEntry {
 export const HORIZON_FACTS_LOCK_SEED = 0x48_5a_46; // "HZF"
 
 /**
+ * Migration versions OWNED BY THE GRAPH PROVIDER (HorizonDBGraphStore), not the
+ * facts provider. The facts store filters these out of its run set; the graph
+ * store runs them inline as part of its idempotent bootstrap.
+ *   0003 — AGE extension + create_graph (the graph bootstrap).
+ *   0013 — graph_namespaces registry sidecar (graph-fact-search enhancements).
+ */
+export const GRAPH_OWNED_MIGRATIONS = ["0003", "0013"] as const;
+
+/** Whether a migration version is graph-owned (run by the graph store, not facts). */
+export function isGraphOwnedMigration(version: string): boolean {
+    return (GRAPH_OWNED_MIGRATIONS as readonly string[]).includes(version);
+}
+
+/**
  * Run all pending migrations against the given schema.
  *
  * Uses a PostgreSQL advisory lock keyed on `lockSeed` + schema name to
@@ -103,6 +117,9 @@ export interface MigrationTokens {
     schema: string;
     graphName: string;
     embeddingDim: number;
+    /** Graph-owned schema for the namespace registry sidecar (0013).
+     * Defaults to `${graphName}_registry`. */
+    registrySchema?: string;
 }
 
 const MIGRATION_FILE = /^(\d{4})_([a-z0-9_]+)\.sql$/;
@@ -129,6 +146,10 @@ export function loadMigrations(tokens: MigrationTokens): MigrationEntry[] {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(tokens.graphName)) {
         throw new Error(`unsafe graph name: ${JSON.stringify(tokens.graphName)}`);
     }
+    const registrySchema = tokens.registrySchema ?? `${tokens.graphName}_registry`;
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(registrySchema)) {
+        throw new Error(`unsafe registry schema name: ${JSON.stringify(registrySchema)}`);
+    }
     const dim = Math.trunc(tokens.embeddingDim);
     if (!Number.isFinite(dim) || dim < 1) {
         throw new Error(`embeddingDim must be a positive integer, got ${tokens.embeddingDim}`);
@@ -150,6 +171,7 @@ export function loadMigrations(tokens: MigrationTokens): MigrationEntry[] {
         const sql = raw
             .replaceAll("{{SCHEMA}}", tokens.schema)
             .replaceAll("{{GRAPH_NAME}}", tokens.graphName)
+            .replaceAll("{{REGISTRY_SCHEMA}}", registrySchema)
             .replaceAll("{{EMBEDDING_DIM}}", String(dim));
         return { version: m[1], name: m[2], sql };
     });

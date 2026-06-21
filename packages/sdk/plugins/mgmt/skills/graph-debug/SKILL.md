@@ -30,12 +30,28 @@ without a graph and nothing here applies — say so plainly instead of guessing.
 | `graph_search_nodes` | ✓ | ✓ | Find entities by name / kind / seed scope-keys |
 | `graph_search_edges` | ✓ | ✓ | Find relationships by predicate / endpoints |
 | `graph_neighbourhood` | ✓ | ✓ | Bounded subgraph around one node (1–5 hops) |
+| `graph_list_namespaces` | ✓ | ✓ | Discover registered graph corpora from compact frontmatter |
+| `graph_get_namespace` | ✓ | ✓ | Read full descriptor for one namespace/corpus |
 | `graph_stats` | ✓ | ✓ | Node + edge counts and crawl backlog (read-only) |
 | `read_session_graph_searches` | — | ✓ | Forensics: what graph searches a session ran |
 
 Neither role mutates the graph through this skill. The facts-manager *holds*
-the graph write/delete tools (dormant) but graph **building** is a harvester
-job — do not crawl or upsert here unless an operator explicitly asks.
+the graph write/delete tools (dormant), plus namespace registry mutation tools
+for explicit operator actions, but graph **building** is a harvester job — do
+not crawl, upsert, archive, or delete here unless an operator explicitly asks.
+
+## Namespace discovery
+
+If `graph_list_namespaces` is available, use it before graph traversal when the
+question may be corpus/domain-specific. The compact frontmatter tells you what a
+namespace contains and when it is relevant. Call `graph_get_namespace` only for a
+namespace that looks relevant and needs details such as source or schema shape.
+
+The reserved `default` namespace is the unscoped graph partition. Other
+namespaces are corpus/domain keys such as `corpus/acme`; graph namespace filters
+match that namespace and descendants such as `corpus/acme/services`. Use the
+same namespace across graph tools and facts tools when you pivot between source
+facts and graph structure.
 
 ## Reporting on the graph (facts-manager)
 
@@ -45,9 +61,11 @@ graph":
 1. Start with `graph_stats` — it returns node count, edge count, and how many
    facts remain **uncrawled** (the harvest backlog). A large uncrawled backlog
    with few nodes means harvesting is behind, not that the graph is broken.
-2. Sample structure with `graph_search_nodes` (e.g. by `kind`) and expand a
+2. If namespaces are present, list them first and choose the relevant corpus
+   rather than sampling the whole graph blindly.
+3. Sample structure with `graph_search_nodes` (e.g. by `kind`) and expand a
    few with `graph_neighbourhood` to characterise connectivity.
-3. Do **not** fan out a neighbourhood call per node to "count" the graph —
+4. Do **not** fan out a neighbourhood call per node to "count" the graph —
    `graph_stats` already has the counts. Fanning out is a self-inflicted DoS.
 
 ### Rendering the graph as Markdown / Mermaid

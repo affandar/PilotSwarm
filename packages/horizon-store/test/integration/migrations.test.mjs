@@ -20,6 +20,7 @@ describe.skipIf(!HAS_DB)("migrations (MG1–MG6)", () => {
     });
 
     const tokens = (names) => ({ schema: names.schema, graphName: names.graph, embeddingDim: 4 });
+    const factMigrations = (names) => api.loadMigrations(tokens(names)).filter((m) => !api.isGraphOwnedMigration(m.version));
     const freshNames = (tag) => {
         const names = uniqueNames(tag);
         cleanups.push(() => dropSchemaAndGraph(names.schema, names.graph));
@@ -28,11 +29,11 @@ describe.skipIf(!HAS_DB)("migrations (MG1–MG6)", () => {
 
     it("MG1 fresh apply: versions recorded in order; expected objects exist (catalog-level)", async () => {
         const names = freshNames("mg1");
-        await api.runMigrations(pool, names.schema, api.loadMigrations(tokens(names)), api.HORIZON_FACTS_LOCK_SEED);
+        await api.runMigrations(pool, names.schema, factMigrations(names), api.HORIZON_FACTS_LOCK_SEED);
 
         const { rows: vers } = await pool.query(
             `SELECT version FROM "${names.schema}".schema_migrations ORDER BY version`);
-        assert.deepEqual(vers.map((r) => r.version), ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0011", "0012"]);
+        assert.deepEqual(vers.map((r) => r.version), ["0001", "0002", "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0011", "0012"]);
 
         const { rows: cols } = await pool.query(
             `SELECT column_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = 'facts'`,
@@ -71,7 +72,7 @@ describe.skipIf(!HAS_DB)("migrations (MG1–MG6)", () => {
         assert.ok(trig.some((r) => r.tgname === "facts_touch"), "facts_touch trigger installed");
 
         const { rows: g } = await pool.query(`SELECT 1 FROM ag_catalog.ag_graph WHERE name = $1`, [names.graph]);
-        assert.equal(g.length, 1, "AGE graph created");
+        assert.equal(g.length, 0, "facts migrations do not create the AGE graph");
 
         const { rows: idx } = await pool.query(
             `SELECT indexname FROM pg_indexes WHERE schemaname = $1`, [names.schema]);
@@ -81,7 +82,7 @@ describe.skipIf(!HAS_DB)("migrations (MG1–MG6)", () => {
 
     it("MG2 idempotent re-run is a no-op", async () => {
         const names = freshNames("mg2");
-        const migs = api.loadMigrations(tokens(names));
+        const migs = factMigrations(names);
         await api.runMigrations(pool, names.schema, migs, api.HORIZON_FACTS_LOCK_SEED);
         const { rows: before } = await pool.query(
             `SELECT version, applied_at FROM "${names.schema}".schema_migrations ORDER BY version`);
@@ -99,25 +100,28 @@ describe.skipIf(!HAS_DB)("migrations (MG1–MG6)", () => {
         await Promise.all([s1.initialize(), s2.initialize()]);
         await s1.close(); await s2.close();
         const { rows } = await pool.query(
-            `SELECT count(*)::int AS n FROM "${names.schema}".schema_migrations`);
-        // The FACT provider runs all non-AGE migrations; the 0003 AGE bootstrap belongs to
-        // HorizonDBGraphStore (07 D2) and is not recorded in the facts schema.
-        assert.equal(rows[0].n, 11, "each FACT migration recorded exactly once");
+            `SELECT version FROM "${names.schema}".schema_migrations ORDER BY version`);
+        // The FACT provider runs all non-graph-owned migrations; 0003 (AGE
+        // bootstrap) and 0013 (graph namespace registry) belong to
+        // HorizonDBGraphStore and are not recorded in the facts schema.
+        assert.deepEqual(rows.map((r) => r.version),
+            ["0001", "0002", "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0011", "0012"],
+            "facts store records exactly the non-graph-owned migrations");
     });
 
     it("MG4 partial-chain resume: only the missing tail is applied", async () => {
         const names = freshNames("mg4");
-        const migs = api.loadMigrations(tokens(names));
+        const migs = factMigrations(names);
         await api.runMigrations(pool, names.schema, migs.slice(0, 3), api.HORIZON_FACTS_LOCK_SEED);
         await api.runMigrations(pool, names.schema, migs, api.HORIZON_FACTS_LOCK_SEED);
         const { rows } = await pool.query(
             `SELECT version FROM "${names.schema}".schema_migrations ORDER BY version`);
-        assert.deepEqual(rows.map((r) => r.version), ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0011", "0012"]);
+        assert.deepEqual(rows.map((r) => r.version), ["0001", "0002", "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0011", "0012"]);
     });
 
     it("MG5 trigger semantics (direct SQL probes)", async () => {
         const names = freshNames("mg5");
-        await api.runMigrations(pool, names.schema, api.loadMigrations(tokens(names)), api.HORIZON_FACTS_LOCK_SEED);
+        await api.runMigrations(pool, names.schema, factMigrations(names), api.HORIZON_FACTS_LOCK_SEED);
         const T = `"${names.schema}".facts`;
 
         await pool.query(
@@ -145,7 +149,7 @@ describe.skipIf(!HAS_DB)("migrations (MG1–MG6)", () => {
 
     it("MG6 unknown future version → refuses loudly, never repairs", async () => {
         const names = freshNames("mg6");
-        const migs = api.loadMigrations(tokens(names));
+        const migs = factMigrations(names);
         await api.runMigrations(pool, names.schema, migs, api.HORIZON_FACTS_LOCK_SEED);
         await pool.query(
             `INSERT INTO "${names.schema}".schema_migrations (version, name) VALUES ('9999', 'from_the_future')`);

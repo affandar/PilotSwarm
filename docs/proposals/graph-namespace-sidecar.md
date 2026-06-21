@@ -37,9 +37,10 @@ So the registry must be graph-owned and self-sufficient:
 
 - It must not assume the facts schema or facts migration runner exists.
 - The graph store must create and own the table itself.
-- Introduce an explicit `graphSchema` / `HORIZON_GRAPH_SCHEMA` config, default to
-  a graph-owned schema, and `CREATE SCHEMA IF NOT EXISTS` it during graph
-  initialize. Do not place the table inside the AGE-managed graph schema.
+- Introduce an explicit `registrySchema` / `HORIZON_GRAPH_REGISTRY_SCHEMA`
+   config, default to `${graphName}_registry`, and `CREATE SCHEMA IF NOT EXISTS`
+   it during graph initialize. Do not place the table inside the AGE-managed
+   graph schema (`graphName` / `HORIZON_GRAPH_SCHEMA`).
 
 ### Sidecar Table
 
@@ -170,7 +171,7 @@ For `@pilotswarm/horizon-store`:
 1. Do not stand up a second migration framework. The graph store today runs only
    the AGE bootstrap (0003) inline under an advisory xact lock and tracks no
    relational `schema_migrations`. Fold the sidecar into that same idempotent
-   bootstrap in `initialize()`: `CREATE SCHEMA IF NOT EXISTS <graphSchema>`,
+   bootstrap in `initialize()`: `CREATE SCHEMA IF NOT EXISTS <registrySchema>`,
    `CREATE TABLE IF NOT EXISTS graph_namespaces (...)`, seed `default` via
    `INSERT ... ON CONFLICT DO NOTHING`, all under the existing advisory lock.
 2. Add indexes: primary key on `namespace`, a partial index for active rows
@@ -463,7 +464,7 @@ Update these surfaces when implementing:
 
 - `docs/facts-table.md`
 - `docs/harvester-deployment.md`
-- `packages/horizon-store/src/config.ts` (`graphSchema`, `namespaceCacheTtlMs`)
+- `packages/horizon-store/src/config.ts` (`registrySchema`, `namespaceCacheTtlMs`)
 - `packages/sdk/src/graph-tools.ts` tool descriptions
 - `packages/sdk/plugins/mgmt/agents/facts-manager.agent.md`
 - graph-aware default prompt guidance
