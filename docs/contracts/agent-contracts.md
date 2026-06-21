@@ -159,7 +159,7 @@ Contract:
 - the target session must call `reply_session_message(request_id=..., session_id=<sender>, body=...)` to return the answer
 - answering only in the target session's own chat transcript does not deliver a response to the sender
 - request and response protocol prompts are durable transcript items and should render as dedicated session request/reply cards in shared UI surfaces
-- ordinary sessions cannot wake system sessions through cross-session messages
+- ordinary sessions may send requests or replies to system sessions; the same terminal-state, self-message, orchestration-live, and rate-limit guards still apply
 
 Why it matters:
 

@@ -98,7 +98,7 @@ harmlessly ignored).
 | Role | `harvester` frontmatter | Gets | Responsibility |
 |------|------------------------|------|----------------|
 | **Harvester** | `harvester: true` | crawl queue (`facts_read_uncrawled` / `facts_mark_crawled`) + graph reconciliation (`graph_remove_evidence`) + namespace registry (`graph_upsert_namespace` / `graph_archive_namespace`) + graph writes (`graph_upsert_node` / `graph_upsert_edge` / `graph_merge_nodes` / `graph_delete_node` / `graph_delete_edge`) | Register the corpus, crawl sources into a dedicated `corpus/*` (source-capture) namespace, build/reconcile the graph, mark facts crawled |
-| **Reader** | (none) | `facts_search` / `facts_similar` + namespace discovery (`graph_list_namespaces` / `graph_get_namespace`) + graph reads (`graph_search_nodes` / `graph_search_edges` / `graph_neighbourhood`) + graph writes (`graph_upsert_*` / `graph_merge_nodes` / `graph_delete_*`) | Discover relevant corpora, retrieve knowledge, pivot fact↔graph; may also incorporate into the shared graph |
+| **Reader** | (none) | `facts_search` / `facts_similar` + namespace discovery (`graph_list_namespaces` / `graph_get_namespace`) + namespace registration (`graph_upsert_namespace`) + graph reads (`graph_search_nodes` / `graph_search_edges` / `graph_neighbourhood`) + graph writes (`graph_upsert_*` / `graph_merge_nodes` / `graph_delete_*`) | Discover/register relevant corpora, retrieve knowledge, pivot fact↔graph; may also incorporate into the shared graph |
 | **Facts Manager** | system agent (dormant) | crawl + graph writes, but **does not crawl** unless an operator explicitly asks | Curate `intake/*` (task-agent observations) into reusable skills |
 
 The harvester role is **authoritative per turn** — the runtime derives it from the

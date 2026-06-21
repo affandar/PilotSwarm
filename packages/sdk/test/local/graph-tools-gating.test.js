@@ -318,10 +318,11 @@ describe("P4: graph tool gating (createGraphTools)", () => {
 describe("graph namespace registry tool gating (createGraphTools)", () => {
     const base = (seen = {}) => ({ graphStore: fakeNamespaceGraphStore(seen), factStore: fakeBaseStore() });
 
-    it("role matrix: reader/tuner get namespace reads only; harvester adds upsert/archive; facts-manager adds delete", () => {
+    it("role matrix: reader can upsert namespaces; harvester adds archive; facts-manager adds delete; tuner read-only", () => {
         const reader = names(createGraphTools({ ...base(), agentIdentity: "default" }));
         assert(reader.has("graph_list_namespaces") && reader.has("graph_get_namespace"), "reader gets namespace read tools");
-        assert(!reader.has("graph_upsert_namespace") && !reader.has("graph_archive_namespace") && !reader.has("graph_delete_namespace"), "reader gets no namespace mutations");
+        assert(reader.has("graph_upsert_namespace"), "reader gets namespace upsert for graph incorporation");
+        assert(!reader.has("graph_archive_namespace") && !reader.has("graph_delete_namespace"), "reader cannot archive/delete namespaces");
 
         const harvester = names(createGraphTools({ ...base(), agentIdentity: "app-harvester", isHarvester: true }));
         assert(harvester.has("graph_upsert_namespace") && harvester.has("graph_archive_namespace"), "harvester gets namespace upsert/archive");
@@ -349,7 +350,7 @@ describe("graph namespace registry tool gating (createGraphTools)", () => {
         assert(!names(createGraphTools({ graphStore: getOnly, factStore: fakeBaseStore(), agentIdentity: "default" })).has("graph_get_namespace"), "get without list does not expose read pair");
 
         const upsertOnly = { ...fakeGraphStore(), upsertGraphNamespace: async () => ({}) };
-        assert(names(createGraphTools({ graphStore: upsertOnly, factStore: fakeBaseStore(), agentIdentity: "app-harvester", isHarvester: true })).has("graph_upsert_namespace"), "upsert mutator can stand alone");
+        assert(names(createGraphTools({ graphStore: upsertOnly, factStore: fakeBaseStore(), agentIdentity: "default" })).has("graph_upsert_namespace"), "upsert mutator can stand alone for ordinary graph writers");
 
         const deleteOnly = { ...fakeGraphStore(), deleteGraphNamespace: async () => ({ deleted: true }) };
         assert(names(createGraphTools({ graphStore: deleteOnly, factStore: fakeBaseStore(), agentIdentity: "facts-manager" })).has("graph_delete_namespace"), "delete mutator can stand alone for facts-manager");

@@ -201,7 +201,7 @@ Reader tools for all graph-enabled sessions:
 
 Write/delete tools:
 
-- `graph_upsert_namespace`: harvester-capable sessions and facts-manager.
+- `graph_upsert_namespace`: graph-writing sessions (all non-tuner sessions when a graph store is configured).
 - `graph_archive_namespace`: harvester-capable sessions and facts-manager.
 - `graph_delete_namespace`: facts-manager only, and only on explicit user
   request.
@@ -342,8 +342,8 @@ SDK/tool tests:
 
 1. A graph-enabled reader gets `graph_list_namespaces` and `graph_get_namespace`.
 2. A baseline non-graph session does not get namespace tools.
-3. A harvester (`harvester: true`) gets `graph_upsert_namespace` and
-   `graph_archive_namespace`.
+3. Ordinary graph-writing sessions get `graph_upsert_namespace`; a harvester
+   (`harvester: true`) also gets `graph_archive_namespace`.
 4. An ordinary reader does not get namespace write/delete tools.
 5. Facts-manager gets upsert, archive, and delete tools.
 6. A non-harvester reader that invokes a write/delete tool gets a clear

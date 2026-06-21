@@ -125,11 +125,10 @@ describe("Cross-session messaging", () => {
         );
     });
 
-    it("guards missing, terminal, and system-session targets before enqueue", async () => {
+    it("guards missing and terminal targets before enqueue", async () => {
         const { runtime, enqueued } = createRuntime([
             session("sender"),
             session("terminal", { state: "cancelled" }),
-            session("system-target", { isSystem: true }),
         ]);
 
         await assertThrows(
@@ -165,17 +164,39 @@ describe("Cross-session messaging", () => {
             "Terminal cross-session reply target should fail before enqueue",
         );
 
-        await assertThrows(
-            () => sendInternalSessionMessage(runtime, {
-                fromSessionId: "sender",
-                toSessionId: "system-target",
-                subject: "Need info",
-                body: "Ping",
-            }),
-            /ordinary sessions cannot wake system sessions/i,
-            "Ordinary sessions should not wake system sessions through cross-session messaging",
-        );
-
         assertEqual(enqueued.length, 0, "Rejected cross-session messages should not enqueue durable prompts");
+    });
+
+    it("allows ordinary sessions to send messages and replies to system sessions", async () => {
+        const { runtime, enqueued } = createRuntime([
+            session("ordinary-sender"),
+            session("ordinary-responder"),
+            session("system-target", { isSystem: true, agentId: "facts-manager" }),
+        ]);
+
+        const message = await sendInternalSessionMessage(runtime, {
+            fromSessionId: "ordinary-sender",
+            toSessionId: "system-target",
+            subject: "Please inspect intake",
+            body: "A regular agent needs Facts Manager to inspect a shared intake item.",
+            reason: "guidance",
+            expectsResponse: true,
+        });
+        await replyInternalSessionMessage(runtime, {
+            requestId: message.requestId,
+            fromSessionId: "ordinary-responder",
+            toSessionId: "system-target",
+            verdict: "answered",
+            body: "Here is extra context for the system session.",
+        });
+
+        assertEqual(enqueued.length, 2, "Ordinary-to-system message and reply should enqueue durable prompts");
+        assertEqual(enqueued[0].orchestrationId, "session-system-target", "Message should target the system session orchestration");
+        assertIncludes(enqueued[0].payload.prompt, "[SESSION_MESSAGE", "System target receives a session message prompt");
+        assertIncludes(enqueued[0].payload.prompt, "from=ordinary-sender", "System target sees the ordinary sender id");
+        assertIncludes(enqueued[0].payload.prompt, "expects_response=true", "Message expectation is preserved for system target");
+        assertEqual(enqueued[1].orchestrationId, "session-system-target", "Reply should also target the system session orchestration");
+        assertIncludes(enqueued[1].payload.prompt, "[SESSION_MESSAGE_RESPONSE", "System target receives a response prompt");
+        assertIncludes(enqueued[1].payload.prompt, "from=ordinary-responder", "System target sees the ordinary responder id");
     });
 });

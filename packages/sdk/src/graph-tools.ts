@@ -360,12 +360,13 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
         }));
     }
 
-    // ── Namespace registry writes — harvester-capable sessions + facts-manager
-    // only. These mutate corpus discovery metadata, not graph data itself.
-    if (canHarvest && canUpsertNamespace) {
+    // ── Namespace registry writes. Upsert follows normal graph-write policy so
+    // ordinary graph-aware agents can register corpora they just incorporated.
+    // Archive remains harvester/facts-manager only; delete is facts-manager only.
+    if (canWriteGraph && canUpsertNamespace) {
         tools.push(defineTool("graph_upsert_namespace", {
             description:
-                "Register or update a graph namespace/corpus descriptor. Harvester/facts-manager only. " +
+                "Register or update a graph namespace/corpus descriptor. Available to graph-writing sessions. " +
                 "Use when a corpus starts, before first crawl, or when static source/schema/harvest details change. " +
                 "frontmatter must be compact name/description discovery text; do not write per-crawl stats or secrets.",
             parameters: {
