@@ -28,13 +28,18 @@ turning namespace listing into an AGE graph scan or adding high-churn fields.
 
 ### Schema Placement
 
-The sidecar table belongs to the graph schema, not the Horizon facts schema.
+The graph store is an independent provider. `HorizonDBGraphStore` has its own
+pool, never reads the facts table, and supports the `PgFactStore +
+HorizonDBGraphStore` tier — where the HorizonDB database holds only the AGE
+graph and has no facts schema or facts migration tables at all.
 
-For HorizonDB/AGE, create the registry in the graph-owned relational schema
-associated with the graph provider lifecycle. If the provider needs a new
-explicit config value, add one, for example `graphSchema` /
-`HORIZON_GRAPH_SCHEMA`. Do not create this table in the facts schema just
-because the source evidence lives in facts.
+So the registry must be graph-owned and self-sufficient:
+
+- It must not assume the facts schema or facts migration runner exists.
+- The graph store must create and own the table itself.
+- Introduce an explicit `graphSchema` / `HORIZON_GRAPH_SCHEMA` config, default to
+  a graph-owned schema, and `CREATE SCHEMA IF NOT EXISTS` it during graph
+  initialize. Do not place the table inside the AGE-managed graph schema.
 
 ### Sidecar Table
 
@@ -45,10 +50,9 @@ Keep the table minimal:
 
 ```text
 namespace text primary key
-status text not null              -- active | archived
+archived boolean not null default false
 frontmatter jsonb not null         -- compact name/description hints returned by list
-description text                   -- detailed human description, details only
-source text                        -- how source fact keys map/link to namespace
+source text                        -- how source fact keys map/link to namespace, details only
 node_schema jsonb                  -- details only
 edge_schema jsonb                  -- details only
 harvest_config jsonb               -- static/non-secret harvest shape, details only
@@ -56,12 +60,14 @@ created_at timestamptz not null
 updated_at timestamptz not null
 ```
 
-`status` has only two states for now: `active` and `archived`.
+There is no separate `status` column and no standalone `description` column.
+`archived` is the only lifecycle state, and `frontmatter.description` is the
+description.
 
-Seed a `default` row idempotently during migration. Graph records with no
-namespace should be presented as belonging to `default` for discovery and
-reporting. New graph write flows should still prefer explicit namespaces when
-an app corpus is known.
+Seed the `default` row idempotently when the table is created. `default` is the
+registry entry for the unscoped graph partition (see Default Namespace). New
+graph write flows should still prefer explicit namespaces when an app corpus is
+known.
 
 No secrets should be stored in sidecar rows. `harvest_config` should name secret
 keys or configuration handles, not secret values.
@@ -81,8 +87,13 @@ description: PostgreSQL hackers mailing-list discussion graph. Use when the user
 ---
 ```
 
-`graph_list_namespaces` should return only `namespace`, `status`, and
+`graph_list_namespaces` should return only `namespace`, `archived`, and
 `frontmatter` unless the caller asks for details.
+
+`frontmatter` must be validated and bounded: default `name` to the namespace
+when missing, require a `description`, and cap the serialized frontmatter size so
+the compact list stays compact. Oversized frontmatter is rejected on upsert or
+truncated in list output.
 
 ### Source
 
@@ -93,6 +104,21 @@ linkage, not operational status. Example:
 Facts under corpus/pgsql-hackers/* are harvested into graph namespace corpus/pgsql-hackers.
 Graph evidence scopeKeys point back to those source facts.
 ```
+
+### Default Namespace
+
+`default` is defined as "no namespace" — graph records whose `namespace`
+property is NULL.
+
+- The registry stores a row with the literal key `default` to carry frontmatter
+  for the NULL-namespace partition.
+- The provider normalizes `default` and empty string to NULL on graph writes, so
+  un-namespaced nodes/edges are the `default` partition.
+- Graph reads for `default` translate to `namespace IS NULL`.
+- `default` cannot be archived or deleted; it always exists.
+
+This resolves the mismatch where graph queries filtering `namespace = 'default'`
+would otherwise miss nodes written with no namespace property.
 
 ### Schema And Harvest Shape
 
@@ -111,74 +137,79 @@ names. It must not be updated on every crawl and must not carry stats.
 
 Extend the SDK graph-store interface with namespace registry methods:
 
-- `listGraphNamespaces({ prefix?, status?, includeDetails?, limit? })`
+- `listGraphNamespaces({ prefix?, includeArchived?, includeDetails? })`
 - `getGraphNamespace(namespace)`
 - `upsertGraphNamespace(input)`
 - `archiveGraphNamespace(namespace)`
 - `deleteGraphNamespace(namespace)`
 
-`listGraphNamespaces` returns `namespace`, `status`, and `frontmatter` by
-default. With `includeDetails=true`, it may include `description`, `source`,
-`node_schema`, `edge_schema`, and `harvest_config`.
+`listGraphNamespaces` returns `namespace`, `archived`, and `frontmatter` by
+default, excludes archived rows unless `includeArchived=true`, and has no
+pagination — the namespace set is small. With `includeDetails=true`, it may
+include `source`, `node_schema`, `edge_schema`, and `harvest_config`.
 
-`archiveGraphNamespace` sets `status = archived`. It is non-destructive.
+`getGraphNamespace` returns the full descriptor for one namespace regardless of
+`archived`, or null when the namespace has no registry row.
 
-`deleteGraphNamespace` is destructive and should be facts-manager-only. The
-intended semantics are to delete the namespace registry row and drop graph data
-owned by that namespace. It must not delete source facts unless a future explicit
-option says so.
+`upsertGraphNamespace` upserts by `namespace` (`ON CONFLICT (namespace) DO
+UPDATE`) and may clear `archived` back to false.
+
+`archiveGraphNamespace` sets `archived = true`. It is non-destructive and leaves
+graph data searchable when explicitly targeted.
+
+`deleteGraphNamespace` is destructive and facts-manager-only. It deletes the
+registry row and drops graph data for that exact namespace (subtree deletion is
+out of scope for v1; child namespaces are deleted explicitly). It deletes graph
+data first, then the registry row, and is re-runnable so a mid-delete crash
+recovers. It must not delete source facts. `default` cannot be deleted.
 
 ### Provider Implementation Outline
 
 For `@pilotswarm/horizon-store`:
 
-1. Add a graph-schema migration that creates `graph_namespaces` and seeds
-   `default`.
-2. Add indexes: primary key on `namespace`, index on `status`, and optional
-   `namespace text_pattern_ops` for prefix listing.
-3. Keep namespace listing relational. Do not scan AGE for namespace discovery.
-4. Implement `listGraphNamespaces`, `getGraphNamespace`,
-   `upsertGraphNamespace`, `archiveGraphNamespace`, and
-   `deleteGraphNamespace` in the graph provider.
-5. Do not add per-crawl harvest status writes. Namespace rows should change only
-   when corpus details change, when a namespace is archived, or when a
-   namespace is deleted.
+1. Do not stand up a second migration framework. The graph store today runs only
+   the AGE bootstrap (0003) inline under an advisory xact lock and tracks no
+   relational `schema_migrations`. Fold the sidecar into that same idempotent
+   bootstrap in `initialize()`: `CREATE SCHEMA IF NOT EXISTS <graphSchema>`,
+   `CREATE TABLE IF NOT EXISTS graph_namespaces (...)`, seed `default` via
+   `INSERT ... ON CONFLICT DO NOTHING`, all under the existing advisory lock.
+2. Add indexes: primary key on `namespace`, a partial index for active rows
+   (`WHERE archived = false`), and optional `namespace text_pattern_ops` for
+   prefix listing.
+3. Maintain `updated_at` with a trigger, mirroring the existing `facts_touch()`
+   pattern, so timestamps never drift from app code.
+4. Keep namespace listing relational. Do not scan AGE for namespace discovery.
+5. Implement `listGraphNamespaces`, `getGraphNamespace`, `upsertGraphNamespace`,
+   `archiveGraphNamespace`, and `deleteGraphNamespace` in the graph provider.
+6. Do not add per-crawl harvest writes. Namespace rows should change only when
+   corpus details change, when a namespace is archived, or when a namespace is
+   deleted.
+7. `graphStats({ namespace })` already exists if an `includeStats` option is ever
+   wanted; it is intentionally out of scope for v1.
 
 ### Tool Surface
 
-Register tools only when `graphStore` is configured.
+Register tools only when `graphStore` is configured. Use the `graph_*` prefix
+(collision-safe vs SDK built-ins; still run the tool-collision regression check).
 
 Reader tools for all graph-enabled sessions:
 
-- `graph_list_namespaces`
-- `graph_get_namespace`
-
-`graph_list_namespaces` should accept `prefix`, `status`, `includeDetails`, and
-`limit`.
-
-`graph_get_namespace` returns the full descriptor for one namespace.
+- `graph_list_namespaces` — accepts `prefix`, `includeArchived`, `includeDetails`
+  (no pagination).
+- `graph_get_namespace` — returns the full descriptor for one namespace.
 
 Write/delete tools:
 
 - `graph_upsert_namespace`: harvester-capable sessions and facts-manager.
 - `graph_archive_namespace`: harvester-capable sessions and facts-manager.
-- `graph_delete_namespace`: facts-manager only, and only when the user requests
-  destructive deletion.
+- `graph_delete_namespace`: facts-manager only, and only on explicit user
+  request.
 
-Harvesters can archive a corpus they own when it is retired. Only facts-manager
-should be able to delete a namespace, because deletion drops the namespace rather
-than merely hiding it from normal discovery.
-
-### Reader Agent Flow
-
-Update graph-aware prompt guidance so a cold reader agent does this:
-
-1. Call `graph_list_namespaces({ limit: 20 })` when graph knowledge may help.
-2. Use each row's `frontmatter` to decide whether a namespace is relevant.
-3. Call `graph_get_namespace({ namespace })` only when details are needed.
-4. Use the selected namespace consistently with `facts_search`,
-   `graph_search_nodes`, `graph_search_edges`, and `graph_neighbourhood`.
-5. If no namespace fits, use `default` or ask the user which corpus to use.
+"Harvester-capable" means an agent whose frontmatter sets `harvester: true`,
+plus `facts-manager`. A session without that capability that calls a write/delete
+tool gets a clear permission error (mirroring the reserved-namespace errors in
+the facts tools); the tool is not silently ignored. Only facts-manager can
+delete, because deletion drops the namespace rather than hiding it.
 
 ## Part 2 - Search Strategy Selection
 
@@ -214,48 +245,53 @@ Strategy rules:
 ### Graph Search Skill
 
 Add a separate graph-search skill/prompt section for domain enrichment. This is
-where namespace discovery belongs.
+where namespace discovery belongs (the cold-reader namespace flow lives here, not
+in a separate reader section).
 
 Graph guidance:
 
-1. When a task may benefit from domain/corpus enrichment, inspect namespace
-   frontmatter first with `graph_list_namespaces`.
-2. Use frontmatter to decide whether graph search is worth doing at all.
-3. Call `graph_get_namespace` only when frontmatter is insufficient and details
-   are needed.
-4. Once a namespace is selected, use it consistently in graph tools.
+1. When a task may benefit from domain/corpus enrichment, call
+   `graph_list_namespaces` and inspect frontmatter first.
+2. Use frontmatter to decide whether graph search is worth doing at all and which
+   namespace is relevant.
+3. Call `graph_get_namespace({ namespace })` only when frontmatter is
+   insufficient and details are needed.
+4. Once a namespace is selected, use it consistently across `graph_search_nodes`,
+   `graph_search_edges`, and `graph_neighbourhood`.
 5. If graph hits return evidence scopeKeys, use `read_facts` or `facts_search`
    separately to retrieve source fact content.
-6. Do not use graph namespace discovery as a replacement for fact-search mode
+6. If no namespace fits, use `default` (the unscoped/NULL partition) or ask the
+   user which corpus to use.
+7. Do not use graph namespace discovery as a replacement for fact-search mode
    selection.
 
-### SessionManager Frontmatter Cache
+### Namespace List Cache
 
-Consider adding a small SessionManager-owned cache of namespace frontmatter when
-a graph store is configured.
+Hold off on SessionManager prompt injection for now. Namespace discovery stays
+tool-driven.
 
-Rationale:
+Cache `listGraphNamespaces` in the provider (one cache per graph store / worker,
+shared across that worker's sessions), not in the per-session tool layer.
 
-- Namespace frontmatter is tiny and changes rarely.
-- Injecting a compact list into the base prompt can help cold agents decide
-  whether graph search is relevant without spending a tool call.
-- It prevents the graph search skill from needing to begin every turn with a
-  discovery call.
+The namespace set is small, so cache two full in-memory snapshots and filter in
+process — no per-parameter cache keys:
 
-Constraints:
+- Full compact snapshot (`namespace`, `archived`, `frontmatter`).
+- Full details snapshot.
 
-- Cache only active namespaces.
-- Inject only `namespace`, `status`, and frontmatter `name` / `description`.
-- Cap by count and token budget, for example the first 20 active namespaces or a
-  hard prompt-budget slice.
-- Refresh on worker/session startup and periodically with a conservative TTL.
-- If the cache is absent, stale, or truncated, agents can still call
-  `graph_list_namespaces`.
-- Never inject node schema, edge schema, harvest config, or source details into
-  the default prompt.
+Serve `prefix` and `includeArchived` by filtering the snapshots in memory.
 
-Design preference: use cache injection as an optimization, not as the only
-discovery mechanism. `graph_list_namespaces` remains the authoritative tool.
+TTL is provider config (`namespaceCacheTtlMs`), default 60000 (one minute).
+
+Invalidation rules:
+
+- TTL expiry refreshes the snapshots.
+- `upsertGraphNamespace`, `archiveGraphNamespace`, and `deleteGraphNamespace`
+  invalidate the snapshots immediately in-process.
+- Immediate invalidation is per-process only; other workers converge within the
+  TTL. Global consistency is TTL-bounded, not instant.
+- The TTL must be overridable in tests (tiny TTL or fake clock) so expiry tests
+  do not sleep a minute.
 
 ## Harvester Flow
 
@@ -274,23 +310,45 @@ Update harvester guidance so each corpus-owning harvester:
 
 Provider-level HorizonDB tests:
 
-1. Migration creates the graph-schema sidecar and seeds `default`.
-2. `upsertGraphNamespace` is idempotent and updates mutable fields.
-3. `listGraphNamespaces({ prefix })` returns exact namespace and descendants.
-4. `listGraphNamespaces({ status })` filters `active` and `archived` rows.
-5. Basic list output contains compact `frontmatter` and omits details.
-6. `includeDetails=true` includes description, source, schema, and harvest config.
-7. `archiveGraphNamespace` sets `status = archived` without deleting graph data.
-8. `deleteGraphNamespace` drops the registry row and namespace-owned graph data.
+1. Graph bootstrap creates the sidecar (in a DB with no facts schema) and seeds
+   `default` idempotently across repeated/concurrent `initialize()` calls.
+2. `upsertGraphNamespace` is idempotent, updates mutable fields, and can clear
+   `archived` back to false.
+3. Concurrent `upsertGraphNamespace` on the same namespace yields one row.
+4. `listGraphNamespaces({ prefix })` is a string-prefix filter over registry
+   rows (not an AGE subtree query).
+5. `listGraphNamespaces` excludes archived rows by default and includes them with
+   `includeArchived=true`.
+6. Basic list output contains compact `frontmatter` and omits details.
+7. `includeDetails=true` includes source, schema, and harvest config.
+8. `getGraphNamespace` returns archived rows and returns null for a missing
+   namespace.
+9. `archiveGraphNamespace` sets `archived = true` and leaves graph data
+   searchable when explicitly targeted.
+10. `deleteGraphNamespace` deletes graph data for the exact namespace then the
+    row, is re-runnable after a simulated mid-delete failure, and never touches
+    source facts.
+11. `default` cannot be archived or deleted, and `default` maps to
+    `namespace IS NULL` on graph reads/writes.
+12. Frontmatter validation: missing `name` defaults to the namespace; oversized
+    frontmatter is rejected or truncated in list output.
+13. Orphan/empty namespaces: graph data under an unregistered namespace is
+    allowed (registry is authoritative for discovery), and a registry row with no
+    graph data lists normally.
+14. `updated_at` advances via trigger on update.
 
 SDK/tool tests:
 
 1. A graph-enabled reader gets `graph_list_namespaces` and `graph_get_namespace`.
 2. A baseline non-graph session does not get namespace tools.
-3. A harvester gets `graph_upsert_namespace` and `graph_archive_namespace`.
+3. A harvester (`harvester: true`) gets `graph_upsert_namespace` and
+   `graph_archive_namespace`.
 4. An ordinary reader does not get namespace write/delete tools.
 5. Facts-manager gets upsert, archive, and delete tools.
-6. `graph_list_namespaces` stays compact unless `includeDetails=true`.
+6. A non-harvester reader that invokes a write/delete tool gets a clear
+   permission error, not a silent no-op.
+7. `graph_delete_namespace` on `default` is rejected.
+8. `graph_list_namespaces` stays compact unless `includeDetails=true`.
 
 `facts_search` strategy tests:
 
@@ -311,39 +369,49 @@ Graph search skill tests:
 3. The graph-search skill tells agents to use evidence scopeKeys to retrieve
    source facts when graph hits need grounding.
 
-SessionManager cache tests:
+Namespace list cache tests (TTL injected small / fake clock):
 
-1. Graph-enabled sessions receive a compact namespace frontmatter block when
-   active namespaces exist.
-2. The injected block omits archived namespaces and detail-heavy fields.
-3. Sessions without a graph store receive no namespace frontmatter block.
-4. When the cache is truncated, the prompt tells agents to call
-   `graph_list_namespaces` for the full list.
+1. Repeated compact `listGraphNamespaces` calls within the TTL hit the in-memory
+   snapshot.
+2. `prefix` and `includeArchived` are served by filtering the snapshot, not by
+   re-querying per parameter.
+3. `upsertGraphNamespace`, `archiveGraphNamespace`, and `deleteGraphNamespace`
+   invalidate the snapshots immediately in-process.
+4. After TTL expiry, the next call refreshes the snapshots from the table.
+5. A second provider instance still serves its prior snapshot until its own TTL
+   expiry (per-process invalidation; TTL-bounded convergence).
 
 ## Scenario Tests
 
 1. Cold reader discovers available knowledge bases. Seed `default` and
    `corpus/pgsql-hackers`, ask what knowledge bases are available, and expect
    use of `graph_list_namespaces`.
-2. Reader chooses a namespace before search. Seed two namespaces with distinct
-   frontmatter and expect namespace discovery before facts or graph search.
+2. Reader chooses a namespace before graph search. Seed two namespaces with
+   distinct frontmatter and expect namespace discovery before graph traversal
+   (fact search does not require namespace discovery first).
 3. Reader loads details lazily. It should call `graph_get_namespace` only after
    choosing a likely namespace from frontmatter.
 4. Harvester registers namespace before crawl. Verify `graph_upsert_namespace`
    is called and compact namespace details are stored.
-5. Harvester does not write per-crawl stats. Run two crawl cycles and verify the
-   namespace row changes only when static details change.
+5. Harvester does not rewrite namespace metadata per crawl. Run two crawl cycles
+   and verify the row changes only when static details change.
 6. Default namespace fallback. With only `default`, the agent should identify
-   `default` instead of claiming no graph knowledge.
-7. Archived namespace avoided. Agents should omit archived namespaces unless
-   asked for them.
-8. Facts-manager deletes namespace on explicit user request. Verify namespace
-   registry row and namespace-owned graph records are removed.
+   `default` (the NULL partition) instead of claiming no graph knowledge.
+7. Archived namespace avoided. Agents should omit archived namespaces from
+   discovery unless asked for them, even though direct search still works.
+8. Facts-manager deletes namespace on explicit user request. Verify the registry
+   row and that namespace's graph records are removed and source facts are not.
 
 ## Mini Eval Plan
 
-Add a small HorizonDB-only eval that runs when the HDB provider is enabled. It
-should validate behavior, not benchmark retrieval quality exhaustively.
+This is a quality eval, not a gating test. Place it under the evals folder
+(`packages/horizon-store/eval/`) with a separate eval runner that measures
+behavior quality; it must not run in `./scripts/run-tests.sh` and must not be
+subject to the no-retry gating rules. Implementation is deferred — skip it for
+the initial implementation and add later.
+
+When implemented, it runs HorizonDB-only when the HDB provider is enabled and
+validates behavior rather than benchmarking retrieval quality exhaustively.
 
 Seed two or three namespace rows with concise frontmatter, for example:
 
@@ -353,7 +421,7 @@ Seed two or three namespace rows with concise frontmatter, for example:
 
 For each graph-search eval prompt, record whether the agent:
 
-1. Used injected namespace frontmatter or called `graph_list_namespaces`.
+1. Used namespace frontmatter from `graph_list_namespaces`.
 2. Chose the expected namespace from frontmatter.
 3. Used graph search only when enrichment was relevant.
 4. Avoided `graph_get_namespace` unless the prompt required details.
@@ -395,6 +463,7 @@ Update these surfaces when implementing:
 
 - `docs/facts-table.md`
 - `docs/harvester-deployment.md`
+- `packages/horizon-store/src/config.ts` (`graphSchema`, `namespaceCacheTtlMs`)
 - `packages/sdk/src/graph-tools.ts` tool descriptions
 - `packages/sdk/plugins/mgmt/agents/facts-manager.agent.md`
 - graph-aware default prompt guidance
