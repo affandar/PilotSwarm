@@ -121,6 +121,21 @@ PilotSwarm publishes the following packages (in dependency/publish order):
 
 If package names change later, update this skill in the same change.
 
+## OBO Live-Tenant Smoke Gate
+
+If the release touches the User OBO Propagation surface (`packages/sdk/src/envelope-crypto.ts`, `user-context-store.ts`, `tool-outcomes.ts`, the worker-side `getCurrentUserContextForSession` lookup, the portal MSAL `getDownstreamToken` path, or the `packages/obo-smoke-plugin/` reference plugin), the live-tenant smoke checklist in `docs/operations/obo-kek-runbook.md` is a **release-gate artifact** and must be exercised before publish.
+
+Required steps:
+
+- Build the worker image with `--variant smoke`, deploy a stamp with the smoke env overlay (`deploy/envs/template.smoke.env`) and `OBO_KEK_KID` / `PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE` configured, then run `pilotswarm smoke <stamp> --profile obo` using the `packages/obo-smoke-plugin/` tools. Confirm:
+  - `whoami` round-trips the engineer's UPN through OBO end-to-end.
+  - `force_reauth` produces an `interactionRequired` outcome with one of the pinned reason codes (`reauth_required` | `mfa_refresh` | `conditional_access` | `consent_required`), and the portal renders the auto re-auth affordance via `browser-transport.js`.
+- Verify `OBO_KEK_KID` AKV firewall and RBAC: both portal and worker pod identities resolve to `Key Vault Crypto User` on the configured KEK; `wrapKey`/`unwrapKey` succeed in-cluster.
+- Confirm KEK rotation safety: the encrypted envelope's `cipher.kekKid` records the versioned key URL (`wrapResult.keyID`), not the unversioned `OBO_KEK_KID` env value, so prior-version retention covers in-flight envelopes when the KEK is rotated.
+- Confirm `PlaintextEnvelopeCrypto` is **not** active in production (`kekKid: "plaintext-mode"` sentinel must be absent from any envelope a production worker sees).
+
+If the OBO surface is untouched in the release, this section is informational only and the standard release checklist applies.
+
 ## Notes
 
 - Prefer fixing brittle tests over loosening product behavior just to get green.

@@ -98,9 +98,9 @@ belongs in new app roles checked explicitly in code.
 > npm-orchestrator stamps, this is wired into the new-env flow by the
 > `pilotswarm-npm-deployer` agent.
 
-Portal branding and sign-in copy come from `plugin.json.portal`, with
+Portal branding, sign-in copy, and optional in-process tool plugin declarations come from `plugin.json`, with
 `plugin.json.tui` used as a fallback when the portal plugin metadata does not
-provide an override. Preferred portal metadata shape is nested under
+provide an override. Tool plugins use `plugin.json.tools`; see [Plugin Architecture & Layering Guide](./plugin-architecture-guide.md) for the full contract. Preferred portal metadata shape is nested under
 `portal.branding`, `portal.ui`, and `portal.auth`; browser logo assets can be
 supplied with `portal.branding.logoFile` and optional
 `portal.branding.faviconFile`.
@@ -135,6 +135,51 @@ Current authorization is Phase 1 only:
 - group-based allow/deny
 - normalized `admin` / `user` role assignment
 - no session ownership filtering yet
+
+### User OBO Propagation (optional)
+
+The portal can additionally acquire a downstream-resource access token at
+sign-in (and at silent refresh), forwarding it through an
+envelope-encrypted per-RPC carrier to worker tool handlers. Tool handlers
+call `getUserContextForSession()` from `pilotswarm-sdk` to perform OBO
+flows against Azure DevOps, Microsoft Graph, etc., under the signed-in
+engineer's Entra identity.
+
+Backwards-compatible — stamps that don't configure the downstream scope
+continue to operate with the existing principal-only envelope.
+
+```bash
+# Portal-side: acquire this scope on top of the portal sign-in scope.
+# `offline_access` is added automatically; do NOT include it here.
+PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE=api://<your-worker-app>/.default
+
+# Worker + portal: un-versioned AKV key URL for envelope encryption.
+# Production: populated automatically by base-infra bicep when
+# OBO_ENABLED=true; you do NOT set this directly in deployed envs.
+# Local dev: point at your own AKV key, or use OBO_ENVELOPE_PLAINTEXT_MODE=1.
+OBO_KEK_KID=https://<your-kv>.vault.azure.net/keys/obo-user-token-kek
+
+# Dev-only escape hatch. Refuses to start when NODE_ENV=production.
+# Emits a loud startup warning when active.
+OBO_ENVELOPE_PLAINTEXT_MODE=0
+```
+
+| Var | Side | Default | Notes |
+|---|---|---|---|
+| `PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE` | Portal | unset | `api://<worker-app>/.default` form |
+| `OBO_KEK_KID` | Worker + portal | unset (sentinel) | Un-versioned AKV key URL |
+| `OBO_ENVELOPE_PLAINTEXT_MODE` | Worker + portal | `0` | Dev escape hatch; refused in prod |
+| `OBO_ENABLED` | Deploy-time | `false` | Provisions KEK + RBAC in base-infra |
+
+**Multi-tab portal behavior.** Each browser tab acquires and refreshes
+its own downstream token independently, consistent with today's per-tab
+session-storage MSAL cache.
+
+**Operator runbook.** See [`docs/operations/obo-kek-runbook.md`](./operations/obo-kek-runbook.md)
+for KEK provisioning, RBAC verification, rotation, emergency revocation,
+and AKV throughput sizing.
+
+**Tool-handler integration guide.** See [`docs/sdk/user-context.md`](./sdk/user-context.md).
 
 ## PostgreSQL Setup
 

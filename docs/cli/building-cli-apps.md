@@ -62,11 +62,14 @@ The plugin directory supplies:
 - `agents/*.agent.md`
 - `skills/*/SKILL.md`
 - `.mcp.json`
+- optional in-process tool declarations via `plugin.json.tools`
 
 `plugin.json` is not just metadata anymore. The CLI reads it for TUI branding:
 
 - `tui.title` → terminal/tab title and root system-session title
 - `tui.splash` or `tui.splashFile` → startup splash and root system-session splash
+
+For the full `plugin.json.tools` contract, see [Plugin Architecture & Layering Guide](../plugin-architecture-guide.md).
 
 Pass it with:
 
@@ -77,6 +80,8 @@ npx pilotswarm --plugin ./plugin
 ### 2. Worker module
 
 The worker module supplies local worker-side code such as custom tools.
+
+For the full `plugin.json.tools` contract, see [Plugin Architecture & Layering Guide](../plugin-architecture-guide.md).
 
 Pass it with:
 

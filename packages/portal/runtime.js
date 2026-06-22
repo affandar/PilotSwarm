@@ -1,4 +1,4 @@
-import { NodeSdkTransport } from "pilotswarm-cli/portal";
+import { NodeSdkTransport, selectEnvelopeCrypto } from "pilotswarm-cli/portal";
 
 function normalizeParams(params) {
     return params && typeof params === "object" ? params : {};
@@ -82,12 +82,71 @@ function requireUserPrincipal(authContext, methodName) {
     return principal;
 }
 
+/**
+ * Build a UserEnvelopeCarrier from the auth context if a principal is present.
+ *
+ * Attaches the principal claims so worker-side tool handlers can
+ * resolve user identity via getUserContextStore(). When the request
+ * carried a downstream-scope access token (set on req.auth.principal by the
+ * /api/rpc body extractor), it is encrypted via the configured EnvelopeCrypto
+ * before placement on the durable queue (FR-020 — no plaintext token in
+ * persistent storage). When no envelope-crypto is configured (deployments
+ * without a downstream scope), the token portion is dropped and the worker
+ * sees a principal-only envelope.
+ *
+ * Returns null when the request has no authenticated principal (anonymous /
+ * local-TUI / system-driven RPC). The orchestration treats absent envelope
+ * as "no per-user identity bound to this turn".
+ */
+async function buildUserEnvelope(authContext, envelopeCrypto) {
+    const principal = normalizeSessionOwner(authContext);
+    if (!principal) return null;
+    const rawPrincipal = authContext?.principal || {};
+    const accessToken = typeof rawPrincipal.accessToken === "string" && rawPrincipal.accessToken.length > 0
+        ? rawPrincipal.accessToken
+        : null;
+    const accessTokenExpiresAt = Number.isFinite(rawPrincipal.accessTokenExpiresAt)
+        ? rawPrincipal.accessTokenExpiresAt
+        : null;
+    let accessTokenCipher = null;
+    if (accessToken && envelopeCrypto) {
+        try {
+            accessTokenCipher = await envelopeCrypto.encrypt({
+                principal,
+                accessToken,
+                accessTokenExpiresAt,
+            });
+        } catch (error) {
+            // Encryption failure must not leak the plaintext token onto the
+            // queue. Log a metadata-only warning and ship principal-only.
+            // eslint-disable-next-line no-console
+            console.warn(
+                "[portal-runtime] envelope token encryption failed:",
+                error?.code || error?.name || "unknown",
+            );
+            accessTokenCipher = null;
+        }
+    }
+    return {
+        v: 1,
+        principal,
+        accessTokenCipher,
+    };
+}
+
 export class PortalRuntime {
     constructor({ store, mode, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser } = {}) {
         this.transport = new NodeSdkTransport({ store, mode, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser });
         this.mode = mode;
         this.started = false;
         this.startPromise = null;
+        // User OBO: the portal owns its own EnvelopeCrypto instance
+        // for encrypting per-RPC user access tokens at envelope-build time.
+        // Construction is identical to the worker-side selection so portal
+        // and worker agree on backend + KEK kid (KEK provisioned by
+        // PilotSwarm base-infra AKV, inherited via fork to consumers).
+        // null when no downstream scope is configured (OBO disabled).
+        this.envelopeCrypto = selectEnvelopeCrypto(process.env);
     }
 
     async start() {
@@ -251,7 +310,8 @@ export class PortalRuntime {
                     groupId: safeParams.groupId,
                     owner,
                 });
-            case "createSessionForAgent":
+            case "createSessionForAgent": {
+                const envelope = await buildUserEnvelope(authContext, this.envelopeCrypto);
                 return this.transport.createSessionForAgent(safeParams.agentName, {
                     model: safeParams.model,
                     reasoningEffort: safeParams.reasoningEffort,
@@ -260,15 +320,25 @@ export class PortalRuntime {
                     initialPrompt: safeParams.initialPrompt,
                     groupId: safeParams.groupId,
                     owner,
+                    ...(envelope ? { envelope } : {}),
                 });
+            }
             case "listCreatableAgents":
                 return this.transport.listCreatableAgents();
             case "getSessionCreationPolicy":
                 return this.transport.getSessionCreationPolicy();
-            case "sendMessage":
-                return this.transport.sendMessage(safeParams.sessionId, safeParams.prompt, safeParams.options);
-            case "sendAnswer":
-                return this.transport.sendAnswer(safeParams.sessionId, safeParams.answer);
+            case "sendMessage": {
+                const envelope = await buildUserEnvelope(authContext, this.envelopeCrypto);
+                const options = {
+                    ...(safeParams.options || {}),
+                    ...(envelope ? { envelope } : {}),
+                };
+                return this.transport.sendMessage(safeParams.sessionId, safeParams.prompt, options);
+            }
+            case "sendAnswer": {
+                const envelope = await buildUserEnvelope(authContext, this.envelopeCrypto);
+                return this.transport.sendAnswer(safeParams.sessionId, safeParams.answer, envelope ? { envelope } : undefined);
+            }
             case "cancelPendingMessage":
                 return this.transport.cancelPendingMessage(safeParams.sessionId, safeParams.clientMessageIds);
             case "renameSession":

@@ -44,6 +44,9 @@
     "foundrySku": {
       "value": "${FOUNDRY_SKU}"
     },
+    "oboEnabled": {
+      "value": ${OBO_ENABLED}
+    },
     "vpnGatewayEnabled": {
       "value": ${VPN_GATEWAY_ENABLED}
     },

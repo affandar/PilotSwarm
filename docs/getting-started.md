@@ -350,7 +350,7 @@ WORKERS=4                               # embedded workers in TUI (0 = client-on
 SYSTEM_MESSAGE="You are a helpful assistant."  # or path to .md file
 
 # ─── Optional: Plugin ─────────────────────────────────────────────
-PLUGIN_DIRS=./plugin                    # skills, agents, MCP config
+PLUGIN_DIRS=./plugin                    # skills, agents, MCP config, optional plugin.json tools
 WORKER_MODULE=./my-worker.js            # custom worker module
 
 # ─── Optional: AKS / K8s ──────────────────────────────────────────

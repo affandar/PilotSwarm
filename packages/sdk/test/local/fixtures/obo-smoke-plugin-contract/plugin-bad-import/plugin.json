@@ -1,0 +1,4 @@
+{
+  "name": "plugin-bad-import",
+  "tools": "./tools.js"
+}

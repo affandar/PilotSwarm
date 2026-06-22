@@ -78,6 +78,7 @@ my-sdk-app/
 ├── package.json
 ├── .env
 ├── plugin/
+│   ├── plugin.json
 │   ├── agents/
 │   │   ├── default.agent.md
 │   │   └── planner.agent.md
@@ -93,8 +94,8 @@ my-sdk-app/
 
 This keeps the split clean:
 
-- plugin files hold prompts, skills, and MCP config
-- worker code registers tool handlers
+- plugin files hold prompts, skills, MCP config, and optional `plugin.json.tools` declarations
+- worker code registers tool handlers directly or through an in-process tool plugin
 - app code creates and drives sessions
 
 PilotSwarm's own framework prompt and management plugins are embedded in the installed `pilotswarm-sdk` package. Your app ships only its own `plugin/` directory and worker code.
@@ -136,6 +137,7 @@ If the same plugin also powers the shipped UI packages, `plugin.json` may additi
 - `portal.ui.loadingMessage` and `portal.ui.loadingCopy` for browser portal
   startup copy
 - `portal.auth.*` for browser sign-in copy
+- `tools` for in-process tool plugins loaded from application `pluginDirs`
 
 Flat legacy keys such as `portal.title` and `portal.loadingMessage` are still
 accepted for backwards compatibility, but nested `portal.branding` /
@@ -157,8 +159,9 @@ Put prompts and skills on disk:
 - `agents/*.agent.md`
 - `skills/*/SKILL.md`
 - `.mcp.json`
+- optional `plugin.json.tools` for in-process tool plugins
 
-Then point the worker at `pluginDirs`.
+Then point the worker at `pluginDirs`. See [Plugin Architecture & Layering Guide](../plugin-architecture-guide.md) for the full tool-plugin contract.
 
 This keeps prompts versioned, reviewable, and easy to reuse across local and remote deployments.
 
@@ -212,7 +215,7 @@ For remote mode:
 
 For apps you expect other LLMs or engineers to extend, keep these layers separate:
 
-- plugin files for prompts, agents, skills, MCP config, session policy, and optional CLI branding
+- plugin files for prompts, agents, skills, MCP config, session policy, optional in-process tools, and optional CLI branding
 - worker code for tool handlers and any runtime-only defaults
 - app code for session orchestration, API/UI behavior, and deployment wiring
 

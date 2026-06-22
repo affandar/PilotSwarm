@@ -22,7 +22,8 @@ Every app built on PilotSwarm has three layers:
 │    A directory containing:                                       │
 │    • agents/*.agent.md  — named sub-personas                     │
 │    • skills/*/SKILL.md  — domain knowledge                       │
-│    • .mcp.json          — external tool providers                │
+│    • .mcp.json          — external tool providers
+│    • plugin.json tools — optional in-process tool plugin                │
 │    ↓                                                              │
 │  Tools (execution)                                                │
 │    LLM-callable functions registered on the worker               │
@@ -35,7 +36,7 @@ Every app built on PilotSwarm has three layers:
 
 | Layer | What | Where | Owned by |
 |-------|------|-------|----------|
-| **Plugin** | Agents + skills + MCP configs | `plugin/` directory | App developer |
+| **Plugin** | Agents + skills + MCP configs + optional `plugin.json.tools` | `plugin/` directory | App developer |
 | **Tools** | Name + description + parameters + handler function | Worker code (`worker.registerTools()`) | App developer |
 | **Runtime** | Worker process + DB + secrets + artifacts | Deployment target (local, K8s, etc.) | Operations |
 
@@ -49,6 +50,7 @@ contents at startup and passes them to every Copilot SDK session via:
 - **`skillDirectories`** — paths to `skills/` subdirectories containing `SKILL.md` files
 - **`customAgents`** — agent configs parsed from `agents/*.agent.md` files
 - **`mcpServers`** — MCP server configs parsed from `.mcp.json`
+- **in-process tool plugins** — optional `plugin.json.tools` modules that export `registerTools(worker)`; see [Plugin Architecture & Layering Guide](./plugin-architecture-guide.md)
 
 ### Plugin Directory Structure
 
@@ -62,7 +64,8 @@ my-plugin/
 │   │   └── SKILL.md
 │   └── concise-assistant/
 │       └── SKILL.md
-└── .mcp.json                ← Optional: MCP server configs
+├── .mcp.json                ← Optional: MCP server configs
+└── plugin.json              ← Optional: metadata, branding, tool plugin declarations
 ```
 
 ### How Loading Works

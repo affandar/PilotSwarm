@@ -12,6 +12,11 @@ export function createNoBrowserAuthProvider() {
         async getAccessToken() {
             return null;
         },
+        // User OBO: the "none" provider has no IdP and no downstream
+        // scope, so always returns null. Worker-side OBO is disabled.
+        async getDownstreamToken() {
+            return null;
+        },
         getAccount() {
             return null;
         },

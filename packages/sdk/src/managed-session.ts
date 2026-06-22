@@ -1,5 +1,7 @@
 import { defineTool, type Tool, type CopilotSession } from "@github/copilot-sdk";
 import type { TurnAction, TurnResult, TurnOptions, ManagedSessionConfig, CapturedEvent } from "./types.js";
+import { PS_TOOL_OUTCOME_MARKER } from "./types.js";
+import { readToolOutcomeMarker } from "./tool-outcomes.js";
 import type { ReasoningEffort } from "./model-providers.js";
 
 /**
@@ -1341,7 +1343,17 @@ export class ManagedSession {
                     if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary((t as any).name ?? "tool");
                     const augmented = { ...invocation, durableSessionId };
                     try {
-                        return await (t as any).handler(args, augmented);
+                        const result = await (t as any).handler(args, augmented);
+                        // Structured tool outcomes. If the handler
+                        // returned an `interactionRequired(...)` /
+                        // `serviceUnavailable(...)` payload, the marker is
+                        // intentionally LEFT on the result so the session
+                        // event persistence path can detect it and emit
+                        // `outcome` / `outcome_payload`. The `claims` blob
+                        // (for `interaction_required`) is NOT serialized
+                        // into `textResultForLlm` by the helper itself, so
+                        // the LLM never sees it.
+                        return result;
                     } catch (error) {
                         return failureToolResult(error);
                     }

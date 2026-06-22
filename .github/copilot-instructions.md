@@ -167,6 +167,31 @@ Current overlap to preserve unless intentionally changed:
 - `f` in the logs inspector opens the log-filter dialog, `f` in the files inspector opens the files-filter dialog, and `f` in the stats inspector cycles between session, fleet, and users views
 - `Shift+A` opens or closes the per-user Admin Console (profile + GitHub Copilot key); inside the console `e` edits the key, `c` clears it, `r` refreshes the profile, and `Esc` returns to the workspace
 
+## User OBO (User-On-Behalf-Of) Propagation
+
+PilotSwarm propagates the signed-in portal user's identity (and, when configured, an envelope-encrypted downstream access token) to worker tool handlers so downstream consumer apps can perform OAuth2 OBO flows (e.g. Microsoft Graph, Azure DevOps, or any Entra-protected resource) as the engineer rather than as the worker UAMI. This is a generic propagation surface — PilotSwarm itself does not call any specific downstream resource; consumer apps that build on PilotSwarm do.
+
+Architecture invariants — do not break these without an explicit cross-repo coordination:
+
+- **Wire field is `envelope`** (carrying plaintext `principal` claims plus optional `accessTokenCipher`), not `envelopeCipher`. Plaintext principal flows on every worker-bound RPC; only the access token is encrypted.
+- **Envelope encryption** uses AKV-wrapped DEK + AES-256-GCM ciphertext. KEK selection is via `OBO_KEK_KID` (full versioned or unversioned AKV key URL); on encrypt the cipher records `wrapResult.keyID` (versioned URL) so KEK rotation with prior-version retention works correctly.
+- **Three crypto backends** in `packages/sdk/src/envelope-crypto.ts` selected by `selectEnvelopeCrypto(env)`: `AkvEnvelopeCrypto` (production; AKV SDKs lazy-loaded so non-OBO consumers don't pull deps), `InMemoryEnvelopeCrypto` (tests), `PlaintextEnvelopeCrypto` (dev-only, sentinel `kekKid: "plaintext-mode"` — workers must refuse cross-mode interpretation).
+- **Worker lookup contract**: tool handlers call `getUserContextForSession(sessionId)` from `pilotswarm-sdk` (worker side). Returns `{ principal: { provider, subject, email, displayName }, accessToken, accessTokenExpiresAt } | null`. The lookup is synchronous, O(1), worker-affined, and resolves through chain resolution (sub-agent sessions → root portal-bound parent at lookup time, not at spawn time) so re-rooting works correctly.
+- **`accessToken: null`** is the universal absence signal (no token configured, system/orchestration session, AKV unwrap failure). Tools that need only the principal continue to work; tools that need the token emit `serviceUnavailable` for unwrap failure and `interactionRequired` for AAD interaction-required errors.
+- **Structured tool outcomes** in `packages/sdk/src/tool-outcomes.ts`: `interactionRequired({ reasonCode, message?, claims? })` with pinned reason codes (`reauth_required` | `mfa_refresh` | `conditional_access` | `consent_required`) and `serviceUnavailable({ reasonCode, retryAfter?, message? })`. Three-way machine-distinguishable from generic tool failure. The `claims` blob is opaque AAD plumbing and must never reach the LLM transcript; portal re-auth UI keys off `reasonCode`, not message text.
+- **Portal-side refresh, not worker-side**: portal MSAL re-acquires silently when the cached token is within ~5 min of expiry at RPC time. The worker never persists or refreshes tokens. Refresh token (`offline_access`) lives only in the in-memory MSAL session cache portal-side.
+- **Single-tenant** assumption (configured `https://login.microsoftonline.com/<tenant-id>` authority). Scope minimization: only the configured `PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE` is acquired.
+- **System / non-portal sessions**: lookup returns `null`. Local-TUI hosts have no portal envelope and thus no user context.
+
+Trust boundary: the portal-issued envelope is the trust root. Worker tools must not synthesize their own principal from CMS owner fields when an envelope is absent — they must refuse the operation or emit `serviceUnavailable`/`interactionRequired` per the outcome contract.
+
+Operator-visible config:
+- Portal: `PORTAL_AUTH_PROVIDER=entra`, `PORTAL_AUTH_ENTRA_TENANT_ID`, `PORTAL_AUTH_ENTRA_CLIENT_ID`, `PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE` (e.g. `api://<worker-app>/.default offline_access`).
+- Worker: `OBO_KEK_KID` (AKV key URL), `WORKLOAD_IDENTITY_CLIENT_ID` for the federated-credential exchange.
+- Both pods must hold `Key Vault Crypto User` on the OBO KEK AKV. Bicep accepts an array `oboKekUamiPrincipalIds` so single-UAMI deployments (single-UAMI shape) and dual-UAMI deployments (PilotSwarm reference shape) both work.
+
+Live-tenant smoke is the npm publish gate for OBO changes — see `packages/obo-smoke-plugin/` (`obo_smoke_whoami` against Graph `/me`, `obo_smoke_force_reauth`) and `docs/operations/obo-kek-runbook.md`. The smoke plugin is opt-in through the `--variant smoke` worker image plus `PLUGIN_DIRS=/app/packages/obo-smoke-plugin`; `OBO_SMOKE_ENABLED=true` is only the smoke-driver stamp marker. Reference smoke env vars are read at handler-time, not at module-load time, so a loaded smoke plugin still functions correctly once configured.
+
 ## TUI Maintenance
 
 The shared terminal UI is a maintained product surface, not an experiment.

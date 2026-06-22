@@ -23,6 +23,7 @@ import type {
     SessionContextUsage,
     SessionOwnerInfo,
     SessionSummaryState,
+    UserEnvelopeCarrier,
 } from "./types.js";
 import type { SessionCatalogProvider, SessionRow, TopEventEmitterRow } from "./cms.js";
 import { PgSessionCatalogProvider } from "./cms.js";
@@ -1324,6 +1325,110 @@ export class PilotSwarmManagementClient {
         return this._catalog!.getFleetStats(opts);
     }
 
+    // ─── Structured Tool Outcomes (observability surface) ──────
+    // FR-010 / SC-005 / repo "Observability Surface for the Agent Tuner"
+    // rule: the two members of the Structured tool outcome family
+    // (interaction_required, service_unavailable) must be reachable by the
+    // tuner through a typed management API + paired inspect-tool, not just
+    // via raw SQL. Tokens are never persisted in the outcome_payload (FR-020
+    // allow-list sanitization in session-proxy.ts), so these reads are safe
+    // to expose to tuner sessions.
+
+    /**
+     * Read structured tool-outcome events (interaction_required and/or
+     * service_unavailable) for a single session. Includes both
+     * tool.execution_complete rows whose data.outcome matches a structured
+     * kind AND synthetic system.tool_outcome rows (FR-024 AKV-unwrap
+     * persistent failures).
+     */
+    async getStructuredOutcomeEvents(
+        sessionId: string,
+        opts?: { kind?: "interaction_required" | "service_unavailable"; limit?: number },
+    ): Promise<Array<{
+        seq: number;
+        eventType: string;
+        outcome: "interaction_required" | "service_unavailable";
+        outcomePayload: Record<string, unknown> | null;
+        createdAt: string | Date;
+    }>> {
+        this._ensureStarted();
+        const limit = opts?.limit && opts.limit > 0 ? opts.limit : 500;
+        const wanted = opts?.kind ?? null;
+        const events = await this._catalog!.getSessionEvents(sessionId, undefined, limit);
+        const out: Array<{
+            seq: number;
+            eventType: string;
+            outcome: "interaction_required" | "service_unavailable";
+            outcomePayload: Record<string, unknown> | null;
+            createdAt: string | Date;
+        }> = [];
+        for (const ev of events) {
+            const data = (ev as any)?.data;
+            if (!data || typeof data !== "object") continue;
+            const outcome = (data as any).outcome;
+            if (outcome !== "interaction_required" && outcome !== "service_unavailable") continue;
+            if (wanted && outcome !== wanted) continue;
+            const payload = (data as any).outcome_payload;
+            out.push({
+                seq: (ev as any).seq,
+                eventType: (ev as any).eventType,
+                outcome,
+                outcomePayload: (payload && typeof payload === "object") ? payload as Record<string, unknown> : null,
+                createdAt: (ev as any).createdAt,
+            });
+        }
+        return out;
+    }
+
+    /**
+     * Fleet-wide aggregate of structured tool outcomes. Iterates sessions
+     * and sums counts per outcome kind + reasonCode bucket. Intended for
+     * tuner triage of how often re-auth or transport failures hit users
+     * — not a real-time dashboard signal.
+     */
+    async getFleetStructuredOutcomeStats(opts?: {
+        sessionLimit?: number;
+        eventLimitPerSession?: number;
+    }): Promise<{
+        totals: { interactionRequired: number; serviceUnavailable: number };
+        byReasonCode: Array<{ outcome: "interaction_required" | "service_unavailable"; reasonCode: string; count: number }>;
+        sessionsScanned: number;
+    }> {
+        this._ensureStarted();
+        const sessionCap = opts?.sessionLimit && opts.sessionLimit > 0 ? opts.sessionLimit : 200;
+        const evCap = opts?.eventLimitPerSession && opts.eventLimitPerSession > 0 ? opts.eventLimitPerSession : 500;
+        const sessions = await this._catalog!.listSessions();
+        const slice = sessions.slice(0, sessionCap);
+        const buckets = new Map<string, { outcome: "interaction_required" | "service_unavailable"; reasonCode: string; count: number }>();
+        let totalIR = 0;
+        let totalSU = 0;
+        for (const sess of slice) {
+            const sid = (sess as any).sessionId ?? (sess as any).id;
+            if (!sid) continue;
+            try {
+                const events = await this.getStructuredOutcomeEvents(String(sid), { limit: evCap });
+                for (const ev of events) {
+                    if (ev.outcome === "interaction_required") totalIR += 1;
+                    else totalSU += 1;
+                    const reasonCode = (ev.outcomePayload && typeof ev.outcomePayload.reasonCode === "string")
+                        ? ev.outcomePayload.reasonCode as string
+                        : "unknown";
+                    const key = `${ev.outcome}::${reasonCode}`;
+                    const prev = buckets.get(key);
+                    if (prev) prev.count += 1;
+                    else buckets.set(key, { outcome: ev.outcome, reasonCode, count: 1 });
+                }
+            } catch {
+                // Per-session enumeration errors are non-fatal for the aggregate.
+            }
+        }
+        return {
+            totals: { interactionRequired: totalIR, serviceUnavailable: totalSU },
+            byReasonCode: [...buckets.values()].sort((a, b) => b.count - a.count),
+            sessionsScanned: slice.length,
+        };
+    }
+
     async getUserStats(opts?: { includeDeleted?: boolean; since?: Date }): Promise<UserStats> {
         this._ensureStarted();
         const stats = await this._catalog!.getUserStats(opts);
@@ -1587,7 +1692,7 @@ export class PilotSwarmManagementClient {
     async sendMessage(
         sessionId: string,
         prompt: string,
-        options?: { clientMessageIds?: string[] },
+        options?: { clientMessageIds?: string[]; envelope?: UserEnvelopeCarrier | null },
     ): Promise<void> {
         this._ensureStarted();
         const session = await this.getSession(sessionId);
@@ -1626,6 +1731,9 @@ export class PilotSwarmManagementClient {
         const payload: Record<string, unknown> = { prompt };
         if (options?.clientMessageIds && options.clientMessageIds.length > 0) {
             payload.clientMessageIds = options.clientMessageIds;
+        }
+        if (options?.envelope) {
+            payload.envelope = options.envelope;
         }
         await this._duroxideClient.enqueueEvent(
             orchId,
@@ -1678,14 +1786,22 @@ export class PilotSwarmManagementClient {
     /**
      * Send an answer to a pending question from a session.
      */
-    async sendAnswer(sessionId: string, answer: string): Promise<void> {
+    async sendAnswer(
+        sessionId: string,
+        answer: string,
+        options?: { envelope?: UserEnvelopeCarrier | null },
+    ): Promise<void> {
         this._ensureStarted();
         const orchId = `session-${sessionId}`;
         await this._assertOrchestrationLive(orchId, sessionId, "sendAnswer");
+        const payload: Record<string, unknown> = { answer, wasFreeform: true };
+        if (options?.envelope) {
+            payload.envelope = options.envelope;
+        }
         await this._duroxideClient.enqueueEvent(
             orchId,
             "messages",
-            JSON.stringify({ answer, wasFreeform: true }),
+            JSON.stringify(payload),
         );
     }
 

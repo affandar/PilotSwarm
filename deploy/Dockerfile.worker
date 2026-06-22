@@ -1,14 +1,44 @@
-# Single-stage: install from npm (linux binary published to registry)
+# Multi-stage worker image.
+#
+# Two runtime targets:
+#   * `runtime`       (LAST stage, the implicit default for `docker build`)
+#     — smoke-free production worker image. Does NOT contain the OBO smoke
+#     plugin at /app/packages/obo-smoke-plugin. Even if an operator sets
+#     PLUGIN_DIRS to that path the worker fails fast at startup (the plugin
+#     loader hard-fails on a missing pluginDir). This is the image every
+#     normal AKS deploy ships.
+#   * `runtime-smoke` (explicit --target runtime-smoke)
+#     — adds the OBO smoke plugin at /app/packages/obo-smoke-plugin so the
+#     live-smoke harness (PLUGIN_DIRS=/app/packages/obo-smoke-plugin) can
+#     load it. Only used by dedicated smoke stamps; never by production.
+#
+# Build convention (enforced by deploy/scripts/test/dockerfile-worker.test.mjs
+# and build-call-sites.test.mjs):
+#   * Bare `docker buildx build` (no --target) MUST resolve to the
+#     smoke-free `runtime` stage. That's why `runtime` is the LAST stage in
+#     this file.
+#   * Smoke deploys MUST explicitly pass `--target runtime-smoke`.
+#
 # trixie-slim (Debian 13, glibc 2.41) required by duroxide-linux-x64-gnu >= 0.1.25
 # (prebuilds link against GLIBC_2.39; bookworm-slim is 2.36 and crashes at dlopen).
-FROM node:24-trixie-slim
 
-# Install CA certificates for HTTPS
+# ---------------------------------------------------------------------------
+# base — common workspace install. Identical for both runtime targets so the
+# layer is cached once.
+#
+# Only the sdk + cli workspace manifests are copied before `npm ci`. The
+# obo-smoke-plugin manifest is intentionally NOT included — its only
+# extra dependency (@azure/msal-node) happens to already be a direct
+# dependency of pilotswarm-cli, so the smoke plugin's runtime require()
+# still resolves in the smoke-target image without us adding the plugin
+# manifest to the lockfile-install set.
+# ---------------------------------------------------------------------------
+FROM node:24-trixie-slim AS base
+
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Copy workspace root and package manifests
 COPY package.json package-lock.json ./
 COPY packages/sdk/package.json ./packages/sdk/
 COPY packages/cli/package.json ./packages/cli/
@@ -17,16 +47,41 @@ COPY scripts/postinstall.js ./scripts/
 # from this SHA are byte-reproducible. Matches deploy/Dockerfile.starter.
 RUN npm ci --omit=dev --force
 
-# Copy built SDK dist + bundled plugins, worker script, and app plugins
+# Common source copy for both runtime targets.
 COPY packages/sdk/dist/ ./packages/sdk/dist/
 COPY packages/sdk/plugins/ ./packages/sdk/plugins/
 COPY packages/sdk/examples/worker.js ./packages/sdk/examples/
 COPY packages/cli/plugins/ ./packages/cli/plugins/
-
-# Copy model providers config (if present)
 COPY .model_providers.json* ./
 
-# Run as the built-in node user (non-root)
+# ---------------------------------------------------------------------------
+# runtime-smoke — opt-in smoke target. Adds the OBO smoke plugin so the
+# live-smoke harness can load it via PLUGIN_DIRS=/app/packages/obo-smoke-plugin.
+#
+# Production deploys MUST NOT use this target. Smoke deploys pass
+# `--target runtime-smoke` explicitly (see scripts that build the worker
+# image; build-call-sites.test.mjs enforces no caller smuggles smoke in
+# accidentally).
+# ---------------------------------------------------------------------------
+FROM base AS runtime-smoke
+
+COPY packages/obo-smoke-plugin ./packages/obo-smoke-plugin
+
+USER node
+
+ENTRYPOINT ["node", "packages/sdk/examples/worker.js"]
+
+# ---------------------------------------------------------------------------
+# runtime — DEFAULT, smoke-free production target. MUST remain the LAST
+# stage so `docker build` with no --target resolves here.
+#
+# Notably does NOT copy packages/obo-smoke-plugin/. If a caller sets
+# PLUGIN_DIRS=/app/packages/obo-smoke-plugin against this image, the
+# worker's plugin loader fails fast at startup with a clear error — smoke
+# cannot accidentally activate against the production image.
+# ---------------------------------------------------------------------------
+FROM base AS runtime
+
 USER node
 
 ENTRYPOINT ["node", "packages/sdk/examples/worker.js"]

@@ -90,7 +90,7 @@ npm run db:reset       # Drop duroxide + CMS schemas
 
 | Path | Purpose |
 |------|---------|
-| `plugin/plugin.json` | Plugin metadata |
+| `plugin/plugin.json` | Plugin metadata, branding, optional in-process tool declarations |
 | `plugin/.mcp.json` | MCP server configuration |
 | `plugin/agents/*.agent.md` | Agent definitions (YAML frontmatter + markdown) |
 | `plugin/skills/*/SKILL.md` | Reusable knowledge modules |
@@ -116,7 +116,8 @@ PilotSwarmWorker
   ├── Plugin Loader
   │   ├── loadAgentFiles() → AgentConfig[]
   │   ├── loadSkills() → SkillConfig[]
-  │   └── loadMcpConfig() → MCP server configs
+  │   ├── loadMcpConfig() → MCP server configs
+  │   └── plugin.json tools → registerTools(worker) for app-tier tool plugins
   └── ModelProviderRegistry
 
 PilotSwarmManagementClient
@@ -468,7 +469,7 @@ Plugins are directories loaded by `PilotSwarmWorker` on startup. Each directory 
 
 ```
 plugin/
-  plugin.json           # { name, version, agents, skills }
+  plugin.json           # { name, version, agents, skills, tools }
   .mcp.json             # MCP server configurations
   agents/
     default.agent.md    # Base system instructions

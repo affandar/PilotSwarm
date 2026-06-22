@@ -108,6 +108,7 @@ const worker = new PilotSwarmWorker({
 
 await worker.start();
 console.log(`[worker] Started ✓ Polling for orchestrations...`);
+
 if (worker.modelProviders) {
     const groups = worker.modelProviders.getModelsByProvider();
     for (const g of groups) {

@@ -13,14 +13,31 @@ import { SERVICE_IMAGE_INFO } from "./service-info.mjs";
 
 // Build a service image and write a gzipped OCI/docker tarball to the staging dir.
 // Returns the absolute path to the .tar.gz on disk.
-export async function buildImage({ service, envName, imageTag, stagingDir: stage }) {
+//
+// `variant` (worker only): "default" (the smoke-free `runtime` Dockerfile stage,
+// the implicit `docker build` default) or "smoke" (the `runtime-smoke` stage that
+// includes the OBO live-smoke plugin). Smoke variant gets a `-smoke` image-tag
+// suffix so default and smoke images never collide in the registry.
+export async function buildImage({ service, envName, imageTag, stagingDir: stage, variant = "default" }) {
   const info = SERVICE_IMAGE_INFO[service];
   if (!info) {
     throw new Error(
       `Service '${service}' has no image to build (only worker/portal have container images).`,
     );
   }
+  if (variant !== "default" && variant !== "smoke") {
+    throw new Error(`buildImage: variant must be "default" or "smoke" (got "${variant}")`);
+  }
+  if (variant === "smoke" && service !== "worker") {
+    throw new Error(
+      `buildImage: variant="smoke" is only valid for service="worker" (got service="${service}")`,
+    );
+  }
   const { dockerImageRepo, dockerfile } = info;
+  // imageTag is already variant-suffixed by the caller (deploy.mjs runOneService
+  // calls effectiveImageTag() before passing ctx.imageTag here). Build, push,
+  // manifest substitution, and rollout verification must all see the SAME
+  // string — see effectiveImageTag() in service-info.mjs.
   const localTag = `${dockerImageRepo}:${imageTag}`;
   const dockerfileAbs = join(REPO_ROOT, dockerfile);
   if (!existsSync(dockerfileAbs)) {
@@ -51,8 +68,12 @@ export async function buildImage({ service, envName, imageTag, stagingDir: stage
   }
 
   // 1) docker buildx build (platform pinned per repo Docker convention).
-  log("info", `docker buildx build → ${localTag}`);
-  await runForeground("docker", [
+  // For variant="smoke" pass `--target runtime-smoke`; for "default" use no
+  // `--target` so the build resolves to the LAST stage in Dockerfile.worker
+  // (which is the smoke-free `runtime` stage by convention — enforced by
+  // deploy/scripts/test/dockerfile-worker.test.mjs).
+  log("info", `docker buildx build${variant === "smoke" ? " --target runtime-smoke" : ""} → ${localTag}`);
+  const buildArgs = [
     "buildx",
     "build",
     "--platform",
@@ -62,8 +83,12 @@ export async function buildImage({ service, envName, imageTag, stagingDir: stage
     localTag,
     "-f",
     dockerfileAbs,
-    REPO_ROOT,
-  ]);
+  ];
+  if (variant === "smoke") {
+    buildArgs.push("--target", "runtime-smoke");
+  }
+  buildArgs.push(REPO_ROOT);
+  await runForeground("docker", buildArgs);
 
   // 2) docker save | zlib gzip → <staging>/<repo>.tar.gz (no host gzip CLI).
   const outPath = join(stage, `${dockerImageRepo}.tar.gz`);

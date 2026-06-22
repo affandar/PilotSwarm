@@ -1,7 +1,9 @@
 import { isSessionLockAcquireTimeoutError, type SessionManager } from "./session-manager.js";
+import { runWithSessionManager } from "./worker-registry.js";
 import type { SessionStateStore } from "./session-store.js";
 import type { SessionCatalogProvider } from "./cms.js";
-import { SESSION_STATE_MISSING_PREFIX, type SerializableSessionConfig, type TurnResult, type OrchestrationInput } from "./types.js";
+import { SESSION_STATE_MISSING_PREFIX, type SerializableSessionConfig, type TurnResult, type OrchestrationInput, PS_TOOL_OUTCOME_MARKER, type ToolOutcomeKind } from "./types.js";
+import { readToolOutcomeMarker, sanitizeOutcomePayloadForPersistence } from "./tool-outcomes.js";
 import type { AgentConfig } from "./agent-loader.js";
 import { systemChildAgentUUID } from "./agent-loader.js";
 import { PilotSwarmClient } from "./client.js";
@@ -389,6 +391,49 @@ function isFailureToolCompletion(data: unknown): boolean {
         || typeof eventData.errorMessage === "string";
 }
 
+/**
+ * Detect a structured tool outcome on a tool.execution_complete
+ * event and rewrite the event data so it carries `outcome` and
+ * `outcome_payload` (sanitized via the allow-list in tool-outcomes.ts).
+ * The raw marker is stripped from the persisted row so it never appears
+ * inside the JSONB CMS column.
+ *
+ * Always populates `outcome` for tool.execution_complete events so
+ * downstream consumers can match on a single field instead of inferring
+ * success vs failure heuristically (SC-005: three-way distinguishability).
+ *
+ * Backwards-compat: legacy consumers that don't read `outcome` continue
+ * to see existing fields (`resultType`, `error`, etc.) unchanged.
+ */
+function enrichToolCompletionEventData(eventData: Record<string, unknown> | null | undefined): Record<string, unknown> | undefined {
+    if (!eventData) return undefined;
+    const cloned: Record<string, unknown> = { ...eventData };
+    const marker = readToolOutcomeMarker(cloned)
+        ?? readToolOutcomeMarker(cloned.result)
+        ?? readToolOutcomeMarker(cloned.toolResult);
+    if (marker) {
+        cloned.outcome = marker.kind as ToolOutcomeKind;
+        cloned.outcome_payload = sanitizeOutcomePayloadForPersistence(marker);
+        delete cloned[PS_TOOL_OUTCOME_MARKER];
+        if (cloned.result && typeof cloned.result === "object") {
+            const rcopy = { ...(cloned.result as Record<string, unknown>) };
+            delete rcopy[PS_TOOL_OUTCOME_MARKER];
+            cloned.result = rcopy;
+        }
+        if (cloned.toolResult && typeof cloned.toolResult === "object") {
+            const tcopy = { ...(cloned.toolResult as Record<string, unknown>) };
+            delete tcopy[PS_TOOL_OUTCOME_MARKER];
+            cloned.toolResult = tcopy;
+        }
+        return cloned;
+    }
+    // No structured marker → default to success/failure based on existing
+    // heuristic. Sets a stable `outcome` field so consumers don't need to
+    // re-implement the heuristic at read time.
+    cloned.outcome = isFailureToolCompletion(eventData) ? "failure" : "success";
+    return cloned;
+}
+
 async function tryReadSnapshotSizeBytes(sessionStore: SessionStateStore | null | undefined, sessionId: string): Promise<number | undefined> {
     if (!sessionStore) return undefined;
 
@@ -438,7 +483,7 @@ export function createSessionProxy(
             prompt: string,
             bootstrap?: boolean,
             turnIndex?: number,
-            turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; retryCount?: number; clientMessageIds?: string[] },
+            turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; retryCount?: number; clientMessageIds?: string[]; envelope?: import("./types.js").UserEnvelopeCarrier | null },
         ) {
             return ctx.scheduleActivityOnSession(
                 "runTurn",
@@ -455,6 +500,7 @@ export function createSessionProxy(
                     ...(turnMeta?.clientMessageIds && turnMeta.clientMessageIds.length > 0
                         ? { clientMessageIds: turnMeta.clientMessageIds }
                         : {}),
+                    ...(turnMeta?.envelope ? { envelope: turnMeta.envelope } : {}),
                 },
                 affinityKey,
             );
@@ -653,9 +699,124 @@ export function registerActivities(
             nestingLevel?: number;
             requiredTool?: string;
             retryCount?: number;
+            envelope?: import("./types.js").UserEnvelopeCarrier | null;
         },
     ): Promise<TurnResult> => {
+        // User OBO: publish the owning SessionManager into
+        // AsyncLocalStorage for the duration of this activity so any
+        // tool handler that calls `getUserContextForSession(sessionId)`
+        // resolves to this worker's UserContextStore. Without this,
+        // the public lookup would fall back to a global single-worker
+        // assumption that is unsafe in multi-worker/in-process tests
+        // and in embedded mode where the same node hosts more than one
+        // worker.
+        return runWithSessionManager(sessionManager, async () => {
         activityCtx.traceInfo(`[runTurn] session=${input.sessionId}`);
+
+        // ── User envelope decrypt + UserContextStore population ───
+        // Run before any business logic so tools invoked during the turn
+        // can consume user context via the public lookup. Population
+        // happens whether or not `accessTokenCipher` is null — that
+        // satisfies Spec P1 scenario 2 (no OBO scope → principal+null token).
+        if (input.envelope && input.envelope.v === 1 && input.envelope.principal) {
+            try {
+                const principal = input.envelope.principal;
+                let accessToken: string | null = null;
+                let accessTokenExpiresAt: number | null = null;
+                if (input.envelope.accessTokenCipher) {
+                    const crypto = sessionManager.getEnvelopeCrypto();
+                    if (!crypto) {
+                        activityCtx.traceInfo(
+                            `[runTurn] envelope carries accessTokenCipher but no envelopeCrypto is configured on this worker; ignoring token portion (principal still populated)`,
+                        );
+                    } else {
+                        // Per FR-024: treat decrypt failures as transient and
+                        // retry before surfacing the structured outcome.
+                        // Strict reading of the spec asks for "Duroxide's
+                        // existing retry semantics", but that requires
+                        // throwing out of the activity and updating the live
+                        // orchestration's runTurn error handler — which means
+                        // a new orchestration version (per the duroxide
+                        // orchestration-versioning rules in this repo) and
+                        // history replay risk across in-flight sessions.
+                        // The pragmatic spec-aligned alternative used here:
+                        // bounded in-activity retries with exponential
+                        // backoff (3 attempts, ~7.5s worst-case), then fall
+                        // through to the structured `service_unavailable`
+                        // outcome on persistent failure. Observable behavior
+                        // matches the spec ("transient retry, then structured
+                        // outcome"); operators see the retry attempts in the
+                        // activity trace and consumers see the same final
+                        // event shape they would from the orchestration path.
+                        const ENVELOPE_DECRYPT_RETRY_DELAYS_MS = [500, 2_000, 5_000];
+                        let decryptErr: any = null;
+                        let attempt = 0;
+                        const maxAttempts = ENVELOPE_DECRYPT_RETRY_DELAYS_MS.length + 1;
+                        while (true) {
+                            try {
+                                const decrypted = await crypto.decrypt(input.envelope.accessTokenCipher);
+                                accessToken = decrypted.accessToken ?? null;
+                                accessTokenExpiresAt = decrypted.accessTokenExpiresAt ?? null;
+                                decryptErr = null;
+                                break;
+                            } catch (err: any) {
+                                decryptErr = err;
+                                const remaining = ENVELOPE_DECRYPT_RETRY_DELAYS_MS.slice(attempt);
+                                if (remaining.length === 0) break;
+                                const delay = remaining[0];
+                                activityCtx.traceInfo(
+                                    `[runTurn] envelope decrypt transient failure (attempt ${attempt + 1}/${maxAttempts}), ` +
+                                    `retrying in ${delay}ms: ${err?.message ?? err}`,
+                                );
+                                await new Promise<void>((resolve) => setTimeout(resolve, delay));
+                                attempt++;
+                            }
+                        }
+                        if (decryptErr) {
+                            // Persistent failure after exhausting transient
+                            // retries surfaces as a structured
+                            // service_unavailable system event (FR-024) so the
+                            // portal can render a transient-error notice. The
+                            // turn still proceeds with principal-only context
+                            // so identity-aware tools (those that don't need
+                            // the access token) continue to function.
+                            activityCtx.traceInfo(
+                                `[runTurn] envelope decrypt failed after ${maxAttempts} attempts: ${decryptErr?.message ?? decryptErr} (populating principal-only, emitting service_unavailable)`,
+                            );
+                            if (catalog) {
+                                await cmsRetryBestEffort(
+                                    `runTurn.recordEvent system.tool_outcome akv_unwrap_failure session=${input.sessionId}`,
+                                    () => catalog!.recordEvents(input.sessionId, [{
+                                        eventType: "system.tool_outcome",
+                                        data: {
+                                            outcome: "service_unavailable",
+                                            outcome_payload: {
+                                                reasonCode: "akv_unwrap_failure",
+                                                message: "User access token could not be decrypted; downstream identity-bound calls are unavailable.",
+                                            },
+                                            source: "envelope_decrypt",
+                                        },
+                                    }], workerNodeId),
+                                    (msg) => activityCtx.traceInfo(msg),
+                                );
+                            }
+                        }
+                    }
+                }
+                sessionManager.getUserContextStore().setUserContext(input.sessionId, {
+                    provider: principal.provider,
+                    subject: principal.subject,
+                    email: principal.email ?? null,
+                    displayName: principal.displayName ?? null,
+                    accessToken,
+                    accessTokenExpiresAt,
+                });
+            } catch (envErr: any) {
+                activityCtx.traceInfo(
+                    `[runTurn] envelope processing failed (non-fatal): ${envErr?.message ?? envErr}`,
+                );
+            }
+        }
 
         const turnTelemetry = {
             tokensInput: 0,
@@ -1486,6 +1647,17 @@ export function registerActivities(
                     } else if (event.eventType === "tool.execution_complete" && isFailureToolCompletion(event.data)) {
                         turnTelemetry.toolErrors += 1;
                     }
+                    // Enrich tool.execution_complete events with
+                    // a stable `outcome` field and structured-outcome
+                    // payload (when applicable). Mutates a copy of the
+                    // event data before persistence; the raw marker
+                    // never lands in the CMS JSONB column.
+                    if (persistedEvent.eventType === "tool.execution_complete") {
+                        const enriched = enrichToolCompletionEventData(
+                            normalizeEventData(persistedEvent.data as Record<string, unknown> | undefined),
+                        );
+                        if (enriched) persistedEvent.data = enriched;
+                    }
                     // Best-effort with one transient retry. trackEventWrite tracks
                     // the wrapped promise so the post-turn barrier waits for the
                     // retry to settle before emitting turn_completed.
@@ -1859,6 +2031,7 @@ export function registerActivities(
                 try { await (clientToStop as any).stop(); } catch {}
             }
         }
+        });  // end runWithSessionManager
     });
 
     // ── dehydrateSession ────────────────────────────────────
@@ -2043,6 +2216,16 @@ export function registerActivities(
         _ctx: any,
         input: { sessionId: string },
     ): Promise<void> => {
+        // Clear user-context entry AND parent-map binding on terminal
+        // cleanup. The entry holds plaintext token material; the parent-
+        // map binding is structural metadata but is no longer useful
+        // once the session is destroyed (and a future session reusing
+        // this id MUST start with a fresh chain).
+        try {
+            const store = sessionManager.getUserContextStore();
+            store.clear(input.sessionId);
+            store.clearParent(input.sessionId);
+        } catch { /* best-effort */ }
         await sessionManager.destroySession(input.sessionId);
     });
 

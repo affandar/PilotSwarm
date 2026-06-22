@@ -1,0 +1,4 @@
+{
+  "name": "plugin-missing-tools-file",
+  "tools": "./does-not-exist.js"
+}

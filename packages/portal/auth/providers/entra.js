@@ -6,13 +6,14 @@ const JWKS_CACHE = new Map();
 function getEntraConfig(pluginAuthConfig = {}) {
     const tenantId = process.env.PORTAL_AUTH_ENTRA_TENANT_ID;
     const clientId = process.env.PORTAL_AUTH_ENTRA_CLIENT_ID;
+    const downstreamScope = String(process.env.PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE || "").trim() || null;
     const displayName = String(
         pluginAuthConfig?.providers?.entra?.displayName
         || pluginAuthConfig?.displayName
         || "Entra ID",
     ).trim() || "Entra ID";
     if (!tenantId || !clientId) return null;
-    return { tenantId, clientId, displayName };
+    return { tenantId, clientId, displayName, downstreamScope };
 }
 
 async function ensureJwks(tenantId) {
@@ -69,6 +70,14 @@ export function createEntraAuthProvider({ pluginAuthConfig } = {}) {
                     clientId: config.clientId,
                     authority: `https://login.microsoftonline.com/${config.tenantId}`,
                     redirectUri: `${req?.protocol || "https"}://${host}`,
+                    // User OBO: when the deployment configures a
+                    // downstream scope (e.g. api://<worker-app>/.default for a
+                    // downstream consumer), the SPA acquires an additional
+                    // access token at sign-in / RPC time and forwards it via
+                    // the per-RPC envelope so worker tools can perform OBO.
+                    // null = OBO disabled for this deployment; SPA stays on
+                    // the existing admission-only flow.
+                    downstreamScope: config.downstreamScope,
                 },
             };
         },

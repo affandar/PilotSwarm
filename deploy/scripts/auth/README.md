@@ -20,6 +20,7 @@ You can also invoke it directly.
 | `Create3PApplication.ps1` | Generic Azure AD application primitive. Useful if you need a non-portal app registration (e.g. a worker daemon with app roles). The PilotSwarm portal wrapper does **not** call this — it does its own SPA-shaped `az ad app create` so it can configure the SPA platform + implicit-grant + per-token-type groups claim, which the generic primitive doesn't expose. |
 | `Setup-PortalAuth.ps1` | Opinionated wrapper that creates the exact shape the PilotSwarm portal expects. See "Defaults" below. |
 | `Set-PortalAuthAssignments.ps1` | Add / remove / list user + group assignments against the `admin` / `user` app roles on an existing portal app. Idempotent. Re-runnable. See `.github/skills/pilotswarm-portal-auth-assignments/SKILL.md` for full operator docs. |
+| `Setup-OboSmokeWorkerApp.ps1` | Opinionated wrapper that creates the per-stamp **OBO live-smoke downstream worker app** — required only when running OBO live-smoke against a stamp. Creates the app, exposes an OAuth2 delegated scope, declares Microsoft Graph `User.Read` as a delegated permission, pre-authorizes the per-stamp portal app, and create-or-patches the app federated identity credential (default MSI-as-FIC; optional AKS-direct). Writes a sidecar JSON and prints the smoke `.env` paste block. Idempotent. See "OBO smoke worker app" below + `.github/skills/pilotswarm-obo-smoke-app-reg/SKILL.md`. |
 
 ## Prerequisites
 
@@ -35,8 +36,10 @@ You can also invoke it directly.
   `deploy/.tmp/<EnvName>/bicep-outputs.cache.json` must exist (i.e. the
   bicep-publish step of `npm run deploy` has run at least once).
 
+For OBO live-smoke, run the smoke worker image variant (`--variant smoke`) and compose the emitted smoke env overlay into the stamp env before worker rollout.
+
 The scripts use only cross-platform pwsh APIs (`Join-Path`, `Resolve-Path`,
-`[System.IO.Path]::GetTempFileName()`, `az`) and forward-slash path
+repo-local scratch files under `deploy/.tmp/`, `az`) and forward-slash path
 separators throughout, so the same invocation works in all three OSes.
 
 ## Service Tree ID is required
@@ -239,6 +242,143 @@ with an empty redirect-URI list. After deploy finishes, run again with
 | Signed-in user with no role gets `defaultRole` instead of being denied | The stamp has `PORTAL_AUTHZ_DEFAULT_ROLE=user` (legacy open posture) | Leave `PORTAL_AUTHZ_DEFAULT_ROLE` unset (defaults to `none` = deny-by-default since v0.1.33). With `-CreateAppRoles`, assigned users get `admin`/`user` via the JWT role claim; unassigned signed-in users are denied by the engine |
 | First sign-in fails with `AADSTS90094` admin-consent prompt after `-AssignmentRequired` | Tenant user-consent policy restricts non-verified-publisher apps; the OIDC sign-in flow can't create the user-consent grant for Microsoft Graph (`openid profile offline_access`) on the user's behalf while `appRoleAssignmentRequired=true` blocks them | One-time dance: `az ad sp update --id <sp-objectId> --set appRoleAssignmentRequired=false`, have each affected user sign in once to accept user-consent, then flip back to `true`. Or drop `-AssignmentRequired` entirely — with `-CreateAppRoles` + role assignments, the engine's deny-by-default behavior already enforces lockdown without needing the Entra-side gate |
 | `403` on portal admin routes | Signed-in user does not have the `admin` app role (or matching group via `PORTAL_AUTH_ENTRA_ADMIN_GROUPS`) | Assign the user to the `admin` role: `pwsh -File deploy/scripts/auth/Set-PortalAuthAssignments.ps1 -EnvName <stamp> -AdminAssignments <upn>` (or via Entra portal "Users and groups") |
+
+## OBO smoke worker app (`Setup-OboSmokeWorkerApp.ps1`)
+
+The OBO live-smoke harness (`pilotswarm smoke <stamp> --profile obo`)
+exercises the full two-hop OBO chain on a deployed stamp: portal
+acquires a worker-audienced token → worker exchanges that token via
+`acquireTokenOnBehalfOf` for a Microsoft Graph `User.Read` token →
+worker calls Graph as the signed-in user. That chain requires a
+**per-stamp downstream worker AAD app** distinct from the portal app
+and from the worker's own UAMI.
+
+`Setup-OboSmokeWorkerApp.ps1` provisions that app and its supporting
+infra in a single idempotent invocation. It is the OBO analog of
+`Setup-PortalAuth.ps1` and runs after both the portal app-reg and the
+per-stamp bicep step have succeeded.
+
+### What it does
+
+1. Creates (or finds, by display name) the app
+   `"PilotSwarm OBO Smoke Worker - <EnvName>"`.
+2. Mints (or re-reads) an OAuth2 delegated scope `user_impersonation`
+   under `identifierUri: api://<appId>` with
+   `requestedAccessTokenVersion = 2` (so issued tokens are v2 —
+   `@azure/msal-node`'s `acquireTokenOnBehalfOf` requires v2).
+3. Declares Microsoft Graph `User.Read` as a **delegated** permission
+   (`type=Scope`). Without this declaration, the worker's OBO exchange
+   returns `AADSTS65001` at runtime even with pre-authorization in
+   place.
+4. Overwrites `api.preAuthorizedApplications` with a single-element
+   array containing the per-stamp portal app's clientId (read from
+   `deploy/envs/local/<EnvName>/entra-app.json`, or supplied via
+   `-PortalClientId`). Overwrite (not merge) because each stamp has a
+   strict 1:1 portal-app → worker-app relationship.
+5. Create-or-patches the federated identity credential **on the Entra
+   application**. The default `-FicPattern msi` is CORP-compatible:
+   it reads `WORKLOAD_IDENTITY_CLIENT_ID` from
+   `deploy/.tmp/<EnvName>/bicep-outputs.cache.json`, resolves that
+   UAMI's enterprise-app/service-principal object id, then writes an
+   app FIC with issuer `https://login.microsoftonline.com/<tenant>/v2.0`,
+   subject `<uami-object-id>`, and audience
+   `api://AzureADTokenExchange`. The worker pod first exchanges its AKS
+   service-account token for a UAMI token through the existing UAMI FIC,
+   then uses the UAMI token as the worker-app `client_assertion`.
+   Optional `-FicPattern aks-direct` preserves the historical direct AKS
+   OIDC issuer + service-account subject app FIC for tenants that allow it.
+6. Optionally (`-GrantAdminConsent`) runs `az ad app permission
+   admin-consent` for Graph `User.Read`. A shortcut that skips the
+   per-user consent prompt on first sign-in for every user; only
+   meaningful when the running principal is a tenant Global Admin (or
+   a Cloud Application Administrator). Per-user consent at portal
+   sign-in is the default path otherwise.
+7. Writes a JSON sidecar at
+   `deploy/envs/local/<EnvName>/obo-smoke-worker-app.json`.
+8. Prints the smoke `.env` paste block to stdout for the operator to
+   paste into `deploy/envs/local/<EnvName>/.env`:
+
+   ```
+   PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE=api://<worker-app-id>/.default offline_access
+   OBO_SMOKE_WORKER_APP_TENANT_ID=<tenant-id>
+   OBO_SMOKE_WORKER_APP_CLIENT_ID=<worker-app-id>
+   OBO_SMOKE_WORKER_APP_GRAPH_SCOPE=https://graph.microsoft.com/User.Read
+   PLUGIN_DIRS=/app/packages/obo-smoke-plugin
+   ```
+
+**The wrapper never edits `.env`** — same single-actor-on-`.env`
+invariant `Setup-PortalAuth.ps1` preserves. Paste the lines
+yourself, or have the npm-deployer agent do it via its `edit` tool.
+
+### Invocation
+
+Two-phase (recommended for new-env bring-up):
+
+```bash
+# Phase 1 — before bicep (alongside Setup-PortalAuth.ps1):
+pwsh -NoProfile -ExecutionPolicy Bypass \
+  -File deploy/scripts/auth/Setup-OboSmokeWorkerApp.ps1 \
+  -Mode app-shell \
+  -ServiceTreeId <id> \
+  -EnvName <stamp>
+
+# Phase 2 — after the full deploy, just before OBO smoke:
+pwsh -NoProfile -ExecutionPolicy Bypass \
+  -File deploy/scripts/auth/Setup-OboSmokeWorkerApp.ps1 \
+  -Mode patch-fic \
+  -ServiceTreeId <id> \
+  -EnvName <stamp>
+```
+
+Single-shot (back-compat default; requires bicep to have run):
+
+```bash
+pwsh -NoProfile -ExecutionPolicy Bypass \
+  -File deploy/scripts/auth/Setup-OboSmokeWorkerApp.ps1 \
+  -ServiceTreeId <id> \
+  -EnvName <stamp>
+```
+
+`-Mode app-shell` skips the FIC dependency; only the
+app + scope + pre-auth are created and the `.env` paste block is
+emitted. `-Mode patch-fic` looks up the existing app and creates or
+patches the selected FIC pattern (no `.env` changes). `-Mode all`
+(default) does both.
+
+FIC pattern selection:
+
+| Parameter | Pattern | When to use |
+|---|---|---|
+| `-FicPattern msi` (default) | MSI-as-FIC: eSTS issuer + UAMI object-id subject | Default everywhere; required in Microsoft CORP tenant. |
+| `-FicPattern aks-direct` | AKS OIDC issuer + Kubernetes service-account subject | Only in tenants/scenarios where policy explicitly allows direct AKS-on-app FICs for 3P apps. |
+
+Example explicit fallback:
+
+```bash
+pwsh -NoProfile -ExecutionPolicy Bypass \
+  -File deploy/scripts/auth/Setup-OboSmokeWorkerApp.ps1 \
+  -Mode patch-fic \
+  -FicPattern aks-direct \
+  -ServiceTreeId <id> \
+  -EnvName <stamp>
+```
+
+For full parameter reference, troubleshooting, and the
+upstream-audience-vs-downstream-resource scope distinction, see
+`.github/skills/pilotswarm-obo-smoke-app-reg/SKILL.md`.
+
+### When NOT to run it
+
+- Default production stamps or any stamp that will not run OBO live-smoke. Runtime opt-in also requires a worker image built with `--variant smoke` and the smoke env overlay, including `PLUGIN_DIRS=/app/packages/obo-smoke-plugin`.
+- Stamps using `PORTAL_AUTH_PROVIDER=none` — the smoke harness
+  requires a signed-in portal user.
+
+For stamps that already have the smoke env values pasted, re-running
+the wrapper is a safe no-op (idempotent re-read of the OAuth2 scope
+GUID, FIC create-or-patch by deterministic name). To point at a
+manually-managed downstream app, pass `-ExistingAppId <appId>` rather
+than skipping the wrapper — the FIC + Graph perm + pre-auth still
+need to be patched on whatever app the smoke env points at.
 
 ## Why `Create3PApplication.ps1` is included
 

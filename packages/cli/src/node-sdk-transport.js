@@ -737,7 +737,7 @@ export class NodeSdkTransport {
         return { sessionId: session.sessionId, model: effectiveModel, reasoningEffort: reasoningEffort || undefined };
     }
 
-    async createSessionForAgent(agentName, { model, reasoningEffort, title, splash, initialPrompt, owner, groupId } = {}) {
+    async createSessionForAgent(agentName, { model, reasoningEffort, title, splash, initialPrompt, owner, groupId, envelope } = {}) {
         const effectiveModel = await this.assertSessionModelCreatable({ model, owner });
         const session = await this.client.createSessionForAgent(agentName, {
             ...(effectiveModel ? { model: effectiveModel } : {}),
@@ -747,6 +747,7 @@ export class NodeSdkTransport {
             ...(initialPrompt ? { initialPrompt } : {}),
             ...(owner ? { owner } : {}),
             ...(groupId ? { groupId } : {}),
+            ...(envelope ? { envelope } : {}),
         });
         this.sessionHandles.set(session.sessionId, session);
         return {
@@ -786,8 +787,13 @@ export class NodeSdkTransport {
             throw new Error(buildTerminalSendError(sessionId, session));
         }
 
-        const sendOptions = options?.clientMessageIds && Array.isArray(options.clientMessageIds) && options.clientMessageIds.length > 0
-            ? { clientMessageIds: options.clientMessageIds }
+        const hasIds = options?.clientMessageIds && Array.isArray(options.clientMessageIds) && options.clientMessageIds.length > 0;
+        const hasEnvelope = options?.envelope != null;
+        const sendOptions = (hasIds || hasEnvelope)
+            ? {
+                ...(hasIds ? { clientMessageIds: options.clientMessageIds } : {}),
+                ...(hasEnvelope ? { envelope: options.envelope } : {}),
+            }
             : undefined;
 
         if (options?.enqueueOnly) {
@@ -813,11 +819,11 @@ export class NodeSdkTransport {
         // "Working…" forever. Propagate the error so the caller can retry
         // through the full sessionHandle.send path that owns the start.
         const sessionHandle = await this.getSessionHandle(sessionId);
-        await sessionHandle.send(prompt);
+        await sessionHandle.send(prompt, sendOptions);
     }
 
-    async sendAnswer(sessionId, answer) {
-        await this.mgmt.sendAnswer(sessionId, answer);
+    async sendAnswer(sessionId, answer, options) {
+        await this.mgmt.sendAnswer(sessionId, answer, options);
     }
 
     async cancelPendingMessage(sessionId, clientMessageIds) {

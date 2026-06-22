@@ -4,6 +4,61 @@ import type { ReasoningEffort } from "./model-providers.js";
 
 export const SESSION_STATE_MISSING_PREFIX = "SESSION_STATE_MISSING:";
 
+/**
+ * Manifest shape for a plugin's `plugin.json` file.
+ *
+ * Plugin authors can import this type from `pilotswarm-sdk` to get
+ * TypeScript-level validation of their `plugin.json` contents. The
+ * loader treats unknown fields as opaque metadata, so adding extra
+ * keys is safe — but the typed fields below are the contract surface
+ * the worker reads.
+ *
+ * See `docs/plugin-architecture-guide.md` for the full contract,
+ * including loader semantics, tier policy, and failure modes.
+ *
+ * @example
+ * ```ts
+ * // packages/<your-plugin>/plugin.json (generate from this type)
+ * import type { PluginManifest } from "pilotswarm-sdk";
+ *
+ * const manifest: PluginManifest = {
+ *     name: "my-plugin",
+ *     version: "1.0.0",
+ *     tools: "./tools.js",
+ * };
+ * ```
+ */
+export interface PluginManifest {
+    /** Logical plugin name; defaults to directory basename when absent. */
+    name?: string;
+    /** Optional plugin version (free-form string). */
+    version?: string;
+    /**
+     * Reserved for future use; current loader discovers agents from an
+     * `agents/` subdirectory rather than a manifest field. Declaring it
+     * here keeps the interface forward-compatible.
+     */
+    agents?: string | string[];
+    /**
+     * Reserved for future use; current loader discovers skills from a
+     * `skills/` subdirectory rather than a manifest field. Declaring it
+     * here keeps the interface forward-compatible.
+     */
+    skills?: string | string[];
+    /**
+     * Optional path (relative to the plugin directory) to a JS module
+     * that exports `registerTools(worker)`. App-tier only; ignored on
+     * system/management tier with a warning.
+     */
+    tools?: string;
+    /** Portal branding/auth metadata (consumed by `packages/portal`). */
+    portal?: Record<string, unknown>;
+    /** TUI branding metadata (consumed by `packages/cli`). */
+    tui?: Record<string, unknown>;
+    /** Free-form additional metadata fields. */
+    [key: string]: unknown;
+}
+
 // ─── Turn Result ─────────────────────────────────────────────────
 // What ManagedSession.runTurn() returns to the orchestration.
 
@@ -836,3 +891,155 @@ export interface SessionStatusSignal {
     retriesExhausted?: boolean;
     contextUsage?: SessionContextUsage;
 }
+
+// ─── User OBO Envelope ──────────────────────────────────────────
+// Plaintext shape used inside pod memory only. Carries principal claims
+// plus optional user access token for downstream OBO exchanges.
+
+export interface PrincipalClaims {
+    provider: string;
+    subject: string;
+    email: string | null;
+    displayName: string | null;
+}
+
+/**
+ * Plaintext user envelope. NEVER written to durable queue or activity input.
+ * Token fields are nullable to allow principal-only carriage when no
+ * downstream worker scope is configured (FR-002 / SC-002 / P1 scenario 2).
+ */
+export interface UserEnvelope {
+    provider: string;
+    subject: string;
+    email: string | null;
+    displayName: string | null;
+    accessToken: string | null;
+    accessTokenExpiresAt: number | null;
+}
+
+/**
+ * Wire ciphertext shape (versioned). AES-GCM ciphertext over
+ * {accessToken, accessTokenExpiresAt} plus a KEK-wrapped DEK.
+ * kekKid is the AKV key URL with version (or "plaintext-mode" for
+ * the dev-only PlaintextEnvelopeCrypto backend; cross-mode interpretation
+ * is REFUSED at decrypt time).
+ */
+export interface EnvelopeCipher {
+    /** AES-GCM ciphertext, base64. */
+    ciphertext: string;
+    /** AES-GCM 12-byte nonce, base64. */
+    iv: string;
+    /** AES-GCM 16-byte tag, base64. */
+    tag: string;
+    /** KEK-wrapped 32-byte DEK, base64. */
+    wrappedDek: string;
+    /** AKV key URL with version, or "plaintext-mode" sentinel. */
+    kekKid: string;
+}
+
+/**
+ * The on-the-wire carrier travelling in queue payloads and runTurn
+ * activity input. Principal claims are plaintext (not secret). Token
+ * material is encrypted (or absent when no OBO scope is configured).
+ *
+ * Field name on the wire: envelope (NOT envelopeCipher) — reflects
+ * that it carries plaintext principal + optional ciphertext.
+ */
+export interface UserEnvelopeCarrier {
+    /** Carrier-shape version. Always 1 for the current wire format. */
+    v: 1;
+    principal: PrincipalClaims;
+    /** Null when no OBO scope configured for the deployment. */
+    accessTokenCipher: EnvelopeCipher | null;
+}
+
+/**
+ * Lookup return type for getUserContextForSession(); the in-memory
+ * UserContextStore stores this shape per session.
+ */
+export interface UserContext {
+    principal: PrincipalClaims;
+    accessToken: string | null;
+    accessTokenExpiresAt: number | null;
+}
+
+// ─── Structured tool outcomes ────────────────────────────────────────
+//
+// Two members of the Structured tool outcome family that worker tools can
+// emit (via interactionRequired() / serviceUnavailable() from
+// "pilotswarm-sdk") to communicate something fundamentally different from
+// generic tool failure:
+//
+//   * interaction_required — the user must re-authenticate at the IdP
+//     before the tool can proceed. Triggers a re-auth affordance in the
+//     portal. The opaque `claims` blob (IdP claims-challenge) is persisted
+//     server-side but NEVER passed to the LLM.
+//
+//   * service_unavailable — a transport-layer dependency (AKV unwrap,
+//     downstream IdP, etc.) is persistently unavailable. The user has
+//     nothing to do; the UI surfaces a transient-error notice with an
+//     optional retry-after countdown.
+//
+// Three-way distinguishability vs generic failure (SC-005) is preserved
+// at the event-data level via a separate `outcome` field.
+
+export type ToolOutcomeKind = "success" | "failure" | "interaction_required" | "service_unavailable";
+
+export interface InteractionRequiredPayload {
+    reasonCode: InteractionRequiredReasonCode;
+    message?: string | null;
+    /**
+     * Opaque IdP claims-challenge blob. Persisted in the CMS event row so
+     * the portal can forward it to MSAL's `acquireToken({ claims })`
+     * call; NEVER included in the LLM-visible text result.
+     */
+    claims?: string | null;
+}
+
+/**
+ * Pinned set of stable reason codes accepted by
+ * `interactionRequired()`. The portal keys behavior off `reasonCode`
+ * (not free-form text), so this is part of the public contract.
+ * Extension requires explicit consensus across PilotSwarm + downstream
+ * consumers (see CHANGELOG entry for the OBO structured tool outcome
+ * contract).
+ *
+ * The union type and the runtime `ReadonlySet` are both derived from
+ * a single private tuple so a future contributor adding a code can
+ * only edit one place; the type and the runtime check can never
+ * silently drift apart.
+ */
+const INTERACTION_REQUIRED_REASON_CODES_TUPLE = [
+    "reauth_required",
+    "mfa_refresh",
+    "conditional_access",
+    "consent_required",
+] as const;
+
+export type InteractionRequiredReasonCode =
+    (typeof INTERACTION_REQUIRED_REASON_CODES_TUPLE)[number];
+
+export const INTERACTION_REQUIRED_REASON_CODES: ReadonlySet<InteractionRequiredReasonCode> =
+    new Set(INTERACTION_REQUIRED_REASON_CODES_TUPLE);
+
+export interface ServiceUnavailablePayload {
+    reasonCode: string;
+    retryAfter?: number | null;
+    message?: string | null;
+}
+
+export type ToolOutcomePayload = InteractionRequiredPayload | ServiceUnavailablePayload;
+
+/**
+ * Marker field embedded in a tool handler's return value by the
+ * `interactionRequired` / `serviceUnavailable` helpers. Detected by
+ * ManagedSession's tool wrapper and stripped before the LLM-visible
+ * string is shipped to the model.
+ */
+export interface ToolOutcomeMarker {
+    kind: "interaction_required" | "service_unavailable";
+    payload: ToolOutcomePayload;
+}
+
+export const PS_TOOL_OUTCOME_MARKER = "__pilotswarmToolOutcome" as const;
+

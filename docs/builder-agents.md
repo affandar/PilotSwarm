@@ -89,6 +89,7 @@ Builder templates should assume:
 - generated delegation flows should document `contract.wakeOn` for child sessions: `any` for chatty short-lived work, `material_change` for watchers, and `completion` for done/blocked/error-only children
 - Azure deployment guidance should prefer `kubectl create secret generic ... --from-env-file=...` when semicolon-bearing values such as Azure Storage connection strings are involved
 - builder guidance should treat `write_artifact` / `export_artifact` as the canonical text-and-binary artifact path, using `contentType` plus base64 encoding for binary files and documenting download-only browser behavior for non-text previews
+- if a generated app's tools need to call Azure DevOps / Microsoft Graph / etc. on behalf of the signed-in engineer, builder guidance should reference the public OBO surface (`getUserContextForSession`, `interactionRequired`, `serviceUnavailable` from `pilotswarm-sdk`) and the corresponding deploy switches (`OBO_ENABLED`, `PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE`); see [`docs/sdk/user-context.md`](./sdk/user-context.md) and [`docs/operations/obo-kek-runbook.md`](./operations/obo-kek-runbook.md)
 
 ## Maintenance Rule
 

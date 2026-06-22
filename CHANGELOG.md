@@ -1,5 +1,156 @@
 # Changelog
 
+## Unreleased
+
+### Plugin contract and OBO live-smoke opt-in
+
+**Plugin contract**: `plugin.json` now supports a `tools` field for in-process tool plugins (collision-safe via atomic `registerTools()`). The OBO live-smoke harness moved into `packages/obo-smoke-plugin/` and is loaded via the standard plugin contract. Default deploy surface no longer carries smoke-specific configuration, code, or dependencies — smoke is opt-in via the `--variant smoke` worker-image build, the new `deploy/envs/template.smoke.env` env overlay, and `PLUGIN_DIRS` set to the in-image plugin directory.
+
+### User OBO Propagation (new capability — backwards-compatible)
+
+Adds first-class support for per-RPC user identity + access-token
+propagation from the portal sign-in flow through to worker tool
+handlers, enabling downstream consumers (e.g.
+downstream consumer apps) to
+perform Azure DevOps / Graph / etc. calls via the OAuth 2.0
+On-Behalf-Of flow under the signed-in engineer's Entra identity.
+
+**Backwards-compatible.** Stamps that do not configure
+`PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE` continue to operate with the
+existing principal-only envelope — no behavior change. The OBO KEK is
+provisioned only when `OBO_ENABLED=true` in the per-env `.env`.
+
+**New public SDK surface (`pilotswarm-sdk`):**
+
+- `getUserContextForSession(sessionId)` — worker-affined synchronous
+  lookup returning `{ principal, accessToken, accessTokenExpiresAt }`
+  or `null`. Resolves the active end-user identity for a given
+  session, with sub-agent chain walking to inherit from the spawning
+  parent session. Tool handlers call this to authenticate downstream
+  HTTPS calls. `accessToken` is `null` (never `undefined`) in all
+  three absence cases: no downstream scope configured, system /
+  orchestration session, AKV unwrap failure.
+- `interactionRequired({ reasonCode, message?, claims? })` — helper
+  that produces a structured tool-result outcome signaling the user
+  must re-authenticate (Conditional Access, MFA, consent, password
+  change). Reason-code taxonomy is **pinned**: only
+  `reauth_required`, `mfa_refresh`, `conditional_access`,
+  `consent_required` are accepted; the helper throws on unknown
+  codes (the portal UI keys off `reasonCode` to render the re-auth
+  affordance, so unstable values would fragment the contract). The
+  pinned set is also exported as `INTERACTION_REQUIRED_REASON_CODES`
+  and the matching `InteractionRequiredReasonCode` type. The
+  `claims` blob is never forwarded to the LLM.
+- `serviceUnavailable({ reasonCode, retryAfter?, message? })` —
+  helper for transient service-degraded outcomes
+  (`akv_unwrap_failure`, `idp_unreachable`, etc.). Machine-
+  distinguishable from `interaction_required` and generic failure.
+
+**New AKV key (provisioned by `base-infra` bicep when `OBO_ENABLED=true`):**
+
+- `obo-user-token-kek` — RSA 2048, `wrapKey` + `unwrapKey` ops only.
+  365-day automatic rotation with prior versions retained so any in-
+  flight ciphertext referencing an older version remains decryptable
+  across rotation events. Operator runbook:
+  [`docs/operations/obo-kek-runbook.md`](docs/operations/obo-kek-runbook.md).
+- The shared CSI UAMI receives `Key Vault Crypto User` on the vault.
+  Downstream forks with distinct portal vs worker UAMIs can override
+  the new `oboKekUamiPrincipalIds` Bicep param (an array of principal
+  IDs) without forking the keyvault template.
+
+**New env vars:**
+
+- `OBO_ENABLED` (deploy-time, default `false`) — controls
+  base-infra KEK provisioning and role assignments.
+- `PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE` (portal runtime) —
+  e.g. `api://<worker-app>/.default`. The portal MSAL flow acquires
+  this on top of the existing portal sign-in scope. `offline_access`
+  is added automatically by the SDK; do **not** include it.
+- `OBO_KEK_KID` (worker + portal runtime) — un-versioned AKV key URL.
+  Populated automatically from the new `oboKekKid` Bicep output via
+  `OUTPUT_ALIAS`. Operators do **not** set this directly.
+- `OBO_ENVELOPE_PLAINTEXT_MODE` (worker + portal runtime, **dev-only**)
+  — `1` enables the in-process plaintext envelope crypto with a loud
+  startup warning. **Refuses to start when `NODE_ENV=production`.**
+
+**New top-level SDK dependencies** (lazy-loaded inside the AKV
+crypto backend; no runtime impact for stamps that don't enable OBO):
+
+- `@azure/keyvault-keys`
+- `@azure/identity`
+
+**Reference plugin:** [`packages/obo-smoke-plugin/`](packages/obo-smoke-plugin/) ships
+`obo_smoke_whoami` (5 metadata-only modes including real Graph
+`/me` exchange via `@azure/msal-node`'s `acquireTokenOnBehalfOf` —
+auto-selects between client-secret and MSI-as-FIC workload-identity
+backends via `WORKLOAD_IDENTITY_CLIENT_ID`, FIC winning precedence)
+and `obo_smoke_force_reauth`
+(always emits `interactionRequired`). The manual live-tenant smoke
+checklist ([`packages/obo-smoke-plugin/SMOKE_CHECKLIST.md`](packages/obo-smoke-plugin/SMOKE_CHECKLIST.md))
+remains the npm-publish release gate for changes touching the OBO
+path.
+
+**Repeatable live-smoke harness:** `pilotswarm smoke <stamp>
+--profile obo` — CLI driver that loads a stamp's `.env`, validates
+preflight, acquires user access tokens (device-code or pre-staged
+env), drives the deployed portal's `/api/rpc` with both the admission
+bearer and the encrypted-envelope downstream token, exercises both
+`obo_smoke_*` tools, and emits a structured pass/fail JSON record.
+New runbook at
+[`docs/operations/live-smoke.md`](docs/operations/live-smoke.md). The
+smoke driver preflights `OBO_SMOKE_ENABLED=true` as a stamp marker;
+worker registration now happens through `PLUGIN_DIRS` pointing at the
+in-image smoke plugin. A CI workflow wrapping the driver is deferred —
+per-stamp `.env` files are gitignored, so a runner-side env loader and
+committed CI federated-credential trust are prerequisites for adding
+one later.
+
+**Historical live-smoke deploy-pipeline plumbing (superseded):** early
+OBO smoke planning described projecting the smoke toggle plus per-stamp
+downstream-app identity into the default worker ConfigMap and using
+`OBO_SMOKE_ENABLED=true` as the worker registration gate. That posture
+has been superseded by the plugin-contract opt-in above: default env
+templates and default images stay smoke-free, the smoke image variant
+contains `packages/obo-smoke-plugin/`, and `PLUGIN_DIRS` controls worker
+registration.
+
+**Auto-provisioning the OBO smoke worker AAD app:** new
+opinionated wrapper `deploy/scripts/auth/Setup-OboSmokeWorkerApp.ps1`
+provisions the per-stamp downstream worker app in a single idempotent
+invocation: creates/finds the app, mints the OAuth2 delegated scope,
+declares Microsoft Graph `User.Read` as a delegated permission,
+overwrites `api.preAuthorizedApplications` with the per-stamp portal
+app's clientId, and create-or-patches the default MSI-as-FIC
+federated identity credential **on the Entra application itself**.
+The worker pod first uses the existing AKS-FIC-on-UAMI, then supplies
+the UAMI token as the worker-app `client_assertion`; the historical
+AKS-direct app FIC is retained only as an explicit fallback for tenants
+that allow it.
+Writes a sidecar JSON at
+`deploy/envs/local/<stamp>/obo-smoke-worker-app.json` and prints
+the smoke `.env` paste block (`PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE`,
+`OBO_SMOKE_WORKER_APP_TENANT_ID/_CLIENT_ID/_GRAPH_SCOPE`, and
+`PLUGIN_DIRS=/app/packages/obo-smoke-plugin`) to paste
+into the per-stamp `.env`. The wrapper **never edits `.env`** —
+preserves the single-actor-on-`.env` invariant
+(`new-env.mjs` + `compose-env.mjs` + operator/agent are the only
+mutators). A new skill, `pilotswarm-obo-smoke-app-reg`, drives the
+wrapper from the `pilotswarm-npm-deployer` agent's new Step 0.b
+(sequenced after portal app-reg + bicep, before
+`worker manifests,rollout`). Closes the last manual gap in the
+live-smoke harness; `OBO_SMOKE_ENABLED=true` is now the driver marker in the smoke overlay, while worker registration is handled by `PLUGIN_DIRS` and the smoke image variant.
+
+**Docs:**
+
+- New: [`docs/operations/obo-kek-runbook.md`](docs/operations/obo-kek-runbook.md)
+  — operator runbook (provisioning, RBAC verification, rotation,
+  emergency revocation, AKV throughput sizing, sentinel semantics).
+- Updated: [`docs/configuration.md`](docs/configuration.md) — env-var
+  reference table.
+- Updated: [`docs/sdk/user-context.md`](docs/sdk/user-context.md) —
+  public lookup API, sub-agent inheritance behavior, structured tool
+  outcomes, security guidance.
+
 ## 0.2.0 — 2026-06-19
 
 ### Deploy — Azure VPN Gateway P2S Ingress (Entra ID auth)

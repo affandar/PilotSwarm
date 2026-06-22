@@ -31,7 +31,7 @@ updated in lockstep with the code, this skill is a procedural overlay:
 | Tier | Resource | Notes |
 |---|---|---|
 | Global | AFD Premium profile, AFD WAF policy, Global RG | Only when `EDGE_MODE=afd` |
-| T2 | Control AKS, ACR, Postgres Flex, Storage, Key Vault, UAMIs, Flux | Always |
+| T2 | Control AKS, ACR, Postgres Flex, Storage, Key Vault (incl. optional OBO KEK), UAMIs, Flux | Always |
 | T2 edge (afd) | AppGw v2 + WAF + Private Link Service + AGIC | `EDGE_MODE=afd` |
 | T2 edge (private) | AKS web-app-routing (NGINX) on ILB + Private DNS Zone | `EDGE_MODE=private` |
 | T2 ingress (vpn) | Azure VPN Gateway P2S (OpenVPN + Entra ID) + `GatewaySubnet` + managed Private DNS zone + auto-seeded AppGw WAF guard rules | `VPN_GATEWAY_ENABLED=true` (additive; requires `EDGE_MODE=afd` + `TLS_SOURCE=akv`) |
@@ -216,8 +216,112 @@ Portal auth (ConfigMap) — fields depend on auth posture
   # App-role assignments (Roles posture only — not stored in .env, applied via Set-PortalAuthAssignments.ps1)
   ADMIN_ASSIGNMENTS                  <suggested: ${user}; CONFIRM OR OVERRIDE>   # UPNs / object ids / group display names, comma-separated
   USER_ASSIGNMENTS                   <empty>                                       # UPNs / object ids / group display names, comma-separated
+
+User OBO Propagation (optional — opt-in feature for downstream consumers)
+  OBO_ENABLED                        false (default)                              # set 'true' to provision the OBO KEK in stamp Key Vault
+  PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE <empty> (default)                             # api://<worker-app>/.default form when consumer wires OBO end-to-end
+
 ```
 
+User OBO live-smoke is not part of the default input surface. Use it
+only for dedicated smoke stamps by building the worker image with
+`--variant smoke`, composing `deploy/envs/template.smoke.env` into the
+per-stamp `.env`, and ensuring `PLUGIN_DIRS` includes
+`/app/packages/obo-smoke-plugin`. `OBO_SMOKE_ENABLED=true` is a
+smoke-driver stamp marker; the worker loads smoke tools because
+`PLUGIN_DIRS` points at an in-image plugin directory.
+
+> **Auto-provisioning the OBO smoke worker app (two-phase):** for
+> stamps that will run `pilotswarm smoke <stamp> --profile obo`, do
+> **not** ask the user to pre-create the downstream AAD app or fill in
+> the smoke env block by hand. Invoke the `pilotswarm-obo-smoke-app-reg`
+> skill in two phases so nothing in the deploy pipeline has to wait
+> on Entra:
+>
+> 1. **`-Mode app-shell`** runs alongside Step 0 (portal app-reg),
+>    **before** bicep. Creates the worker app, mints the OAuth2 scope,
+>    declares Graph `User.Read` delegated permission, pre-authorizes
+>    the portal app, and prints the `.env` paste block including
+>    `PLUGIN_DIRS=/app/packages/obo-smoke-plugin`. No FIC, no OIDC
+>    dependency — bicep/manifests/rollout can all proceed from here.
+> 2. **`-Mode patch-fic`** runs **after the full deploy completes**
+>    (bicep + manifests + rollout), right before
+>    `pilotswarm smoke <stamp> --profile obo`. Looks up the existing
+>    app and create-or-patches the default MSI-as-FIC trust: reads
+>    `WORKLOAD_IDENTITY_CLIENT_ID` from
+>    `deploy/.tmp/<stamp>/bicep-outputs.cache.json`, resolves that
+>    UAMI's object id, and writes an eSTS FIC on the worker app
+>    (`issuer=https://login.microsoftonline.com/<tenant>/v2.0`,
+>    `subject=<uami-object-id>`). No `.env` or k8s changes — the worker
+>    pod is already using the UAMI and will start accepting OBO
+>    exchanges as soon as the app FIC exists in AAD (no pod restart
+>    required). Use `-FicPattern aks-direct` only in tenants where direct
+>    AKS-on-app FICs are explicitly allowed; Microsoft CORP requires the
+>    default MSI-as-FIC pattern.
+>
+> A single-shot `-Mode all` is also available for operator re-runs
+> against an already-deployed stamp. The wrapper never writes `.env`
+> directly — same single-actor invariant the portal app-reg script
+> preserves.
+>
+> Note also that `PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE` is the upstream
+> audience (`api://<worker-app-id>/.default offline_access`) the portal
+> acquires a token *for*, while `OBO_SMOKE_WORKER_APP_GRAPH_SCOPE` is
+> the downstream resource scope (default
+> `https://graph.microsoft.com/User.Read`) the worker exchanges that
+> token *to*. They look similar; they are not interchangeable. See
+> `pilotswarm-obo-smoke-app-reg` for the full table.
+
+**About OBO User Context propagation:** opt-in feature (default off,
+backwards-compatible when unset; see [`docs/specs/user-obo-propagation.md`](../../../docs/specs/user-obo-propagation.md)). When `OBO_ENABLED=true`,
+the base-infra Bicep additionally provisions a key in the stamp Key Vault:
+`obo-user-token-kek` (RSA-2048, `wrapKey`/`unwrapKey` only, 365-day
+auto-rotation with prior-version retention) and grants `Key Vault Crypto
+User` on the vault to the principal IDs passed via the
+`oboKekUamiPrincipalIds` array Bicep param. The reference shape (single
+shared CSI UAMI federated to both worker and portal SAs) collapses to a
+1-element array; downstream consumers with split portal/worker UAMI
+topologies override by passing an N-element array in their parameter
+file — no template fork. The unversioned key URL is emitted as the
+Bicep output `oboKekKid` and projected into the worker + portal pods as
+`OBO_KEK_KID` via the overlay-rendered ConfigMaps. `PORTAL_AUTH_ENTRA_DOWNSTREAM_SCOPE`
+is read by the portal MSAL flow at sign-in to acquire an additional
+downstream access token (plus `offline_access`, added automatically) on
+top of the existing portal sign-in. Leaving it empty disables the OBO
+flow even if `OBO_ENABLED=true`. See [`docs/operations/obo-kek-runbook.md`](../../../docs/operations/obo-kek-runbook.md)
+for KEK rotation, AKV firewall, and live-tenant smoke procedures.
+
+**About OBO live-smoke:** opt-in per dedicated smoke stamp. Build the
+worker image with `--variant smoke`, compose the smoke env overlay into
+the stamp `.env`, and ensure `PLUGIN_DIRS` includes
+`/app/packages/obo-smoke-plugin`. `OBO_SMOKE_ENABLED=true` is a marker
+that the smoke driver checks before running; worker registration is
+governed by `PLUGIN_DIRS` and by the plugin directory being present in
+the smoke image variant. **On AKS, leave the client-secret unset** — the
+plugin uses `ManagedIdentityCredential(WORKLOAD_IDENTITY_CLIENT_ID)` to
+obtain the UAMI token that backs the default MSI-as-FIC app trust.
+After building/pushing the smoke image and re-projecting the worker
+ConfigMap (`node deploy/scripts/deploy.mjs worker <stamp> --steps
+manifests,rollout`), drive the smoke from a workstation:
+
+```bash
+pilotswarm smoke <stamp> --profile obo
+```
+
+The default `--auth device-code` mode prints a code to stderr and
+opens an interactive sign-in. **Sign in as yourself** — any user the
+portal admits will do. No dedicated test-user provisioning is
+required. The optional `OBO_SMOKE_TEST_USER_UPN` env key only
+controls a `graph.upn` assertion in the driver: when set, the smoke
+fails if the signed-in user's UPN doesn't match; when unset, any
+non-empty UPN passes. (`--auth from-env` with
+`OBO_SMOKE_USER_ADMISSION_TOKEN` + `OBO_SMOKE_USER_DOWNSTREAM_TOKEN`
+is the CI fallback for unattended runs — not needed for hands-on
+operator smoke. See
+[`docs/operations/live-smoke.md`](../../../docs/operations/live-smoke.md)
+for MFA / Conditional Access considerations.) Default
+production stamps should use the default worker image and omit the smoke
+env overlay.
 **When the user asks for VPN access (e.g. "spin up a VPN-enabled env",
 "I need off-network access", "trusted-bypass lane"):** populate the VPN
 block above and **auto-fill `edge-mode=afd` + `tls-source=akv` as the
@@ -509,6 +613,33 @@ kubectl --context ps<name>-aks-t3 get statefulset,pvc,pod,svc -n pilotswarm-jobs
 # Portal health (substitute the AFD endpoint or private FQDN).
 curl -s https://<portal-fqdn>/api/health
 # → {"ok":true,...}
+
+# OBO User Context (only when OBO_ENABLED=true in the per-stamp .env).
+# Verify the KEK was provisioned and the role assignment landed:
+KV_NAME=$(jq -r '.keyVaultName.value' deploy/.tmp/<name>/bicep-outputs.cache.json)
+az keyvault key show --vault-name "$KV_NAME" --name obo-user-token-kek \
+  --query '{name: key.kid, kty: key.kty, ops: key.keyOps}'
+# → kty: RSA, ops: [wrapKey, unwrapKey]
+az role assignment list --scope $(az keyvault show --name "$KV_NAME" --query id -o tsv) \
+  --query "[?roleDefinitionName=='Key Vault Crypto User'].{principal: principalId, role: roleDefinitionName}"
+# → at least one assignment per principalId in oboKekUamiPrincipalIds
+kubectl --context ps<name>-aks -n pilotswarm get configmap portal-env -o jsonpath='{.data.OBO_KEK_KID}'
+kubectl --context ps<name>-aks -n pilotswarm get configmap worker-env -o jsonpath='{.data.OBO_KEK_KID}'
+# → un-versioned AKV key URL (NOT __PS_UNSET__)
+
+# OBO live-smoke (only on a dedicated smoke stamp built with --variant smoke).
+# Confirm the smoke env overlay marker, plugin path, and downstream-app config landed:
+kubectl --context ps<name>-aks -n pilotswarm get configmap worker-env -o jsonpath='{.data.OBO_SMOKE_ENABLED}'
+# → "true" (driver preflight marker, not the worker registration gate)
+kubectl --context ps<name>-aks -n pilotswarm get configmap worker-env -o jsonpath='{.data.PLUGIN_DIRS}'
+# → includes /app/packages/obo-smoke-plugin
+for k in OBO_SMOKE_WORKER_APP_TENANT_ID OBO_SMOKE_WORKER_APP_CLIENT_ID OBO_SMOKE_WORKER_APP_GRAPH_SCOPE OBO_SMOKE_TEST_USER_UPN; do
+  echo -n "$k="; kubectl --context ps<name>-aks -n pilotswarm get configmap worker-env -o jsonpath="{.data.$k}"; echo
+done
+# → app keys populated (NOT __PS_UNSET__); test-user UPN may be empty if not asserting against a specific user
+# Then drive the smoke from a workstation; default --auth device-code prompts you to sign in as yourself:
+pilotswarm smoke <stamp> --profile obo
+# → JSON pass/fail; non-zero exit on failure
 ```
 
 (Adjust namespace names if your deploy manifests use different defaults

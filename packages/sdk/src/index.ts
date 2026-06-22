@@ -19,7 +19,7 @@
 
 export { PilotSwarmClient, PilotSwarmSession } from "./client.js";
 export type { SessionEventHandler } from "./client.js";
-export { PilotSwarmWorker } from "./worker.js";
+export { PilotSwarmWorker, ToolNameCollisionError } from "./worker.js";
 export { PilotSwarmManagementClient } from "./management-client.js";
 export type {
     PilotSwarmSessionView,
@@ -150,3 +150,43 @@ export { SessionDumper } from "./session-dumper.js";
 
 // Re-export defineTool from Copilot SDK for convenience
 export { defineTool } from "@github/copilot-sdk";
+
+// Plugin authoring: public type for `plugin.json`. Plugin authors can
+// import this type to get TypeScript-level validation of their manifest.
+// See docs/plugin-architecture-guide.md for the full contract.
+export type { PluginManifest } from "./types.js";
+
+// User OBO: worker-side per-session user-context lookup.
+// Synchronous, importable. Returns null for system sessions, unknown
+// sessions, broken chains, and ambiguous multi-worker contexts.
+export { getUserContextForSession } from "./worker-registry.js";
+export type { UserContext, PrincipalClaims } from "./types.js";
+
+// User OBO: envelope-crypto factory for portal-side encryption.
+// Portals construct their own EnvelopeCrypto via selectEnvelopeCrypto(env)
+// and use it to encrypt the per-RPC user access token before placing the
+// envelope on the durable queue. The same env-driven selection logic is
+// shared with workers so portal and worker agree on backend + KEK kid.
+export { selectEnvelopeCrypto } from "./envelope-crypto.js";
+export type { EnvelopeCrypto } from "./envelope-crypto.js";
+export type {
+    UserEnvelope,
+    EnvelopeCipher,
+    UserEnvelopeCarrier,
+} from "./types.js";
+
+// User OBO: structured tool outcome helpers — interaction_required
+// and service_unavailable — for worker tools to signal IdP re-auth required
+// or transport-layer dependency outage. Three-way distinguishability from
+// generic tool failure is preserved via the persisted `outcome` event field.
+export { interactionRequired, serviceUnavailable } from "./tool-outcomes.js";
+export type { StructuredToolResult } from "./tool-outcomes.js";
+export { INTERACTION_REQUIRED_REASON_CODES } from "./types.js";
+export type {
+    ToolOutcomeKind,
+    InteractionRequiredPayload,
+    InteractionRequiredReasonCode,
+    ServiceUnavailablePayload,
+    ToolOutcomePayload,
+    ToolOutcomeMarker,
+} from "./types.js";

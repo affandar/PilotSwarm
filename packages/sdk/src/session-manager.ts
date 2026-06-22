@@ -11,6 +11,8 @@ import { buildKnowledgePromptBlocks, loadKnowledgeIndexFromFactStore } from "./k
 import { composeStructuredSystemMessage, extractPromptContent, mergePromptSections } from "./prompt-layering.js";
 import { buildPromptLayersEventPayload, type PromptLayerDescriptor } from "./prompt-layers.js";
 import { approvePermissionForSession } from "./permissions.js";
+import type { EnvelopeCrypto } from "./envelope-crypto.js";
+import { UserContextStore } from "./user-context-store.js";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -191,16 +193,32 @@ export class SessionManager {
     private _getLineageSessionIds: ((sessionId: string) => Promise<string[]>) | null = null;
     /** Per-session critical sections; protects the SDK session handle and local session.db. */
     private sessionLocks = new Map<string, Promise<void>>();
+    /** Envelope crypto backend; null when no OBO downstream scope is configured. */
+    private envelopeCrypto: EnvelopeCrypto | null = null;
+    /** In-memory store of per-session user contexts. */
+    private userContextStore = new UserContextStore();
 
     constructor(
         private githubToken?: string,
         sessionStore?: SessionStateStore | null,
         workerDefaults?: WorkerDefaults,
         sessionStateDir?: string,
+        envelopeCrypto?: EnvelopeCrypto | null,
     ) {
         this.sessionStore = sessionStore ?? null;
         this.workerDefaults = workerDefaults ?? {};
         this.sessionStateDir = sessionStateDir ?? DEFAULT_SESSION_STATE_DIR;
+        this.envelopeCrypto = envelopeCrypto ?? null;
+    }
+
+    /** Returns the configured envelope-crypto backend, or null when OBO is disabled. */
+    getEnvelopeCrypto(): EnvelopeCrypto | null {
+        return this.envelopeCrypto;
+    }
+
+    /** Returns the per-worker user-context store. */
+    getUserContextStore(): UserContextStore {
+        return this.userContextStore;
     }
 
     /** Store full config (with tools/hooks) for a session. Called by PilotSwarmClient. */
@@ -825,6 +843,22 @@ export class SessionManager {
 
         const managed = new ManagedSession(sessionId, copilotSession, config);
         this.sessions.set(sessionId, managed);
+        // ── User OBO: bind parent-map entries by walking the CMS-recorded
+        // ancestor chain ONCE per session per worker. Idempotent and
+        // bounded; never blocks resume. Required so descendant lookups
+        // can resolve to the portal-bound ancestor even after the
+        // intermediate ManagedSession has been evicted from warm cache.
+        if (!this.userContextStore.hasParentBinding(sessionId)) {
+            try {
+                await this._bindParentChainFromCatalog(sessionId);
+            } catch (chainErr: any) {
+                emitSessionManagerTrace(
+                    sessionId,
+                    `parent-chain bind failed (non-fatal) error=${chainErr?.message ?? chainErr}`,
+                    { trace, level: "warn" },
+                );
+            }
+        }
         const promptLayers = buildEffectivePromptLayers(this.workerDefaults, config);
         if (promptLayers.length > 0 && this.sessionCatalog) {
             void this.sessionCatalog.recordEvents(sessionId, [{
@@ -833,6 +867,39 @@ export class SessionManager {
             }]).catch(() => {});
         }
         return managed;
+    }
+
+    /**
+     * Walk the CMS-recorded ancestor chain for `sessionId` once and
+     * populate parent-map entries in the UserContextStore. Bounded by
+     * a depth cap mirroring the store's own walk cap. No-op when no
+     * sessionCatalog is wired (local-TUI / unit-test paths).
+     *
+     * Each entry carries `{ parentSessionId, isSystem }` — no token
+     * material. Already-present bindings are skipped to keep the walk
+     * O(unseen-depth) rather than O(spawn-tree-depth) on every call.
+     */
+    private async _bindParentChainFromCatalog(sessionId: string): Promise<void> {
+        if (!this.sessionCatalog) return;
+        const CHAIN_BIND_MAX = 32;
+        let cur: string | null = sessionId;
+        for (let depth = 0; depth < CHAIN_BIND_MAX; depth++) {
+            if (!cur) return;
+            if (this.userContextStore.hasParentBinding(cur)) return;
+            const row = await this.sessionCatalog.getSession(cur);
+            if (!row) return;
+            this.userContextStore.bindParent(cur, {
+                parentSessionId: row.parentSessionId ?? null,
+                isSystem: Boolean(row.isSystem),
+            });
+            if (!row.parentSessionId) return;
+            cur = row.parentSessionId;
+        }
+        emitSessionManagerTrace(
+            sessionId,
+            `parent-chain bind exceeded depth ${CHAIN_BIND_MAX} starting from ${sessionId}; chain walk truncated`,
+            { level: "warn" },
+        );
     }
 
     /** Get a session by ID (null if not in memory on this node). */
@@ -1028,6 +1095,14 @@ export class SessionManager {
         } else {
             emitSessionManagerTrace(sessionId, `dehydrate complete reason=${reason}`, { trace });
         }
+        // ── User OBO: clear the user-context entry on dehydrate so token
+        // material never outlives the warm session in pod memory. The
+        // parent-map binding intentionally persists so descendants can
+        // still resolve to the portal-bound ancestor; the next envelope
+        // -bearing RPC after rehydration will repopulate via setUserContext.
+        try {
+            this.userContextStore.clear(sessionId);
+        } catch { /* never let cleanup mask dehydrate completion */ }
     }
 
     /**

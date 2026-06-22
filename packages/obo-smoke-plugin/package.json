@@ -1,0 +1,16 @@
+{
+  "name": "pilotswarm-obo-smoke-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Reference smoke plugin for the User OBO Propagation feature. Two tools: obo_smoke_whoami (proves principal + worker OBO exchange path) and obo_smoke_force_reauth (proves the interactive-reauth UX path).",
+  "type": "module",
+  "main": "./tools.js",
+  "exports": {
+    ".": "./tools.js"
+  },
+  "dependencies": {
+    "@azure/identity": "^4.13.1",
+    "@azure/msal-node": "^5.1.0",
+    "pilotswarm-sdk": "*"
+  }
+}

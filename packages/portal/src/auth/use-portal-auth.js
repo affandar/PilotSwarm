@@ -402,11 +402,29 @@ export function usePortalAuth(authConfig) {
         return providerRef.current.getAccessToken();
     }, [state.accessToken, state.authEnabled, state.provider]);
 
+    // User OBO: expose downstream-scope token acquisition to RPC
+    // dispatch. Returns `{ accessToken, accessTokenExpiresAt } | null`.
+    // Provider implementations are responsible for caching + near-expiry
+    // refresh; this hook is a thin pass-through.
+    //
+    // FR-011: when called with `{ interactive: true }` (the
+    // transport sets this on observing an `interaction_required` outcome),
+    // the provider falls back to a popup/redirect on silent-acquire
+    // failure so the user can complete Conditional Access reauth / MFA
+    // refresh without leaving the portal.
+    const getDownstreamToken = React.useCallback(async (options) => {
+        if (!state.authEnabled) return null;
+        if (!providerRef.current) return null;
+        if (typeof providerRef.current.getDownstreamToken !== "function") return null;
+        return providerRef.current.getDownstreamToken(options || {});
+    }, [state.authEnabled]);
+
     return {
         ...state,
         signIn,
         signOut,
         getAccessToken,
+        getDownstreamToken,
         handleUnauthorized,
         handleForbidden,
     };

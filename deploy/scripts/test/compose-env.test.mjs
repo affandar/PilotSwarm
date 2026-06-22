@@ -129,3 +129,72 @@ test("simulates the deploy flow: empty cache, then bicep merges BaseInfra output
   assert.equal(env.PILOTSWARM_DB_AAD_USER, "ps-csi-mid");
   assert.ok(env.PILOTSWARM_CMS_FACTS_DATABASE_URL);
 });
+
+// -----------------------------------------------------------------------------
+// Default-surface invariant: the OBO smoke plugin is opt-in and must never
+// leak into a default-deploy env map via compose-env. This guards against
+// reintroducing the smoke-specific sentinel block that was removed when the
+// smoke harness was promoted to a first-class opt-in plugin.
+// -----------------------------------------------------------------------------
+
+test("compose-env never injects OBO_SMOKE_* keys into a default env", () => {
+  const env = {
+    POSTGRES_FQDN: "ps.example.postgres.database.azure.com",
+    POSTGRES_AAD_ADMIN_PRINCIPAL_NAME: "ps-csi-mid",
+    BLOB_CONTAINER_ENDPOINT: "https://acct.blob.core.windows.net/",
+  };
+  composeDerivedEnv(env);
+  const smokeKeys = Object.keys(env).filter((k) => k.startsWith("OBO_SMOKE"));
+  assert.deepEqual(
+    smokeKeys,
+    [],
+    `compose-env must not introduce smoke-plugin keys on a default deploy; got ${smokeKeys.join(", ")}`,
+  );
+});
+
+test("OBO_SMOKE_* keys provided in env are passed through untouched (compose-env is not a smoke gate)", () => {
+  // If an operator running the opt-in smoke overlay has pre-populated
+  // these keys (e.g. via `deploy/envs/template.smoke.env` or
+  // Setup-OboSmokeWorkerApp.ps1), compose-env must leave them alone:
+  // no overwrite, no sentinel injection.
+  const env = {
+    OBO_SMOKE_ENABLED: "true",
+    OBO_SMOKE_WORKER_APP_TENANT_ID: "tenant-real",
+    OBO_SMOKE_WORKER_APP_CLIENT_ID: "client-real",
+    OBO_SMOKE_WORKER_APP_GRAPH_SCOPE: "https://graph.microsoft.com/User.Read",
+  };
+  composeDerivedEnv(env);
+  assert.equal(env.OBO_SMOKE_ENABLED, "true");
+  assert.equal(env.OBO_SMOKE_WORKER_APP_TENANT_ID, "tenant-real");
+  assert.equal(env.OBO_SMOKE_WORKER_APP_CLIENT_ID, "client-real");
+  assert.equal(env.OBO_SMOKE_WORKER_APP_GRAPH_SCOPE, "https://graph.microsoft.com/User.Read");
+});
+
+test("INVARIANT: no file in deploy/scripts/lib/ contains an OBO_SMOKE_ string literal", async () => {
+  // The smoke plugin is opt-in and its env keys must not be wired into
+  // the default deploy-script library. This generalizes the per-file
+  // audit performed during planning into a maintained invariant — any
+  // reintroduction of an OBO_SMOKE_ reference under deploy/scripts/lib/
+  // will fail this test loudly.
+  const { readdirSync, readFileSync, statSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const { join, dirname } = await import("node:path");
+
+  const here = dirname(fileURLToPath(import.meta.url));
+  const libDir = join(here, "..", "lib");
+  const offenders = [];
+  for (const entry of readdirSync(libDir)) {
+    const full = join(libDir, entry);
+    if (!statSync(full).isFile()) continue;
+    const content = readFileSync(full, "utf8");
+    if (content.includes("OBO_SMOKE")) {
+      offenders.push(entry);
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `deploy/scripts/lib/ must not reference OBO_SMOKE_* keys (smoke is opt-in); offenders: ${offenders.join(", ")}`,
+  );
+});
+

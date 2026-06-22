@@ -1,4 +1,4 @@
-import type { CommandMessage, OrchestrationInput, TurnResult } from "../types.js";
+import type { CommandMessage, OrchestrationInput, TurnResult, UserEnvelopeCarrier } from "../types.js";
 import {
     applyChildUpdate,
     maybeResolveAgentWaitCompletion,
@@ -281,7 +281,12 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
         }
 
         if (msg.answer !== undefined) {
-            stash.push({ kind: "answer", answer: msg.answer, wasFreeform: msg.wasFreeform });
+            stash.push({
+                kind: "answer",
+                answer: msg.answer,
+                wasFreeform: msg.wasFreeform,
+                ...(msg.envelope ? { envelope: msg.envelope } : {}),
+            });
             continue;
         }
 
@@ -389,6 +394,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 bootstrap: Boolean(msg.bootstrap),
                 ...(msg.requiredTool ? { requiredTool: msg.requiredTool } : {}),
                 ...(incomingClientMessageIds.length > 0 ? { clientMessageIds: incomingClientMessageIds } : {}),
+                ...(msg.envelope ? { envelope: msg.envelope } : {}),
             });
             continue;
         }
@@ -459,7 +465,12 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
         }
 
         if (msg.answer !== undefined) {
-            stash.push({ kind: "answer", answer: msg.answer, wasFreeform: msg.wasFreeform });
+            stash.push({
+                kind: "answer",
+                answer: msg.answer,
+                wasFreeform: msg.wasFreeform,
+                ...(msg.envelope ? { envelope: msg.envelope } : {}),
+            });
             continue;
         }
 
@@ -476,6 +487,7 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
                 bootstrap: Boolean(msg.bootstrap),
                 ...(msg.requiredTool ? { requiredTool: msg.requiredTool } : {}),
                 ...(incomingClientMessageIds.length > 0 ? { clientMessageIds: incomingClientMessageIds } : {}),
+                ...(msg.envelope ? { envelope: msg.envelope } : {}),
             });
             continue;
         }
@@ -492,7 +504,8 @@ function* processAnswer(runtime: DurableSessionRuntime, answerItem: any): Genera
     const question = runtime.state.pendingInputQuestion?.question ?? "a question";
     runtime.state.pendingInputQuestion = null;
     const answerPrompt = `The user was asked: "${question}"\nThe user responded: "${answerItem.answer}"`;
-    yield* processPrompt(runtime, answerPrompt, false);
+    const envelope: UserEnvelopeCarrier | undefined = answerItem.envelope;
+    yield* processPrompt(runtime, answerPrompt, false, undefined, undefined, envelope ?? null);
 }
 
 export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean, any> {
@@ -542,6 +555,7 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
                 let mergedBootstrap = item.bootstrap ?? false;
                 let mergedRequiredTool = item.requiredTool;
                 const mergedClientMessageIds: string[] = [...ids];
+                let mergedEnvelope: UserEnvelopeCarrier | null = item.envelope ?? null;
                 while (true) {
                     const peek = popFifoItem(runtime);
                     if (!peek) break;
@@ -559,6 +573,8 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
                     mergedBootstrap = mergedBootstrap || (peek.bootstrap ?? false);
                     if (!mergedRequiredTool && peek.requiredTool) mergedRequiredTool = peek.requiredTool;
                     for (const id of peekIds) mergedClientMessageIds.push(id);
+                    // Last envelope wins — most recent token in the merged batch.
+                    if (peek.envelope) mergedEnvelope = peek.envelope;
                 }
                 yield* processPrompt(
                     runtime,
@@ -566,6 +582,7 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
                     mergedBootstrap,
                     mergedRequiredTool,
                     mergedClientMessageIds.length > 0 ? mergedClientMessageIds : undefined,
+                    mergedEnvelope,
                 );
                 break;
             }
