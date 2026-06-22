@@ -1,6 +1,7 @@
 import { isSessionLockAcquireTimeoutError, type SessionManager } from "./session-manager.js";
 import type { SessionStateStore } from "./session-store.js";
-import type { SessionCatalogProvider } from "./cms.js";
+import type { SessionCatalog } from "./cms.js";
+import type { StorageConfig } from "./storage-config.js";
 import { SESSION_STATE_MISSING_PREFIX, type SerializableSessionConfig, type TurnResult, type OrchestrationInput } from "./types.js";
 import type { AgentConfig } from "./agent-loader.js";
 import { systemChildAgentUUID } from "./agent-loader.js";
@@ -321,7 +322,7 @@ function errorMessage(error: unknown): string {
 }
 
 async function recordLossyHandoffEvent(
-    catalog: SessionCatalogProvider | null | undefined,
+    catalog: SessionCatalog | null | undefined,
     sessionId: string,
     workerNodeId: string | undefined,
     data: Record<string, unknown>,
@@ -666,11 +667,12 @@ export function registerActivities(
     sessionManager: SessionManager,
     _sessionStore: SessionStateStore | null,
     githubToken?: string,
-    catalog?: SessionCatalogProvider | null,
+    catalog?: SessionCatalog | null,
     provider?: any,
     storeUrl?: string,
     cmsSchema?: string,
     clientConfig?: {
+        storageConfig?: StorageConfig;
         duroxideSchema?: string;
         factsSchema?: string;
         // Full facts/CMS target so activity-layer clients resolve the SAME store
@@ -703,6 +705,7 @@ export function registerActivities(
     // when facts live on an enhanced (HorizonDB) store.
     const internalClientConfig = () => ({
         store: storeUrl!,
+        ...(clientConfig?.storageConfig != null && { storageConfig: clientConfig.storageConfig }),
         cmsSchema,
         ...(clientConfig?.duroxideSchema != null && { duroxideSchema: clientConfig.duroxideSchema }),
         ...(clientConfig?.factsSchema != null && { factsSchema: clientConfig.factsSchema }),

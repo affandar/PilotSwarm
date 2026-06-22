@@ -18,19 +18,17 @@ import type {
     SessionResponsePayload,
     SessionOwnerInfo,
 } from "./types.js";
-import type { SessionCatalogProvider, SessionEvent } from "./cms.js";
-import { PgSessionCatalogProvider } from "./cms.js";
+import type { SessionCatalog, SessionEvent } from "./cms.js";
 import type { FactStore } from "./facts-store.js";
-import { createFactStoreForUrl, resolveFactsTarget } from "./facts-store.js";
-import { createDuroxidePostgresProvider } from "./duroxide-provider-factory.js";
+import { resolveStorageConfig } from "./storage-config.js";
+import { getDuroxideStorageProvider, getRuntimeStorageProvider } from "./storage-providers.js";
 import { deriveStatusFromCmsAndRuntime, shouldSyncCompletedStatus, shouldSyncFailedStatus } from "./session-status.js";
 
 // duroxide is CommonJS — use createRequire for ESM compatibility
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
-const { SqliteProvider, PostgresProvider, Client } = require("duroxide");
+const { SqliteProvider, Client } = require("duroxide");
 
-const DEFAULT_DUROXIDE_SCHEMA = "duroxide";
 const WAIT_POLL_SLICE_MS = 10_000;
 
 function createAbortError(message: string, reason?: unknown): Error {
@@ -58,7 +56,7 @@ function throwIfAborted(signal: AbortSignal | undefined, message: string): void 
  */
 export class PilotSwarmClient {
     private config: PilotSwarmClientOptions & { waitThreshold: number };
-    private _catalog!: SessionCatalogProvider;
+    private _catalog!: SessionCatalog;
     private _factStore: FactStore | null = null;
     private duroxideClient: any = null;
     private sessionConfigs = new Map<string, ManagedSessionConfig>();
@@ -410,6 +408,8 @@ export class PilotSwarmClient {
     async start(): Promise<void> {
         if (this.started) return;
         const store = this.config.store;
+        const storage = resolveStorageConfig({ options: this.config });
+        const runtimeStorageProvider = getRuntimeStorageProvider(storage.runtime.provider);
         const _trace = this.config.traceWriter ?? (() => {});
         const startedAt = Date.now();
         const trace = (message: string) => _trace(`[+${Date.now() - startedAt}ms] ${message}`);
@@ -421,55 +421,28 @@ export class PilotSwarmClient {
         // honours the same MI switch via duroxide-node's native Entra
         // path; CMS/facts go through the pg-pool factory using
         // `DefaultAzureCredential`.
-        const cmsFactsUrl = this.config.cmsFactsDatabaseUrl ?? store;
-        const useMi = this.config.useManagedIdentity ?? false;
-        const aadUser = this.config.aadDbUser;
-
         // Create duroxide client
         let provider: any;
         if (store === "sqlite::memory:") provider = SqliteProvider.inMemory();
         else if (store.startsWith("sqlite://")) provider = SqliteProvider.open(store);
-        else if (store.startsWith("postgres://") || store.startsWith("postgresql://")) {
+        else if (storage.duroxide.url.startsWith("postgres://") || storage.duroxide.url.startsWith("postgresql://")) {
             trace("[client] duroxide provider connect start...");
-            provider = await createDuroxidePostgresProvider(
-                PostgresProvider,
-                store,
-                this.config.duroxideSchema ?? DEFAULT_DUROXIDE_SCHEMA,
-                { useManagedIdentity: useMi, aadUser },
-            );
+            provider = await getDuroxideStorageProvider(storage.duroxide.provider).createDuroxideProvider(storage.duroxide);
             trace("[client] duroxide provider connect done");
         } else {
-            throw new Error(`Unsupported store URL: ${store}`);
+            throw new Error(`Unsupported duroxide store URL: ${storage.duroxide.url}`);
         }
         this.duroxideClient = new Client(provider);
 
         // Create CMS catalog
-        if (cmsFactsUrl.startsWith("postgres://") || cmsFactsUrl.startsWith("postgresql://")) {
-            trace("[client] CMS create start...");
-            this._catalog = await PgSessionCatalogProvider.create(
-                cmsFactsUrl,
-                this.config.cmsSchema,
-                { useManagedIdentity: useMi, aadUser },
-            );
-            trace("[client] CMS initialize start...");
-            await this._catalog.initialize();
-            trace("[client] CMS initialize done");
-        }
+        trace("[client] CMS create start...");
+        this._catalog = await runtimeStorageProvider.createSessionCatalog(storage.runtime);
+        trace("[client] CMS initialize start...");
+        await this._catalog.initialize();
+        trace("[client] CMS initialize done");
 
         trace("[client] facts create start...");
-        const factsTarget = resolveFactsTarget({
-            store,
-            cmsFactsDatabaseUrl: this.config.cmsFactsDatabaseUrl,
-            enhancedFactsDatabaseUrl: this.config.enhancedFactsDatabaseUrl,
-            factsProvider: this.config.factsProvider,
-            factsSchema: this.config.factsSchema,
-            enhancedFactsSchema: this.config.enhancedFactsSchema,
-        });
-        this._factStore = await createFactStoreForUrl(
-            factsTarget.url,
-            factsTarget.schema,
-            { useManagedIdentity: useMi, aadUser, provider: factsTarget.provider },
-        );
+        this._factStore = await runtimeStorageProvider.createFactStore(storage.runtime);
         await this._factStore.initialize();
         trace("[client] facts initialize done");
 
@@ -649,7 +622,7 @@ export class PilotSwarmClient {
     }
 
     /** @internal */
-    _getCatalog(): SessionCatalogProvider {
+    _getCatalog(): SessionCatalog {
         return this._catalog;
     }
 

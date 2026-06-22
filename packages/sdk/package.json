@@ -36,6 +36,7 @@
     "test:local:retrieval-usage": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/retrieval-usage-stats.test.js",
     "test:local:cache-observability": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/cache-observability.test.js",
     "test:local:facts-stats": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/facts-stats.test.js",
+    "test:local:storage": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/storage-config.test.js test/local/duroxide-schema-migration.test.js",
     "test:local:sdk-disk-format": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/sdk-disk-format.test.js",
     "test:local:dehydrate-no-fallback": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/dehydrate-no-fallback.test.js",
     "test:local": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run",

@@ -2,6 +2,7 @@ import type { Tool, SessionConfig } from "@github/copilot-sdk";
 import type { SessionStateStore } from "./session-store.js";
 import type { ReasoningEffort } from "./model-providers.js";
 import type { EmbeddingEndpointConfig } from "./facts-store.js";
+import type { StorageConfig } from "./storage-config.js";
 
 export const SESSION_STATE_MISSING_PREFIX = "SESSION_STATE_MISSING:";
 
@@ -573,6 +574,13 @@ export interface PilotSwarmWorkerOptions {
     traceWriter?: (msg: string) => void;
 
     /**
+     * Resolved storage config. When supplied, this is the source of truth for
+     * runtime storage and duroxide storage; legacy flat storage fields are used
+     * only as compatibility inputs when this is omitted.
+     */
+    storageConfig?: StorageConfig;
+
+    /**
      * Custom LLM provider (BYOK — Bring Your Own Key).
      * When specified, uses this API endpoint instead of the GitHub Copilot API.
      * Eliminates the need for a GitHub token.
@@ -592,7 +600,7 @@ export interface PilotSwarmWorkerOptions {
 
     /**
      * PostgreSQL schema name for duroxide orchestration tables.
-     * Default: `"duroxide"`. Change this to run multiple independent
+    * Default: `"ps_duroxide"`. Change this to run multiple independent
      * deployments on the same database.
      */
     duroxideSchema?: string;
@@ -754,6 +762,12 @@ export interface PilotSwarmClientOptions {
      */
     traceWriter?: (msg: string) => void;
 
+    /**
+     * Resolved storage config. Must match the worker. When supplied, this is
+     * the source of truth for CMS/facts and duroxide storage.
+     */
+    storageConfig?: StorageConfig;
+
     /** Seconds between periodic checkpoints (blob upload without losing session pin). -1 = disabled. */
     checkpointInterval?: number;
 
@@ -762,7 +776,7 @@ export interface PilotSwarmClientOptions {
 
     /**
      * PostgreSQL schema name for duroxide orchestration tables.
-     * Default: `"duroxide"`. Must match the worker's `duroxideSchema`.
+    * Default: `"ps_duroxide"`. Must match the worker's `duroxideSchema`.
      */
     duroxideSchema?: string;
 

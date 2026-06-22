@@ -1,4 +1,3 @@
-import { createDuroxidePostgresProvider } from "./duroxide-provider-factory.js";
 import { SessionManager } from "./session-manager.js";
 import { SessionBlobStore, createSessionBlobStore } from "./blob-store.js";
 import { FilesystemArtifactStore, FilesystemSessionStore, type ArtifactStore, type SessionStateStore } from "./session-store.js";
@@ -7,15 +6,17 @@ import {
     DURABLE_SESSION_ORCHESTRATION_NAME,
     DURABLE_SESSION_ORCHESTRATION_REGISTRY,
 } from "./orchestration-registry.js";
-import { PgSessionCatalogProvider } from "./cms.js";
-import type { SessionCatalogProvider } from "./cms.js";
+import { PgSessionCatalog } from "./cms.js";
+import type { SessionCatalog } from "./cms.js";
 import { loadAgentFiles } from "./agent-loader.js";
 import { startSystemAgents } from "./system-agents.js";
 import { loadMcpConfig } from "./mcp-loader.js";
 import { loadModelProviders, type ModelProviderRegistry } from "./model-providers.js";
 import { createArtifactTools } from "./artifact-tools.js";
-import { createFactStoreForUrl, createGraphStoreForUrl, resolveFactsTarget, isEnhancedFactStore, PgFactStore, type FactStore } from "./facts-store.js";
+import { isEnhancedFactStore, PgFactStore, type FactStore } from "./facts-store.js";
 import type { GraphStore } from "./graph-store.js";
+import { resolveStorageConfig, type StorageConfig } from "./storage-config.js";
+import { getDuroxideStorageProvider, getRuntimeStorageProvider } from "./storage-providers.js";
 import { createSweeperTools } from "./sweeper-tools.js";
 import { createResourceManagerTools } from "./resourcemgr-tools.js";
 import { composeSystemPrompt, mergePromptSections } from "./prompt-layering.js";
@@ -34,9 +35,8 @@ import { createRequire } from "node:module";
 
 const __sdkDir = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
-const { SqliteProvider, PostgresProvider, Runtime, Client } = require("duroxide");
+const { SqliteProvider, Runtime, Client } = require("duroxide");
 
-const DEFAULT_DUROXIDE_SCHEMA = "duroxide";
 const DEFAULT_SESSION_STATE_DIR = path.join(os.homedir(), ".copilot", "session-state");
 const DEFAULT_ORCHESTRATION_CONCURRENCY = 2;
 const DEFAULT_WORKER_CONCURRENCY = 2;
@@ -72,13 +72,13 @@ export { buildSystemAgentBootstrapPayload } from "./system-agents.js";
  * facts without needing `shared=true`.
  *
  * Exported so tests can verify spawn-tree visibility behavior with a
- * mock `SessionCatalogProvider`.
+ * mock `SessionCatalog`.
  *
  * @internal
  */
 export async function resolveSpawnTreeSessionIds(
     sessionId: string,
-    catalog: Pick<SessionCatalogProvider, "getSession" | "getDescendantSessionIds">,
+    catalog: Pick<SessionCatalog, "getSession" | "getDescendantSessionIds">,
 ): Promise<string[]> {
     const seen = new Set([sessionId]);
     const lineage: string[] = [];
@@ -119,7 +119,7 @@ export class PilotSwarmWorker {
     private graphStore: GraphStore | null = null;
     private runtime: any = null;
     private _provider: any = null;
-    private _catalog: SessionCatalogProvider | null = null;
+    private _catalog: SessionCatalog | null = null;
     private _started = false;
     /** Worker-level tool registry — name → Tool. */
     private toolRegistry = new Map<string, Tool<any>>();
@@ -260,7 +260,7 @@ export class PilotSwarmWorker {
     }
 
     /** Session catalog (CMS) — available when store is PostgreSQL. */
-    get catalog(): SessionCatalogProvider | null {
+    get catalog(): SessionCatalog | null {
         return this._catalog;
     }
 
@@ -306,12 +306,14 @@ export class PilotSwarmWorker {
 
         const trace = this.config.traceWriter ?? (() => {});
         const store = this.config.store;
+        const storage = resolveStorageConfig({ options: this.config });
+        const runtimeStorageProvider = getRuntimeStorageProvider(storage.runtime.provider);
         const orchestrationConcurrency = parsePositiveInt(process.env.PILOTSWARM_ORCHESTRATION_CONCURRENCY)
             ?? DEFAULT_ORCHESTRATION_CONCURRENCY;
         const workerConcurrency = parsePositiveInt(process.env.PILOTSWARM_WORKER_CONCURRENCY)
             ?? DEFAULT_WORKER_CONCURRENCY;
         const cmsPoolMax = parsePositiveInt(process.env.PILOTSWARM_CMS_PG_POOL_MAX)
-            ?? PgSessionCatalogProvider.DEFAULT_POOL_MAX;
+            ?? PgSessionCatalog.DEFAULT_POOL_MAX;
         const factsPoolMax = parsePositiveInt(process.env.PILOTSWARM_FACTS_PG_POOL_MAX)
             ?? PgFactStore.DEFAULT_POOL_MAX;
 
@@ -319,7 +321,7 @@ export class PilotSwarmWorker {
             process.env.DUROXIDE_PG_POOL_MAX = String(DEFAULT_DUROXIDE_PG_POOL_MAX);
         }
 
-        this._provider = await this._createProvider();
+        this._provider = await this._createProvider(storage);
 
         // Initialize CMS catalog and facts store.
         // CMS + facts can use a separate URL when running with AAD/MI
@@ -329,44 +331,20 @@ export class PilotSwarmWorker {
         // (created above in `_createProvider`) honours the same MI
         // switch via duroxide-node's native Entra path; CMS/facts go
         // through the pg-pool factory using `DefaultAzureCredential`.
-        const cmsFactsUrl = this.config.cmsFactsDatabaseUrl ?? store;
-        const useMi = this.config.useManagedIdentity ?? false;
-        const aadUser = this.config.aadDbUser;
-        if (cmsFactsUrl.startsWith("postgres://") || cmsFactsUrl.startsWith("postgresql://")) {
-            try {
-                this._catalog = await PgSessionCatalogProvider.create(
-                    cmsFactsUrl,
-                    this.config.cmsSchema,
-                    { useManagedIdentity: useMi, aadUser },
-                );
-                await this._catalog.initialize();
-            } catch (err) {
-                console.error("[PilotSwarmWorker] CMS initialization failed:", err);
-                this._catalog = null;
-            }
+        try {
+            this._catalog = await runtimeStorageProvider.createSessionCatalog(storage.runtime);
+            await this._catalog.initialize();
+        } catch (err) {
+            console.error("[PilotSwarmWorker] CMS initialization failed:", err);
+            this._catalog = null;
         }
         // ── Facts store: base PgFactStore (default) or an EnhancedFactStore
         //    provider (enhancedfactstore 07 P3). Shared resolver keeps the
         //    worker/client/management in lockstep.
-        const factsTarget = resolveFactsTarget({
-            store,
-            cmsFactsDatabaseUrl: this.config.cmsFactsDatabaseUrl,
-            enhancedFactsDatabaseUrl: this.config.enhancedFactsDatabaseUrl,
-            factsProvider: this.config.factsProvider,
-            factsSchema: this.config.factsSchema,
-            enhancedFactsSchema: this.config.enhancedFactsSchema,
-        });
-        this.factStore = await createFactStoreForUrl(
-            factsTarget.url,
-            factsTarget.schema,
-            {
-                useManagedIdentity: useMi,
-                aadUser,
-                provider: factsTarget.provider,
-                embedding: this.config.horizonEmbed,
-            },
-        );
+        this.factStore = await runtimeStorageProvider.createFactStore(storage.runtime);
         await this.factStore.initialize();
+        const enhancedFactStore = runtimeStorageProvider.getEnhancedFactStore?.(this.factStore)
+            ?? (isEnhancedFactStore(this.factStore) ? this.factStore : undefined);
 
         // ── Durable embedder lifecycle (enhancedfactstore 07 P5) ────────────
         //   When horizonEmbed is configured AND the store is an enhanced store
@@ -384,14 +362,14 @@ export class PilotSwarmWorker {
         //   worker's shutdown would halt embedding for the whole fleet, and a
         //   rolling restart would leave it stopped. It is started idempotently
         //   and only ever stopped by an explicit operator action.
-        if (this.config.horizonEmbed && isEnhancedFactStore(this.factStore) && this.factStore.capabilities.embedder) {
+        if (storage.runtime.embedding && enhancedFactStore?.capabilities.embedder) {
             try {
-                let st = await this.factStore.embedderStatus();
+            let st = await enhancedFactStore.embedderStatus();
                 if (!st.running) {
                     // Recovery: the provider's boot start did not take (or a
                     // prior loop was stopped). startEmbedder is idempotent +
                     // advisory-locked, so this converges on exactly one loop.
-                    st = await this.factStore.startEmbedder();
+                    st = await enhancedFactStore.startEmbedder();
                 }
                 trace(`[worker] durable embedder: running=${st.running}${st.instanceId ? `, instance=${st.instanceId}` : ""}`);
             } catch (err) {
@@ -404,32 +382,10 @@ export class PilotSwarmWorker {
 
         // ── Graph store: SEPARATE, opt-in provider (07 D2). Present iff
         //    graphDatabaseUrl is configured. Never selected implicitly.
-        if (this.config.graphDatabaseUrl) {
-            // The graph name must DIFFER from the facts schema — AGE's
-            // create_graph() makes a PG schema named after the graph, so a
-            // collision with the facts schema corrupts both. Default to a
-            // dedicated "horizon_graph" rather than the facts schema, and
-            // fail-fast on an explicit same-name-same-DB collision.
-            const graphSchema = this.config.graphSchema ?? "horizon_graph";
-            const sameDbAsFacts = this.config.graphDatabaseUrl === factsTarget.url;
-            if (sameDbAsFacts && graphSchema === (factsTarget.schema ?? "pilotswarm_facts")) {
-                throw new Error(
-                    `graphSchema "${graphSchema}" collides with the facts schema on the same database. ` +
-                    `Apache AGE creates a PG schema named after the graph; choose a distinct graphSchema.`,
-                );
-            }
+        if (storage.runtime.graph?.enabled) {
             let candidate: GraphStore | undefined;
             try {
-                candidate = await createGraphStoreForUrl(
-                    this.config.graphDatabaseUrl,
-                    graphSchema,
-                    {
-                        useManagedIdentity: useMi,
-                        aadUser,
-                        registrySchema: this.config.graphRegistrySchema,
-                        namespaceCacheTtlMs: this.config.graphNamespaceCacheTtlMs,
-                    },
-                );
+                candidate = await runtimeStorageProvider.createGraphStore?.(storage.runtime);
                 if (candidate) await candidate.initialize();
                 this.graphStore = candidate ?? null;
             } catch (err) {
@@ -443,7 +399,7 @@ export class PilotSwarmWorker {
         }
 
         trace(
-            `[worker] facts provider=${factsTarget.provider}, graph=${this.graphStore ? "on" : "off"}; ` +
+            `[worker] runtime storage provider=${storage.runtime.provider}, enhancedFacts=${enhancedFactStore ? "on" : "off"}, graph=${this.graphStore ? "on" : "off"}; ` +
             `postgres pools: duroxidePgPoolMax=${process.env.DUROXIDE_PG_POOL_MAX ?? "(unset)"}, ` +
             `cmsPoolMax=${cmsPoolMax}, factsPoolMax=${factsPoolMax}`,
         );
@@ -491,17 +447,18 @@ export class PilotSwarmWorker {
             this.config.githubToken,
             this._catalog,
             this._provider,
-            store,
-            this.config.cmsSchema,
+            storage.duroxide.url,
+            storage.runtime.cmsSchema,
             {
-                duroxideSchema: this.config.duroxideSchema,
-                factsSchema: this.config.factsSchema,
-                cmsFactsDatabaseUrl: this.config.cmsFactsDatabaseUrl,
-                enhancedFactsDatabaseUrl: this.config.enhancedFactsDatabaseUrl,
-                factsProvider: this.config.factsProvider,
-                enhancedFactsSchema: this.config.enhancedFactsSchema,
-                useManagedIdentity: this.config.useManagedIdentity,
-                aadDbUser: this.config.aadDbUser,
+                storageConfig: storage,
+                duroxideSchema: storage.duroxide.schema,
+                factsSchema: storage.runtime.factsSchema,
+                cmsFactsDatabaseUrl: storage.runtime.sessionCatalogUrl ?? storage.runtime.url,
+                enhancedFactsDatabaseUrl: storage.runtime.factStoreUrl,
+                factsProvider: storage.runtime.provider === "horizondb" ? "horizon" : "pg",
+                enhancedFactsSchema: storage.runtime.provider === "horizondb" ? storage.runtime.factsSchema : undefined,
+                useManagedIdentity: storage.runtime.useManagedIdentity,
+                aadDbUser: storage.runtime.aadDbUser,
             },
             this._loadedSystemAgents,
             this._sessionPolicy,
@@ -526,8 +483,8 @@ export class PilotSwarmWorker {
                 catalog: this._catalog,
                 duroxideClient: sweeperClient,
                 factStore: this.factStore,
-                duroxideSchema: this.config.duroxideSchema,
-                storeUrl: this.config.store,
+                duroxideSchema: storage.duroxide.schema,
+                storeUrl: storage.duroxide.url,
             });
             this.registerTools(sweeperTools);
         }
@@ -545,8 +502,8 @@ export class PilotSwarmWorker {
                 catalog: this._catalog,
                 duroxideClient: rmClient,
                 blobStore: this.blobStore,
-                duroxideSchema: this.config.duroxideSchema,
-                cmsSchema: this.config.cmsSchema,
+                duroxideSchema: storage.duroxide.schema,
+                cmsSchema: storage.runtime.cmsSchema,
             });
             this.registerTools(rmTools);
         }
@@ -916,21 +873,13 @@ export class PilotSwarmWorker {
         });
     }
 
-    private async _createProvider(): Promise<any> {
+    private async _createProvider(storage: StorageConfig): Promise<any> {
         const store = this.config.store;
         if (store === "sqlite::memory:") return SqliteProvider.inMemory();
         if (store.startsWith("sqlite://")) return SqliteProvider.open(store);
-        if (store.startsWith("postgres://") || store.startsWith("postgresql://")) {
-            return createDuroxidePostgresProvider(
-                PostgresProvider,
-                store,
-                this.config.duroxideSchema ?? DEFAULT_DUROXIDE_SCHEMA,
-                {
-                    useManagedIdentity: this.config.useManagedIdentity ?? false,
-                    aadUser: this.config.aadDbUser,
-                },
-            );
+        if (storage.duroxide.url.startsWith("postgres://") || storage.duroxide.url.startsWith("postgresql://")) {
+            return getDuroxideStorageProvider(storage.duroxide.provider).createDuroxideProvider(storage.duroxide);
         }
-        throw new Error(`Unsupported store URL: ${store}`);
+        throw new Error(`Unsupported duroxide store URL: ${storage.duroxide.url}`);
     }
 }

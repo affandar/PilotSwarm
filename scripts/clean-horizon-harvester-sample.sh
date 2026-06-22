@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Clean up the Horizon Harvester sample. Three escalating levels:
 #
-#   (no args)   Local only — drop the local duroxide + copilot_sessions schemas
+#   (no args)   Local only — drop the local ps_duroxide/legacy duroxide + copilot_sessions schemas
 #               and session files. HorizonDB facts + graph are NOT touched.
 #   --facts     The above, plus delete this sample's corpus/northwind facts from
 #               HorizonDB (keeps the schema + the durable embedder loop).

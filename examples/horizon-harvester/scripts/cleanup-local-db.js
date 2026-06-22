@@ -6,7 +6,7 @@
  * Resets local development state:
  *   1. Queries CMS for session IDs (before dropping schemas)
  *   2. Removes local artifact / session-state / session-store files for those sessions
- *   3. Drops the local duroxide + copilot_sessions schemas (CMS + orchestration)
+ *   3. Drops the local ps_duroxide, legacy duroxide if PilotSwarm-owned, and copilot_sessions schemas (CMS + orchestration)
  *
  * The HorizonDB facts + graph live on a SEPARATE (preview) cluster, so this script
  * does NOT touch them by default. Two opt-in levels of HorizonDB cleanup:
@@ -31,6 +31,19 @@ import path from "node:path";
 import pg from "pg";
 
 const { Client } = pg;
+
+async function schemaOwnedByPgDurable(client, schemaName) {
+    const { rows } = await client.query(`
+        SELECT EXISTS (
+            SELECT 1
+            FROM pg_extension e
+            JOIN pg_namespace n ON n.oid = e.extnamespace
+            WHERE e.extname = 'pg_durable'
+              AND n.nspname = $1
+        ) AS owned
+    `, [schemaName]);
+    return Boolean(rows[0]?.owned);
+}
 
 if (typeof process.loadEnvFile === "function") {
     try { process.loadEnvFile(".env"); } catch {}
@@ -93,8 +106,14 @@ console.log(`Deleted ${artifactsDeleted} artifact dir(s), ${stateDeleted} sessio
 // ── 3. Drop local CMS + orchestration schemas ───────────────
 
 try {
-    await client.query("DROP SCHEMA IF EXISTS duroxide CASCADE");
-    console.log("Dropped schema: duroxide");
+    await client.query("DROP SCHEMA IF EXISTS ps_duroxide CASCADE");
+    console.log("Dropped schema: ps_duroxide");
+    if (await schemaOwnedByPgDurable(client, "duroxide")) {
+        console.log("Skipped schema: duroxide (owned by pg_durable)");
+    } else {
+        await client.query("DROP SCHEMA IF EXISTS duroxide CASCADE");
+        console.log("Dropped schema: duroxide");
+    }
     await client.query("DROP SCHEMA IF EXISTS copilot_sessions CASCADE");
     console.log("Dropped schema: copilot_sessions");
 } finally {

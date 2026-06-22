@@ -48,9 +48,9 @@ LOCAL_TMP="${REPO_ROOT}/.tmp"
 SESSION_STATE_DIR="${SESSION_STATE_DIR:-${LOCAL_TMP}/session-state}"
 SESSION_STORE_DIR="${SESSION_STORE_DIR:-${LOCAL_TMP}/session-store}"
 ARTIFACT_DIR="${ARTIFACT_DIR:-${LOCAL_TMP}/artifacts}"
-DUROXIDE_SCHEMA="${DUROXIDE_SCHEMA:-duroxide}"
-CMS_SCHEMA="${CMS_SCHEMA:-copilot_sessions}"
-FACTS_SCHEMA="${FACTS_SCHEMA:-pilotswarm_facts}"
+DUROXIDE_SCHEMA="${PILOTSWARM_DUROXIDE_SCHEMA:-${DUROXIDE_SCHEMA:-ps_duroxide}}"
+CMS_SCHEMA="${PILOTSWARM_CMS_SCHEMA:-${CMS_SCHEMA:-copilot_sessions}}"
+FACTS_SCHEMA="${PILOTSWARM_FACTS_SCHEMA:-${FACTS_SCHEMA:-pilotswarm_facts}}"
 
 # ── Query CMS for summary counts ─────────────────────────────────
 SESSION_IDS_FILE=$(mktemp)
@@ -67,7 +67,7 @@ const ssl = ['require','prefer','verify-ca','verify-full'].includes(url.searchPa
 url.searchParams.delete('sslmode');
 const pool = new pg.Pool({ connectionString: url.toString(), ...(ssl ? { ssl: { rejectUnauthorized: false } } : {}) });
 try {
-    const cmsSchema = process.env.CMS_SCHEMA || 'copilot_sessions';
+    const cmsSchema = process.env.PILOTSWARM_CMS_SCHEMA || process.env.CMS_SCHEMA || 'copilot_sessions';
     const { rows } = await pool.query('SELECT session_id FROM ' + quoteIdent(cmsSchema) + '.sessions');
     for (const r of rows) console.log(r.session_id);
 } catch {}
@@ -83,7 +83,7 @@ const ssl = ['require','prefer','verify-ca','verify-full'].includes(url.searchPa
 url.searchParams.delete('sslmode');
 const pool = new pg.Pool({ connectionString: url.toString(), ...(ssl ? { ssl: { rejectUnauthorized: false } } : {}) });
 try {
-    const factsSchema = process.env.FACTS_SCHEMA || 'pilotswarm_facts';
+    const factsSchema = process.env.PILOTSWARM_FACTS_SCHEMA || process.env.FACTS_SCHEMA || 'pilotswarm_facts';
     const { rows } = await pool.query('SELECT COUNT(*)::text AS count FROM ' + quoteIdent(factsSchema) + '.facts');
     process.stdout.write(rows[0]?.count ?? '0');
 } catch {
@@ -103,7 +103,7 @@ else
 fi
 echo ""
 echo "   This will:"
-echo "     ${STEP}. DROP database schemas: ${DUROXIDE_SCHEMA}, ${CMS_SCHEMA}, ${FACTS_SCHEMA}"
+echo "     ${STEP}. DROP database schemas: ${DUROXIDE_SCHEMA}, legacy duroxide, ${CMS_SCHEMA}, ${FACTS_SCHEMA}"
 STEP=$((STEP + 1))
 echo "     ${STEP}. Delete ${FACT_COUNT} fact row(s) from ${FACTS_SCHEMA}.facts"
 if [[ "$MODE" != "remote" ]]; then
@@ -143,9 +143,9 @@ const quoteIdent = (value) => '\"' + String(value).replace(/\"/g, '\"\"') + '\"'
 const ssl = ['require','prefer','verify-ca','verify-full'].includes(url.searchParams.get('sslmode') ?? '');
 url.searchParams.delete('sslmode');
 const client = new pg.Client({ connectionString: url.toString(), ...(ssl ? { ssl: { rejectUnauthorized: false } } : {}) });
-const duroxideSchema = process.env.DUROXIDE_SCHEMA || 'duroxide';
-const cmsSchema = process.env.CMS_SCHEMA || 'copilot_sessions';
-const factsSchema = process.env.FACTS_SCHEMA || 'pilotswarm_facts';
+const duroxideSchema = process.env.PILOTSWARM_DUROXIDE_SCHEMA || process.env.DUROXIDE_SCHEMA || 'ps_duroxide';
+const cmsSchema = process.env.PILOTSWARM_CMS_SCHEMA || process.env.CMS_SCHEMA || 'copilot_sessions';
+const factsSchema = process.env.PILOTSWARM_FACTS_SCHEMA || process.env.FACTS_SCHEMA || 'pilotswarm_facts';
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function terminateOtherBackends() {
@@ -180,12 +180,27 @@ async function dropSchema(schemaName) {
     }
 }
 
+async function schemaOwnedByPgDurable(schemaName) {
+    const { rows } = await client.query(
+        'SELECT EXISTS (SELECT 1 FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = $1 AND n.nspname = $2) AS owned',
+        ['pg_durable', schemaName]
+    );
+    return Boolean(rows[0]?.owned);
+}
+
 await client.connect();
 const terminated = await terminateOtherBackends();
 if (terminated > 0) {
     console.log('   ✅ Terminated ' + terminated + ' other PostgreSQL backend(s) on current database');
 }
 await dropSchema(duroxideSchema);
+if (duroxideSchema !== 'duroxide') {
+    if (await schemaOwnedByPgDurable('duroxide')) {
+        console.log('   ↪ skipped duroxide schema (owned by pg_durable)');
+    } else {
+        await dropSchema('duroxide');
+    }
+}
 await dropSchema(cmsSchema);
 await dropSchema(factsSchema);
 await client.end();

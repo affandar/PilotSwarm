@@ -298,7 +298,7 @@ new PilotSwarmWorker({
     blobContainer: string,          // container name (default: "copilot-sessions")
 
     // Schema isolation (for multi-tenant on same database)
-    duroxideSchema: "duroxide",         // orchestration schema (default: "duroxide")
+    duroxideSchema: "ps_duroxide",      // orchestration schema (default: "ps_duroxide")
     cmsSchema: "copilot_sessions",       // session catalog schema (default: "copilot_sessions")
 });
 ```
@@ -428,7 +428,7 @@ new PilotSwarmClient({
     dehydrateOnInputRequired: 60, // seconds to wait before dehydrating on user input
 
     // Schema isolation (must match worker)
-    duroxideSchema: "duroxide",         // default: "duroxide"
+    duroxideSchema: "ps_duroxide",      // default: "ps_duroxide"
     cmsSchema: "copilot_sessions",       // default: "copilot_sessions"
 });
 ```

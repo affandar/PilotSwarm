@@ -8,7 +8,7 @@
  * @module
  */
 
-import type { SessionCatalogProvider, SessionRow, SessionEvent } from "./cms.js";
+import type { SessionCatalog, SessionRow, SessionEvent } from "./cms.js";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -43,7 +43,7 @@ function escapeContent(text: string): string {
 // ─── SessionDumper ───────────────────────────────────────────────
 
 export class SessionDumper {
-    constructor(private catalog: SessionCatalogProvider) {}
+    constructor(private catalog: SessionCatalog) {}
 
     /**
      * Dump a single session and all its descendants to Markdown.

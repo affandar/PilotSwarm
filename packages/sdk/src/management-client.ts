@@ -24,8 +24,7 @@ import type {
     SessionOwnerInfo,
     SessionSummaryState,
 } from "./types.js";
-import type { SessionCatalogProvider, SessionRow, TopEventEmitterRow } from "./cms.js";
-import { PgSessionCatalogProvider } from "./cms.js";
+import type { SessionCatalog, SessionRow, TopEventEmitterRow } from "./cms.js";
 import type {
     SessionMetricSummary,
     SessionTreeStats,
@@ -47,8 +46,9 @@ import type {
     ChildOutcomeRow,
 } from "./cms.js";
 import type { FactStore, FactsStatsRow, FactsTombstoneStats } from "./facts-store.js";
-import { createFactStoreForUrl, resolveFactsTarget, isEnhancedFactStore } from "./facts-store.js";
-import { createDuroxidePostgresProvider } from "./duroxide-provider-factory.js";
+import { isEnhancedFactStore } from "./facts-store.js";
+import { resolveStorageConfig, type StorageConfig } from "./storage-config.js";
+import { getDuroxideStorageProvider, getRuntimeStorageProvider } from "./storage-providers.js";
 import { SessionDumper } from "./session-dumper.js";
 import { loadModelProviders, type ModelProviderRegistry, type ModelDescriptor, type ReasoningEffort } from "./model-providers.js";
 import { deriveStatusFromCmsAndRuntime, shouldSyncCompletedStatus, shouldSyncFailedStatus } from "./session-status.js";
@@ -64,9 +64,8 @@ import {
 // duroxide is CommonJS — use createRequire for ESM compatibility
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
-const { SqliteProvider, PostgresProvider, Client } = require("duroxide");
+const { SqliteProvider, Client } = require("duroxide");
 
-const DEFAULT_DUROXIDE_SCHEMA = "duroxide";
 const STATUS_WAIT_SLICE_MS = 10_000;
 const MAX_SESSION_TITLE_LENGTH = 60;
 const SESSION_COMMAND_SETTLE_TIMEOUT_MS = 65_000;
@@ -345,7 +344,9 @@ export interface ExecutionHistoryEvent {
 export interface PilotSwarmManagementClientOptions {
     /** PostgreSQL connection string. PilotSwarm requires PostgreSQL for CMS and facts. */
     store: string;
-    /** PostgreSQL schema for duroxide tables. Default: "duroxide". */
+    /** Resolved storage config. Must match the worker when supplied. */
+    storageConfig?: StorageConfig;
+    /** PostgreSQL schema for duroxide tables. Default: "ps_duroxide". */
     duroxideSchema?: string;
     /** PostgreSQL schema for CMS tables. Default: "copilot_sessions". */
     cmsSchema?: string;
@@ -398,7 +399,7 @@ export interface PilotSwarmManagementClientOptions {
 
 export class PilotSwarmManagementClient {
     private config: PilotSwarmManagementClientOptions;
-    private _catalog: SessionCatalogProvider | null = null;
+    private _catalog: SessionCatalog | null = null;
     private _factStore: FactStore | null = null;
     private _duroxideClient: any = null;
     private _modelProviders: ModelProviderRegistry | null = null;
@@ -416,6 +417,8 @@ export class PilotSwarmManagementClient {
     async start(): Promise<void> {
         if (this._started) return;
         const store = this.config.store;
+        const storage = resolveStorageConfig({ options: this.config });
+        const runtimeStorageProvider = getRuntimeStorageProvider(storage.runtime.provider);
         const _trace = this.config.traceWriter ?? (() => {});
 
         // CMS + facts may use a separate URL when running with AAD/MI
@@ -423,55 +426,28 @@ export class PilotSwarmManagementClient {
         // display name). Mirrors PilotSwarmClient.start(). The duroxide
         // orchestration store honours the same MI switch via
         // duroxide-node's native Entra path.
-        const cmsFactsUrl = this.config.cmsFactsDatabaseUrl ?? store;
-        const useMi = this.config.useManagedIdentity ?? false;
-        const aadUser = this.config.aadDbUser;
-
         // Create duroxide client
         let provider: any;
         if (store === "sqlite::memory:") provider = SqliteProvider.inMemory();
         else if (store.startsWith("sqlite://")) provider = SqliteProvider.open(store);
-        else if (store.startsWith("postgres://") || store.startsWith("postgresql://")) {
+        else if (storage.duroxide.url.startsWith("postgres://") || storage.duroxide.url.startsWith("postgresql://")) {
             _trace("[mgmt] duroxide provider connect start...");
-            provider = await createDuroxidePostgresProvider(
-                PostgresProvider,
-                store,
-                this.config.duroxideSchema ?? DEFAULT_DUROXIDE_SCHEMA,
-                { useManagedIdentity: useMi, aadUser },
-            );
+            provider = await getDuroxideStorageProvider(storage.duroxide.provider).createDuroxideProvider(storage.duroxide);
             _trace("[mgmt] duroxide provider connect done");
         } else {
-            throw new Error(`Unsupported store URL: ${store}`);
+            throw new Error(`Unsupported duroxide store URL: ${storage.duroxide.url}`);
         }
         this._duroxideClient = new Client(provider);
 
         // Create CMS catalog
-        if (cmsFactsUrl.startsWith("postgres://") || cmsFactsUrl.startsWith("postgresql://")) {
-            _trace("[mgmt] CMS create start...");
-            this._catalog = await PgSessionCatalogProvider.create(
-                cmsFactsUrl,
-                this.config.cmsSchema,
-                { useManagedIdentity: useMi, aadUser },
-            );
-            _trace("[mgmt] CMS initialize start...");
-            await this._catalog.initialize();
-            _trace("[mgmt] CMS initialize done");
-        }
+        _trace("[mgmt] CMS create start...");
+        this._catalog = await runtimeStorageProvider.createSessionCatalog(storage.runtime);
+        _trace("[mgmt] CMS initialize start...");
+        await this._catalog.initialize();
+        _trace("[mgmt] CMS initialize done");
 
         _trace("[mgmt] facts create start...");
-        const factsTarget = resolveFactsTarget({
-            store,
-            cmsFactsDatabaseUrl: this.config.cmsFactsDatabaseUrl,
-            enhancedFactsDatabaseUrl: this.config.enhancedFactsDatabaseUrl,
-            factsProvider: this.config.factsProvider,
-            factsSchema: this.config.factsSchema,
-            enhancedFactsSchema: this.config.enhancedFactsSchema,
-        });
-        this._factStore = await createFactStoreForUrl(
-            factsTarget.url,
-            factsTarget.schema,
-            { useManagedIdentity: useMi, aadUser, provider: factsTarget.provider },
-        );
+        this._factStore = await runtimeStorageProvider.createFactStore(storage.runtime);
         await this._factStore.initialize();
         _trace("[mgmt] facts initialize done");
 

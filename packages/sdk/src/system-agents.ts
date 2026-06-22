@@ -6,7 +6,7 @@ import {
     DURABLE_SESSION_LATEST_VERSION,
     DURABLE_SESSION_ORCHESTRATION_NAME,
 } from "./orchestration-registry.js";
-import type { SessionCatalogProvider } from "./cms.js";
+import type { SessionCatalog } from "./cms.js";
 import type { OrchestrationInput, SerializableSessionConfig } from "./types.js";
 
 const __sdkDir = path.dirname(fileURLToPath(import.meta.url));
@@ -186,7 +186,7 @@ function filterPlansForTarget(plans: SystemAgentSessionPlan[], agentId?: string)
 }
 
 export async function startSystemAgents(opts: {
-    catalog: Pick<SessionCatalogProvider, "getSession" | "createSession" | "updateSession">;
+    catalog: Pick<SessionCatalog, "getSession" | "createSession" | "updateSession">;
     duroxideClient: any;
     agents: AgentConfig[];
     defaultModel: string;

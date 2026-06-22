@@ -22,7 +22,7 @@
 
 import { defineTool } from "@github/copilot-sdk";
 import type { Tool } from "@github/copilot-sdk";
-import type { SessionCatalogProvider, SessionEvent } from "./cms.js";
+import type { SessionCatalog, SessionEvent } from "./cms.js";
 import { isEnhancedFactStore } from "./facts-store.js";
 import { formatOwnerBucketLabel, formatSessionOwnerLabel, getSessionOwnerKind, matchesOwnerBucketFilters, matchesSessionOwnerFilters } from "./session-owner-utils.js";
 
@@ -109,7 +109,7 @@ function serializeEvents(events: SessionEvent[]): { serialized: SerializedEvent[
 }
 
 export interface CreateInspectToolsOptions {
-    catalog: SessionCatalogProvider;
+    catalog: SessionCatalog;
     agentIdentity?: string;
     /**
      * Optional duroxide client used by tuner-only tools that read

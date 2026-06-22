@@ -6,7 +6,7 @@ import type { ModelProviderRegistry } from "./model-providers.js";
 import { createFactTools } from "./facts-tools.js";
 import { createGraphTools } from "./graph-tools.js";
 import { createInspectTools } from "./inspect-tools.js";
-import type { SessionCatalogProvider } from "./cms.js";
+import type { SessionCatalog } from "./cms.js";
 import type { FactStore } from "./facts-store.js";
 import { isEnhancedFactStore } from "./facts-store.js";
 import type { GraphStore } from "./graph-store.js";
@@ -190,7 +190,7 @@ export class SessionManager {
      * graphDatabaseUrl was configured; gates graph-tool registration. */
     private graphStore: GraphStore | null = null;
     /** Shared CMS catalog used to build always-on inspect tools. */
-    private sessionCatalog: SessionCatalogProvider | null = null;
+    private sessionCatalog: SessionCatalog | null = null;
     /** Duroxide client used by tuner-only inspect tools. */
     private _duroxideClient: any = null;
     /** Lineage lookup for ancestor/descendant facts access. */
@@ -270,7 +270,7 @@ export class SessionManager {
     }
 
     /** Set the CMS catalog for always-on inspect tools (e.g. read_agent_events). */
-    setSessionCatalog(catalog: SessionCatalogProvider | null): void {
+    setSessionCatalog(catalog: SessionCatalog | null): void {
         this.sessionCatalog = catalog;
     }
 

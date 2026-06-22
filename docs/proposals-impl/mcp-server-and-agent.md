@@ -234,7 +234,7 @@ The MCP server reads its config from environment variables (same names as the wo
 | `AZURE_STORAGE_CONNECTION_STRING` | No | Blob store for session dumps |
 | `MODEL_PROVIDERS_PATH` | No | Path to `.model_providers.json` |
 | `PILOTSWARM_CMS_SCHEMA` | No | CMS schema (default: `copilot_sessions`) |
-| `PILOTSWARM_DUROXIDE_SCHEMA` | No | Duroxide schema (default: `duroxide`) |
+| `PILOTSWARM_DUROXIDE_SCHEMA` | No | Duroxide schema (default: `ps_duroxide`) |
 | `PILOTSWARM_FACTS_SCHEMA` | No | Facts schema (default: `pilotswarm_facts`) |
 
 ### MCP Host Configuration

@@ -296,7 +296,7 @@ export interface UserStats {
  * Admin Console + future client-state migrations decide its schema).
  *
  * `githubCopilotKeySet` is a presence flag; the raw key text is only
- * available through the worker-side resolver in `SessionCatalogProvider`
+ * available through the worker-side resolver in `SessionCatalog`
  * to prevent accidental leakage through this management-facing type.
  */
 export interface UserProfile {
@@ -484,12 +484,12 @@ export interface GraphEdgeSearchUsageRow {
 // ─── Provider Interface ──────────────────────────────────────────
 
 /**
- * SessionCatalogProvider — abstraction over the CMS backing store.
+ * SessionCatalog — abstraction over the CMS backing store.
  *
  * Initial implementation: PostgreSQL.
  * Future: CosmosDB, etc.
  */
-export interface SessionCatalogProvider {
+export interface SessionCatalog {
     /** Create schema and tables if they don't exist. */
     initialize(): Promise<void>;
 
@@ -757,12 +757,12 @@ function sqlForSchema(schema: string) {
 }
 
 /**
- * PgSessionCatalogProvider — PostgreSQL implementation of SessionCatalogProvider.
+ * PgSessionCatalog — PostgreSQL implementation of SessionCatalog.
  *
  * Uses the `pg` package (node-postgres) directly.
- * Must be created via the async `PgSessionCatalogProvider.create()` factory.
+ * Must be created via the async `PgSessionCatalog.create()` factory.
  */
-export class PgSessionCatalogProvider implements SessionCatalogProvider {
+export class PgSessionCatalog implements SessionCatalog {
     private pool: any;
     private initialized = false;
     private sql: ReturnType<typeof sqlForSchema>;
@@ -774,19 +774,19 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
 
     static readonly DEFAULT_POOL_MAX = 3;
 
-    /** Factory: create and connect a PgSessionCatalogProvider. */
+    /** Factory: create and connect a PgSessionCatalog. */
     static async create(
         connectionString: string,
         schema?: string,
         opts: { useManagedIdentity?: boolean; aadUser?: string } = {},
-    ): Promise<PgSessionCatalogProvider> {
+    ): Promise<PgSessionCatalog> {
         const { default: pg } = await import("pg");
         const { buildPgPoolConfig } = await import("./pg-pool-factory.js");
 
         const configuredPoolMax = Number.parseInt(process.env.PILOTSWARM_CMS_PG_POOL_MAX ?? "", 10);
         const poolMax = Number.isFinite(configuredPoolMax) && configuredPoolMax > 0
             ? configuredPoolMax
-            : PgSessionCatalogProvider.DEFAULT_POOL_MAX;
+            : PgSessionCatalog.DEFAULT_POOL_MAX;
 
         const poolConfig = buildPgPoolConfig({
             connectionString,
@@ -804,8 +804,9 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
             console.error('[cms] pool idle client error (non-fatal):', err.message);
         });
 
-        return new PgSessionCatalogProvider(pool, schema ?? DEFAULT_SCHEMA);
+        return new PgSessionCatalog(pool, schema ?? DEFAULT_SCHEMA);
     }
+
 
     async initialize(): Promise<void> {
         if (this.initialized) return;
@@ -1937,3 +1938,9 @@ function rowToUserProfile(row: any): UserProfile {
         updatedAt: row.updated_at ? new Date(row.updated_at) : null,
     };
 }
+
+/** @deprecated Use `SessionCatalog` instead. */
+export type SessionCatalogProvider = SessionCatalog;
+
+/** @deprecated Use `PgSessionCatalog` instead. */
+export const PgSessionCatalogProvider = PgSessionCatalog;
