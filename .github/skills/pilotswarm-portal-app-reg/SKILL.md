@@ -232,7 +232,11 @@ unless the user wants a non-standard name.
 
 This auto-discovers the redirect URI from
 `deploy/envs/<stamp>/bicep-outputs.cache.json` and writes a JSON summary
-to `deploy/envs/<stamp>/entra-app.json`. If the bicep cache doesn't
+to `deploy/envs/<stamp>/entra-app.json`. **AFD + VPN stamps**
+(`VPN_GATEWAY_ENABLED=true` with `EDGE_MODE=afd`) get **two** redirect
+URIs registered automatically: the AFD endpoint (public path) and the
+portal `PORTAL_HOSTNAME` (VPN-private path, served by the AppGw
+listener behind the Private DNS A record). If the bicep cache doesn't
 exist yet (you're running BEFORE first deploy), keep `-EnvName` for the
 display name and per-stamp output path, and add `-RedirectUri` once you
 know the AFD endpoint (or omit it entirely to create the app shell now

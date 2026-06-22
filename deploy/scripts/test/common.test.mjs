@@ -99,3 +99,62 @@ test("redactArgs masks --sp (azcopy / az login service principal)", () => {
   const out = redactArgs(["azcopy", "login", "--sp", "secret-value"]);
   assert.deepEqual(out, ["azcopy", "login", "--sp", "***"]);
 });
+
+
+// ── parseEnvFile: inline `# comment` stripping for unquoted values ──
+// Regression for the VPN gateway deploy failure where VPN_GATEWAY_SKU
+// carried its template.env documentation comment into the bicep param,
+// triggering "value is not part of the allowed value(s)".
+
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { parseEnvFile } from "../lib/common.mjs";
+
+function writeTmpEnv(body) {
+  const dir = mkdtempSync(join(tmpdir(), "parseenv-"));
+  const path = join(dir, ".env");
+  writeFileSync(path, body, "utf8");
+  return { dir, path };
+}
+
+test("parseEnvFile strips inline `# comment` after unquoted value", () => {
+  const { dir, path } = writeTmpEnv("VPN_GATEWAY_SKU=VpnGw1                                    # @allowed: VpnGw1 / VpnGw2\n");
+  try {
+    const env = parseEnvFile(path);
+    assert.equal(env.VPN_GATEWAY_SKU, "VpnGw1");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("parseEnvFile preserves `#` inside quoted values", () => {
+  const { dir, path } = writeTmpEnv('TOKEN="abc#def"\n');
+  try {
+    const env = parseEnvFile(path);
+    assert.equal(env.TOKEN, "abc#def");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("parseEnvFile preserves `#` in unquoted value when not preceded by whitespace", () => {
+  const { dir, path } = writeTmpEnv("URL=https://example.com/page#section\n");
+  try {
+    const env = parseEnvFile(path);
+    assert.equal(env.URL, "https://example.com/page#section");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("parseEnvFile leaves full-line `#` comments alone (existing behavior)", () => {
+  const { dir, path } = writeTmpEnv("# this is a comment\nKEY=value\n");
+  try {
+    const env = parseEnvFile(path);
+    assert.equal(env.KEY, "value");
+    assert.equal(Object.keys(env).length, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

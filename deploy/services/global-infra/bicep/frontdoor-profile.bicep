@@ -99,6 +99,9 @@ output frontDoorEndpointName string = frontDoorEndpoint.name
 @description('Front Door endpoint resource ID.')
 output frontDoorEndpointId string = frontDoorEndpoint.id
 
+@description('Front Door profile ID GUID (the value Azure compares against the X-Azure-FDID origin header to prove the request came from this AFD profile). Surfaced so per-stamp AppGw WAF custom rules can allow-list it when VPN ingress is enabled (hybrid AFD+VPN trusted-bypass pattern).')
+output frontDoorId string = frontDoorProfile.properties.frontDoorId
+
 // ==============================================================================
 // Diagnostic settings — ship Front Door access, health-probe, and WAF logs to
 // the global Log Analytics workspace so we can correlate edge requests with

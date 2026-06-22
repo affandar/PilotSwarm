@@ -60,7 +60,9 @@
       deploy/.tmp/<EnvName>/bicep-outputs.cache.json if -RedirectUri is not given.
 
 .PARAMETER RedirectUri
-    Explicit SPA redirect URI (https://...). Overrides EnvName auto-discovery.
+    Explicit SPA redirect URI(s) (https://...). Overrides EnvName auto-discovery.
+    Accepts an array — pass multiple values to register more than one redirect URI
+    (e.g. an AFD endpoint and a VPN-private portal hostname on the same stamp).
 
 .PARAMETER ExistingAppId
     If provided, the script will NOT create a new app. Instead it appends
@@ -184,7 +186,7 @@ param(
     [Parameter(Mandatory=$true)][string]$ServiceTreeId,
     [Parameter(Mandatory=$false)][string]$DisplayName,
     [Parameter(Mandatory=$false)][string]$EnvName,
-    [Parameter(Mandatory=$false)][string]$RedirectUri,
+    [Parameter(Mandatory=$false)][string[]]$RedirectUri,
     [Parameter(Mandatory=$false)][string]$ExistingAppId,
     [Parameter(Mandatory=$false)][string]$Owner,
     [Parameter(Mandatory=$false)][switch]$SkipGroupsClaim = $false,
@@ -218,37 +220,57 @@ function Resolve-RedirectUriFromEnv {
     $cache = Join-Path $repo "deploy/.tmp/$Env/bicep-outputs.cache.json"
     if (-not (Test-Path $cache)) {
         Write-Warning "bicep-outputs.cache.json not found at $cache - cannot auto-discover redirect URI."
-        return $null
+        return @()
     }
     try {
         $outputs = Get-Content $cache -Raw | ConvertFrom-Json
     } catch {
         Write-Warning "Failed to parse ${cache}: $_"
-        return $null
+        return @()
     }
     # The deploy orchestrator's bicep cache uses UPPER_SNAKE keys
     # (deploy/scripts/lib/bicep-outputs-cache.mjs). For EDGE_MODE=afd the
     # public-facing URL is the AFD endpoint; for private/AppGw modes it
-    # is the PORTAL_HOSTNAME (AppGw FQDN). Try EDGE_MODE-aware order.
+    # is the PORTAL_HOSTNAME (AppGw FQDN). When VPN_GATEWAY_ENABLED=true
+    # on an AFD stamp we need BOTH: the AFD endpoint (public path) AND
+    # the PORTAL_HOSTNAME (VPN-private path resolved via the AppGw
+    # Private DNS A record — matches the AppGw HTTPS listener / AKV cert).
     $edgeMode = if ($outputs.PSObject.Properties.Name -contains 'EDGE_MODE') { [string]$outputs.EDGE_MODE } else { '' }
+    $vpnEnabled = $false
+    if ($outputs.PSObject.Properties.Name -contains 'VPN_GATEWAY_ID') {
+        $vpnId = [string]$outputs.VPN_GATEWAY_ID
+        if (-not [string]::IsNullOrWhiteSpace($vpnId)) { $vpnEnabled = $true }
+    }
+
     $orderedKeys = if ($edgeMode -ieq 'afd') {
-        @('FRONT_DOOR_ENDPOINT_HOST_NAME', 'PORTAL_HOSTNAME')
+        if ($vpnEnabled) {
+            # AFD + VPN: register both endpoints on the same app reg.
+            @('FRONT_DOOR_ENDPOINT_HOST_NAME', 'PORTAL_HOSTNAME')
+        } else {
+            @('FRONT_DOOR_ENDPOINT_HOST_NAME', 'PORTAL_HOSTNAME')
+        }
     } else {
         @('PORTAL_HOSTNAME', 'FRONT_DOOR_ENDPOINT_HOST_NAME')
     }
-    $portalHost = $null
+
+    $uris = New-Object System.Collections.Generic.List[string]
     foreach ($k in $orderedKeys) {
         if ($outputs.PSObject.Properties.Name -contains $k) {
             $v = [string]$outputs.$k
-            if (-not [string]::IsNullOrWhiteSpace($v)) { $portalHost = $v; break }
+            if (-not [string]::IsNullOrWhiteSpace($v)) {
+                if ($v -notmatch '^https?://') { $v = "https://$v" }
+                $v = $v.TrimEnd('/')
+                if (-not $uris.Contains($v)) { $uris.Add($v) }
+                # Non-AFD+VPN modes: stop at the first match (preserves old behavior).
+                if (-not ($edgeMode -ieq 'afd' -and $vpnEnabled)) { break }
+            }
         }
     }
-    if (-not $portalHost) {
+    if ($uris.Count -eq 0) {
         Write-Warning "Could not find a portal hostname (FRONT_DOOR_ENDPOINT_HOST_NAME / PORTAL_HOSTNAME) in $cache. Pass -RedirectUri explicitly."
-        return $null
+        return @()
     }
-    if ($portalHost -notmatch '^https?://') { $portalHost = "https://$portalHost" }
-    return $portalHost.TrimEnd('/')
+    return @($uris)
 }
 
 function Build-RequiredResourceAccessJson {
@@ -299,14 +321,18 @@ function Build-AppRolesJson {
 }
 
 function Build-PlatformPatchBodyJson {
-    param([string]$RedirectUriArg)
+    param([string[]]$RedirectUris)
     # Literal JSON to guarantee redirectUris is always a JSON array, even when empty
     # or single-element.
-    $urisJson = if ([string]::IsNullOrWhiteSpace($RedirectUriArg)) {
+    $items = @($RedirectUris | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $urisJson = if ($items.Count -eq 0) {
         "[]"
     } else {
-        $escaped = $RedirectUriArg.Replace('\', '\\').Replace('"', '\"')
-        "[`"$escaped`"]"
+        $escapedItems = $items | ForEach-Object {
+            $esc = $_.Replace('\', '\\').Replace('"', '\"')
+            "`"$esc`""
+        }
+        "[" + ($escapedItems -join ",") + "]"
     }
     return @"
 {
@@ -360,14 +386,19 @@ if ([string]::IsNullOrWhiteSpace($Owner)) {
     }
 }
 
-# Resolve redirect URI
-if ([string]::IsNullOrWhiteSpace($RedirectUri) -and -not [string]::IsNullOrWhiteSpace($EnvName)) {
+# Resolve redirect URIs
+if (($null -eq $RedirectUri -or $RedirectUri.Count -eq 0) -and -not [string]::IsNullOrWhiteSpace($EnvName)) {
     $RedirectUri = Resolve-RedirectUriFromEnv -Env $EnvName
-    if ($RedirectUri) { Write-Host "Resolved redirect URI from env '$EnvName': $RedirectUri" }
+    if ($RedirectUri -and $RedirectUri.Count -gt 0) {
+        Write-Host "Resolved redirect URI(s) from env '$EnvName':"
+        foreach ($u in $RedirectUri) { Write-Host "  - $u" }
+    }
 }
-if (-not [string]::IsNullOrWhiteSpace($RedirectUri)) {
-    if ($RedirectUri -notmatch '^https://') {
-        throw "RedirectUri must be https://. Got: $RedirectUri"
+if ($RedirectUri -and $RedirectUri.Count -gt 0) {
+    foreach ($u in $RedirectUri) {
+        if ($u -notmatch '^https://') {
+            throw "RedirectUri must be https://. Got: $u"
+        }
     }
 }
 
@@ -391,8 +422,9 @@ if (-not [string]::IsNullOrWhiteSpace($ExistingAppId)) {
     Write-Host ""
     Write-Host "Mode: ADD REDIRECT URI to existing app" -ForegroundColor Cyan
     Write-Host "  Existing App ID: $ExistingAppId"
-    Write-Host "  New redirect URI: $RedirectUri"
-    if ([string]::IsNullOrWhiteSpace($RedirectUri)) {
+    Write-Host "  New redirect URI(s):"
+    foreach ($u in @($RedirectUri)) { Write-Host "    - $u" }
+    if ($null -eq $RedirectUri -or $RedirectUri.Count -eq 0) {
         throw "-RedirectUri (or -EnvName for auto-discovery) is required when -ExistingAppId is set."
     }
 
@@ -401,16 +433,17 @@ if (-not [string]::IsNullOrWhiteSpace($ExistingAppId)) {
     $objectId = $existing.id
     $currentUris = @()
     if ($existing.spa -and $existing.spa.redirectUris) { $currentUris = @($existing.spa.redirectUris) }
-    if ($currentUris -contains $RedirectUri) {
-        Write-Host "Redirect URI already present - no change." -ForegroundColor Yellow
+    $toAdd = @($RedirectUri | Where-Object { $currentUris -notcontains $_ })
+    if ($toAdd.Count -eq 0) {
+        Write-Host "All redirect URIs already present - no change." -ForegroundColor Yellow
     } else {
-        $newUris = @($currentUris + $RedirectUri | Select-Object -Unique)
+        $newUris = @(($currentUris + $RedirectUri) | Select-Object -Unique)
         $escapedUris = $newUris | ForEach-Object {
             '"' + ($_.Replace('\', '\\').Replace('"', '\"')) + '"'
         }
         $urisArrJson = "[" + ($escapedUris -join ",") + "]"
         $body = "{`"spa`":{`"redirectUris`":$urisArrJson}}"
-        Invoke-GraphPatch -ObjectId $objectId -BodyJson $body -Description "Append SPA redirect URI"
+        Invoke-GraphPatch -ObjectId $objectId -BodyJson $body -Description "Append SPA redirect URI(s)"
     }
 
     $clientId = $existing.appId
@@ -419,7 +452,7 @@ if (-not [string]::IsNullOrWhiteSpace($ExistingAppId)) {
     Write-Host "Mode: CREATE NEW app registration" -ForegroundColor Cyan
     Write-Host "  Display name        : $DisplayName"
     Write-Host "  Tenant              : $tenantId (single-tenant)"
-    Write-Host "  Redirect URI        : $(if ($RedirectUri) { $RedirectUri } else { '<none - add later>' })"
+    Write-Host "  Redirect URI(s)     : $(if ($RedirectUri -and $RedirectUri.Count -gt 0) { ($RedirectUri -join ', ') } else { '<none - add later>' })"
     Write-Host "  Service Tree ID     : $ServiceTreeId"
     Write-Host "  Groups claim        : $(if ($SkipGroupsClaim) { 'NO' } else { 'YES (idToken+accessToken+saml2Token)' })"
     Write-Host "  App roles           : $(if ($CreateAppRoles) { 'YES (admin + user)' } else { 'NO' })"
@@ -464,7 +497,7 @@ if (-not [string]::IsNullOrWhiteSpace($ExistingAppId)) {
     }
 
     # Configure SPA platform + implicit grant via Graph PATCH (az ad app create does not expose these)
-    $platformBody = Build-PlatformPatchBodyJson -RedirectUriArg $RedirectUri
+    $platformBody = Build-PlatformPatchBodyJson -RedirectUris @($RedirectUri)
     Invoke-GraphPatch -ObjectId $objectId -BodyJson $platformBody -Description "Configure SPA platform + implicit grant (id+access tokens)"
 
     # Set owner
@@ -504,7 +537,7 @@ $summary = [ordered]@{
     clientId       = $clientId
     objectId       = $objectId
     displayName    = $DisplayName
-    redirectUri    = $RedirectUri
+    redirectUris   = @($RedirectUri)
     envName        = $EnvName
     serviceTreeId  = $ServiceTreeId
     appRolesCreated     = [bool]$CreateAppRoles
@@ -523,7 +556,9 @@ Write-Host ""
 Write-Host "=== PilotSwarm Portal App Registration ===" -ForegroundColor Green
 Write-Host "PORTAL_AUTH_ENTRA_TENANT_ID = $tenantId"
 Write-Host "PORTAL_AUTH_ENTRA_CLIENT_ID = $clientId"
-if ($RedirectUri) { Write-Host "Redirect URI                = $RedirectUri" }
+if ($RedirectUri -and $RedirectUri.Count -gt 0) {
+    foreach ($u in $RedirectUri) { Write-Host "Redirect URI                = $u" }
+}
 Write-Host "==========================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Cyan

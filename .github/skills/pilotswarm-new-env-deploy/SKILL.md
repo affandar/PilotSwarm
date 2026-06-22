@@ -34,6 +34,7 @@ updated in lockstep with the code, this skill is a procedural overlay:
 | T2 | Control AKS, ACR, Postgres Flex, Storage, Key Vault (incl. optional OBO KEK), UAMIs, Flux | Always |
 | T2 edge (afd) | AppGw v2 + WAF + Private Link Service + AGIC | `EDGE_MODE=afd` |
 | T2 edge (private) | AKS web-app-routing (NGINX) on ILB + Private DNS Zone | `EDGE_MODE=private` |
+| T2 ingress (vpn) | Azure VPN Gateway P2S (OpenVPN + Entra ID) + `GatewaySubnet` + managed Private DNS zone + auto-seeded AppGw WAF guard rules | `VPN_GATEWAY_ENABLED=true` (additive; requires `EDGE_MODE=afd` + `TLS_SOURCE=akv`) |
 | T3 | Ephemeral worker AKS + workload-SA UAMI + Flux + `worker-t3-manifests` blob container | Always |
 | Cross-cluster | T2 csi UAMI gets `AKS Cluster User Role` on T3 | For T2 worker → T3 kubeconfig minting |
 
@@ -61,22 +62,31 @@ Ask, in order:
    - `entra` → continue.
 2. **"Do you already have a `PORTAL_AUTH_ENTRA_CLIENT_ID` (an existing
    Entra app registration), or shall I provision one for this stamp?"**
-   - **Default recommendation: provision a new dedicated app for this
-     stamp.** One app per stamp keeps redirect URI lists clean, lets
-     each environment be retired (and its app deleted) independently,
-     and avoids the "shared app blast radius" where revoking one
-     stamp's access touches every other stamp on the same client id.
-     Only reuse a shared existing app when the user explicitly asks
-     for it (e.g. they want a single SSO consent prompt across all
-     dev stamps, or tenant policy makes app creation expensive).
-   - "Provision one" (recommended) → invoke the
-     `pilotswarm-portal-app-reg` skill **before** Step 1. That skill
+   - **Each stamp gets its own dedicated Entra app — always provision
+     a new one.** One app per stamp keeps redirect URI lists clean,
+     lets each environment be retired (and its app deleted)
+     independently, and avoids the "shared app blast radius" where
+     revoking one stamp's access touches every other stamp on the
+     same client id.
+   - **Never auto-suggest copying `PORTAL_AUTH_ENTRA_CLIENT_ID` from a
+     sibling stamp's `.env` file.** Even when a previous local stamp
+     (e.g. `chkrawps9/.env`) shows a working client id, that app is
+     bound to that stamp's lifecycle and redirect URIs. Pulling
+     non-auth values (subscription, tenant, region) from a reference
+     stamp is fine; pulling the client id is not.
+   - The only valid path is: invoke the `pilotswarm-portal-app-reg`
+     skill **before** Step 1 to provision a fresh app. That skill
      produces the `clientId` and writes it to
      `deploy/envs/local/<stamp>/entra-app.json`. The skill requires
      `-ServiceTreeId` — ask the user for theirs before invoking; do
      not invent a placeholder.
-   - "I have one / I want to share" → take the client id directly, or
-     invoke the skill in append mode (`-ExistingAppId <appId> -EnvName <stamp>`).
+   - The only exception is if the user **explicitly and unprompted**
+     asks to reuse a specific existing app (e.g. tenant policy makes
+     app creation expensive, or they want a single SSO consent prompt
+     across all dev stamps). In that case take the client id directly
+     from them, or invoke the skill in append mode
+     (`-ExistingAppId <appId> -EnvName <stamp>`). Do not infer this
+     intent from the presence of a sibling stamp.
 3. **"Should sign-in be locked down to assigned users only, or open to
    any tenant member?"** (only when `entra` and provisioning new)
    - **Production stamp (recommended)** → `-CreateAppRoles` + assign
@@ -163,6 +173,12 @@ Edge / TLS
   acme-email                    <suggested: ${user}; CONFIRM OR OVERRIDE> # only when tls-source=letsencrypt
   host                          portal (default)      # only when edge-mode=private
   private-dns-zone              <required>            # only when edge-mode=private
+
+VPN (optional — only when user asks for VPN access / off-network ingress)
+  vpn-enabled                   n (default)           # n | y; when 'y', auto-implies edge-mode=afd + tls-source=akv
+  ssl-cert-domain-suffix        <required when tls-source=akv>  # DNS suffix whose AKV cert this stamp will serve (e.g. dev.contoso.example)
+  vpn-client-address-pool       172.16.200.0/24 (default)       # must not overlap VNet 10.20.0.0/16
+  vpn-aad-audience              c632b3df-fb67-4d84-bdcf-b95ad541b5c8 (default)  # current Azure VPN Client app; override only for legacy-audience tenants
 
 Per-stamp secrets (Key Vault)
   GITHUB_TOKEN                  <offer `gh auth token`>  # optional; sentinel if empty
@@ -306,6 +322,18 @@ operator smoke. See
 for MFA / Conditional Access considerations.) Default
 production stamps should use the default worker image and omit the smoke
 env overlay.
+**When the user asks for VPN access (e.g. "spin up a VPN-enabled env",
+"I need off-network access", "trusted-bypass lane"):** populate the VPN
+block above and **auto-fill `edge-mode=afd` + `tls-source=akv` as the
+defaults** for the Edge/TLS block — these are the only values that pass
+the VPN combo gate, so the user shouldn't have to discover that
+separately. Then ask for `ssl-cert-domain-suffix` (the one new value the
+agent cannot infer), confirm `vpn-client-address-pool` (default is fine
+unless their corp VPN already uses 172.16.200.0/24), and leave
+`vpn-aad-audience` at the default unless they explicitly mention legacy
+VPN client builds. Surface the 45-min provisioning lead time and the
+tenant-admin Conditional Access requirement (see §"Optional: VPN
+Gateway P2S" for both) *before* invoking the scaffolder, not after.
 
 **Pick one mechanism per stamp; don't mix roles + email allowlist.**
 The portal authz engine treats the JWT `roles` claim as authoritative
@@ -435,17 +463,93 @@ after non-interactive runs too.
 
 ## Step 4 — Edge mode × TLS source selection
 
-| `EDGE_MODE` | `TLS_SOURCE` | Supported? | When |
-|---|---|---|---|
-| `afd` | `letsencrypt` | ✅ default | OSS-friendly public endpoint, ACME HTTP-01. |
-| `afd` | `akv` | ✅ | Enterprise-internal OneCertV2-PublicCA cert via AKV. |
-| `afd` | `akv-selfsigned` | ❌ | AppGw can't consume an AKV `Self` chain end-to-end. |
-| `private` | `akv` | ✅ | Enterprise-internal OneCertV2-PrivateCA via AKV. |
-| `private` | `akv-selfsigned` | ✅ | OSS-friendly private demo; AKV `Self`-issued cert. |
-| `private` | `letsencrypt` | ❌ | ACME HTTP-01 cannot reach a private/ILB endpoint. |
+| `EDGE_MODE` | `TLS_SOURCE` | `VPN_GATEWAY_ENABLED` | Supported? | When |
+|---|---|---|---|---|
+| `afd` | `letsencrypt` | `false` | ✅ default | OSS-friendly public endpoint, ACME HTTP-01. |
+| `afd` | `akv` | `false` | ✅ | Enterprise-internal OneCertV2-PublicCA cert via AKV. |
+| `afd` | `akv` | `true` | ✅ | Hybrid AFD + VPN P2S (trusted-bypass for authenticated users not matched by the AFD WAF allow-list). AKV-only — see "Optional: VPN Gateway P2S" below. |
+| `afd` | `akv-selfsigned` | any | ❌ | AppGw can't consume an AKV `Self` chain end-to-end. |
+| `afd` | `letsencrypt` | `true` | ❌ | VPN path requires an AKV cert; ACME HTTP-01 cannot reach a VPN-only client. Preflight error: `vpn-requires-akv`. |
+| `private` | `akv` | `false` | ✅ | Enterprise-internal OneCertV2-PrivateCA via AKV. |
+| `private` | `akv-selfsigned` | `false` | ✅ | OSS-friendly private demo; AKV `Self`-issued cert. |
+| `private` | `letsencrypt` | any | ❌ | ACME HTTP-01 cannot reach a private/ILB endpoint. |
+| `private` | any | `true` | ❌ | VPN path is additive to AFD only (its WAF guard rules assume AFD as the public ingress). Preflight error: `vpn-requires-afd`. |
 
 The orchestrator validates the combo against `UNSUPPORTED_COMBOS` in
-`deploy.mjs` before any Bicep runs.
+`deploy.mjs` and `validateVpnGatewayCombo()` in
+`deploy/scripts/lib/overlay-contracts.mjs` before any Bicep runs.
+
+### Optional: VPN Gateway P2S (hybrid AFD + VPN)
+
+Tenant users with a valid Entra ID token can still be blocked at the
+public edge by AFD WAF allow-lists that the operator configures
+(typically service-tag, IP-range, or header-based rules that gate the
+public ingress to a known managed-network population). Enabling
+`VPN_GATEWAY_ENABLED=true` adds an Azure VPN Gateway (Point-to-Site,
+OpenVPN, Microsoft Entra ID auth) that terminates at the same AppGw
+private listener as the AFD path, with the same AKV cert — a
+"trusted-bypass" lane to the same stamp for authenticated tenant users
+who don't match the public allow-list (e.g. remote / off-network /
+unmanaged-device users).
+
+- **Constraints**: `EDGE_MODE=afd` is required (code: `vpn-requires-afd`).
+  `validateVpnGatewayCombo()` accepts any AKV-family `TLS_SOURCE` (`akv`
+  or `akv-selfsigned`; code: `vpn-requires-akv`); however,
+  `akv-selfsigned` is also rejected on AFD stamps end-to-end by
+  `deploy.mjs` `UNSUPPORTED_COMBOS`, so the only effective combo for the
+  trusted-bypass is `TLS_SOURCE=akv`. `letsencrypt` is rejected because
+  ACME HTTP-01 cannot reach a VPN-only client.
+  `SSL_CERT_DOMAIN_SUFFIX` must be set (the managed Private DNS zone
+  uses it). The scaffolder prompts for it interactively when
+  `TLS_SOURCE=akv`, or pass `--ssl-cert-domain-suffix <suffix>` for
+  non-interactive runs (e.g. `--ssl-cert-domain-suffix
+  dev.contoso.example`). `VPN_CLIENT_ADDRESS_POOL` must not overlap the VNet (default
+  `10.20.0.0/16`). VPN uses the existing stamp `AZURE_TENANT_ID` — same
+  Entra tenant as the rest of the deploy.
+- **Cost / time**: ~$450/month total for `VpnGw2AZ` + Azure Private DNS Resolver inbound endpoint (~$280 gateway + PIP + ~$170 resolver). The Resolver is co-provisioned with the gateway so P2S clients can resolve Private DNS Zone records (e.g. portal hostname) through the tunnel without hosts-file edits.
+  First-deploy time is **45+ minutes** (gateway provisioning is the long
+  pole). Subsequent param changes are still measured in minutes.
+- **AAD audience**: defaults to `c632b3df-fb67-4d84-bdcf-b95ad541b5c8`
+  (current Microsoft-registered Azure VPN Client app). Set
+  `VPN_AAD_AUDIENCE=41b23e61-6c1e-4545-b367-cd054e0ed4b4` in `.env` only on
+  tenants that must interop with older Azure VPN client builds registered
+  against the legacy audience.
+- **Auto-seeded AppGw WAF guards**: when `VPN_GATEWAY_ENABLED=true` the
+  base-infra bicep prepends three custom rules at priorities 90/91/92 to
+  the AppGw WAF policy — `AllowAfd` (matches `X-Azure-FDID =
+  <frontDoorId>`), `AllowVpn` (matches `RemoteAddr ∈
+  VPN_CLIENT_ADDRESS_POOL`), and `BlockOther` (catch-all `Block`).
+  Operator rules loaded from `APPGW_WAF_CUSTOM_RULES_FILE` (mirrors the
+  AFD-side `WAF_CUSTOM_RULES_FILE`) MUST start at priority ≥ 100 — the
+  90–92 band is reserved.
+
+#### Setting up Conditional Access
+
+Required out-of-band step before first VPN connect (tenant admin only).
+Create one CA policy targeting the Azure VPN Client app
+`c632b3df-fb67-4d84-bdcf-b95ad541b5c8` (or the legacy
+`41b23e61-6c1e-4545-b367-cd054e0ed4b4` if you set the override above),
+assigned to a NAMED users group (do not target "all users"), with the
+grant control set to **require MFA**. Explicitly do **NOT** require device
+compliance — the VPN client cannot satisfy that grant and the connect
+attempt will fail with an opaque AAD error. The post-scaffold reminder
+block in `new-env.mjs` re-prints these requirements when `VPN_GATEWAY_ENABLED=true`.
+
+#### Distributing the VPN client profile
+
+After the first deploy completes, hand operators the OpenVPN client
+profile. Preferred path is the repo helper:
+`pwsh -File deploy/scripts/auth/Get-VpnClientProfile.ps1 -EnvName <stamp>`
+(see the `pilotswarm-vpn-client-profile` skill). It wraps
+`az network vnet-gateway vpn-client generate --authentication-method EAPTLS`,
+downloads the signed zip, and extracts it under the gitignored
+`deploy/envs/local/<stamp>/vpn-client/` folder. As fallbacks: the Azure
+portal — `Resource group → <gateway-name> → Point-to-site configuration →
+Download VPN client` — or the raw CLI `az network vnet-gateway vpn-client
+generate --resource-group <rg> --name <gateway-name>
+--authentication-method EAPTLS`. All three emit the same `.zip` that
+imports directly into the Azure VPN Client app (Windows / macOS / iOS /
+Android).
 
 ## Step 5 — Deploy
 

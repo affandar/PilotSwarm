@@ -28,3 +28,6 @@ deploy/.tmp/
 .paw/
 .pr-*.diff
 .pr-*.txt
+
+# Claude Code local tooling (scheduled-task lock, machine-local settings)
+.claude/

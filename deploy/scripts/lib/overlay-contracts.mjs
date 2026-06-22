@@ -157,8 +157,81 @@ export function getContract({ edgeMode, tlsSource }) {
   return c;
 }
 
-// Pre-deploy validator. Asserts every userRequiredEnvKey is present in
-// `env` and non-empty. Returns an array of missing keys (empty = OK).
+// Human-readable rendering for VPN combo error codes. Keeps the message
+// and remediation hint adjacent to the code so deploy.mjs / new-env.mjs
+// don't have to re-derive them. The hint NEVER points at the scaffolder
+// (re-running new-env.mjs would clobber operator edits) — it points at
+// the env file and the VPN docs.
+const VPN_COMBO_ERROR_DETAILS = Object.freeze({
+  "vpn-requires-afd": Object.freeze({
+    message:
+      "VPN gateway requires EDGE_MODE='afd' (the auto-seeded AppGw WAF guard at " +
+      "priorities 90/91/92 only makes sense when AFD is the public ingress and " +
+      "AppGw is the private front-end).",
+    hint:
+      "Set EDGE_MODE=afd in deploy/envs/local/<env>/.env, or disable the VPN " +
+      "gateway by setting VPN_GATEWAY_ENABLED=false. See docs/deploying-to-aks.md.",
+  }),
+  "vpn-requires-akv": Object.freeze({
+    message:
+      "VPN gateway requires TLS_SOURCE='akv' or 'akv-selfsigned' " +
+      "(Let's Encrypt's HTTP-01 challenge cannot reach a VPN-only client).",
+    hint:
+      "Set TLS_SOURCE=akv (or akv-selfsigned) in deploy/envs/local/<env>/.env, " +
+      "or disable the VPN gateway by setting VPN_GATEWAY_ENABLED=false. " +
+      "See docs/deploying-to-aks.md.",
+  }),
+  "vpn-requires-domain-suffix": Object.freeze({
+    message:
+      "VPN gateway requires SSL_CERT_DOMAIN_SUFFIX to be set (the managed " +
+      "Private DNS zone is named from this suffix).",
+    hint:
+      "Set SSL_CERT_DOMAIN_SUFFIX in deploy/envs/local/<env>/.env. " +
+      "See docs/deploying-to-aks.md.",
+  }),
+  "vpn-pool-overlap": Object.freeze({
+    message:
+      "VPN_CLIENT_ADDRESS_POOL overlaps the stamp VNet CIDR (or is malformed). " +
+      "The client pool MUST be disjoint from the VNet address space — overlap " +
+      "would black-hole intra-stamp traffic from connected VPN clients.",
+    hint:
+      "Pick a non-overlapping IPv4 CIDR for VPN_CLIENT_ADDRESS_POOL in " +
+      "deploy/envs/local/<env>/.env (the default stamp VNet is 10.20.0.0/16; " +
+      "set VNET_CIDR if you've customised it). See docs/deploying-to-aks.md.",
+  }),
+  "vpn-requires-tenant-id": Object.freeze({
+    message:
+      "VPN gateway requires AZURE_TENANT_ID to be set (the P2S Entra ID " +
+      "authentication flow needs the tenant GUID; an empty value would fall " +
+      "through to bicep's empty default and produce a confusing late failure).",
+    hint:
+      "Set AZURE_TENANT_ID in deploy/envs/local/<env>/.env (it ships populated " +
+      "in template.env — restore it if it was blanked). See docs/deploying-to-aks.md.",
+  }),
+});
+
+// Build a rich combo-error object from a code returned by
+// validateVpnGatewayCombo(). Unknown codes get a generic message so a
+// future combo-error addition isn't silently rendered as "[object Object]".
+function describeVpnComboError(code) {
+  const detail = VPN_COMBO_ERROR_DETAILS[code];
+  if (!detail) {
+    return {
+      code,
+      message: `VPN gateway combo error: ${code}.`,
+      hint: "See docs/deploying-to-aks.md.",
+    };
+  }
+  return { code, message: detail.message, hint: detail.hint };
+}
+
+// Pre-deploy validator. Returns `{ missing, combo }`:
+//   missing — array of userRequiredEnvKey names that are unset/blank (and
+//             ACME_EMAIL when malformed on letsencrypt). These render as
+//             "requires <keys> to be set" with a scaffolder hint.
+//   combo   — array of `{ code, message, hint }` objects describing VPN
+//             gateway combo errors. These render distinctly: a named
+//             error + a hint that does NOT point at the scaffolder.
 // Callers decide whether to throw or log — deploy.mjs throws via
 // process.exit(1); new-env.mjs warn-and-continues at scaffold time.
 export function validateRequiredEnv({ edgeMode, tlsSource, env }) {
@@ -179,7 +252,136 @@ export function validateRequiredEnv({ edgeMode, tlsSource, env }) {
       missing.push("ACME_EMAIL"); // present but malformed → treat as missing
     }
   }
-  return missing;
+  // VPN gateway combo validation. Returned as a SEPARATE channel from
+  // `missing` because the rendering and remediation
+  // differ — combo errors are not "set this key" errors and should not
+  // direct operators at the scaffolder. Gated on VPN_GATEWAY_ENABLED=true
+  // inside validateVpnGatewayCombo so non-VPN stamps are unaffected.
+  const vpnCodes = validateVpnGatewayCombo({ edgeMode, tlsSource, env });
+  const combo = vpnCodes.map(describeVpnComboError);
+  return { missing, combo };
+}
+
+// ===========================================================================
+// VPN gateway combo validator.
+//
+// Gated on `env.VPN_GATEWAY_ENABLED === 'true'`. Returns an array of error
+// codes (empty = OK). Codes:
+//   vpn-requires-afd            — EDGE_MODE must be 'afd' (the auto-seeded
+//                                 AppGw WAF guard at priorities 90/91/92
+//                                 only makes sense when AFD is the public
+//                                 ingress and AppGw is private-FE).
+//   vpn-requires-akv            — TLS_SOURCE must be 'akv' or
+//                                 'akv-selfsigned'; Let's Encrypt is
+//                                 unsupported on the VPN path (HTTP-01
+//                                 cannot reach a VPN-only client).
+//   vpn-requires-domain-suffix  — SSL_CERT_DOMAIN_SUFFIX must be non-empty
+//                                 (managed Private DNS zone uses it).
+//   vpn-pool-overlap            — VPN_CLIENT_ADDRESS_POOL overlaps the
+//                                 stamp VNet CIDR. Reads VNET_CIDR from
+//                                 env when present, defaults to
+//                                 '10.20.0.0/16' (matches vnet.bicep's
+//                                 default base address space).
+//   vpn-requires-tenant-id      — AZURE_TENANT_ID must be set (non-empty)
+//                                 when the VPN gateway is enabled.
+//                                 Closes the gap behind the bicep
+//                                 `tenantId=''` default — even though
+//                                 template.env ships a populated value,
+//                                 an operator who blanks it gets a clear
+//                                 pre-deploy error instead of a confusing
+//                                 bicep failure.
+//
+// Returns an empty array when VPN_GATEWAY_ENABLED is anything other than
+// the literal string 'true' (handles the unset / 'false' / 'FALSE' /
+// boolean-false cases).
+// ===========================================================================
+export function validateVpnGatewayCombo({ edgeMode, tlsSource, env }) {
+  const enabled = String(env?.VPN_GATEWAY_ENABLED ?? "").toLowerCase() === "true";
+  if (!enabled) return [];
+
+  const errors = [];
+
+  const em = String(edgeMode ?? "").toLowerCase();
+  if (em !== "afd") errors.push("vpn-requires-afd");
+
+  // Accept both `akv` and `akv-selfsigned` (they collapse to the same
+  // overlay anyway; the only delta is the AKV issuer). The forbidden value
+  // is `letsencrypt`.
+  const ts = String(tlsSource ?? "").toLowerCase();
+  if (ts !== "akv" && ts !== "akv-selfsigned") errors.push("vpn-requires-akv");
+
+  const suffix = env?.SSL_CERT_DOMAIN_SUFFIX;
+  if (suffix === undefined || suffix === null || String(suffix).trim() === "") {
+    errors.push("vpn-requires-domain-suffix");
+  }
+
+  const pool = env?.VPN_CLIENT_ADDRESS_POOL;
+  // VNET_CIDR is forward-compatible — not in template.env today; default
+  // mirrors vnet.bicep's `10.20.0.0/16` baseline.
+  const vnetCidr = env?.VNET_CIDR && String(env.VNET_CIDR).trim() !== ""
+    ? String(env.VNET_CIDR).trim()
+    : "10.20.0.0/16";
+  if (pool && String(pool).trim() !== "") {
+    try {
+      if (cidrsOverlap(String(pool).trim(), vnetCidr)) {
+        errors.push("vpn-pool-overlap");
+      }
+    } catch {
+      // Malformed CIDR → also a pool problem.
+      errors.push("vpn-pool-overlap");
+    }
+  }
+
+  // AZURE_TENANT_ID must be present when VPN is enabled. The bicep side
+  // declares `param tenantId string = ''` so a blanked value would silently
+  // flow through and surface as a confusing late error in the gateway
+  // module — fail-closed here instead.
+  const tenantId = env?.AZURE_TENANT_ID;
+  if (tenantId === undefined || tenantId === null || String(tenantId).trim() === "") {
+    errors.push("vpn-requires-tenant-id");
+  }
+
+  return errors;
+}
+
+// IPv4 CIDR overlap helper. Returns true when the two prefixes share any
+// address. Pure-JS, no dependencies; only handles IPv4 (the VPN gateway
+// supports IPv6 client pools too, but the stamp VNet is IPv4-only — when
+// IPv6 support arrives we extend here and add tests).
+function cidrsOverlap(a, b) {
+  const [na, ma] = parseCidr(a);
+  const [nb, mb] = parseCidr(b);
+  // Two prefixes overlap iff one contains the other. Apply the SHORTER
+  // (less specific) mask to both networks — if they match, the longer
+  // prefix's network is contained in the shorter prefix.
+  const mask = ma < mb ? ma : mb;
+  return networkOf(na, mask) === networkOf(nb, mask);
+}
+
+function parseCidr(cidr) {
+  const m = /^([0-9]{1,3}(?:\.[0-9]{1,3}){3})\/([0-9]{1,2})$/.exec(cidr);
+  if (!m) throw new Error(`invalid IPv4 CIDR: ${cidr}`);
+  const ip = m[1].split(".").map((o) => {
+    const n = Number(o);
+    if (!Number.isInteger(n) || n < 0 || n > 255) {
+      throw new Error(`invalid IPv4 octet in ${cidr}`);
+    }
+    return n;
+  });
+  const mask = Number(m[2]);
+  if (!Number.isInteger(mask) || mask < 0 || mask > 32) {
+    throw new Error(`invalid IPv4 prefix length in ${cidr}`);
+  }
+  // Use unsigned right shift to keep the result in [0, 2^32-1].
+  const num = ((ip[0] << 24) | (ip[1] << 16) | (ip[2] << 8) | ip[3]) >>> 0;
+  return [num, mask];
+}
+
+function networkOf(ipNum, prefix) {
+  if (prefix === 0) return 0;
+  // 32-bit left-aligned mask; >>> 0 to coerce back to unsigned.
+  const mask = (0xffffffff << (32 - prefix)) >>> 0;
+  return (ipNum & mask) >>> 0;
 }
 
 // Off-path stub-fill. Mutates `env` in place, setting any stubKey that

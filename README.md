@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.1.35** — Hotfix: `pilotswarm-sdk` now declares `@opentelemetry/api` as a direct dependency (it was hard-imported by `session-proxy.ts` in v0.1.33+ but not listed in `package.json`, so standalone installs crashed at import time). No behavior change. v0.1.34 release notes remain accurate for portal authz behavior.
+> **Latest release: v0.2.0** — Azure VPN Gateway P2S ingress with Entra ID auth: optional "trusted-bypass" path alongside the existing AFD edge mode, with seamless DNS (Private DNS Resolver), dual redirect-URI portal app registration, a VPN client-profile helper script + skill, and full operator docs. 248 / 248 deploy-scripts tests pass.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 
