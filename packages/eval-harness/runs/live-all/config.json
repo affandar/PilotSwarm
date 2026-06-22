@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "live-all",
+  "description": "Tiny v0 default plan over the bundled minimal live corpus.",
+  "scenarios": "./scenarios.jsonl",
+  "defaults": {
+    "isolation": "shared-worker",
+    "timeoutMs": 900000
+  },
+  "output": {
+    "reportsDir": ".eval-results/live-all"
+  },
+  "llmJudge": {
+    "enabled": true,
+    "provider": "copilot",
+    "judgeModel": "gpt-5.4",
+    "totalBudgetUsd": 0.5,
+    "onMissingProvider": "error"
+  }
+}

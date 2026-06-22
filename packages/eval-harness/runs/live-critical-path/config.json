@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "live-critical-path",
+  "description": "Minimal live PilotSwarm gate over basic runtime, durable waits, worker restart recovery, safety, and LLM judge evidence.",
+  "scenarios": "./scenarios.jsonl",
+  "defaults": {
+    "isolation": "shared-worker",
+    "timeoutMs": 900000
+  },
+  "output": {
+    "reportsDir": ".eval-results/live-critical-path"
+  },
+  "llmJudge": {
+    "enabled": true,
+    "provider": "copilot",
+    "judgeModel": "gpt-5.4",
+    "totalBudgetUsd": 0.5,
+    "onMissingProvider": "error"
+  }
+}

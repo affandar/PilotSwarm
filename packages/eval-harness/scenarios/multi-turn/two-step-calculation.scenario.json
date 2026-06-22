@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "kind": "multi-turn",
+  "id": "multi-turn.two-step-calculation",
+  "description": "Two-turn incident workflow retains the first impact total in session memory, then uses it to compute the rollback blast radius in a later turn.",
+  "agent": "default",
+  "tools": ["test_add"],
+  "tags": ["multi-turn", "critical-path", "cheap"],
+  "turns": [
+    {
+      "input": { "prompt": "For incident PS-347, what is the combined impact of 3 checkout canary failures and 4 payment canary failures? Remember the total for rollback planning." },
+      "checks": [
+        { "type": "response-contains", "any": ["7"] }
+      ]
+    },
+    {
+      "input": { "prompt": "Now double that retained incident total across the two affected clusters. Report the rollback blast radius." },
+      "checks": [
+        { "type": "response-contains", "any": ["14"] }
+      ]
+    }
+  ],
+  "checks": [
+    { "type": "response-contains", "any": ["14"] },
+    { "type": "cms-state-in", "states": ["idle", "completed"] }
+  ],
+  "runs": { "timeoutMs": 240000 }
+}

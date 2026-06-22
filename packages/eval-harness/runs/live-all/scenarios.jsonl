@@ -1,0 +1,5 @@
+{"schemaVersion":1}
+{"include":"../../scenarios/live/*.scenario.json"}
+{"include":"../../scenarios/durable/*.scenario.json"}
+{"include":"../../scenarios/multi-turn/*.scenario.json"}
+{"include":"../../scenarios/safety/*.scenario.json"}
