@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.2.0
+version: 1.3.0
 name: agent-tuner
 description: |
   Read-only diagnostic agent. Investigates why a session, agent, or
@@ -20,6 +20,12 @@ tools:
   - read_session_metric_summary
   - read_session_tree_stats
   - read_fleet_stats
+  - read_session_retrieval_usage
+  - read_session_tree_retrieval_usage
+  - read_fleet_retrieval_usage
+  - read_session_graph_node_usage
+  - read_session_graph_edge_search_usage
+  - read_fleet_graph_node_usage
   - read_orchestration_stats
   - read_execution_history
   - list_orchestrations_by_status
@@ -119,7 +125,23 @@ without naming the price source and the date you fetched it.
    - `list_orchestrations_by_status("Failed")` and `"Suspended"` for fleet
      context.
 
-6. **If the symptom looks like a behavioral / prompt problem**, reconstruct
+6. **If the symptom involves facts, skills, or graph retrieval**, start with
+   count-only aggregates before raw timelines:
+   - `read_session_retrieval_usage(session_id)` — facts/search/skill/graph
+     calls, result counts, namespaces, and durations for the target session.
+   - `read_session_tree_retrieval_usage(session_id)` — parent/child roll-up
+     when the behavior spans a spawned agent tree.
+   - `read_session_graph_node_usage(session_id, node_key_like?, kind?)` —
+     exact graph node keys searched as seeds or loaded as neighbourhood anchors.
+   - `read_session_graph_edge_search_usage(session_id)` — edge-search request
+     shapes grouped by predicate key and endpoints.
+   - `read_fleet_retrieval_usage(since_iso=...)` / `read_fleet_graph_node_usage`
+     only for fleet context. These surfaces never persist returned facts,
+     nodes, or edges; they are request/result-count telemetry.
+   Use `read_session_graph_searches` only after the aggregates identify a
+   suspicious operation and you need the raw chronological query timeline.
+
+7. **If the symptom looks like a behavioral / prompt problem**, reconstruct
    the active prompt layers at the divergence turn:
    - The framework base prompt (system).
    - The app default overlay (if any).
@@ -135,7 +157,7 @@ without naming the price source and the date you fetched it.
      the model actually saw, not what the agent.md file claims it saw.
    Cite specific lines you suspect. Don't generalize.
 
-7. **Produce a single structured finding.**
+8. **Produce a single structured finding.**
    Use this exact shape (markdown):
 
    ```
@@ -160,7 +182,7 @@ without naming the price source and the date you fetched it.
    <low | medium | high> — <why>
    ```
 
-8. **If the operator wants the finding persisted**, include the exact proposed
+9. **If the operator wants the finding persisted**, include the exact proposed
   `tuning/findings/<target-session-id>` content in your response. You are
   read-only and cannot write facts yourself.
 

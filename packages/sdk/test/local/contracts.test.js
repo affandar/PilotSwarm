@@ -58,6 +58,10 @@ const EXPECTED_ALWAYS_ON_TOOL_NAMES = [
     "read_facts",
     "delete_fact",
     "read_agent_events",
+    "read_session_retrieval_usage",
+    "read_session_tree_retrieval_usage",
+    "read_session_graph_node_usage",
+    "read_session_graph_edge_search_usage",
 ];
 const EXPECTED_FRAMEWORK_SESSION_TOOL_NAMES = [
     ...EXPECTED_ALWAYS_ON_TOOL_NAMES,

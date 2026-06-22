@@ -2021,13 +2021,16 @@ export class PilotSwarmUiController {
             // sessions are still part of the operator's reality (cost,
             // tokens, skill usage) until the underlying rows are pruned.
             const fleetOpts = { since, includeDeleted: true };
-            const [data, userStats, skillUsage, sharedFactsStats, factsTombstoneStats] = await Promise.all([
+            const [data, userStats, skillUsage, retrievalUsage, sharedFactsStats, factsTombstoneStats] = await Promise.all([
                 this.transport.getFleetStats(fleetOpts),
                 typeof this.transport.getUserStats === "function"
                     ? this.transport.getUserStats(fleetOpts).catch(() => null)
                     : null,
                 typeof this.transport.getFleetSkillUsage === "function"
                     ? this.transport.getFleetSkillUsage(fleetOpts).catch(() => null)
+                    : null,
+                typeof this.transport.getFleetRetrievalUsage === "function"
+                    ? this.transport.getFleetRetrievalUsage(fleetOpts).catch(() => null)
                     : null,
                 typeof this.transport.getSharedFactsStats === "function"
                     ? this.transport.getSharedFactsStats().catch(() => null)
@@ -2036,9 +2039,9 @@ export class PilotSwarmUiController {
                     ? this.transport.getFactsTombstoneStats().catch(() => null)
                     : null,
             ]);
-            this.dispatch({ type: "fleetStats/loaded", data, userStats, skillUsage, sharedFactsStats, factsTombstoneStats });
+            this.dispatch({ type: "fleetStats/loaded", data, userStats, skillUsage, retrievalUsage, sharedFactsStats, factsTombstoneStats });
         } catch {
-            this.dispatch({ type: "fleetStats/loaded", data: null, userStats: null, skillUsage: null, sharedFactsStats: null, factsTombstoneStats: null });
+            this.dispatch({ type: "fleetStats/loaded", data: null, userStats: null, skillUsage: null, retrievalUsage: null, sharedFactsStats: null, factsTombstoneStats: null });
         }
     }
 

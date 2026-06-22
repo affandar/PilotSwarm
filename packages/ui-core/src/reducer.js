@@ -1351,6 +1351,7 @@ export function appReducer(state, action) {
                     data: action.data || null,
                     userStats: action.userStats || null,
                     skillUsage: action.skillUsage || null,
+                    retrievalUsage: action.retrievalUsage || null,
                     sharedFactsStats: action.sharedFactsStats || null,
                     factsTombstoneStats: action.factsTombstoneStats || null,
                     fetchedAt: Date.now(),

@@ -80,6 +80,10 @@ Notes:
 - Suite filters may be positional names or --suite=<name>, and can be mixed.
 - Suite filters are substring matches under packages/sdk/test/local.
 - Unknown options fail fast.
+- Every run prints a consolidated phase summary at the end (builds, optional
+    node suites, and the SDK Vitest result with file/test counts) plus an
+    Overall PASS/FAIL line, and exits non-zero if any phase failed. The
+    --all-providers path additionally prints its own combined provider summary.
 - Default runs load .env as the baseline/default provider config and then
     clear HORIZON_* provider vars, so a stale local .env cannot accidentally
     turn the default PgFactStore run into a HorizonDB run.
@@ -359,14 +363,28 @@ if [ "$ALL_PROVIDERS" = "1" ]; then
     exit "$?"
 fi
 
+# ─── Phase tracking for the single-run (non --all-providers) summary ─────────
+# A normal run executes several phases (builds, optional node-based suites,
+# then the SDK Vitest run). The script historically ended in `exec npx vitest`,
+# so on success only Vitest's own summary printed and the earlier phases had no
+# roll-up. Record each phase here and print a consolidated summary at the end.
+RUN_PHASE_LABELS=()
+RUN_PHASE_RESULTS=()
+record_run_phase() {
+    RUN_PHASE_LABELS+=("$1")
+    RUN_PHASE_RESULTS+=("$2")
+}
+
 # Build
 echo "🔨 Building TypeScript..."
 (cd "$SDK_DIR" && npm run build) || { echo "❌ Build failed"; exit 1; }
+record_run_phase "TypeScript build" "PASS"
 
 # Build mcp-server (its tests import from packages/mcp-server/dist/...).
 # Cheap incremental tsc — only rebuilds when sources changed.
 (cd "$REPO_ROOT/packages/mcp-server" && npm run build) \
     || { echo "❌ mcp-server build failed"; exit 1; }
+record_run_phase "mcp-server build" "PASS"
 
 # Run the deploy-scripts test suite (Node `node --test`, not vitest) when
 # no SDK suite filter is in effect. The deploy orchestrator's helpers
@@ -379,11 +397,13 @@ echo "🔨 Building TypeScript..."
 run_deploy_scripts_tests() {
     if [ "${SKIP_DEPLOY_SCRIPTS_TESTS:-0}" = "1" ]; then
         echo "⏭  Skipping deploy-scripts tests (SKIP_DEPLOY_SCRIPTS_TESTS=1)."
+        record_run_phase "deploy-scripts tests" "SKIPPED"
         return 0
     fi
     echo "🧪 Running deploy-scripts tests (node --test)..."
     (cd "$REPO_ROOT" && npm run --silent test:deploy-scripts) \
         || { echo "❌ deploy-scripts tests failed"; exit 1; }
+    record_run_phase "deploy-scripts tests" "PASS"
 }
 
 # Run the mcp-server unit suite when no SDK suite filter is in effect.
@@ -393,11 +413,13 @@ run_deploy_scripts_tests() {
 run_mcp_server_tests() {
     if [ "${SKIP_MCP_SERVER_TESTS:-0}" = "1" ]; then
         echo "⏭  Skipping mcp-server tests (SKIP_MCP_SERVER_TESTS=1)."
+        record_run_phase "mcp-server unit tests" "SKIPPED"
         return 0
     fi
     echo "🧪 Running mcp-server unit tests (node)..."
     (cd "$REPO_ROOT" && npm run --silent test:mcp-server) \
         || { echo "❌ mcp-server tests failed"; exit 1; }
+    record_run_phase "mcp-server unit tests" "PASS"
 }
 
 # Run the @pilotswarm/horizon-store LIVE integration suite (the provider-level
@@ -407,19 +429,138 @@ run_mcp_server_tests() {
 run_horizon_store_tests() {
     if [ "${SKIP_HORIZON_STORE_TESTS:-0}" = "1" ]; then
         echo "⏭  Skipping horizon-store integration tests (SKIP_HORIZON_STORE_TESTS=1)."
+        record_run_phase "horizon-store integration" "SKIPPED"
         return 0
     fi
     if [ "$WITH_HORIZONDB" != "1" ] && [ "$ALL_PROVIDERS" != "1" ]; then
         echo "⏭  Skipping horizon-store integration tests (provider overlay not enabled)."
+        record_run_phase "horizon-store integration" "SKIPPED"
         return 0
     fi
     if [ -z "${HORIZON_DATABASE_URL:-}" ]; then
         echo "⏭  Skipping horizon-store integration tests (HORIZON_DATABASE_URL not set)."
+        record_run_phase "horizon-store integration" "SKIPPED"
         return 0
     fi
     echo "🧪 Running @pilotswarm/horizon-store integration tests (live HorizonDB)..."
     (cd "$REPO_ROOT" && npm run --silent test:integration --workspace=@pilotswarm/horizon-store) \
         || { echo "❌ horizon-store integration tests failed"; exit 1; }
+    record_run_phase "horizon-store integration" "PASS"
+}
+
+# Print a consolidated phase roll-up for a single (non --all-providers) run.
+# $1 = SDK Vitest JSON result file (may be empty/missing), $2 = Vitest exit code.
+print_run_summary() {
+    local sdk_json="$1"
+    local sdk_code="$2"
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "Local test run summary"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    local idx
+    for ((idx = 0; idx < ${#RUN_PHASE_LABELS[@]}; idx++)); do
+        printf '  %-32s %s\n' "${RUN_PHASE_LABELS[$idx]}" "${RUN_PHASE_RESULTS[$idx]}"
+    done
+
+    local sdk_status="PASS"
+    if [ "$sdk_code" != "0" ]; then
+        sdk_status="FAIL (exit $sdk_code)"
+    fi
+    printf '  %-32s %s\n' "SDK vitest" "$sdk_status"
+
+    # Detailed file/test breakdown and, on failure, the exact failing tests plus
+    # a ready-to-paste rerun command — parsed from the Vitest JSON report.
+    if [ -s "$sdk_json" ]; then
+        node - "$sdk_json" <<'NODE'
+const fs = require("fs");
+const path = require("path");
+const jsonFile = process.argv[2];
+let report;
+try { report = JSON.parse(fs.readFileSync(jsonFile, "utf8")); } catch { process.exit(0); }
+const suites = report.testResults ?? [];
+const failedFiles = new Set();
+const failedEntries = [];
+for (const suite of suites) {
+    const suiteName = suite.name || suite.file || "";
+    const rel = path.relative(process.cwd(), suiteName).split(path.sep).join("/");
+    const display = rel.startsWith("..") ? suiteName : rel;
+    const assertions = suite.assertionResults ?? [];
+    const suiteFailed = suite.status === "failed" || assertions.some((a) => a.status === "failed");
+    if (suiteFailed) failedFiles.add(display);
+    for (const a of assertions) {
+        if (a.status === "failed") failedEntries.push({ file: display, name: a.fullName || a.title || "(unknown test)" });
+    }
+}
+const totalFiles = suites.length;
+const failedFileCount = failedFiles.size;
+const passedFileCount = Math.max(0, totalFiles - failedFileCount);
+const tPass = report.numPassedTests ?? 0;
+const tFail = report.numFailedTests ?? 0;
+const tSkip = (report.numPendingTests ?? 0) + (report.numTodoTests ?? 0);
+const tTotal = report.numTotalTests ?? 0;
+console.log(`    files: ${passedFileCount} passed, ${failedFileCount} failed (${totalFiles} total)`);
+console.log(`    tests: ${tPass} passed, ${tFail} failed, ${tSkip} skipped (${tTotal} total)`);
+if (failedEntries.length > 0) {
+    console.log(`    failed tests:`);
+    for (const e of failedEntries) console.log(`      FAIL ${e.file} > ${e.name}`);
+}
+const filters = [...new Set([...failedFiles]
+    .filter((f) => f.includes("test/local/"))
+    .map((f) => f.replace(/^.*test\/local\//, "").replace(/\.test\.js$/, "").split("/").pop()))]
+    .sort();
+if (filters.length > 0) {
+    console.log(`    re-run failed suite(s):`);
+    console.log(`      ./scripts/run-tests.sh ${filters.join(" ")}`);
+}
+NODE
+        if [ "$sdk_code" != "0" ]; then
+            printf '    full json: %s\n' "$sdk_json"
+        fi
+    fi
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    if [ "$sdk_code" = "0" ]; then
+        echo "Overall: PASS"
+    else
+        echo "Overall: FAIL"
+    fi
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+}
+
+# Run the SDK Vitest pass and print the phase summary afterwards.
+# Child invocations from --all-providers set VITEST_JSON_OUTPUT_FILE and rely on
+# the parent to print the combined provider summary, so preserve the historical
+# exec behavior there (the parent reads the JSON we write). For a normal single
+# run we capture Vitest's result instead of exec-ing, so we can print a roll-up.
+run_sdk_vitest_and_summarize() {
+    if [ -n "${VITEST_JSON_OUTPUT_FILE:-}" ]; then
+        mkdir -p "$(dirname "$VITEST_JSON_OUTPUT_FILE")"
+        VITEST_ARGS+=(--reporter=default --reporter=json "--outputFile=$VITEST_JSON_OUTPUT_FILE")
+        exec npx vitest "${VITEST_ARGS[@]}" "$@"
+    fi
+
+    local sdk_json
+    sdk_json="$(mktemp "${TMPDIR:-/tmp}/pilotswarm-run-tests-sdk.XXXXXX")"
+    VITEST_ARGS+=(--reporter=default --reporter=json "--outputFile=$sdk_json")
+
+    set +e
+    npx vitest "${VITEST_ARGS[@]}" "$@"
+    local sdk_code=$?
+    set -e
+
+    # On failure, retain the JSON report at a stable path so the failing tests
+    # can be re-inspected without re-running the whole suite.
+    local report_path="$sdk_json"
+    if [ "$sdk_code" != "0" ]; then
+        report_path="${TMPDIR:-/tmp}/pilotswarm-last-sdk-failures.json"
+        mv -f "$sdk_json" "$report_path" 2>/dev/null || report_path="$sdk_json"
+    fi
+
+    print_run_summary "$report_path" "$sdk_code"
+
+    if [ "$sdk_code" = "0" ]; then
+        rm -f "$report_path"
+    fi
+    exit "$sdk_code"
 }
 
 HORIZONDB_ENV_KEYS=(
@@ -545,11 +686,7 @@ if [ ${#TARGET_FILES[@]} -gt 0 ]; then
     if [ -n "${PILOTSWARM_TEST_PHASE:-}" ]; then
         echo "🧪 SDK Vitest phase [$PILOTSWARM_TEST_PHASE]: ${PILOTSWARM_TEST_PHASE_LABEL:-provider pass}"
     fi
-    if [ -n "${VITEST_JSON_OUTPUT_FILE:-}" ]; then
-        mkdir -p "$(dirname "$VITEST_JSON_OUTPUT_FILE")"
-        VITEST_ARGS+=(--reporter=default --reporter=json "--outputFile=$VITEST_JSON_OUTPUT_FILE")
-    fi
-    exec npx vitest "${VITEST_ARGS[@]}" "${TARGET_FILES[@]}"
+    run_sdk_vitest_and_summarize "${TARGET_FILES[@]}"
 else
     run_deploy_scripts_tests
     run_mcp_server_tests
@@ -557,9 +694,5 @@ else
     if [ -n "${PILOTSWARM_TEST_PHASE:-}" ]; then
         echo "🧪 SDK Vitest phase [$PILOTSWARM_TEST_PHASE]: ${PILOTSWARM_TEST_PHASE_LABEL:-provider pass}"
     fi
-    if [ -n "${VITEST_JSON_OUTPUT_FILE:-}" ]; then
-        mkdir -p "$(dirname "$VITEST_JSON_OUTPUT_FILE")"
-        VITEST_ARGS+=(--reporter=default --reporter=json "--outputFile=$VITEST_JSON_OUTPUT_FILE")
-    fi
-    exec npx vitest "${VITEST_ARGS[@]}"
+    run_sdk_vitest_and_summarize
 fi

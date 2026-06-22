@@ -87,6 +87,8 @@ Timer context: {seconds}s timer (reason: "{reason}"), {elapsed}s elapsed, {remai
 
 - 2026-06-21: Added graph namespace-registry guidance to the base graph prompt, Facts Manager, Agent Tuner, graph-debug skill, builder harvester skill, and Horizon Harvester sample agents. Expected behavior: agents first discover relevant graph corpora with `graph_list_namespaces`/frontmatter when available, use `graph_get_namespace` lazily for details, keep `facts_search` mode selection separate from graph discovery, and use namespace filters consistently across facts and graph tools. Bumped affected PilotSwarm-authored agent versions (facts-manager 1.7.0, agent-tuner 1.2.0; sample harvester 1.4.0, librarian 1.1.0). Not model-specific; SDK graph-tool gating tests passed.
 
+- 2026-06-21: Added count-only retrieval usage diagnostics to Agent Tuner and graph-debug guidance. Agent Tuner now starts facts/skills/graph investigations with `read_session_retrieval_usage`, `read_session_tree_retrieval_usage`, graph node/edge usage aggregates, and fleet retrieval summaries before falling back to raw `read_session_graph_searches` timelines. Bumped `packages/sdk/plugins/mgmt/agents/agent-tuner.agent.md` to 1.3.0. Expected behavior: retrieval investigations use aggregate counts first and avoid implying returned facts/nodes/edges are persisted in telemetry. Not model-specific; `retrieval-usage`, `agent-tuner`, and `contracts` suites passed.
+
 ### Other Options Considered (not implemented)
 - **Option A (dual-action):** "You MUST do BOTH: 1. Reply with text. 2. Call wait." — Not tried, likely same result with GPT-5.1.
 - **Option C (role-based):** "You are in a conversation — respond naturally." — Not tried.

@@ -11,6 +11,7 @@ agent-tuner should be able to answer:
 - How many graph searches did this session perform?
 - Which graph operation types were used: node search, edge search, neighbourhood?
 - Which namespaces were queried?
+- Which node keys were explicitly searched as node-key seeds?
 - Which specific graph node keys were explicitly loaded as anchors?
 - Which edge predicates or endpoint keys were searched?
 
@@ -39,8 +40,9 @@ shape only.
 - Do not count low-level provider calls that bypass PilotSwarm tools.
 - Do not backfill historical sessions. Pre-feature sessions will simply have no
   retrieval-usage events.
-- Do not expose these APIs as general agent tools unless the same lineage/tuner
-  gating used by existing inspect tools is preserved.
+- Do not expose fleet-wide APIs as normal agent tools. Session/tree inspection
+  tools must preserve the same lineage/tuner gating used by existing inspect
+  tools.
 
 ## Existing Pattern To Follow
 
@@ -85,10 +87,18 @@ Emit these count-only events from SDK tool wrappers:
 | `facts.similar` | `facts_similar` | Count nearest-neighbour expansion from a known fact. |
 | `skills.searched` | `search_skills` | Count semantic/hybrid learned-skill search calls. |
 | `graph.searched` | `graph_search_nodes`, `graph_search_edges`, `graph_neighbourhood` | Count graph retrieval calls and preserve request shape. |
-| `graph.node_loaded` | `graph_neighbourhood` and direct node-key graph searches | Count explicit node anchor loads. |
+| `graph.node_searched` | `graph_search_nodes` with exact node-key seeds | Count explicit node-key searches. |
+| `graph.node_loaded` | `graph_neighbourhood` and future exact node-load tools | Count explicit node anchor loads. |
 
 `graph.searched` already exists today in a coarse form. Extend its payload and
 aggregation rather than replacing it.
+
+Events are stamped by the existing CMS event path: `recordEvents(sessionId, ...)`
+stores the owning `session_id`, `seq`, `created_at`, and optional
+`worker_node_id`. The payload may include `callerAgentId` for convenience, but
+aggregations should join to `sessions.agent_id` for authoritative agent identity.
+Do not duplicate `sessionId` in `data` unless it is needed for an external export
+format.
 
 ### Count-Only Payloads
 
@@ -96,11 +106,12 @@ Payloads may include:
 
 - operation name
 - namespace filter
+- bounded request text previews, capped at 80 characters
 - requested mode or graph search kind
 - limit/depth/k/minScore/minConfidence values
 - result count
 - elapsed duration in milliseconds
-- caller session id and agent id when already available
+- caller agent id when already available; session id is already the CMS event row
 - explicit anchor identifiers supplied by the caller, such as `nodeKey`,
   `fromKey`, `toKey`, `predicateKey`, or `scopeKey`
 
@@ -126,21 +137,21 @@ Example `facts.searched`:
 ```json
 {
   "operation": "facts_search",
-  "queryHash": "sha256:...",
-  "queryPreview": "optional bounded preview",
+  "queryPreview": "bounded to 80 chars",
   "mode": "hybrid",
   "namespace": "corpus/pgsql-hackers",
   "tags": ["patch"],
   "limit": 20,
   "resultCount": 12,
   "durationMs": 44,
-  "toolVersion": 1
+  "callerAgentId": "researcher"
 }
 ```
 
-`queryPreview` is optional. If included, cap it tightly, for example 160
-characters. If we want the strictest privacy posture, store only `queryHash` and
-omit the preview.
+`queryPreview` is clipped raw query text, capped at 80 characters. Do not add
+`queryHash` in Phase 1; hashing creates a second lookup vocabulary without an
+immediate product use. If a future privacy review decides previews are too much,
+drop the preview rather than adding hashes by default.
 
 Example `graph.searched` for node search:
 
@@ -149,14 +160,14 @@ Example `graph.searched` for node search:
   "operation": "search_nodes",
   "namespace": "corpus/pgsql-hackers",
   "kind": "person",
-  "hasNameLike": true,
-  "nameLikeHash": "sha256:...",
+  "nameLikePreview": "alvaro herrera",
   "seedCount": 0,
+  "nodeKeySeedCount": 0,
   "depth": null,
   "limit": 20,
   "resultCount": 8,
   "durationMs": 31,
-  "toolVersion": 1
+  "callerAgentId": "researcher"
 }
 ```
 
@@ -172,7 +183,7 @@ Example `graph.searched` for neighbourhood:
   "nodeCount": 18,
   "edgeCount": 24,
   "durationMs": 63,
-  "toolVersion": 1
+  "callerAgentId": "researcher"
 }
 ```
 
@@ -184,9 +195,13 @@ Example `graph.node_loaded`:
   "namespace": "corpus/pgsql-hackers",
   "operation": "neighbourhood",
   "durationMs": 63,
-  "toolVersion": 1
+  "callerAgentId": "researcher"
 }
 ```
+
+Do not include `toolVersion` in Phase 1. The event type plus payload keys are the
+schema. If a later event schema needs an incompatible change, introduce a new
+event type or add a `schemaVersion` field at that time.
 
 ### What Counts As A Specific Node Load
 
@@ -194,9 +209,16 @@ A specific graph node is considered loaded when the caller supplies an exact nod
 key and the tool uses it as an anchor:
 
 - `graph_neighbourhood({ nodeKey })`
-- `graph_search_nodes({ seeds: [...] })` when a seed is interpreted as a node key
-  by the graph provider or clearly has node-key shape
 - future exact-node load tools, if added
+
+Node-key searches are tracked separately from loads:
+
+- `graph_search_nodes({ seeds: [...] })` emits `graph.node_searched` for each
+  exact node-key seed supplied by the caller, plus the aggregate
+  `graph.searched` event. This answers "which node keys did the session search
+  for?" without implying the node was loaded as a neighbourhood anchor.
+- Fact scopeKey seeds do not emit `graph.node_searched`, because they are fact
+  anchors, not graph node keys.
 
 A fuzzy node search by `kind` / `nameLike` counts as `graph.searched`, but does
 not emit `graph.node_loaded`, because no specific node was requested.
@@ -205,12 +227,17 @@ not emit `graph.node_loaded`, because no specific node was requested.
 
 For edges, store the requested shape, not the returned edge identities:
 
-- `predicateKey` or bounded/hash-normalized `predicate`
+- `predicateKey`
 - `fromKey`, if supplied
 - `toKey`, if supplied
 - namespace
 - minConfidence
 - result count
+
+If a caller supplies raw `predicate` without `predicateKey`, the tool should
+normalize it the same way graph writes/search already do and persist only the
+normalized `predicateKey` when available. Do not persist raw predicate text in
+the metric payload.
 
 This supports questions such as "how often did this session search DEPENDS_ON
 edges?" without persisting every matched edge.
@@ -232,6 +259,7 @@ export type RetrievalOperation =
     | "graph_neighbourhood";
 
 export interface RetrievalUsageRow {
+    /** Computed aggregate row, not a stored row. */
     surface: RetrievalSurface;
     operation: RetrievalOperation;
     namespace: string | null;
@@ -245,15 +273,18 @@ export interface RetrievalUsageRow {
 }
 
 export interface GraphNodeUsageRow {
+    /** Computed aggregate for exact node-key searches or exact node loads. */
     nodeKey: string;
     namespace: string | null;
     operation: RetrievalOperation;
-    loads: number;
-    firstLoadedAt: Date;
-    lastLoadedAt: Date;
+    kind: "searched" | "loaded";
+    count: number;
+    firstSeenAt: Date;
+    lastSeenAt: Date;
 }
 
 export interface GraphEdgeSearchUsageRow {
+    /** Computed aggregate for requested edge-search shapes. */
     predicateKey: string | null;
     fromKey: string | null;
     toKey: string | null;
@@ -264,14 +295,22 @@ export interface GraphEdgeSearchUsageRow {
     lastSearchedAt: Date;
 }
 
-  export interface RetrievalUsageResult<T> {
+export interface RetrievalUsageResult<T> {
     enabled: boolean;
     reason?: string;
     rows: T[];
-  }
+}
 ```
 
 ### Management Client
+
+The `Retrieval*Row` and `Graph*Row` types are not tables. They are aggregate
+result rows computed on demand by CMS stored procedures over raw
+`session_events`, the same way skill-usage rows are computed today. `firstUsedAt`
+/ `lastUsedAt` and `firstSeenAt` / `lastSeenAt` are for recency UX and reports:
+sorting hot/recent namespaces, answering "when did this session last touch this
+graph/fact surface?", and distinguishing current heat from historical usage in
+fleet summaries.
 
 Add read-only methods to `PilotSwarmManagementClient`:
 
@@ -297,14 +336,27 @@ getFleetRetrievalUsage(
 
 getSessionGraphNodeUsage(
   sessionId: string,
-  opts?: { since?: Date; limit?: number }
+  opts?: { since?: Date; limit?: number; nodeKeyLike?: string; kind?: "searched" | "loaded" }
 ): Promise<RetrievalUsageResult<GraphNodeUsageRow>>;
 
 getSessionGraphEdgeSearchUsage(
   sessionId: string,
   opts?: { since?: Date; limit?: number }
 ): Promise<RetrievalUsageResult<GraphEdgeSearchUsageRow>>;
+
+getFleetGraphNodeUsage(
+  opts?: { since?: Date; includeDeleted?: boolean; limit?: number; nodeKeyLike?: string; kind?: "searched" | "loaded" }
+): Promise<{ enabled: boolean; reason?: string; windowStart: number | null; rows: Array<GraphNodeUsageRow & { agentId: string | null; sessionCount: number }> }>;
 ```
+
+Fleet retrieval APIs must support these product questions:
+
+- fleet-wide fact/graph search counts by operation
+- top namespaces by call count and result count
+- distinct node keys searched over a window
+- distinct node keys loaded over a window
+- how often a specific node key was searched or loaded over the last N period,
+  with `nodeKeyLike` for prefix/substring investigations
 
 ### Graceful Unavailable Behavior
 
@@ -339,17 +391,22 @@ an explanation. The inspect tools should always return an object with
 
 ### Inspect Tools
 
-Add tuner-only tools, following the existing `read_session_skill_usage` shape:
+Add inspect tools following the existing `read_session_skill_usage` shape and
+lineage gate:
 
 - `read_session_retrieval_usage(session_id, since_iso?)`
 - `read_session_tree_retrieval_usage(session_id, since_iso?)`
 - `read_fleet_retrieval_usage(since_iso?, include_deleted?)`
 - `read_session_graph_node_usage(session_id, since_iso?, limit?)`
 - `read_session_graph_edge_search_usage(session_id, since_iso?, limit?)`
+- `read_fleet_graph_node_usage(since_iso?, include_deleted?, limit?, node_key_like?, kind?)`
 
-Non-tuner sessions should not receive these tools unless we intentionally decide
-that lineage-scoped retrieval usage is safe for normal agents. The first version
-should be tuner-only.
+Access follows the existing inspect lineage model:
+
+- Parent/root sessions may read retrieval usage for their descendant sessions.
+- The agent-tuner may read any session.
+- Other sessions may read only their own session unless a future tool explicitly
+  grants broader lineage access.
 
 Unavailable examples:
 
@@ -423,20 +480,23 @@ Update `facts-tools.ts`:
 - Wrap `search_skills` with duration measurement and emit `skills.searched`.
 - Use best-effort `recordEvent`, matching the learned-skill pattern: never fail a
   tool call if telemetry persistence fails.
+- Include `queryPreview` clipped to 80 characters; do not include a query hash in
+  Phase 1.
 
 Update `graph-tools.ts`:
 
 - Expand existing `recordSearch` to include `operation`, namespace, duration,
   result counts, and sanitized request shape.
 - Emit `graph.node_loaded` for exact node anchors.
+- Emit `graph.node_searched` for exact graph node-key seeds supplied to
+  `graph_search_nodes`.
+- Persist `predicateKey` for edge searches; do not persist raw predicate text.
 - Do not include returned node/edge arrays in events.
 
 Sanitization helpers:
 
-- `hashText(value: string): string` for free-text queries/predicates if we avoid
-  storing raw query text.
-- `boundedPreview(value: string, max = 160): string | undefined` if we choose to
-  include preview text.
+- `boundedPreview(value: string, max = 80): string | undefined` for fact queries
+  and graph `nameLike` previews.
 - `normalizeNamespace(value): string | null` so aggregation groups `default`,
   empty, and null consistently.
 
@@ -450,11 +510,11 @@ Indexes:
 ```sql
 CREATE INDEX IF NOT EXISTS idx_<schema>_events_retrieval_usage
   ON <schema>.session_events (session_id, created_at DESC)
-  WHERE event_type IN ('facts.searched', 'facts.similar', 'skills.searched', 'graph.searched', 'graph.node_loaded');
+  WHERE event_type IN ('facts.searched', 'facts.similar', 'skills.searched', 'graph.searched', 'graph.node_searched', 'graph.node_loaded');
 
 CREATE INDEX IF NOT EXISTS idx_<schema>_events_graph_node_usage
   ON <schema>.session_events ((data->>'nodeKey'), created_at DESC)
-  WHERE event_type = 'graph.node_loaded';
+  WHERE event_type IN ('graph.node_searched', 'graph.node_loaded');
 ```
 
 Stored procedures:
@@ -464,6 +524,7 @@ Stored procedures:
 - `cms_get_fleet_retrieval_usage(p_since, p_include_deleted)`
 - `cms_get_session_graph_node_usage(p_session_id, p_since, p_limit)`
 - `cms_get_session_graph_edge_search_usage(p_session_id, p_since, p_limit)`
+- `cms_get_fleet_graph_node_usage(p_since, p_include_deleted, p_limit, p_node_key_like, p_kind)`
 
 All procedures aggregate from `session_events`. No new data table is required for
 Phase 1.
@@ -484,6 +545,10 @@ Grouping rules:
 - `calls`: `COUNT(*)`.
 - `totalResults`: sum numeric `resultCount` where present.
 - `duration`: sum/avg numeric `durationMs` where present; null if no duration.
+- `GraphNodeUsageRow.kind`: derived from event type, `searched` for
+  `graph.node_searched` and `loaded` for `graph.node_loaded`.
+- `nodeKeyLike`: implemented as a bounded SQL `ILIKE` over `data->>'nodeKey'`.
+  Keep it optional and require a `since` window for fleet use.
 
 ### 2a. Retention And Size Controls
 
@@ -499,8 +564,9 @@ metrics:
   window, mirroring `read_fleet_skill_usage`.
 - Partial indexes must cover only the retrieval event types so normal transcript
   traffic does not bloat the retrieval indexes.
-- Event payloads must stay small and deterministic in shape. Cap optional preview
-  fields, cap tag arrays if needed, and never include result arrays.
+- Event payloads must stay small and deterministic in shape. Preview fields are
+  capped at 80 characters, tag arrays should be capped if needed, and result
+  arrays are never included.
 - Per-session aggregate queries can scan all retrieval events for that session;
   fleet aggregate queries should default to a recent window in UI/tuner usage.
 
@@ -530,7 +596,8 @@ Update `index.ts`:
 
 Update `inspect-tools.ts`:
 
-- Add tuner-only tools inside the existing tuner-tool branch.
+- Add inspect tools with the same lineage/tuner authorization used by existing
+  session inspection tools.
 - Return `{ enabled, reason, rows }` rather than throwing capability errors to
   the agent.
 - Update `read_session_graph_searches` to map new `graph.searched` shape.
@@ -562,9 +629,13 @@ Add focused unit/integration tests:
 - `graph_search_edges` emits count-only `graph.searched` with predicate/endpoint
   request shape.
 - `graph_neighbourhood` emits `graph.searched` plus `graph.node_loaded`.
+- `graph_search_nodes` with node-key seeds emits `graph.node_searched` for those
+  seeds and does not emit `graph.node_loaded`.
 - CMS aggregation returns per-session counts from seeded events.
-- Graph node usage aggregates exact node anchors.
+- Graph node usage aggregates exact node searches and exact node loads.
 - Graph edge search usage aggregates predicate/from/to request shapes.
+- Fleet graph node usage supports `nodeKeyLike`, `kind`, `since`, and bounded
+  `limit`.
 - Inspect tools return graceful unavailable payloads when graph/enhanced facts are
   absent.
 
@@ -589,16 +660,14 @@ Per repo rules, the CMS migration needs a companion file under
 - Raw retrieval metrics have the same retention behavior as other
   `session_events`: they remain until session-event pruning deletes old rows.
 
-## Open Questions
+## Decisions
 
-1. Should free-text queries be stored as bounded previews, hashes only, or both?
-   Recommendation: hash plus optional bounded preview for local/dev; hash-only if
-   tenant privacy is a concern.
-2. Should ordinary agents be allowed to read lineage-scoped retrieval usage, or
-   should this remain agent-tuner-only? Recommendation: tuner-only first.
-3. Should per-node usage include exact `nodeKey` strings? Recommendation: yes,
-   because node keys are already explicit request inputs and are necessary for
-   the requested "which nodes were loaded" view.
-4. Should edge usage aggregate raw `predicate` text or only `predicateKey`?
-   Recommendation: prefer `predicateKey`; hash raw `predicate` when no key is
-   supplied.
+1. Free-text fact queries and graph `nameLike` values are stored only as bounded
+  previews clipped to 80 characters. No query hashes in Phase 1.
+2. Parent/root sessions may read retrieval usage for child sessions. The
+  agent-tuner may read any session. Other sessions are limited to self unless a
+  future tool grants broader access.
+3. Exact graph node keys supplied by the caller are persisted for usage metrics.
+  Node-key searches and node loads are separate event types and aggregate rows.
+4. Edge usage aggregates `predicateKey` only. Raw predicate text is not persisted
+  in the usage metric payload.

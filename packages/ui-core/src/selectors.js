@@ -4607,6 +4607,43 @@ function buildFactsTombstoneBody(stats) {
     ]);
 }
 
+function retrievalOperationLabel(operation) {
+    switch (operation) {
+        case "facts_search": return "facts search";
+        case "facts_similar": return "facts similar";
+        case "search_skills": return "skill search";
+        case "graph_search_nodes": return "graph nodes";
+        case "graph_search_edges": return "graph edges";
+        case "graph_neighbourhood": return "graph hood";
+        default: return String(operation || "retrieval");
+    }
+}
+
+function buildFleetRetrievalBody(rows, maxWidth) {
+    const top = rows
+        .slice()
+        .sort((a, b) => (Number(b.calls) || 0) - (Number(a.calls) || 0))
+        .slice(0, 12);
+    const callCells = top.map((r) => `${Number(r.calls) || 0} calls`);
+    const resultCells = top.map((r) => `${Number(r.totalResults) || 0} res`);
+    const callW = callCells.reduce((m, c) => Math.max(m, c.length), 0);
+    const resultW = resultCells.reduce((m, c) => Math.max(m, c.length), 0);
+    const reserve = 4 + 2 + callW + 2 + resultW;
+    const labelMax = Number.isFinite(maxWidth) && maxWidth > 0
+        ? Math.max(10, Math.floor(maxWidth) - reserve)
+        : Infinity;
+    const tableRows = top.map((r, i) => {
+        const namespace = r.namespace ? ` ${r.namespace}` : "";
+        const label = ellipsize(`${retrievalOperationLabel(r.operation)}${namespace}`, labelMax);
+        return [label, callCells[i], resultCells[i]];
+    });
+    const body = formatColumnTable(tableRows);
+    if (rows.length > top.length) {
+        return `${body}\n… ${rows.length - top.length} more`;
+    }
+    return body;
+}
+
 function buildFleetStatsLines(state, maxWidth) {
     const fleet = state.fleetStats;
     if (!fleet || (fleet.loading && !fleet.data)) {
@@ -4714,6 +4751,20 @@ function buildFleetStatsLines(state, maxWidth) {
             body: buildFleetSkillsBody(fleetSkillRows, maxWidth),
             width: w,
             titleColor: "cyan",
+            borderColor: "gray",
+            fitToContent: true,
+        }));
+    }
+
+    const retrievalRows = Array.isArray(fleet.retrievalUsage?.rows) ? fleet.retrievalUsage.rows : [];
+    if (retrievalRows.length > 0) {
+        const totalCalls = retrievalRows.reduce((sum, row) => sum + (Number(row.calls) || 0), 0);
+        lines.push(plainInspectorLine(""));
+        lines.push(...buildMessageCardLines({
+            title: `Fleet Retrieval (${formatCompactNumber(totalCalls)})`,
+            body: buildFleetRetrievalBody(retrievalRows, maxWidth),
+            width: w,
+            titleColor: "magenta",
             borderColor: "gray",
             fitToContent: true,
         }));

@@ -26,6 +26,7 @@ import { loadMigrations, HORIZON_FACTS_LOCK_SEED, hashSchemaName } from "./horiz
 import { assertGraphExtensions } from "./preconditions.js";
 import { ident } from "./sql-util.js";
 import { GraphQueries } from "./graph-queries.js";
+import { predicateKey } from "./graph-model.js";
 
 /** The single graph-bootstrap migration (AGE extension + create_graph). */
 const GRAPH_BOOTSTRAP_VERSION = "0003";
@@ -189,6 +190,9 @@ export class HorizonDBGraphStore implements GraphStore {
     }
     searchGraphEdges(q: GraphEdgeQuery, access?: AccessContext): Promise<GraphEdgeHit[]> {
         return this.graphQueries.searchGraphEdges(q, access);
+    }
+    normalizePredicateKey(predicate: string): string {
+        return predicateKey(predicate);
     }
     graphNeighbourhood(nodeKey: string, depth: number, access?: AccessContext, opts?: GraphNamespaceQuery): Promise<SubGraph> {
         return this.graphQueries.graphNeighbourhood(nodeKey, depth, access, opts);

@@ -34,6 +34,13 @@ import type {
     SkillUsageRow,
     SessionTreeSkillUsage,
     FleetSkillUsage,
+    RetrievalUsageRow,
+    SessionTreeRetrievalUsage,
+    FleetRetrievalUsage,
+    GraphNodeUsageKind,
+    GraphNodeUsageRow,
+    FleetGraphNodeUsage,
+    GraphEdgeSearchUsageRow,
     UserProfile,
     UserPrincipal,
     SessionGroupRow,
@@ -1462,6 +1469,42 @@ export class PilotSwarmManagementClient {
     async getFleetSkillUsage(opts?: { since?: Date; includeDeleted?: boolean }): Promise<FleetSkillUsage> {
         this._ensureStarted();
         return this._catalog!.getFleetSkillUsage(opts);
+    }
+
+    /** Get per-session retrieval usage for enhanced facts, learned skills, and graph reads. */
+    async getSessionRetrievalUsage(sessionId: string, opts?: { since?: Date }): Promise<RetrievalUsageRow[]> {
+        this._ensureStarted();
+        return this._catalog!.getSessionRetrievalUsage(sessionId, opts);
+    }
+
+    /** Get retrieval usage rolled up across the spawn tree rooted at the given session. */
+    async getSessionTreeRetrievalUsage(sessionId: string, opts?: { since?: Date }): Promise<SessionTreeRetrievalUsage> {
+        this._ensureStarted();
+        return this._catalog!.getSessionTreeRetrievalUsage(sessionId, opts);
+    }
+
+    /** Get fleet-wide retrieval usage broken down by agent and operation. */
+    async getFleetRetrievalUsage(opts?: { since?: Date; includeDeleted?: boolean }): Promise<FleetRetrievalUsage> {
+        this._ensureStarted();
+        return this._catalog!.getFleetRetrievalUsage(opts);
+    }
+
+    /** Get exact graph node-key search/load usage for one session. */
+    async getSessionGraphNodeUsage(sessionId: string, opts?: { since?: Date; limit?: number; nodeKeyLike?: string; kind?: GraphNodeUsageKind }): Promise<GraphNodeUsageRow[]> {
+        this._ensureStarted();
+        return this._catalog!.getSessionGraphNodeUsage(sessionId, opts);
+    }
+
+    /** Get exact graph node-key search/load usage across the fleet. */
+    async getFleetGraphNodeUsage(opts?: { since?: Date; includeDeleted?: boolean; limit?: number; nodeKeyLike?: string; kind?: GraphNodeUsageKind }): Promise<FleetGraphNodeUsage> {
+        this._ensureStarted();
+        return this._catalog!.getFleetGraphNodeUsage(opts);
+    }
+
+    /** Get requested graph edge-search shapes for one session. */
+    async getSessionGraphEdgeSearchUsage(sessionId: string, opts?: { since?: Date; limit?: number }): Promise<GraphEdgeSearchUsageRow[]> {
+        this._ensureStarted();
+        return this._catalog!.getSessionGraphEdgeSearchUsage(sessionId, opts);
     }
 
     /**

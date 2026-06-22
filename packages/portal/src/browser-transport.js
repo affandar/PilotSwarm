@@ -330,6 +330,13 @@ export class BrowserPortalTransport {
         });
     }
 
+    async getFleetRetrievalUsage(opts) {
+        return this.rpc("getFleetRetrievalUsage", {
+            includeDeleted: opts?.includeDeleted,
+            since: opts?.since instanceof Date ? opts.since.toISOString() : opts?.since,
+        });
+    }
+
     async getSessionFactsStats(sessionId) {
         return this.rpc("getSessionFactsStats", { sessionId });
     }

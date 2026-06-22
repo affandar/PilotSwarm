@@ -33,9 +33,15 @@ without a graph and nothing here applies — say so plainly instead of guessing.
 | `graph_list_namespaces` | ✓ | ✓ | Discover registered graph corpora from compact frontmatter |
 | `graph_get_namespace` | ✓ | ✓ | Read full descriptor for one namespace/corpus |
 | `graph_stats` | ✓ | ✓ | Node + edge counts and crawl backlog (read-only) |
+| `read_session_retrieval_usage` | ✓ | ✓ | Count-only fact/skill/graph retrieval usage for a session |
+| `read_session_tree_retrieval_usage` | ✓ | ✓ | Count-only retrieval usage rolled up across a spawn tree |
+| `read_session_graph_node_usage` | ✓ | ✓ | Exact graph node keys searched or loaded by a session |
+| `read_session_graph_edge_search_usage` | ✓ | ✓ | Edge-search shapes grouped by predicate key and endpoints |
 | `read_session_graph_searches` | — | ✓ | Forensics: what graph searches a session ran |
 
-Neither role mutates the graph through this skill. The facts-manager *holds*
+The `read_session_*_retrieval_usage` tools are lineage-gated for non-tuner
+sessions: facts-manager can inspect itself and descendant sessions, while
+agent-tuner can inspect any session. Neither role mutates the graph through this skill. The facts-manager *holds*
 the graph write/delete tools (dormant), plus namespace registry mutation tools
 for explicit operator actions, but graph **building** is a harvester job — do
 not crawl, upsert, archive, or delete here unless an operator explicitly asks.
@@ -89,17 +95,30 @@ large, render the top entities by degree and say you truncated.
 When investigating "why did session X not find what it expected in the graph",
 or "what did this agent actually search for":
 
-1. Call `read_session_graph_searches({ session_id })`. Each row is a durable
-   `graph.searched` event: the **kind** (nodes / edges / neighbourhood), the
-   **query** the agent issued, and the **result count** it got back.
-2. Compare the query to what you'd expect. A zero-result `graph_search_nodes`
+1. Start with `read_session_retrieval_usage({ session_id })`. It returns
+   count-only aggregates for `facts_search`, `facts_similar`, `search_skills`,
+   `graph_search_nodes`, `graph_search_edges`, and `graph_neighbourhood`, grouped
+   by namespace with result counts and durations. It does **not** store returned
+   facts, nodes, or edges.
+2. If the question is about a specific graph anchor, call
+   `read_session_graph_node_usage({ session_id, node_key_like?, kind? })` to see
+   exact node keys that were searched as seeds (`kind="searched"`) or loaded as
+   neighbourhood anchors (`kind="loaded"`).
+3. If the question is about relationships, call
+   `read_session_graph_edge_search_usage({ session_id })` and inspect the
+   `predicateKey`, `fromKey`, `toKey`, namespace, call count, and result count.
+4. Use `read_session_graph_searches({ session_id })` only when you need the raw
+   timeline. Each row is a durable `graph.searched` event with `operation`
+   (`graph_search_nodes`, `graph_search_edges`, or `graph_neighbourhood`),
+   namespace, bounded query preview, and result counts.
+5. Compare the query to what you'd expect. A zero-result `graph_search_nodes`
    with an over-specific `nameLike` is a prompt problem, not a graph problem.
-3. Cross-check visibility: graph reads honour the same lineage/ACL as
+6. Cross-check visibility: graph reads honour the same lineage/ACL as
    `read_facts`. A session only sees nodes its **accessible facts** evidence.
    If a session got zero results but the entity exists, confirm whether that
    session's lineage actually has evidence linking to it before blaming the
    graph.
-4. For semantic investigations ("find sessions similar to this failure"), use
+7. For semantic investigations ("find sessions similar to this failure"), use
    `facts_search` (semantic / hybrid) and `facts_similar` — then pivot into the
    graph with `graph_search_nodes({ seeds: [<scopeKey>] })`.
 

@@ -22,6 +22,25 @@ function isDefaultNamespace(namespace: unknown): boolean {
     return namespaceKey(namespace).toLowerCase() === DEFAULT_GRAPH_NAMESPACE;
 }
 
+function normalizeNamespace(value: unknown): string | null {
+    const clean = typeof value === "string" ? value.trim().replace(/\/+$/g, "") : "";
+    return clean.length > 0 && clean.toLowerCase() !== DEFAULT_GRAPH_NAMESPACE ? clean : null;
+}
+
+function boundedPreview(value: unknown, max = 80): string | undefined {
+    const text = typeof value === "string" ? value.trim() : "";
+    if (!text) return undefined;
+    return text.length > max ? text.slice(0, max) : text;
+}
+
+function isFactSeed(seed: string): boolean {
+    return /^(shared|session):/.test(seed);
+}
+
+function isLikelyNodeKey(seed: string): boolean {
+    return !isFactSeed(seed) && /^[a-z][a-z0-9_-]*:/i.test(seed);
+}
+
 export interface CreateGraphToolsOptions {
     graphStore: GraphStore;
     /** Base fact store — graph_stats reads crawl-queue counts from it. */
@@ -97,14 +116,9 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
     const tools: Tool<any>[] = [];
 
     // Record a graph search for tuner forensics — best-effort, never blocks.
-    const recordSearch = (sessionId: string | undefined, kind: string, query: unknown, resultCount: number) => {
+    const recordSearch = (sessionId: string | undefined, eventType: string, data: Record<string, unknown>) => {
         if (!recordEvent || !sessionId) return;
-        recordEvent(sessionId, "graph.searched", {
-            kind,
-            query,
-            resultCount,
-            at: new Date().toISOString(),
-        }).catch(() => { /* swallow */ });
+        recordEvent(sessionId, eventType, { ...data, callerAgentId: agentId }).catch(() => { /* swallow */ });
     };
 
     const recordNamespaceMutation = (sessionId: string | undefined, action: string, namespace: string, data: unknown = {}) => {
@@ -178,12 +192,34 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
             },
         },
         handler: async (a: any, ctx: any) => {
+            const startedAt = Date.now();
             const access = await resolveAccess(ctx?.sessionId);
             const hits = await graphStore.searchGraphNodes(
                 { kind: a.kind, nameLike: a.nameLike, namespace: a.namespace, seeds: a.seeds, depth: a.depth, limit: a.limit },
                 access,
             );
-            recordSearch(ctx?.sessionId, "search_nodes", { kind: a.kind, nameLike: a.nameLike, namespace: a.namespace, seeds: a.seeds, depth: a.depth }, hits.length);
+            const seeds = Array.isArray(a.seeds) ? a.seeds.filter((seed: unknown): seed is string => typeof seed === "string" && seed.trim().length > 0) : [];
+            const nodeKeySeeds = seeds.filter(isLikelyNodeKey);
+            recordSearch(ctx?.sessionId, "graph.searched", {
+                operation: "graph_search_nodes",
+                kind: a.kind ?? null,
+                nameLikePreview: boundedPreview(a.nameLike),
+                namespace: normalizeNamespace(a.namespace),
+                seedCount: seeds.length,
+                nodeKeySeedCount: nodeKeySeeds.length,
+                depth: a.depth ?? null,
+                limit: a.limit ?? 50,
+                resultCount: hits.length,
+                durationMs: Date.now() - startedAt,
+            });
+            for (const nodeKey of nodeKeySeeds) {
+                recordSearch(ctx?.sessionId, "graph.node_searched", {
+                    operation: "graph_search_nodes",
+                    nodeKey,
+                    namespace: normalizeNamespace(a.namespace),
+                    durationMs: Date.now() - startedAt,
+                });
+            }
             return hits;
         },
     }));
@@ -209,9 +245,24 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
             },
         },
         handler: async (a: any, ctx: any) => {
+            const startedAt = Date.now();
             const access = await resolveAccess(ctx?.sessionId);
             const hits = await graphStore.searchGraphEdges(a, access);
-            recordSearch(ctx?.sessionId, "search_edges", a, hits.length);
+            const normalizedPredicateKey = a.predicateKey
+                ?? (typeof a.predicate === "string" && typeof graphStore.normalizePredicateKey === "function"
+                    ? graphStore.normalizePredicateKey(a.predicate)
+                    : null);
+            recordSearch(ctx?.sessionId, "graph.searched", {
+                operation: "graph_search_edges",
+                predicateKey: normalizedPredicateKey,
+                fromKey: a.fromKey ?? null,
+                toKey: a.toKey ?? null,
+                namespace: normalizeNamespace(a.namespace),
+                minConfidence: a.minConfidence ?? null,
+                limit: a.limit ?? 50,
+                resultCount: hits.length,
+                durationMs: Date.now() - startedAt,
+            });
             return hits;
         },
     }));
@@ -232,9 +283,26 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
             required: ["nodeKey", "depth"] as const,
         },
         handler: async (a: any, ctx: any) => {
+            const startedAt = Date.now();
             const access = await resolveAccess(ctx?.sessionId);
             const sub = await graphStore.graphNeighbourhood(a.nodeKey, a.depth, access, { namespace: a.namespace });
-            recordSearch(ctx?.sessionId, "neighbourhood", { nodeKey: a.nodeKey, depth: a.depth, namespace: a.namespace }, sub.nodes.length);
+            const durationMs = Date.now() - startedAt;
+            recordSearch(ctx?.sessionId, "graph.searched", {
+                operation: "graph_neighbourhood",
+                nodeKey: a.nodeKey,
+                namespace: normalizeNamespace(a.namespace),
+                depth: a.depth,
+                resultCount: sub.nodes.length + sub.edges.length,
+                nodeCount: sub.nodes.length,
+                edgeCount: sub.edges.length,
+                durationMs,
+            });
+            recordSearch(ctx?.sessionId, "graph.node_loaded", {
+                operation: "graph_neighbourhood",
+                nodeKey: a.nodeKey,
+                namespace: normalizeNamespace(a.namespace),
+                durationMs,
+            });
             return sub;
         },
     }));

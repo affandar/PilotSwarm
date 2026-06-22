@@ -131,6 +131,30 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
     const isTuner = agentIdentity === TUNER_AGENT_ID;
     const isSystemAgent = SYSTEM_AGENT_IDS.has(agentIdentity || "");
 
+    const parseSince = (toolName: string, sinceIso?: string): Date | { error: string } | undefined => {
+        if (!sinceIso) return undefined;
+        const d = new Date(sinceIso);
+        if (Number.isNaN(d.getTime())) return { error: `${toolName}: invalid since_iso` };
+        return d;
+    };
+
+    const ensureSelfOrDescendant = async (toolName: string, targetSessionId: string, callerSessionId?: string): Promise<null | { error: string }> => {
+        if (isTuner) return null;
+        if (!callerSessionId) return { error: `${toolName}: caller session id is required` };
+        if (targetSessionId === callerSessionId) return null;
+        try {
+            const descendants = await catalog.getDescendantSessionIds(callerSessionId);
+            if (descendants.includes(targetSessionId)) return null;
+            return {
+                error:
+                    `${toolName}: session_id ${targetSessionId.slice(0, 8)} is not your session or a descendant. ` +
+                    `You may only inspect yourself or sessions in your spawn tree.`,
+            };
+        } catch (err: any) {
+            return { error: `${toolName}: descendant lookup failed: ${err?.message || String(err)}` };
+        }
+    };
+
     const readAgentEventsTool = defineTool("read_agent_events", {
         description:
             "Read durable events from a descendant agent in your spawn tree, paginated by seq cursor. " +
@@ -457,15 +481,7 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
         },
     });
 
-    if (!isSystemAgent) {
-        return [readAgentEventsTool];
-    }
-
     const systemReadTools = [listAllSessionsTool, readSessionInfoTool, readUserStatsTool];
-
-    if (!isTuner) {
-        return [readAgentEventsTool, ...systemReadTools];
-    }
 
     // ─── Tuner-only read tools ─────────────────────────────────────────────
     // Bypass the lineage gate; expose CMS state, metric summaries, and
@@ -513,7 +529,17 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
                     .filter((e: any) => e.eventType === "graph.searched")
                     .map((e: any) => {
                         const d = e.data ?? {};
-                        return { seq: e.seq, at: d.at ?? "", kind: d.kind ?? "", query: d.query, resultCount: d.resultCount ?? 0 };
+                        return {
+                            seq: e.seq,
+                            at: eventTimestamp(e),
+                            operation: d.operation ?? d.kind ?? "",
+                            namespace: d.namespace ?? null,
+                            nodeKind: d.operation === "graph_search_nodes" ? d.kind ?? null : null,
+                            queryPreview: d.queryPreview ?? d.nameLikePreview ?? null,
+                            resultCount: d.resultCount ?? 0,
+                            nodeCount: d.nodeCount ?? null,
+                            edgeCount: d.edgeCount ?? null,
+                        };
                     });
                 return { sessionId: id, count: searches.length, searches };
             } catch (err: any) {
@@ -660,6 +686,189 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
         },
     });
 
+    const readSessionRetrievalUsageTool = defineTool("read_session_retrieval_usage", {
+        description:
+            "Read per-session retrieval usage for facts_search, facts_similar, search_skills, and graph reads. " +
+            "Returns count-only aggregates from session_events; no returned facts/nodes/edges are stored.",
+        parameters: {
+            type: "object" as const,
+            properties: {
+                session_id: { type: "string" },
+                since_iso: { type: "string", description: "Optional ISO timestamp lower bound." },
+            },
+            required: ["session_id"],
+        },
+        handler: async (args: { session_id: string; since_iso?: string }, ctx?: { sessionId?: string }) => {
+            const id = normalizeSessionId(args.session_id);
+            try {
+                const denied = await ensureSelfOrDescendant("read_session_retrieval_usage", id, ctx?.sessionId);
+                if (denied) return denied;
+                const since = parseSince("read_session_retrieval_usage", args.since_iso);
+                if (since && "error" in since) return since;
+                const rows = await catalog.getSessionRetrievalUsage(id, since ? { since } : undefined);
+                return { enabled: true, sessionId: id, rows, totalCalls: rows.reduce((a, r) => a + r.calls, 0) };
+            } catch (err: any) {
+                return { error: `read_session_retrieval_usage: ${err?.message || String(err)}` };
+            }
+        },
+    });
+
+    const readSessionTreeRetrievalUsageTool = defineTool("read_session_tree_retrieval_usage", {
+        description:
+            "Read retrieval usage rolled up across a session spawn tree. Parents can use this to understand " +
+            "their children facts/graph consumption; tuner can read any tree.",
+        parameters: {
+            type: "object" as const,
+            properties: {
+                session_id: { type: "string" },
+                since_iso: { type: "string", description: "Optional ISO timestamp lower bound." },
+            },
+            required: ["session_id"],
+        },
+        handler: async (args: { session_id: string; since_iso?: string }, ctx?: { sessionId?: string }) => {
+            const id = normalizeSessionId(args.session_id);
+            try {
+                const denied = await ensureSelfOrDescendant("read_session_tree_retrieval_usage", id, ctx?.sessionId);
+                if (denied) return denied;
+                const since = parseSince("read_session_tree_retrieval_usage", args.since_iso);
+                if (since && "error" in since) return since;
+                return await catalog.getSessionTreeRetrievalUsage(id, since ? { since } : undefined);
+            } catch (err: any) {
+                return { error: `read_session_tree_retrieval_usage: ${err?.message || String(err)}` };
+            }
+        },
+    });
+
+    const readFleetRetrievalUsageTool = defineTool("read_fleet_retrieval_usage", {
+        description:
+            "Read fleet-wide count-only retrieval usage broken down by agent, surface, operation, and namespace. " +
+            "Always pass since_iso for the default UI/tuner window to keep the scan bounded.",
+        parameters: {
+            type: "object" as const,
+            properties: {
+                include_deleted: { type: "boolean", description: "Default false." },
+                since_iso: { type: "string", description: "Optional ISO timestamp lower bound on event time." },
+            },
+        },
+        handler: async (args: { include_deleted?: boolean; since_iso?: string }) => {
+            try {
+                const since = parseSince("read_fleet_retrieval_usage", args.since_iso);
+                if (since && "error" in since) return since;
+                return await catalog.getFleetRetrievalUsage({ since: since as Date | undefined, includeDeleted: args.include_deleted === true });
+            } catch (err: any) {
+                return { error: `read_fleet_retrieval_usage: ${err?.message || String(err)}` };
+            }
+        },
+    });
+
+    const readSessionGraphNodeUsageTool = defineTool("read_session_graph_node_usage", {
+        description:
+            "Read exact graph node-key usage for a session: node keys searched as exact seeds and node keys loaded " +
+            "as neighbourhood anchors. Supports node_key_like and kind searched|loaded.",
+        parameters: {
+            type: "object" as const,
+            properties: {
+                session_id: { type: "string" },
+                since_iso: { type: "string", description: "Optional ISO timestamp lower bound." },
+                limit: { type: "number", description: "Max rows (default 100, max 500)." },
+                node_key_like: { type: "string", description: "Optional substring match over nodeKey." },
+                kind: { type: "string", enum: ["searched", "loaded"], description: "Optional row kind filter." },
+            },
+            required: ["session_id"],
+        },
+        handler: async (args: { session_id: string; since_iso?: string; limit?: number; node_key_like?: string; kind?: "searched" | "loaded" }, ctx?: { sessionId?: string }) => {
+            const id = normalizeSessionId(args.session_id);
+            try {
+                const denied = await ensureSelfOrDescendant("read_session_graph_node_usage", id, ctx?.sessionId);
+                if (denied) return denied;
+                const since = parseSince("read_session_graph_node_usage", args.since_iso);
+                if (since && "error" in since) return since;
+                const rows = await catalog.getSessionGraphNodeUsage(id, {
+                    since: since as Date | undefined,
+                    limit: args.limit,
+                    nodeKeyLike: args.node_key_like,
+                    kind: args.kind,
+                });
+                return { enabled: true, sessionId: id, rows };
+            } catch (err: any) {
+                return { error: `read_session_graph_node_usage: ${err?.message || String(err)}` };
+            }
+        },
+    });
+
+    const readFleetGraphNodeUsageTool = defineTool("read_fleet_graph_node_usage", {
+        description:
+            "Read fleet-wide exact graph node-key usage. Use since_iso plus optional node_key_like/kind to answer " +
+            "how often a node key was searched or loaded over a bounded window.",
+        parameters: {
+            type: "object" as const,
+            properties: {
+                include_deleted: { type: "boolean", description: "Default false." },
+                since_iso: { type: "string", description: "Optional ISO timestamp lower bound on event time." },
+                limit: { type: "number", description: "Max rows (default 100, max 500)." },
+                node_key_like: { type: "string", description: "Optional substring match over nodeKey." },
+                kind: { type: "string", enum: ["searched", "loaded"], description: "Optional row kind filter." },
+            },
+        },
+        handler: async (args: { include_deleted?: boolean; since_iso?: string; limit?: number; node_key_like?: string; kind?: "searched" | "loaded" }) => {
+            try {
+                const since = parseSince("read_fleet_graph_node_usage", args.since_iso);
+                if (since && "error" in since) return since;
+                return await catalog.getFleetGraphNodeUsage({
+                    since: since as Date | undefined,
+                    includeDeleted: args.include_deleted === true,
+                    limit: args.limit,
+                    nodeKeyLike: args.node_key_like,
+                    kind: args.kind,
+                });
+            } catch (err: any) {
+                return { error: `read_fleet_graph_node_usage: ${err?.message || String(err)}` };
+            }
+        },
+    });
+
+    const readSessionGraphEdgeSearchUsageTool = defineTool("read_session_graph_edge_search_usage", {
+        description:
+            "Read requested graph edge-search shapes for a session, grouped by predicateKey/fromKey/toKey/namespace.",
+        parameters: {
+            type: "object" as const,
+            properties: {
+                session_id: { type: "string" },
+                since_iso: { type: "string", description: "Optional ISO timestamp lower bound." },
+                limit: { type: "number", description: "Max rows (default 100, max 500)." },
+            },
+            required: ["session_id"],
+        },
+        handler: async (args: { session_id: string; since_iso?: string; limit?: number }, ctx?: { sessionId?: string }) => {
+            const id = normalizeSessionId(args.session_id);
+            try {
+                const denied = await ensureSelfOrDescendant("read_session_graph_edge_search_usage", id, ctx?.sessionId);
+                if (denied) return denied;
+                const since = parseSince("read_session_graph_edge_search_usage", args.since_iso);
+                if (since && "error" in since) return since;
+                const rows = await catalog.getSessionGraphEdgeSearchUsage(id, { since: since as Date | undefined, limit: args.limit });
+                return { enabled: true, sessionId: id, rows };
+            } catch (err: any) {
+                return { error: `read_session_graph_edge_search_usage: ${err?.message || String(err)}` };
+            }
+        },
+    });
+
+    const lineageRetrievalTools = [
+        readSessionRetrievalUsageTool,
+        readSessionTreeRetrievalUsageTool,
+        readSessionGraphNodeUsageTool,
+        readSessionGraphEdgeSearchUsageTool,
+    ];
+
+    if (!isSystemAgent) {
+        return [readAgentEventsTool, ...lineageRetrievalTools];
+    }
+
+    if (!isTuner) {
+        return [readAgentEventsTool, ...systemReadTools, ...lineageRetrievalTools];
+    }
+
     const factsTools: Tool<any>[] = [];
     if (factStore) {
         factsTools.push(defineTool("read_session_facts_stats", {
@@ -795,6 +1004,12 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
         readSessionSkillUsageTool,
         readSessionTreeSkillUsageTool,
         readFleetSkillUsageTool,
+        readSessionRetrievalUsageTool,
+        readSessionTreeRetrievalUsageTool,
+        readFleetRetrievalUsageTool,
+        readSessionGraphNodeUsageTool,
+        readFleetGraphNodeUsageTool,
+        readSessionGraphEdgeSearchUsageTool,
         ...factsTools,
     ];
 

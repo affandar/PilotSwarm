@@ -405,6 +405,82 @@ export interface FleetSkillUsage {
     rows: FleetSkillUsageRow[];
 }
 
+export type RetrievalSurface = "facts" | "skills" | "graph";
+export type RetrievalOperation =
+    | "facts_search"
+    | "facts_similar"
+    | "search_skills"
+    | "graph_search_nodes"
+    | "graph_search_edges"
+    | "graph_neighbourhood";
+
+export interface RetrievalUsageRow {
+    surface: RetrievalSurface;
+    operation: RetrievalOperation;
+    namespace: string | null;
+    calls: number;
+    totalResults: number;
+    avgResults: number;
+    totalDurationMs: number | null;
+    avgDurationMs: number | null;
+    firstUsedAt: Date;
+    lastUsedAt: Date;
+}
+
+export interface SessionTreeRetrievalUsage {
+    rootSessionId: string;
+    perSession: Array<{
+        sessionId: string;
+        agentId: string | null;
+        rows: RetrievalUsageRow[];
+    }>;
+    rolledUp: RetrievalUsageRow[];
+    totalCalls: number;
+}
+
+export interface FleetRetrievalUsageRow extends RetrievalUsageRow {
+    agentId: string | null;
+    sessionCount: number;
+}
+
+export interface FleetRetrievalUsage {
+    windowStart: number | null;
+    rows: FleetRetrievalUsageRow[];
+}
+
+export type GraphNodeUsageKind = "searched" | "loaded";
+
+export interface GraphNodeUsageRow {
+    nodeKey: string;
+    namespace: string | null;
+    operation: RetrievalOperation;
+    kind: GraphNodeUsageKind;
+    count: number;
+    firstSeenAt: Date;
+    lastSeenAt: Date;
+}
+
+export interface FleetGraphNodeUsageRow extends GraphNodeUsageRow {
+    agentId: string | null;
+    sessionCount: number;
+}
+
+export interface FleetGraphNodeUsage {
+    windowStart: number | null;
+    rows: FleetGraphNodeUsageRow[];
+}
+
+export interface GraphEdgeSearchUsageRow {
+    predicateKey: string | null;
+    fromKey: string | null;
+    toKey: string | null;
+    namespace: string | null;
+    calls: number;
+    totalResults: number;
+    firstSearchedAt: Date;
+    lastSearchedAt: Date;
+}
+
 // ─── Provider Interface ──────────────────────────────────────────
 
 /**
@@ -585,6 +661,24 @@ export interface SessionCatalogProvider {
     /** Get fleet-wide skill usage broken down by agent. Tuner / management surface. */
     getFleetSkillUsage(opts?: { since?: Date; includeDeleted?: boolean }): Promise<FleetSkillUsage>;
 
+    /** Get per-session retrieval usage counts from durable retrieval events. */
+    getSessionRetrievalUsage(sessionId: string, opts?: { since?: Date }): Promise<RetrievalUsageRow[]>;
+
+    /** Get retrieval usage rolled up across the spawn tree rooted at the given session. */
+    getSessionTreeRetrievalUsage(sessionId: string, opts?: { since?: Date }): Promise<SessionTreeRetrievalUsage>;
+
+    /** Get fleet-wide retrieval usage broken down by agent. */
+    getFleetRetrievalUsage(opts?: { since?: Date; includeDeleted?: boolean }): Promise<FleetRetrievalUsage>;
+
+    /** Get exact graph node-key search/load usage for one session. */
+    getSessionGraphNodeUsage(sessionId: string, opts?: { since?: Date; limit?: number; nodeKeyLike?: string; kind?: GraphNodeUsageKind }): Promise<GraphNodeUsageRow[]>;
+
+    /** Get exact graph node-key search/load usage across the fleet. */
+    getFleetGraphNodeUsage(opts?: { since?: Date; includeDeleted?: boolean; limit?: number; nodeKeyLike?: string; kind?: GraphNodeUsageKind }): Promise<FleetGraphNodeUsage>;
+
+    /** Get requested graph edge-search shapes for one session. */
+    getSessionGraphEdgeSearchUsage(sessionId: string, opts?: { since?: Date; limit?: number }): Promise<GraphEdgeSearchUsageRow[]>;
+
     /** Upsert a session metric summary with atomic increments. */
     upsertSessionMetricSummary(sessionId: string, updates: SessionMetricSummaryUpsert): Promise<void>;
 
@@ -652,6 +746,12 @@ function sqlForSchema(schema: string) {
             getSessionSkillUsage:       `${s}.cms_get_session_skill_usage`,
             getSessionTreeSkillUsage:   `${s}.cms_get_session_tree_skill_usage`,
             getFleetSkillUsage:         `${s}.cms_get_fleet_skill_usage`,
+            getSessionRetrievalUsage:   `${s}.cms_get_session_retrieval_usage`,
+            getSessionTreeRetrievalUsage: `${s}.cms_get_session_tree_retrieval_usage`,
+            getFleetRetrievalUsage:     `${s}.cms_get_fleet_retrieval_usage`,
+            getSessionGraphNodeUsage:   `${s}.cms_get_session_graph_node_usage`,
+            getFleetGraphNodeUsage:     `${s}.cms_get_fleet_graph_node_usage`,
+            getSessionGraphEdgeSearchUsage: `${s}.cms_get_session_graph_edge_search_usage`,
         },
     };
 }
@@ -1445,6 +1545,107 @@ export class PgSessionCatalogProvider implements SessionCatalogProvider {
         };
     }
 
+    async getSessionRetrievalUsage(sessionId: string, opts?: { since?: Date }): Promise<RetrievalUsageRow[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.getSessionRetrievalUsage}($1, $2)`,
+            [sessionId, opts?.since ?? null],
+        );
+        return rows.map(rowToRetrievalUsageRow);
+    }
+
+    async getSessionTreeRetrievalUsage(sessionId: string, opts?: { since?: Date }): Promise<SessionTreeRetrievalUsage> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.getSessionTreeRetrievalUsage}($1, $2)`,
+            [sessionId, opts?.since ?? null],
+        );
+
+        const perSessionMap = new Map<string, { agentId: string | null; rows: RetrievalUsageRow[] }>();
+        const rolledUpMap = new Map<string, RetrievalUsageRow>();
+        let totalCalls = 0;
+
+        for (const r of rows) {
+            const sid = String(r.session_id);
+            const item = rowToRetrievalUsageRow(r);
+            const bucket = perSessionMap.get(sid)
+                ?? ({ agentId: (r.agent_id ?? null) as string | null, rows: [] as RetrievalUsageRow[] });
+            bucket.rows.push(item);
+            perSessionMap.set(sid, bucket);
+
+            const key = `${item.surface}\u0001${item.operation}\u0001${item.namespace ?? ""}`;
+            const existing = rolledUpMap.get(key);
+            if (existing) {
+                const nextCalls = existing.calls + item.calls;
+                existing.totalResults += item.totalResults;
+                existing.totalDurationMs = sumNullable(existing.totalDurationMs, item.totalDurationMs);
+                existing.calls = nextCalls;
+                existing.avgResults = nextCalls > 0 ? existing.totalResults / nextCalls : 0;
+                existing.avgDurationMs = existing.totalDurationMs != null && nextCalls > 0 ? existing.totalDurationMs / nextCalls : null;
+                if (item.firstUsedAt < existing.firstUsedAt) existing.firstUsedAt = item.firstUsedAt;
+                if (item.lastUsedAt > existing.lastUsedAt) existing.lastUsedAt = item.lastUsedAt;
+            } else {
+                rolledUpMap.set(key, { ...item });
+            }
+            totalCalls += item.calls;
+        }
+
+        const rolledUp = Array.from(rolledUpMap.values()).sort((a, b) =>
+            b.calls - a.calls || b.lastUsedAt.getTime() - a.lastUsedAt.getTime(),
+        );
+        const perSession = Array.from(perSessionMap.entries()).map(([sid, bucket]) => ({
+            sessionId: sid,
+            agentId: bucket.agentId,
+            rows: bucket.rows,
+        }));
+
+        return { rootSessionId: sessionId, perSession, rolledUp, totalCalls };
+    }
+
+    async getFleetRetrievalUsage(opts?: { since?: Date; includeDeleted?: boolean }): Promise<FleetRetrievalUsage> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.getFleetRetrievalUsage}($1, $2)`,
+            [opts?.since ?? null, opts?.includeDeleted ?? false],
+        );
+        return {
+            windowStart: opts?.since ? opts.since.getTime() : null,
+            rows: rows.map((r: any): FleetRetrievalUsageRow => ({
+                ...rowToRetrievalUsageRow(r),
+                agentId: r.agent_id ?? null,
+                sessionCount: Number(r.session_count) || 0,
+            })),
+        };
+    }
+
+    async getSessionGraphNodeUsage(sessionId: string, opts?: { since?: Date; limit?: number; nodeKeyLike?: string; kind?: GraphNodeUsageKind }): Promise<GraphNodeUsageRow[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.getSessionGraphNodeUsage}($1, $2, $3, $4, $5)`,
+            [sessionId, opts?.since ?? null, opts?.limit ?? null, opts?.nodeKeyLike ?? null, opts?.kind ?? null],
+        );
+        return rows.map(rowToGraphNodeUsageRow);
+    }
+
+    async getFleetGraphNodeUsage(opts?: { since?: Date; includeDeleted?: boolean; limit?: number; nodeKeyLike?: string; kind?: GraphNodeUsageKind }): Promise<FleetGraphNodeUsage> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.getFleetGraphNodeUsage}($1, $2, $3, $4, $5)`,
+            [opts?.since ?? null, opts?.includeDeleted ?? false, opts?.limit ?? null, opts?.nodeKeyLike ?? null, opts?.kind ?? null],
+        );
+        return {
+            windowStart: opts?.since ? opts.since.getTime() : null,
+            rows: rows.map((r: any): FleetGraphNodeUsageRow => ({
+                ...rowToGraphNodeUsageRow(r),
+                agentId: r.agent_id ?? null,
+                sessionCount: Number(r.session_count) || 0,
+            })),
+        };
+    }
+
+    async getSessionGraphEdgeSearchUsage(sessionId: string, opts?: { since?: Date; limit?: number }): Promise<GraphEdgeSearchUsageRow[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.getSessionGraphEdgeSearchUsage}($1, $2, $3)`,
+            [sessionId, opts?.since ?? null, opts?.limit ?? null],
+        );
+        return rows.map(rowToGraphEdgeSearchUsageRow);
+    }
+
     async close(): Promise<void> {
         if (this.pool) {
             await this.pool.end();
@@ -1647,6 +1848,66 @@ function rowToSkillUsageRow(row: any): SkillUsageRow {
         firstUsedAt: new Date(row.first_used_at ?? row.last_used_at),
         lastUsedAt: new Date(row.last_used_at),
     };
+}
+
+function normalizeRetrievalSurface(raw: any): RetrievalSurface {
+    return raw === "skills" || raw === "graph" ? raw : "facts";
+}
+
+function normalizeRetrievalOperation(raw: any): RetrievalOperation {
+    switch (raw) {
+        case "facts_similar": return "facts_similar";
+        case "search_skills": return "search_skills";
+        case "graph_search_nodes": return "graph_search_nodes";
+        case "graph_search_edges": return "graph_search_edges";
+        case "graph_neighbourhood": return "graph_neighbourhood";
+        default: return "facts_search";
+    }
+}
+
+function rowToRetrievalUsageRow(row: any): RetrievalUsageRow {
+    return {
+        surface: normalizeRetrievalSurface(row.surface),
+        operation: normalizeRetrievalOperation(row.operation),
+        namespace: row.namespace ?? null,
+        calls: Number(row.calls) || 0,
+        totalResults: Number(row.total_results) || 0,
+        avgResults: Number(row.avg_results) || 0,
+        totalDurationMs: row.total_duration_ms == null ? null : Number(row.total_duration_ms),
+        avgDurationMs: row.avg_duration_ms == null ? null : Number(row.avg_duration_ms),
+        firstUsedAt: new Date(row.first_used_at ?? row.last_used_at),
+        lastUsedAt: new Date(row.last_used_at ?? row.first_used_at),
+    };
+}
+
+function rowToGraphNodeUsageRow(row: any): GraphNodeUsageRow {
+    return {
+        nodeKey: String(row.node_key ?? ""),
+        namespace: row.namespace ?? null,
+        operation: normalizeRetrievalOperation(row.operation),
+        kind: row.kind === "loaded" ? "loaded" : "searched",
+        count: Number(row.count) || 0,
+        firstSeenAt: new Date(row.first_seen_at ?? row.last_seen_at),
+        lastSeenAt: new Date(row.last_seen_at ?? row.first_seen_at),
+    };
+}
+
+function rowToGraphEdgeSearchUsageRow(row: any): GraphEdgeSearchUsageRow {
+    return {
+        predicateKey: row.predicate_key ?? null,
+        fromKey: row.from_key ?? null,
+        toKey: row.to_key ?? null,
+        namespace: row.namespace ?? null,
+        calls: Number(row.calls) || 0,
+        totalResults: Number(row.total_results) || 0,
+        firstSearchedAt: new Date(row.first_searched_at ?? row.last_searched_at),
+        lastSearchedAt: new Date(row.last_searched_at ?? row.first_searched_at),
+    };
+}
+
+function sumNullable(a: number | null, b: number | null): number | null {
+    if (a == null && b == null) return null;
+    return (a ?? 0) + (b ?? 0);
 }
 
 function rowToUserProfile(row: any): UserProfile {

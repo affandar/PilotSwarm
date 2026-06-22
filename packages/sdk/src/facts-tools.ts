@@ -9,6 +9,26 @@ const RESERVED_WRITE_PREFIXES = ["skills/", "asks/", "config/facts-manager/"];
 const RESERVED_READ_PREFIXES = ["intake/"];
 const RESERVED_DELETE_PREFIXES = ["intake/", "skills/", "asks/", "config/facts-manager/"];
 
+function boundedPreview(value: unknown, max = 80): string | undefined {
+    const text = typeof value === "string" ? value.trim() : "";
+    if (!text) return undefined;
+    return text.length > max ? text.slice(0, max) : text;
+}
+
+function normalizeNamespace(value: unknown): string | null {
+    const text = typeof value === "string" ? value.trim().replace(/\/+$/g, "") : "";
+    return text.length > 0 ? text : null;
+}
+
+function clampTags(tags: unknown): string[] | undefined {
+    if (!Array.isArray(tags)) return undefined;
+    const out = tags
+        .map((tag) => typeof tag === "string" ? tag.trim() : "")
+        .filter(Boolean)
+        .slice(0, 20);
+    return out.length > 0 ? out : undefined;
+}
+
 function checkNamespaceWrite(key: string, agentIdentity?: string): string | null {
     if (agentIdentity === TUNER_AGENT_ID) {
         return "Error: agent-tuner sessions are read-only and cannot store facts.";
@@ -90,6 +110,14 @@ export function createFactTools(opts: {
     enhancedFactStore?: EnhancedFactStore;
 }): Tool<any>[] {
     const { factStore, getDescendantSessionIds, getLineageSessionIds, agentIdentity, recordEvent, onSharedIntakeFactStored, enhancedFactStore } = opts;
+
+    const recordRetrievalEvent = (sessionId: string | undefined, eventType: string, data: Record<string, unknown>) => {
+        if (!recordEvent || !sessionId) return;
+        recordEvent(sessionId, eventType, {
+            ...data,
+            callerAgentId: agentIdentity ?? null,
+        }).catch(() => { /* swallow — best-effort telemetry */ });
+    };
 
     const filterReservedReadFacts = (result: any) => {
         if (agentIdentity === FACTS_MANAGER_AGENT_ID || agentIdentity === TUNER_AGENT_ID) return result;
@@ -516,9 +544,20 @@ export function createFactTools(opts: {
             handler: async (a: { query: string; mode?: any; namespace?: string; tags?: string[]; limit?: number }, ctx?: { sessionId?: string }) => {
                 const nsError = blockReservedSearch(a.namespace);
                 if (nsError) return { error: nsError };
+                const startedAt = Date.now();
                 const access = await resolveSearchAccess(ctx);
-                const result = await enhancedFactStore.searchFacts(a.query, { mode: a.mode, namespace: a.namespace, tags: a.tags, limit: a.limit }, access);
-                return stripReserved(result);
+                const result = stripReserved(await enhancedFactStore.searchFacts(a.query, { mode: a.mode, namespace: a.namespace, tags: a.tags, limit: a.limit }, access));
+                recordRetrievalEvent(ctx?.sessionId, "facts.searched", {
+                    operation: "facts_search",
+                    queryPreview: boundedPreview(a.query),
+                    mode: a.mode ?? null,
+                    namespace: normalizeNamespace(a.namespace),
+                    tags: clampTags(a.tags),
+                    limit: a.limit ?? 20,
+                    resultCount: Number(result?.count ?? result?.facts?.length ?? 0),
+                    durationMs: Date.now() - startedAt,
+                });
+                return result;
             },
         }));
 
@@ -545,12 +584,23 @@ export function createFactTools(opts: {
             handler: async (a: { scopeKey: string; namespace?: string; k?: number; minScore?: number }, ctx?: { sessionId?: string }) => {
                 const nsError = blockReservedSearch(a.namespace);
                 if (nsError) return { error: nsError };
+                const startedAt = Date.now();
                 const access = await resolveSearchAccess(ctx);
                 const result = await enhancedFactStore.similarFacts(a.scopeKey, { k: a.k, minScore: a.minScore, namespace: a.namespace }, access);
                 // Post-filter reserved keys — similarFacts has no namespace arg, so
                 // a kNN from an accessible anchor could still surface reserved
                 // near-neighbours for a task agent when namespace is broad/omitted.
-                return stripReserved(result);
+                const filtered = stripReserved(result);
+                recordRetrievalEvent(ctx?.sessionId, "facts.similar", {
+                    operation: "facts_similar",
+                    scopeKey: a.scopeKey,
+                    namespace: normalizeNamespace(a.namespace),
+                    k: a.k ?? 8,
+                    minScore: a.minScore ?? null,
+                    resultCount: Number(filtered?.count ?? filtered?.facts?.length ?? 0),
+                    durationMs: Date.now() - startedAt,
+                });
+                return filtered;
             },
         }));
 
@@ -573,6 +623,7 @@ export function createFactTools(opts: {
                     required: ["query"] as const,
                 },
                 handler: async (a: { query: string; limit?: number }, ctx?: { sessionId?: string }) => {
+                    const startedAt = Date.now();
                     // Skills are SHARED + curated; access is the shared scope (no
                     // private-session leakage possible — namespace is pinned to
                     // 'skills' and scope to 'shared').
@@ -583,13 +634,23 @@ export function createFactTools(opts: {
                         access,
                     );
                     // Hint shape only — the agent loads full content via read_facts.
-                    return {
+                    const out = {
                         count: res.count,
                         skills: res.facts.map((f: any) => {
                             const v = typeof f.value === "string" ? safeParse(f.value) : f.value;
                             return { key: f.key, name: v?.name ?? f.key, description: v?.description ?? "", score: f.score };
                         }),
                     };
+                    recordRetrievalEvent(ctx?.sessionId, "skills.searched", {
+                        operation: "search_skills",
+                        queryPreview: boundedPreview(a.query),
+                        mode: "hybrid",
+                        namespace: "skills",
+                        limit: a.limit ?? 8,
+                        resultCount: Number(out.count ?? 0),
+                        durationMs: Date.now() - startedAt,
+                    });
+                    return out;
                 },
             }));
         }

@@ -210,6 +210,8 @@ export interface GraphStore {
     searchGraphNodes(q: GraphNodeQuery, access?: AccessContext): Promise<GraphNodeHit[]>;
     searchGraphEdges(q: GraphEdgeQuery, access?: AccessContext): Promise<GraphEdgeHit[]>;
     graphNeighbourhood(nodeKey: string, depth: number, access?: AccessContext, opts?: GraphNamespaceQuery): Promise<SubGraph>;
+    /** Optional provider-owned predicate normalizer for metrics/tooling. */
+    normalizePredicateKey?(predicate: string): string;
 
     // write (upsert + merge; evidence OPTIONAL, unions in; reinforcement
     // counts only novel evidence — known-evidence re-asserts are no-ops)

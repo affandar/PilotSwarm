@@ -702,6 +702,10 @@ export class NodeSdkTransport {
         return this.mgmt.getFleetSkillUsage(opts);
     }
 
+    async getFleetRetrievalUsage(opts) {
+        return this.mgmt.getFleetRetrievalUsage(opts);
+    }
+
     async getSessionFactsStats(sessionId) {
         return this.mgmt.getSessionFactsStats(sessionId);
     }

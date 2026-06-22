@@ -234,6 +234,11 @@ export class PortalRuntime {
                     includeDeleted: safeParams.includeDeleted,
                     since: safeParams.since ? new Date(safeParams.since) : undefined,
                 });
+            case "getFleetRetrievalUsage":
+                return this.transport.getFleetRetrievalUsage({
+                    includeDeleted: safeParams.includeDeleted,
+                    since: safeParams.since ? new Date(safeParams.since) : undefined,
+                });
             case "getSessionFactsStats":
                 return this.transport.getSessionFactsStats(safeParams.sessionId);
             case "getSessionTreeFactsStats":
