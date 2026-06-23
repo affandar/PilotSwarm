@@ -9,6 +9,14 @@ export const SESSION_STATE_MISSING_PREFIX = "SESSION_STATE_MISSING:";
 // ─── Turn Result ─────────────────────────────────────────────────
 // What ManagedSession.runTurn() returns to the orchestration.
 
+export type CycleReportStatus = "quiet" | "material" | "blocked";
+
+export interface CycleReport {
+    status: CycleReportStatus;
+    summary?: string;
+    deltas?: string[];
+}
+
 export type TurnAction =
     | { type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; content?: string; events?: CapturedEvent[] }
     | { type: "cron"; action: "set"; intervalSeconds: number; reason: string; events?: CapturedEvent[] }
@@ -30,7 +38,7 @@ type QueuedTurnActionCarrier = {
 };
 
 export type TurnResult =
-    | ({ type: "completed"; content: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "completed"; content: string; events?: CapturedEvent[]; cycleReport?: CycleReport } & QueuedTurnActionCarrier)
     | ({ type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; content?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron"; action: "set"; intervalSeconds: number; reason: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron"; action: "cancel"; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
@@ -67,6 +75,8 @@ export interface TurnOptions {
     bootstrap?: boolean;
     /** Require the Copilot SDK to use a specific tool during this turn. */
     requiredTool?: string;
+    /** Internal: this turn was started by a recurring cron/cron_at timer fire. */
+    cycleOrigin?: "cron" | "cron_at";
     /** Worker-owned inline implementations for non-suspending control tools. */
     controlToolBridge?: {
         spawnAgent(args: {
@@ -356,6 +366,8 @@ export interface OrchestrationInput {
     systemPrompt?: string;
     /** Internal: pending prompt is a bootstrap message, not a user-authored prompt. */
     bootstrapPrompt?: boolean;
+    /** Internal: the pending prompt was produced by a recurring cron/cron_at timer fire. */
+    cycleOrigin?: "cron" | "cron_at";
     // Thresholds
     /** Seconds above which wait/cron timers proactively dehydrate. Default: 29. */
     dehydrateThreshold?: number;
@@ -423,6 +435,9 @@ export interface OrchestrationInput {
             sessionId: string;
             updateType: string;
             content?: string;
+            cycleOrigin?: "cron" | "cron_at";
+            cycleStatus?: CycleReportStatus;
+            verdict?: ChildSessionVerdict;
             observedAtMs: number;
         }>;
     };

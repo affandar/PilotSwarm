@@ -2,7 +2,6 @@ import type {
     CommandMessage,
     CommandResponse,
     SerializableSessionConfig,
-    ChildSessionVerdict,
     SubAgentEntry,
 } from "../types.js";
 import {
@@ -29,34 +28,14 @@ export function isSubAgentTerminalStatus(status?: string): boolean {
     return status === "completed" || status === "failed" || status === "cancelled";
 }
 
-export function parseChildUpdate(promptText?: string): { sessionId: string; updateType: string; content: string; cycleOrigin?: "cron" | "cron_at"; cycleStatus?: "quiet" | "material" | "blocked"; verdict?: ChildSessionVerdict } | null {
+export function parseChildUpdate(promptText?: string): { sessionId: string; updateType: string; content: string } | null {
     if (typeof promptText !== "string") return null;
-    const match = promptText.match(/^\[CHILD_UPDATE\s+([^\]]+)\]/);
+    const match = promptText.match(/^\[CHILD_UPDATE from=(\S+) type=(\S+)/);
     if (!match) return null;
-    const fields = new Map<string, string>();
-    for (const token of match[1].split(/\s+/)) {
-        const [key, ...rest] = token.split("=");
-        if (!key || rest.length === 0) continue;
-        fields.set(key, rest.join("="));
-    }
-    const cycle = fields.get("cycle");
-    const status = fields.get("status");
-    const verdictField = fields.get("verdict");
-    const sessionId = fields.get("from") ?? "";
-    const updateType = fields.get("type") ?? "";
-    if (!sessionId || !updateType) return null;
-    const cycleOrigin = cycle === "cron" || cycle === "cron_at" ? cycle : undefined;
-    const cycleStatus = status === "quiet" || status === "material" || status === "blocked" ? status : undefined;
-    const verdict = verdictField === "success" || verdictField === "partial" || verdictField === "blocked" || verdictField === "failed" || verdictField === "cancelled" || verdictField === "timed_out"
-        ? verdictField
-        : undefined;
     return {
-        sessionId,
-        updateType,
+        sessionId: match[1],
+        updateType: match[2].replace(/\]$/, ""),
         content: promptText.split("\n").slice(1).join("\n").trim(),
-        ...(cycleOrigin ? { cycleOrigin } : {}),
-        ...(cycleStatus ? { cycleStatus } : {}),
-        ...(verdict ? { verdict } : {}),
     };
 }
 
@@ -291,9 +270,8 @@ export function* notifyParentOfTerminalState(
 ): Generator<any, void, any> {
     if (!runtime.options.parentSessionId) return;
     try {
-        const verdict = updateType === "completed" ? "success" : "cancelled";
         yield runtime.manager.sendToSession(runtime.options.parentSessionId,
-            `[CHILD_UPDATE from=${runtime.input.sessionId} type=${updateType} iter=${runtime.state.iteration} verdict=${verdict}]\n${reason}`);
+            `[CHILD_UPDATE from=${runtime.input.sessionId} type=${updateType} iter=${runtime.state.iteration}]\n${reason}`);
     } catch (err: any) {
         runtime.ctx.traceInfo(`[orch] sendToSession(parent) on ${updateType} failed: ${err.message} (non-fatal)`);
     }

@@ -439,7 +439,7 @@ export function createSessionProxy(
             prompt: string,
             bootstrap?: boolean,
             turnIndex?: number,
-            turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; retryCount?: number; clientMessageIds?: string[] },
+            turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; cycleOrigin?: "cron" | "cron_at"; retryCount?: number; clientMessageIds?: string[] },
         ) {
             return ctx.scheduleActivityOnSession(
                 "runTurn",
@@ -452,6 +452,7 @@ export function createSessionProxy(
                     ...(turnMeta?.parentSessionId ? { parentSessionId: turnMeta.parentSessionId } : {}),
                     ...(turnMeta?.nestingLevel != null ? { nestingLevel: turnMeta.nestingLevel } : {}),
                     ...(turnMeta?.requiredTool ? { requiredTool: turnMeta.requiredTool } : {}),
+                    ...(turnMeta?.cycleOrigin ? { cycleOrigin: turnMeta.cycleOrigin } : {}),
                     ...(turnMeta?.retryCount != null ? { retryCount: turnMeta.retryCount } : {}),
                     ...(turnMeta?.clientMessageIds && turnMeta.clientMessageIds.length > 0
                         ? { clientMessageIds: turnMeta.clientMessageIds }
@@ -729,6 +730,7 @@ export function registerActivities(
             parentSessionId?: string;
             nestingLevel?: number;
             requiredTool?: string;
+            cycleOrigin?: "cron" | "cron_at";
             retryCount?: number;
         },
     ): Promise<TurnResult> => {
@@ -754,6 +756,7 @@ export function registerActivities(
                 "pilotswarm.has_parent_session": Boolean(input.parentSessionId),
                 ...(input.parentSessionId ? { "pilotswarm.parent_session_id": input.parentSessionId } : {}),
                 ...(input.requiredTool ? { "pilotswarm.required_tool": input.requiredTool } : {}),
+                ...(input.cycleOrigin ? { "pilotswarm.cycle_origin": input.cycleOrigin } : {}),
                 ...(input.config.model ? { "pilotswarm.model": input.config.model } : {}),
                 ...(input.config.reasoningEffort ? { "pilotswarm.reasoning_effort": input.config.reasoningEffort } : {}),
                 ...(workerNodeId ? { "pilotswarm.worker_node_id": workerNodeId } : {}),
@@ -1654,6 +1657,7 @@ export function registerActivities(
                     modelSummary: sessionManager.getModelSummary(),
                     bootstrap: input.bootstrap,
                     requiredTool: input.requiredTool,
+                    cycleOrigin: input.cycleOrigin,
                     controlToolBridge,
                 });
             };

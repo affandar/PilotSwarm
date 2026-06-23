@@ -96,4 +96,32 @@ describe("cron tool plumbing", () => {
         assertEqual(result.queuedActions?.[0]?.type, "cron", "queued action should be cron");
         assertEqual(result.queuedActions?.[0]?.action, "set", "queued cron action should schedule");
     });
+
+    it("report_cycle records cycle status only during recurring cycle turns", async () => {
+        const outsideCycle = new FakeCopilotSession();
+        outsideCycle.scriptedToolCalls = [
+            { name: "report_cycle", args: { status: "material", summary: "Should be ignored" } },
+        ];
+        outsideCycle.assistantContent = "done";
+
+        const nonCycleManaged = new ManagedSession("report-cycle-non-cycle", outsideCycle, {});
+        const nonCycleResult = await nonCycleManaged.runTurn("ordinary prompt");
+
+        assertEqual(nonCycleResult.type, "completed", "ordinary turn should still complete");
+        assertEqual(nonCycleResult.cycleReport, undefined, "report_cycle outside cycle turns should be ignored");
+
+        const cycle = new FakeCopilotSession();
+        cycle.scriptedToolCalls = [
+            { name: "report_cycle", args: { status: "material", summary: "New blocker", deltas: ["  changed  ", "", 42] } },
+        ];
+        cycle.assistantContent = "done";
+
+        const cycleManaged = new ManagedSession("report-cycle", cycle, {});
+        const cycleResult = await cycleManaged.runTurn("cron wake", { cycleOrigin: "cron" });
+
+        assertEqual(cycleResult.type, "completed", "cycle turn should complete");
+        assertEqual(cycleResult.cycleReport?.status, "material", "cycle report status should be preserved");
+        assertEqual(cycleResult.cycleReport?.summary, "New blocker", "cycle report summary should be trimmed/preserved");
+        assertEqual(cycleResult.cycleReport?.deltas?.join(","), "changed", "cycle report deltas should be sanitized");
+    });
 });

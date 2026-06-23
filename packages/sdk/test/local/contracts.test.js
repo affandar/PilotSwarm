@@ -43,6 +43,7 @@ const EXPECTED_ALWAYS_ON_TOOL_NAMES = [
     "cron",
     "cron_at",
     "ask_user",
+    "report_cycle",
     "list_available_models",
     "update_session_summary",
     "send_session_message",
@@ -298,14 +299,26 @@ async function testRegistryPlusSessionTools(env) {
         // Per-session tool via setSessionConfig
         worker.setSessionConfig(session.sessionId, { tools: [mulTool] });
 
-        console.log("  Sending: Add 10 and 20, then multiply 3 and 7");
-        const response = await session.sendAndWait(
-            "Add 10 and 20, then multiply 3 and 7. Give both results.",
+        console.log("  Sending: Add 10 and 20");
+        const addResponse = await session.sendAndWait(
+            "Add 10 and 20. Give the result.",
             TIMEOUT,
+            undefined,
+            { requiredTool: "test_add" },
         );
 
-        console.log(`  Response: "${response}"`);
+        console.log(`  Add response: "${addResponse}"`);
         assert(addTracker.called, "add tool was not called");
+
+        console.log("  Sending: Multiply 3 and 7");
+        const mulResponse = await session.sendAndWait(
+            "Multiply 3 and 7. Give the result.",
+            TIMEOUT,
+            undefined,
+            { requiredTool: "test_multiply" },
+        );
+
+        console.log(`  Multiply response: "${mulResponse}"`);
         assert(mulTracker.called, "multiply tool was not called");
         ("Registry + Per-Session Tools Combined");
     });
@@ -366,7 +379,12 @@ async function testModeReplaceKeepsBase(env) {
         });
 
         console.log("  Sending: Wait 1 second");
-        const response = await session.sendAndWait("Wait 1 second", TIMEOUT);
+        const response = await session.sendAndWait(
+            "Wait 1 second",
+            TIMEOUT,
+            undefined,
+            { requiredTool: "wait" },
+        );
         console.log(`  Response: "${response}"`);
 
         // If the wait tool wasn't available (base prompt removed), this would fail
