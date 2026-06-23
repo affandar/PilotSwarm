@@ -37,6 +37,29 @@ describe.skipIf(!HAS_DB)("graph nodes (GE1–GE5)", () => {
         assert.equal(again.aliases.filter((a) => a === "tgl").length, 1, "alias union is idempotent");
     });
 
+    it("GE3b non-Latin names produce distinct node keys and preserve aliases", async () => {
+        const hong = await store.upsertGraphNode({
+            kind: "person",
+            name: "홍길동",
+            aliases: ["solo.korean@example.org"],
+            agentId,
+        });
+        const jang = await store.upsertGraphNode({
+            kind: "person",
+            name: "장성준",
+            aliases: ["jang@example.org"],
+            agentId,
+        });
+        assert.equal(hong.nodeKey, "person:홍길동");
+        assert.equal(jang.nodeKey, "person:장성준");
+        assert.notEqual(hong.nodeKey, jang.nodeKey, "distinct Korean people do not merge into person:");
+        assert.ok(hong.aliases.includes("홍길동"), "canonical non-Latin name is preserved as an alias");
+        assert.ok(hong.aliases.includes("solo.korean@example.org"), "email alias is preserved alongside the non-Latin name");
+
+        const hits = await store.searchGraphNodes({ kind: "person", nameLike: "홍길동" }, { unrestricted: true });
+        assert.deepEqual(hits.map((h) => h.nodeKey), [hong.nodeKey], "non-Latin name is searchable without colliding");
+    });
+
     it("GE4 evidence unions onto the node (EVIDENCED_BY anchors)", async () => {
         await store.upsertGraphNode({ kind: "person", name: "Tom Lane", agentId, evidence: ["shared:arch/m1"] });
         await store.upsertGraphNode({ kind: "person", name: "Tom Lane", agentId, evidence: ["shared:arch/m1", "shared:arch/m2"] });

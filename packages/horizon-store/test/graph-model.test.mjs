@@ -40,67 +40,37 @@ test("mergeAliases: dedup by surface form, first-seen order preserved", () => {
     assert.deepEqual(mergeAliases([], ["", "  ", "x"]), ["x"]);
 });
 
-// ─── non-Latin (non-English) names — BUG CHARACTERIZATION ────────────────────
-// normalizeName() keeps only ASCII [a-z0-9]; every other script (Hangul, Han,
-// Cyrillic, Greek, Arabic, …) is replaced with spaces and trimmed away.
-// Consequences:
-//   • a purely non-Latin NAME collapses to ""        → nodeKeyOf() = "<kind>:"
-//   • two distinct non-Latin people share that one bare key → the idempotent
-//     upsert SILENTLY MERGES them into a single node
-//   • a non-Latin PREDICATE collapses to ""          → unrelated edges group
-//   • non-Latin ALIASES normalize to "" and are dropped entirely
-// These tests pin the current (broken) behavior so it is visible and
-// reproducible. The `test.fails(...)` cases at the end encode the DESIRED
-// behavior and will start failing ("expected to fail but passed") the moment
-// the slug generator is fixed to preserve non-Latin codepoints or fall back to
-// a stable unique token.
+// ─── non-Latin (non-English) names ──────────────────────────────────────────
 
-test("normalizeName: purely non-Latin names collapse to empty string (BUG)", () => {
-    assert.equal(normalizeName("장성준"), "");        // Korean / Hangul
-    assert.equal(normalizeName("반지현"), "");        // Korean / Hangul
-    assert.equal(normalizeName("毛澤東"), "");        // Chinese / Han
-    assert.equal(normalizeName("Лев Толстой"), "");   // Russian / Cyrillic
-    assert.equal(normalizeName("Ωμέγα"), "");         // Greek
+test("normalizeName: preserves non-Latin letters while folding punctuation", () => {
+    assert.equal(normalizeName("장성준"), "장성준");        // Korean / Hangul
+    assert.equal(normalizeName("반지현"), "반지현");        // Korean / Hangul
+    assert.equal(normalizeName("毛澤東"), "毛澤東");        // Chinese / Han
+    assert.equal(normalizeName("Лев Толстой"), "лев толстой");   // Russian / Cyrillic
+    assert.equal(normalizeName("Ωμέγα"), "ωμέγα");         // Greek diacritic is meaningful
 });
 
-test("nodeKeyOf: distinct non-Latin people collapse to the SAME bare key (BUG → cross-entity merge)", () => {
-    // Exactly the reported failure: two different Korean-named participants both
-    // slugify to nothing, so the graph treats them as one entity.
-    assert.equal(nodeKeyOf("Person", "장성준"), "person:");
-    assert.equal(nodeKeyOf("Person", "반지현"), "person:");
-    assert.equal(nodeKeyOf("Person", "장성준"), nodeKeyOf("Person", "반지현"));
-});
-
-test("nodeKeyOf: a mixed Latin + non-Latin name keeps ONLY the Latin remainder", () => {
-    // The Hangul is discarded; only the ASCII tail survives the slugifier, so
-    // two different people sharing a Latin romanization also collide.
-    assert.equal(nodeKeyOf("Person", "장성준 (jang)"), "person:jang");
-    assert.equal(nodeKeyOf("Person", "장성준 (jang)"), nodeKeyOf("Person", "반지현 (jang)"));
-});
-
-test("predicateKey: a purely non-Latin predicate collapses to empty (BUG → unrelated edges group)", () => {
-    assert.equal(predicateKey("작성자"), "");  // Korean "author"
-    assert.equal(predicateKey("评论"), "");    // Chinese "comments"
-    assert.equal(predicateKey("작성자"), predicateKey("评论"));
-});
-
-test("mergeAliases: distinct non-Latin aliases are dropped entirely (BUG)", () => {
-    // Each alias normalizes to "" → falsy → skipped, so NONE are recorded.
-    assert.deepEqual(mergeAliases([], ["장성준", "반지현"]), []);
-    // A non-Latin alias is lost even alongside a Latin one.
-    assert.deepEqual(mergeAliases(["Tom Lane"], ["장성준"]), ["Tom Lane"]);
-});
-
-test.fails("DESIRED: distinct non-Latin people get distinct node keys (fails until slug is fixed)", () => {
+test("nodeKeyOf: distinct non-Latin people get distinct non-empty node keys", () => {
+    assert.equal(nodeKeyOf("Person", "장성준"), "person:장성준");
+    assert.equal(nodeKeyOf("Person", "반지현"), "person:반지현");
     assert.notEqual(nodeKeyOf("Person", "장성준"), nodeKeyOf("Person", "반지현"));
-});
-
-test.fails("DESIRED: a purely non-Latin name does not collapse to a bare '<kind>:' key", () => {
     assert.notEqual(nodeKeyOf("Person", "장성준"), "person:");
 });
 
-test.fails("DESIRED: distinct non-Latin aliases are both preserved", () => {
+test("nodeKeyOf: mixed Latin + non-Latin names keep both components", () => {
+    assert.equal(nodeKeyOf("Person", "장성준 (jang)"), "person:장성준-jang");
+    assert.notEqual(nodeKeyOf("Person", "장성준 (jang)"), nodeKeyOf("Person", "반지현 (jang)"));
+});
+
+test("predicateKey: non-Latin predicates remain distinct", () => {
+    assert.equal(predicateKey("작성자"), "작성자");  // Korean "author"
+    assert.equal(predicateKey("评论"), "评论");    // Chinese "comments"
+    assert.notEqual(predicateKey("작성자"), predicateKey("评论"));
+});
+
+test("mergeAliases: distinct non-Latin aliases are preserved", () => {
     assert.deepEqual(mergeAliases([], ["장성준", "반지현"]), ["장성준", "반지현"]);
+    assert.deepEqual(mergeAliases(["Tom Lane"], ["장성준"]), ["Tom Lane", "장성준"]);
 });
 
 // ─── predicate grouping ─────────────────────────────────────────────────────

@@ -16,9 +16,10 @@
 export function normalizeName(raw: string): string {
     return (raw ?? "")
         .normalize("NFKD")
-        .replace(/[̀-ͯ]/g, "") // strip diacritics
+        .replace(/(\p{Script=Latin})\p{M}+/gu, "$1") // strip Latin diacritics
+        .normalize("NFC")
         .toLowerCase()
-        .replace(/[^a-z0-9]+/g, " ")     // punctuation → space
+        .replace(/[^\p{L}\p{N}]+/gu, " ")     // punctuation → space, keep all scripts
         .trim()
         .replace(/\s+/g, " ");
 }
