@@ -21,7 +21,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "test": "node ../../node_modules/vitest/vitest.mjs run test/graph-model.test.mjs test/query-builder.test.mjs test/provider-guards.test.mjs test/pg-pool.test.mjs",
+    "test": "node ../../node_modules/vitest/vitest.mjs run test/graph-model.test.mjs test/query-builder.test.mjs test/provider-guards.test.mjs test/pg-pool.test.mjs test/db-retry.test.mjs test/horizon-migrator.test.mjs",
     "test:integration": "node --env-file-if-exists=.env ../../node_modules/vitest/vitest.mjs run test/integration",
     "test:all": "bash scripts/run-tests.sh",
     "poc:lexical": "node poc/01-lexical.mjs",

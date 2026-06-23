@@ -26,7 +26,7 @@ vanilla Postgres. This skill captures the verified facts and the workarounds.
 | `relation "<label>" already exists` (`42P07`) **or** `duplicate key … "pg_class_relname_nsp_index"` (`23505`) under concurrent graph writes | AGE creates a label's backing table lazily on first `CREATE`/`MERGE`; concurrent first-references race the DDL (two detection points) | re-run the same idempotent statement — the label now exists (see §3 concurrency) |
 | `cannot cast type agtype to jsonb` | `agtype` has no jsonb cast | `RETURN` scalars/`label()`/`type()`, parse client-side |
 | `ECONNRESET` / `Connection terminated unexpectedly` mid-workload | HorizonDB resets idle pooled TLS connections | guard + bounded retry on a **fresh** connection (§1.1) |
-| AGE writes are 600 ms–2 s each under concurrency | small connection pool → ops queue (connection-queue wait, not query cost) | raise `poolMax` for the parallelism (default now 10, `HORIZON_POOL_MAX`); per-connection AGE setup; fewer round-trips per upsert (§3 performance) |
+| AGE writes are 600 ms–2 s each under concurrency | small connection pool → ops queue (connection-queue wait, not query cost) | raise `poolMax` for the parallelism (default now 16, `HORIZON_POOL_MAX`); per-connection AGE setup; fewer round-trips per upsert (§3 performance) |
 
 ## 1. Connection & TLS
 
@@ -354,9 +354,20 @@ Three compounding causes and their fixes, **biggest lever first**:
    "round-trips/op" estimate (`p50 / RTT`) collapses from ~9 to ~2 as the pool
    grows — proving the apparent "9 round trips" was queue wait; the real work is
    ~2 round trips (existence-check + create). **Fix:** size the pool for the
-   expected parallelism. horizon-facts now defaults `poolMax` to **10** (was 3),
+  expected parallelism. horizon-facts now defaults `poolMax` to **16** (was 3),
    overridable via `HORIZON_POOL_MAX` — bounded by the cluster's
    `max_connections`.
+
+### Migration locking: keep the global lock narrow
+
+The Horizon facts migrator uses a per-schema advisory lock for ordinary schema
+migrations. Only database-global DDL (for example `CREATE EXTENSION` and AGE
+`ag_catalog.create_graph`) should take the global Horizon DDL lock, and it
+should be transaction-scoped (`pg_try_advisory_xact_lock`) so an idle pooled
+connection cannot retain it after the protected transaction ends. Do not wrap the
+entire per-schema migration run in a session-level global lock; concurrent SDK
+`--with-horizondb` tests create many isolated `ps_test_facts_*` schemas and a
+broad global lock becomes a suite-wide bottleneck or stale-lock failure.
 
 2. **Per-checkout session setup.** Running `LOAD 'age'` (a wasted *failed* round
    trip when preloaded) + `SET search_path` on every graph-op checkout adds ~2

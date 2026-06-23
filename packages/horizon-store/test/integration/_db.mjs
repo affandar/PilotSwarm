@@ -16,6 +16,8 @@ import pg from "pg";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildPoolConfig } from "../../dist/src/config.js";
+import { isTransientDbError } from "../../dist/src/db-retry.js";
 
 function normalizeDbUrl(raw) {
     if (!raw) return "";
@@ -49,6 +51,16 @@ export const HAS_PLAIN_DB = !!PLAIN_DB_URL;
 export const REAL_EMBED_DIM = Number(process.env.HORIZON_EMBED_DIM ?? "1536");
 export const REAL_EMBED_MODEL = process.env.HORIZON_EMBED_MODEL ?? "text-embedding-3-small";
 export const HAS_REAL_EMBED = !!(process.env.HORIZON_EMBED_URL && process.env.HORIZON_EMBED_API_KEY);
+
+function testPool(url = DB_URL, max = 2) {
+    const pool = new pg.Pool({
+        ...buildPoolConfig(url, max),
+        idleTimeoutMillis: Number(process.env.HORIZON_TEST_IDLE_TIMEOUT_MS ?? 1_000),
+        allowExitOnIdle: true,
+    });
+    pool.on("error", (err) => console.error("[horizon-test] pool error (non-fatal):", err.message));
+    return pool;
+}
 
 /** Embedding config pointed at the live endpoint, from HORIZON_EMBED_* env. */
 export function realEmbedding(overrides = {}) {
@@ -119,7 +131,7 @@ function combinedStore(factStore, graphStore) {
 
 /** Drop a test schema + AGE graph. Safe to call in teardown. */
 export async function dropSchemaAndGraph(schema, graph, registrySchema = `${graph}_registry`) {
-    const pool = new pg.Pool({ connectionString: DB_URL, max: 1 });
+    const pool = testPool(DB_URL, 1);
     try {
         try {
             const { HorizonDBFactStore } = await import("../../dist/src/index.js");
@@ -166,16 +178,25 @@ function graphBootstrapLockKey() {
 /** Raw pool for direct catalog/table assertions (test code is exempt from the
  * provider's no-inline-SQL rule — that rule binds src/, not tests). */
 export function rawPool(url = DB_URL) {
-    return new pg.Pool({ connectionString: url, max: 2 });
+    return testPool(url, 2);
 }
 
 /** Poll an async predicate until truthy or deadline (charter: no fixed sleeps). */
 export async function pollUntil(fn, { timeoutMs = 60_000, everyMs = 500, label = "condition" } = {}) {
     const deadline = Date.now() + timeoutMs;
+    let lastTransient = null;
     for (;;) {
-        const v = await fn();
-        if (v) return v;
-        if (Date.now() > deadline) throw new Error(`pollUntil timed out after ${timeoutMs}ms waiting for ${label}`);
+        try {
+            const v = await fn();
+            if (v) return v;
+        } catch (err) {
+            if (!isTransientDbError(err)) throw err;
+            lastTransient = err;
+        }
+        if (Date.now() > deadline) {
+            const suffix = lastTransient?.message ? `; last transient DB error: ${lastTransient.message}` : "";
+            throw new Error(`pollUntil timed out after ${timeoutMs}ms waiting for ${label}${suffix}`);
+        }
         await new Promise((r) => setTimeout(r, everyMs));
     }
 }

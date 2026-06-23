@@ -6,15 +6,14 @@
 
 import { describe, it, beforeAll, afterAll } from "vitest";
 import assert from "node:assert/strict";
-import { HAS_DB, HAS_PLAIN_DB, DB_URL, PLAIN_DB_URL, uniqueNames, dropSchemaAndGraph } from "./_db.mjs";
+import { HAS_DB, HAS_PLAIN_DB, DB_URL, PLAIN_DB_URL, uniqueNames, dropSchemaAndGraph, rawPool } from "./_db.mjs";
 
 describe.skipIf(!HAS_PLAIN_DB)("preconditions P1–P4 (plain Postgres → itemized error)", () => {
-    let api, pg, plain;
+    let api, plain;
 
     beforeAll(async () => {
         api = await import("../../dist/src/index.js");
-        pg = (await import("pg")).default;
-        plain = new pg.Pool({ connectionString: PLAIN_DB_URL, max: 1 });
+        plain = rawPool(PLAIN_DB_URL);
     });
     afterAll(async () => { await plain?.end(); });
 

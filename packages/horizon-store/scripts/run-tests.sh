@@ -30,7 +30,7 @@ npx tsc
 echo "── unit (DB-less) ─────────────────────────────────────────────────────"
 node "$VITEST" run test/graph-model.test.mjs test/query-builder.test.mjs
 
-echo "── integration (live HorizonDB, sequential files per vitest.config) ───"
+echo "── integration (live HorizonDB, concurrent files per vitest.config) ───"
 OUT="$(mktemp)"
 trap 'rm -f "$OUT"' EXIT
 

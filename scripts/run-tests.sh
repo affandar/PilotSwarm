@@ -113,7 +113,9 @@ Notes:
     --all-providers loads a HorizonDB config and HORIZON_DATABASE_URL is set.
     Set SKIP_HORIZON_STORE_TESTS=1 to skip that provider-level stage. Filtered
     provider-level runs inherit the already-loaded .env.horizondb; they do not
-    load packages/horizon-store/.env or fall back to .env.
+    load packages/horizon-store/.env or fall back to .env. HorizonDB client
+    pools default to the provider's throughput-oriented pool cap; override with
+    HORIZON_POOL_MAX only when explicitly tuning a run.
 EOF
 }
 

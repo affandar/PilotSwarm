@@ -605,7 +605,7 @@ export class HorizonDBFactStore implements EnhancedFactStore {
     }
 
     private async getvar(suffix: EmbedVarSuffix): Promise<string | null> {
-        const { rows } = await this.pool.query(`SELECT df.getvar($1) AS v`, [this.varName(suffix)]);
+        const { rows } = await withDbRetry<{ rows: any[] }>(`embedder_getvar_${suffix}`, () => this.pool.query(`SELECT df.getvar($1) AS v`, [this.varName(suffix)]));
         return rows[0]?.v ?? null;
     }
 

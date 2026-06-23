@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased
+
+### HorizonDB Test Stability
+
+- Narrowed the HorizonDB facts migrator's global DDL advisory lock so only
+  database-global migration statements take it, and use transaction-scoped
+  acquisition for those sections. Ordinary per-schema facts migrations now keep
+  their per-schema lock but no longer serialize every fresh test schema behind a
+  suite-wide session-level global lock.
+- Added bounded HorizonDB migration lock acquisition with holder diagnostics so
+  stale advisory locks fail clearly instead of cascading into unrelated SDK test
+  timeouts.
+- Preserved HorizonDB test throughput by restoring concurrent provider-level
+  test execution and raising the provider client pool default to 16.
+- Extended `scripts/cleanup-test-schemas.js` to clean HorizonDB-side
+  `ps_test_facts_*` schemas, cancelling test embedder loops before dropping
+  those schemas.
+
+### AKS Deployments
+
+- `.env.remote` is a standalone deployment config, not layered with local
+  `.env` or `.env.horizondb`. Any value required by the corp AKS worker or
+  portal must be present there and propagated into `copilot-runtime-secrets`.
+  For no-reset rollouts against the long-lived corp database, keep
+  `PILOTSWARM_DUROXIDE_SCHEMA=duroxide` pinned until an explicit
+  orchestration-schema migration/reset window; otherwise new workers default to
+  `ps_duroxide` and will refuse to start while the legacy `duroxide` schema is
+  still present.
+
 ## 0.1.35 — 2026-05-29
 
 ### SDK — Hotfix: declare `@opentelemetry/api` as a dependency

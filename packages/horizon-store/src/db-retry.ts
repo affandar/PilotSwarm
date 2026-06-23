@@ -11,9 +11,10 @@
 //    cases the statement did not partially commit, so re-running (on a FRESH
 //    connection) is safe. Never matches SQL/logic errors — those must surface.
 //    Also covers connection-ESTABLISHMENT failures that are transient under
-//    load: EADDRNOTAVAIL (local ephemeral-port exhaustion from rapid connection
-//    churn) and DNS hiccups (ENOTFOUND / EAI_AGAIN / getaddrinfo) against the
-//    cluster host — the query never ran, so a fresh-connection retry is safe.
+//    load: EADDRNOTAVAIL / ECONNABORTED (local socket exhaustion or aborted
+//    connection setup from rapid connection churn) and DNS hiccups (ENOTFOUND /
+//    EAI_AGAIN / getaddrinfo) against the cluster host — the query never ran,
+//    so a fresh-connection retry is safe.
 //
 // 2. AGE LABEL-CREATION RACE (isLabelCreationRaceError):
 //    Apache AGE creates a label's backing table LAZILY on the first
@@ -40,7 +41,7 @@
 // for its perf/error report.
 
 const TRANSIENT_DB_ERROR =
-    /ECONNRESET|ENOTCONN|EPIPE|ETIMEDOUT|Connection terminated|terminating connection|server closed the connection|connection to server|read ECONN|EADDRNOTAVAIL|ENOTFOUND|EAI_AGAIN|getaddrinfo/i;
+    /ECONNRESET|ENOTCONN|EPIPE|ETIMEDOUT|Connection terminated|terminating connection|server closed the connection|connection to server|read ECONN|EADDRNOTAVAIL|ECONNABORTED|ENOTFOUND|EAI_AGAIN|getaddrinfo/i;
 
 /** pg connection-class SQLSTATEs: 08xxx connection exceptions, 57P0x
  * admin-shutdown / crash-recovery. All mean "connection went away" → safe to

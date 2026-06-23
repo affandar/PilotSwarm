@@ -49,11 +49,11 @@ export interface HorizonFactsConfig {
      */
     annIndex?: "diskann" | "hnsw" | "auto";
     /**
-     * Max pool connections. Default 10. The graph layer issues several
+        * Max pool connections. Default 16. The graph layer issues several
      * sequential Cypher statements per upsert, and the harvester fires graph
      * tool calls in parallel; a small pool serializes those behind a few
      * connections and connection-queue wait dominates latency (a pool of 3 was
-     * measured ~2-4x slower than 10 under concurrency=8). Override per-cluster
+        * measured ~2-4x slower than 10 under concurrency=8). Override per-cluster
      * with HORIZON_POOL_MAX, bearing in mind the cluster's max_connections.
      */
     poolMax?: number;
@@ -83,8 +83,19 @@ export interface HorizonFactsConfig {
 
 export const DEFAULT_SCHEMA = "horizon_facts";
 export const DEFAULT_GRAPH = "horizon_facts";
-export const DEFAULT_POOL_MAX = 10;
+export const DEFAULT_POOL_MAX = 16;
+export const DEFAULT_CONNECTION_TIMEOUT_MS = 15_000;
 export const DEFAULT_NAMESPACE_CACHE_TTL_MS = 60_000;
+
+function resolveConnectionTimeoutMillis(): number {
+    const raw = process.env.HORIZON_CONNECTION_TIMEOUT_MS;
+    if (raw == null || raw === "") return DEFAULT_CONNECTION_TIMEOUT_MS;
+    const value = Number(raw);
+    if (!Number.isFinite(value) || value < 0) {
+        throw new Error(`HORIZON_CONNECTION_TIMEOUT_MS must be a non-negative number, got ${JSON.stringify(raw)}`);
+    }
+    return Math.trunc(value);
+}
 
 /** Resolve + validate the namespace cache TTL (ms). Rejects NaN / negative. */
 function resolveNamespaceCacheTtl(explicit?: number): number {
@@ -179,6 +190,7 @@ export function buildPoolConfig(connectionString: string, max: number): PoolConf
     return {
         connectionString: sanitized,
         max,
+        connectionTimeoutMillis: resolveConnectionTimeoutMillis(),
         ...(needsSsl ? { ssl: { rejectUnauthorized: false } } : {}),
     };
 }

@@ -25,6 +25,7 @@ test("bare ?sslmode=require → strips sslmode and sets ssl:{rejectUnauthorized:
     assert.deepEqual(cfg.ssl, { rejectUnauthorized: false }, "TLS on, CA not verified (libpq require semantics)");
     assert.equal(parse(cfg.connectionString).searchParams.has("sslmode"), false, "sslmode removed so pg does not re-apply verify-full");
     assert.equal(cfg.max, 7, "max passed through");
+    assert.equal(cfg.connectionTimeoutMillis, 15_000, "connections are bounded so HorizonDB drops do not hang hooks indefinitely");
 });
 
 test("all SSL-requiring modes normalize the same way", () => {
@@ -76,4 +77,16 @@ test("unparseable connection string is returned untouched without throwing", () 
     assert.equal(cfg.connectionString, garbage, "left as-is so pg surfaces a clear connect error");
     assert.equal(cfg.ssl, undefined);
     assert.equal(cfg.max, 2);
+});
+
+test("HORIZON_CONNECTION_TIMEOUT_MS overrides the bounded connection timeout", () => {
+    const previous = process.env.HORIZON_CONNECTION_TIMEOUT_MS;
+    process.env.HORIZON_CONNECTION_TIMEOUT_MS = "2500";
+    try {
+        const cfg = buildPoolConfig(BASE, 1);
+        assert.equal(cfg.connectionTimeoutMillis, 2500);
+    } finally {
+        if (previous === undefined) delete process.env.HORIZON_CONNECTION_TIMEOUT_MS;
+        else process.env.HORIZON_CONNECTION_TIMEOUT_MS = previous;
+    }
 });

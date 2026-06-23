@@ -31,10 +31,19 @@ export const HORIZON_FACTS_LOCK_SEED = 0x48_5a_46; // "HZF"
  *   0013 — graph_namespaces registry sidecar (graph-fact-search enhancements).
  */
 export const GRAPH_OWNED_MIGRATIONS = ["0003", "0013"] as const;
+export const HORIZON_GLOBAL_DDL_LOCK_LABEL = "__horizon_facts_global_ddl__";
+export const DEFAULT_MIGRATION_LOCK_TIMEOUT_MS = 60_000;
+
+const GLOBAL_DDL_SQL = /\bCREATE\s+EXTENSION\b|\bag_catalog\.create_graph\b/i;
 
 /** Whether a migration version is graph-owned (run by the graph store, not facts). */
 export function isGraphOwnedMigration(version: string): boolean {
     return (GRAPH_OWNED_MIGRATIONS as readonly string[]).includes(version);
+}
+
+/** Whether a migration contains database-global DDL that needs global serialization. */
+export function migrationRequiresGlobalDdlLock(migration: Pick<MigrationEntry, "sql">): boolean {
+    return GLOBAL_DDL_SQL.test(migration.sql);
 }
 
 /**
@@ -52,15 +61,15 @@ export async function runMigrations(
     lockSeed: number,
 ): Promise<void> {
     const lockKey = hashSchemaName(schema, lockSeed);
-    const globalDdlLockKey = hashSchemaName("__horizon_facts_global_ddl__", lockSeed);
+    const globalDdlLockKey = hashSchemaName(HORIZON_GLOBAL_DDL_LOCK_LABEL, lockSeed);
     const client = await pool.connect();
+    let schemaLockHeld = false;
     try {
-        // Several migrations run database-GLOBAL DDL (CREATE EXTENSION IF NOT
-        // EXISTS, AGE create_graph). Those collide in pg_catalog even across
-        // distinct per-schema locks, so serialize every migration run on one
-        // global advisory lock in addition to the per-schema lock.
-        await client.query("SELECT pg_advisory_lock($1)", [globalDdlLockKey]);
-        await client.query("SELECT pg_advisory_lock($1)", [lockKey]);
+        // Serialize concurrent initializers for the same schema, but keep other
+        // schemas moving. The database-global DDL lock is acquired only inside
+        // the specific migration transactions that need it.
+        await acquireSessionAdvisoryLock(client, lockKey, `horizon schema migration for ${schema}`);
+        schemaLockHeld = true;
 
         await client.query(`CREATE SCHEMA IF NOT EXISTS "${schema}"`);
 
@@ -92,6 +101,13 @@ export async function runMigrations(
             for (let attempt = 1; attempt <= 5; attempt++) {
                 try {
                     await client.query("BEGIN");
+                    if (migrationRequiresGlobalDdlLock(migration)) {
+                        await acquireTransactionAdvisoryLock(
+                            client,
+                            globalDdlLockKey,
+                            `horizon global DDL migration ${migration.version} (${migration.name})`,
+                        );
+                    }
                     await client.query(migration.sql);
                     await client.query(
                         `INSERT INTO ${migrationsTable} (version, name) VALUES ($1, $2)`,
@@ -107,10 +123,82 @@ export async function runMigrations(
             }
         }
     } finally {
-        await client.query("SELECT pg_advisory_unlock($1)", [lockKey]).catch(() => {});
-        await client.query("SELECT pg_advisory_unlock($1)", [globalDdlLockKey]).catch(() => {});
+        if (schemaLockHeld) await client.query("SELECT pg_advisory_unlock($1)", [lockKey]).catch(() => {});
         client.release();
     }
+}
+
+function migrationLockTimeoutMs(): number {
+    const raw = process.env.HORIZON_MIGRATION_LOCK_TIMEOUT_MS;
+    if (raw == null || raw === "") return DEFAULT_MIGRATION_LOCK_TIMEOUT_MS;
+    const value = Number(raw);
+    if (!Number.isFinite(value) || value < 0) {
+        throw new Error(`HORIZON_MIGRATION_LOCK_TIMEOUT_MS must be a non-negative number, got ${JSON.stringify(raw)}`);
+    }
+    return Math.trunc(value);
+}
+
+async function acquireSessionAdvisoryLock(client: any, key: number, label: string): Promise<void> {
+    await acquireAdvisoryLock(client, key, label, "pg_try_advisory_lock");
+}
+
+async function acquireTransactionAdvisoryLock(client: any, key: number, label: string): Promise<void> {
+    await acquireAdvisoryLock(client, key, label, "pg_try_advisory_xact_lock");
+}
+
+async function acquireAdvisoryLock(
+    client: any,
+    key: number,
+    label: string,
+    fnName: "pg_try_advisory_lock" | "pg_try_advisory_xact_lock",
+): Promise<void> {
+    const timeoutMs = migrationLockTimeoutMs();
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+        const { rows } = await client.query(`SELECT ${fnName}($1) AS locked`, [key]);
+        if (rows[0]?.locked === true) return;
+        if (Date.now() >= deadline) {
+            throw new Error(await advisoryLockTimeoutMessage(client, key, label, timeoutMs));
+        }
+        await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+}
+
+async function advisoryLockTimeoutMessage(client: any, key: number, label: string, timeoutMs: number): Promise<string> {
+    try {
+        const { classid, objid } = advisoryLockKeyParts(key);
+        const { rows } = await client.query(
+            `SELECT a.pid,
+                    a.state,
+                    a.wait_event_type,
+                    a.wait_event,
+                    now() - a.query_start AS age,
+                    left(a.query, 160) AS query
+               FROM pg_locks l
+               LEFT JOIN pg_stat_activity a ON a.pid = l.pid
+              WHERE l.locktype = 'advisory'
+                AND l.granted
+                AND l.classid::bigint = $1
+                AND l.objid::bigint = $2
+              ORDER BY a.query_start NULLS LAST
+              LIMIT 5`,
+            [String(classid), String(objid)],
+        );
+        const holders = rows.length > 0
+            ? rows.map((row: any) => `pid=${row.pid} state=${row.state ?? "unknown"} wait=${row.wait_event_type ?? ""}/${row.wait_event ?? ""} query=${JSON.stringify(row.query ?? "")}`).join("; ")
+            : "no granted holder found";
+        return `${label} could not acquire advisory lock ${key} within ${timeoutMs}ms; holders: ${holders}`;
+    } catch (err: any) {
+        return `${label} could not acquire advisory lock ${key} within ${timeoutMs}ms; holder lookup failed: ${err?.message ?? err}`;
+    }
+}
+
+export function advisoryLockKeyParts(key: number): { classid: string; objid: string } {
+    const unsigned = BigInt.asUintN(64, BigInt(Math.trunc(key)));
+    return {
+        classid: String((unsigned >> 32n) & 0xffff_ffffn),
+        objid: String(unsigned & 0xffff_ffffn),
+    };
 }
 
 // Concurrent first-time creation of the same global object (extension, AGE
