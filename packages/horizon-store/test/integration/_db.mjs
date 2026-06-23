@@ -122,6 +122,21 @@ export async function dropSchemaAndGraph(schema, graph, registrySchema = `${grap
     const pool = new pg.Pool({ connectionString: DB_URL, max: 1 });
     try {
         try {
+            const { HorizonDBFactStore } = await import("../../dist/src/index.js");
+            const factStore = await HorizonDBFactStore.create({
+                connectionString: DB_URL,
+                schema,
+                graphName: graph,
+                registrySchema,
+            });
+            try {
+                await factStore.stopEmbedder("integration test cleanup");
+            } finally {
+                await factStore.close();
+            }
+        } catch { /* embedder/df may not be configured for this suite */ }
+
+        try {
             try {
                 await pool.query(`LOAD 'age'`);
             } catch (err) {

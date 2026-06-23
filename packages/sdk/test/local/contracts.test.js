@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import { createTestEnv, preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { withClient, defineTool, PilotSwarmWorker, composeSystemPrompt } from "../helpers/local-workers.js";
 import { SessionManager } from "../../src/session-manager.ts";
+import { resolveStorageConfig, getRuntimeStorageProvider } from "../../src/index.ts";
 import { assert, assertEqual, assertIncludes, assertGreaterOrEqual, assertNotNull } from "../helpers/assertions.js";
 import { validateSessionAfterTurn } from "../helpers/cms-helpers.js";
 import { createAddTool, createMultiplyTool, ONEWORD_CONFIG, TOOL_CONFIG } from "../helpers/fixtures.js";
@@ -86,6 +87,21 @@ const EXPECTED_LLM_VISIBLE_TOOL_NAMES = [
     "web_fetch",
     "write_bash",
 ];
+
+// Derive the expected enhanced tools from the SAME storage registry the SDK
+// uses to select the runtime provider — not from a re-derived env heuristic.
+// The provider's `enhancedFactStore` capability is exactly what makes the worker
+// append facts_search / facts_similar / search_skills (a non-facts-manager
+// session sees all three).
+function expectedLlmVisibleToolNamesForProvider() {
+    const names = [...EXPECTED_LLM_VISIBLE_TOOL_NAMES];
+    const storage = resolveStorageConfig({});
+    const provider = getRuntimeStorageProvider(storage.runtime.provider);
+    if (provider.capabilities?.enhancedFactStore) {
+        names.push("facts_search", "facts_similar", "search_skills");
+    }
+    return names;
+}
 
 function createNoopFactStore() {
     return {
@@ -663,7 +679,7 @@ async function testGenericSessionsInheritFrameworkDefaultToolNames(env) {
 // ─── Test: LLM Sees Exact Always-On Toolset ─────────────────────
 
 async function testLlmSeesExactAlwaysOnTools(env) {
-    const expectedSorted = [...EXPECTED_LLM_VISIBLE_TOOL_NAMES].sort();
+    const expectedSorted = expectedLlmVisibleToolNamesForProvider().sort();
     const normalizeReportedToolNames = (response) => [...new Set(
         parseToolNameArray(response).map((name) =>
             name === "multi_tool_use.parallel" ? "parallel" : name,

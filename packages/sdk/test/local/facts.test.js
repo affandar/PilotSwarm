@@ -18,6 +18,7 @@ import {
     createFactTools,
     createSweeperTools,
 } from "../../src/index.ts";
+import { createRuntimeFactStore, listRuntimeFactRows } from "../helpers/fact-store-helpers.js";
 
 const TIMEOUT = 180_000;
 const getEnv = useSuiteEnv(import.meta.url);
@@ -40,8 +41,7 @@ async function listFactRows(env) {
 }
 
 async function testFactToolsStoreReadDelete(env) {
-    const factStore = await PgFactStore.create(env.store, env.factsSchema);
-    await factStore.initialize();
+    const factStore = await createRuntimeFactStore(env);
 
     try {
         const [storeFact, readFacts, deleteFact] = createFactTools({ factStore });
@@ -112,7 +112,7 @@ async function testFactToolsStoreReadDelete(env) {
         );
         assertEqual(sharedPatternDelete.deleted, 1, "explicit shared pattern delete removes matching shared facts");
 
-        const rows = await listFactRows(env);
+        const rows = await listRuntimeFactRows(factStore);
         assertEqual(rows.length, 2, "two facts should remain after deletes");
         assert(rows.some((row) => row.key === "build/status" && row.session_id === "session-b"), "session-b private fact should remain");
         assert(rows.some((row) => row.key === "baseline/tps" && row.shared === true), "shared fact should remain");
@@ -122,8 +122,7 @@ async function testFactToolsStoreReadDelete(env) {
 }
 
 async function testSharedIntakeHook(env) {
-    const factStore = await PgFactStore.create(env.store, env.factsSchema);
-    await factStore.initialize();
+    const factStore = await createRuntimeFactStore(env);
     const intakeWrites = [];
 
     try {
@@ -189,8 +188,7 @@ async function testDeleteSessionCleansSessionFacts(env) {
         cmsSchema: env.cmsSchema,
         factsSchema: env.factsSchema,
     });
-    const factStore = await PgFactStore.create(env.store, env.factsSchema);
-    await factStore.initialize();
+    const factStore = await createRuntimeFactStore(env);
 
     await worker.start();
     await client.start();
@@ -222,7 +220,7 @@ async function testDeleteSessionCleansSessionFacts(env) {
 
         await client.deleteSession(session.sessionId);
 
-        const rows = await listFactRows(env);
+        const rows = await listRuntimeFactRows(factStore);
         assertEqual(rows.length, 1, "deleteSession should remove all session-scoped facts");
         assert(!rows.some((row) => row.key === "scratch/step"), "session fact should be removed");
         assert(!rows.some((row) => row.key === "result/summary"), "session facts should not outlive the session");

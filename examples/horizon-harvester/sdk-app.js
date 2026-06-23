@@ -15,10 +15,10 @@
  * has no facts_search / facts_similar; this sample uses the enhanced tier for both.
  *
  * Usage:
- *   node --env-file=.env examples/horizon-harvester/sdk-app.js            # full: harvest then ask
- *   HARVESTER_SCENARIO=harvest node --env-file=.env .../sdk-app.js        # just harvest
- *   HARVESTER_SCENARIO=delete  node --env-file=.env .../sdk-app.js        # harvest, delete one source, reconcile graph
- *   HARVESTER_SCENARIO=ask     node --env-file=.env .../sdk-app.js        # just ask (after a harvest)
+ *   node --env-file=.env.horizondb examples/horizon-harvester/sdk-app.js            # full: harvest then ask
+ *   HARVESTER_SCENARIO=harvest node --env-file=.env.horizondb .../sdk-app.js        # just harvest
+ *   HARVESTER_SCENARIO=delete  node --env-file=.env.horizondb .../sdk-app.js        # harvest, delete one source, reconcile graph
+ *   HARVESTER_SCENARIO=ask     node --env-file=.env.horizondb .../sdk-app.js        # just ask (after a harvest)
  *
  * Requires:
  *   DATABASE_URL               — PostgreSQL connection string (CMS + orchestration)

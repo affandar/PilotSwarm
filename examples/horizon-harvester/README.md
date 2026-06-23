@@ -86,7 +86,7 @@ HARVESTER_SCENARIO=ask ./scripts/run-horizon-harvester-sample.sh
 Or call the app directly:
 
 ```bash
-node --env-file=.env examples/horizon-harvester/sdk-app.js
+node --env-file=.env.horizondb examples/horizon-harvester/sdk-app.js
 ```
 
 ## Visualize the graph

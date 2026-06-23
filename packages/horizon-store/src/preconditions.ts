@@ -5,6 +5,8 @@
 // pg_textsearch (ts_rank is not a substitute), semantic needs pgvector, the
 // graph needs AGE, and the embedder needs pg_durable with df.http granted.
 
+import { withDbRetry } from "./db-retry.js";
+
 interface Ext { name: string; why: string; fix: string; }
 
 /** Extensions the enhanced FACT provider (HorizonDBFactStore) needs (07 D2):
@@ -41,10 +43,10 @@ const GRAPH_REQUIRED: Ext[] = [
 const REQUIRED: Ext[] = [...FACT_REQUIRED, ...GRAPH_REQUIRED];
 
 async function missingFrom(pool: any, required: Ext[]): Promise<string[]> {
-    const { rows } = await pool.query(
+    const { rows } = await withDbRetry<{ rows: any[] }>("horizon_preconditions_extensions", () => pool.query(
         `SELECT name FROM pg_available_extensions WHERE name = ANY($1)`,
         [required.map((r) => r.name)],
-    );
+    ), { tries: 6 });
     const available = new Set(rows.map((r: any) => r.name));
     return required.filter((r) => !available.has(r.name)).map((r) => r.name);
 }
@@ -96,11 +98,11 @@ export async function assertGraphExtensions(pool: any): Promise<void> {
 
 /** Post-migration checks: df.http present and usable by this role. */
 export async function assertDurableHttpUsable(pool: any): Promise<void> {
-    const { rows } = await pool.query(`
+    const { rows } = await withDbRetry<{ rows: any[] }>("horizon_preconditions_df_http", () => pool.query(`
         SELECT EXISTS (
             SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
             WHERE n.nspname = 'df' AND p.proname = 'http'
-        ) AS has_http`);
+        ) AS has_http`), { tries: 6 });
     if (!rows[0]?.has_http) {
         throw new Error(
             "EnhancedFactStore preconditions failed — pg_durable is installed but df.http() is absent. " +
@@ -108,7 +110,7 @@ export async function assertDurableHttpUsable(pool: any): Promise<void> {
         );
     }
     try {
-        await pool.query(`SELECT df.getvar('__hz_precondition_probe')`);
+        await withDbRetry("horizon_preconditions_df_usage", () => pool.query(`SELECT df.getvar('__hz_precondition_probe')`), { tries: 6 });
     } catch (err: any) {
         throw new Error(
             "EnhancedFactStore preconditions failed — this role cannot use the df schema. " +

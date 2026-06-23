@@ -12,6 +12,7 @@
 import { describe, it, beforeAll } from "vitest";
 import { PgFactStore, PilotSwarmManagementClient } from "../../src/index.ts";
 import { preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
+import { createRuntimeFactStore } from "../helpers/fact-store-helpers.js";
 import { createCatalog } from "../helpers/cms-helpers.js";
 import {
     assert,
@@ -141,8 +142,7 @@ describe("Facts Stats", () => {
     it("management client surfaces session, tree, and shared facts stats", async () => {
         const env = getEnv();
         const catalog = await createCatalog(env);
-        const factStore = await PgFactStore.create(env.store, env.factsSchema);
-        await factStore.initialize();
+        const factStore = await createRuntimeFactStore(env);
         try {
             const parent = `sess-${Math.random().toString(36).slice(2, 10)}`;
             const child = `sess-${Math.random().toString(36).slice(2, 10)}`;

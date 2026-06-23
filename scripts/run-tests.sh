@@ -11,10 +11,10 @@
 #   ./scripts/test-local.sh --with-horizondb # run one pass with HorizonDB provider overlay
 #
 # Prerequisites:
-#   - PostgreSQL running with DATABASE_URL in .env
-#   - GITHUB_TOKEN in .env (for Copilot SDK)
-#   - Optional: .env.horizondb (or HORIZONDB_ENV_FILE) to run the live
-#     HorizonDB provider tests via --with-horizondb / --all-providers.
+#   - For baseline / --all-providers: PostgreSQL and GITHUB_TOKEN in .env.
+#   - For --with-horizondb: .env.horizondb (or HORIZONDB_ENV_FILE) as a
+#     standalone config. It should duplicate any needed .env settings,
+#     including the stock PostgreSQL DATABASE_URL for runtime storage.
 
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -23,11 +23,6 @@ cd "$REPO_ROOT"
 SDK_DIR="packages/sdk"
 ENV_FILE=".env"
 HORIZONDB_ENV_FILE="${HORIZONDB_ENV_FILE:-.env.horizondb}"
-HORIZONDB_FALLBACK_ENV_FILE="packages/horizon-store/.env"
-if [ ! -f "$ENV_FILE" ]; then
-    echo "ERROR: $ENV_FILE not found. Create it with DATABASE_URL and GITHUB_TOKEN."
-    exit 1
-fi
 
 WITH_HORIZONDB=0
 ALL_PROVIDERS=0
@@ -53,6 +48,11 @@ for arg in "$@"; do
     esac
 done
 
+if { [ "$WITH_HORIZONDB" != "1" ] || [ "$ALL_PROVIDERS" = "1" ]; } && [ ! -f "$ENV_FILE" ]; then
+    echo "ERROR: $ENV_FILE not found. Create it with DATABASE_URL and GITHUB_TOKEN."
+    exit 1
+fi
+
 print_help() {
         cat <<'EOF'
 Usage:
@@ -74,11 +74,14 @@ Examples:
     ./scripts/run-tests.sh sub-agents reliability
     ./scripts/run-tests.sh --all-providers
     ./scripts/run-tests.sh --with-horizondb composition-tiers
+    ./scripts/run-tests.sh --with-horizondb embedder-outcomes
     ./scripts/run-tests.sh --suite=contracts --suite=durability --sequential
 
 Notes:
 - Suite filters may be positional names or --suite=<name>, and can be mixed.
-- Suite filters are substring matches under packages/sdk/test/local.
+- Suite filters are substring matches under packages/sdk/test/local. When
+    --with-horizondb is active, they also match provider-level integration tests
+    under packages/horizon-store/test/integration (for example embedder-outcomes).
 - Unknown options fail fast.
 - Every run prints a consolidated phase summary at the end (builds, optional
     node suites, and the SDK Vitest result with file/test counts) plus an
@@ -87,11 +90,11 @@ Notes:
 - Default runs load .env as the baseline/default provider config and then
     clear HORIZON_* provider vars, so a stale local .env cannot accidentally
     turn the default PgFactStore run into a HorizonDB run.
-- --with-horizondb loads a HorizonDB provider overlay after .env. The default
-    overlay is .env.horizondb; override with HORIZONDB_ENV_FILE=/path/to/file.
-    For migration convenience, packages/horizon-store/.env is used when
-    .env.horizondb is absent. This mode fails fast if no HorizonDB URL is
-    configured after loading the overlay.
+- --with-horizondb loads only a standalone HorizonDB config file. The default
+    is .env.horizondb; override with HORIZONDB_ENV_FILE=/path/to/file. Duplicate
+    any needed .env settings there, including the stock PostgreSQL DATABASE_URL
+    for runtime CMS/duroxide storage. This mode fails fast if the file is
+    missing or HORIZON_DATABASE_URL is unset.
 - --all-providers runs provider passes one by one. Today that means a baseline
     PgFactStore pass first, then a HorizonDB provider pass if configured. This
     intentionally duplicates the suite so provider interactions cannot mask
@@ -108,7 +111,9 @@ Notes:
     `npm run test:mcp-server:integration` (or :all).
 - Provider-level HorizonDB tests run only when --with-horizondb or
     --all-providers loads a HorizonDB config and HORIZON_DATABASE_URL is set.
-    Set SKIP_HORIZON_STORE_TESTS=1 to skip that provider-level stage.
+    Set SKIP_HORIZON_STORE_TESTS=1 to skip that provider-level stage. Filtered
+    provider-level runs inherit the already-loaded .env.horizondb; they do not
+    load packages/horizon-store/.env or fall back to .env.
 EOF
 }
 
@@ -124,19 +129,10 @@ if [ "${#SCRIPT_ARGS[@]}" -gt 0 ]; then
 fi
 
 horizondb_provider_configured() {
-    if [ -f "$HORIZONDB_ENV_FILE" ] || [ -f "$HORIZONDB_FALLBACK_ENV_FILE" ]; then
+    if [ -f "$HORIZONDB_ENV_FILE" ]; then
         return 0
     fi
-    # Migration convenience: if a maintainer still has HORIZON_DATABASE_URL in
-    # root .env, treat it as configured for --all-providers. The baseline pass
-    # still clears HORIZON_* before running.
-    (
-        set -a
-        # shellcheck disable=SC1090
-        source "$ENV_FILE"
-        set +a
-        [ -n "${HORIZON_DATABASE_URL:-}" ]
-    )
+    return 1
 }
 
 ALL_PROVIDER_PHASE_NAMES=()
@@ -427,6 +423,7 @@ run_mcp_server_tests() {
 # stub out) only when a provider overlay is explicitly enabled. OPT-IN: skipped
 # cleanly in the default-provider run or when SKIP_HORIZON_STORE_TESTS=1.
 run_horizon_store_tests() {
+    local targets=("$@")
     if [ "${SKIP_HORIZON_STORE_TESTS:-0}" = "1" ]; then
         echo "⏭  Skipping horizon-store integration tests (SKIP_HORIZON_STORE_TESTS=1)."
         record_run_phase "horizon-store integration" "SKIPPED"
@@ -442,8 +439,14 @@ run_horizon_store_tests() {
         record_run_phase "horizon-store integration" "SKIPPED"
         return 0
     fi
-    echo "🧪 Running @pilotswarm/horizon-store integration tests (live HorizonDB)..."
-    (cd "$REPO_ROOT" && npm run --silent test:integration --workspace=@pilotswarm/horizon-store) \
+    local display="all integration tests"
+    if [ "${#targets[@]}" -gt 0 ]; then
+        display="${targets[*]}"
+    else
+        targets=(test/integration)
+    fi
+    echo "🧪 Running @pilotswarm/horizon-store integration tests (live HorizonDB): $display"
+    (cd "$REPO_ROOT/packages/horizon-store" && npm run --silent build && node ../../node_modules/vitest/vitest.mjs run "${targets[@]}") \
         || { echo "❌ horizon-store integration tests failed"; exit 1; }
     record_run_phase "horizon-store integration" "PASS"
 }
@@ -453,6 +456,7 @@ run_horizon_store_tests() {
 print_run_summary() {
     local sdk_json="$1"
     local sdk_code="$2"
+    local sdk_label="${3-SDK vitest}"
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "Local test run summary"
@@ -462,15 +466,17 @@ print_run_summary() {
         printf '  %-32s %s\n' "${RUN_PHASE_LABELS[$idx]}" "${RUN_PHASE_RESULTS[$idx]}"
     done
 
-    local sdk_status="PASS"
-    if [ "$sdk_code" != "0" ]; then
-        sdk_status="FAIL (exit $sdk_code)"
+    if [ -n "$sdk_label" ]; then
+        local sdk_status="PASS"
+        if [ "$sdk_code" != "0" ]; then
+            sdk_status="FAIL (exit $sdk_code)"
+        fi
+        printf '  %-32s %s\n' "$sdk_label" "$sdk_status"
     fi
-    printf '  %-32s %s\n' "SDK vitest" "$sdk_status"
 
     # Detailed file/test breakdown and, on failure, the exact failing tests plus
     # a ready-to-paste rerun command — parsed from the Vitest JSON report.
-    if [ -s "$sdk_json" ]; then
+    if [ -n "$sdk_label" ] && [ -s "$sdk_json" ]; then
         node - "$sdk_json" <<'NODE'
 const fs = require("fs");
 const path = require("path");
@@ -568,6 +574,8 @@ HORIZONDB_ENV_KEYS=(
     HORIZON_FACTS_SCHEMA
     HORIZON_GRAPH_DATABASE_URL
     HORIZON_GRAPH_SCHEMA
+    HORIZON_GRAPH_REGISTRY_SCHEMA
+    HORIZON_NAMESPACE_CACHE_TTL_MS
     HORIZON_EMBED_URL
     HORIZON_EMBED_MODEL
     HORIZON_EMBED_DIM
@@ -576,9 +584,33 @@ HORIZONDB_ENV_KEYS=(
     HORIZON_EMBED_BEARER
 )
 
+HORIZONDB_STANDALONE_ENV_KEYS=(
+    DATABASE_URL
+    TEST_DATABASE_URL
+    PS_TEST_DATABASE_URL
+    GITHUB_TOKEN
+    PILOTSWARM_RUNTIME_PROVIDER
+    PILOTSWARM_RUNTIME_URL
+    PILOTSWARM_SESSION_CATALOG_URL
+    PILOTSWARM_RUNTIME_SESSION_CATALOG_URL
+    PILOTSWARM_DUROXIDE_URL
+    PILOTSWARM_FACTSTORE_URL
+    PILOTSWARM_FACTS_SCHEMA
+    PILOTSWARM_GRAPH_URL
+    PILOTSWARM_GRAPH_SCHEMA
+)
+
 clear_horizondb_env() {
     local key
     for key in "${HORIZONDB_ENV_KEYS[@]}"; do
+        unset "$key"
+    done
+}
+
+clear_standalone_horizondb_env() {
+    clear_horizondb_env
+    local key
+    for key in "${HORIZONDB_STANDALONE_ENV_KEYS[@]}"; do
         unset "$key"
     done
 }
@@ -592,33 +624,40 @@ load_env_file() {
 }
 
 configure_provider_env() {
-    if [ "$WITH_HORIZONDB" = "1" ] || [ "$ALL_PROVIDERS" = "1" ]; then
+    if [ "$WITH_HORIZONDB" = "1" ]; then
         if [ -f "$HORIZONDB_ENV_FILE" ]; then
-            echo "🌅 Loading HorizonDB provider config from $HORIZONDB_ENV_FILE"
+            echo "🌅 Loading standalone HorizonDB test config from $HORIZONDB_ENV_FILE"
+            clear_standalone_horizondb_env
             load_env_file "$HORIZONDB_ENV_FILE"
-        elif [ -f "$HORIZONDB_FALLBACK_ENV_FILE" ]; then
-            echo "🌅 Loading HorizonDB provider config from $HORIZONDB_FALLBACK_ENV_FILE"
-            load_env_file "$HORIZONDB_FALLBACK_ENV_FILE"
-        elif [ -n "${HORIZON_DATABASE_URL:-}" ]; then
-            echo "🌅 Using HorizonDB provider config from the existing environment"
-        elif [ "$WITH_HORIZONDB" = "1" ]; then
-            echo "ERROR: --with-horizondb requires HORIZON_DATABASE_URL via $HORIZONDB_ENV_FILE, $HORIZONDB_FALLBACK_ENV_FILE, or the environment."
-            exit 1
         else
-            echo "⏭  No HorizonDB provider config found for --all-providers; running baseline provider only."
-            clear_horizondb_env
-            return 0
+            echo "ERROR: --with-horizondb requires a standalone HorizonDB config file at $HORIZONDB_ENV_FILE."
+            echo "       Copy .env.horizondb.example and duplicate required .env settings there."
+            exit 1
         fi
 
-        if [ -n "${HORIZON_DATABASE_URL:-}" ]; then
-            echo "🌅 HorizonDB provider tests enabled."
-        elif [ "$WITH_HORIZONDB" = "1" ]; then
-            echo "ERROR: --with-horizondb loaded provider config, but HORIZON_DATABASE_URL is still unset."
+        if [ -z "${HORIZON_DATABASE_URL:-}" ]; then
+            echo "ERROR: --with-horizondb loaded $HORIZONDB_ENV_FILE, but HORIZON_DATABASE_URL is unset."
+            echo "       This file must enable the HorizonDB enhanced fact store."
             exit 1
-        else
-            echo "⏭  HorizonDB provider config loaded without HORIZON_DATABASE_URL; running baseline provider only."
-            clear_horizondb_env
         fi
+        if [ -z "${DATABASE_URL:-}" ]; then
+            echo "ERROR: --with-horizondb requires DATABASE_URL in $HORIZONDB_ENV_FILE for stock PostgreSQL runtime storage."
+            exit 1
+        fi
+        if [ -z "${GITHUB_TOKEN:-}" ]; then
+            echo "ERROR: --with-horizondb requires GITHUB_TOKEN in $HORIZONDB_ENV_FILE (Copilot SDK)."
+            exit 1
+        fi
+        if [ "${DATABASE_URL}" = "${HORIZON_DATABASE_URL}" ]; then
+            echo "ERROR: DATABASE_URL must be stock PostgreSQL, distinct from HORIZON_DATABASE_URL."
+            echo "       Runtime CMS/duroxide storage stays on PostgreSQL; only enhanced facts + graph use HorizonDB."
+            exit 1
+        fi
+        # No remapping needed: the SDK derives the hybrid from these vars.
+        # HORIZON_DATABASE_URL selects the horizondb runtime provider, whose
+        # CMS/duroxide stay on DATABASE_URL (stock PostgreSQL) while enhanced
+        # facts + graph use the HorizonDB URLs and schemas.
+        echo "🌅 Hybrid mode: runtime storage on stock PostgreSQL (DATABASE_URL); enhanced facts + graph on HorizonDB."
     else
         clear_horizondb_env
         echo "🧪 Provider mode: baseline default fact store (HorizonDB provider vars cleared)."
@@ -628,8 +667,11 @@ configure_provider_env() {
 # Suppress duroxide Rust WARN logs in tests (AKS workers use INFO via their own env)
 export RUST_LOG="${RUST_LOG:-error}"
 
-# Load .env for baseline config, then opt into provider overlays explicitly.
-load_env_file "$ENV_FILE"
+# Baseline runs load .env. HorizonDB runs load only .env.horizondb so missing
+# standalone settings fail loudly instead of being borrowed from .env.
+if [ "$WITH_HORIZONDB" != "1" ]; then
+    load_env_file "$ENV_FILE"
+fi
 configure_provider_env
 
 cleanup_test_state() {
@@ -669,17 +711,30 @@ fi
 # Run
 cd "$SDK_DIR"
 TARGET_FILES=()
+HORIZON_TARGET_FILES=()
 if [ ${#SUITE_FILTERS[@]} -gt 0 ]; then
     for filter in "${SUITE_FILTERS[@]}"; do
         while IFS= read -r file; do
             TARGET_FILES+=("$file")
         done < <(find test/local -type f -name "*${filter}*.test.js" | sort)
+        if [ "$WITH_HORIZONDB" = "1" ]; then
+            while IFS= read -r file; do
+                HORIZON_TARGET_FILES+=("${file#$REPO_ROOT/packages/horizon-store/}")
+            done < <(find "$REPO_ROOT/packages/horizon-store/test/integration" -type f -name "*${filter}*.test.mjs" | sort)
+        fi
     done
 
-    if [ ${#TARGET_FILES[@]} -eq 0 ]; then
+    if [ ${#TARGET_FILES[@]} -eq 0 ] && [ ${#HORIZON_TARGET_FILES[@]} -eq 0 ]; then
         echo "ERROR: no test files matched suite filter(s): ${SUITE_FILTERS[*]}"
+        if [ "$WITH_HORIZONDB" != "1" ]; then
+            echo "       Provider-level HorizonDB tests are matched only with --with-horizondb."
+        fi
         exit 1
     fi
+fi
+
+if [ ${#HORIZON_TARGET_FILES[@]} -gt 0 ]; then
+    run_horizon_store_tests "${HORIZON_TARGET_FILES[@]}"
 fi
 
 if [ ${#TARGET_FILES[@]} -gt 0 ]; then
@@ -687,6 +742,9 @@ if [ ${#TARGET_FILES[@]} -gt 0 ]; then
         echo "🧪 SDK Vitest phase [$PILOTSWARM_TEST_PHASE]: ${PILOTSWARM_TEST_PHASE_LABEL:-provider pass}"
     fi
     run_sdk_vitest_and_summarize "${TARGET_FILES[@]}"
+elif [ ${#HORIZON_TARGET_FILES[@]} -gt 0 ]; then
+    print_run_summary "" 0 ""
+    exit 0
 else
     run_deploy_scripts_tests
     run_mcp_server_tests

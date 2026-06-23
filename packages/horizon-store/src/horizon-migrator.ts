@@ -52,8 +52,14 @@ export async function runMigrations(
     lockSeed: number,
 ): Promise<void> {
     const lockKey = hashSchemaName(schema, lockSeed);
+    const globalDdlLockKey = hashSchemaName("__horizon_facts_global_ddl__", lockSeed);
     const client = await pool.connect();
     try {
+        // Several migrations run database-GLOBAL DDL (CREATE EXTENSION IF NOT
+        // EXISTS, AGE create_graph). Those collide in pg_catalog even across
+        // distinct per-schema locks, so serialize every migration run on one
+        // global advisory lock in addition to the per-schema lock.
+        await client.query("SELECT pg_advisory_lock($1)", [globalDdlLockKey]);
         await client.query("SELECT pg_advisory_lock($1)", [lockKey]);
 
         await client.query(`CREATE SCHEMA IF NOT EXISTS "${schema}"`);
@@ -83,23 +89,37 @@ export async function runMigrations(
         for (const migration of migrations) {
             if (appliedSet.has(migration.version)) continue;
 
-            try {
-                await client.query("BEGIN");
-                await client.query(migration.sql);
-                await client.query(
-                    `INSERT INTO ${migrationsTable} (version, name) VALUES ($1, $2)`,
-                    [migration.version, migration.name],
-                );
-                await client.query("COMMIT");
-            } catch (err) {
-                await client.query("ROLLBACK").catch(() => {});
-                throw err;
+            for (let attempt = 1; attempt <= 5; attempt++) {
+                try {
+                    await client.query("BEGIN");
+                    await client.query(migration.sql);
+                    await client.query(
+                        `INSERT INTO ${migrationsTable} (version, name) VALUES ($1, $2)`,
+                        [migration.version, migration.name],
+                    );
+                    await client.query("COMMIT");
+                    break;
+                } catch (err) {
+                    await client.query("ROLLBACK").catch(() => {});
+                    if (!isRetryableMigrationRace(err) || attempt === 5) throw err;
+                    await new Promise((resolve) => setTimeout(resolve, 200 * attempt));
+                }
             }
         }
     } finally {
         await client.query("SELECT pg_advisory_unlock($1)", [lockKey]).catch(() => {});
+        await client.query("SELECT pg_advisory_unlock($1)", [globalDdlLockKey]).catch(() => {});
         client.release();
     }
+}
+
+// Concurrent first-time creation of the same global object (extension, AGE
+// graph schema, catalog row) surfaces as one of these races. The losing tx
+// rolled back and committed nothing, and the object now exists, so re-running
+// the same idempotent migration statement succeeds.
+function isRetryableMigrationRace(err: any): boolean {
+    const text = `${err?.code ?? ""} ${err?.message ?? ""} ${err?.detail ?? ""}`;
+    return /tuple concurrently updated|deadlock detected|could not serialize access|already exists/i.test(text);
 }
 
 /** Stable 32-bit hash of a schema name combined with a per-system seed. */

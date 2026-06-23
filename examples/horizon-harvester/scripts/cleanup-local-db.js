@@ -128,28 +128,28 @@ const factsUrl = process.env.HORIZON_DATABASE_URL;
 const graphUrl = process.env.HORIZON_GRAPH_DATABASE_URL || factsUrl;
 
 if (process.env.HARVESTER_DROP_HORIZON === "1" && factsUrl) {
-    // Full teardown: cancel the durable embed loop, drop the AGE graph, then
-    // DROP SCHEMA the facts store. Cancelling the loop FIRST matters — a
-    // pg_durable instance lives in the `df` schema and survives a facts-schema
-    // drop, so left running it would keep firing against a now-missing table
-    // (and, after an embed-input change, a stale loop would keep embedding with
-    // the OLD text). Label mirrors horizon-store: hz-embed-cron:<schema>.
+    // Full teardown: cancel the durable embed loops, drop the AGE graph, then
+    // DROP SCHEMA the facts store. Cancel FIRST — pg_durable instances live in
+    // the `df` schema and survive a facts-schema drop, so a left-running loop
+    // keeps firing against a now-missing table. stopEmbedder() cancels the
+    // batch + retry + legacy loops; the label scheme is owned by the provider,
+    // so go through the SDK rather than hand-rolling df.cancel here.
+    try {
+        const { createFactStoreForUrl, isEnhancedFactStore } = await import("pilotswarm-sdk");
+        const store = await createFactStoreForUrl(factsUrl, factsSchema, { provider: "horizon" });
+        try {
+            if (isEnhancedFactStore(store)) await store.stopEmbedder("harvester cleanup teardown");
+            console.log(`Cancelled durable embedder loops for ${factsSchema}.`);
+        } finally {
+            await store.close?.();
+        }
+    } catch (err) {
+        console.warn(`Embedder loop cancel skipped: ${err.message}`);
+    }
+
     const facts = pgClient(factsUrl);
     try {
         await facts.connect();
-        try {
-            const { rows } = await facts.query(
-                `SELECT id FROM df.instances
-                  WHERE label = $1 AND status IN ('pending','running')`,
-                [`hz-embed-cron:${factsSchema}`],
-            );
-            for (const r of rows) {
-                await facts.query(`SELECT df.cancel($1, $2)`, [r.id, "harvester cleanup teardown"]);
-            }
-            console.log(`Cancelled ${rows.length} durable embedder loop instance(s) for ${factsSchema}.`);
-        } catch (err) {
-            console.warn(`Embedder loop cancel skipped: ${err.message}`);
-        }
         await facts.query(`DROP SCHEMA IF EXISTS "${factsSchema}" CASCADE`);
         console.log(`Dropped schema: ${factsSchema} (facts).`);
     } catch (err) {

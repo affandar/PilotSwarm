@@ -12,7 +12,7 @@ set -euo pipefail
 #               horizon_facts CASCADE. Use this to start completely clean.
 #
 # Requires DATABASE_URL (+ HORIZON_DATABASE_URL / HORIZON_GRAPH_DATABASE_URL for
-# the --facts / --drop levels) in .env at the repo root.
+# the --facts / --drop levels) in .env.horizondb at the repo root.
 #
 #   ./scripts/clean-horizon-harvester-sample.sh           # local only
 #   ./scripts/clean-horizon-harvester-sample.sh --facts   # + delete corpus facts
@@ -36,4 +36,4 @@ case "$MODE" in
 esac
 
 cd "$REPO_ROOT/examples/horizon-harvester"
-exec node --env-file="$REPO_ROOT/.env" scripts/cleanup-local-db.js
+exec node --env-file="$REPO_ROOT/.env.horizondb" scripts/cleanup-local-db.js
