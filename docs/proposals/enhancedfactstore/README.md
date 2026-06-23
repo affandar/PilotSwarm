@@ -31,6 +31,7 @@ open knowledge graph (`GraphStore`). First providers: **HorizonDB**
 | 08 | [Embedding Handling](./08-embedding-handling.md) | Canonical minimal embedding/crawl state model: no content hashes, two independent pg_durable loops, and `last_embed_error` retry/error semantics. |
 | 09 | [External API and Schema Delta](./09-api-schema-delta.md) | External-facing store/tool/schema changes relative to `main`, rationale, and minimalist-criteria assessment. |
 | 10 | [Retrieval Usage Metrics](./10-retrieval-usage-metrics.md) | Count-only usage metrics for enhanced fact search, skill search, graph search, and explicit graph-node loads, with management APIs, tuner tools, and CMS aggregation design. |
+| 11 | [pgsql-hackers Sample Crawler](./11-pgsql-hackers-sample-crawler.md) | Build-ready sample corpus harvester using the enhanced facts + graph infrastructure: deterministic index crawl, parallel thread extraction, graph-plan generation, bulk apply, grading, and promotion. |
 
 ## Phasing
 
