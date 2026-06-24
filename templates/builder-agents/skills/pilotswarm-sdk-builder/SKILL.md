@@ -56,6 +56,7 @@ my-sdk-app/
 15. Agents can read their context usage (current tokens, token limit) from the session status `contextUsage` field. Use this for agents that need to manage context window budgets or trigger compaction.
 16. When the scaffold needs downloadable files, keep using `write_artifact` / `export_artifact`; for binary files, require `contentType` plus `encoding: "base64"` and document that browser hosts download non-text artifacts instead of previewing them inline.
 17. When the app needs to ingest external sources into durable, searchable knowledge or an open knowledge graph, follow the `pilotswarm-knowledge-harvester` skill: enable the optional EnhancedFactStore / GraphStore providers via `horizonConfigFromEnv()`, author a `harvester: true` agent for the crawl→graph→mark loop, and keep reader agents free of harvester frontmatter.
+18. When the app needs stock PostgreSQL runtime storage plus HorizonDB enhanced facts/search/graph, follow the `pilotswarm-hybrid-datastore` skill: keep `DATABASE_URL` as the runtime store, add `HORIZON_DATABASE_URL` / `HORIZON_GRAPH_DATABASE_URL` for optional providers, and wire `horizonConfigFromEnv()` into worker, client, and management client.
 
 ## Guided Intake Questions
 
@@ -74,6 +75,9 @@ Do not guess these answers when the user has not provided them. Offer the standa
 ## Env File Guidance
 
 - Treat `DATABASE_URL` as the canonical PostgreSQL connection input.
+- Treat `DATABASE_URL` as the canonical runtime PostgreSQL connection input. Do not repurpose it as the HorizonDB facts/graph connection in hybrid apps.
+- For hybrid apps, document optional `HORIZON_DATABASE_URL`, `HORIZON_FACTS_SCHEMA`, `HORIZON_GRAPH_DATABASE_URL`, `HORIZON_GRAPH_SCHEMA`, and `HORIZON_EMBED_*` vars in a separate HorizonDB block or `.env.horizondb.example`.
+- The starter/local Docker path should continue to run with stock PostgreSQL by default; HorizonDB is an opt-in provider configuration, not a Docker image requirement.
 - If the app needs a non-default model catalog, check in `.model_providers.example.json`, create the real `.model_providers.json` locally from it, and keep provider keys in `.env` / `.env.remote`.
 - Do not generate redundant `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, or `PGDATABASE` entries unless the user explicitly needs them.
 - Prefer a checked-in `.env.example` plus a local gitignored `.env`.

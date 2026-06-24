@@ -43,11 +43,11 @@ Treat this as a `pilotswarm`-repo maintainer workflow only. Do not update downst
        or run the specific file directly with `npx vitest run <path-to-test>`.
     - If the previously failing tests pass repeatedly in sequential mode, treat the failure as a parallel-run flake in the test harness and continue with the release. Call this out explicitly in the release notes.
    - If a test fails, investigate and fix the root cause. Do not silence failures or weaken assertions to proceed.
-   - If package contents matter, run:
+    - If package contents matter, run:
      ```bash
      npm pack --dry-run
      ```
-     from `packages/sdk` and `packages/cli`.
+       from `packages/sdk`, `packages/horizon-store`, `packages/cli`, and `packages/portal`.
 
 4. Validate npm-release wiring.
    - Check `.github/workflows/publish-npm.yml`.
@@ -114,8 +114,9 @@ Treat this as a `pilotswarm`-repo maintainer workflow only. Do not update downst
 PilotSwarm publishes the following packages (in dependency/publish order):
 
 1. `pilotswarm-sdk` — SDK runtime
-2. `pilotswarm-cli` — terminal UI (depends on sdk; bundles ui-core and ui-react)
-3. `pilotswarm-web` — browser portal (depends on cli; bundles ui-core and ui-react)
+2. `@pilotswarm/horizon-store` — optional HorizonDB enhanced facts + graph providers (peer depends on sdk)
+3. `pilotswarm-cli` — terminal UI (depends on sdk; bundles ui-core and ui-react)
+4. `pilotswarm-web` — browser portal (depends on cli; bundles ui-core and ui-react)
 
 `pilotswarm-ui-core` and `pilotswarm-ui-react` are workspace-only packages (`"private": true`). They ship inside `pilotswarm-cli` and `pilotswarm-web` via `bundledDependencies` — they are never published to npm independently.
 

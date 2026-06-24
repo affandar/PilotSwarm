@@ -26,6 +26,7 @@ That folder is intentionally non-active. Nothing there is loaded into this repos
 - `pilotswarm-portal-builder`
 - `pilotswarm-sdk-builder`
 - `pilotswarm-agent-versioning`
+- `pilotswarm-hybrid-datastore`
 - `pilotswarm-knowledge-harvester`
 - `pilotswarm-azure-deployer`
 - `pilotswarm-aks-identity`
@@ -75,6 +76,7 @@ cp -R templates/builder-agents/skills/* .github/skills/
 - `pilotswarm-portal-builder` helps users customize the shipped browser portal with plugin-driven branding, named-agent exposure, and optional auth add-ons.
 - `pilotswarm-sdk-builder` helps users build SDK-first services and applications around `PilotSwarmClient` and `PilotSwarmWorker`.
 - `pilotswarm-azure-deployer` helps users package and deploy PilotSwarm-based apps to Azure / AKS, with explicit env-template and cross-cluster workload-identity guidance.
+- `pilotswarm-hybrid-datastore` (skill) helps builders wire the stock-PostgreSQL runtime store alongside optional HorizonDB enhanced facts/search/graph providers without changing the default Docker image.
 - `pilotswarm-knowledge-harvester` (skill) helps the SDK builder add a knowledge-harvesting capability: a `harvester: true` agent that crawls sources into the durable facts store, builds the open knowledge graph, and exposes multi-signal search to reader agents through the optional EnhancedFactStore / GraphStore providers.
 
 The CLI and SDK builder templates are intended to be guided builders, not guess-heavy code generators. They should ask about session policy, env-file setup, initial agent roster, and target topology before scaffolding files.

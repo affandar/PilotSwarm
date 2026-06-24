@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.2.0** — Azure VPN Gateway P2S ingress with Entra ID auth: optional "trusted-bypass" path alongside the existing AFD edge mode, with seamless DNS (Private DNS Resolver), dual redirect-URI portal app registration, a VPN client-profile helper script + skill, and full operator docs. 248 / 248 deploy-scripts tests pass.
+> **Latest release: v0.2.1** — Adds the HorizonDB enhanced facts + graph provider package, the Horizon Harvester sample, hybrid datastore builder/deployer guidance, and cycle-aware child watcher cron wake handling. The starter Docker image still defaults to stock PostgreSQL; HorizonDB is opt-in through `HORIZON_*` provider configuration.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 

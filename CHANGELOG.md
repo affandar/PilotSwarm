@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.1 — 2026-06-23
 
 ### HorizonDB Enhanced Facts + Graph
 
@@ -14,6 +14,31 @@
 - Added canonical docs and proposal material for enhanced facts, graph search,
   retrieval usage metrics, soft-delete reconciliation, provider cleanup, and
   harvester deployment.
+
+### SDK / Runtime
+
+- Added cycle-aware child watcher notifications for cron and `cron_at` turns.
+  Quiet child cycles are treated as heartbeats, while `report_cycle` lets
+  material or blocked watcher cycles wake the parent without suspending the
+  child turn. The live orchestration advances to `1.0.53`, with `1.0.52` frozen
+  for warm resume compatibility.
+
+### Builder Agents
+
+- Added the `pilotswarm-hybrid-datastore` builder skill to explain the hybrid
+  store topology: stock PostgreSQL remains the runtime `DATABASE_URL`, while
+  HorizonDB is added through `HORIZON_DATABASE_URL` / `HORIZON_GRAPH_DATABASE_URL`
+  for enhanced facts/search/graph.
+- Updated the SDK builder, knowledge harvester, and Azure deployer templates so
+  app builders can scaffold harvester agents and deploy hybrid store configs
+  without changing the default stock-PostgreSQL Docker image.
+
+### Packages / Release
+
+- Added `@pilotswarm/horizon-store` to the public npm release workflow alongside
+  `pilotswarm-sdk`, `pilotswarm-cli`, and `pilotswarm-web`.
+- The starter Docker image continues to default to stock PostgreSQL; hybrid
+  HorizonDB mode is selected by environment/provider configuration.
 
 ### HorizonDB Test Stability
 

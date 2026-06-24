@@ -12,8 +12,10 @@ agents. This is an **optional, opt-in** capability layered on top of a normal SD
 app — it does not change the default `store_fact` / `read_facts` / `delete_fact`
 surface every agent already has.
 
-Use this skill alongside `pilotswarm-sdk-builder`. Author and version the generated
-agent files per `pilotswarm-agent-versioning`.
+Use this skill alongside `pilotswarm-sdk-builder`. For the recommended production
+topology — stock PostgreSQL for runtime storage and HorizonDB for enhanced
+facts/search/graph — also consult `pilotswarm-hybrid-datastore`. Author and version
+the generated agent files per `pilotswarm-agent-versioning`.
 
 ## Canonical References
 
@@ -229,6 +231,7 @@ seed and navigate by graph topology alone (`graph_search_nodes` → `graph_neigh
 ## Checklist
 
 - [ ] `HORIZON_*` env documented in the app's `.env.example`; real values gitignored.
+- [ ] `DATABASE_URL` remains the stock PostgreSQL runtime store; HorizonDB is wired only through `HORIZON_*` vars.
 - [ ] Worker, client, and management client all spread `horizonConfigFromEnv()`.
 - [ ] Exactly the harvester agent(s) declare `harvester: true`; readers do not.
 - [ ] Recurring crawl uses `cron` / `cron_at`, not a polling loop.

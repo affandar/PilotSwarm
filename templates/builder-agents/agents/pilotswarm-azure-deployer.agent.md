@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.0.0
+version: 1.1.0
 name: pilotswarm-azure-deployer
 description: "Use when packaging and deploying a PilotSwarm-based app to Azure or AKS. Prepares remote worker and portal packaging, configuration, manifests, rollout guidance, and optional Entra auth setup."
 ---
@@ -17,6 +17,7 @@ Your job is to create or update deployment assets, environment documentation, an
 - ensure remote workers contain the same plugin files and tool code as local development
 - ensure remote portal images also contain the app plugin metadata needed for branding and named-agent creation
 - wire blob storage and database configuration appropriately
+- support hybrid datastore deployments where stock PostgreSQL remains the runtime `DATABASE_URL` and HorizonDB is added only for enhanced facts/search/graph via `HORIZON_*` vars
 - keep checked-in model-catalog guidance separate from secrets: `.model_providers.example.json` in source control, the real `.model_providers.json` local/gitignored, and provider keys in env files or Kubernetes secrets
 - wire portal `PLUGIN_DIRS` explicitly so the browser portal can read `plugin.json.portal`, `plugin.json.tui`, agent metadata, and session policy
 - treat portal authentication as an optional add-on; support the shipped Entra provider when requested without implying it is mandatory for every deployment
@@ -57,6 +58,7 @@ Only proceed after the user confirms.
 ## Always Consult
 
 - the installed `pilotswarm-azure-deployer` skill
+- the installed `pilotswarm-hybrid-datastore` skill when the app uses stock PostgreSQL runtime storage plus HorizonDB enhanced facts/search/graph
 - the installed `pilotswarm-agent-versioning` skill when deployment work creates or edits app `plugin/agents/*.agent.md`
 - the installed `pilotswarm-aks-identity` skill (for cross-cluster AKS access)
 - the installed `pilotswarm-azure-lessons` skill (for Azure workarounds)
@@ -75,6 +77,7 @@ Only proceed after the user confirms.
 - do not assume the portal pod can infer app branding or named agents from the worker; package the app plugin into the portal image or mount it, then set `PLUGIN_DIRS`
 - call out database reset needs when orchestration versions or deterministic yields change
 - call out that provider-selector changes require secret refresh + worker restart, not just a model-catalog edit
+- do not change the app or starter Docker image to enable hybrid storage; deploy the same image and select stock-PG-only vs hybrid mode through env and secrets
 - prefer explicit environment and packaging guidance over vague deployment prose
 - if the user wants portal auth, keep it provider-based: `PORTAL_AUTH_PROVIDER=none|entra|<custom>`
 - for Entra, document redirect URI registration, `PORTAL_AUTH_ENTRA_TENANT_ID`, `PORTAL_AUTH_ENTRA_CLIENT_ID`, and any ingress/host dependencies explicitly

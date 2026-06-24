@@ -1,9 +1,8 @@
 {
   "name": "@pilotswarm/horizon-store",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.2.1",
   "type": "module",
-  "description": "HorizonDB-backed providers for PilotSwarm: HorizonDBFactStore (EnhancedFactStore — pg_textsearch + pgvector + pg_durable embedder) and HorizonDBGraphStore (GraphStore — Apache AGE). Implements the @pilotswarm/sdk fact/graph contracts.",
+  "description": "HorizonDB-backed enhanced facts and graph providers for PilotSwarm.",
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",
   "exports": {
@@ -15,8 +14,7 @@
   "files": [
     "dist/**/*",
     "migrations/**/*",
-    "README.md",
-    "LICENSE"
+    "README.md"
   ],
   "scripts": {
     "build": "tsc",
@@ -36,7 +34,7 @@
     "pg": "^8.13.1"
   },
   "peerDependencies": {
-    "pilotswarm-sdk": "*"
+    "pilotswarm-sdk": "^0.2.1"
   },
   "devDependencies": {
     "@github/copilot": "^1.0.50",
@@ -48,5 +46,24 @@
   },
   "engines": {
     "node": ">=24.0.0"
+  },
+  "keywords": [
+    "pilotswarm",
+    "horizondb",
+    "facts",
+    "graph",
+    "pgvector",
+    "apache-age"
+  ],
+  "author": "Affan Dar",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/affandar/PilotSwarm",
+    "directory": "packages/horizon-store"
+  },
+  "homepage": "https://github.com/affandar/PilotSwarm/tree/main/packages/horizon-store",
+  "bugs": {
+    "url": "https://github.com/affandar/PilotSwarm/issues"
   }
 }

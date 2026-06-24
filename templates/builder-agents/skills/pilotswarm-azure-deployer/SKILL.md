@@ -35,6 +35,7 @@ deploy/
 2. Ensure remote workers package the same plugin files and worker code used locally.
 3. Ensure remote portal images package the app plugin metadata needed for branding, agent creation, and session policy.
 4. Configure database and blob storage explicitly.
+  - For hybrid datastore apps, keep `DATABASE_URL` on stock PostgreSQL for runtime state and add HorizonDB only through `HORIZON_DATABASE_URL` / `HORIZON_GRAPH_DATABASE_URL`.
 5. Write manifests, model-catalog/env guidance, and rollout instructions that match the actual app layout.
 6. Call out reset/versioning constraints when orchestration behavior changes.
 7. If deployment work edits `plugin/agents/*.agent.md`, preserve `schemaVersion: 1` and bump the agent `version` according to the app's versioning style. Packaging-only changes should preserve existing agent versions.
@@ -48,6 +49,7 @@ gitignored `.env` copy. Document at least:
 - local gitignored `.model_providers.json` created from that example for the real runtime catalog
 - `GITHUB_TOKEN`
 - `DATABASE_URL`
+- optional hybrid datastore vars: `HORIZON_DATABASE_URL`, `HORIZON_FACTS_SCHEMA`, `HORIZON_GRAPH_DATABASE_URL`, `HORIZON_GRAPH_SCHEMA`, and `HORIZON_EMBED_*`
 - app-specific schema names if the shared PostgreSQL server hosts other PilotSwarm apps
 - Azure subscription, tenant, resource group, and region
 - control-cluster name, namespace, and worker pod label
@@ -70,6 +72,7 @@ Model/provider guidance:
 Also call out the Azure resources the user must provision:
 
 - Azure Database for PostgreSQL
+- HorizonDB for enhanced facts/search/graph when the app opts into the hybrid datastore
 - control AKS cluster
 - user-assigned managed identity for control-plane pods
 - federated identity credential
@@ -77,6 +80,36 @@ Also call out the Azure resources the user must provision:
 - Azure Container Registry
 - public ingress / DNS path for the browser portal when it is exposed
 - worker AKS cluster + namespace (three-tier only — see `pilotswarm-three-tier` skill)
+
+## Portal Deployment Guidance
+
+## Hybrid Datastore Deployment Guidance
+
+When an app uses the hybrid datastore, consult `pilotswarm-hybrid-datastore` and
+document the two store targets separately:
+
+- `DATABASE_URL` points to stock PostgreSQL and remains the runtime store for
+  Duroxide, CMS/session catalog, and default facts fallback.
+- `HORIZON_DATABASE_URL` points to the HorizonDB enhanced facts/search store.
+- `HORIZON_GRAPH_DATABASE_URL` points to the HorizonDB graph store. It may be the
+  same HorizonDB database as `HORIZON_DATABASE_URL`, but `HORIZON_FACTS_SCHEMA`
+  and `HORIZON_GRAPH_SCHEMA` must be distinct.
+
+Keep the Docker image unchanged. Hybrid mode is selected by Kubernetes secrets and
+worker/client options, not by a custom image. If HorizonDB is not configured, the
+same deployment should run as stock-PostgreSQL PilotSwarm with enhanced facts,
+graph tools, and harvester agents disabled.
+
+Validation steps:
+
+- verify `DATABASE_URL` connectivity and runtime migrations separately from
+  HorizonDB provider initialization
+- verify HorizonDB extension allow-listing before declaring enhanced facts/graph
+  ready
+- refresh Kubernetes secrets and restart workers after changing any `HORIZON_*`
+  value
+- keep portal env focused on runtime/branding/auth unless the app process itself
+  initializes clients that need Horizon facts access
 
 ## Portal Deployment Guidance
 

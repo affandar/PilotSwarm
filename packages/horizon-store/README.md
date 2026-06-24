@@ -1,9 +1,9 @@
-# `@incubator/horizon-facts` — Enhanced Facts Interface (INCUBATING)
+# `@pilotswarm/horizon-store`
 
-> ⚠️ **Status: incubation.** This package is intentionally **not** part of the
-> `packages/*` workspace and is **not** wired into PilotSwarm. It exists to
-> design, prototype, and validate a HorizonDB-only enhanced facts interface in
-> isolation, with tests and PoCs, *before* any integration decision is made.
+Optional HorizonDB-backed providers for PilotSwarm enhanced facts/search and the
+open knowledge graph. The package is published alongside `pilotswarm-sdk` and is
+intended for apps that keep stock PostgreSQL as the PilotSwarm runtime store while
+opting into HorizonDB for knowledge retrieval and graph-backed harvester workflows.
 
 ## What this is
 
@@ -40,7 +40,7 @@ exclusively on **Azure HorizonDB** (preview) capabilities:
 ## Layout
 
 ```
-incubator/horizon-facts/
+packages/horizon-store/
   SPEC.md            ← the design: data model, compute/API/frequency, scenarios
   CRAWLER.md         ← open, ontology-free LLM graph crawler (entities + free-form relationships)
   CRAWLER-SPEC.md    ← implementation contract: API, schema, compute tiers, PG mailing-list example
@@ -77,7 +77,7 @@ so it can replace `PgFactStore` anywhere. It **adds** retrieval methods
 in the base behavior changes.
 
 ```js
-import { HorizonFactStore, createFactsTools } from "@incubator/horizon-facts";
+import { HorizonFactStore, createFactsTools } from "@pilotswarm/horizon-store";
 
 const store = await HorizonFactStore.create({
   connectionString: process.env.HORIZON_DATABASE_URL,
@@ -95,7 +95,7 @@ const tools = createFactsTools(store, { graphWrite: true }); // spread into work
 ## Running
 
 ```bash
-cd incubator/horizon-facts
+cd packages/horizon-store
 npm install
 npm run build
 npm test                 # DB-less unit tests — no HorizonDB needed
