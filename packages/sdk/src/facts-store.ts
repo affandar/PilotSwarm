@@ -164,7 +164,7 @@ export interface FactStore {
 
 // ─── EnhancedFactStore contract (enhancedfactstore 02 §3/§3a/§4) ─────────────
 //
-// The SDK OWNS these contracts; concrete providers (e.g. @pilotswarm/horizon-store's
+// The SDK OWNS these contracts; concrete providers (e.g. pilotswarm-horizon-store's
 // HorizonDBFactStore) IMPLEMENT them. The runtime programs to the base FactStore
 // and narrows to EnhancedFactStore by capability detection (isEnhancedFactStore).
 
@@ -348,12 +348,12 @@ function normalizeLikePattern(pattern?: string): string | undefined {
 // Specifier for the OPTIONAL horizon provider peer. The `: string` annotation is
 // load-bearing: it widens the type away from a string literal so TypeScript does
 // NOT eagerly type-resolve `import(HORIZON_STORE_PACKAGE)` at compile time.
-// Resolving it would pull @pilotswarm/horizon-store's emitted .d.ts into this
+// Resolving it would pull pilotswarm-horizon-store's emitted .d.ts into this
 // compile, which re-imports `pilotswarm-sdk` and cycles back onto THIS package's
 // own dist/ — a TS5055 self-overwrite once dist/ exists. The peer is loaded
 // purely structurally at runtime (`mod` is `any`), so nothing is lost. Do NOT
 // inline this back to a string literal.
-const HORIZON_STORE_PACKAGE: string = "@pilotswarm/horizon-store";
+const HORIZON_STORE_PACKAGE: string = "pilotswarm-horizon-store";
 
 export async function createFactStoreForUrl(
     storeUrl: string,
@@ -362,7 +362,7 @@ export async function createFactStoreForUrl(
         useManagedIdentity?: boolean;
         aadUser?: string;
         /** Provider selector. "pg" (default) = PgFactStore. "horizon" =
-         * dynamically import @pilotswarm/horizon-store's HorizonDBFactStore. */
+         * dynamically import pilotswarm-horizon-store's HorizonDBFactStore. */
         provider?: "pg" | "horizon";
         /** Embedding endpoint for the horizon provider's durable embedder. */
         embedding?: EmbeddingEndpointConfig;
@@ -384,14 +384,14 @@ export async function createFactStoreForUrl(
             mod = await import(HORIZON_STORE_PACKAGE);
         } catch (err: any) {
             throw new Error(
-                "factsProvider 'horizon' requires the @pilotswarm/horizon-store package, " +
+                "factsProvider 'horizon' requires the pilotswarm-horizon-store package, " +
                 `which could not be loaded: ${err?.message || String(err)}. ` +
                 "Install it, or unset enhancedFactsDatabaseUrl / factsProvider to use the default PgFactStore.",
             );
         }
         const HorizonDBFactStore = mod.HorizonDBFactStore;
         if (!HorizonDBFactStore?.create) {
-            throw new Error("@pilotswarm/horizon-store did not export HorizonDBFactStore.create");
+            throw new Error("pilotswarm-horizon-store did not export HorizonDBFactStore.create");
         }
         // Do NOT forward the global `useManagedIdentity` flag into the horizon
         // provider. MI is the auth axis for the duroxide/CMS/PgFactStore layer;
@@ -426,7 +426,7 @@ export async function createFactStoreForUrl(
  * SYMMETRIC peer of `createFactStoreForUrl` — its own URL, its own provider, no
  * `factStore` argument and no instance reuse. Returns `undefined` when no graph
  * URL is configured (⇒ no graph store, no graph tools). The only provider today
- * is `@pilotswarm/horizon-store`'s AGE-backed `HorizonDBGraphStore`, loaded via a
+ * is `pilotswarm-horizon-store`'s AGE-backed `HorizonDBGraphStore`, loaded via a
  * guarded dynamic import so the SDK builds/runs without it.
  */
 export async function createGraphStoreForUrl(
@@ -446,14 +446,14 @@ export async function createGraphStoreForUrl(
         mod = await import(HORIZON_STORE_PACKAGE);
     } catch (err: any) {
         throw new Error(
-            "graphDatabaseUrl requires the @pilotswarm/horizon-store package, " +
+            "graphDatabaseUrl requires the pilotswarm-horizon-store package, " +
             `which could not be loaded: ${err?.message || String(err)}. ` +
             "Install it, or unset graphDatabaseUrl to run without a graph store.",
         );
     }
     const HorizonDBGraphStore = mod.HorizonDBGraphStore;
     if (!HorizonDBGraphStore?.create) {
-        throw new Error("@pilotswarm/horizon-store did not export HorizonDBGraphStore.create");
+        throw new Error("pilotswarm-horizon-store did not export HorizonDBGraphStore.create");
     }
     // As with the facts provider: never forward the global MI flag into the
     // horizon graph store. The graph URL carries its own credentials; horizon

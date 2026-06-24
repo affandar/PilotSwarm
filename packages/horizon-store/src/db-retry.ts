@@ -1,4 +1,4 @@
-// @pilotswarm/horizon-store — retry helpers (HorizonDB preview hardening).
+// pilotswarm-horizon-store — retry helpers (HorizonDB preview hardening).
 //
 // Two distinct retryable classes, each with its own classifier so callers opt
 // into exactly the one that is safe for them:

@@ -648,7 +648,7 @@ export interface PilotSwarmWorkerOptions {
     /**
      * Explicit facts-store provider selector. Default inferred: `"horizon"` iff
      * `enhancedFactsDatabaseUrl` is set, else `"pg"`. Selecting `"horizon"`
-     * dynamically imports `@pilotswarm/horizon-store`; a missing package is a
+    * dynamically imports `pilotswarm-horizon-store`; a missing package is a
      * clear startup error only when horizon is explicitly selected.
      */
     factsProvider?: "pg" | "horizon";

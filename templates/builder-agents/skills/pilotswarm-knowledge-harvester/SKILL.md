@@ -54,7 +54,7 @@ what *search* the harvester and readers also get:
 Read it as two independent decisions:
 
 1. **GraphStore — required.** An open knowledge graph (Apache AGE, via
-   `@pilotswarm/horizon-store`) of entities/edges anchored to fact `scopeKey`
+   `pilotswarm-horizon-store`) of entities/edges anchored to fact `scopeKey`
    evidence. Lights up the graph read tools for everyone and the crawl/graph-write
    surface for the harvester role. The crawl queue itself is a **vanilla-Postgres**
    column on the base `FactStore` (no extension), so the harvest runs even when the

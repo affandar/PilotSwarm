@@ -1,4 +1,4 @@
-// @pilotswarm/horizon-store — LLM-facing agent tools (05-tools-spec).
+// pilotswarm-horizon-store — LLM-facing agent tools (05-tools-spec).
 //
 // Tool names and contracts follow docs/proposals/enhancedfactstore/05-tools-spec.md
 // exactly: `facts_*` over the facts store, `graph_*` over the open graph. Two

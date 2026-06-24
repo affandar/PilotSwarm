@@ -1,4 +1,4 @@
-# `@pilotswarm/horizon-store`
+# `pilotswarm-horizon-store`
 
 Optional HorizonDB-backed providers for PilotSwarm enhanced facts/search and the
 open knowledge graph. The package is published alongside `pilotswarm-sdk` and is
@@ -77,7 +77,7 @@ so it can replace `PgFactStore` anywhere. It **adds** retrieval methods
 in the base behavior changes.
 
 ```js
-import { HorizonFactStore, createFactsTools } from "@pilotswarm/horizon-store";
+import { HorizonFactStore, createFactsTools } from "pilotswarm-horizon-store";
 
 const store = await HorizonFactStore.create({
   connectionString: process.env.HORIZON_DATABASE_URL,

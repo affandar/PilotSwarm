@@ -400,4 +400,4 @@ export { createGraphTools } from "./graph-tools.js";
 
 These are available to applications that need direct fact store access outside of
 the tool layer. The concrete enhanced/graph providers ship separately in
-`@pilotswarm/horizon-store` and are loaded by the worker only when configured.
+`pilotswarm-horizon-store` and are loaded by the worker only when configured.

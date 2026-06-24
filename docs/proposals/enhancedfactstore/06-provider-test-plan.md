@@ -8,7 +8,7 @@
 > canonical):** the graph is a **separate injected `GraphStore`** (provider
 > `HorizonDBGraphStore`), the crawl queue lives on the **base `FactStore`**, the
 > enhanced provider is **`HorizonDBFactStore`**, the package is
-> **`@pilotswarm/horizon-store`**. Read `GraphInterface` as `GraphStore` below.
+> **`pilotswarm-horizon-store`**. Read `GraphInterface` as `GraphStore` below.
 >
 > This document is the *how*: a methodical, unit-test-style execution plan for
 > the full provider surface against a **real HorizonDB**, including the

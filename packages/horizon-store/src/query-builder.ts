@@ -1,4 +1,4 @@
-// @pilotswarm/horizon-store — DB-less core.
+// pilotswarm-horizon-store — DB-less core.
 //
 // This module holds the parts of the read path that do NOT need a database:
 //   - query/namespace fragment normalization (unit-testable)

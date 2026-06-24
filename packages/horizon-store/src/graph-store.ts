@@ -1,4 +1,4 @@
-// @pilotswarm/horizon-store — HorizonDB-backed GraphStore provider.
+// pilotswarm-horizon-store — HorizonDB-backed GraphStore provider.
 //
 // SEPARATE PROVIDER (07 D2): the open knowledge graph is its own injected
 // interface, implemented by its own provider with its own pool and an AGE-only

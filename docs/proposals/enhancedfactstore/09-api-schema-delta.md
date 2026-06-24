@@ -291,7 +291,7 @@ Minimalist assessment:
 
 `main` has no Horizon provider package/schema.
 
-This branch adds `@pilotswarm/horizon-store`, with migrations for:
+This branch adds `pilotswarm-horizon-store`, with migrations for:
 
 - facts table parity with PilotSwarm facts
 - vector column for semantic search

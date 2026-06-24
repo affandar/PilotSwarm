@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.1 — 2026-06-23
+## 0.2.2 — 2026-06-23
 
 ### HorizonDB Enhanced Facts + Graph
 
@@ -35,7 +35,7 @@
 
 ### Packages / Release
 
-- Added `@pilotswarm/horizon-store` to the public npm release workflow alongside
+- Added `pilotswarm-horizon-store` to the public npm release workflow alongside
   `pilotswarm-sdk`, `pilotswarm-cli`, and `pilotswarm-web`.
 - The starter Docker image continues to default to stock PostgreSQL; hybrid
   HorizonDB mode is selected by environment/provider configuration.

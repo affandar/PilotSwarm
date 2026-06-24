@@ -1,6 +1,6 @@
 # EnhancedFactStore — Functional Specification
 
-> Status: Proposal · Incubation package: `@pilotswarm/horizon-store`
+> Status: Proposal · Incubation package: `pilotswarm-horizon-store`
 > Companion docs: [02-api-reference.md](./02-api-reference.md) ·
 > [03-design.md](./03-design.md) · [04-test-spec.md](./04-test-spec.md)
 >

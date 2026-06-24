@@ -11,7 +11,7 @@
 > `HorizonDBGraphStore` + `graphDatabaseUrl`), not bundled into `EnhancedFactStore`;
 > the **crawl queue** (`readUncrawledFacts` / `markFactsCrawled`) lives on the **base
 > `FactStore`**; the enhanced provider is **`HorizonDBFactStore`**; the package is
-> **`@pilotswarm/horizon-store`**. Read `GraphInterface` / `factsStoreProvider` /
+> **`pilotswarm-horizon-store`**. Read `GraphInterface` / `factsStoreProvider` /
 > "one bundled provider" wording below through that shape.
 
 ## 1. Configuration

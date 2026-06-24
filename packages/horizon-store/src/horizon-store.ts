@@ -1,4 +1,4 @@
-// @pilotswarm/horizon-store — HorizonDB-backed EnhancedFactStore provider.
+// pilotswarm-horizon-store — HorizonDB-backed EnhancedFactStore provider.
 //
 // DROP-IN: implements the full FactStore API with identical semantics, so it
 // can replace PgFactStore anywhere a FactStore is expected. It ADDS:

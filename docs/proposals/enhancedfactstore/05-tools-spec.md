@@ -8,7 +8,7 @@
 > canonical):** the graph is a **separate injected `GraphStore`** (provider
 > `HorizonDBGraphStore`), the crawl queue lives on the **base `FactStore`**, the
 > enhanced provider is **`HorizonDBFactStore`**, the package is
-> **`@pilotswarm/horizon-store`**. Read `GraphInterface` as `GraphStore` below.
+> **`pilotswarm-horizon-store`**. Read `GraphInterface` as `GraphStore` below.
 without reading the TypeScript API. Each tool maps 1:1 onto an EnhancedFactStore
 / GraphStore method (02-api-reference). Tool names below use the default
 prefixes `facts_` (facts store) and `graph_` (open graph); a host may rechoose

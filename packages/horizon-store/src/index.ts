@@ -1,4 +1,4 @@
-// @pilotswarm/horizon-store — public exports.
+// pilotswarm-horizon-store — public exports.
 //
 // HorizonDB-backed providers implementing the @pilotswarm/sdk fact/graph
 // contracts. The DB-less core (query-builder, graph-model) and the re-exported

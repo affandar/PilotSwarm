@@ -1,4 +1,4 @@
-// @pilotswarm/horizon-store — vendored migration runner.
+// pilotswarm-horizon-store — vendored migration runner.
 //
 // VENDORED from packages/sdk/src/pg-migrator.ts (advisory-locked, versioned,
 // one transaction per migration). TODO(graduation): merge back into

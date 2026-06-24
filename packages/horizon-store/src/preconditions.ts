@@ -1,4 +1,4 @@
-// @pilotswarm/horizon-store — fail-fast preconditions (01-functional-spec §5.5).
+// pilotswarm-horizon-store — fail-fast preconditions (01-functional-spec §5.5).
 //
 // `initialize()` throws ONE precise, ITEMIZED error naming every missing piece
 // and its fix. No feature flags, no silent fallbacks: lexical is BM25 via

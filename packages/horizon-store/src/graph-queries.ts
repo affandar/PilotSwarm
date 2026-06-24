@@ -1,4 +1,4 @@
-// @pilotswarm/horizon-store — typed Cypher layer (AGE).
+// pilotswarm-horizon-store — typed Cypher layer (AGE).
 //
 // ALL graph access goes through this module (03-design §1: graph access is a
 // typed Cypher layer in TypeScript, not plpgsql-wrapped Cypher). The data

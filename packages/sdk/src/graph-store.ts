@@ -4,7 +4,7 @@
  *
  * The graph is a SEPARATE, independently injected interface — NOT part of
  * `EnhancedFactStore` and NOT a capability on the fact store. The SDK owns this
- * contract; a concrete provider (e.g. @pilotswarm/horizon-store's
+ * contract; a concrete provider (e.g. pilotswarm-horizon-store's
  * `HorizonDBGraphStore`, AGE-backed) implements it. The runtime registers graph
  * tools iff a `graphStore` was injected (`!!graphStore`) — there is no
  * fact-store sniff.

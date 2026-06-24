@@ -4,7 +4,7 @@ Design and specification set for the **EnhancedFactStore** — a strict superset
 PilotSwarm's `FactStore` that adds multi-signal retrieval and a durable
 in-database embedding generator — **and**, as a **separate optional surface**, an
 open knowledge graph (`GraphStore`). First providers: **HorizonDB**
-(`@pilotswarm/horizon-store`) — `HorizonDBFactStore` (enhanced facts) and
+(`pilotswarm-horizon-store`) — `HorizonDBFactStore` (enhanced facts) and
 `HorizonDBGraphStore` (AGE-only graph).
 
 > **Canonical shape: [07-pilotswarm-integration.md](./07-pilotswarm-integration.md).**
@@ -13,7 +13,7 @@ open knowledge graph (`GraphStore`). First providers: **HorizonDB**
 > `GraphStore`** (its own provider `HorizonDBGraphStore` + `graphDatabaseUrl`); the
 > **crawl queue** (`last_crawled_at` / `readUncrawledFacts` / `markFactsCrawled`)
 > lives on the **base `FactStore`**; the enhanced fact provider is
-> **`HorizonDBFactStore`**; the package is **`@pilotswarm/horizon-store`**. Where a
+> **`HorizonDBFactStore`**; the package is **`pilotswarm-horizon-store`**. Where a
 > doc still says `GraphInterface` or implies one bundled provider, read it through
 > that shape.
 

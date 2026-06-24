@@ -1,4 +1,4 @@
-// @pilotswarm/horizon-store — type contracts.
+// pilotswarm-horizon-store — type contracts.
 //
 // These contracts are OWNED BY THE SDK (`pilotswarm-sdk`, enhancedfactstore 07
 // P1). This module re-exports them so the provider's own files keep importing

@@ -252,7 +252,7 @@ backlog. A backlog that only grows means the harvester is not keeping up — inc
 crawl frequency or replica count, or widen each crawl's `facts_read_uncrawled(limit=…)`.
 
 **Run compatible store versions.** All services sharing a HorizonDB run the
-`@pilotswarm/horizon-store` migrations against the shared schema (advisory-locked, so
+`pilotswarm-horizon-store` migrations against the shared schema (advisory-locked, so
 concurrent init is safe). Keep the harvester and reader deployments on compatible
 store versions so their migrations converge.
 

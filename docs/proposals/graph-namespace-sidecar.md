@@ -166,7 +166,7 @@ recovers. It must not delete source facts. `default` cannot be deleted.
 
 ### Provider Implementation Outline
 
-For `@pilotswarm/horizon-store`:
+For `pilotswarm-horizon-store`:
 
 1. Do not stand up a second migration framework. The graph store today runs only
    the AGE bootstrap (0003) inline under an advisory xact lock and tracks no

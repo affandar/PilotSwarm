@@ -596,7 +596,7 @@ change to the default path.
 **imports** the SDK contract instead of mirroring it.
 
 - Move `incubator/horizon-facts` → `packages/horizon-store` (decision 4, §6),
-  rename `@incubator/horizon-facts` → `@pilotswarm/horizon-store` — the package
+  rename `@incubator/horizon-facts` → `pilotswarm-horizon-store` — the package
   ships **both** the (already-split, P0) facts and graph providers, hence
   `horizon-store` not `horizon-facts`.
 - Replace its local `types.ts` contract with `import { … } from "@pilotswarm/sdk"`
@@ -628,7 +628,7 @@ change to the default path.
   `enhancedFactsDatabaseUrl` is set), and `horizonEmbed?` (the
   `EmbeddingEndpointConfig`, sourced from env).
 - In [`createFactStoreForUrl()`](../../../packages/sdk/src/facts-store.ts):
-  resolve provider; for `horizon`, **dynamically import** `@pilotswarm/horizon-store`
+  resolve provider; for `horizon`, **dynamically import** `pilotswarm-horizon-store`
   and `HorizonDBFactStore.create(...)`. A missing package throws a clear, actionable
   error **only when horizon is explicitly selected**.
 - Add the parallel **graph-store constructor** `createGraphStoreForUrl()` (new
@@ -915,7 +915,7 @@ P1 ──▶ P2 ──▶ P3 ──▶ P4 ──▶ P5 ──▶ P8 (optional: k
    simpler (no base-schema change) but base + graph would then full-scan to
    harvest. Override if the base-schema migration is unwanted.
 4. **Package name / location:** **resolved** — the provider package moves to
-   `packages/horizon-store` as `@pilotswarm/horizon-store`, pulled out of
+   `packages/horizon-store` as `pilotswarm-horizon-store`, pulled out of
    `incubator/`. It is named `horizon-store` (not `horizon-facts`) because it ships
    **both** the `HorizonDBFactStore` and `HorizonDBGraphStore` providers. The
    class split + renames are **P0 — done in the incubator** (validated 105/105 on
@@ -930,7 +930,7 @@ P1 ──▶ P2 ──▶ P3 ──▶ P4 ──▶ P5 ──▶ P8 (optional: k
 - **01–06** — the EnhancedFactStore design + the HorizonDB provider, originally
   validated in isolation, **now reconciled to this doc's shape** (separate
   `GraphStore` provider, crawl queue on the base `FactStore`,
-  `HorizonDBFactStore` / `HorizonDBGraphStore` naming, `@pilotswarm/horizon-store`
+  `HorizonDBFactStore` / `HorizonDBGraphStore` naming, `pilotswarm-horizon-store`
   package). Each carries an alignment note pointing here as canonical.
 - **GAP-ANALYSIS "Out of scope (this pass)"** — the exact PilotSwarm-core backlog
   (`scopeKey`/`scopeKeys`, provider injection, `enhancedFactsDatabaseUrl`,

@@ -129,7 +129,7 @@ Canonical provider ids for this proposal:
 | Axis | Provider id | Meaning |
 | --- | --- | --- |
 | runtime | `postgres` | Stock PostgreSQL runtime storage: `PgSessionCatalog`, `PgFactStore`, no graph. |
-| runtime | `horizondb` | Azure HorizonDB-backed runtime storage through `@pilotswarm/horizon-store`. Use the full `horizondb` id; `horizon` is misleading and should not be accepted as canonical. |
+| runtime | `horizondb` | Azure HorizonDB-backed runtime storage through `pilotswarm-horizon-store`. Use the full `horizondb` id; `horizon` is misleading and should not be accepted as canonical. |
 | runtime | `mem0` | Hypothetical managed-memory provider backed by Mem0 APIs, likely composing CMS/duroxide through PostgreSQL. |
 | runtime | `cosmosdb` | Hypothetical Azure Cosmos DB runtime provider, using NoSQL/vector surfaces and optionally Gremlin graph. |
 | duroxide | `postgres` | Duroxide PostgreSQL storage provider. |

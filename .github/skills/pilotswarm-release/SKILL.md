@@ -114,7 +114,7 @@ Treat this as a `pilotswarm`-repo maintainer workflow only. Do not update downst
 PilotSwarm publishes the following packages (in dependency/publish order):
 
 1. `pilotswarm-sdk` — SDK runtime
-2. `@pilotswarm/horizon-store` — optional HorizonDB enhanced facts + graph providers (peer depends on sdk)
+2. `pilotswarm-horizon-store` — optional HorizonDB enhanced facts + graph providers (peer depends on sdk)
 3. `pilotswarm-cli` — terminal UI (depends on sdk; bundles ui-core and ui-react)
 4. `pilotswarm-web` — browser portal (depends on cli; bundles ui-core and ui-react)
 

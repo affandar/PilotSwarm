@@ -8,7 +8,7 @@
 > `graphDatabaseUrl`), not bundled with the enhanced fact provider
 > (`HorizonDBFactStore`); the **crawl queue** (`last_crawled_at` /
 > `readUncrawledFacts` / `markFactsCrawled`) lives on the **base `FactStore`**; the
-> package is **`@pilotswarm/horizon-store`**. The diagrams below still draw one
+> package is **`pilotswarm-horizon-store`**. The diagrams below still draw one
 > bundled provider box — read them as two independent providers over one (or
 > separate) HorizonDB.
 
@@ -21,7 +21,7 @@ flowchart TB
     HA["Harvester agent<br/>(facts KV + graph, separate lifecycles)"]
   end
 
-  subgraph Provider["@pilotswarm/horizon-store (providers)"]
+  subgraph Provider["pilotswarm-horizon-store (providers)"]
     API["HorizonDBFactStore (EnhancedFactStore)<br/>+ HorizonDBGraphStore (GraphStore)"]
     PROCS["Stored-proc layer<br/>(relational + vector)"]
     GRAPH["Typed Cypher layer<br/>(AGE)"]
