@@ -1,11 +1,21 @@
 import type { Tool, SessionConfig } from "@github/copilot-sdk";
 import type { SessionStateStore } from "./session-store.js";
 import type { ReasoningEffort } from "./model-providers.js";
+import type { EmbeddingEndpointConfig } from "./facts-store.js";
+import type { StorageConfig } from "./storage-config.js";
 
 export const SESSION_STATE_MISSING_PREFIX = "SESSION_STATE_MISSING:";
 
 // ─── Turn Result ─────────────────────────────────────────────────
 // What ManagedSession.runTurn() returns to the orchestration.
+
+export type CycleReportStatus = "quiet" | "material" | "blocked";
+
+export interface CycleReport {
+    status: CycleReportStatus;
+    summary?: string;
+    deltas?: string[];
+}
 
 export type TurnAction =
     | { type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; content?: string; events?: CapturedEvent[] }
@@ -28,7 +38,7 @@ type QueuedTurnActionCarrier = {
 };
 
 export type TurnResult =
-    | ({ type: "completed"; content: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "completed"; content: string; events?: CapturedEvent[]; cycleReport?: CycleReport } & QueuedTurnActionCarrier)
     | ({ type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; content?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron"; action: "set"; intervalSeconds: number; reason: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron"; action: "cancel"; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
@@ -65,6 +75,8 @@ export interface TurnOptions {
     bootstrap?: boolean;
     /** Require the Copilot SDK to use a specific tool during this turn. */
     requiredTool?: string;
+    /** Internal: this turn was started by a recurring cron/cron_at timer fire. */
+    cycleOrigin?: "cron" | "cron_at";
     /** Worker-owned inline implementations for non-suspending control tools. */
     controlToolBridge?: {
         spawnAgent(args: {
@@ -136,6 +148,15 @@ export interface SerializableSessionConfig {
      * to enforce knowledge pipeline namespace restrictions.
      */
     agentIdentity?: string;
+    /**
+     * Internal: when `true`, this session holds the app-assigned HARVESTER role
+     * (enhancedfactstore 07 §1.5) and receives the privileged crawl-queue +
+     * graph write/delete tools (only when a graph store is configured). Graph
+     * extraction is app-specific, so the app sets this on its own harvester
+     * agent. The facts-manager receives those tools regardless (dormant), and
+     * agent-tuner never does.
+     */
+    isHarvester?: boolean;
 }
 
 /** Full config — includes non-serializable fields (tools, hooks). Stays in memory. */
@@ -345,6 +366,8 @@ export interface OrchestrationInput {
     systemPrompt?: string;
     /** Internal: pending prompt is a bootstrap message, not a user-authored prompt. */
     bootstrapPrompt?: boolean;
+    /** Internal: the pending prompt was produced by a recurring cron/cron_at timer fire. */
+    cycleOrigin?: "cron" | "cron_at";
     // Thresholds
     /** Seconds above which wait/cron timers proactively dehydrate. Default: 29. */
     dehydrateThreshold?: number;
@@ -412,6 +435,9 @@ export interface OrchestrationInput {
             sessionId: string;
             updateType: string;
             content?: string;
+            cycleOrigin?: "cron" | "cron_at";
+            cycleStatus?: CycleReportStatus;
+            verdict?: ChildSessionVerdict;
             observedAtMs: number;
         }>;
     };
@@ -563,6 +589,13 @@ export interface PilotSwarmWorkerOptions {
     traceWriter?: (msg: string) => void;
 
     /**
+     * Resolved storage config. When supplied, this is the source of truth for
+     * runtime storage and duroxide storage; legacy flat storage fields are used
+     * only as compatibility inputs when this is omitted.
+     */
+    storageConfig?: StorageConfig;
+
+    /**
      * Custom LLM provider (BYOK — Bring Your Own Key).
      * When specified, uses this API endpoint instead of the GitHub Copilot API.
      * Eliminates the need for a GitHub token.
@@ -582,7 +615,7 @@ export interface PilotSwarmWorkerOptions {
 
     /**
      * PostgreSQL schema name for duroxide orchestration tables.
-     * Default: `"duroxide"`. Change this to run multiple independent
+    * Default: `"ps_duroxide"`. Change this to run multiple independent
      * deployments on the same database.
      */
     duroxideSchema?: string;
@@ -600,6 +633,64 @@ export interface PilotSwarmWorkerOptions {
      * fact storage across deployments sharing the same database.
      */
     factsSchema?: string;
+
+    // ─── EnhancedFactStore + GraphStore (optional, enhancedfactstore 07 P3) ──
+
+    /**
+     * Connection URL for an EnhancedFactStore provider (multi-signal search +
+     * durable embedder), e.g. a HorizonDB cluster with pgvector/pg_textsearch/
+     * pg_durable. When set (or `factsProvider: "horizon"`), the worker constructs
+     * the enhanced provider instead of the default `PgFactStore`.
+     * Resolution: `enhancedFactsDatabaseUrl ?? cmsFactsDatabaseUrl ?? store`.
+     * Unset ⇒ today's behaviour (plain `PgFactStore`).
+     */
+    enhancedFactsDatabaseUrl?: string;
+    /**
+     * Explicit facts-store provider selector. Default inferred: `"horizon"` iff
+     * `enhancedFactsDatabaseUrl` is set, else `"pg"`. Selecting `"horizon"`
+     * dynamically imports `@pilotswarm/horizon-store`; a missing package is a
+     * clear startup error only when horizon is explicitly selected.
+     */
+    factsProvider?: "pg" | "horizon";
+    /**
+     * Schema for the enhanced facts store. Default: `"horizon_facts"`.
+     */
+    enhancedFactsSchema?: string;
+    /**
+     * Embedding endpoint for the enhanced provider's durable in-DB embedder.
+     * Sourced from env (`HORIZON_EMBED_*`). When omitted, semantic search returns
+     * nothing for un-embedded facts (lexical still works).
+     */
+    horizonEmbed?: EmbeddingEndpointConfig;
+
+    /**
+     * OPT-IN graph store target (Apache AGE). When set, the worker constructs a
+     * separate `GraphStore` provider (`HorizonDBGraphStore`) and graph tools light
+     * up (`!!graphStore`). May be the SAME URL as `enhancedFactsDatabaseUrl` (one
+     * HorizonDB) or a distinct database. Unset ⇒ no graph store, no graph tools —
+     * never selected implicitly.
+     */
+    graphDatabaseUrl?: string;
+    /**
+     * Schema/graph name for the graph store. Default: `"horizon_graph"`.
+     * Apache AGE creates a Postgres schema named after the graph, so on a shared
+     * database this MUST differ from the facts schema — the worker fails fast if
+     * `graphSchema` collides with the facts schema on the same `graphDatabaseUrl`.
+     */
+    graphSchema?: string;
+    /**
+     * Graph-owned relational schema for namespace registry discovery metadata.
+     * Default (provider): `${graphSchema}_registry`. Must differ from
+     * `graphSchema`, because Apache AGE owns a Postgres schema named after the
+     * graph. Env: `HORIZON_GRAPH_REGISTRY_SCHEMA`.
+     */
+    graphRegistrySchema?: string;
+    /**
+     * TTL (ms) for graph namespace list caching inside the graph provider.
+     * Default 60000; set 0 to disable caching. Env:
+     * `HORIZON_NAMESPACE_CACHE_TTL_MS`.
+     */
+    graphNamespaceCacheTtlMs?: number;
 
     // ─── Building Blocks ─────────────────────────────────────
     // Workers own the building blocks. Clients are thin proxies.
@@ -686,6 +777,12 @@ export interface PilotSwarmClientOptions {
      */
     traceWriter?: (msg: string) => void;
 
+    /**
+     * Resolved storage config. Must match the worker. When supplied, this is
+     * the source of truth for CMS/facts and duroxide storage.
+     */
+    storageConfig?: StorageConfig;
+
     /** Seconds between periodic checkpoints (blob upload without losing session pin). -1 = disabled. */
     checkpointInterval?: number;
 
@@ -694,7 +791,7 @@ export interface PilotSwarmClientOptions {
 
     /**
      * PostgreSQL schema name for duroxide orchestration tables.
-     * Default: `"duroxide"`. Must match the worker's `duroxideSchema`.
+    * Default: `"ps_duroxide"`. Must match the worker's `duroxideSchema`.
      */
     duroxideSchema?: string;
 
@@ -709,6 +806,18 @@ export interface PilotSwarmClientOptions {
      * Default: `"pilotswarm_facts"`. Must match the worker's `factsSchema`.
      */
     factsSchema?: string;
+
+    /**
+     * EnhancedFactStore connection URL (enhancedfactstore 07 P3). Must match the
+     * worker's `enhancedFactsDatabaseUrl` so the client's facts cleanup targets
+     * the same store. Unset ⇒ facts live on `cmsFactsDatabaseUrl ?? store`.
+     */
+    enhancedFactsDatabaseUrl?: string;
+    /** Facts provider selector — must match the worker. Inferred from
+     * `enhancedFactsDatabaseUrl` when omitted. */
+    factsProvider?: "pg" | "horizon";
+    /** Enhanced facts schema — must match the worker's `enhancedFactsSchema`. */
+    enhancedFactsSchema?: string;
 
     /**
      * Session creation policy. Typically set by the worker and forwarded

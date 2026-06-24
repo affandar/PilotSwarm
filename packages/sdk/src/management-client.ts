@@ -24,8 +24,7 @@ import type {
     SessionOwnerInfo,
     SessionSummaryState,
 } from "./types.js";
-import type { SessionCatalogProvider, SessionRow, TopEventEmitterRow } from "./cms.js";
-import { PgSessionCatalogProvider } from "./cms.js";
+import type { SessionCatalog, SessionRow, TopEventEmitterRow } from "./cms.js";
 import type {
     SessionMetricSummary,
     SessionTreeStats,
@@ -34,14 +33,22 @@ import type {
     SkillUsageRow,
     SessionTreeSkillUsage,
     FleetSkillUsage,
+    RetrievalUsageRow,
+    SessionTreeRetrievalUsage,
+    FleetRetrievalUsage,
+    GraphNodeUsageKind,
+    GraphNodeUsageRow,
+    FleetGraphNodeUsage,
+    GraphEdgeSearchUsageRow,
     UserProfile,
     UserPrincipal,
     SessionGroupRow,
     ChildOutcomeRow,
 } from "./cms.js";
-import type { FactStore, FactsStatsRow } from "./facts-store.js";
-import { createFactStoreForUrl } from "./facts-store.js";
-import { createDuroxidePostgresProvider } from "./duroxide-provider-factory.js";
+import type { FactStore, FactsStatsRow, FactsTombstoneStats } from "./facts-store.js";
+import { isEnhancedFactStore } from "./facts-store.js";
+import { resolveStorageConfig, type StorageConfig } from "./storage-config.js";
+import { getDuroxideStorageProvider, getRuntimeStorageProvider } from "./storage-providers.js";
 import { SessionDumper } from "./session-dumper.js";
 import { loadModelProviders, type ModelProviderRegistry, type ModelDescriptor, type ReasoningEffort } from "./model-providers.js";
 import { deriveStatusFromCmsAndRuntime, shouldSyncCompletedStatus, shouldSyncFailedStatus } from "./session-status.js";
@@ -57,9 +64,8 @@ import {
 // duroxide is CommonJS — use createRequire for ESM compatibility
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
-const { SqliteProvider, PostgresProvider, Client } = require("duroxide");
+const { SqliteProvider, Client } = require("duroxide");
 
-const DEFAULT_DUROXIDE_SCHEMA = "duroxide";
 const STATUS_WAIT_SLICE_MS = 10_000;
 const MAX_SESSION_TITLE_LENGTH = 60;
 const SESSION_COMMAND_SETTLE_TIMEOUT_MS = 65_000;
@@ -338,12 +344,21 @@ export interface ExecutionHistoryEvent {
 export interface PilotSwarmManagementClientOptions {
     /** PostgreSQL connection string. PilotSwarm requires PostgreSQL for CMS and facts. */
     store: string;
-    /** PostgreSQL schema for duroxide tables. Default: "duroxide". */
+    /** Resolved storage config. Must match the worker when supplied. */
+    storageConfig?: StorageConfig;
+    /** PostgreSQL schema for duroxide tables. Default: "ps_duroxide". */
     duroxideSchema?: string;
     /** PostgreSQL schema for CMS tables. Default: "copilot_sessions". */
     cmsSchema?: string;
     /** PostgreSQL schema for durable facts. Default: "pilotswarm_facts". */
     factsSchema?: string;
+    /** EnhancedFactStore URL (07 P3) — must match the worker so facts reads/
+     * stats target the same store. Unset ⇒ facts on cmsFactsDatabaseUrl ?? store. */
+    enhancedFactsDatabaseUrl?: string;
+    /** Facts provider selector — must match the worker. */
+    factsProvider?: "pg" | "horizon";
+    /** Enhanced facts schema — must match the worker's enhancedFactsSchema. */
+    enhancedFactsSchema?: string;
     /** Path to model_providers.json. Auto-discovers if not set. */
     modelProvidersPath?: string;
     /** App plugin dirs used to discover app-defined system agents for restart operations. */
@@ -384,7 +399,7 @@ export interface PilotSwarmManagementClientOptions {
 
 export class PilotSwarmManagementClient {
     private config: PilotSwarmManagementClientOptions;
-    private _catalog: SessionCatalogProvider | null = null;
+    private _catalog: SessionCatalog | null = null;
     private _factStore: FactStore | null = null;
     private _duroxideClient: any = null;
     private _modelProviders: ModelProviderRegistry | null = null;
@@ -402,6 +417,8 @@ export class PilotSwarmManagementClient {
     async start(): Promise<void> {
         if (this._started) return;
         const store = this.config.store;
+        const storage = resolveStorageConfig({ options: this.config });
+        const runtimeStorageProvider = getRuntimeStorageProvider(storage.runtime.provider);
         const _trace = this.config.traceWriter ?? (() => {});
 
         // CMS + facts may use a separate URL when running with AAD/MI
@@ -409,48 +426,28 @@ export class PilotSwarmManagementClient {
         // display name). Mirrors PilotSwarmClient.start(). The duroxide
         // orchestration store honours the same MI switch via
         // duroxide-node's native Entra path.
-        const cmsFactsUrl = this.config.cmsFactsDatabaseUrl ?? store;
-        const useMi = this.config.useManagedIdentity ?? false;
-        const aadUser = this.config.aadDbUser;
-
         // Create duroxide client
         let provider: any;
         if (store === "sqlite::memory:") provider = SqliteProvider.inMemory();
         else if (store.startsWith("sqlite://")) provider = SqliteProvider.open(store);
-        else if (store.startsWith("postgres://") || store.startsWith("postgresql://")) {
+        else if (storage.duroxide.url.startsWith("postgres://") || storage.duroxide.url.startsWith("postgresql://")) {
             _trace("[mgmt] duroxide provider connect start...");
-            provider = await createDuroxidePostgresProvider(
-                PostgresProvider,
-                store,
-                this.config.duroxideSchema ?? DEFAULT_DUROXIDE_SCHEMA,
-                { useManagedIdentity: useMi, aadUser },
-            );
+            provider = await getDuroxideStorageProvider(storage.duroxide.provider).createDuroxideProvider(storage.duroxide);
             _trace("[mgmt] duroxide provider connect done");
         } else {
-            throw new Error(`Unsupported store URL: ${store}`);
+            throw new Error(`Unsupported duroxide store URL: ${storage.duroxide.url}`);
         }
         this._duroxideClient = new Client(provider);
 
         // Create CMS catalog
-        if (cmsFactsUrl.startsWith("postgres://") || cmsFactsUrl.startsWith("postgresql://")) {
-            _trace("[mgmt] CMS create start...");
-            this._catalog = await PgSessionCatalogProvider.create(
-                cmsFactsUrl,
-                this.config.cmsSchema,
-                { useManagedIdentity: useMi, aadUser },
-            );
-            _trace("[mgmt] CMS initialize start...");
-            await this._catalog.initialize();
-            _trace("[mgmt] CMS initialize done");
-        }
+        _trace("[mgmt] CMS create start...");
+        this._catalog = await runtimeStorageProvider.createSessionCatalog(storage.runtime);
+        _trace("[mgmt] CMS initialize start...");
+        await this._catalog.initialize();
+        _trace("[mgmt] CMS initialize done");
 
         _trace("[mgmt] facts create start...");
-        this._factStore = await createFactStoreForUrl(
-            cmsFactsUrl,
-            this.config.factsSchema,
-            { useManagedIdentity: useMi, aadUser },
-        );
-        _trace("[mgmt] facts initialize start...");
+        this._factStore = await runtimeStorageProvider.createFactStore(storage.runtime);
         await this._factStore.initialize();
         _trace("[mgmt] facts initialize done");
 
@@ -1185,6 +1182,24 @@ export class PilotSwarmManagementClient {
     }
 
     /**
+     * Graph-search forensics (enhancedfactstore 07 P4): the `graph.searched`
+     * events a session emitted — what graph queries it ran and how many results
+     * each returned. Powers the agent-tuner graph-debug skill. Reads the latest
+     * page of session events and filters to `graph.searched`.
+     */
+    async getSessionGraphSearches(sessionId: string, limit?: number): Promise<Array<{ seq: number; at: string; kind: string; query: unknown; resultCount: number }>> {
+        this._ensureStarted();
+        // Pull a generous page and filter; graph searches are sparse vs. all events.
+        const events = await this._catalog!.getSessionEvents(sessionId, undefined, limit ?? 500);
+        return events
+            .filter((e: any) => e.eventType === "graph.searched")
+            .map((e: any) => {
+                const d = e.data ?? {};
+                return { seq: e.seq, at: d.at ?? "", kind: d.kind ?? "", query: d.query, resultCount: d.resultCount ?? 0 };
+            });
+    }
+
+    /**
      * Get a provider-capped older page before a sequence number, ordered by seq.
      * Call repeatedly with the oldest returned seq to drain complete history.
      */
@@ -1432,6 +1447,42 @@ export class PilotSwarmManagementClient {
         return this._catalog!.getFleetSkillUsage(opts);
     }
 
+    /** Get per-session retrieval usage for enhanced facts, learned skills, and graph reads. */
+    async getSessionRetrievalUsage(sessionId: string, opts?: { since?: Date }): Promise<RetrievalUsageRow[]> {
+        this._ensureStarted();
+        return this._catalog!.getSessionRetrievalUsage(sessionId, opts);
+    }
+
+    /** Get retrieval usage rolled up across the spawn tree rooted at the given session. */
+    async getSessionTreeRetrievalUsage(sessionId: string, opts?: { since?: Date }): Promise<SessionTreeRetrievalUsage> {
+        this._ensureStarted();
+        return this._catalog!.getSessionTreeRetrievalUsage(sessionId, opts);
+    }
+
+    /** Get fleet-wide retrieval usage broken down by agent and operation. */
+    async getFleetRetrievalUsage(opts?: { since?: Date; includeDeleted?: boolean }): Promise<FleetRetrievalUsage> {
+        this._ensureStarted();
+        return this._catalog!.getFleetRetrievalUsage(opts);
+    }
+
+    /** Get exact graph node-key search/load usage for one session. */
+    async getSessionGraphNodeUsage(sessionId: string, opts?: { since?: Date; limit?: number; nodeKeyLike?: string; kind?: GraphNodeUsageKind }): Promise<GraphNodeUsageRow[]> {
+        this._ensureStarted();
+        return this._catalog!.getSessionGraphNodeUsage(sessionId, opts);
+    }
+
+    /** Get exact graph node-key search/load usage across the fleet. */
+    async getFleetGraphNodeUsage(opts?: { since?: Date; includeDeleted?: boolean; limit?: number; nodeKeyLike?: string; kind?: GraphNodeUsageKind }): Promise<FleetGraphNodeUsage> {
+        this._ensureStarted();
+        return this._catalog!.getFleetGraphNodeUsage(opts);
+    }
+
+    /** Get requested graph edge-search shapes for one session. */
+    async getSessionGraphEdgeSearchUsage(sessionId: string, opts?: { since?: Date; limit?: number }): Promise<GraphEdgeSearchUsageRow[]> {
+        this._ensureStarted();
+        return this._catalog!.getSessionGraphEdgeSearchUsage(sessionId, opts);
+    }
+
     /**
      * Per-session non-shared facts, bucketed by knowledge namespace
      * (`skills` | `asks` | `intake` | `config` | `(other)`). Counts and
@@ -1490,6 +1541,43 @@ export class PilotSwarmManagementClient {
             totalCount: rows.reduce((acc, r) => acc + r.factCount, 0),
             totalBytes: rows.reduce((acc, r) => acc + r.totalValueBytes, 0),
         };
+    }
+
+    /**
+     * Soft-deleted facts waiting for graph reconciliation or TTL purge.
+     * Used by operator/tuner inspect tools to spot crawler lag before the TTL
+     * backstop strands graph evidence.
+     */
+    async getFactsTombstoneStats(opts?: { ttlSeconds?: number }): Promise<FactsTombstoneStats> {
+        this._ensureStarted();
+        if (!this._factStore) {
+            return { pendingTotal: 0, unreconciled: 0, ttlBlocked: 0, oldestUnreconciledAgeSeconds: null, reconciledUnswept: 0 };
+        }
+        return this._factStore.getFactsTombstoneStats(opts?.ttlSeconds);
+    }
+
+    /**
+     * Durable embedder status (enhancedfactstore 07 P5): whether the in-DB
+     * batch-embedding loop is running for the configured EnhancedFactStore.
+     * Returns `{ supported: false }` for the base PgFactStore (no embedder) or a
+     * store that was not provisioned for embedding. Powers the agent-tuner
+     * `read_embedder_status` tool and operator dashboards — semantic/hybrid
+     * search only returns semantic hits while this is running.
+     */
+    async getEmbedderStatus(): Promise<{ supported: boolean; running?: boolean; instanceId?: string; status?: string }> {
+        this._ensureStarted();
+        // Gate ONLY on whether this is an EnhancedFactStore (which guarantees an
+        // embedderStatus() method). Do NOT gate on construction-time
+        // `capabilities.embedder`: this control-plane store may be built without
+        // an embedding endpoint while the durable loop is configured + running
+        // for the schema by the workers. embedderStatus() reads the durable
+        // df.instances state, so it reports the truth regardless of how THIS
+        // store instance was constructed.
+        if (!this._factStore || !isEnhancedFactStore(this._factStore)) {
+            return { supported: false };
+        }
+        const st = await this._factStore.embedderStatus();
+        return { supported: true, running: st.running, instanceId: st.instanceId, status: st.status };
     }
 
     async pruneDeletedSummaries(olderThan: Date): Promise<number> {

@@ -395,12 +395,15 @@ export function usePortalAuth(authConfig) {
 
     const getAccessToken = React.useCallback(async () => {
         if (!state.authEnabled) return null;
-        if (state.accessToken) return state.accessToken;
         if (!providerRef.current) {
             throw new Error(`Unsupported portal auth provider "${state.provider}"`);
         }
+        // Delegate straight to the provider so MSAL can silently refresh the
+        // access token from its refresh token. Returning the token cached in
+        // React state here would pin the session to the original ~1h
+        // access-token lifetime and force a logout the moment it expired.
         return providerRef.current.getAccessToken();
-    }, [state.accessToken, state.authEnabled, state.provider]);
+    }, [state.authEnabled, state.provider]);
 
     return {
         ...state,

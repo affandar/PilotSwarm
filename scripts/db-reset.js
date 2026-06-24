@@ -20,9 +20,11 @@ if (!DATABASE_URL) {
     console.error("ERROR: DATABASE_URL not set. Use --env-file=.env");
     process.exit(1);
 }
-const DUROXIDE_SCHEMA = process.env.DUROXIDE_SCHEMA || "duroxide";
-const CMS_SCHEMA = process.env.CMS_SCHEMA || "copilot_sessions";
-const FACTS_SCHEMA = process.env.FACTS_SCHEMA || "pilotswarm_facts";
+const DUROXIDE_SCHEMA = process.env.PILOTSWARM_DUROXIDE_SCHEMA || process.env.DUROXIDE_SCHEMA || "ps_duroxide";
+const LEGACY_DUROXIDE_SCHEMA = "duroxide";
+const DUROXIDE_SCHEMAS = [DUROXIDE_SCHEMA];
+const CMS_SCHEMA = process.env.PILOTSWARM_CMS_SCHEMA || process.env.CMS_SCHEMA || "copilot_sessions";
+const FACTS_SCHEMA = process.env.PILOTSWARM_FACTS_SCHEMA || process.env.FACTS_SCHEMA || "pilotswarm_facts";
 
 const skipConfirm = process.argv.includes("--yes") || process.argv.includes("-y");
 
@@ -32,7 +34,10 @@ const displayUrl = DATABASE_URL.replace(/:\/\/([^:]+):[^@]+@/, "://$1:***@");
 console.log(`\n🗑️  Database Reset`);
 console.log(`   Target: ${displayUrl}\n`);
 console.log(`   This will DROP:`);
-console.log(`     • Schema "${DUROXIDE_SCHEMA}"         (orchestrations, queues, timers, history)`);
+console.log(`     • Schema(s) ${DUROXIDE_SCHEMAS.map((schema) => `"${schema}"`).join(", ")}         (orchestrations, queues, timers, history)`);
+if (DUROXIDE_SCHEMA !== LEGACY_DUROXIDE_SCHEMA) {
+    console.log(`     • Legacy schema "${LEGACY_DUROXIDE_SCHEMA}" if it is not owned by pg_durable`);
+}
 console.log(`     • Schema "${CMS_SCHEMA}"  (sessions, events)`);
 console.log(`     • Schema "${FACTS_SCHEMA}"   (durable facts)\n`);
 
@@ -62,11 +67,32 @@ function quoteIdent(value) {
     return `"${String(value).replace(/"/g, "\"\"")}"`;
 }
 
+async function schemaOwnedByPgDurable(schemaName) {
+    const { rows } = await pool.query(`
+        SELECT EXISTS (
+            SELECT 1
+            FROM pg_extension e
+            JOIN pg_namespace n ON n.oid = e.extnamespace
+            WHERE e.extname = 'pg_durable'
+              AND n.nspname = $1
+        ) AS owned
+    `, [schemaName]);
+    return Boolean(rows[0]?.owned);
+}
+
 try {
     console.log("\n   Dropping schemas...");
 
     await pool.query(`DROP SCHEMA IF EXISTS ${quoteIdent(DUROXIDE_SCHEMA)} CASCADE`);
     console.log(`   ✅ ${DUROXIDE_SCHEMA}`);
+    if (DUROXIDE_SCHEMA !== LEGACY_DUROXIDE_SCHEMA) {
+        if (await schemaOwnedByPgDurable(LEGACY_DUROXIDE_SCHEMA)) {
+            console.log(`   ↪ skipped ${LEGACY_DUROXIDE_SCHEMA} (owned by pg_durable)`);
+        } else {
+            await pool.query(`DROP SCHEMA IF EXISTS ${quoteIdent(LEGACY_DUROXIDE_SCHEMA)} CASCADE`);
+            console.log(`   ✅ ${LEGACY_DUROXIDE_SCHEMA}`);
+        }
+    }
 
     await pool.query(`DROP SCHEMA IF EXISTS ${quoteIdent(CMS_SCHEMA)} CASCADE`);
     console.log(`   ✅ ${CMS_SCHEMA}`);

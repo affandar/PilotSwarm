@@ -1,4 +1,3 @@
-import { createDuroxidePostgresProvider } from "./duroxide-provider-factory.js";
 import { SessionManager } from "./session-manager.js";
 import { SessionBlobStore, createSessionBlobStore } from "./blob-store.js";
 import { FilesystemArtifactStore, FilesystemSessionStore, type ArtifactStore, type SessionStateStore } from "./session-store.js";
@@ -7,14 +6,17 @@ import {
     DURABLE_SESSION_ORCHESTRATION_NAME,
     DURABLE_SESSION_ORCHESTRATION_REGISTRY,
 } from "./orchestration-registry.js";
-import { PgSessionCatalogProvider } from "./cms.js";
-import type { SessionCatalogProvider } from "./cms.js";
+import { PgSessionCatalog } from "./cms.js";
+import type { SessionCatalog } from "./cms.js";
 import { loadAgentFiles } from "./agent-loader.js";
 import { startSystemAgents } from "./system-agents.js";
 import { loadMcpConfig } from "./mcp-loader.js";
 import { loadModelProviders, type ModelProviderRegistry } from "./model-providers.js";
 import { createArtifactTools } from "./artifact-tools.js";
-import { createFactStoreForUrl, PgFactStore, type FactStore } from "./facts-store.js";
+import { isEnhancedFactStore, PgFactStore, type FactStore } from "./facts-store.js";
+import type { GraphStore } from "./graph-store.js";
+import { resolveStorageConfig, type StorageConfig } from "./storage-config.js";
+import { getDuroxideStorageProvider, getRuntimeStorageProvider } from "./storage-providers.js";
 import { createSweeperTools } from "./sweeper-tools.js";
 import { createResourceManagerTools } from "./resourcemgr-tools.js";
 import { composeSystemPrompt, mergePromptSections } from "./prompt-layering.js";
@@ -33,9 +35,8 @@ import { createRequire } from "node:module";
 
 const __sdkDir = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
-const { SqliteProvider, PostgresProvider, Runtime, Client } = require("duroxide");
+const { SqliteProvider, Runtime, Client } = require("duroxide");
 
-const DEFAULT_DUROXIDE_SCHEMA = "duroxide";
 const DEFAULT_SESSION_STATE_DIR = path.join(os.homedir(), ".copilot", "session-state");
 const DEFAULT_ORCHESTRATION_CONCURRENCY = 2;
 const DEFAULT_WORKER_CONCURRENCY = 2;
@@ -71,13 +72,13 @@ export { buildSystemAgentBootstrapPayload } from "./system-agents.js";
  * facts without needing `shared=true`.
  *
  * Exported so tests can verify spawn-tree visibility behavior with a
- * mock `SessionCatalogProvider`.
+ * mock `SessionCatalog`.
  *
  * @internal
  */
 export async function resolveSpawnTreeSessionIds(
     sessionId: string,
-    catalog: Pick<SessionCatalogProvider, "getSession" | "getDescendantSessionIds">,
+    catalog: Pick<SessionCatalog, "getSession" | "getDescendantSessionIds">,
 ): Promise<string[]> {
     const seen = new Set([sessionId]);
     const lineage: string[] = [];
@@ -115,16 +116,17 @@ export class PilotSwarmWorker {
     private blobStore: SessionBlobStore | null = null;
     private artifactStore: ArtifactStore | null = null;
     private factStore: FactStore | null = null;
+    private graphStore: GraphStore | null = null;
     private runtime: any = null;
     private _provider: any = null;
-    private _catalog: SessionCatalogProvider | null = null;
+    private _catalog: SessionCatalog | null = null;
     private _started = false;
     /** Worker-level tool registry — name → Tool. */
     private toolRegistry = new Map<string, Tool<any>>();
     /** Loaded skill directories from plugins + direct config. */
     private _loadedSkillDirs: string[] = [];
     /** Raw loaded user-creatable agent configs from plugins + direct config. */
-    private _rawLoadedAgents: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; namespace?: string; promptLayerKind?: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" }> = [];
+    private _rawLoadedAgents: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; namespace?: string; harvester?: boolean; promptLayerKind?: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" }> = [];
     /** Loaded agent configs from plugins + direct config, composed for SDK customAgents. */
     private _loadedAgents: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; namespace?: string }> = [];
     /** Loaded MCP server configs from plugins + direct config. */
@@ -258,7 +260,7 @@ export class PilotSwarmWorker {
     }
 
     /** Session catalog (CMS) — available when store is PostgreSQL. */
-    get catalog(): SessionCatalogProvider | null {
+    get catalog(): SessionCatalog | null {
         return this._catalog;
     }
 
@@ -304,12 +306,14 @@ export class PilotSwarmWorker {
 
         const trace = this.config.traceWriter ?? (() => {});
         const store = this.config.store;
+        const storage = resolveStorageConfig({ options: this.config });
+        const runtimeStorageProvider = getRuntimeStorageProvider(storage.runtime.provider);
         const orchestrationConcurrency = parsePositiveInt(process.env.PILOTSWARM_ORCHESTRATION_CONCURRENCY)
             ?? DEFAULT_ORCHESTRATION_CONCURRENCY;
         const workerConcurrency = parsePositiveInt(process.env.PILOTSWARM_WORKER_CONCURRENCY)
             ?? DEFAULT_WORKER_CONCURRENCY;
         const cmsPoolMax = parsePositiveInt(process.env.PILOTSWARM_CMS_PG_POOL_MAX)
-            ?? PgSessionCatalogProvider.DEFAULT_POOL_MAX;
+            ?? PgSessionCatalog.DEFAULT_POOL_MAX;
         const factsPoolMax = parsePositiveInt(process.env.PILOTSWARM_FACTS_PG_POOL_MAX)
             ?? PgFactStore.DEFAULT_POOL_MAX;
 
@@ -317,7 +321,7 @@ export class PilotSwarmWorker {
             process.env.DUROXIDE_PG_POOL_MAX = String(DEFAULT_DUROXIDE_PG_POOL_MAX);
         }
 
-        this._provider = await this._createProvider();
+        this._provider = await this._createProvider(storage);
 
         // Initialize CMS catalog and facts store.
         // CMS + facts can use a separate URL when running with AAD/MI
@@ -327,33 +331,80 @@ export class PilotSwarmWorker {
         // (created above in `_createProvider`) honours the same MI
         // switch via duroxide-node's native Entra path; CMS/facts go
         // through the pg-pool factory using `DefaultAzureCredential`.
-        const cmsFactsUrl = this.config.cmsFactsDatabaseUrl ?? store;
-        const useMi = this.config.useManagedIdentity ?? false;
-        const aadUser = this.config.aadDbUser;
-        if (cmsFactsUrl.startsWith("postgres://") || cmsFactsUrl.startsWith("postgresql://")) {
+        try {
+            this._catalog = await runtimeStorageProvider.createSessionCatalog(storage.runtime);
+            await this._catalog.initialize();
+        } catch (err) {
+            console.error("[PilotSwarmWorker] CMS initialization failed:", err);
+            this._catalog = null;
+        }
+        // ── Facts store: base PgFactStore (default) or an EnhancedFactStore
+        //    provider (enhancedfactstore 07 P3). Shared resolver keeps the
+        //    worker/client/management in lockstep.
+        this.factStore = await runtimeStorageProvider.createFactStore(storage.runtime);
+        await this.factStore.initialize();
+        const enhancedFactStore = runtimeStorageProvider.getEnhancedFactStore?.(this.factStore)
+            ?? (isEnhancedFactStore(this.factStore) ? this.factStore : undefined);
+
+        // ── Durable embedder lifecycle (enhancedfactstore 07 P5) ────────────
+        //   When horizonEmbed is configured AND the store is an enhanced store
+        //   that was provisioned for embedding, ensure the single eternal in-DB
+        //   embed loop is running. The provider already configures + starts it
+        //   idempotently inside initialize() (advisory-locked → one loop per
+        //   schema across all workers); here the worker OBSERVES that state and
+        //   ENSURES recovery if the loop is somehow not running, logging the
+        //   outcome for operators. This is lifecycle control only — the loop
+        //   itself runs inside HorizonDB (pg_durable), never inline in
+        //   orchestration (determinism boundary).
+        //
+        //   It is INTENTIONAL that worker shutdown does NOT stop the loop (see
+        //   stop()): the loop is a SHARED durable resource. Stopping it on one
+        //   worker's shutdown would halt embedding for the whole fleet, and a
+        //   rolling restart would leave it stopped. It is started idempotently
+        //   and only ever stopped by an explicit operator action.
+        if (storage.runtime.embedding && enhancedFactStore?.capabilities.embedder) {
             try {
-                this._catalog = await PgSessionCatalogProvider.create(
-                    cmsFactsUrl,
-                    this.config.cmsSchema,
-                    { useManagedIdentity: useMi, aadUser },
-                );
-                await this._catalog.initialize();
+            let st = await enhancedFactStore.embedderStatus();
+                if (!st.running) {
+                    // Recovery: the provider's boot start did not take (or a
+                    // prior loop was stopped). startEmbedder is idempotent +
+                    // advisory-locked, so this converges on exactly one loop.
+                    st = await enhancedFactStore.startEmbedder();
+                }
+                trace(`[worker] durable embedder: running=${st.running}${st.instanceId ? `, instance=${st.instanceId}` : ""}`);
             } catch (err) {
-                console.error("[PilotSwarmWorker] CMS initialization failed:", err);
-                this._catalog = null;
+                // Non-fatal: without the embedder, semantic/hybrid search simply
+                // degrades to lexical (provider hybrid-degrade). Do not take the
+                // worker down over an embedder hiccup.
+                console.error("[PilotSwarmWorker] durable embedder start/verify failed (semantic search degraded to lexical):", err);
             }
         }
-        this.factStore = await createFactStoreForUrl(
-            cmsFactsUrl,
-            this.config.factsSchema,
-            { useManagedIdentity: useMi, aadUser },
-        );
-        await this.factStore.initialize();
+
+        // ── Graph store: SEPARATE, opt-in provider (07 D2). Present iff
+        //    graphDatabaseUrl is configured. Never selected implicitly.
+        if (storage.runtime.graph?.enabled) {
+            let candidate: GraphStore | undefined;
+            try {
+                candidate = await runtimeStorageProvider.createGraphStore?.(storage.runtime);
+                if (candidate) await candidate.initialize();
+                this.graphStore = candidate ?? null;
+            } catch (err) {
+                // A failed graph init disables graph tools without taking down
+                // facts — graph is optional and isolated. Close the half-open
+                // pool the provider opened before initialize() threw.
+                await candidate?.close().catch(() => {});
+                this.graphStore = null;
+                console.error("[PilotSwarmWorker] graph store initialization failed (graph tools disabled):", err);
+            }
+        }
+
         trace(
-            `[worker] postgres pools: duroxidePgPoolMax=${process.env.DUROXIDE_PG_POOL_MAX ?? "(unset)"}, ` +
+            `[worker] runtime storage provider=${storage.runtime.provider}, enhancedFacts=${enhancedFactStore ? "on" : "off"}, graph=${this.graphStore ? "on" : "off"}; ` +
+            `postgres pools: duroxidePgPoolMax=${process.env.DUROXIDE_PG_POOL_MAX ?? "(unset)"}, ` +
             `cmsPoolMax=${cmsPoolMax}, factsPoolMax=${factsPoolMax}`,
         );
         this.sessionManager.setFactStore(this.factStore);
+        this.sessionManager.setGraphStore(this.graphStore);
         if (this._catalog) {
             this.sessionManager.setSessionCatalog(this._catalog);
             this.sessionManager.setLineageSessionLookup(async (sessionId) => (
@@ -396,11 +447,18 @@ export class PilotSwarmWorker {
             this.config.githubToken,
             this._catalog,
             this._provider,
-            store,
-            this.config.cmsSchema,
+            storage.duroxide.url,
+            storage.runtime.cmsSchema,
             {
-                duroxideSchema: this.config.duroxideSchema,
-                factsSchema: this.config.factsSchema,
+                storageConfig: storage,
+                duroxideSchema: storage.duroxide.schema,
+                factsSchema: storage.runtime.factsSchema,
+                cmsFactsDatabaseUrl: storage.runtime.sessionCatalogUrl ?? storage.runtime.url,
+                enhancedFactsDatabaseUrl: storage.runtime.factStoreUrl,
+                factsProvider: storage.runtime.provider === "horizondb" ? "horizon" : "pg",
+                enhancedFactsSchema: storage.runtime.provider === "horizondb" ? storage.runtime.factsSchema : undefined,
+                useManagedIdentity: storage.runtime.useManagedIdentity,
+                aadDbUser: storage.runtime.aadDbUser,
             },
             this._loadedSystemAgents,
             this._sessionPolicy,
@@ -425,8 +483,8 @@ export class PilotSwarmWorker {
                 catalog: this._catalog,
                 duroxideClient: sweeperClient,
                 factStore: this.factStore,
-                duroxideSchema: this.config.duroxideSchema,
-                storeUrl: this.config.store,
+                duroxideSchema: storage.duroxide.schema,
+                storeUrl: storage.duroxide.url,
             });
             this.registerTools(sweeperTools);
         }
@@ -444,8 +502,8 @@ export class PilotSwarmWorker {
                 catalog: this._catalog,
                 duroxideClient: rmClient,
                 blobStore: this.blobStore,
-                duroxideSchema: this.config.duroxideSchema,
-                cmsSchema: this.config.cmsSchema,
+                duroxideSchema: storage.duroxide.schema,
+                cmsSchema: storage.runtime.cmsSchema,
             });
             this.registerTools(rmTools);
         }
@@ -545,8 +603,18 @@ export class PilotSwarmWorker {
             this._catalog = null;
         }
         if (this.factStore) {
+            // NOTE: deliberately NOT calling stopEmbedder() here. The durable
+            // embed loop is a SHARED, fleet-wide resource (one per schema inside
+            // HorizonDB via pg_durable); stopping it on a single worker's
+            // shutdown would halt embedding for every other worker and survive a
+            // rolling restart as a stopped loop. It is started idempotently on
+            // boot and only ever stopped by an explicit operator action.
             try { await this.factStore.close(); } catch {}
             this.factStore = null;
+        }
+        if (this.graphStore) {
+            try { await this.graphStore.close(); } catch {}
+            this.graphStore = null;
         }
         this._provider = null;
         this._started = false;
@@ -805,21 +873,13 @@ export class PilotSwarmWorker {
         });
     }
 
-    private async _createProvider(): Promise<any> {
+    private async _createProvider(storage: StorageConfig): Promise<any> {
         const store = this.config.store;
         if (store === "sqlite::memory:") return SqliteProvider.inMemory();
         if (store.startsWith("sqlite://")) return SqliteProvider.open(store);
-        if (store.startsWith("postgres://") || store.startsWith("postgresql://")) {
-            return createDuroxidePostgresProvider(
-                PostgresProvider,
-                store,
-                this.config.duroxideSchema ?? DEFAULT_DUROXIDE_SCHEMA,
-                {
-                    useManagedIdentity: this.config.useManagedIdentity ?? false,
-                    aadUser: this.config.aadDbUser,
-                },
-            );
+        if (storage.duroxide.url.startsWith("postgres://") || storage.duroxide.url.startsWith("postgresql://")) {
+            return getDuroxideStorageProvider(storage.duroxide.provider).createDuroxideProvider(storage.duroxide);
         }
-        throw new Error(`Unsupported store URL: ${store}`);
+        throw new Error(`Unsupported duroxide store URL: ${storage.duroxide.url}`);
     }
 }

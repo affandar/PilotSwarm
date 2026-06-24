@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { SessionCatalogProvider, SessionRow } from "./cms.js";
+import type { SessionCatalog, SessionRow } from "./cms.js";
 
 const SESSION_MESSAGE_RATE_WINDOW_MS = 10 * 60 * 1000;
 const SESSION_MESSAGE_SENDER_LIMIT = 10;
@@ -10,7 +10,7 @@ export type SessionMessageReason = "help" | "guidance" | "fact-request" | "statu
 export type SessionMessageVerdict = "answered" | "declined" | "blocked" | "stale";
 
 export interface InternalSessionMessageRuntime {
-    catalog: SessionCatalogProvider;
+    catalog: SessionCatalog;
     duroxideClient: {
         getStatus(orchestrationId: string): Promise<{ status?: string } | null | undefined>;
         enqueueEvent(orchestrationId: string, eventName: string, payload: string): Promise<unknown>;
@@ -66,7 +66,7 @@ async function assertOrchestrationLive(
 }
 
 async function validateSessionMessageTarget(
-    catalog: SessionCatalogProvider,
+    catalog: SessionCatalog,
     fromSessionId: string,
     toSessionId: string,
     operationKind: "messages" | "replies",
@@ -81,12 +81,6 @@ async function validateSessionMessageTarget(
     }
     if (targetRow.state === "completed" && targetRow.parentSessionId && !targetRow.isSystem) {
         throw new Error(`Session ${toSessionId.slice(0, 8)} is completed and cannot accept cross-session ${operationKind}.`);
-    }
-    if (targetRow.isSystem) {
-        const senderRow = await catalog.getSession(fromSessionId).catch(() => null);
-        if (!senderRow?.isSystem) {
-            throw new Error(`ordinary sessions cannot wake system sessions through cross-session ${operationKind}`);
-        }
     }
     return targetRow;
 }

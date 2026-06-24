@@ -115,6 +115,11 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "session_group_owner_adoption",
             sql: migration_0020_session_group_owner_adoption(schema),
         },
+        {
+            version: "0021",
+            name: "retrieval_usage_procs",
+            sql: migration_0021_retrieval_usage_procs(schema),
+        },
     ];
 }
 
@@ -3101,6 +3106,324 @@ BEGIN
         updated_at = now()
     WHERE session_id = p_session_id
       AND deleted_at IS NULL;
+END;
+$$ LANGUAGE plpgsql;
+`;
+}
+
+// ─── Migration 0021: Retrieval Usage Procs ──────────────────────
+
+function migration_0021_retrieval_usage_procs(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- 0021_retrieval_usage_procs: count-only fact/search/graph retrieval usage from session_events.
+
+CREATE INDEX IF NOT EXISTS idx_${schema}_events_retrieval_usage
+    ON ${s}.session_events (session_id, created_at DESC)
+    WHERE event_type IN ('facts.searched', 'facts.similar', 'skills.searched', 'graph.searched', 'graph.node_searched', 'graph.node_loaded');
+
+CREATE INDEX IF NOT EXISTS idx_${schema}_events_graph_node_usage
+    ON ${s}.session_events ((data->>'nodeKey'), created_at DESC)
+    WHERE event_type IN ('graph.node_searched', 'graph.node_loaded');
+
+CREATE OR REPLACE FUNCTION ${s}.cms_get_session_retrieval_usage(
+    p_session_id TEXT,
+    p_since      TIMESTAMPTZ
+) RETURNS TABLE (
+    surface           TEXT,
+    operation         TEXT,
+    namespace         TEXT,
+    calls             BIGINT,
+    total_results     BIGINT,
+    avg_results       DOUBLE PRECISION,
+    total_duration_ms BIGINT,
+    avg_duration_ms   DOUBLE PRECISION,
+    first_used_at     TIMESTAMPTZ,
+    last_used_at      TIMESTAMPTZ
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        CASE
+            WHEN e.event_type IN ('facts.searched', 'facts.similar') THEN 'facts'
+            WHEN e.event_type = 'skills.searched' THEN 'skills'
+            ELSE 'graph'
+        END::TEXT AS surface,
+        COALESCE(NULLIF(e.data->>'operation', ''),
+            CASE e.event_type
+                WHEN 'facts.searched' THEN 'facts_search'
+                WHEN 'facts.similar' THEN 'facts_similar'
+                WHEN 'skills.searched' THEN 'search_skills'
+                WHEN 'graph.searched' THEN
+                    CASE COALESCE(e.data->>'kind', '')
+                        WHEN 'search_nodes' THEN 'graph_search_nodes'
+                        WHEN 'search_edges' THEN 'graph_search_edges'
+                        WHEN 'neighbourhood' THEN 'graph_neighbourhood'
+                        ELSE 'graph_search_nodes'
+                    END
+                ELSE NULL
+            END
+        )::TEXT AS operation,
+        NULLIF(e.data->>'namespace', '')::TEXT AS namespace,
+        COUNT(*)::BIGINT AS calls,
+        COALESCE(SUM(NULLIF(e.data->>'resultCount', '')::BIGINT), 0)::BIGINT AS total_results,
+        COALESCE(AVG(NULLIF(e.data->>'resultCount', '')::DOUBLE PRECISION), 0)::DOUBLE PRECISION AS avg_results,
+        SUM(NULLIF(e.data->>'durationMs', '')::BIGINT)::BIGINT AS total_duration_ms,
+        AVG(NULLIF(e.data->>'durationMs', '')::DOUBLE PRECISION)::DOUBLE PRECISION AS avg_duration_ms,
+        MIN(e.created_at) AS first_used_at,
+        MAX(e.created_at) AS last_used_at
+    FROM ${s}.session_events e
+    WHERE e.session_id = p_session_id
+      AND e.event_type IN ('facts.searched', 'facts.similar', 'skills.searched', 'graph.searched')
+      AND (p_since IS NULL OR e.created_at >= p_since)
+    GROUP BY 1, 2, 3
+    ORDER BY calls DESC, last_used_at DESC;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_get_session_tree_retrieval_usage(
+    p_session_id TEXT,
+    p_since      TIMESTAMPTZ
+) RETURNS TABLE (
+    session_id        TEXT,
+    agent_id          TEXT,
+    surface           TEXT,
+    operation         TEXT,
+    namespace         TEXT,
+    calls             BIGINT,
+    total_results     BIGINT,
+    avg_results       DOUBLE PRECISION,
+    total_duration_ms BIGINT,
+    avg_duration_ms   DOUBLE PRECISION,
+    first_used_at     TIMESTAMPTZ,
+    last_used_at      TIMESTAMPTZ
+) AS $$
+BEGIN
+    RETURN QUERY
+    WITH RECURSIVE tree AS (
+        SELECT s0.session_id, s0.agent_id FROM ${s}.sessions s0 WHERE s0.session_id = p_session_id
+        UNION ALL
+        SELECT s1.session_id, s1.agent_id FROM ${s}.sessions s1
+        INNER JOIN tree t ON s1.parent_session_id = t.session_id
+    )
+    SELECT
+        e.session_id AS session_id,
+        t.agent_id AS agent_id,
+        CASE
+            WHEN e.event_type IN ('facts.searched', 'facts.similar') THEN 'facts'
+            WHEN e.event_type = 'skills.searched' THEN 'skills'
+            ELSE 'graph'
+        END::TEXT AS surface,
+        COALESCE(NULLIF(e.data->>'operation', ''),
+            CASE e.event_type
+                WHEN 'facts.searched' THEN 'facts_search'
+                WHEN 'facts.similar' THEN 'facts_similar'
+                WHEN 'skills.searched' THEN 'search_skills'
+                WHEN 'graph.searched' THEN
+                    CASE COALESCE(e.data->>'kind', '')
+                        WHEN 'search_nodes' THEN 'graph_search_nodes'
+                        WHEN 'search_edges' THEN 'graph_search_edges'
+                        WHEN 'neighbourhood' THEN 'graph_neighbourhood'
+                        ELSE 'graph_search_nodes'
+                    END
+                ELSE NULL
+            END
+        )::TEXT AS operation,
+        NULLIF(e.data->>'namespace', '')::TEXT AS namespace,
+        COUNT(*)::BIGINT AS calls,
+        COALESCE(SUM(NULLIF(e.data->>'resultCount', '')::BIGINT), 0)::BIGINT AS total_results,
+        COALESCE(AVG(NULLIF(e.data->>'resultCount', '')::DOUBLE PRECISION), 0)::DOUBLE PRECISION AS avg_results,
+        SUM(NULLIF(e.data->>'durationMs', '')::BIGINT)::BIGINT AS total_duration_ms,
+        AVG(NULLIF(e.data->>'durationMs', '')::DOUBLE PRECISION)::DOUBLE PRECISION AS avg_duration_ms,
+        MIN(e.created_at) AS first_used_at,
+        MAX(e.created_at) AS last_used_at
+    FROM ${s}.session_events e
+    INNER JOIN tree t ON e.session_id = t.session_id
+    WHERE e.event_type IN ('facts.searched', 'facts.similar', 'skills.searched', 'graph.searched')
+      AND (p_since IS NULL OR e.created_at >= p_since)
+    GROUP BY e.session_id, t.agent_id, surface, operation, namespace
+    ORDER BY e.session_id, calls DESC, last_used_at DESC;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_get_fleet_retrieval_usage(
+    p_since           TIMESTAMPTZ,
+    p_include_deleted BOOLEAN
+) RETURNS TABLE (
+    agent_id          TEXT,
+    surface           TEXT,
+    operation         TEXT,
+    namespace         TEXT,
+    session_count     BIGINT,
+    calls             BIGINT,
+    total_results     BIGINT,
+    avg_results       DOUBLE PRECISION,
+    total_duration_ms BIGINT,
+    avg_duration_ms   DOUBLE PRECISION,
+    first_used_at     TIMESTAMPTZ,
+    last_used_at      TIMESTAMPTZ
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        s.agent_id AS agent_id,
+        CASE
+            WHEN e.event_type IN ('facts.searched', 'facts.similar') THEN 'facts'
+            WHEN e.event_type = 'skills.searched' THEN 'skills'
+            ELSE 'graph'
+        END::TEXT AS surface,
+        COALESCE(NULLIF(e.data->>'operation', ''),
+            CASE e.event_type
+                WHEN 'facts.searched' THEN 'facts_search'
+                WHEN 'facts.similar' THEN 'facts_similar'
+                WHEN 'skills.searched' THEN 'search_skills'
+                WHEN 'graph.searched' THEN
+                    CASE COALESCE(e.data->>'kind', '')
+                        WHEN 'search_nodes' THEN 'graph_search_nodes'
+                        WHEN 'search_edges' THEN 'graph_search_edges'
+                        WHEN 'neighbourhood' THEN 'graph_neighbourhood'
+                        ELSE 'graph_search_nodes'
+                    END
+                ELSE NULL
+            END
+        )::TEXT AS operation,
+        NULLIF(e.data->>'namespace', '')::TEXT AS namespace,
+        COUNT(DISTINCT e.session_id)::BIGINT AS session_count,
+        COUNT(*)::BIGINT AS calls,
+        COALESCE(SUM(NULLIF(e.data->>'resultCount', '')::BIGINT), 0)::BIGINT AS total_results,
+        COALESCE(AVG(NULLIF(e.data->>'resultCount', '')::DOUBLE PRECISION), 0)::DOUBLE PRECISION AS avg_results,
+        SUM(NULLIF(e.data->>'durationMs', '')::BIGINT)::BIGINT AS total_duration_ms,
+        AVG(NULLIF(e.data->>'durationMs', '')::DOUBLE PRECISION)::DOUBLE PRECISION AS avg_duration_ms,
+        MIN(e.created_at) AS first_used_at,
+        MAX(e.created_at) AS last_used_at
+    FROM ${s}.session_events e
+    INNER JOIN ${s}.sessions s ON s.session_id = e.session_id
+    WHERE e.event_type IN ('facts.searched', 'facts.similar', 'skills.searched', 'graph.searched')
+      AND (p_include_deleted OR s.deleted_at IS NULL)
+      AND (p_since IS NULL OR e.created_at >= p_since)
+    GROUP BY s.agent_id, surface, operation, namespace
+    ORDER BY calls DESC, last_used_at DESC;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_get_session_graph_node_usage(
+    p_session_id    TEXT,
+    p_since         TIMESTAMPTZ,
+    p_limit         INT,
+    p_node_key_like TEXT,
+    p_kind          TEXT
+) RETURNS TABLE (
+    node_key      TEXT,
+    namespace     TEXT,
+    operation     TEXT,
+    kind          TEXT,
+    count         BIGINT,
+    first_seen_at TIMESTAMPTZ,
+    last_seen_at  TIMESTAMPTZ
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        e.data->>'nodeKey' AS node_key,
+        NULLIF(e.data->>'namespace', '')::TEXT AS namespace,
+        COALESCE(NULLIF(e.data->>'operation', ''),
+            CASE WHEN e.event_type = 'graph.node_loaded' THEN 'graph_neighbourhood' ELSE 'graph_search_nodes' END
+        )::TEXT AS operation,
+        CASE WHEN e.event_type = 'graph.node_loaded' THEN 'loaded' ELSE 'searched' END::TEXT AS kind,
+        COUNT(*)::BIGINT AS count,
+        MIN(e.created_at) AS first_seen_at,
+        MAX(e.created_at) AS last_seen_at
+    FROM ${s}.session_events e
+    WHERE e.session_id = p_session_id
+      AND e.event_type IN ('graph.node_searched', 'graph.node_loaded')
+      AND NULLIF(e.data->>'nodeKey', '') IS NOT NULL
+      AND (p_since IS NULL OR e.created_at >= p_since)
+      AND (p_kind IS NULL OR p_kind = '' OR (CASE WHEN e.event_type = 'graph.node_loaded' THEN 'loaded' ELSE 'searched' END) = p_kind)
+      AND (p_node_key_like IS NULL OR p_node_key_like = '' OR e.data->>'nodeKey' ILIKE ('%' || p_node_key_like || '%'))
+    GROUP BY 1, 2, 3, 4
+    ORDER BY count DESC, last_seen_at DESC
+    LIMIT GREATEST(1, LEAST(COALESCE(p_limit, 100), 500));
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_get_fleet_graph_node_usage(
+    p_since           TIMESTAMPTZ,
+    p_include_deleted BOOLEAN,
+    p_limit           INT,
+    p_node_key_like   TEXT,
+    p_kind            TEXT
+) RETURNS TABLE (
+    agent_id      TEXT,
+    node_key      TEXT,
+    namespace     TEXT,
+    operation     TEXT,
+    kind          TEXT,
+    session_count BIGINT,
+    count         BIGINT,
+    first_seen_at TIMESTAMPTZ,
+    last_seen_at  TIMESTAMPTZ
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        s.agent_id AS agent_id,
+        e.data->>'nodeKey' AS node_key,
+        NULLIF(e.data->>'namespace', '')::TEXT AS namespace,
+        COALESCE(NULLIF(e.data->>'operation', ''),
+            CASE WHEN e.event_type = 'graph.node_loaded' THEN 'graph_neighbourhood' ELSE 'graph_search_nodes' END
+        )::TEXT AS operation,
+        CASE WHEN e.event_type = 'graph.node_loaded' THEN 'loaded' ELSE 'searched' END::TEXT AS kind,
+        COUNT(DISTINCT e.session_id)::BIGINT AS session_count,
+        COUNT(*)::BIGINT AS count,
+        MIN(e.created_at) AS first_seen_at,
+        MAX(e.created_at) AS last_seen_at
+    FROM ${s}.session_events e
+    INNER JOIN ${s}.sessions s ON s.session_id = e.session_id
+    WHERE e.event_type IN ('graph.node_searched', 'graph.node_loaded')
+      AND NULLIF(e.data->>'nodeKey', '') IS NOT NULL
+      AND (p_include_deleted OR s.deleted_at IS NULL)
+      AND (p_since IS NULL OR e.created_at >= p_since)
+      AND (p_kind IS NULL OR p_kind = '' OR (CASE WHEN e.event_type = 'graph.node_loaded' THEN 'loaded' ELSE 'searched' END) = p_kind)
+      AND (p_node_key_like IS NULL OR p_node_key_like = '' OR e.data->>'nodeKey' ILIKE ('%' || p_node_key_like || '%'))
+    GROUP BY s.agent_id, node_key, namespace, operation, kind
+    ORDER BY count DESC, last_seen_at DESC
+    LIMIT GREATEST(1, LEAST(COALESCE(p_limit, 100), 500));
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_get_session_graph_edge_search_usage(
+    p_session_id TEXT,
+    p_since      TIMESTAMPTZ,
+    p_limit      INT
+) RETURNS TABLE (
+    predicate_key     TEXT,
+    from_key          TEXT,
+    to_key            TEXT,
+    namespace         TEXT,
+    calls             BIGINT,
+    total_results     BIGINT,
+    first_searched_at TIMESTAMPTZ,
+    last_searched_at  TIMESTAMPTZ
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        NULLIF(e.data->>'predicateKey', '')::TEXT AS predicate_key,
+        NULLIF(e.data->>'fromKey', '')::TEXT AS from_key,
+        NULLIF(e.data->>'toKey', '')::TEXT AS to_key,
+        NULLIF(e.data->>'namespace', '')::TEXT AS namespace,
+        COUNT(*)::BIGINT AS calls,
+        COALESCE(SUM(NULLIF(e.data->>'resultCount', '')::BIGINT), 0)::BIGINT AS total_results,
+        MIN(e.created_at) AS first_searched_at,
+        MAX(e.created_at) AS last_searched_at
+    FROM ${s}.session_events e
+    WHERE e.session_id = p_session_id
+      AND e.event_type = 'graph.searched'
+      AND COALESCE(NULLIF(e.data->>'operation', ''), NULLIF(e.data->>'kind', '')) IN ('graph_search_edges', 'search_edges')
+      AND (p_since IS NULL OR e.created_at >= p_since)
+    GROUP BY 1, 2, 3, 4
+    ORDER BY calls DESC, last_searched_at DESC
+    LIMIT GREATEST(1, LEAST(COALESCE(p_limit, 100), 500));
 END;
 $$ LANGUAGE plpgsql;
 `;

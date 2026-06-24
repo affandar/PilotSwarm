@@ -4,10 +4,13 @@ import type { SessionStateStore } from "./session-store.js";
 import { SESSION_STATE_MISSING_PREFIX, type ManagedSessionConfig, type SerializableSessionConfig } from "./types.js";
 import type { ModelProviderRegistry } from "./model-providers.js";
 import { createFactTools } from "./facts-tools.js";
+import { createGraphTools } from "./graph-tools.js";
 import { createInspectTools } from "./inspect-tools.js";
-import type { SessionCatalogProvider } from "./cms.js";
+import type { SessionCatalog } from "./cms.js";
 import type { FactStore } from "./facts-store.js";
-import { buildKnowledgePromptBlocks, loadKnowledgeIndexFromFactStore } from "./knowledge-index.js";
+import { isEnhancedFactStore } from "./facts-store.js";
+import type { GraphStore } from "./graph-store.js";
+import { buildKnowledgePromptBlocks, loadKnowledgeIndexFromFactStore, buildEnhancedRetrievalPromptBlock, buildGraphReaderPromptBlock } from "./knowledge-index.js";
 import { composeStructuredSystemMessage, extractPromptContent, mergePromptSections } from "./prompt-layering.js";
 import { buildPromptLayersEventPayload, type PromptLayerDescriptor } from "./prompt-layers.js";
 import { approvePermissionForSession } from "./permissions.js";
@@ -183,8 +186,11 @@ export class SessionManager {
     private sessionStateDir: string;
     /** Shared facts store used to build always-on facts tools. */
     private factStore: FactStore | null = null;
+    /** Optional, separately-injected graph store (07 D2). Present iff a
+     * graphDatabaseUrl was configured; gates graph-tool registration. */
+    private graphStore: GraphStore | null = null;
     /** Shared CMS catalog used to build always-on inspect tools. */
-    private sessionCatalog: SessionCatalogProvider | null = null;
+    private sessionCatalog: SessionCatalog | null = null;
     /** Duroxide client used by tuner-only inspect tools. */
     private _duroxideClient: any = null;
     /** Lineage lookup for ancestor/descendant facts access. */
@@ -258,8 +264,13 @@ export class SessionManager {
         this.factStore = factStore;
     }
 
+    /** Set the optional graph store (07 D2). `null`/absent ⇒ no graph tools. */
+    setGraphStore(graphStore: GraphStore | null): void {
+        this.graphStore = graphStore;
+    }
+
     /** Set the CMS catalog for always-on inspect tools (e.g. read_agent_events). */
-    setSessionCatalog(catalog: SessionCatalogProvider | null): void {
+    setSessionCatalog(catalog: SessionCatalog | null): void {
         this.sessionCatalog = catalog;
     }
 
@@ -622,6 +633,15 @@ export class SessionManager {
             factStore: this.factStore,
             getLineageSessionIds: this._getLineageSessionIds ?? undefined,
             agentIdentity: effectiveSerializableConfig.agentIdentity,
+            // Enhanced tools light up only when the store is an EnhancedFactStore.
+            // Pass it when EITHER capability is present: search powers
+            // facts_search / facts_similar / search_skills; embedder powers the
+            // facts-manager-only `manage_embedder` control tool. The tools
+            // themselves gate on the specific capability they need.
+            enhancedFactStore: isEnhancedFactStore(this.factStore)
+                && (this.factStore.capabilities.search || this.factStore.capabilities.embedder)
+                ? this.factStore
+                : undefined,
             recordEvent: this.sessionCatalog
                 ? async (sid, eventType, data) => {
                     try {
@@ -654,7 +674,41 @@ export class SessionManager {
                     }
                 }
                 : undefined,
-            }).filter((tool: any) => !isTunerSession || tool.name === "read_facts");
+            }).filter((tool: any) => !isTunerSession || tool.name === "read_facts" || tool.name === "facts_search" || tool.name === "facts_similar" || tool.name === "search_skills");
+        // Graph tools (07 P4) — registered ONLY when a graph store is configured.
+        // Reader tools AND graph write/delete go to every session (so any agent
+        // can incorporate into the SHARED graph) EXCEPT the read-only agent-tuner;
+        // the crawl queue stays app-harvester-role + facts-manager only; graph_stats
+        // to facts-manager + agent-tuner. Tuner never gets a mutating tool.
+        const graphTools = this.graphStore
+            ? createGraphTools({
+                graphStore: this.graphStore,
+                factStore: this.factStore,
+                agentIdentity: effectiveSerializableConfig.agentIdentity,
+                isHarvester: effectiveSerializableConfig.isHarvester === true,
+                agentId: effectiveSerializableConfig.agentIdentity,
+                // Graph reads use the SAME lineage visibility as read_facts. The
+                // tuner branch inside createGraphTools forces unrestricted; for
+                // everyone else this resolves their granted lineage sessions.
+                resolveAccess: this._getLineageSessionIds
+                    ? async (sessionId: string | undefined) => {
+                        if (!sessionId) return { readerSessionId: null, grantedSessionIds: [] };
+                        const raw = await this._getLineageSessionIds!(sessionId);
+                        const granted = [...new Set((raw || []).filter((sid) => Boolean(sid) && sid !== sessionId))];
+                        return { readerSessionId: sessionId, grantedSessionIds: granted };
+                    }
+                    : undefined,
+                recordEvent: this.sessionCatalog
+                    ? async (sid, eventType, data) => {
+                        try {
+                            await this.sessionCatalog!.recordEvents(sid, [{ eventType, data }]);
+                        } catch {
+                            // Best-effort telemetry.
+                        }
+                    }
+                    : undefined,
+            })
+            : [];
         const inspectTools = this.sessionCatalog
             ? createInspectTools({
                 catalog: this.sessionCatalog,
@@ -664,12 +718,13 @@ export class SessionManager {
             })
             : [];
         const SYSTEM_TOOL_NAMES = new Set([
-            ...systemTools, ...subAgentTools, ...factTools, ...inspectTools,
+            ...systemTools, ...subAgentTools, ...factTools, ...inspectTools, ...graphTools,
         ].map((t: any) => t.name));
         const persistentSessionTools = [
             ...userTools.filter((t: any) => !SYSTEM_TOOL_NAMES.has(t.name)),
             ...factTools,
             ...inspectTools,
+            ...graphTools,
         ];
         const allTools = [
             ...persistentSessionTools.filter((t: any) => !SYSTEM_TOOL_NAMES.has(t.name)),
@@ -677,6 +732,7 @@ export class SessionManager {
             ...subAgentTools,
             ...factTools,
             ...inspectTools,
+            ...graphTools,
         ];
         config.tools = persistentSessionTools;
 
@@ -1253,11 +1309,38 @@ export class SessionManager {
     private _buildKnowledgeToolInstructionsSection(agentIdentity?: string): SectionOverride | undefined {
         if (!this.factStore || agentIdentity === "facts-manager") return undefined;
 
+        // Capability-aware knowledge block (enhancedfactstore 07 §1.5/§1.6). Three
+        // independent axes drive the content: enhanced-search facts, whether an
+        // embedder is available (semantic), and graph presence. The base path is
+        // byte-for-byte today's block.
+        const enhancedSearch = isEnhancedFactStore(this.factStore) && this.factStore.capabilities.search;
+        const hasEmbedder = isEnhancedFactStore(this.factStore) && this.factStore.capabilities.embedder === true;
+        const hasGraph = !!this.graphStore;
+
         return {
             action: async (currentContent: string) => {
+                if (enhancedSearch) {
+                    // Enhanced: DROP the capped-50 skills push — the agent pulls
+                    // ranked skills via search_skills every turn, so skip the
+                    // skills read entirely (includeSkills:false). Open asks still
+                    // surface on their small push path, but without the namespace
+                    // rules (the enhanced block owns them, avoiding duplication).
+                    // The semantic wording is gated on an actual embedder: with
+                    // search-only/lexical-degrade, the block must not promise
+                    // semantic recall.
+                    const knowledgeIndex = await loadKnowledgeIndexFromFactStore(this.factStore!, 50, { includeSkills: false });
+                    const { askBlock } = buildKnowledgePromptBlocks(knowledgeIndex, { includeNamespaceRules: false });
+                    const enhancedBlock = buildEnhancedRetrievalPromptBlock({ semantic: hasEmbedder });
+                    const graphBlock = hasGraph ? buildGraphReaderPromptBlock({ semanticSeed: hasEmbedder }) : undefined;
+                    return mergePromptSections([currentContent, askBlock, enhancedBlock, graphBlock]) ?? currentContent;
+                }
+                // Base store: today's block unchanged (skills + asks push). When a
+                // graph is configured on a base-facts deployment, add the graph
+                // read block too (no semantic-seed sentence).
                 const knowledgeIndex = await loadKnowledgeIndexFromFactStore(this.factStore!, 50);
                 const { askBlock, skillBlock } = buildKnowledgePromptBlocks(knowledgeIndex);
-                return mergePromptSections([currentContent, askBlock, skillBlock]) ?? currentContent;
+                const graphBlock = hasGraph ? buildGraphReaderPromptBlock({ semanticSeed: false }) : undefined;
+                return mergePromptSections([currentContent, askBlock, skillBlock, graphBlock]) ?? currentContent;
             },
         };
     }

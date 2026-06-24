@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { commandResponseKey } from "../../src/types.ts";
+import { parseChildUpdate } from "../../src/orchestration/agents.ts";
 
 let mockSession;
 let mockManager;
@@ -27,6 +28,8 @@ function createHarness({ messages = [], inputOverrides = {} } = {}) {
         nowMs: 0,
         runTurnCall: null,
         continueAsNew: null,
+        sentToSessions: [],
+        recordedEvents: [],
         sentCommands: [],
         cmsUpdates: [],
         deletedSessions: [],
@@ -50,12 +53,13 @@ function createHarness({ messages = [], inputOverrides = {} } = {}) {
 
     mockManager = {
         loadKnowledgeIndex: vi.fn(() => ({ effect: "loadKnowledgeIndex" })),
-        recordSessionEvent: vi.fn(() => ({ effect: "recordSessionEvent" })),
+        recordSessionEvent: vi.fn((sessionId, events) => ({ effect: "recordSessionEvent", sessionId, events })),
         summarizeSession: vi.fn(() => ({ effect: "summarizeSession" })),
         listChildSessions: vi.fn(() => ({ effect: "listChildSessions" })),
         getOrchestrationStats: vi.fn((sessionId) => ({ effect: "getOrchestrationStats", sessionId })),
         getSessionStatus: vi.fn((sessionId) => ({ effect: "getSessionStatus", sessionId })),
         sendCommandToSession: vi.fn((sessionId, command) => ({ effect: "sendCommandToSession", sessionId, command })),
+        sendToSession: vi.fn((sessionId, prompt) => ({ effect: "sendToSession", sessionId, prompt })),
         updateCmsState: vi.fn((sessionId, nextState, lastError, waitReason) => ({
             effect: "updateCmsState",
             sessionId,
@@ -128,6 +132,8 @@ function createHarness({ messages = [], inputOverrides = {} } = {}) {
             case "destroy":
             case "loadKnowledgeIndex":
             case "recordSessionEvent":
+                state.recordedEvents.push({ sessionId: effect.sessionId, events: effect.events });
+                return undefined;
             case "summarizeSession":
                 return undefined;
             case "listChildSessions":
@@ -151,6 +157,9 @@ function createHarness({ messages = [], inputOverrides = {} } = {}) {
             }
             case "sendCommandToSession":
                 state.sentCommands.push({ sessionId: effect.sessionId, command: effect.command });
+                return undefined;
+            case "sendToSession":
+                state.sentToSessions.push({ sessionId: effect.sessionId, prompt: effect.prompt });
                 return undefined;
             case "updateCmsState":
                 state.cmsUpdates.push({
@@ -662,6 +671,157 @@ describe("orchestration child update batching", () => {
 
         expect(result.runTurnCall.systemPrompt).toContain("Buffered child updates arrived during the last 30 seconds");
         expect(result.runTurnCall.systemPrompt).toContain("Child finished while the parent was between executions");
+        expect(mockSession.runTurn).toHaveBeenCalledTimes(1);
+    });
+
+    it("passes cycleOrigin to cron timer turns only", async () => {
+        const cronHarness = createHarness();
+        const cronResult = await cronHarness.runUntilRunTurn();
+        expect(cronResult.runTurnCall.opts).toEqual(expect.objectContaining({ cycleOrigin: "cron" }));
+
+        const promptHarness = createHarness({
+            messages: [{ atMs: 0, payload: { prompt: "ordinary user prompt" } }],
+            inputOverrides: {
+                cronSchedule: undefined,
+                activeTimerState: undefined,
+            },
+        });
+        const promptResult = await promptHarness.runUntilRunTurn();
+        expect(promptResult.runTurnCall.opts?.cycleOrigin).toBeUndefined();
+    });
+
+    it("suppresses quiet cron-origin child completions at the child source", async () => {
+        const harness = createHarness({
+            inputOverrides: {
+                sessionId: "child-session-1",
+                parentSessionId: "parent-session",
+                config: { childContract: { wakeOn: "material_change" } },
+            },
+        });
+
+        const result = await harness.runThroughTurn({
+            type: "completed",
+            content: "Quiet.",
+        });
+
+        expect(result.state.sentToSessions).toEqual([]);
+        expect(result.state.recordedEvents.some((entry) =>
+            entry.events?.some((event) =>
+                event.eventType === "session.child_update_suppressed"
+                && event.data?.classification === "heartbeat"
+                && event.data?.cycleOrigin === "cron",
+            ),
+        )).toBe(true);
+    });
+
+    it("forwards material report_cycle cron completions with cycle metadata", async () => {
+        const harness = createHarness({
+            inputOverrides: {
+                sessionId: "child-session-1",
+                parentSessionId: "parent-session",
+                config: { childContract: { wakeOn: "material_change" } },
+            },
+        });
+
+        await harness.runThroughTurn({
+            type: "completed",
+            content: "Verbose prose that should not be parsed.",
+            cycleReport: { status: "material", summary: "New blocker found." },
+        });
+
+        expect(harness.state.sentToSessions[0]).toEqual(expect.objectContaining({
+            sessionId: "parent-session",
+            prompt: expect.stringContaining("[CHILD_UPDATE from=child-session-1 type=completed iter=6 cycle=cron status=material]"),
+        }));
+        expect(harness.state.sentToSessions[0].prompt).toContain("New blocker found.");
+    });
+
+    it("preserves cycle metadata when batching child updates", async () => {
+        const harness = createHarness({
+            messages: [
+                {
+                    atMs: 0,
+                    payload: {
+                        prompt: "[CHILD_UPDATE from=child-session-1 type=completed iter=9 cycle=cron status=material]\nNew blocker found.",
+                    },
+                },
+            ],
+            inputOverrides: {
+                subAgents: [
+                    { orchId: "agent-1", sessionId: "child-session-1", task: "Track source", status: "running", contract: { wakeOn: "material_change" } },
+                ],
+            },
+        });
+
+        const result = await harness.runUntilRunTurn();
+
+        expect(result.runTurnCall.systemPrompt).toContain("Buffered child updates arrived during the last 30 seconds");
+        expect(result.runTurnCall.systemPrompt).toContain("New blocker found.");
+        expect(mockSession.runTurn).toHaveBeenCalledTimes(1);
+    });
+
+    it("parses legacy and cycle child update headers, rejecting malformed headers", () => {
+        expect(parseChildUpdate("[CHILD_UPDATE from=child-session-1 type=completed iter=9 verdict=success]\nDone")).toEqual({
+            sessionId: "child-session-1",
+            updateType: "completed",
+            content: "Done",
+            verdict: "success",
+        });
+        expect(parseChildUpdate("[CHILD_UPDATE from=child-session-1 type=completed iter=9 cycle=cron status=blocked]\nBlocked")).toEqual({
+            sessionId: "child-session-1",
+            updateType: "completed",
+            content: "Blocked",
+            cycleOrigin: "cron",
+            cycleStatus: "blocked",
+        });
+        expect(parseChildUpdate("[CHILD_UPDATE cycle=cron status=material]\nMissing fields")).toBe(null);
+    });
+
+    it("preserves terminal completion verdict through digest completion policy", async () => {
+        const harness = createHarness({
+            messages: [
+                {
+                    atMs: 0,
+                    payload: {
+                        prompt: "[CHILD_UPDATE from=child-session-1 type=completed iter=9 verdict=success]\nChild finished cleanly.",
+                    },
+                },
+            ],
+            inputOverrides: {
+                subAgents: [
+                    { orchId: "agent-1", sessionId: "child-session-1", task: "Child work", status: "running", contract: { wakeOn: "completion" } },
+                ],
+            },
+        });
+
+        const result = await harness.runUntilRunTurn();
+
+        expect(result.runTurnCall.systemPrompt).toContain("Buffered child updates arrived during the last 30 seconds");
+        expect(result.runTurnCall.systemPrompt).toContain("Child finished cleanly.");
+        expect(mockSession.runTurn).toHaveBeenCalledTimes(1);
+    });
+
+    it("preserves blocked cycle metadata through digest completion policy", async () => {
+        const harness = createHarness({
+            messages: [
+                {
+                    atMs: 0,
+                    payload: {
+                        prompt: "[CHILD_UPDATE from=child-session-1 type=completed iter=9 cycle=cron status=blocked]\nBlocked reading source.",
+                    },
+                },
+            ],
+            inputOverrides: {
+                subAgents: [
+                    { orchId: "agent-1", sessionId: "child-session-1", task: "Track source", status: "running", contract: { wakeOn: "completion" } },
+                ],
+            },
+        });
+
+        const result = await harness.runUntilRunTurn();
+
+        expect(result.runTurnCall.systemPrompt).toContain("Buffered child updates arrived during the last 30 seconds");
+        expect(result.runTurnCall.systemPrompt).toContain("Blocked reading source.");
         expect(mockSession.runTurn).toHaveBeenCalledTimes(1);
     });
 

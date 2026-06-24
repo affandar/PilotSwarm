@@ -57,6 +57,48 @@ If you are pointing other LLMs at one example first, point them here.
 
 ---
 
+## Horizon Harvester (`examples/horizon-harvester/`)
+
+Demonstrates PilotSwarm's **optional** EnhancedFactStore + knowledge-graph
+providers. A `harvester: true` agent crawls a mock knowledge source into durable,
+searchable facts and builds an open knowledge graph; a reader agent answers
+questions over the result using multi-signal search + graph traversal.
+
+It demonstrates:
+
+- wiring the HorizonDB providers from `HORIZON_*` env via `horizonConfigFromEnv()`
+- the harvester role (`harvester: true`) and its crawl-queue + graph-write tools
+- the crawl→graph→reader flow (ingest → `facts_read_uncrawled` → `graph_upsert_*`
+  → `facts_mark_crawled` → `facts_search` + graph pivot)
+- fact-`scopeKey` evidence anchoring and reader/harvester tool gating
+
+Key files:
+
+- [examples/horizon-harvester/README.md](../examples/horizon-harvester/README.md)
+- [examples/horizon-harvester/plugin/agents/source-harvester.agent.md](../examples/horizon-harvester/plugin/agents/source-harvester.agent.md)
+- [examples/horizon-harvester/plugin/agents/librarian.agent.md](../examples/horizon-harvester/plugin/agents/librarian.agent.md)
+- [examples/horizon-harvester/sdk-app.js](../examples/horizon-harvester/sdk-app.js)
+- [examples/horizon-harvester/tools.js](../examples/horizon-harvester/tools.js)
+
+Requires a HorizonDB cluster (`HORIZON_DATABASE_URL` + `HORIZON_GRAPH_DATABASE_URL`;
+`HORIZON_EMBED_*` optional). Run from the repo root:
+
+```bash
+# full flow: harvest, then ask a graph-traversing question
+./scripts/run-horizon-harvester-sample.sh
+
+# individual scenarios
+HARVESTER_SCENARIO=harvest ./scripts/run-horizon-harvester-sample.sh
+HARVESTER_SCENARIO=ask     ./scripts/run-horizon-harvester-sample.sh
+```
+
+See [Enhanced Facts & Knowledge Graph](configuration.md#enhanced-facts--knowledge-graph-optional)
+and [the facts + graph model](facts-table.md) for the underlying providers. To run the
+harvester continuously as its own service, see
+[Deploying a Knowledge Harvester](harvester-deployment.md).
+
+---
+
 ## Chat App (`examples/chat.js`)
 
 A minimal interactive chat that demonstrates the core SDK in single-process mode — great for getting started.

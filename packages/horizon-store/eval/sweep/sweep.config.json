@@ -1,0 +1,16 @@
+{
+  "_comment": "Cross-model sweep config for the horizon-facts closed-QA eval. Edit models/labels to re-target. Schemas are derived per harvester as hz_sw_<label> / hzg_sw_<label>.",
+  "models": {
+    "gpt55": "gpt-5.5",
+    "son46": "claude-sonnet-4.6",
+    "opus48": "claude-opus-4.8"
+  },
+  "harvesters": ["gpt55", "son46", "opus48"],
+  "queries": ["gpt55", "son46", "opus48"],
+  "judges": ["gpt55", "son46", "opus48"],
+  "corpus": "pgsql-hackers-recent.json",
+  "questionCount": 16,
+  "genModel": "claude-opus-4.8",
+  "reportModel": "claude-opus-4.8",
+  "embedDim": 1536
+}

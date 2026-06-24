@@ -16,6 +16,7 @@ If you are building layered apps on top of PilotSwarm, this repo now ships distr
 
 - [Builder Agent Templates](docs/builder-agents.md)
 - [DevOps Command Center Sample](examples/devops-command-center/README.md)
+- [Horizon Harvester Sample](examples/horizon-harvester/README.md) — optional enhanced facts + knowledge graph
 
 These are not active agents in this repo. They are templates intended to be copied into a user repo under `.github/agents/` and `.github/skills/`.
 

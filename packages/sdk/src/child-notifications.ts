@@ -40,6 +40,16 @@ export interface ChildUpdateSnapshot {
     result?: Partial<ChildSessionResult>;
     /** Optional explicit material flag from the child (overrides classifier). */
     material?: boolean;
+    /**
+     * True when this update was produced by a recurring cron/cron_at timer fire
+     * (a periodic watcher cycle), as opposed to a genuine finished answer or a
+     * reply to the parent. A cyclic completion with no terminal verdict and no
+     * explicit `material` flag is treated as a no-op heartbeat regardless of its
+     * prose, so quiet watcher cycles do not wake the parent under
+     * `material_change` / `completion`. Set only by the orchestration for
+     * cron-origin turns.
+     */
+    cyclic?: boolean;
 }
 
 /** Default policy when a contract is missing or unset. */
@@ -129,7 +139,19 @@ export function classifyChildUpdate(update: ChildUpdateSnapshot): ChildUpdateCla
             if (verdict === "blocked" || verdict === "failed" || verdict === "timed_out") return "completion";
             return "completion";
         }
-        // Completed turn without a verdict — treat as material so parent sees the summary.
+        // Explicit material flag from the child wins (escalation path).
+        if (update.material === true) return "material";
+        // Cron-origin (cyclic) completion with no terminal verdict: a periodic
+        // watcher cycle that ended without flagging anything. Classify as a
+        // heartbeat regardless of prose so material_change / completion suppress
+        // it. (`cyclic` is set only for cron/cron_at timer-origin turns; ordinary
+        // completions fall through and keep the legacy behavior below.)
+        // Strict `=== true` so only the orchestration-owned boolean can activate
+        // this suppression path, never truthy garbage from serialized input.
+        if (update.cyclic === true) return "heartbeat";
+        // Non-cyclic completion without a verdict — preserve legacy behavior:
+        // an explicit material:false heartbeat stays a heartbeat; otherwise treat
+        // as material so a genuine finished answer reaches the parent.
         return update.material === false && isHeartbeatText(update.summary) ? "heartbeat" : "material";
     }
 

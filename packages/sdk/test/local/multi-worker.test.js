@@ -21,9 +21,10 @@ import { withClient, withTwoWorkers, PilotSwarmClient, PilotSwarmWorker } from "
 import { assert, assertEqual, assertIncludes, assertIncludesAny, assertGreaterOrEqual, assertNotNull, assertThrows } from "../helpers/assertions.js";
 import { createCatalog, waitForSessionState, validateSessionAfterTurn } from "../helpers/cms-helpers.js";
 import { ONEWORD_CONFIG, MEMORY_CONFIG } from "../helpers/fixtures.js";
+import { createRuntimeFactStore } from "../helpers/fact-store-helpers.js";
 import { existsSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { FilesystemSessionStore, SessionManager, createFactStoreForUrl } from "../../src/index.ts";
+import { FilesystemSessionStore, SessionManager } from "../../src/index.ts";
 
 const TIMEOUT = 180_000;
 const getEnv = useSuiteEnv(import.meta.url);
@@ -70,6 +71,7 @@ async function testSessionSurvivesGracefulRestart(env) {
         store: env.store,
         duroxideSchema: env.duroxideSchema,
         cmsSchema: env.cmsSchema,
+        factsSchema: env.factsSchema,
         sessionStateDir: env.sessionStateDir,
     };
 
@@ -86,6 +88,7 @@ async function testSessionSurvivesGracefulRestart(env) {
         store: env.store,
         duroxideSchema: env.duroxideSchema,
         cmsSchema: env.cmsSchema,
+        factsSchema: env.factsSchema,
     });
     await client.start();
 
@@ -125,6 +128,7 @@ async function testSessionSurvivesGracefulRestart(env) {
         store: env.store,
         duroxideSchema: env.duroxideSchema,
         cmsSchema: env.cmsSchema,
+        factsSchema: env.factsSchema,
     });
     await client2.start();
 
@@ -189,6 +193,7 @@ async function testWorkerHandoffAfterStop(env) {
         store: env.store,
         duroxideSchema: env.duroxideSchema,
         cmsSchema: env.cmsSchema,
+        factsSchema: env.factsSchema,
         sessionStateDir: env.sessionStateDir,
     };
 
@@ -205,6 +210,7 @@ async function testWorkerHandoffAfterStop(env) {
         store: env.store,
         duroxideSchema: env.duroxideSchema,
         cmsSchema: env.cmsSchema,
+        factsSchema: env.factsSchema,
     });
     await client.start();
 
@@ -239,6 +245,7 @@ async function testWorkerHandoffAfterStop(env) {
         store: env.store,
         duroxideSchema: env.duroxideSchema,
         cmsSchema: env.cmsSchema,
+        factsSchema: env.factsSchema,
     });
     await client2.start();
 
@@ -265,8 +272,7 @@ async function testTurnZeroResetsStaleStoredSession(env) {
     const fixedSessionId = "00000000-0000-4000-8000-000000000001";
     const archiveDir = join(dirname(env.sessionStateDir), "session-store");
     const store = new FilesystemSessionStore(archiveDir, env.sessionStateDir);
-    const factStore = await createFactStoreForUrl(env.store, env.factsSchema);
-    await factStore.initialize();
+    const factStore = await createRuntimeFactStore(env);
 
     // Pre-seed stale Copilot session state without any orchestration/CMS history.
     const seedManager = new SessionManager(process.env.GITHUB_TOKEN, store, {}, env.sessionStateDir);
@@ -286,6 +292,7 @@ async function testTurnZeroResetsStaleStoredSession(env) {
         githubToken: process.env.GITHUB_TOKEN,
         duroxideSchema: env.duroxideSchema,
         cmsSchema: env.cmsSchema,
+        factsSchema: env.factsSchema,
         sessionStateDir: env.sessionStateDir,
         workerNodeId: "turn-zero-reset",
         disableManagementAgents: true,
@@ -296,6 +303,7 @@ async function testTurnZeroResetsStaleStoredSession(env) {
         store: env.store,
         duroxideSchema: env.duroxideSchema,
         cmsSchema: env.cmsSchema,
+        factsSchema: env.factsSchema,
     });
     await client.start();
 
@@ -321,6 +329,7 @@ async function testTurnOneLossyReplaysWithoutStoredSession(env) {
         store: env.store,
         duroxideSchema: env.duroxideSchema,
         cmsSchema: env.cmsSchema,
+        factsSchema: env.factsSchema,
         sessionStateDir: env.sessionStateDir,
     };
 
@@ -336,6 +345,7 @@ async function testTurnOneLossyReplaysWithoutStoredSession(env) {
         store: env.store,
         duroxideSchema: env.duroxideSchema,
         cmsSchema: env.cmsSchema,
+        factsSchema: env.factsSchema,
     });
     await clientA.start();
 
@@ -372,6 +382,7 @@ async function testTurnOneLossyReplaysWithoutStoredSession(env) {
         store: env.store,
         duroxideSchema: env.duroxideSchema,
         cmsSchema: env.cmsSchema,
+        factsSchema: env.factsSchema,
     });
     await clientB.start();
 

@@ -8,7 +8,7 @@
  *   2. Removes local artifact dirs (~/.copilot/artifacts/<sessionId>/)
  *   3. Removes local session state dirs (~/.copilot/session-state/<sessionId>/)
  *   4. Removes local session store archives (~/.copilot/session-store/<sessionId>.tar.gz + .meta.json)
- *   5. Drops duroxide + copilot_sessions database schemas
+ *   5. Drops ps_duroxide, legacy duroxide if PilotSwarm-owned, and copilot_sessions database schemas
  *
  * Usage:
  *   node --env-file=../../.env examples/devops-command-center/scripts/cleanup-local-db.js
@@ -33,6 +33,19 @@ if (!connectionString) {
 
 const SESSION_STATE_DIR = process.env.SESSION_STATE_DIR || path.join(os.homedir(), ".copilot", "session-state");
 const SESSION_STORE_DIR = path.join(path.dirname(SESSION_STATE_DIR), "session-store");
+
+async function schemaOwnedByPgDurable(client, schemaName) {
+    const { rows } = await client.query(`
+        SELECT EXISTS (
+            SELECT 1
+            FROM pg_extension e
+            JOIN pg_namespace n ON n.oid = e.extnamespace
+            WHERE e.extname = 'pg_durable'
+              AND n.nspname = $1
+        ) AS owned
+    `, [schemaName]);
+    return Boolean(rows[0]?.owned);
+}
 const ARTIFACT_DIR = path.join(path.dirname(SESSION_STATE_DIR), "artifacts");
 
 // ── 1. Collect session IDs from CMS ─────────────────────────
@@ -97,8 +110,14 @@ console.log(`Deleted ${storeDeleted} local session store file(s).`);
 // ── 5. Drop database schemas ────────────────────────────────
 
 try {
-    await client.query("DROP SCHEMA IF EXISTS duroxide CASCADE");
-    console.log("Dropped schema: duroxide");
+    await client.query("DROP SCHEMA IF EXISTS ps_duroxide CASCADE");
+    console.log("Dropped schema: ps_duroxide");
+    if (await schemaOwnedByPgDurable(client, "duroxide")) {
+        console.log("Skipped schema: duroxide (owned by pg_durable)");
+    } else {
+        await client.query("DROP SCHEMA IF EXISTS duroxide CASCADE");
+        console.log("Dropped schema: duroxide");
+    }
     await client.query("DROP SCHEMA IF EXISTS copilot_sessions CASCADE");
     console.log("Dropped schema: copilot_sessions");
 } finally {

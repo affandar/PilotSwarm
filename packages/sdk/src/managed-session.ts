@@ -1,5 +1,5 @@
 import { defineTool, type Tool, type CopilotSession } from "@github/copilot-sdk";
-import type { TurnAction, TurnResult, TurnOptions, ManagedSessionConfig, CapturedEvent } from "./types.js";
+import type { CycleReport, TurnAction, TurnResult, TurnOptions, ManagedSessionConfig, CapturedEvent } from "./types.js";
 import type { ReasoningEffort } from "./model-providers.js";
 
 /**
@@ -9,6 +9,7 @@ import type { ReasoningEffort } from "./model-providers.js";
 interface TurnState {
     pendingActions: TurnAction[];
     queuedActions: TurnAction[];
+    cycleReport?: CycleReport;
     session: CopilotSession | null;
     waitThreshold: number;
 }
@@ -321,6 +322,24 @@ export class ManagedSession {
             handler: async () => "stub",
         });
 
+        const reportCycleTool = defineTool("report_cycle", {
+            description:
+                "Report the outcome of the current recurring cron/cron_at watcher cycle. " +
+                "Use status='quiet' when nothing material changed, status='material' when the parent should be notified, " +
+                "and status='blocked' when the cycle found a blocker or failure that needs parent attention. " +
+                "This tool does not end the turn; after calling it, finish normally. It is ignored outside recurring watcher cycles.",
+            parameters: {
+                type: "object",
+                properties: {
+                    status: { type: "string", enum: ["quiet", "material", "blocked"], description: "Whether this recurring cycle was quiet or should wake the parent." },
+                    summary: { type: "string", description: "Optional concise machine-readable summary of the cycle outcome." },
+                    deltas: { type: "array", items: { type: "string" }, description: "Optional concrete changes found this cycle." },
+                },
+                required: ["status"],
+            },
+            handler: async () => "stub",
+        });
+
         const listModelsTool = defineTool("list_available_models", {
             description:
                 "List all available LLM models across all configured providers. " +
@@ -397,7 +416,7 @@ export class ManagedSession {
             handler: async () => "stub",
         });
 
-        return [waitTool, waitOnWorkerTool, cronTool, cronAtTool, askUserTool, listModelsTool, updateSessionSummaryTool, sendSessionMessageTool, replySessionMessageTool];
+        return [waitTool, waitOnWorkerTool, cronTool, cronAtTool, askUserTool, reportCycleTool, listModelsTool, updateSessionSummaryTool, sendSessionMessageTool, replySessionMessageTool];
     }
 
     /**
@@ -682,6 +701,49 @@ export class ManagedSession {
                     preserveWorkerAffinity: args.preserveWorkerAffinity ?? false,
                 });
                 return acknowledgeTurnBoundary("wait");
+            },
+        });
+
+        const reportCycleTool = defineTool("report_cycle", {
+            description:
+                "Report the outcome of the current recurring cron/cron_at watcher cycle. " +
+                "Use status='quiet' when nothing material changed, status='material' when the parent should be notified, " +
+                "and status='blocked' when the cycle found a blocker or failure that needs parent attention. " +
+                "This tool does not end the turn; after calling it, finish normally. It is ignored outside recurring watcher cycles.",
+            parameters: {
+                type: "object",
+                properties: {
+                    status: {
+                        type: "string",
+                        enum: ["quiet", "material", "blocked"],
+                        description: "Whether this recurring cycle was quiet or should wake the parent.",
+                    },
+                    summary: {
+                        type: "string",
+                        description: "Optional concise machine-readable summary of the cycle outcome.",
+                    },
+                    deltas: {
+                        type: "array",
+                        items: { type: "string" },
+                        description: "Optional concrete changes found this cycle.",
+                    },
+                },
+                required: ["status"],
+            },
+            handler: async (args: { status: "quiet" | "material" | "blocked"; summary?: string; deltas?: string[] }) => {
+                if (!opts?.cycleOrigin) {
+                    return JSON.stringify({ ok: true, ignored: true, reason: "not_a_recurring_cycle" });
+                }
+                const status = args.status;
+                if (status !== "quiet" && status !== "material" && status !== "blocked") {
+                    return "Error: report_cycle status must be one of quiet, material, or blocked.";
+                }
+                turnState.cycleReport = {
+                    status,
+                    ...(typeof args.summary === "string" && args.summary.trim() ? { summary: args.summary.trim() } : {}),
+                    ...(Array.isArray(args.deltas) ? { deltas: args.deltas.filter((delta) => typeof delta === "string" && delta.trim()).map((delta) => delta.trim()) } : {}),
+                };
+                return JSON.stringify({ ok: true, status });
             },
         });
 
@@ -1318,7 +1380,7 @@ export class ManagedSession {
             },
         });
 
-        const SYSTEM_TOOL_NAMES = new Set(["wait", "wait_on_worker", "cron", "ask_user", "list_available_models", "update_session_summary", "send_session_message", "reply_session_message", "spawn_agent", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "delete_agent"]);
+        const SYSTEM_TOOL_NAMES = new Set(["wait", "wait_on_worker", "cron", "cron_at", "ask_user", "report_cycle", "list_available_models", "update_session_summary", "send_session_message", "reply_session_message", "spawn_agent", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "delete_agent"]);
 
         // Merge user tools with system tools
         const userTools = this.config.tools ?? [];
@@ -1356,6 +1418,7 @@ export class ManagedSession {
             cronTool,
             cronAtTool,
             askUserTool,
+            reportCycleTool,
             listModelsTool,
             updateSessionSummaryTool,
             sendSessionMessageTool,
@@ -1767,6 +1830,7 @@ export class ManagedSession {
             type: "completed",
             content: finalContent ?? "(no response)",
             events: collectedEvents,
+            ...(turnState.cycleReport ? { cycleReport: turnState.cycleReport } : {}),
             queuedActions: completedQueuedActions,
         };
     }

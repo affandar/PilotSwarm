@@ -34,6 +34,36 @@ export function FACTS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "facts_read_unrestricted",
             sql: migration_0004_facts_read_unrestricted(schema),
         },
+        {
+            version: "0005",
+            name: "facts_read_scope_keys",
+            sql: migration_0005_facts_read_scope_keys(schema),
+        },
+        {
+            version: "0006",
+            name: "crawl_queue",
+            sql: migration_0006_crawl_queue(schema),
+        },
+        {
+            version: "0007",
+            name: "minimal_crawl_queue",
+            sql: migration_0007_minimal_crawl_queue(schema),
+        },
+        {
+            version: "0008",
+            name: "batch_store_pattern_delete",
+            sql: migration_0008_batch_store_pattern_delete(schema),
+        },
+        {
+            version: "0009",
+            name: "unified_store_delete_api",
+            sql: migration_0009_unified_store_delete_api(schema),
+        },
+        {
+            version: "0010",
+            name: "soft_delete_etag",
+            sql: migration_0010_soft_delete_etag(schema),
+        },
     ];
 }
 
@@ -444,6 +474,907 @@ BEGIN
         || ' ORDER BY f.updated_at DESC LIMIT ' || p_limit;
 
     RETURN QUERY EXECUTE final_sql;
+END;
+$$ LANGUAGE plpgsql;
+`;
+}
+
+// ─── Migration 0005: facts_read_facts exposes scope_key + accepts scopeKeys ──
+
+function migration_0005_facts_read_scope_keys(schema: string): string {
+    const s = `"${schema}"`;
+    const t = `${s}.facts`;
+    return `
+-- 0005_facts_read_scope_keys (enhancedfactstore 02 §1c): the read proc now
+-- (a) RETURNS the canonical scope_key (so graph 'evidence' arrays can reference
+--     a real fact and resolve back), and
+-- (b) accepts an optional p_scope_keys TEXT[] for bulk read-by-key — the way
+--     graph evidence resolves into facts. ACL still applies; the scope_keys
+--     filter only narrows. Additive + idempotent.
+--
+-- The return shape changes (adds scope_key), so the previous 9-arg proc must be
+-- DROPped before recreating.
+
+DROP FUNCTION IF EXISTS ${s}.facts_read_facts(TEXT, TEXT, TEXT[], TEXT, TEXT[], TEXT, TEXT, INT, BOOLEAN) CASCADE;
+
+CREATE OR REPLACE FUNCTION ${s}.facts_read_facts(
+    p_scope              TEXT,
+    p_reader_session_id  TEXT,
+    p_granted_ids        TEXT[],
+    p_key_pattern        TEXT,
+    p_tags               TEXT[],
+    p_session_id         TEXT,
+    p_agent_id           TEXT,
+    p_limit              INT,
+    p_unrestricted       BOOLEAN DEFAULT FALSE,
+    p_scope_keys         TEXT[]  DEFAULT NULL
+) RETURNS TABLE (
+    scope_key  TEXT,
+    key        TEXT,
+    value      JSONB,
+    agent_id   TEXT,
+    session_id TEXT,
+    shared     BOOLEAN,
+    tags       TEXT[],
+    created_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ
+) AS $$
+DECLARE
+    base_sql TEXT;
+    where_clauses TEXT[] := ARRAY[]::TEXT[];
+    final_sql TEXT;
+BEGIN
+    base_sql := 'SELECT f.scope_key, f.key, f.value, f.agent_id, f.session_id, f.shared, f.tags, f.created_at, f.updated_at FROM ${t} f WHERE ';
+
+    IF p_unrestricted THEN
+        -- Bypass visibility entirely; only optional filters apply.
+        where_clauses := array_append(where_clauses, 'TRUE');
+    ELSIF p_scope = 'shared' THEN
+        where_clauses := array_append(where_clauses, 'f.shared = TRUE');
+    ELSIF p_scope = 'session' THEN
+        IF p_reader_session_id IS NULL THEN
+            RETURN;
+        END IF;
+        where_clauses := array_append(where_clauses,
+            'f.shared = FALSE AND f.session_id = ' || quote_literal(p_reader_session_id));
+    ELSIF p_reader_session_id IS NOT NULL THEN
+        -- "accessible" or "descendants"
+        DECLARE
+            vis_parts TEXT[] := ARRAY[
+                'f.shared = TRUE',
+                '(f.shared = FALSE AND f.session_id = ' || quote_literal(p_reader_session_id) || ')'
+            ];
+        BEGIN
+            IF p_granted_ids IS NOT NULL AND array_length(p_granted_ids, 1) > 0 THEN
+                vis_parts := array_append(vis_parts,
+                    '(f.shared = FALSE AND f.session_id = ANY(' || quote_literal(p_granted_ids)::TEXT || '::TEXT[]))');
+            END IF;
+            where_clauses := array_append(where_clauses, '(' || array_to_string(vis_parts, ' OR ') || ')');
+        END;
+    ELSE
+        where_clauses := array_append(where_clauses, 'f.shared = TRUE');
+    END IF;
+
+    -- Bulk read-by-key (narrows within the visibility filter above). A non-null
+    -- but EMPTY array matches nothing (caller asked for zero facts), so it can
+    -- only narrow — never widen — what the visibility clause already permits.
+    IF p_scope_keys IS NOT NULL THEN
+        where_clauses := array_append(where_clauses,
+            'f.scope_key = ANY(' || quote_literal(p_scope_keys)::TEXT || '::TEXT[])');
+    END IF;
+
+    -- Optional filters
+    IF p_key_pattern IS NOT NULL THEN
+        where_clauses := array_append(where_clauses,
+            'f.key LIKE ' || quote_literal(p_key_pattern));
+    END IF;
+    IF p_tags IS NOT NULL AND array_length(p_tags, 1) > 0 THEN
+        where_clauses := array_append(where_clauses,
+            'f.tags @> ' || quote_literal(p_tags)::TEXT || '::TEXT[]');
+    END IF;
+    IF p_session_id IS NOT NULL THEN
+        where_clauses := array_append(where_clauses,
+            'f.session_id = ' || quote_literal(p_session_id));
+    END IF;
+    IF p_agent_id IS NOT NULL THEN
+        where_clauses := array_append(where_clauses,
+            'f.agent_id = ' || quote_literal(p_agent_id));
+    END IF;
+
+    final_sql := base_sql || array_to_string(where_clauses, ' AND ')
+        || ' ORDER BY f.updated_at DESC LIMIT ' || p_limit;
+
+    RETURN QUERY EXECUTE final_sql;
+END;
+$$ LANGUAGE plpgsql;
+`;
+}
+
+// ─── Migration 0006: crawl queue (base-store, vanilla PG — no extension) ─────
+
+function migration_0006_crawl_queue(schema: string): string {
+    const s = `"${schema}"`;
+    const t = `${s}.facts`;
+    return `
+-- 0006_crawl_queue (enhancedfactstore 07 D3): the facts↔graph crawl bridge lives
+-- on the BASE facts store as plain facts-table bookkeeping — so a base-Postgres
+-- deployment can feed a separate GraphStore harvester. Vanilla PG, no extension.
+--
+--   - content_hash     : trigger-maintained md5 of (key, value); the receipt
+--                        key for the read→mark race guard.
+--   - last_crawled_at  : NULL ⇒ pending crawl. Reset to NULL whenever content
+--                        changes (the facts_touch trigger).
+--   - facts_read_uncrawled / facts_mark_crawled : the harvester work queue.
+--
+-- Additive + idempotent. Inert unless a graph harvester runs.
+
+ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS content_hash    TEXT;
+ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS last_crawled_at TIMESTAMPTZ;
+
+-- Backfill content_hash for rows that predate this migration. last_crawled_at
+-- stays NULL (pending) — correct: nothing has crawled them yet.
+UPDATE ${t}
+SET content_hash = md5(coalesce(key, '') || E'\\x1f' || coalesce(value::text, ''))
+WHERE content_hash IS NULL;
+
+-- Work-queue index: only the pending rows.
+CREATE INDEX IF NOT EXISTS idx_${schema}_facts_uncrawled
+    ON ${t} (id) WHERE last_crawled_at IS NULL;
+
+-- Write-resets-pending-state: recompute content_hash on every write; when it
+-- CHANGES, reset last_crawled_at → NULL so a harvester re-crawls. Identical
+-- content writes change nothing (so re-storing an unchanged fact is a no-op for
+-- the queue).
+CREATE OR REPLACE FUNCTION ${s}.facts_touch() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+    new_hash TEXT;
+BEGIN
+    new_hash := md5(coalesce(NEW.key, '') || E'\\x1f' || coalesce(NEW.value::text, ''));
+    -- Keep content_hash authoritative on every write (defends against any
+    -- direct content_hash tampering by other code paths).
+    NEW.content_hash := new_hash;
+    -- Re-queue (reset crawl stamp) ONLY when the embeddable content changed.
+    IF TG_OP = 'INSERT' OR new_hash IS DISTINCT FROM OLD.content_hash THEN
+        NEW.last_crawled_at := NULL;
+    END IF;
+    RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS facts_touch ON ${t};
+CREATE TRIGGER facts_touch
+    BEFORE INSERT OR UPDATE ON ${t}
+    FOR EACH ROW EXECUTE FUNCTION ${s}.facts_touch();
+
+-- Harvester work queue: pending facts (last_crawled_at IS NULL), across ALL
+-- scopes (privileged), optionally narrowed by a key prefix. Returns the
+-- content_hash so the caller can produce a mark receipt.
+CREATE OR REPLACE FUNCTION ${s}.facts_read_uncrawled(
+    p_ns_prefix TEXT,
+    p_limit     INT
+) RETURNS TABLE (
+    scope_key    TEXT,
+    key          TEXT,
+    value        JSONB,
+    agent_id     TEXT,
+    session_id   TEXT,
+    shared       BOOLEAN,
+    tags         TEXT[],
+    created_at   TIMESTAMPTZ,
+    updated_at   TIMESTAMPTZ,
+    content_hash TEXT
+) LANGUAGE sql STABLE AS $$
+    SELECT f.scope_key, f.key, f.value, f.agent_id, f.session_id, f.shared,
+           f.tags, f.created_at, f.updated_at, f.content_hash
+    FROM ${t} f
+    WHERE f.last_crawled_at IS NULL
+      AND (p_ns_prefix IS NULL OR starts_with(f.key, p_ns_prefix))
+    ORDER BY f.id
+    LIMIT p_limit;
+$$;
+
+-- Stamp last_crawled_at = now(), but ONLY where content_hash still matches the
+-- supplied receipt (a fact edited mid-crawl keeps last_crawled_at = NULL and
+-- re-enters the queue). Mismatches are skipped, not errors.
+CREATE OR REPLACE FUNCTION ${s}.facts_mark_crawled(p_stamps JSONB)
+RETURNS TABLE (marked INT, skipped INT)
+LANGUAGE sql AS $$
+    WITH stamps AS (
+        SELECT e->>'scopeKey' AS scope_key, e->>'contentHash' AS content_hash
+        FROM jsonb_array_elements(p_stamps) e
+    ),
+    upd AS (
+        UPDATE ${t} f
+           SET last_crawled_at = now()
+          FROM stamps s
+         WHERE f.scope_key = s.scope_key
+                     AND f.content_hash = s.content_hash
+        RETURNING f.scope_key
+    )
+    SELECT (SELECT count(*) FROM upd)::int AS marked,
+           ((SELECT count(*) FROM stamps) - (SELECT count(*) FROM upd))::int AS skipped;
+$$;
+`;
+}
+
+function migration_0007_minimal_crawl_queue(schema: string): string {
+    const s = `"${schema}"`;
+    const t = `${s}.facts`;
+    return `
+-- 0007_minimal_crawl_queue: remove content_hash from the base facts final
+-- schema. Crawl state is intentionally minimal: last_crawled_at NULL means
+-- pending, and facts_mark_crawled accepts scopeKey-only receipts.
+
+CREATE OR REPLACE FUNCTION ${s}.facts_touch() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'INSERT' OR NEW.key IS DISTINCT FROM OLD.key OR NEW.value IS DISTINCT FROM OLD.value THEN
+        NEW.last_crawled_at := NULL;
+    END IF;
+    RETURN NEW;
+END $$;
+
+ALTER TABLE ${t} DROP COLUMN IF EXISTS content_hash;
+
+DROP FUNCTION IF EXISTS ${s}.facts_read_uncrawled(TEXT, INT);
+
+CREATE OR REPLACE FUNCTION ${s}.facts_read_uncrawled(
+    p_ns_prefix TEXT,
+    p_limit     INT
+) RETURNS TABLE (
+    scope_key    TEXT,
+    key          TEXT,
+    value        JSONB,
+    agent_id     TEXT,
+    session_id   TEXT,
+    shared       BOOLEAN,
+    tags         TEXT[],
+    created_at   TIMESTAMPTZ,
+    updated_at   TIMESTAMPTZ
+) LANGUAGE sql STABLE AS $$
+    SELECT f.scope_key, f.key, f.value, f.agent_id, f.session_id, f.shared,
+           f.tags, f.created_at, f.updated_at
+    FROM ${t} f
+    WHERE f.last_crawled_at IS NULL
+      AND (p_ns_prefix IS NULL OR starts_with(f.key, p_ns_prefix))
+    ORDER BY f.id
+    LIMIT p_limit;
+$$;
+
+CREATE OR REPLACE FUNCTION ${s}.facts_mark_crawled(p_stamps JSONB)
+RETURNS TABLE (marked INT, skipped INT)
+LANGUAGE sql AS $$
+    WITH stamps AS (
+        SELECT e->>'scopeKey' AS scope_key
+        FROM jsonb_array_elements(p_stamps) e
+    ),
+    upd AS (
+        UPDATE ${t} f
+           SET last_crawled_at = now()
+          FROM stamps s
+         WHERE f.scope_key = s.scope_key
+           AND f.last_crawled_at IS NULL
+        RETURNING f.scope_key
+    )
+    SELECT (SELECT count(*) FROM upd)::int AS marked,
+           ((SELECT count(*) FROM stamps) - (SELECT count(*) FROM upd))::int AS skipped;
+$$;
+`;
+}
+
+function migration_0008_batch_store_pattern_delete(schema: string): string {
+    const s = `"${schema}"`;
+    const t = `${s}.facts`;
+    return `
+-- 0008_batch_store_pattern_delete: batch fact ingestion and explicit pattern
+-- deletes for the base FactStore. Stored procedures stay the only write/delete
+-- data-access surface.
+
+CREATE OR REPLACE FUNCTION ${s}.facts_store_facts(p_facts JSONB)
+RETURNS INT
+LANGUAGE sql AS $$
+    WITH input AS (
+        SELECT
+            e->>'scopeKey' AS scope_key,
+            e->>'key' AS key,
+            e->'value' AS value,
+            e->>'agentId' AS agent_id,
+            e->>'sessionId' AS session_id,
+            coalesce((e->>'shared')::boolean, false) AS shared,
+            coalesce((e->>'transient')::boolean, true) AS transient,
+            coalesce(ARRAY(SELECT jsonb_array_elements_text(e->'tags')), '{}'::text[]) AS tags
+        FROM jsonb_array_elements(p_facts) e
+    ), upserted AS (
+        INSERT INTO ${t}
+            (scope_key, key, value, agent_id, session_id, shared, transient, tags)
+        SELECT scope_key, key, value, agent_id, session_id, shared, transient, tags
+        FROM input
+        ON CONFLICT (scope_key) DO UPDATE SET
+            value      = EXCLUDED.value,
+            agent_id   = EXCLUDED.agent_id,
+            session_id = EXCLUDED.session_id,
+            shared     = EXCLUDED.shared,
+            transient  = EXCLUDED.transient,
+            tags       = EXCLUDED.tags,
+            updated_at = now()
+        RETURNING 1
+    )
+    SELECT count(*)::int FROM upserted;
+$$;
+
+CREATE OR REPLACE FUNCTION ${s}.facts_store_fact(
+    p_scope_key  TEXT,
+    p_key        TEXT,
+    p_value      JSONB,
+    p_agent_id   TEXT,
+    p_session_id TEXT,
+    p_shared     BOOLEAN,
+    p_transient  BOOLEAN,
+    p_tags       TEXT[]
+) RETURNS VOID AS $$
+BEGIN
+    PERFORM ${s}.facts_store_facts(jsonb_build_array(jsonb_build_object(
+        'scopeKey', p_scope_key,
+        'key', p_key,
+        'value', p_value,
+        'agentId', p_agent_id,
+        'sessionId', p_session_id,
+        'shared', p_shared,
+        'transient', p_transient,
+        'tags', coalesce(p_tags, '{}'::text[])
+    )));
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.facts_delete_facts(
+    p_key_pattern TEXT,
+    p_scope       TEXT,
+    p_session_id  TEXT,
+    p_unrestricted BOOLEAN DEFAULT FALSE
+) RETURNS BIGINT AS $$
+DECLARE
+    deleted_count BIGINT;
+BEGIN
+    IF p_key_pattern IS NULL OR p_key_pattern = '' THEN
+        RAISE EXCEPTION 'facts_delete_facts requires a key pattern';
+    END IF;
+    IF p_scope NOT IN ('session', 'shared', 'all') THEN
+        RAISE EXCEPTION 'facts_delete_facts scope must be session, shared, or all';
+    END IF;
+    IF p_scope = 'all' AND p_unrestricted IS DISTINCT FROM TRUE THEN
+        RAISE EXCEPTION 'facts_delete_facts scope=all requires unrestricted=true';
+    END IF;
+    IF p_scope = 'session' AND p_session_id IS NULL THEN
+        RAISE EXCEPTION 'facts_delete_facts scope=session requires sessionId';
+    END IF;
+
+    DELETE FROM ${t} f
+    WHERE f.key LIKE p_key_pattern
+      AND (
+        (p_scope = 'shared' AND f.shared = TRUE)
+        OR (p_scope = 'session' AND f.shared = FALSE AND f.session_id = p_session_id)
+        OR (p_scope = 'all' AND p_unrestricted = TRUE)
+      );
+    GET DIAGNOSTICS deleted_count = ROW_COUNT;
+    RETURN deleted_count;
+END;
+$$ LANGUAGE plpgsql;
+`;
+}
+
+function migration_0009_unified_store_delete_api(schema: string): string {
+    const s = `"${schema}"`;
+    const t = `${s}.facts`;
+    return `
+-- 0009_unified_store_delete_api: collapse plural stored procedure names back
+-- into the singular store/delete API. Batch store is facts_store_fact(jsonb);
+-- pattern delete is facts_delete_fact(key, pattern, scope, sessionId, unrestricted).
+
+DROP FUNCTION IF EXISTS ${s}.facts_store_fact(JSONB);
+DROP FUNCTION IF EXISTS ${s}.facts_store_fact(TEXT, TEXT, JSONB, TEXT, TEXT, BOOLEAN, BOOLEAN, TEXT[]);
+CREATE OR REPLACE FUNCTION ${s}.facts_store_fact(p_facts JSONB)
+RETURNS INT
+LANGUAGE sql AS $$
+    WITH input AS (
+        SELECT
+            e->>'scopeKey' AS scope_key,
+            e->>'key' AS key,
+            e->'value' AS value,
+            e->>'agentId' AS agent_id,
+            e->>'sessionId' AS session_id,
+            coalesce((e->>'shared')::boolean, false) AS shared,
+            coalesce((e->>'transient')::boolean, true) AS transient,
+            coalesce(ARRAY(SELECT jsonb_array_elements_text(e->'tags')), '{}'::text[]) AS tags
+        FROM jsonb_array_elements(p_facts) e
+    ), upserted AS (
+        INSERT INTO ${t}
+            (scope_key, key, value, agent_id, session_id, shared, transient, tags)
+        SELECT scope_key, key, value, agent_id, session_id, shared, transient, tags
+        FROM input
+        ON CONFLICT (scope_key) DO UPDATE SET
+            value      = EXCLUDED.value,
+            agent_id   = EXCLUDED.agent_id,
+            session_id = EXCLUDED.session_id,
+            shared     = EXCLUDED.shared,
+            transient  = EXCLUDED.transient,
+            tags       = EXCLUDED.tags,
+            updated_at = now()
+        RETURNING 1
+    )
+    SELECT count(*)::int FROM upserted;
+$$;
+
+DROP FUNCTION IF EXISTS ${s}.facts_delete_fact(TEXT);
+DROP FUNCTION IF EXISTS ${s}.facts_delete_fact(TEXT, BOOLEAN, TEXT, TEXT, BOOLEAN);
+CREATE OR REPLACE FUNCTION ${s}.facts_delete_fact(
+    p_key_or_pattern TEXT,
+    p_pattern BOOLEAN DEFAULT FALSE,
+    p_scope TEXT DEFAULT NULL,
+    p_session_id TEXT DEFAULT NULL,
+    p_unrestricted BOOLEAN DEFAULT FALSE
+) RETURNS BIGINT AS $$
+DECLARE
+    deleted_count BIGINT;
+    v_scope TEXT;
+BEGIN
+    IF p_pattern THEN
+        IF p_key_or_pattern IS NULL OR p_key_or_pattern = '' THEN
+            RAISE EXCEPTION 'facts_delete_fact pattern mode requires key';
+        END IF;
+        v_scope := coalesce(p_scope, 'session');
+        IF v_scope NOT IN ('session', 'shared', 'all') THEN
+            RAISE EXCEPTION 'facts_delete_fact scope must be session, shared, or all';
+        END IF;
+        IF v_scope = 'all' AND p_unrestricted IS DISTINCT FROM TRUE THEN
+            RAISE EXCEPTION 'facts_delete_fact scope=all requires unrestricted=true';
+        END IF;
+        IF v_scope = 'session' AND p_session_id IS NULL THEN
+            RAISE EXCEPTION 'facts_delete_fact scope=session requires sessionId';
+        END IF;
+
+        DELETE FROM ${t} f
+        WHERE f.key LIKE p_key_or_pattern
+          AND (
+            (v_scope = 'shared' AND f.shared = TRUE)
+            OR (v_scope = 'session' AND f.shared = FALSE AND f.session_id = p_session_id)
+            OR (v_scope = 'all' AND p_unrestricted = TRUE)
+          );
+    ELSE
+        DELETE FROM ${t} WHERE scope_key = p_key_or_pattern;
+    END IF;
+    GET DIAGNOSTICS deleted_count = ROW_COUNT;
+    RETURN deleted_count;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP FUNCTION IF EXISTS ${s}.facts_store_facts(JSONB);
+DROP FUNCTION IF EXISTS ${s}.facts_delete_facts(TEXT, TEXT, TEXT, BOOLEAN);
+`;
+}
+
+function migration_0010_soft_delete_etag(schema: string): string {
+    const s = `"${schema}"`;
+    const t = `${s}.facts`;
+    return `
+-- 0010_soft_delete_etag: soft-delete facts and protect crawl mark writes with
+-- a per-row etag. The facts store stays graph-agnostic: deleted facts remain in
+-- the crawl queue until a crawler marks them, or until the Facts Manager TTL
+-- purge removes expired tombstones.
+
+ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS etag BIGINT NOT NULL DEFAULT 0;
+
+CREATE INDEX IF NOT EXISTS idx_${schema}_facts_tombstones
+    ON ${t} (deleted_at) WHERE deleted_at IS NOT NULL;
+
+-- Crawl-relevant state changes bump the etag and re-enter the crawl queue.
+-- Embedding state does not exist in the base store, so only crawl bookkeeping is
+-- handled here. last_crawled_at-only writes (facts_mark_crawled) do not bump etag.
+CREATE OR REPLACE FUNCTION ${s}.facts_touch() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        NEW.etag := COALESCE(NEW.etag, 0) + 1;
+        NEW.last_crawled_at := NULL;
+    ELSIF NEW.key IS DISTINCT FROM OLD.key
+       OR NEW.value IS DISTINCT FROM OLD.value
+       OR NEW.deleted_at IS DISTINCT FROM OLD.deleted_at THEN
+        NEW.etag := COALESCE(OLD.etag, 0) + 1;
+        NEW.last_crawled_at := NULL;
+    END IF;
+    RETURN NEW;
+END $$;
+
+DROP FUNCTION IF EXISTS ${s}.facts_store_fact(JSONB);
+CREATE OR REPLACE FUNCTION ${s}.facts_store_fact(p_facts JSONB)
+RETURNS INT
+LANGUAGE sql AS $$
+    WITH input AS (
+        SELECT
+            e->>'scopeKey' AS scope_key,
+            e->>'key' AS key,
+            e->'value' AS value,
+            e->>'agentId' AS agent_id,
+            e->>'sessionId' AS session_id,
+            coalesce((e->>'shared')::boolean, false) AS shared,
+            coalesce((e->>'transient')::boolean, true) AS transient,
+            coalesce(ARRAY(SELECT jsonb_array_elements_text(e->'tags')), '{}'::text[]) AS tags
+        FROM jsonb_array_elements(p_facts) e
+    ), upserted AS (
+        INSERT INTO ${t}
+            (scope_key, key, value, agent_id, session_id, shared, transient, tags)
+        SELECT scope_key, key, value, agent_id, session_id, shared, transient, tags
+        FROM input
+        ON CONFLICT (scope_key) DO UPDATE SET
+            key        = EXCLUDED.key,
+            value      = EXCLUDED.value,
+            agent_id   = EXCLUDED.agent_id,
+            session_id = EXCLUDED.session_id,
+            shared     = EXCLUDED.shared,
+            transient  = EXCLUDED.transient,
+            tags       = EXCLUDED.tags,
+            deleted_at = NULL,
+            updated_at = now()
+        RETURNING 1
+    )
+    SELECT count(*)::int FROM upserted;
+$$;
+
+DROP FUNCTION IF EXISTS ${s}.facts_delete_fact(TEXT, BOOLEAN, TEXT, TEXT, BOOLEAN);
+CREATE OR REPLACE FUNCTION ${s}.facts_delete_fact(
+    p_key_or_pattern TEXT,
+    p_pattern BOOLEAN DEFAULT FALSE,
+    p_scope TEXT DEFAULT NULL,
+    p_session_id TEXT DEFAULT NULL,
+    p_unrestricted BOOLEAN DEFAULT FALSE
+) RETURNS BIGINT AS $$
+DECLARE
+    deleted_count BIGINT;
+    v_scope TEXT;
+BEGIN
+    IF p_pattern THEN
+        IF p_key_or_pattern IS NULL OR p_key_or_pattern = '' THEN
+            RAISE EXCEPTION 'facts_delete_fact pattern mode requires key';
+        END IF;
+        v_scope := coalesce(p_scope, 'session');
+        IF v_scope NOT IN ('session', 'shared', 'all') THEN
+            RAISE EXCEPTION 'facts_delete_fact scope must be session, shared, or all';
+        END IF;
+        IF v_scope = 'all' AND p_unrestricted IS DISTINCT FROM TRUE THEN
+            RAISE EXCEPTION 'facts_delete_fact scope=all requires unrestricted=true';
+        END IF;
+        IF v_scope = 'session' AND p_session_id IS NULL THEN
+            RAISE EXCEPTION 'facts_delete_fact scope=session requires sessionId';
+        END IF;
+
+        UPDATE ${t} f
+           SET deleted_at = now(), updated_at = now()
+         WHERE f.deleted_at IS NULL
+           AND f.key LIKE p_key_or_pattern
+           AND (
+            (v_scope = 'shared' AND f.shared = TRUE)
+            OR (v_scope = 'session' AND f.shared = FALSE AND f.session_id = p_session_id)
+            OR (v_scope = 'all' AND p_unrestricted = TRUE)
+          );
+    ELSE
+        UPDATE ${t}
+           SET deleted_at = now(), updated_at = now()
+         WHERE scope_key = p_key_or_pattern
+           AND deleted_at IS NULL;
+    END IF;
+    GET DIAGNOSTICS deleted_count = ROW_COUNT;
+    RETURN deleted_count;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.facts_delete_session_facts(
+    p_session_id TEXT
+) RETURNS BIGINT AS $$
+DECLARE
+    deleted_count BIGINT;
+BEGIN
+    UPDATE ${t}
+       SET deleted_at = now(), updated_at = now()
+     WHERE session_id = p_session_id
+       AND shared = FALSE
+       AND deleted_at IS NULL;
+    GET DIAGNOSTICS deleted_count = ROW_COUNT;
+    RETURN deleted_count;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP FUNCTION IF EXISTS ${s}.facts_read_facts(TEXT, TEXT, TEXT[], TEXT, TEXT[], TEXT, TEXT, INT, BOOLEAN, TEXT[]) CASCADE;
+CREATE OR REPLACE FUNCTION ${s}.facts_read_facts(
+    p_scope              TEXT,
+    p_reader_session_id  TEXT,
+    p_granted_ids        TEXT[],
+    p_key_pattern        TEXT,
+    p_tags               TEXT[],
+    p_session_id         TEXT,
+    p_agent_id           TEXT,
+    p_limit              INT,
+    p_unrestricted       BOOLEAN DEFAULT FALSE,
+    p_scope_keys         TEXT[]  DEFAULT NULL
+) RETURNS TABLE (
+    scope_key  TEXT,
+    key        TEXT,
+    value      JSONB,
+    agent_id   TEXT,
+    session_id TEXT,
+    shared     BOOLEAN,
+    tags       TEXT[],
+    created_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ,
+    deleted_at TIMESTAMPTZ,
+    etag       BIGINT
+) AS $$
+DECLARE
+    base_sql TEXT;
+    where_clauses TEXT[] := ARRAY[]::TEXT[];
+    final_sql TEXT;
+BEGIN
+    base_sql := 'SELECT f.scope_key, f.key, f.value, f.agent_id, f.session_id, f.shared, f.tags, f.created_at, f.updated_at, f.deleted_at, f.etag FROM ${t} f WHERE f.deleted_at IS NULL AND ';
+
+    IF p_unrestricted THEN
+        where_clauses := array_append(where_clauses, 'TRUE');
+    ELSIF p_scope = 'shared' THEN
+        where_clauses := array_append(where_clauses, 'f.shared = TRUE');
+    ELSIF p_scope = 'session' THEN
+        IF p_reader_session_id IS NULL THEN
+            RETURN;
+        END IF;
+        where_clauses := array_append(where_clauses,
+            'f.shared = FALSE AND f.session_id = ' || quote_literal(p_reader_session_id));
+    ELSIF p_reader_session_id IS NOT NULL THEN
+        DECLARE
+            vis_parts TEXT[] := ARRAY[
+                'f.shared = TRUE',
+                '(f.shared = FALSE AND f.session_id = ' || quote_literal(p_reader_session_id) || ')'
+            ];
+        BEGIN
+            IF p_granted_ids IS NOT NULL AND array_length(p_granted_ids, 1) > 0 THEN
+                vis_parts := array_append(vis_parts,
+                    '(f.shared = FALSE AND f.session_id = ANY(' || quote_literal(p_granted_ids)::TEXT || '::TEXT[]))');
+            END IF;
+            where_clauses := array_append(where_clauses, '(' || array_to_string(vis_parts, ' OR ') || ')');
+        END;
+    ELSE
+        where_clauses := array_append(where_clauses, 'f.shared = TRUE');
+    END IF;
+
+    IF p_scope_keys IS NOT NULL THEN
+        where_clauses := array_append(where_clauses,
+            'f.scope_key = ANY(' || quote_literal(p_scope_keys)::TEXT || '::TEXT[])');
+    END IF;
+    IF p_key_pattern IS NOT NULL THEN
+        where_clauses := array_append(where_clauses,
+            'f.key LIKE ' || quote_literal(p_key_pattern));
+    END IF;
+    IF p_tags IS NOT NULL AND array_length(p_tags, 1) > 0 THEN
+        where_clauses := array_append(where_clauses,
+            'f.tags @> ' || quote_literal(p_tags)::TEXT || '::TEXT[]');
+    END IF;
+    IF p_session_id IS NOT NULL THEN
+        where_clauses := array_append(where_clauses,
+            'f.session_id = ' || quote_literal(p_session_id));
+    END IF;
+    IF p_agent_id IS NOT NULL THEN
+        where_clauses := array_append(where_clauses,
+            'f.agent_id = ' || quote_literal(p_agent_id));
+    END IF;
+
+    final_sql := base_sql || array_to_string(where_clauses, ' AND ')
+        || ' ORDER BY f.updated_at DESC LIMIT ' || p_limit;
+
+    RETURN QUERY EXECUTE final_sql;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.facts_get_session_facts_stats(
+    p_session_id TEXT
+) RETURNS TABLE (
+    namespace          TEXT,
+    fact_count         BIGINT,
+    total_value_bytes  BIGINT,
+    oldest_created_at  TIMESTAMPTZ,
+    newest_updated_at  TIMESTAMPTZ
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        ${s}.facts_namespace_for_key(f.key)               AS namespace,
+        COUNT(*)::BIGINT                                  AS fact_count,
+        COALESCE(SUM(pg_column_size(f.value)), 0)::BIGINT AS total_value_bytes,
+        MIN(f.created_at)                                 AS oldest_created_at,
+        MAX(f.updated_at)                                 AS newest_updated_at
+    FROM ${t} f
+    WHERE f.session_id = p_session_id
+      AND f.shared = FALSE
+      AND f.deleted_at IS NULL
+    GROUP BY 1
+    ORDER BY fact_count DESC, namespace;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.facts_get_facts_stats_for_sessions(
+    p_session_ids TEXT[]
+) RETURNS TABLE (
+    namespace          TEXT,
+    fact_count         BIGINT,
+    total_value_bytes  BIGINT,
+    oldest_created_at  TIMESTAMPTZ,
+    newest_updated_at  TIMESTAMPTZ
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        ${s}.facts_namespace_for_key(f.key)               AS namespace,
+        COUNT(*)::BIGINT                                  AS fact_count,
+        COALESCE(SUM(pg_column_size(f.value)), 0)::BIGINT AS total_value_bytes,
+        MIN(f.created_at)                                 AS oldest_created_at,
+        MAX(f.updated_at)                                 AS newest_updated_at
+    FROM ${t} f
+    WHERE f.session_id = ANY(p_session_ids)
+      AND f.shared = FALSE
+      AND f.deleted_at IS NULL
+    GROUP BY 1
+    ORDER BY fact_count DESC, namespace;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.facts_get_shared_facts_stats()
+RETURNS TABLE (
+    namespace          TEXT,
+    fact_count         BIGINT,
+    total_value_bytes  BIGINT,
+    oldest_created_at  TIMESTAMPTZ,
+    newest_updated_at  TIMESTAMPTZ
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        ${s}.facts_namespace_for_key(f.key)               AS namespace,
+        COUNT(*)::BIGINT                                  AS fact_count,
+        COALESCE(SUM(pg_column_size(f.value)), 0)::BIGINT AS total_value_bytes,
+        MIN(f.created_at)                                 AS oldest_created_at,
+        MAX(f.updated_at)                                 AS newest_updated_at
+    FROM ${t} f
+    WHERE f.shared = TRUE
+      AND f.deleted_at IS NULL
+    GROUP BY 1
+    ORDER BY fact_count DESC, namespace;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP FUNCTION IF EXISTS ${s}.facts_read_uncrawled(TEXT, INT);
+CREATE OR REPLACE FUNCTION ${s}.facts_read_uncrawled(
+    p_ns_prefix TEXT,
+    p_limit     INT
+) RETURNS TABLE (
+    scope_key    TEXT,
+    key          TEXT,
+    value        JSONB,
+    agent_id     TEXT,
+    session_id   TEXT,
+    shared       BOOLEAN,
+    tags         TEXT[],
+    created_at   TIMESTAMPTZ,
+    updated_at   TIMESTAMPTZ,
+    deleted_at   TIMESTAMPTZ,
+    etag         BIGINT
+) LANGUAGE sql STABLE AS $$
+    SELECT f.scope_key, f.key, f.value, f.agent_id, f.session_id, f.shared,
+           f.tags, f.created_at, f.updated_at, f.deleted_at, f.etag
+    FROM ${t} f
+    WHERE f.last_crawled_at IS NULL
+      AND (p_ns_prefix IS NULL OR starts_with(f.key, p_ns_prefix))
+    ORDER BY f.id
+    LIMIT p_limit;
+$$;
+
+CREATE OR REPLACE FUNCTION ${s}.facts_mark_crawled(p_stamps JSONB)
+RETURNS TABLE (marked INT, skipped INT)
+LANGUAGE sql AS $$
+    WITH stamps AS (
+         SELECT e->>'scopeKey' AS scope_key,
+             CASE WHEN (e->>'etag') ~ '^[0-9]+$' THEN (e->>'etag')::BIGINT ELSE NULL END AS etag
+        FROM jsonb_array_elements(p_stamps) e
+    ), upd AS (
+        UPDATE ${t} f
+           SET last_crawled_at = now()
+          FROM stamps s
+         WHERE f.scope_key = s.scope_key
+           AND f.last_crawled_at IS NULL
+           AND f.etag = s.etag
+        RETURNING f.scope_key
+    )
+    SELECT (SELECT count(*) FROM upd)::int AS marked,
+           ((SELECT count(*) FROM stamps) - (SELECT count(*) FROM upd))::int AS skipped;
+$$;
+
+CREATE OR REPLACE FUNCTION ${s}.facts_purge_expired(
+    p_ttl_seconds INT DEFAULT 21600,
+    p_limit       INT DEFAULT 1000
+) RETURNS BIGINT AS $$
+DECLARE
+    purged BIGINT;
+BEGIN
+    WITH candidates AS (
+        SELECT id
+        FROM ${t}
+        WHERE deleted_at IS NOT NULL
+          AND (
+            last_crawled_at IS NOT NULL
+            OR deleted_at < now() - make_interval(secs => GREATEST(p_ttl_seconds, 0))
+          )
+        -- Prefer already-reconciled tombstones within a batch so a lagging (not
+        -- dead) crawler's unreconciled tombstones get maximum time before the TTL
+        -- backstop reclaims them and strands their graph evidence.
+        ORDER BY (last_crawled_at IS NULL), deleted_at, id
+        LIMIT GREATEST(p_limit, 1)
+        FOR UPDATE SKIP LOCKED
+    ), del AS (
+        DELETE FROM ${t} f
+        USING candidates c
+        WHERE f.id = c.id
+        RETURNING 1
+    )
+    SELECT count(*) INTO purged FROM del;
+    RETURN COALESCE(purged, 0);
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.facts_tombstone_stats(
+    p_ttl_seconds INT DEFAULT 21600
+) RETURNS TABLE (
+    pending_total BIGINT,
+    unreconciled BIGINT,
+    ttl_blocked BIGINT,
+    oldest_unreconciled_age_seconds DOUBLE PRECISION,
+    reconciled_unswept BIGINT
+) LANGUAGE sql STABLE AS $$
+    SELECT
+        count(*) FILTER (WHERE deleted_at IS NOT NULL)::BIGINT AS pending_total,
+        count(*) FILTER (WHERE deleted_at IS NOT NULL AND last_crawled_at IS NULL)::BIGINT AS unreconciled,
+        count(*) FILTER (
+            WHERE deleted_at IS NOT NULL
+              AND last_crawled_at IS NULL
+              AND deleted_at >= now() - make_interval(secs => GREATEST(p_ttl_seconds, 0))
+        )::BIGINT AS ttl_blocked,
+        EXTRACT(EPOCH FROM (now() - MIN(deleted_at) FILTER (
+            WHERE deleted_at IS NOT NULL AND last_crawled_at IS NULL
+        )))::DOUBLE PRECISION AS oldest_unreconciled_age_seconds,
+        count(*) FILTER (WHERE deleted_at IS NOT NULL AND last_crawled_at IS NOT NULL)::BIGINT AS reconciled_unswept
+    FROM ${t};
+$$;
+
+CREATE OR REPLACE FUNCTION ${s}.facts_force_purge(
+    p_cutoff TIMESTAMPTZ,
+    p_only_unreconciled BOOLEAN DEFAULT FALSE,
+    p_key_prefix TEXT DEFAULT NULL,
+    p_limit INT DEFAULT 1000
+) RETURNS BIGINT AS $$
+DECLARE
+    purged BIGINT;
+BEGIN
+    WITH candidates AS (
+        SELECT id
+        FROM ${t}
+        WHERE deleted_at IS NOT NULL
+          AND deleted_at < p_cutoff
+          AND (p_only_unreconciled IS DISTINCT FROM TRUE OR last_crawled_at IS NULL)
+          AND (p_key_prefix IS NULL OR starts_with(key, p_key_prefix))
+        ORDER BY deleted_at, id
+        LIMIT GREATEST(p_limit, 1)
+        FOR UPDATE SKIP LOCKED
+    ), del AS (
+        DELETE FROM ${t} f
+        USING candidates c
+        WHERE f.id = c.id
+        RETURNING 1
+    )
+    SELECT count(*) INTO purged FROM del;
+    RETURN COALESCE(purged, 0);
 END;
 $$ LANGUAGE plpgsql;
 `;

@@ -1,0 +1,778 @@
+{
+  "generated": "2026-06-11T14:38:48.547Z",
+  "model": "claude-haiku-4.5",
+  "corpus": "pgsql-hackers-recent.json",
+  "tasks": [
+    {
+      "id": 1,
+      "seedType": "area",
+      "seed": "Row Pattern Recognition (RPR) implementation",
+      "question": "I'm getting up to speed on Row Pattern Recognition support in PostgreSQL. Who is proposing and reviewing this feature, what patches exist, how does RPR differ from standard window functions, and what are the main implementation challenges around window frame reduction and the PREV/NEXT function design?",
+      "key_points": [
+        "Tatsuo Ishii proposes PoC patch implementing RPR from SQL:2016, specifically Feature R020 (WINDOW clause portion), with Feature R010 (FROM clause) not yet covered",
+        "RPR enables pattern matching on time-series data (e.g., finding V-shaped stock price movements) using PATTERN and DEFINE clauses with row pattern variables",
+        "Vik Fearing points out critical design issue: RPR must reduce the window frame when calculating matched rows, unlike standard window functions which operate over full frames unconditionally",
+        "rpr() function differs from first_value() by only returning values from first row of matched pattern; unmatched rows return NULL",
+        "V2 patch adds AFTER MATCH SKIP PAST LAST ROW and AFTER MATCH SKIP TO NEXT ROW clauses controlling how pattern matching resumes after a match",
+        "Current implementation uses tweaked var->varno with OUTER_VAR and INNER_VAR to implement PREV/NEXT functions in DEFINE expressions; Ishii notes this is temporary hack needing replacement",
+        "Ishii plans to move pattern matching logic into nodeWindowAgg, specifically modifying update_frameheadpos() and update_frametailpos() to apply frame restriction to all window functions/aggregates",
+        "Pattern parsing currently happens in raw parser for simple cases, limiting support for complex quantifiers and operators; Ishii considers accepting pattern elements as Sconst instead",
+        "Jacob Champion (Timescale) identifies differences between RPR in FROM clause vs WINDOW clause regarding ONE ROW/ALL ROWS PER MATCH handling; questions if rewriting between them is always possible",
+        "Vik Fearing notes MEASURES clause required by standard, with qualified column names (e.g., LAST(DOWN.price) AS lowest) constrained to MEASURES context outside window specification"
+      ],
+      "entities": {
+        "people": [
+          "Tatsuo Ishii",
+          "Vik Fearing",
+          "Jacob Champion"
+        ],
+        "patches": [
+          "RPR PoC patch (v1)",
+          "RPR v2 patch with AFTER MATCH SKIP support"
+        ],
+        "files": [
+          "nodeWindowAgg",
+          "update_frameheadpos",
+          "update_frametailpos"
+        ],
+        "concepts": [
+          "Row Pattern Recognition (RPR)",
+          "SQL:2016 Feature R010 and R020",
+          "Window frame reduction",
+          "PATTERN clause",
+          "DEFINE clause",
+          "MEASURES clause",
+          "AFTER MATCH SKIP PAST LAST ROW",
+          "AFTER MATCH SKIP TO NEXT ROW",
+          "PREV function",
+          "NEXT function",
+          "rpr() aggregate function",
+          "Pattern variables",
+          "Row pattern quantifiers"
+        ]
+      },
+      "threadSubject": "Row pattern recognition",
+      "sourceIds": [
+        "20230625.210509.1276733411677577841.t-ishii@sranhm.sra.co.jp",
+        "fdf57a8d-65d5-e8a5-361f-3095d6899099@postgresfriends.org",
+        "20230626.100520.2022209340496571373.t-ishii@sranhm.sra.co.jp",
+        "20230626.174507.2071661484706170221.t-ishii@sranhm.sra.co.jp",
+        "90bff6fa-01b7-cf60-f4f4-3412514a7cd2@postgresfriends.org",
+        "20230628.095819.1123345378945479712.t-ishii@sranhm.sra.co.jp",
+        "20230628.211700.191321983330956034.t-ishii@sranhm.sra.co.jp",
+        "d5e469b6-2486-7569-e4da-1528b3b41d8c@postgresfriends.org",
+        "07214b3a-5893-f6ce-ef55-0e5d24c94925@timescale.com",
+        "20230720.141513.1986681389874528348.t-ishii@sranhm.sra.co.jp"
+      ]
+    },
+    {
+      "id": 2,
+      "seedType": "area",
+      "seed": "pg_upgrade pg_commit_ts directory migration",
+      "question": "I'm getting up to speed on pg_upgrade's handling of the pg_commit_ts directory when track_commit_timestamp is enabled. Who's involved, what's the patch doing, what code review concerns exist, and how should pg_upgrade behave when the new cluster doesn't have track_commit_timestamp enabled?",
+      "key_points": [
+        "ls7777 provided a patch to automatically copy the pg_commit_ts directory during pg_upgrade and update oldestCommitTsXid and newestCommitTsXid checkpoint values when track_commit_timestamp is on",
+        "Currently pg_commit_ts is NOT copied by pg_upgrade, causing data loss; users must manually copy and run pg_resetwal (per Maxim Orlov's observation)",
+        "Hayato Kuroda identified a critical issue: track_commit_timestamp must be enabled on the NEW instance, otherwise the copied pg_commit_ts data would be removed on startup",
+        "Amit Kapila proposed following the pattern of check_new_cluster_replication_slots(): error out if track_commit_timestamp is not set on the new server but valid commit_ts data exists in the old cluster",
+        "Maxim Orlov and Amit Kapila agreed that erroring is better than silent data loss, unlike the original patch which would silently drop pg_commit_ts if conditions aren't met",
+        "Hayato Kuroda's code review noted: pgindent must be run on the patch, control data attributes must be initialized following existing patterns, indent issues in the if statement",
+        "ls7777 stated commit_ts loss is not critical and left as user responsibility in initial proposal, but later agreed to implement parameter checks and ERROR messages after community feedback",
+        "Hayato Kuroda questioned whether pg_commit_ts is user data (should be preserved) or system data (acceptable to drop), requesting community opinions",
+        "Bruce Momjian clarified that translation work is not the patch author's responsibility—language teams will handle it",
+        "Code logic concern: need to clarify if it's possible for only either oldestCommitTs or newestCommitTs to exist (not both), affecting the ternary operator logic",
+        "The patch modifies copy_subdir_files() call with conditional based on chkpnt_oldstCommitTsxid > 0, requiring proper indentation fixes"
+      ],
+      "entities": {
+        "people": [
+          "ls7777",
+          "Maxim Orlov",
+          "Hayato Kuroda",
+          "Amit Kapila",
+          "Bruce Momjian"
+        ],
+        "patches": [
+          "Patch for migration of the pg_commit_ts directory (by ls7777, under review)"
+        ],
+        "files": [
+          "pg_commit_ts",
+          "control data (checkpoint oldestCommitTsXid, newestCommitTsXid)",
+          "pg_upgrade migration logic"
+        ],
+        "concepts": [
+          "track_commit_timestamp GUC",
+          "pg_commit_ts directory",
+          "pg_upgrade",
+          "pg_resetwal",
+          "checkpoint control data",
+          "check_new_cluster_replication_slots() pattern",
+          "check_control_data()",
+          "copy_subdir_files()",
+          "data loss during cluster migration",
+          "pgindent formatting"
+        ]
+      },
+      "threadSubject": "Patch for migration of the pg_commit_ts directory",
+      "sourceIds": [
+        "182311743703924@mail.yandex.ru",
+        "CACG=eza020LBv6-PPHFTi8OET1971bi8on98Uw6AtW7yV=eX+g@mail.gmail.com",
+        "OSCPR01MB1496660969357E7D16EF4FF12F5E6A@OSCPR01MB14966.jpnprd01.prod.outlook.com",
+        "OSCPR01MB149662EADD1EDA9811E7DF2B6F5E6A@OSCPR01MB14966.jpnprd01.prod.outlook.com",
+        "5381759333107@mail.yandex.ru",
+        "OSCPR01MB14966B4CAB3CC8AE5F8DAD57FF5E7A@OSCPR01MB14966.jpnprd01.prod.outlook.com",
+        "CAA4eK1+Zayox=x84upet_gc4hrCKSwZSpnO9=Q4vH8rrJbsBOg@mail.gmail.com",
+        "CACG=ezaFdL4EM8bdrHTRVHt5BmxxWGXcPiDr6Qm00Qj+S_Y+vQ@mail.gmail.com",
+        "23121759759185@mail.yandex.ru",
+        "aOPkC1kdXHasrJ3Z@momjian.us"
+      ]
+    },
+    {
+      "id": 3,
+      "seedType": "area",
+      "seed": "Conflict log history table for Logical Replication",
+      "question": "I'm getting up to speed on the conflict log history proposal for logical replication. Who is driving this, what are the main design debates, what storage approaches are being considered, should it be a catalog or user table, and what permission/retention models are emerging?",
+      "key_points": [
+        "Dilip Kumar proposed a conflict log history table to replace unstructured text logging, addressing limitations: unqueryable plain text, lack of structured queryable conflict data (table, operation, old/new data, LSN), and poor integration with external monitoring tools",
+        "Design question 1: Storage format — JSON column vs. anyarray (like pg_statistic); JSON chosen for flexibility across different table schemas",
+        "Design question 2: Catalog table vs. user table — Shveta Malik showed pg_statistic experiment: 1000 tables with 1000 rows each → 6,412 pg_statistic rows (~5.3 MB), suggesting catalogs can scale; BDR has bdr.conflict_history as extension-managed table with 30-day retention",
+        "Amit Kapila decided it must be a user table (not system catalog) for: (a) ever-growing data requiring user control to remove old data; (b) future user-controlled partitioning strategy; (c) users specifying what information to store; (d) consistency with parallel proposal for COPY error logging",
+        "Auto-creation during CREATE SUBSCRIPTION proposed: one conflict table per subscription, created automatically with options; Alastair Turner suggested CREATE ... IF NOT EXISTS semantics to allow reusing existing tables",
+        "Permission model: subscription owner receives SELECT, DELETE, TRUNCATE permissions but NOT INSERT/UPDATE to prevent manual data corruption",
+        "Alastair Turner proposed dependency relationship between conflict table and subscription to prevent accidental removal even by superusers",
+        "Retention strategy: conflict_stats_retention_period parameter proposed (default 30 days) with automatic or manual purging via purge_conflict_stats() function",
+        "Critical consideration: prevent conflict history tables from being replicated when included in FOR ALL TABLES publications",
+        "Amit Kapila suggested first version enables auto-creation with options; future versions would allow specifying existing tables; typed tables concept referenced as possible extension mechanism"
+      ],
+      "entities": {
+        "people": [
+          "Dilip Kumar",
+          "Shveta Malik",
+          "Amit Kapila",
+          "Alastair Turner"
+        ],
+        "patches": [],
+        "files": [],
+        "concepts": [
+          "Conflict log history table",
+          "Logical replication",
+          "JSON storage vs. anyarray",
+          "System catalog vs. user table",
+          "CREATE SUBSCRIPTION",
+          "Partitioning strategy",
+          "Retention period",
+          "Permission control",
+          "Dependency relationships",
+          "Extension-managed tables",
+          "Error logging during COPY",
+          "Typed tables"
+        ]
+      },
+      "threadSubject": "Proposal: Conflict log history table for Logical Replication",
+      "sourceIds": [
+        "CAFiTN-u5D5o_AGNbHRZHaOqAMWkxLf+hSk_r9X3gv6HbLOB5+g@mail.gmail.com",
+        "CAJpy0uAfRZa4axLV_e4gvVdmunb8BOVx+Yr=XecECAVD0KnD=A@mail.gmail.com",
+        "CAJpy0uB3y5Sd_LJyrhsyo48aP_WqTHC3oc0fz5m3obwGfc8JTQ@mail.gmail.com",
+        "CAFiTN-v2N256FZAMcgG9f2s7mENC2r0ME9HoKMb+tER7yxUCjQ@mail.gmail.com",
+        "CAJpy0uB-ScuYXzKPuhvnZ2Dk0n5_sPHe9bDgSHMYswrkCH1iqg@mail.gmail.com",
+        "CAFiTN-tddmj=URKbUe=-nV_AKs9gFer1N1ivEne498Se9Tz5oA@mail.gmail.com",
+        "CAJpy0uBa-_s-BhdenXVz2uRy-n8JXfP3KY_P9yUfnE-=W_XFig@mail.gmail.com",
+        "CAA4eK1KxZptz0nsPKHuhWnhDi0zqPkuFoC2d0hS1uqXtrryJZQ@mail.gmail.com",
+        "CAC0GmyyLiNY1HQRc9mHjDOx4e0L7wxsANvLcA9hAkyPd6ySTQA@mail.gmail.com",
+        "CAA4eK1Js=-eCSGx1kbOz+hp7riUKFeF8CnnLkmkj7xijbBPTug@mail.gmail.com"
+      ]
+    },
+    {
+      "id": 4,
+      "seedType": "area",
+      "seed": "REPACK command with optional CONCURRENTLY flag for concurrent table rewriting",
+      "question": "I'm getting up to speed on the REPACK command project. Who is driving this, what patches exist and in what order, what are the main design decisions and open issues, and what compilation/functionality bugs have been reported?",
+      "key_points": [
+        "Alvaro Herrera is leading the effort, building primarily on Antonin Houska's pg_squeeze-based implementation; goal is to unify VACUUM FULL and CLUSTER into a single REPACK command",
+        "0001 patch (target: September commitfest for pg19) reshuffles existing CLUSTER code to create basic REPACK command; CONCURRENTLY flag addition deferred to later in pg19 cycle",
+        "Robert Treat found bug in cluster.c switch statement: CLUSTER case incorrectly returns 'VACUUM' instead of 'CLUSTER' in the string conversion function",
+        "Fujii Masao discovered compilation failure in v17: CLUSTER_COMMAND_CLUSTER identifier used but not declared due to merge mistake when squashing Antonin's 0004 (code restructuring) into 0001",
+        "Concurrent mode requires wal_level=logical; later patches (not yet in main series) will support transient enabling of wal_level=logical per-table for concurrent repack",
+        "Fujii Masao reported functional failures: 'StartTransactionCommand: unexpected state STARTED' error during repeated REPACK, syntax error on 'REPACK (VERBOSE);', and 'has no identity index' errors when attempting REPACK CONCURRENTLY without proper indexes",
+        "Concurrent mode currently marked as non-MVCC safe; Mikhail Nikalayeu considers this a dealbreaker for production use, raising concerns about old snapshots and transactions during the exclusive lock swap phase",
+        "Antonin Houska already implemented an MVCC-safe two-phase approach in separate patches (message-id 77690.1725610115@antos) involving logical decoding with shadow table mechanism; Alvaro proposes deferring this for later review with optional flag",
+        "VACUUM FULL options ANALYZE and SKIP_DATABASE_STATS are not supported by REPACK (also not by CLUSTER); Antonin suggests documenting this limitation",
+        "Mihail Nikalayeu identified semantic overlap between build_new_indexes and index_concurrently_create_copy functions, proposing refactoring; Antonin addressed this in 0002 patch",
+        "Patch versioning: Alvaro submitted v17 (not v1, as Antonin had reached v15); earlier problematic version had undeclared identifier; rebased version includes Antonin's 0004 (code restructuring) and 0005 (regression tests)",
+        "Identity index requirement is mandatory for REPACK CONCURRENTLY but optional for basic REPACK; USING INDEX syntax supported with or without explicit index name"
+      ],
+      "entities": {
+        "people": [
+          "Alvaro Herrera",
+          "Antonin Houska",
+          "Robert Treat",
+          "Fujii Masao",
+          "Mikhail Nikalayeu"
+        ],
+        "patches": [
+          "0001: REPACK command (reshuffled CLUSTER code)",
+          "0002: build_new_indexes refactoring (Antonin)",
+          "0004: Code restructuring (Antonin, merged into v17)",
+          "0005: Regression tests (merged into v17)",
+          "MVCC-safe mode patches (Antonin, message-id 77690.1725610115@antos, deferred)"
+        ],
+        "files": [
+          "src/backend/commands/cluster.c",
+          "regression database"
+        ],
+        "concepts": [
+          "REPACK command",
+          "CONCURRENTLY flag",
+          "Logical decoding",
+          "wal_level setting",
+          "Identity index",
+          "MVCC safety",
+          "Concurrent table rewrite",
+          "Table bloat removal",
+          "pg_squeeze",
+          "pg_repack",
+          "Shadow table mechanism"
+        ]
+      },
+      "threadSubject": "Adding REPACK [concurrently]",
+      "sourceIds": [
+        "202507262156.sb455angijk6@alvherre.pgsql",
+        "CABV9wwMjm_8GQ_6A7WZkXzEkbz5ZPurB3ijxu74MbFJ4+XrWUg@mail.gmail.com",
+        "CAHGQGwELP6OAOprxjkS5iYSj1KXKmVPULJyYMddE7-uRxrSP_Q@mail.gmail.com",
+        "202507311650.3a44mqyi3xnw@alvherre.pgsql",
+        "CAHGQGwHCeqXUoNaJuftWjOkB8_LSmyH7Md9qkR79sOtW9DJe2Q@mail.gmail.com",
+        "CADzfLwWnMvnHc1-89woNzOzfK2_wqx7bD66p+RwD6xU2fg6Y_g@mail.gmail.com",
+        "11036.1754384324@localhost",
+        "CADzfLwXx46j8KwQjjM1ZcqNBsx-k6GxHOzDJkm4SHjh+cv31Rw@mail.gmail.com",
+        "202508091333.qvgvo7ikuezm@alvherre.pgsql",
+        "41104.1754922120@localhost"
+      ]
+    },
+    {
+      "id": 5,
+      "seedType": "area",
+      "seed": "pg_rewind timeline divergence handling during multi-crash promotion scenarios",
+      "question": "I'm ramping up on pg_rewind's handling of diverging timelines after multiple standby promotions. Who is involved, what is the core issue and proposed fix, what concerns were raised in review, and what remains to be resolved?",
+      "key_points": [
+        "Mats Kindahl identified a scenario where multiple crashes during standby promotion create diverging timelines (e.g., S1 and S2 both create TLI 2 independently), which pg_rewind cannot currently resolve",
+        "The specific failure case: S1 crashes, starts promotion to TLI 2, crashes before replicating End-of-Recovery (EOR), then S2 is promoted and also creates TLI 2, creating two independent TLI 2 versions (2.1 and 2.2)",
+        "Proposed solution: add UUID tags to timeline history entries to uniquely identify each promotion and allow pg_rewind to distinguish divergent timelines",
+        "Surya Poondla identified a critical bug: GetCurrentTimestamp() returns microseconds since Postgres epoch (2000-01-01), but generate_uuidv7_r expects milliseconds since Unix epoch, causing 30-year offset and non-conformant UUIDs",
+        "Mats fixed the timestamp issue by switching to gettimeofday() and removed unnecessary EOR record changes that were originally attempted",
+        "Logic for zero-UUID handling: if two timelines have identical TLI but one has zero UUID and one doesn't, they are from different promotions (old vs new server) and must be treated as different",
+        "Japin Li identified documentation mismatch: comment referenced non-existent timelines_match() function instead of matchAndFetchTimelines()",
+        "Struct naming inconsistency: TimelineHistoriesData should be TimeLineHistoriesData for consistency with TimeLineHistoryEntry",
+        "Japin Li discovered Windows platform test failure requiring path cleaning in tests (analogous to Cluster.pm pattern)",
+        "Patches created at least 5 versions (v1-v5) with iterative improvements based on review feedback",
+        "Code refactoring: matchingTimelineUUID() function was created and reused to simplify UUID comparison logic throughout",
+        "Test case added: three-promotion divergence scenario to exercise the fix more comprehensively"
+      ],
+      "entities": {
+        "people": [
+          "Mats Kindahl",
+          "Surya Poondla",
+          "Japin Li"
+        ],
+        "patches": [
+          "v1 - Initial patch with UUID tagging of timeline history",
+          "v2 - Updated version removing XLOG_END_OF_RECOVERY UUID extension, keeping history file changes",
+          "v3 - Timestamp epoch fix using gettimeofday(), EOR changes removed, UUID mismatch error handling added",
+          "v4 - Refactored to use matchingTimelineUUID(), fixed typos and naming inconsistencies",
+          "v5 - Windows path cleaning fix for tests"
+        ],
+        "files": [
+          "pg_rewind timeline history handling code",
+          "pg_rewind/test test suite",
+          "src/bin/pg_rewind/",
+          "Cluster.pm (referenced for path handling pattern)"
+        ],
+        "concepts": [
+          "timeline divergence",
+          "standby promotion",
+          "End-of-Recovery (EOR) record",
+          "timeline history (TLI)",
+          "UUIDv7 tagging",
+          "pg_rewind",
+          "WAL (Write-Ahead Logging)",
+          "synchronous_standby_names",
+          "crash recovery scenarios",
+          "zero UUID sentinel value",
+          "platform-agnostic path handling"
+        ]
+      },
+      "threadSubject": "pg_rewind does not rewind diverging timelines",
+      "sourceIds": [
+        "CAN305gBeJr8m7ZRW9mH0zakEFR4hDUPDo8fJRKJOHWMORG5_Bg@mail.gmail.com",
+        "CAN305gC0VE8zB=guccMj-7cJTW4oOAmTYCktaUKSzyOup=HHEw@mail.gmail.com",
+        "CAOVWO5oZZtniLR4Pyd=e_cS-FNxh837Gbz9TDUnSwWqmbap=bw@mail.gmail.com",
+        "CAN305gCcj4Mhr3uBQAnQCYsx6F-syp1rGtazoy=h+_EHO0xOXA@mail.gmail.com",
+        "SY7PR01MB1092190B1E748F1438CAB5D7AB60A2@SY7PR01MB10921.ausprd01.prod.outlook.com",
+        "CAN305gBPFE8KPgT5cdsbK8Xwxxii_+Hp4WVhCWsjFOYJ9j4xaw@mail.gmail.com",
+        "SY7PR01MB109216DF36CF987CF6EF10B29B60B2@SY7PR01MB10921.ausprd01.prod.outlook.com",
+        "CAN305gCaErXmG3fg48n50dWUC7=ETBBopuFL_cgyzutXUdp-5g@mail.gmail.com",
+        "SY7PR01MB10921E0F8383139EB27B33C11B6162@SY7PR01MB10921.ausprd01.prod.outlook.com",
+        "9ce0d2b9-7a41-4a8a-b299-da295bb4514f@gmail.com"
+      ]
+    },
+    {
+      "id": 6,
+      "seedType": "area",
+      "seed": "Logical replication walsender shutdown without remote flush confirmation",
+      "question": "Should logical replication walsenders exit before confirming remote flush (unlike physical replication), and what are the design concerns and behavioral implications?",
+      "key_points": [
+        "Current behavior: walsender delays shutdown until remote data flush confirmed (added in commit 985bd7 for physical replication switchover support)",
+        "Physical replication use case: stop primary → promote secondary → reboot primary as secondary requires flush confirmation to avoid failed reboot",
+        "Logical replication cannot support role switching: if transactions committed during switchover, subscriber cannot request WALs from specific positions and must truncate+recreate subscription",
+        "Proposal: logical replication walsender should exit immediately without flush confirmation; physical replication keeps current behavior",
+        "Kyotaro Horiguchi concern: breaking existing behavior people may rely on; suggested limiting change to apply_delay case only instead",
+        "Kyotaro's alternative: have apply worker send crafted feedback with commit_data.end_lsn as flushpos to trick walsender into thinking flush confirmed",
+        "Hayato tested Kyotaro's workaround: failed because sentPtr (next WAL location to send) larger than subscriber's flushed position; end_lsn found in COMMIT record not BEGIN",
+        "Hayato's technical concern: delaying in apply_handle_commit() causes apply worker to hold database locks for extended time",
+        "Dilip Kumar found typo in patch comment: 'replication more' should be 'replication mode'",
+        "Amit Kapila questioned: should WalSndDone() check pq_is_send_pending() for logical replication like caller already does?",
+        "Amit Kapila noted: time-delayed logical replication could fill send buffer while apply worker delayed, blocking walsender (unlike physical replication with separate walreceiver process)"
+      ],
+      "entities": {
+        "people": [
+          "Hayato Kuroda",
+          "Amit Kapila",
+          "Ashutosh Bapat",
+          "Kyotaro Horiguchi",
+          "Dilip Kumar"
+        ],
+        "patches": [
+          "walsender logical replication exit patch (multiple revisions with comment fixes)"
+        ],
+        "files": [
+          "WalSndDone()",
+          "XLogSendLogical",
+          "send_feedback()",
+          "apply_handle_commit()"
+        ],
+        "concepts": [
+          "walsender",
+          "logical replication",
+          "physical replication",
+          "switchover",
+          "time-delayed replication",
+          "apply_delay",
+          "WAL flush confirmation",
+          "apply worker",
+          "subscriber",
+          "publisher",
+          "synchronous replication",
+          "send buffer"
+        ]
+      },
+      "threadSubject": "Exit walsender before confirming remote flush in logical replication",
+      "sourceIds": [
+        "TYAPR01MB586668E50FC2447AD7F92491F5E89@TYAPR01MB5866.jpnprd01.prod.outlook.com",
+        "CAExHW5v6Q4SFsqku2V3UHyv_pbdaX0Lt-uzb_L72CJaY4r6wvg@mail.gmail.com",
+        "20221223.112154.220544589754432382.horikyota.ntt@gmail.com",
+        "CAA4eK1LKHQKMQ=z-eB74jKxxnv3HYgwtmOutpEDvdU7Fxfet+g@mail.gmail.com",
+        "TYAPR01MB5866CCD2C21790FEBE944034F5E99@TYAPR01MB5866.jpnprd01.prod.outlook.com",
+        "TYAPR01MB5866A76B75ADBBA126951B36F5EC9@TYAPR01MB5866.jpnprd01.prod.outlook.com",
+        "CAFiTN-uBV+TG4Kf-NEuLkTQARJ+sDA2u-4n5T_ZR0WxghAq6FA@mail.gmail.com",
+        "TYAPR01MB5866580E59386FF24B41E94FF5ED9@TYAPR01MB5866.jpnprd01.prod.outlook.com",
+        "CAA4eK1+pD654+XnrPugYueh7Oh22EBGTr6dA_fS0+gPiHayG9A@mail.gmail.com",
+        "CAA4eK1L+JVwRiy9Z=7DK5B_FGb8hJcsH=nz8BvPFVg82s7zH5g@mail.gmail.com"
+      ]
+    },
+    {
+      "id": 7,
+      "seedType": "area",
+      "seed": "pg_stat_statements scalability improvements",
+      "question": "I'm getting up to speed on improving pg_stat_statements scalability. Who is working on this, what specific scaling problems are being addressed, what patches exist, what design decisions have been made (especially around eviction and parallel safety), and what bugs or concerns remain unresolved?",
+      "key_points": [
+        "Sami Imseih identified three major scaling problems: (1) per-entry SpinLock contention on counter updates, (2) deallocation under exclusive LWLock blocking all backends when hash table is full, (3) query text file bloat triggering GC under exclusive lock",
+        "pg_stat_statements.max is a static GUC requiring server restart; deallocation happens inline during query execution and is frequent with many unique queries",
+        "Patch series reorganized into v1-0001 (in-transaction flush dependency), v1-0002 (move hash to custom pgstat kind), v1-0003 (DSA + file storage for query text), v1-0004 (new columns to pg_stat_statements_info)",
+        "FreeBSD CI failure occurred when parallel workers called pg_stat_statements() marked PARALLEL SAFE; fixed by marking pg_stat_statements() and pg_stat_statements_reset() as PARALLEL RESTRICTED and setting max_parallel_workers_per_gather=0 in pg_stat_statements.conf",
+        "Lukas Fittl raised concern about steady workloads losing the 5001st entry when max=5000 if single-threaded eviction blocks new entries; Sami addressed this with parallel clock-sweep eviction using decrementing refcounts",
+        "Parallel clock-sweep eviction: multiple backends evict subsets concurrently, decrement refcounts, only entries that decay to zero are evicted; 5% headroom using USAGE_DEALLOC_PERCENT keeps entry count at 95% of max",
+        "Zsolt Parragi identified three bugs: (1) minmax_only reset clears mean_time/sum_var_time but recalculates using pre-reset data, (2) min_time doesn't recover after minmax_reset because only updated if smaller but equals zero after reset, (3) possible integer overflow in nentries check lacking explicit uint64 casts similar to deleted code",
+        "Lukas Fittl questioned why deferred work on generate_normalized_query if entry confirmed in pgss_store_query_text; also noted tuples_hot_updated and tuples_newpage_updated should respect transaction rollbacks like tuples_(inserted|updated|deleted)",
+        "Julien Rouhaud clarified request: maintaining query text save timestamps rather than execution timestamps to identify missing query texts in snapshot-based external systems without full GC",
+        "Wiki page created at https://wiki.postgresql.org/wiki/Scalability_of_pg_stat_statements combining 2025 discussion and PGConf.Dev unconference notes",
+        "Version bumped to 1.14 for parallel safety changes; concern about backward compatibility if users downgrade pg_stat_statements versions",
+        "Partition-based eviction with dshash (dynamic shared hash) and DSA (dynamic shared allocation) used to replace fixed-size hash table and enable concurrent eviction"
+      ],
+      "entities": {
+        "people": [
+          "Sami Imseih",
+          "Lukas Fittl",
+          "Julien Rouhaud",
+          "Zsolt Parragi",
+          "Andres"
+        ],
+        "patches": [
+          "v1-0001 (in-transaction flush dependency)",
+          "v1-0002 (move hash to custom pgstat kind)",
+          "v1-0003 (DSA + file storage)",
+          "v1-0004 (pg_stat_statements_info columns)",
+          "v2 (updated series)",
+          "v3 (latest iteration with parallel clock-sweep eviction)"
+        ],
+        "files": [
+          "contrib/pg_stat_statements/pg_stat_statements.c",
+          "pg_stat_statements.conf",
+          "pg_stat_statements_info"
+        ],
+        "concepts": [
+          "SpinLock contention",
+          "exclusive LWLock blocking",
+          "query text file bloat and garbage collection",
+          "LFU (least-frequently-used) eviction",
+          "dshash (dynamic shared hash)",
+          "DSA (dynamic shared allocation)",
+          "parallel clock-sweep eviction",
+          "refcount decay algorithm",
+          "USAGE_DEALLOC_PERCENT (5% headroom)",
+          "PARALLEL RESTRICTED functions",
+          "PARALLEL SAFE vs PARALLEL UNSAFE",
+          "minmax_only reset",
+          "transaction rollback handling",
+          "debug_parallel_query=regress",
+          "mean_time and sum_var_time counters",
+          "min_time recovery",
+          "pending stats flushing"
+        ]
+      },
+      "threadSubject": "Improve pg_stat_statements scalability",
+      "sourceIds": [
+        "CAA5RZ0vZwR_dSK6fo0P2-EnskUVN0NjLHnGnJMFDPC8-kEW3sQ@mail.gmail.com",
+        "CAA5RZ0sxGs7k7vUCd_wurwrreqC3367eC6QuEQX5f4Oeu6WkDQ@mail.gmail.com",
+        "CAA5RZ0u-Y4HHTdBpJMn5if6DnOnj-Bn9MmPKJ=28Y5dkpHhCoA@mail.gmail.com",
+        "CAA5RZ0vjpyU-RJzUYCkr0-9jqJtbS95cRFnWTiOEENE7iYNgcA@mail.gmail.com",
+        "CAP53Pky9CViOfy1yQxJv0VE7aEiuDb13SppwGa7T_qOeBSumfA@mail.gmail.com",
+        "CAP53PkyWD99bNwFVv2KibfL4bhm-D78QAnc9UqQQJdtJ3mQWPQ@mail.gmail.com",
+        "ahI3hfji3FI6fY5X@jrouhaud",
+        "CAA5RZ0sQ+gDn-J85j1FzOdL1YjVYRegpmQpDiah1=REWZSZj+Q@mail.gmail.com",
+        "CAA5RZ0uoxiQ2_=xHGRnyc4WdM9aR0fzdMhBubnw97po==--yGQ@mail.gmail.com",
+        "CAN4CZFN=6+2ntiDx=p4fq5X_kZmXtK=Eyd0G+kZdobdzAK=9JQ@mail.gmail.com"
+      ]
+    },
+    {
+      "id": 8,
+      "seedType": "area",
+      "seed": "Extended statistics improvement: multi-column MCV missing values",
+      "question": "I'm getting up to speed on using MCV statistics for missing value combinations. Who is involved, what patches have been proposed, how do they handle column coverage and estimation, and what are the main concerns about scope and code duplication?",
+      "key_points": [
+        "Enrique Sánchez proposes using MCV miss information: when a multi-column combination is absent from the MCV list, its frequency is bounded by the least common (maximum) value in the MCV list",
+        "Zsolt Parragi identified a critical bug: v2 patch failed when clause conditions don't cover all MCV columns (e.g., column 'a' used twice while column 'c' not used), causing significant underestimation",
+        "Fix implemented using Bitmapset: compare columns in the clause against stat->keys to ensure all MCV dimensions are covered before applying the cap",
+        "v3-0002 adds ndistinct-based estimation: calculates non_mcv_sel = (1.0 - mcv_totalsel) / (ndistinct - mcv_nitems) as upper bound, similar to var_eq_const() in selfuncs.c",
+        "Ilia Evdokimov identified code duplication: mcv_can_cap() reimplements logic from dependency_is_compatible_clause(), and get_ndistinct_for_keys() duplicates ndistinct lookup from estimate_multivariate_ndistinct()",
+        "Performance issue found: mcv_can_cap() runs unconditionally before is_or branch but is only used in AND branch, causing unnecessary syscache lookups for OR queries",
+        "v4-0001 fixes performance by moving mcv_can_cap() and covered_attnums computation inside the else/AND branch only",
+        "v4-0002 eliminates duplication by creating helper function for ndistinct lookup used by both MCV and ndistinct statistics code",
+        "Design decision: scope limited to 'full-dimensional top-level AND equality miss' for first version; IN/ANY clauses deferred",
+        "Design decision: first patch will NOT modify MCV struct to include ndistinct; instead rely on matching extended ndistinct statistics when they exist",
+        "Chengpeng Yan and Enrique agreed: top-level AND with equality for all MCV columns has clearest case for using MCV miss information as useful negative information",
+        "Enrique's test case demonstrates the planner trap: table where combination (1,1,1) is excluded from MCV but individual values 1 are most common, showing current underestimation"
+      ],
+      "entities": {
+        "people": [
+          "Enrique Sánchez",
+          "Ilia Evdokimov",
+          "Chengpeng Yan",
+          "Zsolt Parragi"
+        ],
+        "patches": [
+          "v2: fixed column coverage checking using Bitmapset comparison",
+          "v3-0001: added IsA(clause, RestrictInfo) check, added tests",
+          "v3-0002: implemented ndistinct-based estimation",
+          "v4-0001: moved mcv_can_cap() inside AND branch",
+          "v4-0002: created helper function for ndistinct lookup"
+        ],
+        "files": [
+          "selfuncs.c",
+          "mcvlist code",
+          "extended statistics code"
+        ],
+        "concepts": [
+          "Most Common Values (MCV)",
+          "multi-column statistics",
+          "selectivity estimation",
+          "MCV miss (absence from MCV list)",
+          "least-MCV-frequency cap",
+          "ndistinct statistics",
+          "full-dimensional AND equality clause",
+          "inclusion-exclusion principle",
+          "Bitmapset",
+          "RestrictInfo",
+          "pseudo-constant",
+          "top-level AND conditions"
+        ]
+      },
+      "threadSubject": "Extended statistics improvement: multi-column MCV missing values",
+      "sourceIds": [
+        "CAOCkzAkmnAjEWxfP-vBTRta7cHe5CMu8i4SFSeOi2nS8+Kj7Ng@mail.gmail.com",
+        "00d52d6f-ae9e-40df-80d3-9e96a23efa70@tantorlabs.com",
+        "CAOCkzAmfFgGgZggjx-y+tc3JDQZhgKf6MGT18e15df61rTLH9w@mail.gmail.com",
+        "37F4735D-23FB-422F-95B4-681C39601A57@outlook.com",
+        "CAN4CZFPySmmiepwG4+MH8nyDJb1xHK2HFcQfu4ZaEOO65jWKTg@mail.gmail.com",
+        "CAOCkzA=w6UJfMB3Td-8fu2L6FMsTnymVFD6suzJAFiT+2NJGfQ@mail.gmail.com",
+        "CAOCkzAntraDudo=zghSecb4d7f4fnveUiXDHUYVWAAhrhE2QSg@mail.gmail.com",
+        "CAOCkzAnYgzn0ZN4KUPngyiHQdcKHbF=KAxmCR-ObJVKirQvVLw@mail.gmail.com",
+        "4f101ba3-1fcf-49e5-b4d8-28993bedba1f@tantorlabs.com",
+        "CAOCkzAmKBdQucXb=5nnYSa2wzap+duRNFdW94066F6=KH5gDTA@mail.gmail.com"
+      ]
+    },
+    {
+      "id": 9,
+      "seedType": "area",
+      "seed": "Wait events for server logging destination writes",
+      "question": "I'm getting up to speed on instrumenting wait events for server logging operations. Which logging output paths need wait event instrumentation, what WaitEventIO events were added, what build issues came up, and how did the scope evolve across patch versions?",
+      "key_points": [
+        "write(2) calls in write_pipe_chunks() to syslogger pipe and write_console() to stderr were not instrumented; blocking on these showed wait_event = NULL, making logging stalls invisible in pg_stat_activity",
+        "v1 had a build failure: elog.c used pgstat_report_wait_start()/end() and WAIT_EVENT_* constants but lacked #include \"utils/wait_event.h\", exposed only by transitive includes on developer's machine",
+        "v2 fixed build failure by adding #include \"utils/wait_event.h\" to elog.c",
+        "Four WaitEventIO events were added: SysloggerWrite (write(2) to syslogger pipe), StderrWrite (write(2) to stderr, WriteConsoleW() on Windows), SyslogWrite (syslog(3) in write_syslog()), EventlogWrite (ReportEventW()/ReportEventA() in write_eventlog())",
+        "Michael Paquier noted that normally event numbers are split per code path, but using same numbers for a routine is acceptable here",
+        "Kyotaro Horiguchi questioned whether ReportEventW()/ReportEventA() and syslog() should be instrumented if covering all blocking paths; this prompted v3 to extend scope",
+        "v3 extended coverage to include syslog(3) calls and Windows ReportEvent calls for consistency across all logging output paths",
+        "v4 rebased over current master after conflicts with recent elog.c changes (const WCHAR pointer in write_eventlog()) and new COPY pipe wait events in wait_event_names.txt",
+        "Implementation wraps only the leaf write calls using existing pgstat_report_wait_start()/end() helpers, maintaining allocation-free safety for error-reporting paths",
+        "Before/after testing showed logging backends previously reported NULL wait events now report IO/SysloggerWrite 99%+ of the time during logging",
+        "Series split into v4-0001 (portable: SysloggerWrite, StderrWrite, SyslogWrite) and v4-0002 (Windows: WriteConsoleW, EventlogWrite)",
+        "Changes touch only elog.c and wait_event_names.txt, builds clean with Autoconf and Meson on current master"
+      ],
+      "entities": {
+        "people": [
+          "신성준 (Seongjun Shin)",
+          "Kirk Wolak",
+          "Michael Paquier",
+          "Kyotaro Horiguchi"
+        ],
+        "patches": [
+          "v1",
+          "v2 (build fix: added #include)",
+          "v3 (extended scope to syslog and ReportEvent)",
+          "v4 (rebase over current master)",
+          "v4-0001 (portable part)",
+          "v4-0002 (Windows part)"
+        ],
+        "files": [
+          "elog.c",
+          "wait_event_names.txt",
+          "utils/wait_event.h"
+        ],
+        "concepts": [
+          "wait events",
+          "pg_stat_activity",
+          "WaitEventIO",
+          "pgstat_report_wait_start/end",
+          "syslogger pipe",
+          "write_pipe_chunks",
+          "write_console",
+          "write_syslog",
+          "write_eventlog",
+          "logging_collector",
+          "stderr output",
+          "syslog(3)",
+          "ReportEventW/ReportEventA",
+          "WriteConsoleW"
+        ]
+      },
+      "threadSubject": "Add wait events for server logging destination writes",
+      "sourceIds": [
+        "CACdN0M78U+GvpqA7oey-GA7fFSYM636aDp6H9FVvCztv9zXxSA@mail.gmail.com",
+        "CACdN0M4ENFV0Hg4zbBkP+ScRHdeN9NdYx9QV79h5BM_eN9YxHA@mail.gmail.com",
+        "CACLU5mSNZEbLrwRLf_rsG1Y1D+JWnWKwvzwhpG73rjLjD3R1yA@mail.gmail.com",
+        "ah0MjuP8Kku69_vz@paquier.xyz",
+        "20260601.144922.658666928129832364.horikyota.ntt@gmail.com",
+        "CACdN0M6WCA32MKK30-TS3CgGRTRKZpXRB9o3oHt2LGrB_CHDmA@mail.gmail.com",
+        "CACdN0M65jfGbOcBDm5rM_3nGVYNan7EQ9vQ1WAyk6Xx8X10Wrw@mail.gmail.com"
+      ]
+    },
+    {
+      "id": 10,
+      "seedType": "area",
+      "seed": "pg_stat_kind_info system view for cumulative statistics introspection",
+      "question": "I'm getting up to speed on adding pg_stat_kind_info. Who is involved, what does the patch do, what schema changes were proposed, and what unresolved design questions remain about column naming and NULL handling?",
+      "key_points": [
+        "Tristan Partin proposes pg_stat_kind_info built on pg_stat_get_kind_info() to expose metadata about statistics kinds (id, name, count, builtin, shared_size columns)",
+        "Feature addresses lack of SQL introspection for custom statistics registered via pluggable cumulative statistics (commit 7949d959458)",
+        "Michael Paquier requires filtering test queries to builtin=true for stable installcheck results when custom kinds are loaded",
+        "v1 was missing the patch attachment; v2 was promised with additional columns (fixed_amount, written_to_file, accessed_across_databases, snapshot_ctl_off, shared_ctl_off, shared_data_off, shared_data_len, pending_size) but not yet attached",
+        "NULL handling for shared_size debated: should return NULL for built-in fixed-sized stats kinds (unknown value) vs numeric for custom kinds",
+        "Tristan proposed renaming write_to_file column to written_to_file or persisted, with question about whether PgStat_KindInfo::write_to_file field name should also change",
+        "Michael suggested exposing flags to enable cross-checks: pgstat_register_kind() already validates that fixed_amount+shared_size>0 and !fixed_amount with track_entry_count are forbidden",
+        "Track_entry_count returns NULL for count if flag not set, sensible per Michael's review",
+        "Discussion of whether callbacks should only be exposed/validated when fixed_amount is true",
+        "Michael concerned that built-in stats kinds lack internal consistency mechanism for flags/callbacks setup, custom kinds loaded from libraries need more cross-checks"
+      ],
+      "entities": {
+        "people": [
+          "Tristan Partin",
+          "Michael Paquier"
+        ],
+        "patches": [
+          "pg_stat_kind_info patch v1 (referenced but not attached)",
+          "pg_stat_kind_info patch v2 (referenced but not attached)"
+        ],
+        "files": [
+          "PgStat_KindInfo struct",
+          "pgstat_register_kind()",
+          "pg_stat_kind_info view definition"
+        ],
+        "concepts": [
+          "pluggable cumulative statistics",
+          "statistics kinds (custom vs built-in)",
+          "track_entry_count flag",
+          "fixed_amount flag",
+          "write_to_file/persisted flag",
+          "accessed_across_databases flag",
+          "shared_ctl_off and snapshot_ctl_off",
+          "shared_data_off and shared_data_len",
+          "pending_size",
+          "pg_shmem_allocations",
+          "NULL handling for unknown metrics"
+        ]
+      },
+      "threadSubject": "Add pg_stat_kind_info system view",
+      "sourceIds": [
+        "DI6OFGHJ1B69.25YVDEP3BABRH@partin.io",
+        "DI6QSF1CCNT4.16HAZ5AR534A@partin.io",
+        "agVd1SlWwBte1FQ8@paquier.xyz",
+        "DIUH6XJFH54H.3KUBCVEJ38V5U@partin.io",
+        "ah0bZrpJjZL2qUga@paquier.xyz",
+        "DJ0FB0R1ZZJR.3MWRAPZCTL5ZI@partin.io",
+        "aiYJzV8WUig0Ifst@paquier.xyz"
+      ]
+    },
+    {
+      "id": 11,
+      "seedType": "code_file",
+      "seed": "elog.c",
+      "question": "I'm about to work on elog.c. What recent pgsql-hackers activity touches it — which patches/threads/people, and what concerns or changes should I know?",
+      "key_points": [
+        "elog.c was missing #include \"utils/wait_event.h\" in initial patch versions, causing CI build failures on Linux and Windows until v2 added it",
+        "Four new WaitEventIO events are being added: SysloggerWrite, StderrWrite, SyslogWrite (syslog(3) in write_syslog()), and EventlogWrite (Windows ReportEvent variants in write_eventlog())",
+        "All wait instrumentation uses pgstat_report_wait_start()/end() helpers placed only around leaf calls to remain allocation-free and safe on error-reporting paths",
+        "The patch series is split into two parts: 0001 covers portable logging paths (SysloggerWrite, StderrWrite, SyslogWrite) and 0002 covers Windows-specific paths (WriteConsoleW and EventlogWrite)",
+        "Recent rebase conflicts occurred in write_eventlog() due to upstream changes converting to const WCHAR pointer and pgindent formatting, plus new COPY pipe wait events in wait_event_names.txt",
+        "EventlogWrite is Windows-only and had limited runtime testing availability—only compile verification via cfbot's Windows task",
+        "The series maintains consistent coverage: each event wraps an entire routine (e.g., SyslogWrite covers all syslog(3) calls in write_syslog(), not individual call sites)",
+        "Changes touch only two files: elog.c and wait_event_names.txt"
+      ],
+      "entities": {
+        "people": [
+          "신성준 (Seongjun Shin) - patch author"
+        ],
+        "patches": [
+          "v1, v2, v3, v4 - iterative revisions of 'Add wait events for server logging destination writes'",
+          "v4-0001 - portable part (SysloggerWrite, StderrWrite, SyslogWrite)",
+          "v4-0002 - Windows part (WriteConsoleW plus EventlogWrite)"
+        ],
+        "files": [
+          "elog.c",
+          "wait_event_names.txt",
+          "utils/wait_event.h"
+        ],
+        "concepts": [
+          "wait events (WaitEventIO)",
+          "pgstat_report_wait_start()/end()",
+          "syslog(3)",
+          "ReportEventW()/ReportEventA() (Windows)",
+          "WriteConsoleW() (Windows)",
+          "write_syslog()",
+          "write_eventlog()",
+          "write_pipe_chunks()",
+          "error-reporting path safety",
+          "allocation-free instrumentation"
+        ]
+      },
+      "threadSubject": "file:elog.c",
+      "sourceIds": [
+        "CACdN0M4ENFV0Hg4zbBkP+ScRHdeN9NdYx9QV79h5BM_eN9YxHA@mail.gmail.com",
+        "CACdN0M6WCA32MKK30-TS3CgGRTRKZpXRB9o3oHt2LGrB_CHDmA@mail.gmail.com",
+        "CACdN0M65jfGbOcBDm5rM_3nGVYNan7EQ9vQ1WAyk6Xx8X10Wrw@mail.gmail.com"
+      ]
+    },
+    {
+      "id": 12,
+      "seedType": "code_file",
+      "seed": "cluster.c",
+      "question": "I'm about to work on cluster.c. What recent pgsql-hackers activity touches it — which patches/threads/people, and what concerns or changes should I know?",
+      "key_points": [
+        "REPACK command is being added to cluster.c alongside existing CLUSTER and VACUUM FULL functionality, intended to help users transition away from deprecated commands",
+        "Early WIP patch has a known bug: switch statement case for CLUSTER_COMMAND_CLUSTER incorrectly returns 'VACUUM' instead of 'CLUSTER'",
+        "Compilation failure exists: undeclared identifier 'CLUSTER_COMMAND_CLUSTER' in cluster_is_permitted_for_relation() call; may need to use GetUserId() instead",
+        "REPACK CONCURRENTLY variant being designed with requirement for wal_level=logical, while plain REPACK must work with wal_level=minimal/replica for backward compatibility",
+        "Discussion of eventual deprecation path: VACUUM FULL and CLUSTER may be deprecated in favor of REPACK, requiring compatibility maintenance",
+        "cluster_is_permitted_for_relation() function is being integrated into REPACK permission checking logic",
+        "Patch is acknowledged as early-stage WIP not ready for full review, with overlapping changes expected once concurrent variant is added"
+      ],
+      "entities": {
+        "people": [
+          "Robert Treat",
+          "Fujii Masao"
+        ],
+        "patches": [
+          "REPACK [concurrently] feature patch (early WIP)"
+        ],
+        "files": [
+          "src/backend/commands/cluster.c"
+        ],
+        "concepts": [
+          "REPACK command",
+          "REPACK CONCURRENTLY",
+          "CLUSTER command preservation",
+          "VACUUM FULL deprecation",
+          "wal_level constraints (minimal, replica, logical)",
+          "cluster_is_permitted_for_relation()",
+          "GetUserId()"
+        ]
+      },
+      "threadSubject": "file:cluster.c",
+      "sourceIds": [
+        "CABV9wwMjm_8GQ_6A7WZkXzEkbz5ZPurB3ijxu74MbFJ4+XrWUg@mail.gmail.com",
+        "CAHGQGwELP6OAOprxjkS5iYSj1KXKmVPULJyYMddE7-uRxrSP_Q@mail.gmail.com"
+      ]
+    },
+    {
+      "id": 13,
+      "seedType": "code_file",
+      "seed": "makefuncs.c",
+      "question": "I'm about to work on makefuncs.c. What recent pgsql-hackers activity touches it — which patches/threads/people, and what concerns or changes should I know?",
+      "key_points": [
+        "A refactoring proposal was made (2026-06-01) to unify internal expression construction logic by consolidating wrapper functions.",
+        "The proposal targeted make_andclause(), make_orclause(), and make_notclause() to call makeBoolExpr() directly instead of duplicate implementations.",
+        "makeSimpleA_Expr() was proposed for removal as a trivial wrapper around makeA_Expr(), and makeDefElemExtended() as a wrapper around makeDefElem().",
+        "Tom Lane reviewed and rejected the proposal on 2026-06-01 11:56 UTC, stating 'I don't think this is worth the trouble.'",
+        "The patch author (ZizhuanLiu Liu) accepted the rejection and agreed to drop the refactoring idea.",
+        "The motivation cited was alignment with existing patterns in gram.y (makeAndExpr/makeOrExpr/makeNotExpr) and elimination of redundant code.",
+        "The refactoring was characterized as zero functional change—pure code cleanup with minimal intrusion and no altered runtime behavior.",
+        "The proposal was motivated by review of commit cf6723 (Make transformAExprIn() return a flattened bool expression directly).",
+        "Test cases were mentioned as being added for refactored functions to prevent regression."
+      ],
+      "entities": {
+        "people": [
+          "ZizhuanLiu Liu (patch proposer)",
+          "Tom Lane (reviewer/decision-maker)"
+        ],
+        "patches": [
+          "cf6723: Make transformAExprIn() return a flattened bool expression directly (referenced context)"
+        ],
+        "files": [
+          "makefuncs.c (primary target)",
+          "gram.y (pattern reference for makeAndExpr/makeOrExpr/makeNotExpr)"
+        ],
+        "concepts": [
+          "expression construction consolidation",
+          "boolean clause unification",
+          "wrapper function elimination",
+          "code cleanup refactoring",
+          "duplicate code reduction",
+          "zero-impact refactoring"
+        ]
+      },
+      "threadSubject": "file:makefuncs.c",
+      "sourceIds": [
+        "tencent_99476336BC701B21ADDC44E2B7BE25147506@qq.com",
+        "tencent_1DA28D8E166122FEDBCC32815AA5B1157E05@qq.com"
+      ]
+    }
+  ]
+}

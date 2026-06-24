@@ -330,7 +330,7 @@ export function* recordCancelledMessageIds(
 
 export function bufferChildUpdate(
     runtime: DurableSessionRuntime,
-    update: { sessionId: string; updateType: string; content: string },
+    update: { sessionId: string; updateType: string; content: string; cycleOrigin?: "cron" | "cron_at"; cycleStatus?: "quiet" | "material" | "blocked"; verdict?: import("../types.js").ChildSessionVerdict },
     observedAtMs: number,
 ): void {
     if (!runtime.state.pendingChildDigest) {
@@ -344,6 +344,9 @@ export function bufferChildUpdate(
         sessionId: update.sessionId,
         updateType: update.updateType,
         ...(update.content ? { content: update.content.slice(0, 2000) } : {}),
+        ...(update.cycleOrigin ? { cycleOrigin: update.cycleOrigin } : {}),
+        ...(update.cycleStatus ? { cycleStatus: update.cycleStatus } : {}),
+        ...(update.verdict ? { verdict: update.verdict } : {}),
         observedAtMs,
     };
     const existingIndex = runtime.state.pendingChildDigest.updates.findIndex((entry) => entry.sessionId === update.sessionId);
@@ -411,6 +414,7 @@ export function buildContinueInput(
         prompt: overridePrompt,
         requiredTool: overrideRequiredTool,
         systemPrompt: overrideSystemPrompt,
+        cycleOrigin: overrideCycleOrigin,
         bootstrapPrompt: overrideBootstrapPrompt,
         rehydrationMessage: overrideRehydrationMessage,
         ...restOverrides
@@ -419,6 +423,7 @@ export function buildContinueInput(
     const carriedPrompt = overridePrompt ?? state.pendingPrompt;
     const carriedRequiredTool = overrideRequiredTool ?? state.pendingRequiredTool;
     const carriedSystemPrompt = overrideSystemPrompt ?? state.pendingSystemPrompt;
+    const carriedCycleOrigin = overrideCycleOrigin ?? state.pendingCycleOrigin;
     const carriedRehydrationMessage = overrideRehydrationMessage ?? state.pendingRehydrationMessage;
     const promptForInput = carriedPrompt
         ?? (carriedSystemPrompt ? INTERNAL_SYSTEM_TURN_PROMPT : undefined);
@@ -447,6 +452,7 @@ export function buildContinueInput(
         ...(carriedSystemPrompt ? { systemPrompt: carriedSystemPrompt } : {}),
         ...(promptForInput ? { prompt: promptForInput } : {}),
         ...(carriedRequiredTool ? { requiredTool: carriedRequiredTool } : {}),
+        ...(carriedCycleOrigin ? { cycleOrigin: carriedCycleOrigin } : {}),
         ...(promptForInput && bootstrapForInput !== undefined ? { bootstrapPrompt: bootstrapForInput } : {}),
         subAgents: state.subAgents,
         ...(state.pendingToolActions.length > 0 ? { pendingToolActions: state.pendingToolActions } : {}),

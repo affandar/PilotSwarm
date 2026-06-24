@@ -39,18 +39,66 @@ export { SessionManager } from "./session-manager.js";
 export { ManagedSession } from "./managed-session.js";
 export { SessionBlobStore, createSessionBlobStore } from "./blob-store.js";
 export { FilesystemSessionStore, FilesystemArtifactStore } from "./session-store.js";
-export { PgFactStore, createFactStoreForUrl } from "./facts-store.js";
-export { PgSessionCatalogProvider, computeCacheHitRatio } from "./cms.js";
-export type { SessionCatalogProvider, SessionRow, SessionRowUpdates, SessionEvent, TopEventEmitterRow, InsertTurnMetricInput, TurnMetricRow, HourlyTokenBucketRow, SessionMetricSummary, SessionMetricSummaryUpsert, FleetStats, UserStats, UserStatsBucket, UserStatsModelBucket, UserStatsOwnerKind, SessionTreeStats, SkillKind, SkillUsageRow, SessionTreeSkillUsage, FleetSkillUsageRow, FleetSkillUsage, UserProfile, UserPrincipal } from "./cms.js";
+export { PgFactStore, createFactStoreForUrl, createGraphStoreForUrl, resolveFactsTarget, isEnhancedFactStore, EnhancedFactsUnsupportedError } from "./facts-store.js";
+// Convenience: map HORIZON_* env vars to worker enhanced-facts/graph config.
+export { horizonConfigFromEnv } from "./horizon-env.js";
+export type { HorizonEnvConfig } from "./horizon-env.js";
+export { resolveStorageConfig, DEFAULT_DUROXIDE_SCHEMA, DEFAULT_RUNTIME_STORAGE_PROVIDER, DEFAULT_DUROXIDE_STORAGE_PROVIDER } from "./storage-config.js";
+export type { StorageConfig, RuntimeStorageConfig, DuroxideStorageConfig, StorageConfigLegacyOptions } from "./storage-config.js";
+export { runtimeStorageProviders, duroxideStorageProviders, getRuntimeStorageProvider, getDuroxideStorageProvider } from "./storage-providers.js";
+export type { RuntimeStorageProvider, DuroxideStorageProvider } from "./storage-providers.js";
+export { migrateLegacyDuroxideSchema } from "./duroxide-schema-migration.js";
+export type { DuroxideSchemaMigrationOptions, DuroxideSchemaMigrationResult } from "./duroxide-schema-migration.js";
+export { PgSessionCatalog, PgSessionCatalogProvider, computeCacheHitRatio } from "./cms.js";
+export type { SessionCatalog, SessionCatalogProvider, SessionRow, SessionRowUpdates, SessionEvent, TopEventEmitterRow, InsertTurnMetricInput, TurnMetricRow, HourlyTokenBucketRow, SessionMetricSummary, SessionMetricSummaryUpsert, FleetStats, UserStats, UserStatsBucket, UserStatsModelBucket, UserStatsOwnerKind, SessionTreeStats, SkillKind, SkillUsageRow, SessionTreeSkillUsage, FleetSkillUsageRow, FleetSkillUsage, RetrievalSurface, RetrievalOperation, RetrievalUsageRow, SessionTreeRetrievalUsage, FleetRetrievalUsageRow, FleetRetrievalUsage, GraphNodeUsageKind, GraphNodeUsageRow, FleetGraphNodeUsageRow, FleetGraphNodeUsage, GraphEdgeSearchUsageRow, UserProfile, UserPrincipal } from "./cms.js";
 export type {
     FactStore,
     FactRecord,
     StoreFactInput,
+    StoredFactResult,
     ReadFactsQuery,
     DeleteFactInput,
+    DeletedFactResult,
+    DeletedFactsResult,
     FactsStatsRow,
+    FactsTombstoneStats,
+    ForcePurgeFactsInput,
     FactsNamespace,
+    AccessContext,
+    CrawledFactStamp,
+    EnhancedFactStore,
+    FactsCapabilities,
+    SearchMode,
+    SearchWeights,
+    SearchOpts,
+    SimilarOpts,
+    ScoredFact,
+    SearchResult,
+    EmbedderStatus,
+    EmbedderLoopStatus,
+    EmbeddingEndpointConfig,
 } from "./facts-store.js";
+// Graph store contract (optional, separately injected — enhancedfactstore 07 D2)
+export { isGraphStore, scopeKeyAccessible, DEFAULT_GRAPH_NAMESPACE } from "./graph-store.js";
+export type {
+    GraphStore,
+    GraphNodeInput,
+    GraphEdgeInput,
+    GraphNodeQuery,
+    GraphEdgeQuery,
+    GraphNamespaceQuery,
+    GraphNodeRef,
+    GraphNodeHit,
+    GraphEdgeRef,
+    GraphEdgeHit,
+    GraphEvidenceRemovalResult,
+    SubGraph,
+    GraphNamespaceFrontmatter,
+    GraphNamespaceInfo,
+    GraphNamespaceInput,
+    GraphNamespaceListQuery,
+    GraphNamespaceDeleteResult,
+} from "./graph-store.js";
 export type {
     SessionStateStore,
     SessionMetadata,
@@ -94,6 +142,7 @@ export { LOCAL_DEFAULT_USER_PRINCIPAL } from "./session-owner-utils.js";
 export { createSweeperTools } from "./sweeper-tools.js";
 // Fact tools
 export { createFactTools } from "./facts-tools.js";
+export { createGraphTools } from "./graph-tools.js";
 // Inspect tools (read_agent_events, etc.)
 export { createInspectTools } from "./inspect-tools.js";
 // Resource Manager Agent tools

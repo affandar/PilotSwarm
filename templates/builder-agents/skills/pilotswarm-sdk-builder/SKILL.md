@@ -55,6 +55,7 @@ my-sdk-app/
 15. When generated agents spawn long-running children, teach them to set `contract.wakeOn`: `any` for short-lived/high-signal children, `material_change` for watchers, and `completion` for done/blocked/error-only flows.
 15. Agents can read their context usage (current tokens, token limit) from the session status `contextUsage` field. Use this for agents that need to manage context window budgets or trigger compaction.
 16. When the scaffold needs downloadable files, keep using `write_artifact` / `export_artifact`; for binary files, require `contentType` plus `encoding: "base64"` and document that browser hosts download non-text artifacts instead of previewing them inline.
+17. When the app needs to ingest external sources into durable, searchable knowledge or an open knowledge graph, follow the `pilotswarm-knowledge-harvester` skill: enable the optional EnhancedFactStore / GraphStore providers via `horizonConfigFromEnv()`, author a `harvester: true` agent for the crawl→graph→mark loop, and keep reader agents free of harvester frontmatter.
 
 ## Guided Intake Questions
 

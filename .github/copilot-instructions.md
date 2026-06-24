@@ -30,6 +30,8 @@ When writing or updating files under `docs/bugreports/`, keep downstream deploym
 
 When env or model-catalog shape changes, keep `.env.example` and `.model_providers.example.json` in sync with placeholder values. The checked-in `.model_providers.example.json` is the shareable template; the real `.model_providers.json` stays local and gitignored. Provider availability is still controlled by env-backed keys.
 
+`.env` and `.env.horizondb` are two **standalone** local configs, never layered. `.env` is stock-PostgreSQL only: it backs the default `./scripts/run-tests.sh` run (all suites with the PG fact store) and must leave the HorizonDB enhanced-facts/graph settings empty. `.env.horizondb` is a complete standalone config (stock PG runtime storage + HorizonDB enhanced facts/graph) used by `./scripts/run-tests.sh --with-horizondb` and the Horizon Harvester scripts. Those paths load **only** `.env.horizondb` — there is **no fallback to `.env`, ever** — so every value the run needs (`DATABASE_URL`, `GITHUB_TOKEN`, model keys, `HORIZON_*`) must be duplicated in it. Keep `.env.horizondb.example` in sync with its shape, like `.env.example`.
+
 ## Project Overview
 
 pilotswarm is a durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents, powered by [duroxide](https://github.com/microsoft/duroxide) (a Rust-based durable orchestration engine). It provides **crash recovery, durable timers, session dehydration, and multi-node scaling**.
@@ -246,11 +248,40 @@ When you add or materially change a user-facing or builder-facing feature, updat
 
 - the canonical docs in `docs/` for the relevant SDK, CLI, plugin, or packaging behavior
 - the DevOps sample in `examples/devops-command-center/`
+- the Horizon Harvester sample in `examples/horizon-harvester/` (see its dedicated section below)
 - the builder templates in `templates/builder-agents/`
 - `.github/copilot-instructions.md` if the change affects contributor workflow or maintenance expectations
 - package names, install examples, and CI publish/release wiring if the npm surface changes
 
 Do not treat proposal docs as sufficient once behavior ships. If the product changed, the canonical docs, sample app, and builder templates should reflect it too.
+
+## Horizon Harvester Sample
+
+`examples/horizon-harvester/` is the maintained worked example for the optional
+EnhancedFactStore + knowledge-graph providers (`@pilotswarm/horizon-store`). Treat it as
+a product surface, not a throwaway demo — keep it current when harvester, facts, graph,
+or embedder behavior changes.
+
+It ships three repo-root entry-point scripts; all three must keep working:
+
+- `scripts/run-horizon-harvester-sample.sh` — harvest, delete/reconcile, and/or ask (`HARVESTER_SCENARIO=full|harvest|delete|ask`)
+- `scripts/export-horizon-harvester-graph.sh` — export the graph to a Markdown/Mermaid file (`examples/horizon-harvester/scripts/graph-to-mermaid.mjs`)
+- `scripts/clean-horizon-harvester-sample.sh` — clean up; `--facts` / `--drop` escalate to HorizonDB teardown (`examples/horizon-harvester/scripts/cleanup-local-db.js`)
+
+When you change harvester-relevant behavior, keep these in sync in the same change:
+
+- the sample agents `plugin/agents/source-harvester.agent.md` (`harvester: true`) and `plugin/agents/librarian.agent.md` (reader), bumping each agent's `version` per the `agent-versioning` skill
+- the three scripts above and the sample `README.md` (Run / Visualize / Cleanup sections)
+- the builder skill `templates/builder-agents/skills/pilotswarm-knowledge-harvester/SKILL.md` and `docs/harvester-deployment.md`, which teach the same patterns
+
+Load-bearing conventions to preserve:
+
+- **Harvester scripts load `.env.horizondb` only.** All three repo-root scripts source the standalone `.env.horizondb` (stock PG runtime + HorizonDB facts/graph) via `node --env-file`, with no fallback to `.env`. Every value they need (`DATABASE_URL`, `GITHUB_TOKEN`, `HORIZON_*`) must be present there.
+- **Namespaces are not interchangeable.** The harvester writes raw source captures under its own `corpus/*` namespace; `intake/*` is the system Facts Manager's curation queue for short task-agent observations. Never route harvester documents through `intake/*`.
+- **Crawl receipts are `{ scopeKey, etag }`.** Harvesters must pass both values from `facts_read_uncrawled` into `facts_mark_crawled`. A skipped mark means the fact changed after it was read, was already marked, or no longer exists; re-read before declaring the backlog drained.
+- **Deleted crawl rows reconcile graph evidence.** A row with `deletedAt` set is a tombstone, not source content to rebuild. Call `graph_remove_evidence(scopeKey, namespace)` for that row before marking it crawled so only that source fact's graph anchors/evidence are removed.
+- **Embedder/search text wiring.** `HORIZON_EMBED_*` (in `.env.horizondb`) configures the durable in-DB embed loop; without it the `embedding` column stays NULL and `facts_similar` returns nothing. The embed input is `key + value::text` (horizon-store migration `0007`), and lexical `search_text` uses the same broad `key + value::text` source (migration `0009`), so any JSON value shape remains embeddable and lexically searchable.
+- **The durable embed loop survives a schema drop.** Any teardown must cancel it first (the `--drop` path does); never leave a stale loop running against a dropped schema.
 
 ## Agent Prompt Tuning & Model Compatibility
 
@@ -396,6 +427,8 @@ Each test function should:
 **No retries.** Never add `retry` to test configurations (vitest `retry`, `retries`, or manual retry loops). If a test fails, it means the product has a bug or the test prompt is wrong — fix the root cause.
 
 **No hacks.** Do not paper over product bugs by weakening assertions, adding arbitrary sleeps, or swallowing errors. Tests exist to catch real problems.
+
+**Preserve test throughput by default.** Do not reduce concurrency, file parallelism, worker counts, pool caps, or other test-throughput settings without first checking with the user and giving a strong, specific reason. Prefer fixing connection pressure or backend instability at the client/server capacity layer rather than silently serializing tests.
 
 **Default-model by default.** Tests should use the repo's configured default model unless the test is explicitly about model selection, multi-model behavior, cross-model behavior, or an intentional per-model compatibility sweep. Do not pin a specific model in ordinary behavior tests just to make them pass.
 

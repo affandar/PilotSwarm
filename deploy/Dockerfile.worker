@@ -12,6 +12,10 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY packages/sdk/package.json ./packages/sdk/
 COPY packages/cli/package.json ./packages/cli/
+# horizon-store package.json must be present BEFORE `npm ci` so npm creates the
+# node_modules/@pilotswarm/horizon-store workspace symlink the SDK's dynamic
+# import("@pilotswarm/horizon-store") resolves at runtime (optional EnhancedFactStore).
+COPY packages/horizon-store/package.json ./packages/horizon-store/
 COPY scripts/postinstall.js ./scripts/
 # `npm ci` enforces the committed package-lock.json so worker image rebuilds
 # from this SHA are byte-reproducible. Matches deploy/Dockerfile.starter.
@@ -22,6 +26,12 @@ COPY packages/sdk/dist/ ./packages/sdk/dist/
 COPY packages/sdk/plugins/ ./packages/sdk/plugins/
 COPY packages/sdk/examples/worker.js ./packages/sdk/examples/
 COPY packages/cli/plugins/ ./packages/cli/plugins/
+
+# horizon-store built output + runtime-read migrations (the migrator reads the
+# numbered migrations/*.sql from disk relative to dist/). Sibling layout matters:
+# dist/src/horizon-migrator.js resolves ../../migrations.
+COPY packages/horizon-store/dist/ ./packages/horizon-store/dist/
+COPY packages/horizon-store/migrations/ ./packages/horizon-store/migrations/
 
 # Copy model providers config (if present)
 COPY .model_providers.json* ./

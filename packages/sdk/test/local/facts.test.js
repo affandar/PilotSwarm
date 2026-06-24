@@ -18,6 +18,7 @@ import {
     createFactTools,
     createSweeperTools,
 } from "../../src/index.ts";
+import { createRuntimeFactStore, listRuntimeFactRows } from "../helpers/fact-store-helpers.js";
 
 const TIMEOUT = 180_000;
 const getEnv = useSuiteEnv(import.meta.url);
@@ -30,6 +31,7 @@ async function listFactRows(env) {
         const { rows } = await client.query(
             `SELECT key, session_id, shared
              FROM "${env.factsSchema}".facts
+               WHERE deleted_at IS NULL
              ORDER BY key ASC, session_id ASC NULLS LAST`,
         );
         return rows;
@@ -39,8 +41,7 @@ async function listFactRows(env) {
 }
 
 async function testFactToolsStoreReadDelete(env) {
-    const factStore = await PgFactStore.create(env.store, env.factsSchema);
-    await factStore.initialize();
+    const factStore = await createRuntimeFactStore(env);
 
     try {
         const [storeFact, readFacts, deleteFact] = createFactTools({ factStore });
@@ -57,14 +58,27 @@ async function testFactToolsStoreReadDelete(env) {
             { key: "baseline/tps", value: { value: 1250 }, shared: true, tags: ["baseline"] },
             { sessionId: "session-a", agentId: "analyst" },
         );
+        const batch = await storeFact.handler(
+            {
+                facts: [
+                    { key: "bulk/a/one", value: { n: 1 }, tags: ["bulk"] },
+                    { key: "bulk/a/two", value: { n: 2 }, tags: ["bulk"] },
+                    { key: "bulk/b/shared", value: { n: 3 }, shared: true, tags: ["bulk"] },
+                ],
+            },
+            { sessionId: "session-a", agentId: "builder" },
+        );
+        assertEqual(batch.stored, 3, "store_fact should ingest a batch");
 
         const accessible = await readFacts.handler(
             { scope: "accessible" },
             { sessionId: "session-a" },
         );
-        assertEqual(accessible.count, 2, "session-a should see its session fact plus shared fact");
+        assertEqual(accessible.count, 5, "session-a should see its session facts plus shared facts");
         assert(accessible.facts.some((fact) => fact.key === "build/status" && fact.shared === false), "session fact returned");
         assert(accessible.facts.some((fact) => fact.key === "baseline/tps" && fact.shared === true), "shared fact returned");
+        assert(accessible.facts.some((fact) => fact.key === "bulk/a/one" && fact.shared === false), "batch session fact returned");
+        assert(accessible.facts.some((fact) => fact.key === "bulk/b/shared" && fact.shared === true), "batch shared fact returned");
         assert(!accessible.facts.some((fact) => fact.sessionId === "session-b"), "other session's private fact should be hidden");
 
         const sessionOnly = await readFacts.handler(
@@ -80,8 +94,26 @@ async function testFactToolsStoreReadDelete(env) {
         );
         assertEqual(deleted.deleted, true, "delete_fact should delete the current session's private fact");
 
-        const rows = await listFactRows(env);
-        assertEqual(rows.length, 2, "two facts should remain after deleting session-a's private fact");
+        const literalStar = await deleteFact.handler(
+            { key: "bulk/a/*" },
+            { sessionId: "session-a" },
+        );
+        assertEqual(literalStar.deleted, false, "glob-like keys are not patterns unless pattern=true");
+
+        const patternDelete = await deleteFact.handler(
+            { key: "bulk/a/*", pattern: true },
+            { sessionId: "session-a" },
+        );
+        assertEqual(patternDelete.deleted, 2, "explicit pattern delete removes matching owned session facts");
+
+        const sharedPatternDelete = await deleteFact.handler(
+            { key: "bulk/b/*", pattern: true, scope: "shared" },
+            { sessionId: "session-a" },
+        );
+        assertEqual(sharedPatternDelete.deleted, 1, "explicit shared pattern delete removes matching shared facts");
+
+        const rows = await listRuntimeFactRows(factStore);
+        assertEqual(rows.length, 2, "two facts should remain after deletes");
         assert(rows.some((row) => row.key === "build/status" && row.session_id === "session-b"), "session-b private fact should remain");
         assert(rows.some((row) => row.key === "baseline/tps" && row.shared === true), "shared fact should remain");
     } finally {
@@ -90,8 +122,7 @@ async function testFactToolsStoreReadDelete(env) {
 }
 
 async function testSharedIntakeHook(env) {
-    const factStore = await PgFactStore.create(env.store, env.factsSchema);
-    await factStore.initialize();
+    const factStore = await createRuntimeFactStore(env);
     const intakeWrites = [];
 
     try {
@@ -157,8 +188,7 @@ async function testDeleteSessionCleansSessionFacts(env) {
         cmsSchema: env.cmsSchema,
         factsSchema: env.factsSchema,
     });
-    const factStore = await PgFactStore.create(env.store, env.factsSchema);
-    await factStore.initialize();
+    const factStore = await createRuntimeFactStore(env);
 
     await worker.start();
     await client.start();
@@ -190,7 +220,7 @@ async function testDeleteSessionCleansSessionFacts(env) {
 
         await client.deleteSession(session.sessionId);
 
-        const rows = await listFactRows(env);
+        const rows = await listRuntimeFactRows(factStore);
         assertEqual(rows.length, 1, "deleteSession should remove all session-scoped facts");
         assert(!rows.some((row) => row.key === "scratch/step"), "session fact should be removed");
         assert(!rows.some((row) => row.key === "result/summary"), "session facts should not outlive the session");

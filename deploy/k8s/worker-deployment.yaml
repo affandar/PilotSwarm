@@ -7,7 +7,7 @@ metadata:
     app.kubernetes.io/name: pilotswarm
     app.kubernetes.io/component: worker
 spec:
-  replicas: 3
+  replicas: 8
   selector:
     matchLabels:
       app.kubernetes.io/name: pilotswarm
@@ -21,8 +21,6 @@ spec:
       securityContext:
         runAsUser: 1000
         runAsGroup: 1000
-      imagePullSecrets:
-        - name: acr-pull
       tolerations:
         - key: "kubernetes.azure.com/scalesetpriority"
           operator: "Equal"
@@ -54,6 +52,10 @@ spec:
               value: "info"
             - name: PLUGIN_DIRS
               value: "/app/packages/cli/plugins"
+            - name: PILOTSWARM_ORCHESTRATION_CONCURRENCY
+              value: "4"
+            - name: PILOTSWARM_WORKER_CONCURRENCY
+              value: "8"
           envFrom:
             - secretRef:
                 name: copilot-runtime-secrets
@@ -63,7 +65,7 @@ spec:
               memory: "1Gi"
             limits:
               cpu: "1000m"
-              memory: "2Gi"
+              memory: "4Gi"
           volumeMounts:
             - name: copilot-home
               mountPath: /home/node/.copilot

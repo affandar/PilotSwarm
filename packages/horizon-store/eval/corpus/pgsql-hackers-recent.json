@@ -1,0 +1,1164 @@
+{
+  "scenario": "postgres pgsql-hackers mailing list — last 3 months, full threads (REAL archive data)",
+  "description": "Real messages pulled from the public postgresql.org archives for the last 3 months of pgsql-hackers. Each month's listed messages are used as thread entry points and expanded to the full flat thread. Bodies have quoted reply lines stripped and are capped at 2500 chars. Caps: 18 threads / 120 messages.",
+  "source": {
+    "list": "pgsql-hackers",
+    "months": [
+      "2026-06",
+      "2026-05",
+      "2026-04"
+    ],
+    "threads": [
+      {
+        "entry": "CAAAe_zBO7wU6JEuQJ246PzS=B63ufcYUQjovEfwsQvCZdaM7tg@mail.gmail.com",
+        "subject": "Row pattern recognition",
+        "messages": 377,
+        "taken": 10
+      },
+      {
+        "entry": "2414504.1780275350@sss.pgh.pa.us",
+        "subject": "Update our timezone code to IANA tzcode2026b",
+        "messages": 2,
+        "taken": 2
+      },
+      {
+        "entry": "OS9PR01MB1214967B82E58290180229323F5152@OS9PR01MB12149.jpnprd01.prod.outlook.com",
+        "subject": "Patch for migration of the pg_commit_ts directory",
+        "messages": 52,
+        "taken": 10
+      },
+      {
+        "entry": "CAHut+Pv4F3iAsE6NhQ6_EOOzzK5JoMxx4p2_=31i19pe1HSkiQ@mail.gmail.com",
+        "subject": "Proposal: Conflict log history table for Logical Replication",
+        "messages": 432,
+        "taken": 10
+      },
+      {
+        "entry": "TY4PR01MB1771838FAEA8614A388EF138E94152@TY4PR01MB17718.jpnprd01.prod.outlook.com",
+        "subject": "Adding REPACK [concurrently]",
+        "messages": 405,
+        "taken": 10
+      },
+      {
+        "entry": "tencent_99476336BC701B21ADDC44E2B7BE25147506@qq.com",
+        "subject": "[PATCH]Refactor and unify expression construction functions in makefuncs.c",
+        "messages": 3,
+        "taken": 3
+      },
+      {
+        "entry": "SY7PR01MB10921F0B09B693C8D5149880EB6152@SY7PR01MB10921.ausprd01.prod.outlook.com",
+        "subject": "pg_rewind does not rewind diverging timelines",
+        "messages": 17,
+        "taken": 10
+      },
+      {
+        "entry": "OS9PR01MB1214984918640A7AC5BEE2A0AF5152@OS9PR01MB12149.jpnprd01.prod.outlook.com",
+        "subject": "Exit walsender before confirming remote flush in logical replication",
+        "messages": 126,
+        "taken": 10
+      },
+      {
+        "entry": "ah0E0xLvv5_OtOi6@paquier.xyz",
+        "subject": "[PATCH] Fix libxml leaks in contrib/xml2 XPath functions",
+        "messages": 5,
+        "taken": 5
+      },
+      {
+        "entry": "ah0FxpCYeubtqX6A@paquier.xyz",
+        "subject": "autovacuum launcher crash: assert in pgstat_count_io_op (IOOP_EXTEND on pg_database's VM)",
+        "messages": 5,
+        "taken": 5
+      },
+      {
+        "entry": "ah0MjuP8Kku69_vz@paquier.xyz",
+        "subject": "Add wait events for server logging destination writes",
+        "messages": 7,
+        "taken": 7
+      },
+      {
+        "entry": "20260601.135858.1116584574478485492.horikyota.ntt@gmail.com",
+        "subject": "Improve pg_stat_statements scalability",
+        "messages": 15,
+        "taken": 10
+      },
+      {
+        "entry": "ah0V3EPMrHJs5IKs@paquier.xyz",
+        "subject": "[PATCH] Remove obsolete tupDesc assignment in extended statistics",
+        "messages": 4,
+        "taken": 4
+      },
+      {
+        "entry": "DFFF817B-7DFB-43D8-AC6F-7874716DB375@gmail.com",
+        "subject": "pg_stat_statements: Fix normalization of + signs for FETCH and MOVE",
+        "messages": 3,
+        "taken": 3
+      },
+      {
+        "entry": "ah0bZrpJjZL2qUga@paquier.xyz",
+        "subject": "Add pg_stat_kind_info system view",
+        "messages": 7,
+        "taken": 7
+      },
+      {
+        "entry": "OS3PR01MB8553C5907830DE25A8A4986ED9152@OS3PR01MB8553.jpnprd01.prod.outlook.com",
+        "subject": "[PATCH] doc: explain database-wide impact of old xmin on VACUUM",
+        "messages": 1,
+        "taken": 1
+      },
+      {
+        "entry": "CAFPTHDbTRuxqG0J_tnUB5UbYQF-wM6QPyiSJe3FQb89Op5xP_Q@mail.gmail.com",
+        "subject": "[PATCH] Fix NULL dereference in subscription REFRESH on concurrent DROP",
+        "messages": 2,
+        "taken": 2
+      },
+      {
+        "entry": "37F4735D-23FB-422F-95B4-681C39601A57@outlook.com",
+        "subject": "Extended statistics improvement: multi-column MCV missing values",
+        "messages": 10,
+        "taken": 10
+      }
+    ],
+    "fetchedAt": "2026-06-11T04:12:58.483Z",
+    "note": "Public mailing-list archive content; regenerate with build-pgsql-hackers-recent.mjs"
+  },
+  "metadata": {
+    "messageCount": 119,
+    "threadCount": 18,
+    "participants": [
+      {
+        "name": "Michael Paquier",
+        "messages": 10
+      },
+      {
+        "name": "Hayato Kuroda",
+        "messages": 7
+      },
+      {
+        "name": "Tatsuo Ishii",
+        "messages": 6
+      },
+      {
+        "name": "Amit Kapila",
+        "messages": 6
+      },
+      {
+        "name": "Mats Kindahl",
+        "messages": 6
+      },
+      {
+        "name": "Sami Imseih",
+        "messages": 6
+      },
+      {
+        "name": "Enrique Sánchez",
+        "messages": 6
+      },
+      {
+        "name": "Dilip Kumar",
+        "messages": 4
+      },
+      {
+        "name": "shveta malik",
+        "messages": 4
+      },
+      {
+        "name": "신성준",
+        "messages": 4
+      },
+      {
+        "name": "Tristan Partin",
+        "messages": 4
+      },
+      {
+        "name": "Vik Fearing",
+        "messages": 3
+      },
+      {
+        "name": "Tom Lane",
+        "messages": 3
+      },
+      {
+        "name": "ls7777",
+        "messages": 3
+      },
+      {
+        "name": "Alvaro Herrera",
+        "messages": 3
+      },
+      {
+        "name": "Japin Li",
+        "messages": 3
+      },
+      {
+        "name": "Andrey Chernyy",
+        "messages": 3
+      },
+      {
+        "name": "Ewan Young",
+        "messages": 3
+      },
+      {
+        "name": "Maxim Orlov",
+        "messages": 2
+      },
+      {
+        "name": "Fujii Masao",
+        "messages": 2
+      },
+      {
+        "name": "Mihail Nikalayeu",
+        "messages": 2
+      },
+      {
+        "name": "Antonin Houska",
+        "messages": 2
+      },
+      {
+        "name": "ZizhuanLiu X-MAN",
+        "messages": 2
+      },
+      {
+        "name": "Kyotaro Horiguchi",
+        "messages": 2
+      },
+      {
+        "name": "Lukas Fittl",
+        "messages": 2
+      },
+      {
+        "name": "Zsolt Parragi",
+        "messages": 2
+      },
+      {
+        "name": "Denis Rodionov",
+        "messages": 2
+      },
+      {
+        "name": "Chao Li",
+        "messages": 2
+      },
+      {
+        "name": "Ilia Evdokimov",
+        "messages": 2
+      },
+      {
+        "name": "Jacob Champion",
+        "messages": 1
+      },
+      {
+        "name": "Bruce Momjian",
+        "messages": 1
+      },
+      {
+        "name": "Alastair Turner",
+        "messages": 1
+      },
+      {
+        "name": "Robert Treat",
+        "messages": 1
+      },
+      {
+        "name": "surya poondla",
+        "messages": 1
+      },
+      {
+        "name": "Ashutosh Bapat",
+        "messages": 1
+      },
+      {
+        "name": "Melanie Plageman",
+        "messages": 1
+      },
+      {
+        "name": "Kirk Wolak",
+        "messages": 1
+      },
+      {
+        "name": "Julien Rouhaud",
+        "messages": 1
+      },
+      {
+        "name": "liu zhilong",
+        "messages": 1
+      },
+      {
+        "name": "SATYANARAYANA NARLAPURAM",
+        "messages": 1
+      },
+      {
+        "name": "Ajin Cherian",
+        "messages": 1
+      },
+      {
+        "name": "Chengpeng Yan",
+        "messages": 1
+      }
+    ],
+    "multiMessageAuthors": [
+      "Michael Paquier",
+      "Hayato Kuroda",
+      "Tatsuo Ishii",
+      "Amit Kapila",
+      "Mats Kindahl",
+      "Sami Imseih",
+      "Enrique Sánchez",
+      "Dilip Kumar",
+      "shveta malik",
+      "신성준",
+      "Tristan Partin",
+      "Vik Fearing",
+      "Tom Lane",
+      "ls7777",
+      "Alvaro Herrera",
+      "Japin Li",
+      "Andrey Chernyy",
+      "Ewan Young",
+      "Maxim Orlov",
+      "Fujii Masao",
+      "Mihail Nikalayeu",
+      "Antonin Houska",
+      "ZizhuanLiu X-MAN",
+      "Kyotaro Horiguchi",
+      "Lukas Fittl",
+      "Zsolt Parragi",
+      "Denis Rodionov",
+      "Chao Li",
+      "Ilia Evdokimov"
+    ]
+  },
+  "messages": [
+    {
+      "id": "20230625.210509.1276733411677577841.t-ishii@sranhm.sra.co.jp",
+      "from": "Tatsuo Ishii <ishii(at)sraoss(dot)co(dot)jp>",
+      "subject": "Row pattern recognition",
+      "date": "2023-06-25 12:05:09",
+      "body": "Attached is a PoC patch to implement \"Row pattern recognition\" (RPR)\nin SQL:2016 (I know SQL:2023 is already out, but I don't have access\nto it). Actually SQL:2016 defines RPR in two places[1]:\n\n    Feature R010, “Row pattern recognition: FROM clause”\n    Feature R020, “Row pattern recognition: WINDOW clause”\n\nThe patch includes partial support for R020 part.\n\n- What is RPR?\n\nRPR provides a way to search series of data using regular expression\npatterns. Suppose you have a stock database.\n\nCREATE TABLE stock (\n       company TEXT,\n       tdate DATE,\n       price BIGINT);\n\nYou want to find a \"V-shaped\" pattern: i.e. price goes down for 1 or\nmore days, then goes up for 1 or more days. If we try to implement the\nquery in PostgreSQL, it could be quite complex and inefficient.\n\nRPR provides convenient way to implement the query.\n\nSELECT company, tdate, price, rpr(price) OVER w FROM stock\n WINDOW w AS (\n PARTITION BY company\n ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING\n PATTERN (START DOWN+ UP+)\n DEFINE\n  START AS TRUE,\n  UP AS price > PREV(price),\n  DOWN AS price < PREV(price)\n);\n\n\"PATTERN\" and \"DEFINE\" are the key clauses of RPR. DEFINE defines 3\n\"row pattern variables\" namely START, UP and DOWN. They are associated\nwith logical expressions namely \"TRUE\", \"price > PREV(price)\", and\n\"price < PREV(price)\". Note that \"PREV\" function returns price column\nin the previous row. So, UP is true if price is higher than previous\nday. On the other hand, DOWN is true if price is lower than previous\nday.  PATTERN uses the row pattern variables to create a necessary\npattern.  In this case, the first row is always match because START is\nalways true, and second or more rows match with \"UP\" ('+' is a regular\nexpression representing one or more), and subsequent rows match with\n\"DOWN\".\n\nHere is the sample output.\n\n company  |   tdate    | price | rpr\n----------+------------+-------+------\n company1 | 2023-07-01 |   100 |\n company1 | 2023-07-02 |   200 |  200 -- 200->150->140->150\n company1 | 2023-07-03 |   150 |  150 -- 150->140->150\n company1 | 2023-07-04 |   140 |\n company1 | 2023-07-05 |   150 |  150 -- 150->90->110->130\n company1 | 2023-07-06 |    90 |\n company1 | 2023-07-07 |   110 |\n company1 | 2023-07-08 |   130 |\n company1 | 2023-07-09 |   120 |\n company1 | 2023-07-10 |   130 |\n\nrpr shows the first row if all the patterns are satisfied. In the\nexample above 200, 150, 150 are the cases.  Other rows are shown as\n[... truncated for corpus ...]"
+    },
+    {
+      "id": "fdf57a8d-65d5-e8a5-361f-3095d6899099@postgresfriends.org",
+      "from": "Vik Fearing <vik(at)postgresfriends(dot)org>",
+      "subject": "Re: Row pattern recognition",
+      "date": "2023-06-25 21:08:35",
+      "body": "I have been dreaming of and lobbying for someone to pick up this\nfeature.  I will be sure to review it from a standards perspective and\nwill try my best to help with the technical aspect, but I am not sure to\nhave the qualifications for that.\n\nTHANK YOU!\n\nIf you can, try to get ISO/IEC 19075-5 which is a guide to RPR instead\nof just its technical specification.\n\nhttps://www.iso.org/standard/78936.html\n\nI don't understand this.  RPR in a window specification limits the\nwindow to the matched rows, so this looks like your rpr() function is\njust the regular first_value() window function that we already have?\n\nI thought DuckDB had it already, but it looks like I was wrong.\n\nAs in your example, you cannot have START.price outside of the window\nspecification; it can only go in the MEASURES clause.  Only startprice\nis allowed outside and it gets its qualification from the OVER.  Using\nw.startprice might have been better but that would require window names\nto be in the same namespace as range tables.\n\nThis currently works in Postgres:\n\n   SELECT RANK() OVER w\n   FROM (VALUES (1)) AS w (x)\n   WINDOW w AS (ORDER BY w.x);\n\nOkay, for now.\n\nIs this because you haven't done it yet, or because you ran into\nproblems trying to do it?\n\nThis is what I had a hard time imagining how to do while thinking about\nit.  The grammar is so different here and we allow many more operators\n(like \"?\" which is also the standard parameter symbol).  People more\nexpert than me will have to help here.\n\nIn this case, we should require the user to specify AFTER MATCH SKIP TO\nNEXT ROW so that behavior doesn't change when we implement the standard\ndefault.  (Your patch might do this already.)\n\nI do not understand what this means.\n\nI have no problem with that as long as we don't paint ourselves into a\ncorner.\n\nI have not looked at the patch yet, but is the reason for doing R020\nbefore R010 because you haven't done the MEASURES clause yet?\n\nIn any case, I will be watching this with a close eye, and I am eager to\nhelp in any way I can."
+    },
+    {
+      "id": "20230626.100520.2022209340496571373.t-ishii@sranhm.sra.co.jp",
+      "from": "Tatsuo Ishii <ishii(at)sraoss(dot)co(dot)jp>",
+      "subject": "Re: Row pattern recognition",
+      "date": "2023-06-26 01:05:20",
+      "body": "Thank you for looking into my proposal.\n\nThanks for the info.\n\nNo, rpr() is different from first_value(). rpr() returns the argument\nvalue at the first row in a frame only when matched rows found. On the\nother hand first_value() returns the argument value at the first row\nin a frame unconditionally.\n\ncompany  |   tdate    | price | rpr  | first_value\n----------+------------+-------+------+-------------\n company1 | 2023-07-01 |   100 |      |         100\n company1 | 2023-07-02 |   200 |  200 |         200\n company1 | 2023-07-03 |   150 |  150 |         150\n company1 | 2023-07-04 |   140 |      |         140\n company1 | 2023-07-05 |   150 |  150 |         150\n company1 | 2023-07-06 |    90 |      |          90\n company1 | 2023-07-07 |   110 |      |         110\n company1 | 2023-07-08 |   130 |      |         130\n company1 | 2023-07-09 |   120 |      |         120\n company1 | 2023-07-10 |   130 |      |         130\n\nFor example, a frame starting with (tdate = 2023-07-02, price = 200)\nconsists of rows (price = 200, 150, 140, 150) satisfying the pattern,\nthus rpr returns 200. Since in this example frame option \"ROWS BETWEEN\nCURRENT ROW AND UNBOUNDED FOLLOWING\" is specified, next frame starts\nwith (tdate = 2023-07-03, price = 150). This frame satisfies the\npattern too (price = 150, 140, 150), and rpr retus 150... and so on.\n\nInteresting.\n\nBecause it seems SUBSET is not useful without MEASURES support. Thus\nmy plan is, firstly implement MEASURES, then SUBSET. What do you\nthink?\n\nYes, that is a problem.\n\nAgreed. I will implement AFTER MATCH SKIP PAST LAST ROW in the next\npatch and I will change the default to AFTER MATCH SKIP PAST LAST ROW.\n\nOk, let me explain. See example below. In my understanding \"count\"\nshould retun the number of rows in a frame restriced by the match\ncondition. For example at the first line (2023-07-01 | 100) count\nreturns 10. I think this should be 0 because the \"restriced\" frame\nstarting at the line contains no matched row. On the other hand the\n(restricted) frame starting at second line (2023-07-02 | 200) contains\n4 rows, thus count should return 4, instead of 9.\n\nSELECT company, tdate, price, rpr(price) OVER w, count(*) OVER w FROM stock\n WINDOW w AS (\n PARTITION BY company\n ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING\n PATTERN (START DOWN+ UP+)\n DEFINE\n  START AS TRUE,\n  UP AS price > PREV(price),\n  DOWN AS price < PREV(price)\n);\n\ncompany  |   tdate    | price | rpr  | count\n----------+------------+-------+------+-------\n[... truncated for corpus ...]"
+    },
+    {
+      "id": "20230626.174507.2071661484706170221.t-ishii@sranhm.sra.co.jp",
+      "from": "Tatsuo Ishii <ishii(at)sraoss(dot)co(dot)jp>",
+      "subject": "Re: Row pattern recognition",
+      "date": "2023-06-26 08:45:07",
+      "body": "Attached is the v2 patch to add support for AFTER MATCH SKIP PAST LAST\nROW and AFTER MATCH SKIP PAST LAST ROW. The default is AFTER MATCH\nSKIP PAST LAST ROW as the standard default. Here are some examples to\ndemonstrate how those clauses affect the query result.\n\nSELECT i, rpr(i) OVER w\n  FROM (VALUES (1), (2), (3), (4)) AS v (i)\n  WINDOW w AS (\n   ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING\n   AFTER MATCH SKIP PAST LAST ROW\n   PATTERN (A B)\n   DEFINE\n    A AS i <= 2,\n    B AS i <= 3\n);\n i | rpr\n---+-----\n 1 |   1\n 2 |\n 3 |\n 4 |\n(4 rows)\n\nIn this example rpr starts from i = 1 and find that row i = 1\nsatisfies A, and row i = 2 satisfies B. Then rpr moves to row i = 3\nand find that it does not satisfy A, thus the result is NULL. Same\nthing can be said to row i = 4.\n\nSELECT i, rpr(i) OVER w\n  FROM (VALUES (1), (2), (3), (4)) AS v (i)\n  WINDOW w AS (\n   ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING\n   AFTER MATCH SKIP TO NEXT ROW\n   PATTERN (A B)\n   DEFINE\n    A AS i <= 2,\n    B AS i <= 3\n);\n i | rpr\n---+-----\n 1 |   1\n 2 |   2\n 3 |\n 4 |\n(4 rows)\n\nIn this example rpr starts from i = 1 and find that row i = 1\nsatisfies A, and row i = 2 satisfies B (same as above). Then rpr moves\nto row i = 2, rather than 3 because AFTER MATCH SKIP TO NEXT ROW is\nspecified.\n\nBest reagards,"
+    },
+    {
+      "id": "90bff6fa-01b7-cf60-f4f4-3412514a7cd2@postgresfriends.org",
+      "from": "Vik Fearing <vik(at)postgresfriends(dot)org>",
+      "subject": "Re: Row pattern recognition",
+      "date": "2023-06-26 22:38:20",
+      "body": "Okay, I see the problem now, and why you need the rpr() function.\n\nYou are doing this as something that happens over a window frame, but it\nis actually something that *reduces* the window frame.  The pattern\nmatching needs to be done when the frame is calculated and not when any\nparticular function is applied over it.\n\nThis query (with all the defaults made explicit):\n\nSELECT s.company, s.tdate, s.price,\n        FIRST_VALUE(s.tdate) OVER w,\n        LAST_VALUE(s.tdate) OVER w,\n        lowest OVER w\nFROM stock AS s\nWINDOW w AS (\n   PARTITION BY s.company\n   ORDER BY s.tdate\n   ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING\n   EXCLUDE NO OTHERS\n   MEASURES\n     LAST(DOWN) AS lowest\n   AFTER MATCH SKIP PAST LAST ROW\n   INITIAL PATTERN (START DOWN+ UP+)\n   DEFINE\n     START AS TRUE,\n     UP AS price > PREV(price),\n     DOWN AS price < PREV(price)\n);\n\nShould produce this result:\n\n  company  |   tdate    | price | first_value | last_value | lowest\n----------+------------+-------+-------------+------------+--------\n  company1 | 07-01-2023 |   100 |             |            |\n  company1 | 07-02-2023 |   200 | 07-02-2023  | 07-05-2023 |    140\n  company1 | 07-03-2023 |   150 |             |            |\n  company1 | 07-04-2023 |   140 |             |            |\n  company1 | 07-05-2023 |   150 |             |            |\n  company1 | 07-06-2023 |    90 |             |            |\n  company1 | 07-07-2023 |   110 |             |            |\n  company1 | 07-08-2023 |   130 | 07-05-2023  | 07-05-2023 |    120\n  company1 | 07-09-2023 |   120 |             |            |\n  company1 | 07-10-2023 |   130 |             |            |\n(10 rows)\n\nOr if we switch to AFTER MATCH SKIP TO NEXT ROW, then we get:\n\n  company  |   tdate    | price | first_value | last_value | lowest\n----------+------------+-------+-------------+------------+--------\n  company1 | 07-01-2023 |   100 |             |            |\n  company1 | 07-02-2023 |   200 | 07-02-2023  | 07-05-2023 |    140\n  company1 | 07-03-2023 |   150 | 07-03-2023  | 07-05-2023 |    140\n  company1 | 07-04-2023 |   140 |             |            |\n  company1 | 07-05-2023 |   150 | 07-05-2023  | 07-08-2023 |     90\n  company1 | 07-06-2023 |    90 |             |            |\n  company1 | 07-07-2023 |   110 |             |            |\n  company1 | 07-08-2023 |   130 | 07-08-2023  | 07-10-2023 |    120\n  company1 | 07-09-2023 |   120 |             |            |\n  company1 | 07-10-2023 |   130 |             |            |\n[... truncated for corpus ...]"
+    },
+    {
+      "id": "20230628.095819.1123345378945479712.t-ishii@sranhm.sra.co.jp",
+      "from": "Tatsuo Ishii <ishii(at)sraoss(dot)co(dot)jp>",
+      "subject": "Re: Row pattern recognition",
+      "date": "2023-06-28 00:58:19",
+      "body": "Yes. (I think the standard calls the window frame as \"full window\nframe\" in context of RPR to make a contrast with the subset of the\nframe rows restricted by RPR. The paper I refered to as [2] claims\nthat the latter window frame is called \"reduced window frame\" in the\nstandard but I wasn't able to find the term in the standard.)\n\nI wanted to demonstate that pattern matching logic is basically\ncorrect in the PoC patch. Now what I need to do is, move the row\npattern matching logic to somewhere inside nodeWindowAgg so that\n\"restricted window frame\" can be applied to all window functions and\nwindow aggregates. Currently I am looking into update_frameheadpos()\nand update_frametailpos() which calculate the frame head and tail\nagainst current row. What do you think?\n\n[snip]\n\nThanks for the examples. I agree with the expected query results.\n\nOk.\n\nMaybe an insane idea but what about rewriting MATCH_RECOGNIZE clause\ninto Window clause with RPR?\n\nThanks. Will fix.\n\nBest reagards,"
+    },
+    {
+      "id": "20230628.211700.191321983330956034.t-ishii@sranhm.sra.co.jp",
+      "from": "Tatsuo Ishii <ishii(at)sraoss(dot)co(dot)jp>",
+      "subject": "Re: Row pattern recognition",
+      "date": "2023-06-28 12:17:00",
+      "body": "Small question.\n\nshould be \"LAST(DOWN.price) AS lowest\"?\n\nBest reagards,"
+    },
+    {
+      "id": "d5e469b6-2486-7569-e4da-1528b3b41d8c@postgresfriends.org",
+      "from": "Vik Fearing <vik(at)postgresfriends(dot)org>",
+      "subject": "Re: Row pattern recognition",
+      "date": "2023-06-28 22:30:43",
+      "body": "Yes, it should be.  And the tdate='07-08-2023' row in the first\nresultset should have '07-08-2023' and '07-10-2023' as its 4th and 5th\ncolumns.\n\nSince my brain is doing the processing instead of postgres, I made some\nhuman errors. :-)"
+    },
+    {
+      "id": "07214b3a-5893-f6ce-ef55-0e5d24c94925@timescale.com",
+      "from": "Jacob Champion <jchampion(at)timescale(dot)com>",
+      "subject": "Re: Row pattern recognition",
+      "date": "2023-07-19 16:30:40",
+      "body": "Hello,\n\nThanks for working on this! We're interested in RPR as well, and I've\nbeen trying to get up to speed with the specs, to maybe make myself\nuseful.\n\n19075-5 discusses that, at least; not sure about other parts of the spec.\n\nAre we guaranteed to always have an equivalent window clause? There seem\nto be many differences between the two, especially when it comes to ONE\nROW/ALL ROWS PER MATCH."
+    },
+    {
+      "id": "20230720.141513.1986681389874528348.t-ishii@sranhm.sra.co.jp",
+      "from": "Tatsuo Ishii <ishii(at)sraoss(dot)co(dot)jp>",
+      "subject": "Re: Row pattern recognition",
+      "date": "2023-07-20 05:15:13",
+      "body": "Thank you for being interested in this.\n\nThanks for the info. Unfortunately I don't have 19075-5 though.\n\nYou are right. I am not 100% sure if the rewriting is possible at this\npoint.\n\nMe too but...\n\nCurrently my patch has a limitation for the sake of simple\nimplementation: a pattern like \"A+\" is parsed and analyzed in the raw\nparser. This makes subsequent process much easier because the pattern\nelement variable (in this case \"A\") and the quantifier (in this case\n\"+\") is already identified by the raw parser. However there are much\nmore cases are allowed in the standard as you already pointed out. For\nthose cases probably we should give up to parse PATTERN items in the\nraw parser, and instead the raw parser just accepts the elements as\nSconst?\n\nWill fix.\n\nRight. Will fix.\n\nAny comments, especially on the PREV/NEXT implementation part is\nwelcome. Currently the DEFINE expression like \"price > PREV(price)\" is\nprepared in ExecInitWindowAgg using ExecInitExpr,tweaking var->varno\nin Var node so that PREV uses OUTER_VAR, NEXT uses INNER_VAR.  Then\nevaluate the expression in ExecWindowAgg using ExecEvalExpr, setting\nprevious row TupleSlot to ExprContext->ecxt_outertuple, and next row\nTupleSlot to ExprContext->ecxt_innertuple. I think this is temporary\nhack and should be gotten ride of before v1 is committed. Better idea?\n\nBest reagards,"
+    },
+    {
+      "id": "2294297.1780270682@sss.pgh.pa.us",
+      "from": "Tom Lane <tgl(at)sss(dot)pgh(dot)pa(dot)us>",
+      "subject": "Update our timezone code to IANA tzcode2026b",
+      "date": "2026-05-31 23:38:02",
+      "body": "Here's a patch to do $SUBJECT.  I looked into this due to Andres'\nreport of a Valgrind uninitialized-memory complaint [1].  I can\nconfirm that Valgrind no longer complains about this code.\nHowever, it seems like the uninitialized-memory issue didn't\nhave any practical effect.  The files generated by zic are\nmostly the same as before, and for the couple dozen that are\nnot, testing with \"zdump -v\" shows that they represent the same\nset of timestamp transitions as before.  I suppose that those\nchanges are from internal algorithmic changes in zic.  One file\nthat changed was Asia/Tbilisi, which is called out in the upstream\nrelease notes for 2026a as no longer containing a useless no-op\ntransition.  I didn't bother trying to trace down the other data\nchanges.\n\nThere are a lot of changes in this patch, since we hadn't done\na similar update since 2020.  One that is rather annoying for\nour purposes is that they changed the signatures of both\ntzload() and tzparse().  Which they're entitled to do, both\nof those being internal to localtime.c --- except we'd unwisely\nexposed them as additional API.  I think the best thing to do\nis make them both local functions again, so that they can\ntrack upstream, and instead export our own wrapper function.\n\nA question that immediately raises is whether it's enough of\nan API break to prevent back-patching this.  Historically we've\nusually back-patched tzcode updates to ensure that we'll still\nbe able to read future tzdata updates, and I was intending to\ndo so again with this.  But perhaps this API break is a reason\nnot to.  I don't see any really strong reason why extension\nmodules would be calling tzload() or tzparse(), but maybe\nsomebody is.  So at the moment I'm leaning to \"no backpatch\".\n\nI'll park this in the upcoming CF for now.\n\n\t\t\tregards, tom lane\n\n[1] https://www.postgresql.org/message-id/4uukubkg3t5eavtxxzfa7smqbnqqvl3ysl7aptmj77zbtdxjh3%40krjnfntcirw6"
+    },
+    {
+      "id": "2414504.1780275350@sss.pgh.pa.us",
+      "from": "Tom Lane <tgl(at)sss(dot)pgh(dot)pa(dot)us>",
+      "subject": "Re: Update our timezone code to IANA tzcode2026b",
+      "date": "2026-06-01 00:55:50",
+      "body": "I wrote:\n\ncfbot didn't like v1 too much, here's a v2.\n\n\t\t\tregards, tom lane"
+    },
+    {
+      "id": "182311743703924@mail.yandex.ru",
+      "from": "ls7777 <ls7777(at)yandex(dot)ru>",
+      "subject": "Patch for migration of the pg_commit_ts directory",
+      "date": "2025-04-03 18:27:32",
+      "body": "Good afternoon!\n\n      During pg_upgrade migration, the pg_commit_ts directory is not copied when track_commit_timestamp = on is set. There is a patch in the attachment that fixes this.\n\n    Contents & Purpose\n\n    ==================\n\n    The patch copies the pg_commit_ts directory of the old cluster and updates the Latest checkpoints oldestCommitTsXid and Latest checkpoint's newestCommitTsXid for the new cluster. If required.\n\n    Initial Run\n\n    ===========\n\n    The patch can be applied on the master branch.\n\n    I don't understand what tests are needed for such a patch. The patch is very simple.\n\n     Performance\n\n    ===========\n\n    The pg_upgrade operation time increases by the time the pg_commit_ts catalog is copied."
+    },
+    {
+      "id": "CACG=eza020LBv6-PPHFTi8OET1971bi8on98Uw6AtW7yV=eX+g@mail.gmail.com",
+      "from": "Maxim Orlov <orlovmg(at)gmail(dot)com>",
+      "subject": "Re: Patch for migration of the pg_commit_ts directory",
+      "date": "2025-09-30 10:35:26",
+      "body": "Yes, the pg_commit_ts directory is not transferred by pg_upgrade.\nBasically, you can get the exact same result by manually copying the\npg_commit_ts directory and running pg_resetwal.  And this patch does it\nautomatically.\n\nIn other words, the patch provides the stated functionality, but\nconsider running pgindet.\n\nI'm not sure whether there were any reasons not to make this move from\nthe beginning.  The authors' opinions are needed here.\n\nAnd one more thing.  In my perspective, having some tests is always a\ngood idea, even if they are not meant to be committed. After briefly\nexamining the patch, I developed this basic test. This is not finalized\nin any manner, but it is simply an idea."
+    },
+    {
+      "id": "OSCPR01MB1496660969357E7D16EF4FF12F5E6A@OSCPR01MB14966.jpnprd01.prod.outlook.com",
+      "from": "\"Hayato Kuroda (Fujitsu)\" <kuroda(dot)hayato(at)fujitsu(dot)com>",
+      "subject": "RE: Patch for migration of the pg_commit_ts directory",
+      "date": "2025-10-01 12:17:50",
+      "body": "Hi,\n\nPer my understanding, track_commit_timestamp must be on the new instance,\notherwise it would be removed when new instance starts. Is it correct?\nIf so, should we detect the difference and do some warnings/errors here?\nOr it is just the user's responsibility?\n\nBest regards,\nHayato Kuroda\nFUJITSU LIMITED"
+    },
+    {
+      "id": "OSCPR01MB149662EADD1EDA9811E7DF2B6F5E6A@OSCPR01MB14966.jpnprd01.prod.outlook.com",
+      "from": "\"Hayato Kuroda (Fujitsu)\" <kuroda(dot)hayato(at)fujitsu(dot)com>",
+      "subject": "RE: Patch for migration of the pg_commit_ts directory",
+      "date": "2025-10-01 12:27:25",
+      "body": "Dear Maxim,\n\nThanks for considering the test case. To confirm, where should we put the test code?\nPp_upgrade has already had 006 test, and commit_ts has not had 005 test.\n\nRegarding the test, it is enough to check whether oldest/newest transactions on the old\ncluster can be tracked.\n\nBest regards,\nHayato Kuroda\nFUJITSU LIMITED"
+    },
+    {
+      "id": "5381759333107@mail.yandex.ru",
+      "from": "ls7777 <ls7777(at)yandex(dot)ru>",
+      "subject": "Re: Patch for migration of the pg_commit_ts directory",
+      "date": "2025-10-01 16:25:26",
+      "body": "<div><div>Hi,</div><div> </div><div>Yes, track_commit_timestamp must be installed in the new instance.</div><div>This is only the responsibility of an experienced user.</div><div>pg_upgrage should allow you to save pg_commit_ts if this data exists at the time of migration.</div></div><div><div>Warnings are not needed, the loss of this data is not critical in most cases. They were lost with each migration if users did not manually migrate them.</div><div> </div></div><div>----------------</div><div>Кому: 'ls7777' (ls7777(at)yandex(dot)ru);</div><div>Копия: pgsql-hackers(at)postgresql(dot)org;</div><div>Тема: Patch for migration of the pg_commit_ts directory;</div><div>01.10.2025, 17:17, \"Hayato Kuroda (Fujitsu)\" &lt;kuroda(dot)hayato(at)fujitsu(dot)com&gt;:</div><blockquote><p>Hi,<br /><br />Per my understanding, track_commit_timestamp must be on the new instance,<br />otherwise it would be removed when new instance starts. Is it correct?<br />If so, should we detect the difference and do some warnings/errors here?<br />Or it is just the user's responsibility?<br /><br />Best regards,<br />Hayato Kuroda<br />FUJITSU LIMITED<br /> </p></blockquote>"
+    },
+    {
+      "id": "OSCPR01MB14966B4CAB3CC8AE5F8DAD57FF5E7A@OSCPR01MB14966.jpnprd01.prod.outlook.com",
+      "from": "\"Hayato Kuroda (Fujitsu)\" <kuroda(dot)hayato(at)fujitsu(dot)com>",
+      "subject": "RE: Patch for migration of the pg_commit_ts directory",
+      "date": "2025-10-02 06:40:08",
+      "body": "Hi,\n(Sorry but I cannot find your name)\n\nSo, your policy is that commit_ts is not the user data thus it is OK to drop during\nthe upgrade, is it correct? I want to know other's opinion around here.\nNote that if we want to check, it can be done in check_control_data().\n\nRegarding the patch:\n```\n-\n+\tcluster->controldata.chkpnt_oldstCommitTsxid = 0;\n+\tcluster->controldata.chkpnt_newstCommitTsxid = 0;\n```\n\nOther attributes are not initialized, you can follow.\n\n```\n+\tif (old_cluster.controldata.chkpnt_oldstCommitTsxid > 0)\n+\t\t\t\t\t   copy_subdir_files(\"pg_commit_ts\", \"pg_commit_ts\");\n```\n\nIndent should be fixed. Please run pgindent.\n\n```\n-\t\t\t  old_cluster.controldata.chkpnt_nxtxid,\n-\t\t\t  old_cluster.controldata.chkpnt_nxtxid,\n+\t\t\t  old_cluster.controldata.chkpnt_oldstCommitTsxid == 0 ? old_cluster.controldata.chkpnt_nxtxid : old_cluster.controldata.chkpnt_oldstCommitTsxid,\n+\t\t\t  old_cluster.controldata.chkpnt_newstCommitTsxid == 0 ? old_cluster.controldata.chkpnt_nxtxid : old_cluster.controldata.chkpnt_newstCommitTsxid,\n```\n\nTo confirm, is there a possibility that only either of oldest/newest CommitTs exists?\n\nBest regards,\nHayato Kuroda\nFUJITSU LIMITED"
+    },
+    {
+      "id": "CAA4eK1+Zayox=x84upet_gc4hrCKSwZSpnO9=Q4vH8rrJbsBOg@mail.gmail.com",
+      "from": "Amit Kapila <amit(dot)kapila16(at)gmail(dot)com>",
+      "subject": "Re: Patch for migration of the pg_commit_ts directory",
+      "date": "2025-10-02 08:49:28",
+      "body": "On Thu, Oct 2, 2025 at 12:10 PM Hayato Kuroda (Fujitsu)\n<kuroda(dot)hayato(at)fujitsu(dot)com> wrote:\n\nIIUC, the proposal is that if GUC track_commit_timestamp is enabled on\nthe new instance then we should copy it, otherwise, we can drop\ncopying it. Is my understanding correct? I think we can follow what is\ndone check_new_cluster_replication_slots() for the case when\ntrack_commit_timestamp is not set on the new server. When we try to\ncopy slots and the wal_level on the new server is minimal, we error\nout, so shouldn't we do the same here and error_out if\ntrack_commit_timestamp is not enabled and we have some valid commit_ts\ndata to copy?"
+    },
+    {
+      "id": "CACG=ezaFdL4EM8bdrHTRVHt5BmxxWGXcPiDr6Qm00Qj+S_Y+vQ@mail.gmail.com",
+      "from": "Maxim Orlov <orlovmg(at)gmail(dot)com>",
+      "subject": "Re: Patch for migration of the pg_commit_ts directory",
+      "date": "2025-10-06 07:58:55",
+      "body": "+1 Sounds reasonable to me. It's better to give an explicit error;\notherwise, we would remove data that the user clearly wants to migrate\nto the new cluster. And deleting data just because the user forgot to\nspecify one parameter in a new cluster looks like a bad joke to me."
+    },
+    {
+      "id": "23121759759185@mail.yandex.ru",
+      "from": "ls7777 <ls7777(at)yandex(dot)ru>",
+      "subject": "Re: Patch for migration of the pg_commit_ts directory",
+      "date": "2025-10-06 14:31:52",
+      "body": "<div><div>Hi,</div><div><div><span style=\"white-space:pre-wrap\">I'll try to return it to the original </span><span style=\"background-color:#ffffff;color:#1a1a1a;float:none;font-family:'ys text' , 'arial' , sans-serif;font-size:16px;font-style:normal;font-weight:400;text-align:start;text-decoration-color:initial;text-decoration-style:initial;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\">thread.</span></div><div> </div><div><div>I absolutely agree with you. Data loss during migration is an unacceptable situation. And why it's still happening, I don't understand. But issuing messages will require translating it into other languages and complicate the patch.  I'm not a programmer to do it beautifully. And not a beautiful patch is unlikely to be accepted. </div><div>I will do a parameter check and an ERROR message.</div></div><div> </div></div><div> </div><blockquote><div><span style=\"background-color:#ffffff;color:#1a1a1a;float:none;font-family:'ys text' , 'arial' , sans-serif;font-size:16px;font-style:normal;font-weight:400;text-align:start;text-decoration-color:initial;text-decoration-style:initial;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\">Hi,</span><br style=\"background-color:rgb( 255 , 255 , 255 );color:rgb( 26 , 26 , 26 );font-family:'ys text' , 'arial' , sans-serif;font-size:16px;font-style:normal;font-weight:400;text-align:start;text-decoration-color:initial;text-decoration-style:initial;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\" /><br style=\"background-color:rgb( 255 , 255 , 255 );color:rgb( 26 , 26 , 26 );font-family:'ys text' , 'arial' , sans-serif;font-size:16px;font-style:normal;font-weight:400;text-align:start;text-decoration-color:initial;text-decoration-style:initial;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\" /><span style=\"background-color:#ffffff;color:#1a1a1a;float:none;font-family:'ys text' , 'arial' , sans-serif;font-size:16px;font-style:normal;font-weight:400;text-align:start;text-decoration-color:initial;text-decoration-style:initial;text-indent:0px;text-transform:none;white-space:normal;word-spacing:0px\">Could you please reply to the original thread? Otherwise, it is difficult to track later.</span><br style=\"background-color:rgb( 255 , 255 , 255 );color:rgb( 26 , 26 , 26 );font-family:'ys text' , 'arial' , sans-serif;font-size:16px;font-style:normal;font-weight:400;text-align:start;text-decoration-color:initial;text-deco\n[... truncated for corpus ...]"
+    },
+    {
+      "id": "aOPkC1kdXHasrJ3Z@momjian.us",
+      "from": "Bruce Momjian <bruce(at)momjian(dot)us>",
+      "subject": "Re: Patch for migration of the pg_commit_ts directory",
+      "date": "2025-10-06 15:45:15",
+      "body": "You don't need to worry about translations.  Each language team will\nmake sure your English message is translated."
+    },
+    {
+      "id": "CAFiTN-u5D5o_AGNbHRZHaOqAMWkxLf+hSk_r9X3gv6HbLOB5+g@mail.gmail.com",
+      "from": "Dilip Kumar <dilipbalaut(at)gmail(dot)com>",
+      "subject": "Proposal: Conflict log history table for Logical Replication",
+      "date": "2025-08-05 12:24:01",
+      "body": "Currently we log conflicts to the server's log file and updates, this\napproach has limitations, 1) Difficult to query and analyze, parsing\nplain text log files for conflict details is inefficient. 2) Lack of\nstructured data, key conflict attributes (table, operation, old/new\ndata, LSN, etc.) are not readily available in a structured, queryable\nformat. 3) Difficult for external monitoring tools or custom\nresolution scripts to consume conflict data directly.\n\nThis proposal aims to address these limitations by introducing a\nconflict log history table, providing a structured, and queryable\nrecord of all logical replication conflicts.  This should be a\nconfigurable option whether to log into the conflict log history\ntable, server logs or both.\n\nThis proposal has two main design questions:\n===================================\n\n1. How do we store conflicting tuples from different tables?\nUsing a JSON column to store the row data seems like the most flexible\nsolution, as it can accommodate different table schemas.\n\n2. Should this be a system table or a user table?\na) System Table: Storing this in a system catalog is simple, but\ncatalogs aren't designed for ever-growing data. While pg_large_object\nis an exception, this is not what we generally do IMHO.\nb) User Table: This offers more flexibility. We could allow a user to\nspecify the table name during CREATE SUBSCRIPTION.  Then we choose to\neither create the table internally or let the user create the table\nwith a predefined schema.\n\nA potential drawback is that a user might drop or alter the table.\nHowever, we could mitigate this risk by simply logging a WARNING if\nthe table is configured but an insertion fails.\nI am currently working on a POC patch for the same, but will post that\nonce we have some thoughts on design choices.\n\nSchema for the conflict log history table may look like this, although\nthere is a room for discussion on this.\n\nNote:  I think these fields are self explanatory so I haven't\nexplained them here.\n\nconflict_log_table (\n    logid  SERIAL PRIMARY KEY,\n    subid                OID,\n    schema_id          OID,\n    table_id            OID,\n    conflict_type        TEXT NOT NULL,\n    operation_type       TEXT NOT NULL,\n    replication_origin   TEXT,\n    remote_commit_ts TIMESTAMPTZ,\n    local_commit_ts TIMESTAMPTZ,\n    ri_key                    JSON,\n    remote_tuple         JSON,\n    local_tuple          JSON,\n);\n\nCredit:  Thanks to Amit Kapila for discussing this offlist and\n[... truncated for corpus ...]"
+    },
+    {
+      "id": "CAJpy0uAfRZa4axLV_e4gvVdmunb8BOVx+Yr=XecECAVD0KnD=A@mail.gmail.com",
+      "from": "shveta malik <shveta(dot)malik(at)gmail(dot)com>",
+      "subject": "Re: Proposal: Conflict log history table for Logical Replication",
+      "date": "2025-08-07 06:55:04",
+      "body": "+1 for the idea.\n\nYes, that is one option. I have not looked into details myself, but\nyou can also explore 'anyarray' used in pg_statistics to store 'Column\ndata values of the appropriate kind'.\n\nI believe it makes more sense for this to be a catalog table rather\nthan a user table. I wanted to check if we already have a large\ncatalog table of this kind, and I think pg_statistic could be an\nexample of a sizable catalog table. To get a rough idea of how size\nscales with data, I ran a quick experiment: I created 1000 tables,\neach with 2 JSON columns, 1 text column, and 2 integer columns. Then,\nI inserted 1000 rows into each table and ran ANALYZE to collect\nstatistics. Here’s what I observed on a fresh database before and\nafter:\n\nBefore:\npg_statistic row count: 412\nTable size: ~256 kB\n\nAfter:\npg_statistic row count: 6,412\nTable size: ~5.3 MB\n\nAlthough it isn’t an exact comparison, this gives us some insight into\nhow the statistics catalog table size grows with the number of rows.\nIt doesn’t seem excessively large with 6k rows, given the fact that\npg_statistic itself is a complex table having many 'anyarray'-type\ncolumns.\n\nThat said, irrespective of what we decide, it would be ideal to offer\nusers an option for automatic purging, perhaps via a retention period\nparameter like conflict_stats_retention_period (say default to 30\ndays), or a manual purge API such as purge_conflict_stats('older than\ndate'). I wasn’t able to find any such purge mechanism for PostgreSQL\nstats tables, but Oracle does provide such purging options for some of\ntheir statistics tables (not related to conflicts), see [1], [2].\nAnd to manage it better, it could be range partitioned on timestamp.\n\nI feel operation_type is not needed when we already have\nconflict_type. The name of 'conflict_type' is enough to give us info\non operation-type.\n\n[1]\nhttps://docs.oracle.com/en/database/oracle/oracle-database/21/arpls/DBMS_STATS.html#GUID-8E6413D5-F827-4F57-9FAD-7EC56362A98C\n\n[2]\nhttps://docs.oracle.com/en/database/oracle/oracle-database/21/arpls/DBMS_STATS.html#GUID-A04AE1C0-5DE1-4AFC-91F8-D35D41DF98A2\n\nthanks\nShveta"
+    },
+    {
+      "id": "CAJpy0uB3y5Sd_LJyrhsyo48aP_WqTHC3oc0fz5m3obwGfc8JTQ@mail.gmail.com",
+      "from": "shveta malik <shveta(dot)malik(at)gmail(dot)com>",
+      "subject": "Re: Proposal: Conflict log history table for Logical Replication",
+      "date": "2025-08-07 08:13:40",
+      "body": "It seems BDR also has one such conflict-log table which is a catalog\ntable and is also partitioned on time. It has a default retention\nperiod of 30 days. See 'bdr.conflict_history' mentioned under\n'catalogs' in [1]\n\n[1]: https://www.enterprisedb.com/docs/pgd/latest/reference/tables-views-functions/#user-visible-catalogs-and-views\n\nthanks\nShveta"
+    },
+    {
+      "id": "CAFiTN-v2N256FZAMcgG9f2s7mENC2r0ME9HoKMb+tER7yxUCjQ@mail.gmail.com",
+      "from": "Dilip Kumar <dilipbalaut(at)gmail(dot)com>",
+      "subject": "Re: Proposal: Conflict log history table for Logical Replication",
+      "date": "2025-08-07 09:38:20",
+      "body": "Thanks Shveta for your opinion on the design.\n\nThanks\n\nI think conversion from row to json and json to row is convenient and\nalso other extensions like pgactive/bdr also provide as JSON.  But we\ncan explore this alternative options as well, thanks\n\nYeah that's good analysis, apart from this pg_largeobject is also a\ncatalog which grows with each large object and growth rate for that\nwill be very high because it stores large object data in catalog.\n\nYeah that's an interesting suggestion to timestamp based partitioning\nit for purging.\n\nActually bdr is an extension and this table is under extension\nnamespace (bdr.conflict_history) so this is not really a catalog but\nits a extension managed table.  So logically for PostgreSQL its an\nuser table but yeah this is created and managed by the extension."
+    },
+    {
+      "id": "CAJpy0uB-ScuYXzKPuhvnZ2Dk0n5_sPHe9bDgSHMYswrkCH1iqg@mail.gmail.com",
+      "from": "shveta malik <shveta(dot)malik(at)gmail(dot)com>",
+      "subject": "Re: Proposal: Conflict log history table for Logical Replication",
+      "date": "2025-08-08 03:28:21",
+      "body": "Okay. Agreed.\n\nYes, right. Sorry for confusion.\n\nAny idea if the user can alter/drop or perform any DML on it? I could\nnot find any details on this part."
+    },
+    {
+      "id": "CAFiTN-tddmj=URKbUe=-nV_AKs9gFer1N1ivEne498Se9Tz5oA@mail.gmail.com",
+      "from": "Dilip Kumar <dilipbalaut(at)gmail(dot)com>",
+      "subject": "Re: Proposal: Conflict log history table for Logical Replication",
+      "date": "2025-08-08 04:31:03",
+      "body": "In my experience, for such extension managed tables where we want them\nto behave like catalog, generally users are just granted with SELECT\npermission.  So although it is not a catalog but for accessibility\nwise for non admin users it is like a catalog.  IMHO, even if we\nchoose to create a user table for conflict log history we can also\ncontrol the permissions similarly.  What's your opinion on this?"
+    },
+    {
+      "id": "CAJpy0uBa-_s-BhdenXVz2uRy-n8JXfP3KY_P9yUfnE-=W_XFig@mail.gmail.com",
+      "from": "shveta malik <shveta(dot)malik(at)gmail(dot)com>",
+      "subject": "Re: Proposal: Conflict log history table for Logical Replication",
+      "date": "2025-08-08 08:42:33",
+      "body": "Yes, it can be done. Technically there is nothing preventing us from\ndoing it. But in my experience, I have never seen any\nsystem-maintained statistics tables to be a user table rather than\ncatalog table. Extensions are a different case; they typically manage\ntheir own tables, which are not part of the system catalog. But if any\nsuch stats related functionality is part of the core database, it\ngenerally makes more sense to implement it as a catalog table\n(provided there are no major obstacles to doing so). But I am curious\nto know what others think here.\n\nthanks\nShveta"
+    },
+    {
+      "id": "CAA4eK1KxZptz0nsPKHuhWnhDi0zqPkuFoC2d0hS1uqXtrryJZQ@mail.gmail.com",
+      "from": "Amit Kapila <amit(dot)kapila16(at)gmail(dot)com>",
+      "subject": "Re: Proposal: Conflict log history table for Logical Replication",
+      "date": "2025-08-13 10:08:55",
+      "body": "Yes, I think it is important to control permissions on this table even\nif it is a user table. How about giving SELECT, DELETE, TRUNCATE\npermissions to subscription owner assuming we create one such table\nper subscription?\n\nIt should be a user table due to following reasons (a) It is an ever\ngrowing table by definition and we need some level of user control to\nmanage it (like remove the old data); (b) We may want some sort of\npartitioning streategy to manage it, even though, we decide to do it\nourselves now but in future, we should allow user to also specify it;\n(c) We may also want user to specify what exact information she wants\nto get stored considering in future we want resolutions to also be\nstored in it. See a somewhat similar proposal to store errors during\ncopy by Tom [1]; (d) In a near-by thread, we are discussing storing\nerrors during copy in user table [2] and we have some similarity with\nthat proposal as well.\n\nIf we agree on this then the next thing to consider is whether we\nallow users to create such a table or do it ourselves. In the long\nterm, we may want both but for simplicity, we can auto-create\nourselves during CREATE SUBSCRIPTION with some option. BTW, if we\ndecide to let user create it then we can consider the idea of TYPED\ntables as discussed in emails [3][4].\n\nFor user tables, we need to consider how to avoid replicating these\ntables for publications that use FOR ALL TABLES specifier. One idea is\nto use EXCLUDE table functionality as being discussed in thread [5]\nbut that would also be a bit tricky especially if we decide to create\nsuch a table automatically. One naive idea is that internally we skip\nsending changes from this table for \"FOR ALL TABLES\" publication, and\nwe shouldn't allow creating publication for this table. OTOH, if we\nallow the user to create and specify this table, we can ask her to\nspecify with EXCLUDE syntax in publication. This needs more thoughts.\n\n[1] - https://www.postgresql.org/message-id/flat/752672.1699474336%40sss.pgh.pa.us#b8450be5645c4252d7d02cf7aca1fc7b\n[2] - https://www.postgresql.org/message-id/CACJufxH_OJpVra%3D0c4ow8fbxHj7heMcVaTNEPa5vAurSeNA-6Q%40mail.gmail.com\n[3] - https://www.postgresql.org/message-id/28c420cf-f25d-44f1-89fd-04ef0b2dd3db%40dunslane.net\n[4] - https://www.postgresql.org/message-id/CADrsxdYG%2B%2BK%3DiKjRm35u03q-Nb0tQPJaqjxnA2mGt5O%3DDht7sw%40mail.gmail.com\n[5] - https://www.postgresql.org/message-id/CANhcyEW%2BuJB_bvQLEaZCgoRTc1%3Di%2BQnrPPHxZ2%3D0SBSCyj9pkg%40mail.gmail.com"
+    },
+    {
+      "id": "CAC0GmyyLiNY1HQRc9mHjDOx4e0L7wxsANvLcA9hAkyPd6ySTQA@mail.gmail.com",
+      "from": "Alastair Turner <minion(at)decodable(dot)me>",
+      "subject": "Re: Proposal: Conflict log history table for Logical Replication",
+      "date": "2025-08-14 10:56:26",
+      "body": "Having it be a user table, and specifying the table per subscription sounds\ngood. This is very similar to how the load error tables for CloudBerry\nbehave, for instance. To have both options for table creation, CREATE ...\nIF NOT EXISTS semantics work well - if the option on CREATE SUBSCRIPTION\nspecifies an existing table of the right type use it, or create one with\nthe name supplied. This would also give the user control over whether to\nhave one table per subscription, one central table or anything in between.\nRather than constraining permissions on the table, the CREATE SUBSCRIPTION\ncommand could create a dependency relationship between the table and the\nsubscription.This would prevent removal of the table, even by a superuser.\n\nIf a dependency relationship is established between the error table and the\nsubscription, could this be used as a basis for filtering the error tables\nfrom FOR ALL TABLES subscriptions?\n\nRegards\n\nAlastair"
+    },
+    {
+      "id": "CAA4eK1Js=-eCSGx1kbOz+hp7riUKFeF8CnnLkmkj7xijbBPTug@mail.gmail.com",
+      "from": "Amit Kapila <amit(dot)kapila16(at)gmail(dot)com>",
+      "subject": "Re: Proposal: Conflict log history table for Logical Replication",
+      "date": "2025-08-15 06:52:32",
+      "body": "Sounds reasonable. I think the first version we can let such a table\nbe created automatically with some option(s) with subscription. Then,\nin subsequent versions, we can extend the functionality to allow\nexisting tables.\n\nOkay, that makes sense. But, we still probably want to disallow users\nfrom inserting or updating rows in the conflict table.\n\nYeah, that is worth considering."
+    },
+    {
+      "id": "202507262156.sb455angijk6@alvherre.pgsql",
+      "from": "Alvaro Herrera <alvherre(at)alvh(dot)no-ip(dot)org>",
+      "subject": "Adding REPACK [concurrently]",
+      "date": "2025-07-26 21:56:04",
+      "body": "Hello,\n\nHere's a patch to add REPACK and eventually the CONCURRENTLY flag to it.\nThis is coming from [1].  The ultimate goal is to have an in-core tool\nto allow concurrent table rewrite to get rid of bloat; right now, VACUUM\nFULL does that, but it's not concurrent.  Users have resorted to using\nthe pg_repack third-party tool, which is ancient and uses a weird\ninternal implementation, as well as pg_squeeze, which uses logical\ndecoding to capture changes that occur during the table rewrite.  The\npatch submitted here, largely by Antonin Houska with some changes by me,\nis based on the the pg_squeeze code which he authored, and first\nintroduces a new command called REPACK to absorb both VACUUM FULL and\nCLUSTER, followed by addition of a CONCURRENTLY flag to allow some forms\nof REPACK to operate online using logical decoding.\n\nEssentially, this first patch just reshuffles the CLUSTER code to create\nthe REPACK command.\n\nI made a few changes from Antonin's original at [2].  First, I modified\nthe grammar to support \"REPACK [tab] USING INDEX\" without specifying the\nindex name.  With this change, all possibilities of the old commands are\ncovered, which gives us the chance to flag them as obsolete.  (This is\ngood, because having VACUUM FULL do something completely different from\nregular VACUUM confuses users all the time; and on the other hand,\nhaving a command called CLUSTER which is at odds with what most people\nthink of as a \"database cluster\" is also confusing.)\n\nHere's a list of existing commands, and how to write them in the current\npatch's proposal for REPACK:\n\n-- re-clusters all tables that have a clustered index set\nCLUSTER                     -> REPACK USING INDEX\n\n-- clusters the given table using the given index\nCLUSTER tab USING idx       -> REPACK tab USING INDEX idx\n\n-- clusters this table using a clustered index; error if no index clustered\nCLUSTER tab                 -> REPACK tab USING INDEX\n\n-- vacuum-full all tables\nVACUUM FULL                 -> REPACK\n\n-- vacuum-full the specified table\nVACUUM FULL tab             -> REPACK tab\n\nMy other change to Antonin's patch is that I made REPACK USING INDEX set\nthe 'indisclustered' flag to the index being used, so REPACK behaves\nidentically to CLUSTER.  We can discuss whether we really want this.\nFor instance we could add an option so that by default REPACK omits\npersisting the clustered index, and instead it only does that when you\ngive it some special option, say something like\n[... truncated for corpus ...]"
+    },
+    {
+      "id": "CABV9wwMjm_8GQ_6A7WZkXzEkbz5ZPurB3ijxu74MbFJ4+XrWUg@mail.gmail.com",
+      "from": "Robert Treat <rob(at)xzilla(dot)net>",
+      "subject": "Re: Adding REPACK [concurrently]",
+      "date": "2025-07-27 01:59:10",
+      "body": "Thanks for keeping this ball rolling.\n\nI think I would lean towards having it work like CLUSTER (preserve the\nindex), since that helps people making the transition, and it doesn't\nfeel terribly useful to invent new syntax for a feature that I would\nagree isn't very useful for most people.\n\nFor clarity, are you intending to commit this patch before having the\nother parts ready? (If that sounds like an objection, it isn't) After\na first pass, I think there's some confusing bits in the new docs that\ncould use straightening out, but there likely going to overlap changes\nonce concurrently is brought in, so it might make sense to hold off on\nthose. Either way I definitely want to dive into this a bit deeper\nwith some fresh eyes, there's a lot to digest... speaking of, for this\nbit in src/backend/commands/cluster.c\n\n+    switch (cmd)\n+    {\n+        case REPACK_COMMAND_REPACK:\n+            return \"REPACK\";\n+        case REPACK_COMMAND_VACUUMFULL:\n+            return \"VACUUM\";\n+        case REPACK_COMMAND_CLUSTER:\n+            return \"VACUUM\";\n+    }\n+    return \"???\";\n\nThe last one should return \"CLUSTER\" no?\n\nRobert Treat\nhttps://xzilla.net"
+    },
+    {
+      "id": "CAHGQGwELP6OAOprxjkS5iYSj1KXKmVPULJyYMddE7-uRxrSP_Q@mail.gmail.com",
+      "from": "Fujii Masao <masao(dot)fujii(at)gmail(dot)com>",
+      "subject": "Re: Adding REPACK [concurrently]",
+      "date": "2025-07-27 06:00:51",
+      "body": "+1\n\nDoes this mean REPACK CONCURRENTLY requires wal_level = logical,\nwhile plain REPACK (without CONCURRENTLY) works with any wal_level\nsetting? If we eventually deprecate VACUUM FULL and CLUSTER,\nI think plain REPACK should still be allowed with wal_level = minimal\nor replica, so users with those settings can perform equivalent\nprocessing.\n\n+ if (!cluster_is_permitted_for_relation(tableOid, userid,\n+    CLUSTER_COMMAND_CLUSTER))\n\nAs for the patch you attached, it seems to be an early WIP and\nmight not be ready for review yet?? BTW, I got the following\ncompilation failure and probably CLUSTER_COMMAND_CLUSTER\nthe above should be GetUserId().\n\n-----------------\ncluster.c:455:14: error: use of undeclared identifier 'CLUSTER_COMMAND_CLUSTER'\n  455 |\n                    CLUSTER_COMMAND_CLUSTER))\n      |\n                    ^\n1 error generated.\n-----------------\n\nRegards,"
+    },
+    {
+      "id": "202507311650.3a44mqyi3xnw@alvherre.pgsql",
+      "from": "Alvaro Herrera <alvherre(at)alvh(dot)no-ip(dot)org>",
+      "subject": "Re: Adding REPACK [concurrently]",
+      "date": "2025-07-31 16:50:11",
+      "body": "I'm aiming at getting 0001 committed during the September commitfest,\nand the CONCURRENTLY flag addition later in the pg19 cycle.  But I'd\nrather have good-enough docs at every step of the way.  They don't have\nto be *perfect* if we want to get everything in pg19, but I'd rather not\nleave anything openly confusing even transiently.\n\nThat said, I did not review the docs this time around, so here's them\nthe same as they were in the previous post.  But if you want to suggest\nchanges for the docs in 0001, please do.  Just don't get too carried\naway.\n\nAbsolutely -- my blunder.\n\nAbsolutely.\n\nOne of the later patches in the series, which I have not included yet,\nintends to implement the idea of transiently enabling wal_level=logical\nfor the table being repacked concurrently, so that you can still use\nthe concurrent mode if you have a non-logical-wal_level instance.\n\nThis was a silly merge mistake, caused by my squashing Antonin's 0004\n(trivial code restructuring) into 0001 at the last minute and failing to\n\"git add\" the compile fixes before doing git-format-patch.\n\nHere's v17.  (I decided that calling my previous one \"v1\" after Antonin\nhad gone all the way to v15 was stupid on my part.)  The important part\nhere is that I rebased Antonin 0004's, that is, the addition of the\nCONCURRENTLY flag, plus 0005 regression tests.\n\nThe only interesting change here is that I decided to not mess with the\ngrammar by allowing an unparenthesized CONCURRENTLY keyword; if you want\nconcurrent, you have to say \"REPACK (CONCURRENTLY)\".  This is at odds\nwith the way we use the keyword in other commands, but ISTM we don't\n_need_ to support that legacy syntax.  Anyway, this is easy to put back\nafterwards, if enough people find it not useless.\n\nI've not reviewed 0003 in depth yet, just rebased it.  But it works to\nthe point that CI is happy with it.\n\nI've not yet included Antonin's 0006 and 0007.\n\nTODO list for 0001:\n\n- addition of src/bin/scripts/repackdb\n- clean up the progress report infrastructure\n- doc review"
+    },
+    {
+      "id": "CAHGQGwHCeqXUoNaJuftWjOkB8_LSmyH7Md9qkR79sOtW9DJe2Q@mail.gmail.com",
+      "from": "Fujii Masao <masao(dot)fujii(at)gmail(dot)com>",
+      "subject": "Re: Adding REPACK [concurrently]",
+      "date": "2025-08-01 11:07:05",
+      "body": "Sounds good to me!\n\nI just tried REPACK command and observed a few things:\n\nWhen I repeatedly ran REPACK on the regression database\nwhile make installcheck was running, I got the following error:\n\n        ERROR:  StartTransactionCommand: unexpected state STARTED\n\n\"REPACK (VERBOSE);\" failed with the following error.\n\n        ERROR:  syntax error at or near \";\"\n\nREPACK (CONCURRENTLY) USING INDEX failed with the following error,\nwhile the same command without CONCURRENTLY completed successfully:\n\n        =# REPACK (CONCURRENTLY) parallel_vacuum_table using index\nregular_sized_index ;\n        ERROR:  cannot process relation \"parallel_vacuum_table\"\n        HINT:  Relation \"parallel_vacuum_table\" has no identity index.\n\nWhen I ran REPACK (CONCURRENTLY) on a table that's also a logical\nreplication target, I saw the following log messages. Is this expected?\n\n        =# REPACK (CONCURRENTLY) t;\n        LOG:  logical decoding found consistent point at 1/00021F20\n        DETAIL:  There are no running transactions.\n        STATEMENT:  REPACK (CONCURRENTLY) t;\n\nRegards,"
+    },
+    {
+      "id": "CADzfLwWnMvnHc1-89woNzOzfK2_wqx7bD66p+RwD6xU2fg6Y_g@mail.gmail.com",
+      "from": "Mihail Nikalayeu <mihailnikalayeu(at)gmail(dot)com>",
+      "subject": "Re: Adding REPACK [concurrently]",
+      "date": "2025-08-04 23:21:00",
+      "body": "Hello Álvaro,\n\nShould we skip non-ready indexes in build_new_indexes?\n\nAlso, in the current implementation, concurrent mode is marked as\nnon-MVCC safe. From my point of view, this is a significant limitation\nfor practical use.\nShould we consider an option to exchange non-MVCC issues to short\nexclusive lock of ProcArrayLock + cancellation of some transactions\nwith older xmin?\n\nBest regards,\nMikhail"
+    },
+    {
+      "id": "11036.1754384324@localhost",
+      "from": "Antonin Houska <ah(at)cybertec(dot)at>",
+      "subject": "Re: Adding REPACK [concurrently]",
+      "date": "2025-08-05 08:58:44",
+      "body": "Alvaro Herrera <alvherre(at)alvh(dot)no-ip(dot)org> wrote:\n\n...\n\nNow that we want to cover the CLUSTER/VACUUM FULL completely, I've checked the\noptions of VACUUM FULL. I found two items not supported by REPACK (but also\nnot supported by by CLUSTER): ANALYZE and SKIP_DATABASE_STATS. Maybe just\nlet's mention that in the user documentation of REPACK?\n\n(Besides that, VACUUM FULL accepts TRUNCATE and INDEX_CLEANUP options, but I\nthink these have no effect.)"
+    },
+    {
+      "id": "CADzfLwXx46j8KwQjjM1ZcqNBsx-k6GxHOzDJkm4SHjh+cv31Rw@mail.gmail.com",
+      "from": "Mihail Nikalayeu <mihailnikalayeu(at)gmail(dot)com>",
+      "subject": "Re: Adding REPACK [concurrently]",
+      "date": "2025-08-09 12:55:00",
+      "body": "Hello!\n\nOne more thing - I think build_new_indexes and\nindex_concurrently_create_copy are very close in semantics, so it\nmight be a good idea to refactor them a bit.\n\nI’m still concerned about MVCC-related issues. For multiple\napplications, this is a dealbreaker, because in some cases correctness\nis a higher priority than availability.\n\nPossible options:\n\n1) Terminate connections with old snapshots.\n\nAdd a flag to terminate all connections with snapshots during the\nExclusiveLock period for the swap. From the application’s perspective,\nthis is not a big deal - it's similar to a primary switch. We would\nalso need to prevent new snapshots from being taken during the swap\ntransaction, so a short exclusive lock on ProcArrayLock would also be\nrequired.\n\n2) MVCC-safe two-phase approach (inspired by CREATE INDEX).\n\n- copy the data from T1 to the new table T2.\n- apply the log.\n- take a table-exclusive lock on T1\n- apply the log again.\n- instead of swapping, mark the T2 as a kind of shadow table - any\ntransaction applying changes to T1 must also apply them to T2, while\nreads still use T1 as the source of truth.\n- commit (and record the transaction ID as XID1).\n- at this point, all changes are applied to both tables with the same\nXIDs because of the \"shadow table\" mechanism.\n- wait until older snapshots no longer treat XID1 as uncommitted.\n- now the tables are identical from the MVCC perspective.\n- take an exclusive lock on both T1 and T2.\n- perform the swap and drop T1.\n- commit.\n\nThis is more complex and would require implementing some sort of\n\"shadow table\" mechanism, so it might not be worth the effort. Option\n1 feels more appealing to me.\n\nIf others think this is a good idea, I might try implementing a proof\nof concept.\n\nBest regards,\nMikhail"
+    },
+    {
+      "id": "202508091333.qvgvo7ikuezm@alvherre.pgsql",
+      "from": "Alvaro Herrera <alvherre(at)alvh(dot)no-ip(dot)org>",
+      "subject": "Re: Adding REPACK [concurrently]",
+      "date": "2025-08-09 13:33:31",
+      "body": "Please note that Antonin already implemented this.  See his patches\nhere:\nhttps://www.postgresql.org/message-id/77690.1725610115%40antos\nI proposed to leave this part out initially, which is why it hasn't been\nreposted.  We can review and discuss after the initial patches are in.\nBecause having an MVCC-safe mode has drawbacks, IMO we should make it\noptional.\n\nBut you're welcome to review that part specifically if you're so\ninclined, and offer feedback on it.  (I suggest to rewind back your\nchecked-out tree to branch master at the time that patch was posted, for\neasy application.  We can deal with a rebase later.)"
+    },
+    {
+      "id": "41104.1754922120@localhost",
+      "from": "Antonin Houska <ah(at)cybertec(dot)at>",
+      "subject": "Re: Adding REPACK [concurrently]",
+      "date": "2025-08-11 14:22:00",
+      "body": "Mihail Nikalayeu <mihailnikalayeu(at)gmail(dot)com> wrote:\n\nYou're right. I think I even used the latter for reference when writing the\nfirst.\n\n0002 in the attached series tries to fix that. build_new_indexes() (in 0004)\nis simpler now."
+    },
+    {
+      "id": "tencent_99476336BC701B21ADDC44E2B7BE25147506@qq.com",
+      "from": "ZizhuanLiu X-MAN <44973863(at)qq(dot)com>",
+      "subject": "[PATCH]Refactor and unify expression construction functions in makefuncs.c",
+      "date": "2026-06-01 02:45:29",
+      "body": "Hi， Hackers\n`\nWhile reviewing commit cf6723 (Make transformAExprIn() return a flattened bool expression directly),&nbsp;\nI found several near-duplicate function implementations in makefuncs.c that can be refactored to&nbsp;\nsimplify and clean up the codebase.\n`\nThis patch performs a set of minor, low-impact clean-up refactors to unify internal expression construction logic:\n- make_andclause() / make_orclause() / make_notclause(): Rework these functions to directly call makeBoolExpr(),&nbsp;\n&nbsp; aligning their implementation style with the existing makeAndExpr() / makeOrExpr() / makeNotExpr() logic in gram.y.\n&nbsp; This eliminates redundant duplicate code for boolean clause construction.\n- makeSimpleA_Expr() --&gt; makeA_Expr(): Remove the trivial wrapper function and use the core makeA_Expr() directly to\n&nbsp; simplify expression building logic.\n- makeDefElemExtended() --&gt; makeDefElem(): Remove the extended wrapper and adopt standard makeDefElem() uniformly for &nbsp;\n&nbsp; definition element construction.\n`\nAll changes are pure code cleanup with zero functional change.\nThe patch has minimal code intrusion, only optimizing internal function call chains without altering runtime behavior.\n`\nTest cases are added for every refactored function to guarantee correctness and prevent regression:\n&nbsp; - make_andclause() --&gt; makeBoolExpr(): SELECT * FROM t1 WHERE id = 1 AND id = 3;\n&nbsp; - make_orclause() --&gt; &nbsp;makeBoolExpr(): SELECT * FROM t1 WHERE id = 1 OR id = 3;\n&nbsp; - make_notclause() --&gt; makeBoolExpr(): SELECT * FROM t1 WHERE id NOT IN (1);\n&nbsp; - makeSimpleA_Expr() --&gt; makeA_Expr(): SELECT oid::integer+1 FROM pg_class WHERE oid::integer+1 < 100;\n&nbsp; - makeDefElemExtended() --&gt; makeDefElem():&nbsp; &nbsp; &nbsp; &nbsp;\n&nbsp; &nbsp; &nbsp; CREATE SERVER myserver FOREIGN DATA WRAPPER postgres_fdw OPTIONS (host 'foo', dbname 'foodb', port '5432');\n&nbsp; &nbsp; &nbsp; ALTER SERVER myserver OPTIONS (DROP port);\n`\nAll newly added tests pass successfully, verifying that the refactoring is safe, consistent and introduces no behavioral changes.\n\nThanks,"
+    },
+    {
+      "id": "2425182.1780286172@sss.pgh.pa.us",
+      "from": "Tom Lane <tgl(at)sss(dot)pgh(dot)pa(dot)us>",
+      "subject": "Re: [PATCH]Refactor and unify expression construction functions in makefuncs.c",
+      "date": "2026-06-01 03:56:12",
+      "body": "\"=?utf-8?B?Wml6aHVhbkxpdSBYLU1BTg==?=\" <44973863(at)qq(dot)com> writes:\n\nTBH, I don't think this is worth the trouble.\n\n\t\t\tregards, tom lane"
+    },
+    {
+      "id": "tencent_1DA28D8E166122FEDBCC32815AA5B1157E05@qq.com",
+      "from": "ZizhuanLiu X-MAN <44973863(at)qq(dot)com>",
+      "subject": "Re: [PATCH]Refactor and unify expression construction functions in makefuncs.c",
+      "date": "2026-06-01 08:01:58",
+      "body": "&gt;From: Tom Lane <tgl(at)sss(dot)pgh(dot)pa(dot)us&gt;\n&gt;Date: 2026-06-01 11:56\n&gt;To: ZizhuanLiu X-MAN <44973863(at)qq(dot)com&gt;\n&gt;Cc: pgsql-hackers <pgsql-hackers(at)lists(dot)postgresql(dot)org&gt;\n&gt;Subject: Re: [PATCH]Refactor and unify expression construction functions in makefuncs.c\n&gt;\n&gt;\n&gt; &nbsp; &nbsp; &nbsp;\"=?utf-8?B?Wml6aHVhbkxpdSBYLU1BTg==?=\"?<44973863(at)qq(dot)com&gt;?writes:\n&gt;&gt;?This?patch?performs?a?set?of?minor,?low-impact?clean-up?refactors?to?unify?internal?expression?construction?logic:\n&gt;\n&gt;TBH, I don't think this is worth the trouble.\n&gt;\n&gt;                 regards, tom lane\n\nThanks,&nbsp; you're right.&nbsp; Let's drop this idea for now.\n`\nregards,"
+    },
+    {
+      "id": "CAN305gBeJr8m7ZRW9mH0zakEFR4hDUPDo8fJRKJOHWMORG5_Bg@mail.gmail.com",
+      "from": "Mats Kindahl <mats(dot)kindahl(at)gmail(dot)com>",
+      "subject": "pg_rewind does not rewind diverging timelines",
+      "date": "2026-04-30 08:19:21",
+      "body": "Hi all,\n\nI have been playing around with various promotion scenarios to check if it\nis possible to lose writes in more complicated scenarios involving\npromotions and uses of synchronous_standby_names and decided to create a\nTLA+ model for streaming replication involving promotions and check those\nwith TLC. You can find the models at [1] if you're interested.\n\nThere is one scenario that I assume is known that TLC found, but does not\nseem to be fixed. It is a relatively rare case, but since the fix is quite\neasy, I thought I'd share it with you and get feedback.\n\nThe scenario can occur if you're unlucky and have more than one crash when\npromoting standbys to be primaries, and goes like this:\n\nYou have three servers, S1, S2, and S3. S1 is primary and S2 and S3 are\nstandbys. All are on timeline (TLI) 1.\n\n1. S1 crashes\n2. S1 recovers and starts promotion. It writes XLOG_END_OF_RECOVERY (EOR)\nfor TLI 2 to the WAL.\n3. S1 It manages to write some records W1 to the WAL.\n4. Before the EOR is replicated to any standby, S1 crashes again. It is now\non TLI 2 and has some changes that are not elsewhere.\n5. S2 is promoted. It writes an EOR for TLI 2 (since it is not aware of any\nother timeline) to the WAL.\n6. S2 writes some records W2 to WAL and now S1 has a record of TLI 2\nversion 1 (TLI 2.1) and S2 is on TLI 2.2.\n7. S1 recovers and wants to join as a standby. You run pg_rewind to get rid\nof the extra data, but since S2 is also on TLI 2, pg_rewind will happily\nassume that both are on the same timeline.\n8. S2 is now a standby but has that extra record for W2 both in the WAL and\nin the database.\n\nThe fix (see attached draft) is quite simple: add a UUID to the EOR and to\nthe history file. When comparing timelines, don't only check the TLI, also\ncheck the UUID. If not both match, go back further until you find a\ntimeline where both the TLI and the timeline UUID matches and do the usual\nfandango to find the good LSN to rewind to.\n\n[1]: https://github.com/mkindahl/tla-postgres"
+    },
+    {
+      "id": "CAN305gC0VE8zB=guccMj-7cJTW4oOAmTYCktaUKSzyOup=HHEw@mail.gmail.com",
+      "from": "Mats Kindahl <mats(dot)kindahl(at)gmail(dot)com>",
+      "subject": "Re: pg_rewind does not rewind diverging timelines",
+      "date": "2026-05-01 16:06:20",
+      "body": "On Thu, Apr 30, 2026 at 10:19 AM Mats Kindahl <mats(dot)kindahl(at)gmail(dot)com>\nwrote:\n\nHere is an updated version of the patch. It seems like it is not necessary\nto extend the XLOG_END_OF_RECOVERY record with the UUID, just the history\nfiles. The scenario is still the same though, and can trigger diverging\nservers, possibly silent. I have an additional test case using a divergence\ngoing back three promotions."
+    },
+    {
+      "id": "CAOVWO5oZZtniLR4Pyd=e_cS-FNxh837Gbz9TDUnSwWqmbap=bw@mail.gmail.com",
+      "from": "surya poondla <suryapoondla4(at)gmail(dot)com>",
+      "subject": "Re: pg_rewind does not rewind diverging timelines",
+      "date": "2026-05-21 22:09:05",
+      "body": "Hi Mats,\n\nThanks for picking this up -- the scenario is a real one and I think the\nUUID-tagging approach is a clean way to solve it. v2 applies and builds\nwithout trouble, and the core algorithm reads well to me.\nI have a handful of observations that I'd love your thoughts.\n\nRegarding Correctness I have the below thoughts\n\n1. UUIDv7 timestamp epoch.\n     In StartupXLOG():\n         TimestampTz now = GetCurrentTimestamp();\n         generate_uuidv7_r(&uuid_buf, (uint64)(now / 1000),\n                                      (uint32)(now % 1000) * 1000);\n\nI think there might be a small mismatch here: GetCurrentTimestamp() returns\nmicroseconds since the Postgres epoch (2000-01-01),\nwhereas generate_uuidv7_r describes its first argument as milliseconds\nsince the Unix epoch.\nAs written that 30-year offset would land in the UUID's timestamp field, so\nthe resulting UUID wouldn't be a conformant UUIDv7 and wouldn't\ntime-order against UUIDv7s generated through the SQL functions.\n\nUniqueness is preserved either way, so the rewind logic still works as\nintended but it seemed worth flagging.\n\nI see conversion that's used elsewhere as:\nus = ts + (POSTGRES_EPOCH_JDATE - UNIX_EPOCH_JDATE)\n                   * SECS_PER_DAY * USECS_PER_SEC;\n\nOr, since promotion isn't on a hot path, gettimeofday() / time(NULL)\ndirectly would also be fine.\n\n2. EOR-record path, the intent is unclear.\n\nThe comment above generate_uuidv7_r() at says:\n\n\"The same UUID is written into the history file and later into the\nXLOG_END_OF_RECOVERY record so that pg_rewind can distinguish two\nservers...\"\n\nBut from what I can see only the history-file part actually lands.\nxl_end_of_recovery is unchanged, CreateEndOfRecoveryRecord() doesn't add\nthe UUID, and XLogCtl->ThisTimeLineUUID is written under info_lck without a\nreader (I couldn't grep it).\n\nThe xlog_redo() memset() + Min(rec_len, sizeof(...)) change reads like\npreparation for an EOR-struct extension that ended up not being part of the\npatch.\n\nWas the EOR-record piece something you intended to keep for a follow-up, or\nhas it been superseded by the history-file approach?\n\n3. Malformed UUID handling in readTimeLineHistory().\n\n     The optional field-4 path is:\n\n         if (nfields == 4 && strlen(uuid_str) == UUID_STR_LEN)\n         {\n             Datum datum = DirectFunctionCall1(uuid_in,\n                                               CStringGetDatum(uuid_str));\n             ...\n         }\n[... truncated for corpus ...]"
+    },
+    {
+      "id": "CAN305gCcj4Mhr3uBQAnQCYsx6F-syp1rGtazoy=h+_EHO0xOXA@mail.gmail.com",
+      "from": "Mats Kindahl <mats(dot)kindahl(at)gmail(dot)com>",
+      "subject": "Re: pg_rewind does not rewind diverging timelines",
+      "date": "2026-05-24 18:30:17",
+      "body": "On Fri, May 22, 2026 at 12:09 AM surya poondla <suryapoondla4(at)gmail(dot)com>\nwrote:\n\nHi Surya,\n\nThank you for the review. It is a quite rare scenario, but it is real and\nthe fix is simple.\n\nYes, the intention was to use a proper timestamp to allow debugging servers\nif necessary. Switched to gettimeofday() and used 0 for sub-ms since this\nis not going to be critical. (We could use ns here as well, but that would\nonly solve a race if you have two servers being promoted in the same ms,\nwhich I find unlikely, and there is a random number added for that\nsituation.)\n\nNo, the EOR changes are not needed for the promotion, contrary to what I\noriginally thought. Cleaned up the comment and the code and removed all\ntraces of changes to the EOR (I hope).\n\nAgree. I added code to capture the error and raise a FATAL instead (with\nthe error message from the uuid_in, in case it is modified it makes sense\nto show this).\n\nYes, that should work regardless of whether the source or the target has\nthe zero UUID.\n\nI realized one thing: if two timelines have identical TLI but one has zero\nUUID and one has not, it seems they could not come from the same promotion\n(one promotion happened on an old server and the other one on a new\nserver), that is, they should be treated as different. Does that make\nsense? I made the necessary changes in the attached patches for testing.\nPlease have a look.\n\nI was unsure if this test was necessary or interesting, hence a separate\ncommit. Since you thought it was useful, it's now rolled into the patch and\nI extended the tests with the scenarios you suggested.\n\nI also did some refactorings of the tests to avoid duplication. More below.\n\nGood point.\n\nI refactored the code to avoid some duplication and make the test flow\nself-explanatory and as part of that I set the wal_keep_size for all nodes.\n\nIn the process I noticed that many of the functions in RewindTest.pm do the\nsame job as the primitives I wrote, but have hard-coded variable names. I\ncould rewrite them to take parameters, but that would be quite a big patch\nto add additional changes to each call site, so I did not do that and\nrather added small wrappers specific for the tests in 005_same_timeline.pl.\n\nAttached a new version of the now single patch.\n\nThank you for reviewing it."
+    },
+    {
+      "id": "SY7PR01MB1092190B1E748F1438CAB5D7AB60A2@SY7PR01MB10921.ausprd01.prod.outlook.com",
+      "from": "Japin Li <japinli(at)hotmail(dot)com>",
+      "subject": "Re: pg_rewind does not rewind diverging timelines",
+      "date": "2026-05-25 05:20:57",
+      "body": "Hi, Mats\n\nThank you for your work.  I have one comment.\n\n+\ta = &tlh->source[tlh->sourceNentries - 2].tluuid;\n+\tb = &tlh->target[tlh->targetNentries - 2].tluuid;\n+\n+\tif (memcmp(a, &zero, UUID_LEN) == 0 && memcmp(b, &zero, UUID_LEN) == 0)\n+\t\treturn true;\n+\n+\treturn memcmp(a, b, UUID_LEN) == 0;\n\nSince we already have matchingTimelineUUID(), the above code can be simplified\nusing it."
+    },
+    {
+      "id": "CAN305gBPFE8KPgT5cdsbK8Xwxxii_+Hp4WVhCWsjFOYJ9j4xaw@mail.gmail.com",
+      "from": "Mats Kindahl <mats(dot)kindahl(at)gmail(dot)com>",
+      "subject": "Re: pg_rewind does not rewind diverging timelines",
+      "date": "2026-05-25 18:59:47",
+      "body": "Hi Japin,\n\nThank you for the review. I switched to using the matchingTimelineUUID()\nfor this part of the code and made some other minor improvements as well."
+    },
+    {
+      "id": "SY7PR01MB109216DF36CF987CF6EF10B29B60B2@SY7PR01MB10921.ausprd01.prod.outlook.com",
+      "from": "Japin Li <japinli(at)hotmail(dot)com>",
+      "subject": "Re: pg_rewind does not rewind diverging timelines",
+      "date": "2026-05-26 06:56:09",
+      "body": "Hi, Mats\n\nThanks for updating the patch.\n\nHere are some comments on v4.\n\n1.\n+/*\n+ * Timeline histories for both clusters, populated by timelines_match().\n+ */\n\nI don't see a timelines_match() function.  Does this refer to\nmatchAndFetchTimelines()?\n\n2.\n+typedef struct TimelineHistoriesData\n+{\n+       TimeLineHistoryEntry *source,\n+                          *target;\n+       int                     sourceNentries,\n+                               targetNentries;\n+}                      TimelineHistoriesData;\n\nI'd prefer to use TimeLineHistoriesData to stay consistent with\nTimeLineHistoryEntry.  Anyway I'm not instant on it.\n\n3.\n+typedef TimelineHistoriesData * TimelineHistories;\n\nThe space between * and TimelineHistories is unnecessary — see\nStringInfoData and other typedefs.\n\n4.\n+# node_x and node_b both start from the same TLI 1 baseline.\n+my ($node_x, $node_b2) =\n+  setup_standbys_from_origin($node_origin2, 'node_x', 'node_b2');\n\nThere appears to be a typo in the comment.  The node_b should be node_b2.\n\nEverything else looks good.  Thank you again for updating the patch!"
+    },
+    {
+      "id": "CAN305gCaErXmG3fg48n50dWUC7=ETBBopuFL_cgyzutXUdp-5g@mail.gmail.com",
+      "from": "Mats Kindahl <mats(dot)kindahl(at)gmail(dot)com>",
+      "subject": "Re: pg_rewind does not rewind diverging timelines",
+      "date": "2026-05-26 16:03:32",
+      "body": "Hi Japin,\n\nThanks for reviewing the patch.\n\nCorrect. Updated.\n\nMakes sense to be consistent. Updated.\n\nMy mistake. FIxed.\n\nRight. Fixed.\n\nThank you again for reviewing the patch. :)\n\nAttached a new version of the patch with the changes you suggested."
+    },
+    {
+      "id": "SY7PR01MB10921E0F8383139EB27B33C11B6162@SY7PR01MB10921.ausprd01.prod.outlook.com",
+      "from": "Japin Li <japinli(at)hotmail(dot)com>",
+      "subject": "Re: pg_rewind does not rewind diverging timelines",
+      "date": "2026-05-29 02:01:41",
+      "body": "Hi, Mats\n\nI found an error on the Windows platform [1].\n\n[07:08:28.538] >>> MALLOC_PERTURB_=168 PG_REGRESS=C:\\cirrus\\build\\src/test\\regress\\pg_regress.exe REGRESS_SHLIB=C:\\cirrus\\build\\src/test\\regress\\regress.dll MSAN_OPTIONS=halt_on_error=1:abort_on_error=1:print_summary=1:print_stacktrace=1 top_builddir=C:\\cirrus\\build UBSAN_OPTIONS=halt_on_error=1:abort_on_error=1:print_summary=1:print_stacktrace=1 MESON_TEST_ITERATION=1 PATH=C:\\cirrus\\build\\tmp_install\\usr\\local\\pgsql\\bin;C:\\cirrus\\build\\src\\bin\\pg_rewind;C:/cirrus/build/src/bin/pg_rewind/test;C:\\VS_2019\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64;C:\\VS_2019\\MSBuild\\Current\\bin\\Roslyn;C:\\Program Files (x86)\\Windows Kits\\10\\bin\\10.0.22621.0\\x64;C:\\Program Files (x86)\\Windows Kits\\10\\bin\\x64;C:\\VS_2019\\\\MSBuild\\Current\\Bin;C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319;C:\\VS_2019\\Common7\\IDE\\;C:\\VS_2019\\Common7\\Tools\\;C:\\VS_2019\\VC\\Auxiliary\\Build;C:\\zstd\\zstd-v1.5.2-win64;C:\\zlib;C:\\lz4;C:\\icu;C:\\winflexbison;C:\\strawberry\\5.42.0.1\\perl\\bin;C:\\python\\Scripts\\;C:\\python\\;C:\\Windows Kits\\10\\Debuggers\\x64;C:\\Program Files\\Git\\usr\\bin;C:\\Windows\\system32;C:\\Windows;C:\\Windows\\System32\\Wbem;C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\;C:\\Windows\\System32\\OpenSSH\\;C:\\ProgramData\\GooGet;C:\\Program Files\\Google\\Compute Engine\\metadata_scripts;C:\\Program Files (x86)\\Google\\Cloud SDK\\google-cloud-sdk\\bin;C:\\Program Files\\PowerShell\\7\\;C:\\Program Files\\Google\\Compute Engine\\sysprep;C:\\ProgramData\\chocolatey\\bin;C:\\Program Files\\Git\\cmd;C:\\Program Files\\Git\\mingw64\\bin;C:\\Program Files\\Git\\usr\\bin;C:\\Windows\\system32\\config\\systemprofile\\AppData\\Local\\Microsoft\\WindowsApps INITDB_TEMPLATE=C:/cirrus/build/tmp_install/initdb-template ASAN_OPTIONS=halt_on_error=1:abort_on_error=1:print_summary=1 share_contrib_dir=C:/cirrus/build/tmp_install//usr/local/pgsql/share/contrib C:\\python\\python3.EXE C:\\cirrus\\build\\..\\src/tools/testwrap --basedir C:\\cirrus\\build --srcdir C:\\cirrus\\src\\bin\\pg_rewind --pg-test-extra  --testgroup pg_rewind --testname 005_same_timeline -- C:\\strawberry\\5.42.0.1\\perl\\bin\\perl.EXE -I C:/cirrus/src/test/perl -I C:\\cirrus\\src\\bin\\pg_rewind C:/cirrus/src/bin/pg_rewind/t/005_same_timeline.pl\n[07:08:28.538] ------------------------------------- 8< -------------------------------------\n[07:08:28.538] stderr:\n[07:08:28.538] #   Failed test 'pg_rewind rewinds across mismatched TLI 2 / TLI 2-prime to TLI 1'\n[07:08:28.538] #   at C:/cirrus/src/bin/pg_rewind/t/005_same_timeline.pl line 45.\n[... truncated for corpus ...]"
+    },
+    {
+      "id": "9ce0d2b9-7a41-4a8a-b299-da295bb4514f@gmail.com",
+      "from": "Mats Kindahl <mats(dot)kindahl(at)gmail(dot)com>",
+      "subject": "Re: pg_rewind does not rewind diverging timelines",
+      "date": "2026-05-30 20:26:11",
+      "body": "Hi Japin,\n\nThanks for testing it on Windows.\n\nIt seems like the path needs to be cleaned on Windows. I checked\nCluster.pm and created a version of that code and added that to the test\nthat should work. See attached patch.\n\nI noted that many of the paths are not platform-agnostic. It an idea to\nswitch to use something like File::Spec instead and build paths using\nthat, but it's out of scope for this patch.\n\nBest wishes,\nMats Kindahl, Multigres Engineer, Supabase"
+    },
+    {
+      "id": "TYAPR01MB586668E50FC2447AD7F92491F5E89@TYAPR01MB5866.jpnprd01.prod.outlook.com",
+      "from": "\"Hayato Kuroda (Fujitsu)\" <kuroda(dot)hayato(at)fujitsu(dot)com>",
+      "subject": "Exit walsender before confirming remote flush in logical replication",
+      "date": "2022-12-22 05:46:11",
+      "body": "Dear hackers,\n(I added Amit as CC because we discussed in another thread)\n\nThis is a fork thread from time-delayed logical replication [1].\nWhile discussing, we thought that we could extend the condition of walsender shutdown[2][3].\n\nCurrently, walsenders delay the shutdown request until confirming all sent data\nare flushed on remote side. This condition was added in 985bd7[4], which is for\nsupporting clean switchover. Supposing that there is a primary-secondary\nphysical replication system, and do following steps. If any changes are come\nwhile step 2 but the walsender does not confirm the remote flush, the reboot in\nstep 3 may be failed.\n\n1. Stops primary server.\n2. Promotes secondary to new primary.\n3. Reboot (old)primary as new secondary.\n\nIn case of logical replication, however, we cannot support the use-case that\nswitches the role publisher <-> subscriber. Suppose same case as above, additional\ntransactions are committed while doing step2. To catch up such changes subscriber\nmust receive WALs related with trans, but it cannot be done because subscriber\ncannot request WALs from the specific position. In the case, we must truncate all\ndata in new subscriber once, and then create new subscription with copy_data\n= true.\n\nTherefore, I think that we can ignore the condition for shutting down the\nwalsender in logical replication.\n\nThis change may be useful for time-delayed logical replication. The walsender\nwaits the shutdown until all changes are applied on subscriber, even if it is\ndelayed. This causes that publisher cannot be stopped if large delay-time is\nspecified.\n\nPSA the minimal patch for that. I'm not sure whether WalSndCaughtUp should be\nalso omitted or not. It seems that changes may affect other parts like\nWalSndWaitForWal(), but we can investigate more about it.\n\n[1]: https://commitfest.postgresql.org/41/3581/\n[2]: https://www.postgresql.org/message-id/TYAPR01MB58661BA3BF38E9798E59AE14F5E19%40TYAPR01MB5866.jpnprd01.prod.outlook.com\n[3]: https://www.postgresql.org/message-id/CAA4eK1LyetktcphdRrufHac4t5DGyhsS2xG2DSOGb7OaOVcDVg%40mail.gmail.com\n[4]: https://github.com/postgres/postgres/commit/985bd7d49726c9f178558491d31a570d47340459\n\nBest Regards,\nHayato Kuroda\nFUJITSU LIMITED"
+    },
+    {
+      "id": "CAExHW5v6Q4SFsqku2V3UHyv_pbdaX0Lt-uzb_L72CJaY4r6wvg@mail.gmail.com",
+      "from": "Ashutosh Bapat <ashutosh(dot)bapat(dot)oss(at)gmail(dot)com>",
+      "subject": "Re: Exit walsender before confirming remote flush in logical replication",
+      "date": "2022-12-22 11:59:34",
+      "body": "On Thu, Dec 22, 2022 at 11:16 AM Hayato Kuroda (Fujitsu)\n<kuroda(dot)hayato(at)fujitsu(dot)com> wrote:\n\nI think the current behaviour is an artifact of using the same WAL\nsender code for both logical and physical replication.\n\nI agree with you that the logical WAL sender need not wait for all the\nWAL to be replayed downstream.\n\nI have not reviewed the patch though."
+    },
+    {
+      "id": "20221223.112154.220544589754432382.horikyota.ntt@gmail.com",
+      "from": "Kyotaro Horiguchi <horikyota(dot)ntt(at)gmail(dot)com>",
+      "subject": "Re: Exit walsender before confirming remote flush in logical replication",
+      "date": "2022-12-23 02:21:54",
+      "body": "At Thu, 22 Dec 2022 17:29:34 +0530, Ashutosh Bapat <ashutosh(dot)bapat(dot)oss(at)gmail(dot)com> wrote in\n..\n...\n\nYeah, I don't think we do that for the reason of switchover. On the\nother hand I think the behavior was intentionally taken over since it\nis thought as sensible alone. And I'm afraind that many people already\nrelies on that behavior.\n\nThus I feel that it might be a bit outrageous to get rid of that\nbahavior altogether because of a new feature stumbling on it.  I'm\nfine doing that only in the apply_delay case, though.  However, I have\nanother concern that we are introducing the second exception for\nXLogSendLogical in the common path.\n\nI doubt that anyone wants to use synchronous logical replication with\napply_delay since the sender transaction is inevitablly affected back\nby that delay.\n\nThus how about before entering an apply_delay, logrep worker sending a\nkind of crafted feedback, which reports commit_data.end_lsn as\nflushpos?  A little tweak is needed in send_feedback() but seems to\nwork..\n\nregards."
+    },
+    {
+      "id": "CAA4eK1LKHQKMQ=z-eB74jKxxnv3HYgwtmOutpEDvdU7Fxfet+g@mail.gmail.com",
+      "from": "Amit Kapila <amit(dot)kapila16(at)gmail(dot)com>",
+      "subject": "Re: Exit walsender before confirming remote flush in logical replication",
+      "date": "2022-12-23 05:56:21",
+      "body": "On Fri, Dec 23, 2022 at 7:51 AM Kyotaro Horiguchi\n<horikyota(dot)ntt(at)gmail(dot)com> wrote:\n\nDo you see it was discussed somewhere? If so, can you please point to\nthat discussion?\n\nBut OTOH, it can also be annoying for users to see some wait during\nthe shutdown which is actually not required.\n\nHow can we send commit_data.end_lsn before actually committing the\nxact? I think this can lead to a problem because next time (say after\nrestart of walsender) server can skip sending the xact even if it is\nnot committed by the client."
+    },
+    {
+      "id": "TYAPR01MB5866CCD2C21790FEBE944034F5E99@TYAPR01MB5866.jpnprd01.prod.outlook.com",
+      "from": "\"Hayato Kuroda (Fujitsu)\" <kuroda(dot)hayato(at)fujitsu(dot)com>",
+      "subject": "RE: Exit walsender before confirming remote flush in logical replication",
+      "date": "2022-12-23 12:54:15",
+      "body": "Dear Horiguchi-san,\n\nThanks for replying! I tested your saying but it could not work well...\n\nI made PoC based on the latest time-delayed patches [1] for non-streaming case.\nApply workers that are delaying applications send begin_data.final_lsn as recvpos and flushpos in send_feedback().\n\nFollowings were contents of the feedback message I got, and we could see that recv and flush were overwritten.\n\n```\nDEBUG:  sending feedback (force 1) to recv 0/1553638, write 0/1553550, flush 0/1553638\nCONTEXT:  processing remote data for replication origin \"pg_16390\" during message type \"BEGIN\" in transaction 730, finished at 0/1553638\n```\n\nIn terms of walsender, however, sentPtr seemed to be slightly larger than flushed position on subscriber.\n\n```\n(gdb) p MyWalSnd->sentPtr\n$2 = 22361760\n(gdb) p MyWalSnd->flush\n$3 = 22361656\n(gdb) p *MyWalSnd\n$4 = {pid = 28807, state = WALSNDSTATE_STREAMING, sentPtr = 22361760, needreload = false, write = 22361656,\n  flush = 22361656, apply = 22361424, writeLag = 20020343, flushLag = 20020343, applyLag = 20020343,\n  sync_standby_priority = 0, mutex = 0 '\\000', latch = 0x7ff0350cbb94, replyTime = 725113263592095}\n```\n\nTherefore I could not shut down the publisher node when applications were delaying.\nDo you have any opinions about them?\n\n```\n$ pg_ctl stop -D data_pub/\nwaiting for server to shut down............................................................... failed\npg_ctl: server does not shut down\n```\n\n[1]: https://www.postgresql.org/message-id/TYCPR01MB83730A3E21E921335F6EFA38EDE89@TYCPR01MB8373.jpnprd01.prod.outlook.com\n\nBest Regards,\nHayato Kuroda\nFUJITSU LIMITED"
+    },
+    {
+      "id": "TYAPR01MB5866A76B75ADBBA126951B36F5EC9@TYAPR01MB5866.jpnprd01.prod.outlook.com",
+      "from": "\"Hayato Kuroda (Fujitsu)\" <kuroda(dot)hayato(at)fujitsu(dot)com>",
+      "subject": "RE: Exit walsender before confirming remote flush in logical replication",
+      "date": "2022-12-26 12:27:24",
+      "body": "Dear Horiguchi-san,\n\nMaybe I misunderstood what you said... I have also found that sentPtr is not the actual sent\nposition, but the starting point of the next WAL. You can see the comment below.\n\n```\n/*\n * How far have we sent WAL already? This is also advertised in\n * MyWalSnd->sentPtr.  (Actually, this is the next WAL location to send.)\n */\nstatic XLogRecPtr sentPtr = InvalidXLogRecPtr;\n```\n\nWe must use end_lsn for crafting messages to cheat the walsender, but such records\nare included in COMMIT, not in BEGIN for the non-streaming case.\nBut if workers are delayed in apply_handle_commit(), will they hold locks for database\nobjects for a long time and it causes another issue.\n\nBest Regards,\nHayato Kuroda\nFUJITSU LIMITED"
+    },
+    {
+      "id": "CAFiTN-uBV+TG4Kf-NEuLkTQARJ+sDA2u-4n5T_ZR0WxghAq6FA@mail.gmail.com",
+      "from": "Dilip Kumar <dilipbalaut(at)gmail(dot)com>",
+      "subject": "Re: Exit walsender before confirming remote flush in logical replication",
+      "date": "2022-12-27 07:40:05",
+      "body": "On Thu, Dec 22, 2022 at 11:16 AM Hayato Kuroda (Fujitsu)\n<kuroda(dot)hayato(at)fujitsu(dot)com> wrote:\n\n+1 for the idea.\n\n- * Note that if we determine that there's still more data to send, this\n- * function will return control to the caller.\n+ * Note that if we determine that there's still more data to send or we are in\n+ * the physical replication more, this function will return control to the\n+ * caller.\n\nI think in this comment you meant to say\n\n1. \"or we are in physical replication mode and all WALs are not yet replicated\"\n2. Typo /replication more/replication mode"
+    },
+    {
+      "id": "TYAPR01MB5866580E59386FF24B41E94FF5ED9@TYAPR01MB5866.jpnprd01.prod.outlook.com",
+      "from": "\"Hayato Kuroda (Fujitsu)\" <kuroda(dot)hayato(at)fujitsu(dot)com>",
+      "subject": "RE: Exit walsender before confirming remote flush in logical replication",
+      "date": "2022-12-27 08:14:13",
+      "body": "Dear Dilip,\n\nThanks for checking my proposal!\n\nFirstly I considered 2, but I thought 1 seemed to be better.\nPSA the updated patch.\n\nBest Regards,\nHayato Kuroda\nFUJITSU LIMITED"
+    },
+    {
+      "id": "CAA4eK1+pD654+XnrPugYueh7Oh22EBGTr6dA_fS0+gPiHayG9A@mail.gmail.com",
+      "from": "Amit Kapila <amit(dot)kapila16(at)gmail(dot)com>",
+      "subject": "Re: Exit walsender before confirming remote flush in logical replication",
+      "date": "2022-12-27 09:20:48",
+      "body": "On Tue, Dec 27, 2022 at 1:44 PM Hayato Kuroda (Fujitsu)\n<kuroda(dot)hayato(at)fujitsu(dot)com> wrote:\n\nI think even for logical replication we should check whether there is\nany pending WAL (via pq_is_send_pending()) to be sent. Otherwise, what\nis the point to send the done message? Also, the caller of\nWalSndDone() already has that check which is another reason why I\ncan't see why you didn't have the same check in function WalSndDone().\n\nBTW, even after fixing this, I think logical replication will behave\ndifferently when due to some reason (like time-delayed replication)\nsend buffer gets full and walsender is not able to send data. I think\nthis will be less of an issue with physical replication because there\nis a separate walreceiver process to flush the WAL which doesn't wait\nbut the same is not true for logical replication. Do you have any\nthoughts on this matter?"
+    },
+    {
+      "id": "CAA4eK1L+JVwRiy9Z=7DK5B_FGb8hJcsH=nz8BvPFVg82s7zH5g@mail.gmail.com",
+      "from": "Amit Kapila <amit(dot)kapila16(at)gmail(dot)com>",
+      "subject": "Re: Exit walsender before confirming remote flush in logical replication",
+      "date": "2022-12-27 09:25:07",
+      "body": "In logical replication, it can happen today as well without\ntime-delayed replication. Basically, say apply worker is waiting to\nacquire some lock that is already acquired by some backend then it\nwill have the same behavior. I have not verified this, so you may want\nto check it once."
+    },
+    {
+      "id": "20260601010124.5edf9a20@andrnote",
+      "from": "Andrey Chernyy <andrey(dot)cherny(at)tantorlabs(dot)com>",
+      "subject": "[PATCH] Fix libxml leaks in contrib/xml2 XPath functions",
+      "date": "2026-05-31 22:01:24",
+      "body": "Hi,\n\nWhile reviewing contrib/xml2 I found two successful-path libxml leaks in\nXPath functions.\n\nThe attached series is:\n\n  0001 Fix libxml string leak in contrib/xml2 xpath_list\n  0002 Fix libxml leaks in contrib/xml2 xpath_table\n\nIn xpath_list(), the plain separator path passes the result of\nxmlXPathCastNodeToString() directly to xmlBufferWriteCHAR().\nxmlXPathCastNodeToString() returns a libxml-allocated xmlChar * that\nhas to be released with xmlFree(), while xmlBufferWriteCHAR() copies\nthe string rather than taking ownership.\n\nIn xpath_table(), xmlXPathCompiledEval() returns an xmlXPathObjectPtr\nthat has to be released with xmlXPathFreeObject().  The function also\nstores libxml-allocated xmlChar strings in the values array before\ncalling BuildTupleFromCStrings().  BuildTupleFromCStrings() consumes\nthose strings by converting/copying them into the result tuple, so the\ntemporary libxml strings can be released after the tuple is built.\n\nThe second patch frees the XPath result object after each evaluation,\nfrees per-column string values after BuildTupleFromCStrings() has\nconsumed them, and tracks the current libxml allocations across the\nexisting PG_TRY block so they are also released on error.\n\nThe attached manual repro scripts exercise the two paths separately.\nThey are Linux-specific because they sample VmRSS from\n/proc/<backend-pid>/status using pg_read_file(), so they should be run\nas a superuser or a role allowed to read server files.\n\nOn unpatched origin/master, selected NOTICE lines from the repro scripts\nshow steady backend RSS growth:\n\npostgres=# \\i ./xml2-xpath-list-leak-repro.sql\npsql:xml2-xpath-list-leak-repro.sql:38: NOTICE:  xpath_list i=1,\ntotal_kb=38616, diff_kb=17220 psql:xml2-xpath-list-leak-repro.sql:38:\nNOTICE:  xpath_list i=2, total_kb=40732, diff_kb=2104\npsql:xml2-xpath-list-leak-repro.sql:38: NOTICE:  xpath_list i=3,\ntotal_kb=42720, diff_kb=1988 psql:xml2-xpath-list-leak-repro.sql:38:\nNOTICE:  xpath_list i=4, total_kb=44644, diff_kb=1924\npsql:xml2-xpath-list-leak-repro.sql:38: NOTICE:  xpath_list i=5,\ntotal_kb=46440, diff_kb=1796 psql:xml2-xpath-list-leak-repro.sql:38:\nNOTICE:  xpath_list i=6, total_kb=47968, diff_kb=1528\npsql:xml2-xpath-list-leak-repro.sql:38: NOTICE:  xpath_list i=7,\ntotal_kb=50892, diff_kb=2924 psql:xml2-xpath-list-leak-repro.sql:38:\nNOTICE:  xpath_list i=8, total_kb=52712, diff_kb=1820\npsql:xml2-xpath-list-leak-repro.sql:38: NOTICE:  xpath_list i=9,\n[... truncated for corpus ...]"
+    },
+    {
+      "id": "ah0E0xLvv5_OtOi6@paquier.xyz",
+      "from": "Michael Paquier <michael(at)paquier(dot)xyz>",
+      "subject": "Re: [PATCH] Fix libxml leaks in contrib/xml2 XPath functions",
+      "date": "2026-06-01 04:04:35",
+      "body": "Right.  I have missed that xmlXPathCastNodeToString() does an\nallocation of the result, and it is documented in the upstream code\nthat the caller is responsible for freeing what's been returned.\n\n+   xmlXPathContextPtr volatile ctxt = NULL;\n+   xmlXPathObjectPtr volatile res = NULL;\n+   xmlXPathCompExprPtr volatile comppath = NULL;\n+   xmlChar    *volatile resstr = NULL;\n\nFor these fout, ctxt is reachable once xmlXPathNewContext() does not\nreturn NULL.  For res, that's xmlXPathCompiledEval, and caller has to\nfree the result (documented).  comppath is limited to the case where\nthe call of xmlXPathCtxtCompile() allocates a result, returns non-NULL\nand has an error, which is a short window, still reachable.  resstr\ncan be reached under when pg_xml_error_occurred() fails with an\nallocation done.\n\nI can see two more problematic patterns, that happen in error-only\npaths still are worth addressing:\n- pgxmlNodeSetToText() is missing a xmlFree() for \"result\".\n- xmlXPathCtxtCompile() in pgxml_xpath(), where pg_xml_error_occurred\nis reached and an allocation is done.\n\n732061150b0 was only done on HEAD because these leaks were considered\nas not worth the trouble in the back branches.  This could qualify as\nan open item, even if the leaks you are pointing at here are much\nolder than that.\n\nAttached is a patch for the code paths I have grabbed on the way.\nI'll take care of that, merging everything together.  Thanks for the\nreport!"
+    },
+    {
+      "id": "20260602034314.7eadc4d7@andrnote",
+      "from": "Andrey Chernyy <andrey(dot)cherny(at)tantorlabs(dot)com>",
+      "subject": "Re: [PATCH] Fix libxml leaks in contrib/xml2 XPath functions",
+      "date": "2026-06-02 00:43:14",
+      "body": "Hi Michael,\n\nI checked v2, and the two additional error-path cases make sense to me.\n\nWhile looking at pgxml_xpath(), I noticed one more nearby cleanup gap.\npgxml_xpath() builds an xpath_workspace before returning it to callers.\nThe callers already wrap pgxml_xpath() with PG_TRY/PG_CATCH, but if an\nERROR is thrown before pgxml_xpath() returns, the assignment of the\nworkspace pointer in the caller has not completed yet.  The caller-side\nPG_CATCH blocks therefore cannot call cleanup_workspace() for the\npartially-built workspace.\n\nAttached is an incremental patch on top of your v2-0001..v2-0003.  It\nadds local cleanup in pgxml_xpath(), tracks comppath for the error path,\nand checks xmlXPathNewContext() before dereferencing the returned\ncontext. I kept it separate for review, but it can of course be folded\nif that makes the final series cleaner.\n\nI also used the attached manual repro script, which catches repeated\nXPath syntax errors in a single backend and samples VmRSS from /proc.\nOn my checkout without this pgxml_xpath() cleanup it kept growing after\neach round, for example:\n\npostgres=# \\i xml2-pgxml-xpath-error-leak-repro.sql\nNOTICE:  error i=1, failures=20, total_kb=109748, diff_kb=88008\nNOTICE:  error i=2, failures=20, total_kb=193016, diff_kb=83268\nNOTICE:  error i=3, failures=20, total_kb=276220, diff_kb=83204\nNOTICE:  error i=4, failures=20, total_kb=359428, diff_kb=83208\nNOTICE:  error i=5, failures=20, total_kb=442632, diff_kb=83204\nNOTICE:  error i=6, failures=20, total_kb=525840, diff_kb=83208\nNOTICE:  error i=7, failures=20, total_kb=609044, diff_kb=83204\nNOTICE:  error i=8, failures=20, total_kb=692252, diff_kb=83208\nNOTICE:  error i=9, failures=20, total_kb=775456, diff_kb=83204\nNOTICE:  error i=10, failures=20, total_kb=858664, diff_kb=83208\n\nWith this patch applied, it plateaued after the initial warmup:\n\npostgres=# \\i xml2-pgxml-xpath-error-leak-repro.sql\nNOTICE:  error i=1, failures=20, total_kb=22672, diff_kb=972\nNOTICE:  error i=2, failures=20, total_kb=22692, diff_kb=20\nNOTICE:  error i=3, failures=20, total_kb=22704, diff_kb=8\nNOTICE:  error i=4, failures=20, total_kb=22700, diff_kb=-8\nNOTICE:  error i=5, failures=20, total_kb=22704, diff_kb=4\nNOTICE:  error i=6, failures=20, total_kb=22704, diff_kb=0\nNOTICE:  error i=7, failures=20, total_kb=22708, diff_kb=4\nNOTICE:  error i=8, failures=20, total_kb=22704, diff_kb=-8\nNOTICE:  error i=9, failures=20, total_kb=22708, diff_kb=4\nNOTICE:  error i=10, failures=20, total_kb=22708, diff_kb=-4"
+    },
+    {
+      "id": "ah9Uz-VwT9H_lpvG@paquier.xyz",
+      "from": "Michael Paquier <michael(at)paquier(dot)xyz>",
+      "subject": "Re: [PATCH] Fix libxml leaks in contrib/xml2 XPath functions",
+      "date": "2026-06-02 22:10:23",
+      "body": "Aha, nice.  That's because xmlXPathNewContext() can fail internally on\na call of xmlMalloc().\n\nOne thing that slightly confused me is that it could be possible to do\ntwice cleanup_workspace() for the callers of pgxml_xpath(), but that's\nfine: once if the TRY/CATCH block of pgxml_xpath() fails and a second\ntime in the TRY/CATCH block of xpath_string(), xpath_number() or\nxpath_bool().\n\nNow wait a minute, something is off in upstream with\nxmlXPathCompiledEval(), no?  This stuff does a chain of\nxmlXPathCompiledEval() -> xmlXPathCompiledEvalInternal() ->\nxmlXPathCompParserContext().  xmlXPathCompParserContext() may fail on\na xmlMalloc(), and xmlXPathCompiledEvalInternal() has the idea to\nreturn the same result if given NULL in input by its caller or on OOM.\nThat means that we could incorrectly assign a NULL result that should\nnot be.  I don't think that there is much we can do in the Postgres\ncode because we have no idea of the error state (aka valid NULL or\njust an OOM), but that may be worth mentioning to upstream, where they\nwould need a new \"extensible\" API with an error reason or a different\nerror code depending on the failure.  As far as I can see we are doing\nnothing wrong in xml2.  Well, at least nothing worse than the current\ndeal.  :)\n\nThe set of v2-0001~0004 merged together should be fine as final\nsolution, after double-checking all the callers with the set applied."
+    },
+    {
+      "id": "20260603012745.14262e5b@andrnote",
+      "from": "Andrey Chernyy <andrey(dot)cherny(at)tantorlabs(dot)com>",
+      "subject": "Re: [PATCH] Fix libxml leaks in contrib/xml2 XPath functions",
+      "date": "2026-06-02 22:29:27",
+      "body": "Thanks, Michael.\n\nAgreed about xmlXPathCompiledEval(); without a reliable error indication\nfrom libxml2, xml2 cannot distinguish a valid NULL result from an\ninternal failure locally.\n\nThe v2-0001..v2-0004 merge sounds good to me."
+    },
+    {
+      "id": "CAON2xHNOyaN9MCZohhD_NL6as3QVhGA0SOn2Hyi9w6+Y-_1bFA@mail.gmail.com",
+      "from": "Ewan Young <kdbase(dot)hack(at)gmail(dot)com>",
+      "subject": "autovacuum launcher crash: assert in pgstat_count_io_op (IOOP_EXTEND on pg_database's VM)",
+      "date": "2026-05-31 04:36:45",
+      "body": "Hi hackers,\n\nI was stress-testing master (commit e2b35735b00, assertions enabled) with a\nworkload that does a lot of DDL/DML, including creating and dropping\ndatabases in a tight loop, and the autovacuum launcher kept crashing on me"
+    },
+    {
+      "id": "ah0FxpCYeubtqX6A@paquier.xyz",
+      "from": "Michael Paquier <michael(at)paquier(dot)xyz>",
+      "subject": "Re: autovacuum launcher crash: assert in pgstat_count_io_op (IOOP_EXTEND on pg_database's VM)",
+      "date": "2026-06-01 04:08:38",
+      "body": "My first suspicion would be something in the area of b46e1e54d078 and\nsome of the VM improvements.  Melanie?"
+    },
+    {
+      "id": "CAON2xHOda4QZ+gNCwpMJiiEpByDSxqyU-aQYFz1LJYjWrom5Rw@mail.gmail.com",
+      "from": "Ewan Young <kdbase(dot)hack(at)gmail(dot)com>",
+      "subject": "Re: autovacuum launcher crash: assert in pgstat_count_io_op (IOOP_EXTEND on pg_database's VM)",
+      "date": "2026-06-01 08:41:35",
+      "body": "That was exactly the right neighborhood, thanks for the quick pointer.\nThe mechanism, as far as I can tell (I'm new to this code, so corrections\nwelcome):\n\nThe autovacuum launcher scans pg_database in get_database_list() with a\ncatalog scan (rel_read_only = false).  On a full, prunable page,\nheap_page_prune_opt() calls visibilitymap_pin(), which extends the VM fork\nif it doesn't exist.  The launcher isn't allowed to do IOOP_EXTEND, so\npgstat_count_io_op() trips the assertion at pgstat_io.c:74 and it aborts.\n\nTwo commits combine to cause it: 4f7ecca84dd added the unconditional\n(extending) visibilitymap_pin() in the on-access prune path, and 378a216187a\nmade INSERT set pd_prune_xid, so on-access pruning now fires on\ninsert-mostly\ncatalogs like pg_database.  That's also why it was hard to reduce: any\nregular backend or autovacuum worker that scans pg_database recreates the\nfork harmlessly (they may extend), so the launcher only crashes in the brief\nwindow before that happens.  I can now reproduce it deterministically; happy\nto share the script.\n\nPatch attached (one file).  Only read-only scans actually set the VM, and\nthose run only in regular backends (which may extend), so it extends the\nfork only on read-only scans and, for other scans, pins an existing VM page\nwithout extending (via visibilitymap_get_status()).  Corruption detection is\nunaffected; we just leave fork creation to the next VACUUM.  Passes\ncheck/installcheck, isolation, and contrib/pg_visibility.\n\nThis is just my own attempt at a fix and I'm not sure it's correct, so\nplease don't hesitate to point out anything I've got wrong.\n\nThanks,\nEwan"
+    },
+    {
+      "id": "CAAKRu_birmRc+rZWTewTf-dhCJc9nCzE92cbhoAzpSExHAy9Rw@mail.gmail.com",
+      "from": "Melanie Plageman <melanieplageman(at)gmail(dot)com>",
+      "subject": "Re: autovacuum launcher crash: assert in pgstat_count_io_op (IOOP_EXTEND on pg_database's VM)",
+      "date": "2026-06-01 15:05:28",
+      "body": "Ouch :( Thanks for the report!\n\nYea, so SO_HINT_REL_READ_ONLY is only meant as a hint. I don't\nguarantee that all queries that aren't modifying the relation will\npass it. It's only a performance optimization. We did touch on\nexcluding scans of catalog tables briefly in the thread (albeit deep\nin the thread) [1].\n\nThat being said, we still pin the VM (and potentially extend it) even\nif we don't set it. If it does already exist, pinning it lets us check\nfor corruption. If we extend it and won't set it, it isn't totally\nwasted work because then we don't have to extend it later. Though it's\ntrue that if the VM needs to be extended, that part of the VM can't be\ncorrupted, I wanted to avoid special casing the presence of the VM\npage.\n\nWhen I wrote pgstat_tracks_io_op(), I thought through which IO\noperations we should expect for each backend type. The idea was that\nif that were ever to change, we could change pgstat_tracks_io_op().\nThere is no reason why the autovacuum launcher inherently shouldn't\nextend the VM. Logically, if it is just reading catalog tables, it\nwon't need to extend the actual data fork of the relation. However,\nnow that reading tables may cause extending the VM, we can modify\npgstat_tracks_io_op() like this:\n\n-   if ((bktype == B_AUTOVAC_LAUNCHER || bktype == B_BG_WRITER ||\n-        bktype == B_CHECKPOINTER) && io_op == IOOP_EXTEND)\n+   if ((bktype == B_BG_WRITER || bktype == B_CHECKPOINTER) &&\n+       io_op == IOOP_EXTEND)\n        return false;\n\nWe should probably add a flags argument to table_beginscan_catalog()\nin 20. That along with modifying pgstat_tracks_io_op() is probably the\nright solution IMO. I think we shouldn't do that in 19 since it is\nexpanding the feature footprint.\n\nSo for fixing 19, we could just alter pgstat_tracks_io_op() which\nwould avoid tripping the assert.\n\nThe next question is whether or not we should also do the patch you\nproposed, since it is true that if the VM is not extended enough to\nhave the relevant VM bits, we can't possibly be fixing corruption. And\nif we are not doing that and won't set the VM, we are prematurely\ndoing work.\n\nMy hesitation about this is that the logic is a bit confusing. It\nrelies on us knowing that visibiltymap_pin() will extend the relation\nand visibilitymap_get_status() won't. Both will read and pin the VM if\nit exists. If in heap_page_prune_and_freeze() we do anything with the\nVM page, it must be pinned. So, you have to know that if it needed to\n[... truncated for corpus ...]"
+    },
+    {
+      "id": "CAON2xHPxvBO2xwPjEpc0s+np3nWypyOuTThb1iYPfVnR1W7vFA@mail.gmail.com",
+      "from": "Ewan Young <kdbase(dot)hack(at)gmail(dot)com>",
+      "subject": "Re: autovacuum launcher crash: assert in pgstat_count_io_op (IOOP_EXTEND on pg_database's VM)",
+      "date": "2026-06-02 14:02:54",
+      "body": "Hi Melanie,\n\nThat all makes sense — your plan sounds right to me. Happy to go with\nrelaxing pgstat_tracks_io_op() for 19 and leaving the\ntable_beginscan_catalog() flags work for 20, and to drop my patch.\n\nReproducer attached.\n\nThanks so much for the quick and thoughtful response — really appreciate it!\n\nEwan\n\nOn Mon, Jun 1, 2026 at 11:05 PM Melanie Plageman <melanieplageman(at)gmail(dot)com>\nwrote:"
+    },
+    {
+      "id": "CACdN0M78U+GvpqA7oey-GA7fFSYM636aDp6H9FVvCztv9zXxSA@mail.gmail.com",
+      "from": "신성준 <shinsj4653(at)gmail(dot)com>",
+      "subject": "Add wait events for server logging destination writes",
+      "date": "2026-05-31 08:50:08",
+      "body": "Hi hackers,\n\nThe write(2) calls that flush server log output aren't covered by wait\nevents. When a backend logs something, the writes go out in:\n\n  - write_pipe_chunks(): write(2) to the syslogger pipe\n  - write_console(): write(2) to stderr (WriteConsoleW() on Windows)\n\nIf one of those blocks -- syslogger pipe full, slow console, slow log\ndevice -- pg_stat_activity just shows wait_event = NULL until it\nreturns. Since NULL usually reads as \"on CPU\", a backend stuck writing\nlogs looks like it's doing work, so logging-related stalls are easy to\nmiss.\n\nAttached is a short series that adds two WaitEventIO events and reports\nthem around those writes:\n\n  IO / SysloggerWrite - write(2) to the syslogger pipe\n  IO / StderrWrite - write(2) to stderr, and WriteConsoleW()\n\n0001 adds the events and covers the write(2) paths. 0002 does the\nWindows WriteConsoleW() path, split out since it's platform-specific.\n\nIt only wraps the leaf write call and uses the existing\npgstat_report_wait_start()/end() helpers, so it stays allocation-free\nand safe to call from inside the error-reporting path.\n\nI did a quick before/after to make sure the events show up: 8 backends\neach emitting large RAISE LOG lines, sampling wait_event from\npg_stat_activity every 50 ms for 20 s.\n\n  - logging_collector = on (syslogger pipe):\n    master:  NULL                100.0%  (2184/2184)\n    patched: IO/SysloggerWrite     99.1%  (2204/2224), NULL 0.9%\n\n  - logging_collector = off (stderr):\n    master:  NULL                100.0%  (2144/2144)\n    patched: IO/StderrWrite        90.7%  (1952/2152), NULL 9.3%\n\nOn master that wait time is just invisible; with the patch it lands on\nthe new events. I can send the scripts and raw samples if anyone wants\nto reproduce it.\n\nApplies on current master. A couple of things I'm unsure about and\nwould appreciate input on: whether the event names fit the surrounding\nconventions, and whether splitting the Windows path into its own patch\nis the right call.\n\nThanks,\nSeongjun Shin"
+    },
+    {
+      "id": "CACdN0M4ENFV0Hg4zbBkP+ScRHdeN9NdYx9QV79h5BM_eN9YxHA@mail.gmail.com",
+      "from": "신성준 <shinsj4653(at)gmail(dot)com>",
+      "subject": "Re: Add wait events for server logging destination writes",
+      "date": "2026-05-31 10:42:41",
+      "body": "Hi,\n\ncfbot caught a build failure on v1, in the SanityCheck task on Linux\nand Windows: elog.c uses pgstat_report_wait_start()/end() and the\nWAIT_EVENT_* constants but didn't include utils/wait_event.h. It only\nbuilt here because of an accidental transitive include on my machine;\non the CI images the declarations weren't visible.\n\nv2 fixes that by adding the missing #include \"utils/wait_event.h\" to\nelog.c, folded into 0001 so that patch builds on its own. No other\nchanges; the wait events and the reported write paths are the same as\nin v1.\n\nv2-0001 adds the two events and covers the write(2) paths.\nv2-0002 covers the Windows WriteConsoleW() path, split out as before.\n\nApplies cleanly on current master; full build passes locally.\n\nThanks,\nSeongjun Shin\n\n2026년 5월 31일 (일) 오후 5:50, 신성준 <shinsj4653(at)gmail(dot)com>님이 작성:"
+    },
+    {
+      "id": "CACLU5mSNZEbLrwRLf_rsG1Y1D+JWnWKwvzwhpG73rjLjD3R1yA@mail.gmail.com",
+      "from": "Kirk Wolak <wolakk(at)gmail(dot)com>",
+      "subject": "Re: Add wait events for server logging destination writes",
+      "date": "2026-05-31 16:53:09",
+      "body": "+1\n  Nice.  We have too many waits that are registered as CPU."
+    },
+    {
+      "id": "ah0MjuP8Kku69_vz@paquier.xyz",
+      "from": "Michael Paquier <michael(at)paquier(dot)xyz>",
+      "subject": "Re: Add wait events for server logging destination writes",
+      "date": "2026-06-01 04:37:34",
+      "body": "Hmm.  Usually we split the event numbers so as there is one for each\ncode path, but here we are just dealing with the same routine that\nsends chunks.  Using the same numbers seem fine by me.\n\nIf others have any thoughts or comments, feel free."
+    },
+    {
+      "id": "20260601.144922.658666928129832364.horikyota.ntt@gmail.com",
+      "from": "Kyotaro Horiguchi <horikyota(dot)ntt(at)gmail(dot)com>",
+      "subject": "Re: Add wait events for server logging destination writes",
+      "date": "2026-06-01 05:49:22",
+      "body": "Hello.\n\nAt Sun, 31 May 2026 17:50:08 +0900, 신성준 <shinsj4653(at)gmail(dot)com> wrote in\n\nShould we also consider instrumenting ReportEventW()/ReportEventA()?\nThey seem to be another Windows-specific logging output path.\n\nAlso, if the intention is to cover all places where logging output can\nblock, I wonder whether the syslog() calls should be covered as\nwell. If they are intentionally excluded, perhaps a short comment\nexplaining the rationale would be useful.\n\nRegards."
+    },
+    {
+      "id": "CACdN0M6WCA32MKK30-TS3CgGRTRKZpXRB9o3oHt2LGrB_CHDmA@mail.gmail.com",
+      "from": "신성준 <shinsj4653(at)gmail(dot)com>",
+      "subject": "Re: Add wait events for server logging destination writes",
+      "date": "2026-06-06 16:25:25",
+      "body": "Hi,\n\nThanks Kirk, glad it's useful.\n\nKyotaro Horiguchi wrote:\n\nGood points -- both are blocking output paths and there's no real\nreason to leave them out, so v3 instruments them rather than excluding\nthem with a comment. The intent is exactly to cover the places where\nlogging output can block, so this makes the series consistent.\n\nv3 adds two more WaitEventIO events:\n\n  IO / SyslogWrite   - syslog(3) in write_syslog()\n  IO / EventlogWrite - ReportEventW()/ReportEventA() in write_eventlog()\n\nSame approach as before: the wait is reported only around the leaf\ncall, using the existing pgstat_report_wait_start()/end() helpers, so\nit stays allocation-free and safe on the error-reporting path, and the\nseries still touches just elog.c and wait_event_names.txt.\n\nThis also matches Michael's point on v2 -- each event covers a routine\nrather than a single call site, so SyslogWrite wraps the syslog(3)\ncalls in write_syslog() and EventlogWrite wraps both ReportEvent\nvariants in write_eventlog(), the same way SysloggerWrite already\ncovers the two writes in write_pipe_chunks().\n\nAs before, 0001 is the portable part and 0002 is the Windows part\n(WriteConsoleW plus the new EventlogWrite).\n\nOne caveat: EventlogWrite is Windows-only, so I couldn't get a runtime\nbefore/after for it here -- I've only confirmed it builds (cfbot's\nWindows task should cover that). The other events still show up in the\nsampling I posted earlier. If someone on Windows can exercise the\nevent-log path I'd appreciate a confirmation.\n\nApplies cleanly on current master; full build passes locally on both\nAutoconf and Meson, with no new warnings.\n\nThanks,\nSeongjun Shin\n\n2026년 6월 1일 (월) 오후 2:49, Kyotaro Horiguchi <horikyota(dot)ntt(at)gmail(dot)com>님이 작성:"
+    },
+    {
+      "id": "CACdN0M65jfGbOcBDm5rM_3nGVYNan7EQ9vQ1WAyk6Xx8X10Wrw@mail.gmail.com",
+      "from": "신성준 <shinsj4653(at)gmail(dot)com>",
+      "subject": "Re: Add wait events for server logging destination writes",
+      "date": "2026-06-06 16:52:34",
+      "body": "Hi,\n\ncfbot flagged v3 as needing a rebase -- it stopped applying after the\nrecent changes to elog.c (the switch to a const WCHAR pointer in\nwrite_eventlog(), pgindent, etc.) and the new COPY pipe wait events in\nwait_event_names.txt.\n\nv4 is the same change rebased over current master, no functional\ndifference from v3. The only real conflict was in write_eventlog(),\nwhere the EventlogWrite wrapping now sits on top of the const\nutf16_const pointer; everything else merged cleanly.\n\nStill applies as two patches:\nv4-0001 - portable part (SysloggerWrite, StderrWrite, SyslogWrite)\nv4-0002 - Windows part (WriteConsoleW plus EventlogWrite)\n\nBuilds clean on current master with both Autoconf and Meson, no new\nwarnings.\n\nThanks,\nSeongjun Shin\n\n2026년 6월 7일 (일) 오전 1:25, 신성준 <shinsj4653(at)gmail(dot)com>님이 작성:"
+    },
+    {
+      "id": "CAA5RZ0vZwR_dSK6fo0P2-EnskUVN0NjLHnGnJMFDPC8-kEW3sQ@mail.gmail.com",
+      "from": "Sami Imseih <samimseih(at)gmail(dot)com>",
+      "subject": "Improve pg_stat_statements scalability",
+      "date": "2026-05-11 23:53:53",
+      "body": "Hi,\n\npg_stat_statements has well-known scaling problems under\nhigh concurrency. This patch series is an initial proposal\nfor how to $SUBJECT.\n\nThe three scaling problems:\n\n1. Per-entry SpinLock contention. Every counter update acquires\na SpinLock on the entry. Hot queries executed across many\nbackends contend on the same lock, and the hold time grows as\nwe add more counters to the struct. Higher core counts mean\nmore CPUs contending for the same spinlock, making the problem\nworse on modern hardware. See this complaint here [3].\n\n2. Deallocation under exclusive LWLock. The hash table is\nfixed-size, bounded by pg_stat_statements.max. When full, a\nsingle backend performs least-frequently-used eviction of\nthe bottom 5% while holding an exclusive LWLock, blocking all\nother backends from reading or writing pg_stat_statements.\nThis happens inline during query execution, and workloads with\nmany unique queries trigger it frequently. Making matters\nworse, pg_stat_statements.max is a static GUC, requiring a\nfull server restart to change, and that is disruptive in\nproduction systems.\n\n3. Query text file bloat and GC. Deallocated entries leave dead\ntext in the external file. When the file grows to 2x the size\nof live text, GC rewrites the entire file under exclusive lock.\nDisk I/O under exclusive lock is the worst combination, and\nfrequent deallocations (problem #2) trigger more GC.\n\nUsing the pgstat, \"statistics collector\", system to improve\npg_stat_statements scalability has been discussed previously\n[4]. It writes stats locally first and flushes periodically\nto shared memory, avoiding spinlock contention on the write\npath. Also, the storage is a dshash (partitioned hash table),\nwhich reduces contention on lookups and allows dynamic resizing\nwithout restart. The prerequisite work to make this usable by\nextensions has been building over two release cycles:\n\n- PG18: Pluggable cumulative statistics API\n(pgstat_register_kind) [7949d959]\n\n- PG19: Serialization callbacks (to_serialized_data,\nfrom_serialized_data, finish) for custom stats kinds\n[4ba012a8ed9]\n\nThis patch builds on the prerequisite work to address the\nscalability issues mentioned above.\n\nThe series consists of two patches:\n\n---\n\n[0001] pgstat: add pgstat_flush_pending() and pg_stat_flush_pending(pid)\n\nAdds infrastructure for flushing pending statistics to shared\nmemory on demand. pgstat_flush_pending() flushes all pending\nentries in the calling backend immediately. Unlike\n[... truncated for corpus ...]"
+    },
+    {
+      "id": "CAA5RZ0sxGs7k7vUCd_wurwrreqC3367eC6QuEQX5f4Oeu6WkDQ@mail.gmail.com",
+      "from": "Sami Imseih <samimseih(at)gmail(dot)com>",
+      "subject": "Re: Improve pg_stat_statements scalability",
+      "date": "2026-05-12 00:35:55",
+      "body": "One thing I forgot to mention above is for the spinlock contention\ntest, I plan on running this on a machine with much higher\ncore count, where I have seen this be a much larger issue in\nthe past."
+    },
+    {
+      "id": "CAA5RZ0u-Y4HHTdBpJMn5if6DnOnj-Bn9MmPKJ=28Y5dkpHhCoA@mail.gmail.com",
+      "from": "Sami Imseih <samimseih(at)gmail(dot)com>",
+      "subject": "Re: Improve pg_stat_statements scalability",
+      "date": "2026-05-17 17:37:23",
+      "body": "Hi,\n\nI had to fix an issue with the serialization callback that was causing\nCI failures.\n\nI also made re-organized the patches a bit:\n\nv1-0001: This will not be part of the main patchset, but will be be a dependency\nfor the remaining patches. This is, as mentioned above, an in-transaction flush\nrequired [1]\n\nv1-0002: This now only moves the pg_stat_statements hash to a custom\npgstat kind\n\nv1-0003: This moves the query text file to a DSA + file storage.\n\nv1-0004: Adds new columns to pg_stat_statements_info\n\n[1] https://commitfest.postgresql.org/patch/6781/"
+    },
+    {
+      "id": "CAA5RZ0vjpyU-RJzUYCkr0-9jqJtbS95cRFnWTiOEENE7iYNgcA@mail.gmail.com",
+      "from": "Sami Imseih <samimseih(at)gmail(dot)com>",
+      "subject": "Re: Improve pg_stat_statements scalability",
+      "date": "2026-05-20 22:59:23",
+      "body": "There was a failure on FreeBSD [1]. The test uses\ndebug_parallel_query=regress which forces parallel plans. What\nhappens is the parallel worker calls pg_stat_statements() (marked\nPARALLEL SAFE), tries to flush pending stats, but the leader is the one\nthat actually accumulated those stats.\n\nI fixed this by:\n\n1. Setting max_parallel_workers_per_gather = 0 in\npg_stat_statements.conf, and only enabling it during\nparallel.sql when we actually want to track a parallel query.\n\n2. Bumping pg_s_s to version 1.14 and marking pg_stat_statements()\nand pg_stat_statements_reset() as PARALLEL RESTRICTED to ensure\nthese functions only execute in the leader, which is the process\nthat accumulates the pending stats. These could also be marked UNSAFE,\nbut RESTRICTED seems better since it doesn't completely prevent\nparallel plans if these functions are used with other tables; although\nit's hard to imagine a real-world case where this would matter.\n\nThis also means old versions would have this issue with\ndebug_parallel_query, but I don't think we should change\nfunction definitions for older versions, in case a user\ndowngrades pg_s_s versions. Maybe others have a\ndifferent opinion?\n\n[1] https://cirrus-ci.com/task/5948422076760064"
+    },
+    {
+      "id": "CAP53Pky9CViOfy1yQxJv0VE7aEiuDb13SppwGa7T_qOeBSumfA@mail.gmail.com",
+      "from": "Lukas Fittl <lukas(at)fittl(dot)com>",
+      "subject": "Re: Improve pg_stat_statements scalability",
+      "date": "2026-05-22 04:38:09",
+      "body": "Agreed. Let's fix this for Postgres 20.\n\nThank you for putting together initial patches!\n\nYep, agreed on these problems.\n\nI noticed the following in the 0001 patch (to be clear, looking at the\nv2 version you posted later), which I wasn't sure about:\n\nIf I follow correctly, you're moving tuples_(inserted|updated|deleted)\nhere to special case them so they respect transaction rollbacks, but\nyou don't do that for tuples_hot_updated and tuples_newpage_updated.\nShouldn't those also be ignored if a transaction rolls back?\n\nI've taken a first pass at this, and noticed an issue (again, in the\nv2 patch for clarity):\n\ndiff --git a/contrib/pg_stat_statements/pg_stat_statements.c\nb/contrib/pg_stat_statements/pg_stat_statements.c\n\nIt appears you've moved the equivalent of the \"if (!entry)\" check into\nthe pgss_store_query_text function, and we now unconditionally call\ngenerate_normalized_query.\n\nIs there a reason we couldn't just defer that work until we've\nconfirmed we actually need to save the query text?\n\nMakes sense.\n\nBig +1 on these first two design changes - its clear that we get a\nbenefit here, and its nice to simplify/streamline the code as well.\n\nI feel this is problematic as presented (looking at pgss_maybe_evict\nin v2), because even on a somewhat steady workload you have a high\nrisk of losing the 5001st entry (if max is 5000).\n\nWhat if we instead trigger deallocation early, e.g. at 90% of entries\nbeing full? I think this could also go well with a background worker\ndoing the work.\n\nI think a background worker might simplify things around deallocation\nand query text GC handling - we have precedent that contrib extensions\nutilize background workers, e.g. pg_prewarm, pg_stash_advice, etc.\n\nI feel like this design introduces a performance cliff at the\nin-memory => disk boundary that will be surprising and hard to\nunderstand. We had previously discussed doing an in-memory only\ndesign, but I could see that being harder to get agreement on in\npractice with the large query text files many of us have seen on\ncustomer systems.\n\nWhat if we instead designed this as an in-memory buffering mechanism?\n\ni.e. new query texts are first written to the in-memory buffer, and\nthen flushed to disk. The in-memory buffer is kept as DSA like you\nhave it, so many concurrent sessions suddenly running a new query only\nhave one of them actually saving it to the buffer. We could then have\na background writer write that out to disk in batches, to make room\n[... truncated for corpus ...]"
+    },
+    {
+      "id": "CAP53PkyWD99bNwFVv2KibfL4bhm-D78QAnc9UqQQJdtJ3mQWPQ@mail.gmail.com",
+      "from": "Lukas Fittl <lukas(at)fittl(dot)com>",
+      "subject": "Re: Improve pg_stat_statements scalability",
+      "date": "2026-05-23 01:15:00",
+      "body": "For archive's sake and others reading along, we had a productive\ndiscussion about this today at PGConf.Dev.\n\nI've created a new wiki page combining the prior 2025 discussion, and\nnotes from today:\n\nhttps://wiki.postgresql.org/wiki/Scalability_of_pg_stat_statements\n\nThanks,\nLukas"
+    },
+    {
+      "id": "ahI3hfji3FI6fY5X@jrouhaud",
+      "from": "Julien Rouhaud <rjuju123(at)gmail(dot)com>",
+      "subject": "Re: Improve pg_stat_statements scalability",
+      "date": "2026-05-23 23:25:57",
+      "body": "Hi,\n\nThanks a lot Lukas!\n\nJust a small clarification, I wasn't asking for a way to remember the last time\na query was executed (although I think it's a very good thing to have), but\nremembering the time each query text was saved.\n\nIn a reasonable system (that is a system where the number of entries doesn't\ngrow much more than pg_stat_statements.max, ie, you can actually use the\ncurrent version pg_stat_statements) you will likely get a lot of entries even\nif you filter out the entries that didn't get executed in the last X minutes.\nHowever, the vast majority of them should not be new queries.  So if you\nmaintain an external system that snapshot pg_stat_statements once in a while\nyou only care about the (possibly) missing query texts, which should be a very\nsmall fraction of all the records you otherwise need."
+    },
+    {
+      "id": "CAA5RZ0sQ+gDn-J85j1FzOdL1YjVYRegpmQpDiah1=REWZSZj+Q@mail.gmail.com",
+      "from": "Sami Imseih <samimseih(at)gmail(dot)com>",
+      "subject": "Re: Improve pg_stat_statements scalability",
+      "date": "2026-05-24 01:29:26",
+      "body": "Thank you, Lukas!"
+    },
+    {
+      "id": "CAA5RZ0uoxiQ2_=xHGRnyc4WdM9aR0fzdMhBubnw97po==--yGQ@mail.gmail.com",
+      "from": "Sami Imseih <samimseih(at)gmail(dot)com>",
+      "subject": "Re: Improve pg_stat_statements scalability",
+      "date": "2026-05-30 02:15:31",
+      "body": "Thanks for the feedback on v2, and for the productive unconference\ndiscussion in PGConf.dev. I've been iterating on the patches/benchmarks\nand wanted to post an updated series that addresses the major design\npoints raised.\n\nAddressing the feedback from the unconference session:\n\n1/ Eviction\n\nThe concern in the design presented in which entries are skipped until\na single threaded eviction completed was that on a steady workload with\nmax=5000, the 5001st unique query would always be immediately evicted.\nThis was considered unacceptable, and rightly so. It may be fine for\nhigh churn, pathological cases, but for slow churn cases it would be\nunacceptable.\n\nAndres mentioned that eviction should occur in parallel, which I\nunderstood as multiple backends should evict a subset of the entries in\nthe dshash concurrently. To do this, I implemented a parallel\nclock-sweep in which eviction sweeps a partition decrementing\nrefcounts, and only entries that have decayed to zero are evicted. A\ngenuinely new query that just arrived has a fresh refcount and survives\nthe sweep, and if it becomes popular in the meantime, it will survive\nfor longer. So the algorithm wants an entry to prove itself to remain\nconsidered \"hot\", else it's swept.\n\nThere's a 5% headroom using the already existing\nUSAGE_DEALLOC_PERCENT in which we evict until count (across all\npartitions) drops to 95% of max, so there's always room for new\narrivals before the next sweep.\n\nI chose not to use a background worker for eviction, as discussed\nearlier, based on the consensus that backpressure is important, and a\nbackground worker being asynchronous in nature will not provide that.\nAlso, it could be complicated where a background worker cannot be spun\nup for whatever reason.\n\nHowever, to implement parallel eviction as described above, I needed 2\ncore changes:\n\n- pgstat_drop_entry must be able to optionally tolerate a dropped\nentry, as there could be a delay between the time an entry is marked\nas dropped and garbage collection, and within that time multiple\nevictions may attempt to drop the same entry.\n\n- Implement a seq scan API for dshash that scans a specific partition.\nThis will allow eviction to cycle through partitions, i.e.\nclock-sweep.\n\nThe eviction does not attempt to make room in the bucket for an entry\nthat triggered it. The main point is to keep forward progress in\nmaking room. We don't need to be more strict here. Also the fact that\n[... truncated for corpus ...]"
+    },
+    {
+      "id": "CAN4CZFN=6+2ntiDx=p4fq5X_kZmXtK=Eyd0G+kZdobdzAK=9JQ@mail.gmail.com",
+      "from": "Zsolt Parragi <zsolt(dot)parragi(at)percona(dot)com>",
+      "subject": "Re: Improve pg_stat_statements scalability",
+      "date": "2026-05-31 17:26:40",
+      "body": "Hello!\n\nI noticed that the patch has some issues with minmax_only, and these\ndifferences seem to be unintended to me:\n\n1. minmax only resets updates mean/sum_var_time (but then when it\ncalculates them again, it also uses the data before the minmax reset)\n\n+\t\t/*\n+\t\t * Reset only min/max timing values and update minmax_stats_since.\n+\t\t * Iterate matching entries in the dshash, reset the corresponding\n+\t\t * pgstat counters' min/max fields.\n+\t\t */\n...\n+\t\t\t\t\t\tshared->counters.mean_time[kind] = 0;\n+\t\t\t\t\t\tshared->counters.sum_var_time[kind] = 0;\n\n2. min_time doesn't recover after a minmax reset:\n\n+\t\tif (pending->min_time[kind] < shared->min_time[kind])\n+\t\t\tshared->min_time[kind] = pending->min_time[kind];\n\nAs it is only updated if it's smaller, but it is 0 after it, and\nbecause the call count remains > 0 it doesn't get initialized with the\ncurrent value.\n\n+\t\tif ((int) pg_atomic_read_u64(&pgss_shared->nentries) <= pgss_max *\n(100 - USAGE_DEALLOC_PERCENT) / 100)\n+\t\t\tbreak;\n\nisn't there a possible overflow here? The similar deleted check had\nexplicit uint64 casts for pgss_max multiplication.\n\n-\t/*\n-\t * Don't proceed if file does not exceed 512 bytes per possible entry.\n-\t */\n-\tif ((uint64) extent < (uint64) 512 * pgss_max)\n-\t\treturn false;"
+    },
+    {
+      "id": "4cb9e2ae-9ac4-4e2d-a840-c4accb9d105d@tantorlabs.com",
+      "from": "Denis Rodionov <denis(dot)rodionov(at)tantorlabs(dot)com>",
+      "subject": "[PATCH] Remove obsolete tupDesc assignment in extended statistics",
+      "date": "2026-05-28 15:58:39",
+      "body": "Hi hackers,\n\nAttached is a small cleanup patch for extended statistics.\n\nlookup_var_attr_stats() assigns tupDesc to VacAttrStats entries created\nfor expressions. That appears to be obsolete: make_build_data() uses\ntupDesc only when fetching values for regular columns, while expressions\nare handled separately using VacAttrStats entries created by\nexamine_expression().\n\nThe old comment also points at statext_mcv_build(), but this does not\nseem to match the current code anymore.  If some future code needs a\ntuple descriptor for expression entries here, it should probably set up\nthat dependency explicitly rather than rely on copying vacatts[0]->tupDesc.\n\nThe patch removes the assignment and the outdated XXX comment.\n\nBest regards,\nDenis Rodionov\nTantor Labs LLC,\nhttps://tantorlabs.com/"
+    },
+    {
+      "id": "ah0V3EPMrHJs5IKs@paquier.xyz",
+      "from": "Michael Paquier <michael(at)paquier(dot)xyz>",
+      "subject": "Re: [PATCH] Remove obsolete tupDesc assignment in extended statistics",
+      "date": "2026-06-01 05:17:16",
+      "body": "I got this code under my eyes a couple of weeks ago for a bug fix, and\nwondered the same thing as you here, but I never got down to analyze\nwhere the TupleDesc is used.  Could that be just an oversight of\na4d75c86bf15 due to rebases of what has been committed?\n\nPerhaps we should enforce somewhere that a VacAttrStats.tupDesc is\nnever set for an expression, in the shape of an assertion?  I am not\nsure where I would plant that, or if it's required, but that would\nfeel better than just removing these lines."
+    },
+    {
+      "id": "9de4ad69-2ad8-45be-94a1-0b0565173992@tantorlabs.ru",
+      "from": "Denis Rodionov <denis(dot)rodionov(at)tantorlabs(dot)ru>",
+      "subject": "Re: [PATCH] Remove obsolete tupDesc assignment in extended statistics",
+      "date": "2026-06-04 18:27:05",
+      "body": "Thanks for looking at this.\n\nI checked a4d75c86bf15 and current master. The only use of\nVacAttrStats.tupDesc in extended_stats.c seems to be the heap_getattr()\ncall in make_build_data(). That loop only iterates over stat->columns,\nso it only uses the VacAttrStats entries for regular columns. Expression\nentries are handled separately and make_build_data() creates their\nVacAttrStats entries with examine_expression().\n\nI agree that an assertion makes this clearer. In v2 I removed the\nobsolete assignment and added an assertion in lookup_var_attr_stats() to\ndocument that expression stats do not need a tuple descriptor.\n\nBest regards,\nDenis Rodionov\nTantor Labs LLC,\nhttps://tantorlabs.com/"
+    },
+    {
+      "id": "aij0SgZ7NXEbKlCA@paquier.xyz",
+      "from": "Michael Paquier <michael(at)paquier(dot)xyz>",
+      "subject": "Re: [PATCH] Remove obsolete tupDesc assignment in extended statistics",
+      "date": "2026-06-10 05:21:14",
+      "body": "/*\n-         * XXX We need tuple descriptor later, and we just grab it from\n-         * stats[0]->tupDesc (see e.g. statext_mcv_build). But as coded\n-         * examine_attribute does not set that, so just grab it from the first\n-         * vacatts element.\n+         * Expression stats are not tied to a heap attribute, so they do not\n+         * need a tuple descriptor.\n          */\n-        stats[i]->tupDesc = vacatts[0]->tupDesc;\n+        Assert(stats[i]->tupDesc == NULL);\n\nPlanting an assertion at this location feels OK here.  (I need to\nremember to look at that again once v20 opens for business, noting\nthat down now..)"
+    },
+    {
+      "id": "DFFF817B-7DFB-43D8-AC6F-7874716DB375@gmail.com",
+      "from": "Chao Li <li(dot)evan(dot)chao(at)gmail(dot)com>",
+      "subject": "pg_stat_statements: Fix normalization of + signs for FETCH and MOVE",
+      "date": "2026-06-01 05:33:40",
+      "body": "Hi,\n\nWhile revisiting feature “Show sizes of FETCH queries as constants in pg_stat_statements”, I found another issue where “+” is not properly handled.\n\nSee this repro:\n```\nevantest=*# fetch + 1 c;\n g\n---\n(0 rows)\n\nevantest=*# select calls, query from pg_stat_statements where query like 'fetch%';\n calls |    query\n-------+--------------\n     1 | fetch $1 1 c\n(1 row)\n\nevantest=*# SELECT pg_stat_statements_reset();\n   pg_stat_statements_reset\n-------------------------------\n 2026-06-01 08:59:19.538839+08\n(1 row)\n\nevantest=*# fetch +1 c;\n g\n---\n(0 rows)\n\nevantest=*# select calls, query from pg_stat_statements where query like 'fetch%';\n calls |    query\n-------+-------------\n     1 | fetch $11 c\n(1 row)\n```\n\nAs shown above, the \"+\" sign is replaced separately from the integer. However, a \"-\" sign is handled correctly:\n```\nevantest=*# SELECT pg_stat_statements_reset();\n   pg_stat_statements_reset\n-------------------------------\n 2026-06-01 09:09:48.776385+08\n(1 row)\n\nevantest=*# fetch - 1 c;\n g\n----\n 10\n(1 row)\n\nevantest=*# select calls, query from pg_stat_statements where query like 'fetch%';\n calls |   query\n-------+------------\n     1 | fetch $1 c\n(1 row)\n```\n\nThe same issue exists for “MOVE” as well:\n```\nevantest=*# move relative + 2 c;\nMOVE 0\nevantest=*# select calls, query from pg_stat_statements where query like 'move%';\n calls |        query\n-------+----------------------\n     1 | move relative $1 2 c\n(1 row)\n```\n\nThe fix seems simple, as the \"-\" sign is already handled:\n```\n\t\t\t/*\n\t\t\t * We should find the token position exactly, but if we somehow\n\t\t\t * run past it, work with that.\n\t\t\t */\n\t\t\tif (yylloc >= loc)\n\t\t\t{\n\t\t\t\tif (query[loc] == '-')\n\t\t\t\t{\n\t\t\t\t\t/*\n\t\t\t\t\t * It's a negative value - this is the one and only case\n\t\t\t\t\t * where we replace more than a single token.\n\t\t\t\t\t *\n\t\t\t\t\t * Do not compensate for the special-case adjustment of\n\t\t\t\t\t * location to that of the leading '-' operator in the\n\t\t\t\t\t * event of a negative constant (see doNegate() in\n\t\t\t\t\t * gram.y).  It is also useful for our purposes to start\n\t\t\t\t\t * from the minus symbol.  In this way, queries like\n\t\t\t\t\t * \"select * from foo where bar = 1\" and \"select * from\n\t\t\t\t\t * foo where bar = -2\" can be treated similarly.\n\t\t\t\t\t */\n```\n\nWe just need to handle \"+\" in the same way. See the attached patch for details.\n\nBest regards,"
+    },
+    {
+      "id": "ah0hbY0v8zwJZU0R@paquier.xyz",
+      "from": "Michael Paquier <michael(at)paquier(dot)xyz>",
+      "subject": "Re: pg_stat_statements: Fix normalization of + signs for FETCH and MOVE",
+      "date": "2026-06-01 06:06:37",
+      "body": "This is not directly related to FETCH and MOVE.  For example:\n=# select +1;\n ?column?\n----------\n        1\n(1 row)\n=# select query from pg_stat_statements where query ~ 'select';\n   query\n------------\n select +$1\n(1 row)\n\nI don't recall somebody complaining about that.."
+    },
+    {
+      "id": "C51EB1B2-82C1-4ED3-87B1-2A17D80F46C2@gmail.com",
+      "from": "Chao Li <li(dot)evan(dot)chao(at)gmail(dot)com>",
+      "subject": "Re: pg_stat_statements: Fix normalization of + signs for FETCH and MOVE",
+      "date": "2026-06-01 07:53:11",
+      "body": "Thanks for pointing out the example. I don’t think “select +1” parse “+” in the same way as a FETCH statement.\n\nIf we turn on debug_print_raw_parse:\n```\nevantest=*# set debug_print_raw_parse = 1 and check the raw parse trees:\nSET\nevantest=*# select +1;\n ?column?\n----------\n        1\n(1 row)\n```\n\nThis generates a raw parse tree containing:\n```\n2026-06-01 15:05:08.528 CST [22501] DETAIL:  (\n\t   {RAWSTMT\n\t   :stmt\n\t      {SELECTSTMT\n\t      :distinctClause <>\n\t      :intoClause <>\n\t      :targetList (\n\t         {RESTARGET\n\t         :name <>\n\t         :indirection <>\n\t         :val\n\t            {A_EXPR\n\t            :name (\"+\")\n\t            :lexpr <>\n\t            :rexpr\n\t               {A_CONST\n\t               :val 1\n\t               :location 8\n\t               }\n\t            :rexpr_list_start 0\n\t            :rexpr_list_end 0\n\t            :location 7\n\t            }\n\t         :location 7\n\t         }\n\t      )\n```\n\nHere, “+” is parsed as a unary operator, A_EXPR’s location is at “+”, and A_CONST’s location is at “1”.\n\nFor a FETCH statement:\n```\nevantest=*# fetch +1 c;\n g\n---\n 4\n(1 row)\n```\n\nThe raw parse tree looks like:\n```\n2026-06-01 15:05:37.993 CST [22501] DETAIL:  (\n\t   {RAWSTMT\n\t   :stmt\n\t      {FETCHSTMT\n\t      :direction 0\n\t      :howMany 1\n\t      :portalname c\n\t      :ismove false\n\t      :direction_keyword 0\n\t      :location 6\n\t      }\n\t   :stmt_location 0\n\t   :stmt_len 10\n\t   }\n\t)\n```\n\nHere, the count is parsed through SignedIconst, and the FETCHSTMT location is at “+\".\n\nSo, I still think this issue is specific to FETCH and MOVE. However, I realized that the new code comment in my patch was misleading, so I have updated it.\n\nBest regards,"
+    },
+    {
+      "id": "DI6OFGHJ1B69.25YVDEP3BABRH@partin.io",
+      "from": "\"Tristan Partin\" <tristan(at)partin(dot)io>",
+      "subject": "Add pg_stat_kind_info system view",
+      "date": "2026-04-30 17:47:59",
+      "body": "Hey hackers,\n\nIn 7949d959458[0], we introduced pluggable cumulative statistics.\nExtensions could now register their own custom statistics. However,\nthere was no way for an extension author to introspect their custom\nstatistics through SQL, and I don't believe there is currently a way to\nintrospect builtin statistics either.\n\nAdditionally, there was no way to know how much shared memory each\nstatistics kind was using. We could only know the total shared memory\nused by the statistics subsystem.\n\n\tdbltap(at)postgres=# SELECT * FROM pg_shmem_allocations WHERE name = 'Shared Memory Stats';\n\t        name         |    off    |  size  | allocated_size\n\t---------------------+-----------+--------+----------------\n\t Shared Memory Stats | 153456640 | 321976 |         321976\n\nIn this patch, I have added a new system view: pg_stat_kind_info built\non a new function pg_stat_get_kind_info(). The view has the following\ncolumns:\n\n- id: id of the statistics kind\n- name: name of the statistics kind\n- count: number of entries for the statistics kind\n- builtin: whether the statistics kind of builtin or not\n- shared_size: shared memory size of each entry\n\n\tdbltap(at)postgres=# SELECT * FROM pg_stat_kind_info;\n\t id |          name           | count  | builtin | shared_size\n\t----+-------------------------+--------+---------+-------------\n\t  1 | database                | (null) | t       |         288\n\t  2 | relation                | (null) | t       |         248\n\t  3 | function                | (null) | t       |          56\n\t  4 | replslot                | (null) | t       |         120\n\t  5 | subscription            | (null) | t       |         120\n\t  6 | backend                 | (null) | t       |        2952\n\t  7 | archiver                |      1 | t       |           0\n\t  8 | bgwriter                |      1 | t       |           0\n\t  9 | checkpointer            |      1 | t       |           0\n\t 10 | io                      |      1 | t       |           0\n\t 11 | lock                    |      1 | t       |           0\n\t 12 | slru                    |      1 | t       |           0\n\t 13 | wal                     |      1 | t       |           0\n\t 25 | test_custom_var_stats   |      0 | f       |          40\n\t 26 | test_custom_fixed_stats |      1 | f       |          56\n\t(15 rows)\n\nI am not sure that shared_size is a good column name, and I needed to\ninclude pgstat_internal.h in pgstatfuncs.c to get everything working.\n[... truncated for corpus ...]"
+    },
+    {
+      "id": "DI6QSF1CCNT4.16HAZ5AR534A@partin.io",
+      "from": "\"Tristan Partin\" <tristan(at)partin(dot)io>",
+      "subject": "Re: Add pg_stat_kind_info system view",
+      "date": "2026-04-30 19:38:57",
+      "body": "Of course I forgot to attach the patch :D."
+    },
+    {
+      "id": "agVd1SlWwBte1FQ8@paquier.xyz",
+      "from": "Michael Paquier <michael(at)paquier(dot)xyz>",
+      "subject": "Re: Add pg_stat_kind_info system view",
+      "date": "2026-05-14 05:29:57",
+      "body": "Thanks for the patch.  That sounds like a good idea particularly for\ntrack_entry_count, because we have no real way to provide this\ninformation, which would be more valuable if an in-core stats kind has\nthe idea to switch this flag to true in the future, and I don't really\nwant all extensions to re-implement the same thing to access this\ninformation.\n\n+            if (info->track_entry_count)\n+            {\n+                values[2] = Int64GetDatum(pgstat_get_entry_count(kind));\n+            }\n+            else\n+            {\n+                nulls[2] = true;\n+            }\n\nReturning NULL if the flag is not set sounds sensible.  For\nfixed-numbered, fine by me for 1, so as it is possible to aggregate\nthe full size counting with the fixed shmem size of each stats kind.\n\n+SELECT name, builtin FROM pg_stat_kind_info\n+  ORDER BY name COLLATE \"C\";\n\nThis is not going to be stable if running installcheck on an instance\nwhere a custom kind is loaded, so let's restrict the query to check\nfor built-in kinds.\n\nI'd suggest to expand the data published to more fields and not only\nwhat's presented here, so as it becomes possible to do more SQL sanity\nchecks with the stats kind info (same attribute name as the fields):\n- fixed_amount, where shared_size > 0 does not make sense.\n- snapshot_ctl_off and shared_ctl_off, that only makes sense under\nfixed_amount.  These should not be set for !fixed_amount.\n- pending_size, that should not be set for fixed_amount.\n- existence of flush_pending_cb, delete_pending_cb,\nreset_timestamp_cb, to_serialized_name, from_serialized_name,\nto_serialized_data, from_serialized_data (should be booleans), fine\nfor !fixed_amount, never for fixed_amount.\n- existence of init_shmem_cb, reset_all_cb, snapshot_cb (should be\nbooleans), fine for fixed_amount, never for !fixed_amount.\n\nI may be missing one or two things.  pgstat_internal.h documents all\nthese requirements, the idea is to translate these requirements at SQL\nlevel.  We should definitely apply these checks for both custom and\nbuilt-in stats kinds, which should save time for developers of pgstats\nin core and outside of core by detecting inconsistent patterns\nbeforehand."
+    },
+    {
+      "id": "DIUH6XJFH54H.3KUBCVEJ38V5U@partin.io",
+      "from": "\"Tristan Partin\" <tristan(at)partin(dot)io>",
+      "subject": "Re: Add pg_stat_kind_info system view",
+      "date": "2026-05-28 17:11:42",
+      "body": "Awesome.\n\nI'll fix this in v2, which I will send after resolving more discussion.\nI had not considered this as a potential problem. I'll remove the\nbuiltin column from the SELECT and filter on builtin as suggested.\n\nCan you share how someone might use this additional information? I can\nsee some inherent value for additionally exposing:\n\n- fixed_amount\n- accessed_across_databases\n- write_to_file\n- snapshot_ctl_off\n- shared_ctl_off\n- shared_data_off\n- shared_data_len\n- pending_size\n\nNot sure I understand why we would want to expose the existence of the\ncallbacks to make assertions at the SQL level. I see that in\npgstat_register_kind(), we have the following code:\n\n\t/*\n\t * Check some data for fixed-numbered stats.\n\t */\n\tif (kind_info->fixed_amount)\n\t{\n\t\tif (kind_info->shared_size == 0)\n\t\t\tereport(ERROR,\n\t\t\t\t\t(errmsg(\"custom cumulative statistics property is invalid\"),\n\t\t\t\t\t errhint(\"Custom cumulative statistics require a shared memory size for fixed-numbered objects.\")));\n\t\tif (kind_info->track_entry_count)\n\t\t\tereport(ERROR,\n\t\t\t\t\t(errmsg(\"custom cumulative statistics property is invalid\"),\n\t\t\t\t\t errhint(\"Custom cumulative statistics cannot use entry count tracking for fixed-numbered objects.\")));\n\t}\n\nWe could extend these invariant checks to make sure that the callbacks\nare only set when fixed_amount is true for instance. I am very much open\nto having my mind changed."
+    },
+    {
+      "id": "ah0bZrpJjZL2qUga@paquier.xyz",
+      "from": "Michael Paquier <michael(at)paquier(dot)xyz>",
+      "subject": "Re: Add pg_stat_kind_info system view",
+      "date": "2026-06-01 05:40:54",
+      "body": "There is currently no internal mechanism to make sure that the\nbuilt-in stats kinds have a consistent setup in terms of flags and\ncallbacks set, so for developers we could immediately complain when\ngenerating patches that add new stats kinds.  For custom stats kinds,\nloaded libraries could have more cross-checks.\n\nPerhaps it is not worth bothering at the end, and I'd be fine to keep\nthe data published as minimal as you see fit.  Still, fixed_amount,\nwrite_to_file and accessed_across_databases feel like useful\nadditions.\n\nIf we keep shared_size, it may make sense to set it to NULL if we\ndon't know about it?  That's the case of the built-in fixed-sized\nstats kinds.  We set the value for custom fixed-sized stats kinds."
+    },
+    {
+      "id": "DJ0FB0R1ZZJR.3MWRAPZCTL5ZI@partin.io",
+      "from": "\"Tristan Partin\" <tristan(at)partin(dot)io>",
+      "subject": "Re: Add pg_stat_kind_info system view",
+      "date": "2026-06-04 16:59:00",
+      "body": "I think there is still some confusion on my end about this line of\ndiscussion.\n\nThe additional columns are now added in v2. Note that I named\nwrite_to_file as written_to_file for the column name. I wonder if\npersisted would be a better name for the column and if persisted would\nbe a better name for PgStat_KindInfo::write_to_file.\n\nI believe that I also captured this correctly in v2."
+    },
+    {
+      "id": "aiYJzV8WUig0Ifst@paquier.xyz",
+      "from": "Michael Paquier <michael(at)paquier(dot)xyz>",
+      "subject": "Re: Add pg_stat_kind_info system view",
+      "date": "2026-06-08 00:16:13",
+      "body": "No v2 of the patch has been attached.  :D"
+    },
+    {
+      "id": "OS3PR01MB8553C5907830DE25A8A4986ED9152@OS3PR01MB8553.jpnprd01.prod.outlook.com",
+      "from": "liu zhilong <liuzhilong62(at)outlook(dot)com>",
+      "subject": "[PATCH] doc: explain database-wide impact of old xmin on VACUUM",
+      "date": "2026-06-01 06:10:51",
+      "body": "From 1a2b3c4d5e6f7890abcdef1234567890abcdef12 Mon Sep 17 00:00:00 2001\nFrom: Zhilong Liu <liuzhilong62(at)outlook(dot)com>\nDate: Thu, 28 May 2026 17:52:41 +0800\nSubject: [PATCH] doc: explain database-wide impact of old xmin on VACUUM\n\nAdd a note to the \"Recovering Disk Space\" section explaining that\nVACUUM uses the oldest xmin across backends in the current database\nto decide which tuples are dead, so a long-running transaction on any\ntable can prevent space reclamation for rows newer than that\ntransaction in any table of the same database. Rows older than the\noldest active transaction can still be reclaimed normally. Also\nmention that stale replication slots and prepared transactions have\nthe same effect.\n\nFor shared system catalogs, backends in all databases are considered.\n---\nSource verification: the database-wide (not cluster-wide) behavior\nis implemented in ComputeXidHorizons() in procarray.c, which only\nincludes backends where proc->databaseId == MyDatabaseId for the\ndata_oldest_nonremovable horizon.\n\n doc/src/sgml/maintenance.sgml | 18 ++++++++++++++++++\n 1 file changed, 18 insertions(+)\n\ndiff --git a/doc/src/sgml/maintenance.sgml b/doc/src/sgml/maintenance.sgml\nindex 4a21bdb..5963ba1 100644\n--- a/doc/src/sgml/maintenance.sgml\n+++ b/doc/src/sgml/maintenance.sgml\n@@ -165,6 +165,24 @@\n     space requirements. This is done by running <command>VACUUM</command>.\n    </para>\n\n+   <note>\n+    <para>\n+     To decide which row versions can be removed,\n+     <command>VACUUM</command> considers the oldest active transaction\n+     ID (<firstterm>xmin</firstterm>) across backends in the current\n+     database. Because of this, a long-running transaction on one table\n+     can prevent <command>VACUUM</command> from reclaiming space\n+     occupied by rows that are newer than that transaction in\n+     <emphasis>any</emphasis> table in the same database. For rows\n+     older than the oldest active transaction,\n+     <command>VACUUM</command> can still reclaim them normally. Stale\n+     replication slots and abandoned prepared transactions have the\n+     same effect, since they also hold old xmin values that block\n+     cleanup. Note that for shared system catalogs, backends in all\n+     databases are considered. For troubleshooting, see\n+     <xref linkend=\"vacuum-for-wraparound\"/>.\n+    </para>\n+   </note>\n+\n    <para>\n     The standard form of <command>VACUUM</command> removes dead row\n     versions in tables and indexes and marks the space available for"
+    },
+    {
+      "id": "CAHg+QDcd_o3707Ey8c8b7HkE-t14g8c0tk8ME3ctywDsh3ut8g@mail.gmail.com",
+      "from": "SATYANARAYANA NARLAPURAM <satyanarlapuram(at)gmail(dot)com>",
+      "subject": "[PATCH] Fix NULL dereference in subscription REFRESH on concurrent DROP",
+      "date": "2026-05-24 07:57:11",
+      "body": "Hi Hackers,\n\nALTER SUBSCRIPTION ... REFRESH PUBLICATION may crash if a\nsubscribed table (or sequence) is dropped concurrently.\n\nIn check_publications_origin_tables(), the function iterates over\nsubrel_local_oids without holding locks on the individual relations.\nIf a table is dropped by another session between when the OID list was\ncollected and when get_rel_name() is called, it returns NULL.  That\nNULL is then passed to quote_literal_cstr(), which dereferences it\nunconditionally, causing a segfault. The same pattern exists in\ncheck_publications_origin_sequences() as well.\n\nAttached a patch to fix this by doing a null check after get_rel_name() and\nget_namespace_name(), and skip the relation if it's gone.\n\nThanks,\nSatya"
+    },
+    {
+      "id": "CAFPTHDbTRuxqG0J_tnUB5UbYQF-wM6QPyiSJe3FQb89Op5xP_Q@mail.gmail.com",
+      "from": "Ajin Cherian <itsajin(at)gmail(dot)com>",
+      "subject": "Re: [PATCH] Fix NULL dereference in subscription REFRESH on concurrent DROP",
+      "date": "2026-06-01 06:29:52",
+      "body": "On Sun, May 24, 2026 at 5:57 PM SATYANARAYANA NARLAPURAM <\nsatyanarlapuram(at)gmail(dot)com> wrote:\n\nHi Satya,\nI've reviewed the patch and it looks good, just a small comment - instead\nof silently continuing after finding a dropped local table, would you want\nto log an error message?\n\nregards,\nAjin Cherian\nFujitsu Australia"
+    },
+    {
+      "id": "CAOCkzAkmnAjEWxfP-vBTRta7cHe5CMu8i4SFSeOi2nS8+Kj7Ng@mail.gmail.com",
+      "from": "Enrique Sánchez <enriqueesanchz(at)gmail(dot)com>",
+      "subject": "Extended statistics improvement: multi-column MCV missing values",
+      "date": "2026-05-18 16:09:03",
+      "body": "Hi,\n\nPostgres only uses multi-column MCVs when the value we are looking for is\nin the list. If not, it falls back into individual independent statistics\nto estimate selectivity.\nHowever, a miss in a multi-column MCV list still yields valuable\ninformation that it currently throws away: we know that the combination's\nfrequency is strictly bounded by the frequency of the last (least common)\nitem in that MCV list.\n\nTest case\n=========\n```\n-- 1. Create a minimal table\nDROP TABLE IF EXISTS planner_trap;\nCREATE TABLE planner_trap (\n    col_a integer,\n    col_b integer,\n    col_c integer,\n    sort_col integer\n);\n\n-- 2. 1 becomes the most common value (MCV) for all three columns.\nINSERT INTO planner_trap (col_a, col_b, col_c, sort_col)\nSELECT\n    (pow(random(), 5) * 100)::integer + 1,\n    (pow(random(), 5) * 10)::integer + 1,\n    (pow(random(), 5) * 50)::integer + 1,\n    i\nFROM generate_series(1, 100000) AS i;\n\n-- 3. Create indexes\nCREATE INDEX idx_planner_trap_sort ON planner_trap(sort_col);\nCREATE INDEX idx_planner_trap_a_b_c ON planner_trap(col_a, col_b, col_c);\n\n-- 4. Make the exact combination (1, 1, 1) yield zero rows. This ensures it\nwon't appear\n-- in the MCV list, even though the value '1' remains the most common for\neach individual column.\nUPDATE planner_trap\nSET col_a = 2\nWHERE col_a = 1 AND col_b = 1 AND col_c = 1;\n\n-- 5. Create MCV statistics\nCREATE STATISTICS (mcv) on col_a, col_b, col_c FROM planner_trap;\nANALYZE planner_trap;\n```\n\nThe planner multiplies the individual selectivities and overestimates the\nrow count (5909; actual=0):\n```\npostgres=# EXPLAIN ANALYZE SELECT * FROM planner_trap WHERE col_a = 1 AND\ncol_b = 1 AND col_c = 1 ORDER BY sort_col DESC LIMIT 10;\n\nQUERY PLAN\n\n---------------------------------------------------------------------------------------------------------------------------------------------------------------\n Limit  (cost=0.29..7.72 rows=10 width=16) (actual time=14.632..14.633\nrows=0.00 loops=1)\n   Buffers: shared hit=16355 dirtied=1\n   ->  Index Scan Backward using idx_planner_trap_sort on planner_trap\n (cost=0.29..4386.99 rows=5909 width=16) (actual time=14.630..14.630\nrows=0.00 loops=1)\n         Filter: ((col_a = 1) AND (col_b = 1) AND (col_c = 1))\n         Rows Removed by Filter: 100000\n         Index Searches: 1\n         Buffers: shared hit=16355 dirtied=1\n Planning:\n   Buffers: shared hit=33 read=1\n Planning Time: 0.478 ms\n Execution Time: 14.651 ms\n```\n\n1. Cap selectivity with the last MCV item's frequency\n[... truncated for corpus ...]"
+    },
+    {
+      "id": "00d52d6f-ae9e-40df-80d3-9e96a23efa70@tantorlabs.com",
+      "from": "Ilia Evdokimov <ilya(dot)evdokimov(at)tantorlabs(dot)com>",
+      "subject": "Re: Extended statistics improvement: multi-column MCV missing values",
+      "date": "2026-05-18 22:13:39",
+      "body": "Hi Enrique,\n\nLGTM. If the multicolumn MCV statistics exists and the clause\ncombination is absent from the MCV-list, we can use the least frequent\nMCV item as an upper bound. BTW, this only applies to AND-clauses.\n\nFor this, the ndistinct extended statistics already exist. If both MCV\nand ndistinct statistics are present on the same column set, the formula\nis correct. There are already places in the code that compute ndistinct\nfor columns without extended ndistinct statistics (see\nestimate_num_groups) - but it is worth thinking carefully about whether\nthe added complexity is justified before going down that path."
+    },
+    {
+      "id": "CAOCkzAmfFgGgZggjx-y+tc3JDQZhgKf6MGT18e15df61rTLH9w@mail.gmail.com",
+      "from": "Enrique Sánchez <enriqueesanchz(at)gmail(dot)com>",
+      "subject": "Re: Extended statistics improvement: multi-column MCV missing values",
+      "date": "2026-05-24 18:34:52",
+      "body": "Hi Ilia,\n\nI've attached a draft patch. It's split into 4 commits to make it easier to\nreview. It adds the MCV cap for AND (equality, IN, ANY) clauses. Looking\nforward to your feedback.\n\nGiven that the inclusion-exclusion principle (P(A OR B) = P(A) + P(B) - P(A\nAND B)) is used to calculate OR paths, we could use the same cap to improve\nthe overlap estimation (P(A AND B)).\n\n2. Estimate selectivity as Postgres does for single-column values not in\nI think that the implementation would look similar to the attached patch.\nThe only added complexity is getting the ndistinct estimation. There are 2\nways:\n- Rely on the extended ndistinct statistic if it exists\n- Calculate the ndistinct(col_a, col_b, col_c) statistic as part of the\nMCV. The storage cost is negligible compared to the MCV list and it keeps\nthe MCV statistic complete, so it doesn't need to check if the ndistinct\nstatistic exists. That would be a change on the MCV struct, meaning a\nchange in the mcvlist->type.\n\nI can start working on a proposal for this second part. Let me know what\nyou think.\n\nBest regards,\nEnrique."
+    },
+    {
+      "id": "37F4735D-23FB-422F-95B4-681C39601A57@outlook.com",
+      "from": "Chengpeng Yan <chengpeng_yan(at)outlook(dot)com>",
+      "subject": "Re: Extended statistics improvement: multi-column MCV missing values",
+      "date": "2026-06-01 06:32:20",
+      "body": "Hi,\n\nThanks for working on this.\n\nI think the general idea is a good one: an MCV miss still carries useful\ninformation, and it seems worth using that information instead of\nfalling back entirely to independent estimates.\n\nI have not done a full code review of the patch yet, so this is mostly\nfeedback on the design and scope.\n\nI think the important first boundary is the clause shape, not the choice\nbetween the cap and the ndistinct-based average estimate. The strongest\ncase is a top-level AND condition with equality clauses for all columns\nin the multivariate MCV statistic, where the queried value combination\nis absent from the MCV list. In that case the miss is useful negative\ninformation.\n\nFor that same case, the least-MCV-frequency cap is a useful bound and\nfallback: the combination should not be estimated as more frequent than\nthe least frequent item kept in the MCV list. If matching ndistinct\nstatistics exist for the same column set, the ndistinct-based average\nestimate also seems valid, as Ilia noted earlier in this thread. I do\nnot think the first patch needs to make `CREATE STATISTICS ... (mcv)`\nstore an ndistinct value. It can use matching ndistinct statistics when\nthey exist, while changing what an MCV statistic contains seems like a\nseparate decision.\n\nI am also not sure IN/ANY should be included in the first version. For\nthat case we first have to define the distinct semantic full groups\nrepresented by the clause, not just look at raw array elements. For\nexample, `a = 0 AND b IN (99, 99)` represents one full group, not two,\nand NULL or empty arrays need similar care. That issue exists whether\nthe result is used as a cap or as an ndistinct-based average estimate.\n\nSimilarly, I would leave OR for a follow-up patch. As discussed, that\npath would apply the cap while estimating the `P(A AND B)` part of an OR\nestimate. That is a different estimation problem from the basic\ntop-level AND miss case, and probably needs its own design discussion.\n\nSo my preference would be to start with the smallest case:\n1. Full-dimensional top-level AND equality miss, using the\nndistinct-based average estimate when matching ndistinct statistics\nexist, with the least-MCV frequency as an upper bound; otherwise\nusing the cap alone.\n2. Later patches for IN/ANY and OR handling.\n\nThat would make the first patch easier to reason about and review, while\nstill leaving room for the stronger cases later.\n\nThose are just my initial thoughts, so I may be missing some details in\n[... truncated for corpus ...]"
+    },
+    {
+      "id": "CAN4CZFPySmmiepwG4+MH8nyDJb1xHK2HFcQfu4ZaEOO65jWKTg@mail.gmail.com",
+      "from": "Zsolt Parragi <zsolt(dot)parragi(at)percona(dot)com>",
+      "subject": "Re: Extended statistics improvement: multi-column MCV missing values",
+      "date": "2026-06-01 22:18:20",
+      "body": "Hello\n\nI also only focused on testing the \"basic\" functionality.\n\nI see one issue related to that with the current patch, having the\nsame amount of conditions as the table doesn't mean that we have\nconditions for all columns.\n\nSee the following script that showcases a significant underestimate\nwhen we use one column twice, and another 0 times in the conditions:\n\nCREATE TABLE u (a int, b int, c int);\nINSERT INTO u SELECT 0, (g % 5) + 1, g FROM generate_series(1, 50000) g;\nINSERT INTO u SELECT (g % 30) + 10, (g % 30) + 10, (g % 30) + 10\n  FROM generate_series(1, 30000) g;\nCREATE STATISTICS su (mcv) ON a, b, c FROM u;\nANALYZE u;\nSELECT count(*)  FROM u WHERE a = 0 AND b = ANY(ARRAY[1,2,3]);  -- 30000\nEXPLAIN SELECT * FROM u WHERE a = 0 AND b = ANY(ARRAY[1,2,3]);\n      -- ~18500, same as master\nEXPLAIN SELECT * FROM u WHERE a = 0 AND a = ANY(ARRAY[0,9]) AND b =\nANY(ARRAY[1,2,3]);             -- ~5200 vs ~11500 on master"
+    },
+    {
+      "id": "CAOCkzA=w6UJfMB3Td-8fu2L6FMsTnymVFD6suzJAFiT+2NJGfQ@mail.gmail.com",
+      "from": "Enrique Sánchez <enriqueesanchz(at)gmail(dot)com>",
+      "subject": "Re: Extended statistics improvement: multi-column MCV missing values",
+      "date": "2026-06-04 01:40:51",
+      "body": "Hi, thank you for having a look.\n\nMakes sense, I agree that changing what an MCV statistic contains is a\nseparate decision.\n\nRegarding array deduplication, i.e. `b in (99, 99)` Postgres does not check\nif there are repeated elements right now, and uses them as different\nelements to estimate; e.g.\n\n```\npostgres=# CREATE TABLE psql_hackers(a int, b int);\nCREATE TABLE\npostgres=# INSERT INTO psql_hackers SELECT a, b FROM generate_series(1,\n100) a, generate_series(1, 100) b;\nINSERT 0 9900\npostgres=# EXPLAIN SELECT * FROM psql_hackers WHERE a IN (2);\n                           QUERY PLAN\n----------------------------------------------------------------\n Seq Scan on psql_hackers  (cost=0.00..167.75 rows=100 width=8)\n   Filter: (a = 2)\n(2 rows)\n\npostgres=# EXPLAIN SELECT * FROM psql_hackers WHERE a IN (2, 2);\n                           QUERY PLAN\n----------------------------------------------------------------\n Seq Scan on psql_hackers  (cost=0.00..167.75 rows=200 width=8)\n   Filter: (a = ANY ('{2,2}'::integer[]))\n(2 rows)\n```\nI think we should be consistent with what Postgres already does now. It\nseems like a potential future patch.\n\nand NULL or empty arrays need similar care. That issue exists whether\n\nNULLs and empty arrays can appear in a MCV entry so they should be treated\nthe same.\n\nSo, for the basic functionality we need to check that:\n- All MCV dimensions are used in the clause\n- All clauses are one of:\n  - Equality (=)\n  - IS NULL\n  - Bool operation: (= TRUE), (= FALSE)\n\nWe also need to check that there are no expressions in the clause, as they\ncould refer to multiple values e.g. `mod(a, 7) = 0`\n\nYes, I've been investigating further and it makes more sense to have a\nfollow-up discussion later.\n\nSo my preference would be to start with the smallest case:\n\nI've attached the v2 patch, covering only the full-dimensional top-level\nAND equality miss.\nRight now it only caps to the least-MCV frequency, but I will send a\nfollow-up patch with the ndistinct part asap.\n\nBest regards,\nEnrique."
+    },
+    {
+      "id": "CAOCkzAntraDudo=zghSecb4d7f4fnveUiXDHUYVWAAhrhE2QSg@mail.gmail.com",
+      "from": "Enrique Sánchez <enriqueesanchz(at)gmail(dot)com>",
+      "subject": "Re: Extended statistics improvement: multi-column MCV missing values",
+      "date": "2026-06-04 07:00:23",
+      "body": "Hi, thank you for reviewing it.\n\nTue, 02 Jun 2026 at 0:18, Zsolt Parragi (<zsolt(dot)parragi(at)percona(dot)com>) wrote:\n\nI've fixed this in the v2 patch attached above (also attached here for\ncompleteness). It focuses on the basic full-dimensional top-level AND\nequality miss\nNow we construct a Bitmapset with the columns the clause covers and compare\nit to `stat->keys` that contains the columns covered by the MCV statistic.\n\nBest regards,\nEnrique."
+    },
+    {
+      "id": "CAOCkzAnYgzn0ZN4KUPngyiHQdcKHbF=KAxmCR-ObJVKirQvVLw@mail.gmail.com",
+      "from": "Enrique Sánchez <enriqueesanchz(at)gmail(dot)com>",
+      "subject": "Re: Extended statistics improvement: multi-column MCV missing values",
+      "date": "2026-06-07 15:22:41",
+      "body": "Hi,\n\n1. Full-dimensional top-level AND equality miss, using the\n\nI've implemented the ndistinct-based estimation and attached it as\nv3-0002. The patch applies cleanly and pg-ci.yml passes.\n\n## v3-0001\n- logic remains the same\n- added a `IsA(clause, RestrictInfo)` check before casting to RestrictInfo\nin `mcv_can_cap()`\n- added some tests\n\n## v3-0002\n- used ndistinct to calculate `non_mcv_sel = (1.0 - mcv_totalsel) /\n(ndistinct - mcv_nitems)` and applied it as an upper bound for non-MCV\ncombinations, similarly to what `var_eq_const()` does in `selfuncs.c`\n\nLooking forward to your feedback!\n\nBest regards,\nEnrique."
+    },
+    {
+      "id": "4f101ba3-1fcf-49e5-b4d8-28993bedba1f@tantorlabs.com",
+      "from": "Ilia Evdokimov <ilya(dot)evdokimov(at)tantorlabs(dot)com>",
+      "subject": "Re: Extended statistics improvement: multi-column MCV missing values",
+      "date": "2026-06-09 12:39:09",
+      "body": "1. mcv_can_cap() reimplements logic already present in\ndependency_is_compatible_clause(). Shall we combine the two in order to\navoid code duplication?\n\n2. mcv_can_cap() runs unconditionally before the if (is_or) branch, but\ncan_cap is only consumed in the else/AND branch. This means\nmcv_can_cap() - including get_oprrest, syscache lookups per clause -\nruns for every OR query as wasted work. Both can_cap and covered_attnums\nshould be moved inside the else branch.\n\nget_ndistinct_for_keys() reimplements the ndistinct item lookup already\npresent in estimate_multivariate_ndistinct(). Both functions iterate\nover MVNDistinct->items match by attributes count."
+    },
+    {
+      "id": "CAOCkzAmKBdQucXb=5nnYSa2wzap+duRNFdW94066F6=KH5gDTA@mail.gmail.com",
+      "from": "Enrique Sánchez <enriqueesanchz(at)gmail(dot)com>",
+      "subject": "Re: Extended statistics improvement: multi-column MCV missing values",
+      "date": "2026-06-10 00:57:29",
+      "body": "Hi, thank you for the feedback!\n\nin `dependency_is_compatible_clause()`. They both return the same value\nwhen there's a pseudo-constant and the clause is `=`, `= TRUE` or `=\nFALSE`. Rest of the cases are different (IS NULL, ANY/IN, OR).\n\nWe would need to add surrounding logic because even for the matching cases,\n`mcv_can_cap()` doesn't need the pseudo-constant check that\n`dependency_is_compatible_clause()` requires for the `=` branch, among\nother checks.\nWe won't gain much from combining both: the number of removed lines is\ncompensated with the added surrounding logic; and things will be more\nconvoluted.\n\nMoreover, the two functions will evolve independently because they serve\ndifferent stats, so coupling them would create undesirable\ncross-dependency. I would prefer to maintain it as it is.\n\n2. mcv_can_cap() runs unconditionally before the if (is_or) branch, but\nMakes sense. I've modified it, you can check v4-0001. It only made sense to\nhave it there if we implement the OR path, which might be done in a future\npatch.\n\nget_ndistinct_for_keys() reimplements the ndistinct item lookup already\nRight! I've created a helper and used it in both places. You can check\nv4-0002.\n\nI've checked that the patch applies cleanly and pg-ci.yml passes.\n\nBest regards,\nEnrique."
+    }
+  ]
+}

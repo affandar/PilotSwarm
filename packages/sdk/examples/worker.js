@@ -21,6 +21,9 @@
  *   PILOTSWARM_FACTS_PG_POOL_MAX    — Max facts pg pool connections (default: 3)
  *   PILOTSWARM_ORCHESTRATION_CONCURRENCY — Duroxide orchestration slots (default: 2)
  *   PILOTSWARM_WORKER_CONCURRENCY   — Duroxide worker/activity slots (default: 2)
+ *   HORIZON_DATABASE_URL            — Optional EnhancedFactStore (HorizonDB); enables multi-signal search
+ *   HORIZON_GRAPH_DATABASE_URL      — Optional knowledge graph (Apache AGE) target (opt-in)
+ *   HORIZON_EMBED_URL/MODEL/DIM     — Optional durable in-DB embedder endpoint
  *   PS_MODEL_PROVIDERS_PATH         — Explicit model provider config path
  *   POD_NAME                        — K8s pod name (default: hostname)
  *   PLUGIN_DIRS                     — Comma-separated plugin directories (default: /app/plugin)
@@ -32,7 +35,7 @@
 
 import os from "node:os";
 import fs from "node:fs";
-import { PilotSwarmWorker } from "pilotswarm-sdk";
+import { PilotSwarmWorker, horizonConfigFromEnv } from "pilotswarm-sdk";
 
 // Sentinel value written to KV by the bicep-deploy `seed-secrets` step
 // for optional secrets that the user didn't provide. CSI Secret Store
@@ -71,6 +74,11 @@ if (process.env.PILOTSWARM_CMS_PG_POOL_MAX) console.log(`[worker] CMS PG pool ma
 if (process.env.PILOTSWARM_FACTS_PG_POOL_MAX) console.log(`[worker] Facts PG pool max: ${process.env.PILOTSWARM_FACTS_PG_POOL_MAX}`);
 if (process.env.PILOTSWARM_ORCHESTRATION_CONCURRENCY) console.log(`[worker] Orchestration concurrency: ${process.env.PILOTSWARM_ORCHESTRATION_CONCURRENCY}`);
 if (process.env.PILOTSWARM_WORKER_CONCURRENCY) console.log(`[worker] Worker concurrency: ${process.env.PILOTSWARM_WORKER_CONCURRENCY}`);
+if (process.env.HORIZON_DATABASE_URL) {
+    const graph = process.env.HORIZON_GRAPH_DATABASE_URL ? "on" : "off";
+    const embedder = process.env.HORIZON_EMBED_URL ? "on" : "off";
+    console.log(`[worker] Enhanced facts: HorizonDB (graph=${graph}, embedder=${embedder})`);
+}
 if (process.env.PS_MODEL_PROVIDERS_PATH || process.env.MODEL_PROVIDERS_PATH) {
     console.log(`[worker] Model providers: ${process.env.PS_MODEL_PROVIDERS_PATH || process.env.MODEL_PROVIDERS_PATH}`);
 }
@@ -104,6 +112,9 @@ const worker = new PilotSwarmWorker({
     cmsFactsDatabaseUrl: process.env.PILOTSWARM_CMS_FACTS_DATABASE_URL || undefined,
     aadDbUser: process.env.PILOTSWARM_DB_AAD_USER || undefined,
     blobAccountUrl: process.env.AZURE_STORAGE_ACCOUNT_URL || undefined,
+    // Optional EnhancedFactStore + knowledge graph (HorizonDB). Empty unless
+    // HORIZON_DATABASE_URL is set, so default deployments keep plain PgFactStore.
+    ...horizonConfigFromEnv(),
 });
 
 await worker.start();

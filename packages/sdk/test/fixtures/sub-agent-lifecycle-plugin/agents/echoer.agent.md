@@ -1,4 +1,6 @@
 ---
+schemaVersion: 1
+version: 1.0.0
 name: echoer
 description: Test child agent that echoes back a single token from its task and stops talking.
 ---

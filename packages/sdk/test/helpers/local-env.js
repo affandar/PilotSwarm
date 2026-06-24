@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
 import { afterAll, afterEach, beforeAll } from "vitest";
 import { createTempSessionLayout } from "./temp-session-layout.js";
+import { resolveStorageConfig, getRuntimeStorageProvider, createFactStoreForUrl, isEnhancedFactStore } from "../../src/index.ts";
 
 // ─── Constants ───────────────────────────────────────────────────
 
@@ -75,6 +76,61 @@ async function dropTestSchemas({ duroxideSchema, cmsSchema, factsSchema }) {
     } finally {
         try { await client.end(); } catch {}
     }
+
+    // If the resolved runtime provider keeps enhanced facts on a SEPARATE store
+    // (HorizonDB hybrid), drop the per-test facts schema there too so HorizonDB
+    // schemas don't leak. Decided from the storage registry the SDK uses — not
+    // from a re-derived env heuristic.
+    const enhancedUrl = enhancedFactStoreUrl();
+    if (enhancedUrl) {
+        // Cancel this per-test schema's durable embed loops BEFORE dropping the
+        // schema. The loops live in pg_durable's `df` schema and survive a
+        // facts-schema drop, so a bare DROP SCHEMA orphans them — they keep firing
+        // against a missing table and pile up in the cluster's scheduler.
+        // stopEmbedder() cancels the batch + retry + legacy loops; constructing
+        // via createFactStoreForUrl does NOT initialize(), so it won't re-start
+        // the loop we are trying to stop.
+        try {
+            const enhancedStore = await createFactStoreForUrl(enhancedUrl, factsSchema, { provider: "horizon" });
+            try {
+                if (isEnhancedFactStore(enhancedStore)) await enhancedStore.stopEmbedder("test cleanup");
+            } finally {
+                await enhancedStore.close?.();
+            }
+        } catch {
+            // pg_durable / df schema absent, or provider unavailable — nothing to cancel.
+        }
+
+        const horizonClient = new pg.default.Client({ connectionString: normalizeHorizonDbUrl(enhancedUrl) });
+        try {
+            await horizonClient.connect();
+            await horizonClient.query(`DROP SCHEMA IF EXISTS "${factsSchema}" CASCADE`);
+        } finally {
+            try { await horizonClient.end(); } catch {}
+        }
+    }
+}
+
+// Raw pg clients (unlike the HorizonDB provider) need uselibpqcompat so that
+// `sslmode=require` does not get treated as verify-full against the preview
+// cluster's self-signed chain.
+function normalizeHorizonDbUrl(raw) {
+    if (!raw) return raw;
+    if (!/[?&]sslmode=/i.test(raw)) return raw;
+    if (/[?&]uselibpqcompat=/i.test(raw)) return raw;
+    return raw + (raw.includes("?") ? "&" : "?") + "uselibpqcompat=true";
+}
+
+// The fact-store URL when the resolved runtime provider keeps enhanced facts on
+// a store SEPARATE from the stock-PG runtime (HorizonDB hybrid); undefined when
+// facts live on the same database (baseline PgFactStore). Derived from the
+// storage registry, mirroring how the worker/client pick the fact store.
+function enhancedFactStoreUrl() {
+    const runtime = resolveStorageConfig({ options: { store: DATABASE_URL } }).runtime;
+    const provider = getRuntimeStorageProvider(runtime.provider);
+    if (!provider.capabilities?.enhancedFactStore) return undefined;
+    const url = runtime.factStoreUrl;
+    return url && url !== runtime.url ? url : undefined;
 }
 
 // ─── Test Environment ────────────────────────────────────────────

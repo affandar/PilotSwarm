@@ -9,6 +9,7 @@ import {
     PilotSwarmClient,
     PilotSwarmManagementClient,
     createSessionBlobStore,
+    horizonConfigFromEnv,
     LOCAL_DEFAULT_USER_PRINCIPAL,
 } from "pilotswarm-sdk";
 import { startEmbeddedWorkers, stopEmbeddedWorkers } from "./embedded-workers.js";
@@ -429,12 +430,26 @@ export class NodeSdkTransport {
         this.cmsFactsDatabaseUrl = cmsFactsDatabaseUrl;
         this.aadDbUser = aadDbUser;
         this.pluginDirs = getPluginDirsFromEnv();
+        // Optional EnhancedFactStore (HorizonDB) target. The client and
+        // management client each build their own fact store, so they MUST
+        // resolve the SAME facts DB as the embedded worker or session
+        // cleanup / facts reads would hit the wrong database. Empty unless
+        // HORIZON_DATABASE_URL is set. Graph/embedder fields are worker-only
+        // and intentionally not forwarded here.
+        const horizon = horizonConfigFromEnv();
+        this.enhancedFacts = horizon.enhancedFactsDatabaseUrl
+            ? {
+                enhancedFactsDatabaseUrl: horizon.enhancedFactsDatabaseUrl,
+                ...(horizon.enhancedFactsSchema ? { enhancedFactsSchema: horizon.enhancedFactsSchema } : {}),
+            }
+            : {};
         this.client = null;
         this.mgmt = new PilotSwarmManagementClient({
             store,
             ...(useManagedIdentity !== undefined ? { useManagedIdentity } : {}),
             ...(cmsFactsDatabaseUrl ? { cmsFactsDatabaseUrl } : {}),
             ...(aadDbUser ? { aadDbUser } : {}),
+            ...this.enhancedFacts,
             pluginDirs: this.pluginDirs,
             blobEnabled: Boolean(process.env.AZURE_STORAGE_ACCOUNT_URL || process.env.AZURE_STORAGE_CONNECTION_STRING),
         });
@@ -491,6 +506,7 @@ export class NodeSdkTransport {
             ...(this.useManagedIdentity !== undefined ? { useManagedIdentity: this.useManagedIdentity } : {}),
             ...(this.cmsFactsDatabaseUrl ? { cmsFactsDatabaseUrl: this.cmsFactsDatabaseUrl } : {}),
             ...(this.aadDbUser ? { aadDbUser: this.aadDbUser } : {}),
+            ...this.enhancedFacts,
             ...(this.sessionPolicy ? { sessionPolicy: this.sessionPolicy } : {}),
             ...(this.allowedAgentNames.length > 0 ? { allowedAgentNames: this.allowedAgentNames } : {}),
         });
@@ -686,6 +702,10 @@ export class NodeSdkTransport {
         return this.mgmt.getFleetSkillUsage(opts);
     }
 
+    async getFleetRetrievalUsage(opts) {
+        return this.mgmt.getFleetRetrievalUsage(opts);
+    }
+
     async getSessionFactsStats(sessionId) {
         return this.mgmt.getSessionFactsStats(sessionId);
     }
@@ -696,6 +716,10 @@ export class NodeSdkTransport {
 
     async getSharedFactsStats() {
         return this.mgmt.getSharedFactsStats();
+    }
+
+    async getFactsTombstoneStats(opts) {
+        return this.mgmt.getFactsTombstoneStats(opts);
     }
 
     async pruneDeletedSummaries(olderThan) {

@@ -1,5 +1,47 @@
 # Changelog
 
+## Unreleased
+
+### HorizonDB Enhanced Facts + Graph
+
+- Added the HorizonDB-backed enhanced facts and graph provider package under
+  `packages/horizon-store`, including lexical/semantic/hybrid fact search,
+  durable in-DB embedding support, Apache AGE graph storage, graph namespace
+  registry support, crawl receipts, and graph evidence reconciliation.
+- Added the Horizon Harvester worked example with harvester and reader agents,
+  graph export tooling, cleanup scripts, and end-to-end wiring for stock
+  PostgreSQL runtime storage plus HorizonDB facts/graph providers.
+- Added canonical docs and proposal material for enhanced facts, graph search,
+  retrieval usage metrics, soft-delete reconciliation, provider cleanup, and
+  harvester deployment.
+
+### HorizonDB Test Stability
+
+- Narrowed the HorizonDB facts migrator's global DDL advisory lock so only
+  database-global migration statements take it, and use transaction-scoped
+  acquisition for those sections. Ordinary per-schema facts migrations now keep
+  their per-schema lock but no longer serialize every fresh test schema behind a
+  suite-wide session-level global lock.
+- Added bounded HorizonDB migration lock acquisition with holder diagnostics so
+  stale advisory locks fail clearly instead of cascading into unrelated SDK test
+  timeouts.
+- Preserved HorizonDB test throughput by restoring concurrent provider-level
+  test execution and raising the provider client pool default to 16.
+- Extended `scripts/cleanup-test-schemas.js` to clean HorizonDB-side
+  `ps_test_facts_*` schemas, cancelling test embedder loops before dropping
+  those schemas.
+
+### AKS Deployments
+
+- `.env.remote` is a standalone deployment config, not layered with local
+  `.env` or `.env.horizondb`. Any value required by the corp AKS worker or
+  portal must be present there and propagated into `copilot-runtime-secrets`.
+  For no-reset rollouts against the long-lived corp database, keep
+  `PILOTSWARM_DUROXIDE_SCHEMA=duroxide` pinned until an explicit
+  orchestration-schema migration/reset window; otherwise new workers default to
+  `ps_duroxide` and will refuse to start while the legacy `duroxide` schema is
+  still present.
+
 ## 0.2.0 — 2026-06-19
 
 ### Deploy — Azure VPN Gateway P2S Ingress (Entra ID auth)
@@ -83,8 +125,6 @@ regression guards for VPN combo-error pointer and AppGw WAF rules wiring). The
 live SDK integration suite requires a PostgreSQL + Copilot token environment and
 was last run prior to merging PR #53 at 238 / 238 pass. No SDK source changed
 in this release.
-
----
 
 ## 0.1.35 — 2026-05-29
 

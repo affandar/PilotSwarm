@@ -1,6 +1,7 @@
 import { isSessionLockAcquireTimeoutError, type SessionManager } from "./session-manager.js";
 import type { SessionStateStore } from "./session-store.js";
-import type { SessionCatalogProvider } from "./cms.js";
+import type { SessionCatalog } from "./cms.js";
+import type { StorageConfig } from "./storage-config.js";
 import { SESSION_STATE_MISSING_PREFIX, type SerializableSessionConfig, type TurnResult, type OrchestrationInput } from "./types.js";
 import type { AgentConfig } from "./agent-loader.js";
 import { systemChildAgentUUID } from "./agent-loader.js";
@@ -321,7 +322,7 @@ function errorMessage(error: unknown): string {
 }
 
 async function recordLossyHandoffEvent(
-    catalog: SessionCatalogProvider | null | undefined,
+    catalog: SessionCatalog | null | undefined,
     sessionId: string,
     workerNodeId: string | undefined,
     data: Record<string, unknown>,
@@ -438,7 +439,7 @@ export function createSessionProxy(
             prompt: string,
             bootstrap?: boolean,
             turnIndex?: number,
-            turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; retryCount?: number; clientMessageIds?: string[] },
+            turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; cycleOrigin?: "cron" | "cron_at"; retryCount?: number; clientMessageIds?: string[] },
         ) {
             return ctx.scheduleActivityOnSession(
                 "runTurn",
@@ -451,6 +452,7 @@ export function createSessionProxy(
                     ...(turnMeta?.parentSessionId ? { parentSessionId: turnMeta.parentSessionId } : {}),
                     ...(turnMeta?.nestingLevel != null ? { nestingLevel: turnMeta.nestingLevel } : {}),
                     ...(turnMeta?.requiredTool ? { requiredTool: turnMeta.requiredTool } : {}),
+                    ...(turnMeta?.cycleOrigin ? { cycleOrigin: turnMeta.cycleOrigin } : {}),
                     ...(turnMeta?.retryCount != null ? { retryCount: turnMeta.retryCount } : {}),
                     ...(turnMeta?.clientMessageIds && turnMeta.clientMessageIds.length > 0
                         ? { clientMessageIds: turnMeta.clientMessageIds }
@@ -520,6 +522,53 @@ export function buildRunTurnConfig(
 
     return runConfig;
 }
+
+/**
+ * Derive the app-assigned HARVESTER role from the bound agent definition
+ * (enhancedfactstore 07 §1.5 / P4 review BLOCKER#2).
+ *
+ * The harvester role is a property of the AGENT, not of a session: it is
+ * resolved from the worker's static, loaded agent definitions every turn by
+ * matching the session's resolved identity (agentIdentity / boundAgentName)
+ * against each agent's CANONICAL identifier (id / name). Because the agent list
+ * is static worker configuration, this is deterministic and replay-safe.
+ *
+ * Deriving it here (rather than trusting a persisted `isHarvester`) means the
+ * role can NEVER be inherited from a parent session or smuggled in via a stale
+ * serialized config — a child only becomes a harvester if its OWN bound agent
+ * declares `harvester: true`. System agents (e.g. facts-manager) that should be
+ * harvester-capable get the tools through the SessionManager gating, not here.
+ *
+ * SECURITY (P5 review BLOCKER#2): `title` is display metadata, NOT an
+ * authorization key — matching on it would let a non-harvester whose title
+ * normalizes to a harvester's identity receive the privileged crawl queue
+ * (`facts_read_uncrawled` / `facts_mark_crawled`, which read facts across ALL
+ * scopes). We match only `id` / `name`, and we FAIL CLOSED on ambiguity: when
+ * more than one loaded agent resolves to the same normalized identity, the
+ * privileged role is granted only if EVERY one of them declares `harvester`.
+ */
+export function resolveHarvesterRole(
+    identity: string | undefined,
+    boundAgentName: string | undefined,
+    userAgents?: Array<{ name?: string; id?: string; title?: string; harvester?: boolean }>,
+    systemAgents?: Array<{ name?: string; id?: string; title?: string; harvester?: boolean }>,
+): boolean {
+    const norm = (v?: string) => (v || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+    const target = norm(identity) || norm(boundAgentName);
+    if (!target) return false;
+    const agents = [...(userAgents ?? []), ...(systemAgents ?? [])];
+    // Canonical identifiers ONLY — never `title`.
+    const matches = agents.filter((a) => {
+        const candidates = [a.id, a.name].map(norm).filter(Boolean);
+        return candidates.includes(target);
+    });
+    if (matches.length === 0) return false;
+    // Fail closed on a normalized-id/name collision: do not let an ambiguous
+    // match between a harvester and a non-harvester escalate to the role.
+    return matches.every((a) => a.harvester === true);
+}
+
+
 
 // ─── SessionManagerProxy ─────────────────────────────────────────
 // The orchestration's view of the SessionManager singleton.
@@ -619,13 +668,23 @@ export function registerActivities(
     sessionManager: SessionManager,
     _sessionStore: SessionStateStore | null,
     githubToken?: string,
-    catalog?: SessionCatalogProvider | null,
+    catalog?: SessionCatalog | null,
     provider?: any,
     storeUrl?: string,
     cmsSchema?: string,
     clientConfig?: {
+        storageConfig?: StorageConfig;
         duroxideSchema?: string;
         factsSchema?: string;
+        // Full facts/CMS target so activity-layer clients resolve the SAME store
+        // as the worker (07 P3 — otherwise parent-triggered deleteSession /
+        // cleanup / reads hit the wrong DB when facts live on HorizonDB).
+        cmsFactsDatabaseUrl?: string;
+        enhancedFactsDatabaseUrl?: string;
+        factsProvider?: "pg" | "horizon";
+        enhancedFactsSchema?: string;
+        useManagedIdentity?: boolean;
+        aadDbUser?: string;
     },
     /** Loaded system agents — used by resolveAgentConfig activity. */
     systemAgents?: AgentConfig[],
@@ -634,12 +693,31 @@ export function registerActivities(
     /** Names of loaded non-system agents — used by getWorkerSessionPolicy activity. */
     workerAllowedAgentNames?: string[],
     /** Loaded user-creatable agents — used by resolveAgentConfig activity. */
-    userAgents?: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; namespace?: string; id?: string; title?: string; initialPrompt?: string; splash?: string; parent?: string; promptLayerKind?: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" }>,
+    userAgents?: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; namespace?: string; id?: string; title?: string; initialPrompt?: string; splash?: string; parent?: string; harvester?: boolean; promptLayerKind?: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" }>,
     /** Fact store instance for the loadKnowledgeIndex activity. */
     factStore?: import("./facts-store.js").FactStore | null,
     /** Worker node identifier — written on every CMS event for worker tracking. */
     workerNodeId?: string,
 ) {
+    // Shared config for every activity-layer internal PilotSwarmClient /
+    // PilotSwarmManagementClient. Carries the FULL facts/CMS target (07 P3) so
+    // these clients resolve the SAME store as the worker — otherwise
+    // parent-triggered deleteSession / cleanup / reads would hit the wrong DB
+    // when facts live on an enhanced (HorizonDB) store.
+    const internalClientConfig = () => ({
+        store: storeUrl!,
+        ...(clientConfig?.storageConfig != null && { storageConfig: clientConfig.storageConfig }),
+        cmsSchema,
+        ...(clientConfig?.duroxideSchema != null && { duroxideSchema: clientConfig.duroxideSchema }),
+        ...(clientConfig?.factsSchema != null && { factsSchema: clientConfig.factsSchema }),
+        ...(clientConfig?.cmsFactsDatabaseUrl != null && { cmsFactsDatabaseUrl: clientConfig.cmsFactsDatabaseUrl }),
+        ...(clientConfig?.enhancedFactsDatabaseUrl != null && { enhancedFactsDatabaseUrl: clientConfig.enhancedFactsDatabaseUrl }),
+        ...(clientConfig?.factsProvider != null && { factsProvider: clientConfig.factsProvider }),
+        ...(clientConfig?.enhancedFactsSchema != null && { enhancedFactsSchema: clientConfig.enhancedFactsSchema }),
+        ...(clientConfig?.useManagedIdentity != null && { useManagedIdentity: clientConfig.useManagedIdentity }),
+        ...(clientConfig?.aadDbUser != null && { aadDbUser: clientConfig.aadDbUser }),
+    });
+
     // ── runTurn ──────────────────────────────────────────────
     runtime.registerActivity("runTurn", async (
         activityCtx: any,
@@ -652,6 +730,7 @@ export function registerActivities(
             parentSessionId?: string;
             nestingLevel?: number;
             requiredTool?: string;
+            cycleOrigin?: "cron" | "cron_at";
             retryCount?: number;
         },
     ): Promise<TurnResult> => {
@@ -677,6 +756,7 @@ export function registerActivities(
                 "pilotswarm.has_parent_session": Boolean(input.parentSessionId),
                 ...(input.parentSessionId ? { "pilotswarm.parent_session_id": input.parentSessionId } : {}),
                 ...(input.requiredTool ? { "pilotswarm.required_tool": input.requiredTool } : {}),
+                ...(input.cycleOrigin ? { "pilotswarm.cycle_origin": input.cycleOrigin } : {}),
                 ...(input.config.model ? { "pilotswarm.model": input.config.model } : {}),
                 ...(input.config.reasoningEffort ? { "pilotswarm.reasoning_effort": input.config.reasoningEffort } : {}),
                 ...(workerNodeId ? { "pilotswarm.worker_node_id": workerNodeId } : {}),
@@ -699,6 +779,14 @@ export function registerActivities(
         }
 
         const runConfig = buildRunTurnConfig(input.config, hostname, fallbackAgentIdentity);
+        // Derive the app-assigned harvester role authoritatively from the bound
+        // agent definition EVERY turn (enhancedfactstore 07 §1.5 / BLOCKER#2).
+        // It is a property of the agent, resolved from static worker config, so
+        // it survives hydration, is replay-safe, and can never be inherited from
+        // a parent or trusted from a stale serialized config.
+        runConfig.isHarvester = resolveHarvesterRole(
+            runConfig.agentIdentity, runConfig.boundAgentName, userAgents, systemAgents,
+        );
         const trace = activityTrace(activityCtx, "runTurn");
 
         const failForMissingState = async (message: string) => {
@@ -799,12 +887,7 @@ export function registerActivities(
             if (inlineSdkClientPromise) return await inlineSdkClientPromise;
             if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
             inlineSdkClientPromise = (async () => {
-                const startedClient = new PilotSwarmClient({
-                    store: storeUrl,
-                    cmsSchema,
-                    ...(clientConfig?.duroxideSchema != null && { duroxideSchema: clientConfig.duroxideSchema }),
-                    ...(clientConfig?.factsSchema != null && { factsSchema: clientConfig.factsSchema }),
-                });
+                const startedClient = new PilotSwarmClient(internalClientConfig());
                 await startedClient.start();
                 inlineSdkClient = startedClient;
                 return startedClient;
@@ -986,6 +1069,7 @@ export function registerActivities(
                     const {
                         boundAgentName: _parentBoundAgentName,
                         promptLayering: _parentPromptLayering,
+                        isHarvester: _parentIsHarvester,
                         ...parentConfig
                     } = input.config;
                     const childConfig: SerializableSessionConfig = {
@@ -1573,6 +1657,7 @@ export function registerActivities(
                     modelSummary: sessionManager.getModelSummary(),
                     bootstrap: input.bootstrap,
                     requiredTool: input.requiredTool,
+                    cycleOrigin: input.cycleOrigin,
                     controlToolBridge,
                 });
             };
@@ -2295,10 +2380,7 @@ export function registerActivities(
         if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
 
         const sdkClient = new PilotSwarmClient({
-            store: storeUrl,
-            cmsSchema,
-            ...(clientConfig?.duroxideSchema != null && { duroxideSchema: clientConfig.duroxideSchema }),
-            ...(clientConfig?.factsSchema != null && { factsSchema: clientConfig.factsSchema }),
+            ...internalClientConfig(),
             traceWriter: (message: string) => trace(message),
         });
         try {
@@ -2434,12 +2516,7 @@ export function registerActivities(
         activityCtx.traceInfo(`[sendToSession] session=${input.sessionId} msg="${input.message.slice(0, 60)}"`);
         if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
 
-        const sdkClient = new PilotSwarmClient({
-            store: storeUrl,
-            cmsSchema,
-            ...(clientConfig?.duroxideSchema != null && { duroxideSchema: clientConfig.duroxideSchema }),
-            ...(clientConfig?.factsSchema != null && { factsSchema: clientConfig.factsSchema }),
-        });
+        const sdkClient = new PilotSwarmClient(internalClientConfig());
         try {
             await sdkClient.start();
             const info = await (sdkClient as any)._getSessionInfo(input.sessionId);
@@ -2482,12 +2559,7 @@ export function registerActivities(
         activityCtx.traceInfo(`[sendCommandToSession] session=${input.sessionId} cmd=${input.command?.cmd}`);
         if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
 
-        const sdkClient = new PilotSwarmClient({
-            store: storeUrl,
-            cmsSchema,
-            ...(clientConfig?.duroxideSchema != null && { duroxideSchema: clientConfig.duroxideSchema }),
-            ...(clientConfig?.factsSchema != null && { factsSchema: clientConfig.factsSchema }),
-        });
+        const sdkClient = new PilotSwarmClient(internalClientConfig());
         try {
             await sdkClient.start();
             const orchestrationId = `session-${input.sessionId}`;
@@ -2511,12 +2583,7 @@ export function registerActivities(
         activityCtx.traceInfo(`[getSessionStatus] session=${input.sessionId}`);
         if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
 
-        const sdkClient = new PilotSwarmClient({
-            store: storeUrl,
-            cmsSchema,
-            ...(clientConfig?.duroxideSchema != null && { duroxideSchema: clientConfig.duroxideSchema }),
-            ...(clientConfig?.factsSchema != null && { factsSchema: clientConfig.factsSchema }),
-        });
+        const sdkClient = new PilotSwarmClient(internalClientConfig());
         try {
             await sdkClient.start();
             const info = await sdkClient._getSessionInfo(input.sessionId);
@@ -2542,12 +2609,7 @@ export function registerActivities(
         activityCtx.traceInfo(`[getOrchestrationStats] session=${input.sessionId}`);
         if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmManagementClient");
 
-        const managementClient = new PilotSwarmManagementClient({
-            store: storeUrl,
-            cmsSchema,
-            ...(clientConfig?.duroxideSchema != null && { duroxideSchema: clientConfig.duroxideSchema }),
-            ...(clientConfig?.factsSchema != null && { factsSchema: clientConfig.factsSchema }),
-        });
+        const managementClient = new PilotSwarmManagementClient(internalClientConfig());
         try {
             await managementClient.start();
             return await managementClient.getOrchestrationStats(input.sessionId);
@@ -2565,12 +2627,7 @@ export function registerActivities(
         activityCtx.traceInfo(`[listSessions]`);
         if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
 
-        const sdkClient = new PilotSwarmClient({
-            store: storeUrl,
-            cmsSchema,
-            ...(clientConfig?.duroxideSchema != null && { duroxideSchema: clientConfig.duroxideSchema }),
-            ...(clientConfig?.factsSchema != null && { factsSchema: clientConfig.factsSchema }),
-        });
+        const sdkClient = new PilotSwarmClient(internalClientConfig());
         try {
             await sdkClient.start();
             const sessions = (await sdkClient.listSessions()).filter((session) => matchesSessionOwnerFilters(session, input));
@@ -2598,12 +2655,7 @@ export function registerActivities(
         activityCtx.traceInfo(`[listChildSessions] parent=${input.parentSessionId}`);
         if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
 
-        const sdkClient = new PilotSwarmClient({
-            store: storeUrl,
-            cmsSchema,
-            ...(clientConfig?.duroxideSchema != null && { duroxideSchema: clientConfig.duroxideSchema }),
-            ...(clientConfig?.factsSchema != null && { factsSchema: clientConfig.factsSchema }),
-        });
+        const sdkClient = new PilotSwarmClient(internalClientConfig());
         try {
             await sdkClient.start();
             const sessions = await sdkClient.listSessions();
@@ -2689,12 +2741,7 @@ export function registerActivities(
         activityCtx.traceInfo(`[cancelSession] session=${input.sessionId} reason=${input.reason ?? "none"}`);
         if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
 
-        const sdkClient = new PilotSwarmClient({
-            store: storeUrl,
-            cmsSchema,
-            ...(clientConfig?.duroxideSchema != null && { duroxideSchema: clientConfig.duroxideSchema }),
-            ...(clientConfig?.factsSchema != null && { factsSchema: clientConfig.factsSchema }),
-        });
+        const sdkClient = new PilotSwarmClient(internalClientConfig());
         try {
             await sdkClient.start();
             const orchestrationId = `session-${input.sessionId}`;
@@ -2732,12 +2779,7 @@ export function registerActivities(
         activityCtx.traceInfo(`[deleteSession] session=${input.sessionId} reason=${input.reason ?? "none"}`);
         if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
 
-        const sdkClient = new PilotSwarmClient({
-            store: storeUrl,
-            cmsSchema,
-            ...(clientConfig?.duroxideSchema != null && { duroxideSchema: clientConfig.duroxideSchema }),
-            ...(clientConfig?.factsSchema != null && { factsSchema: clientConfig.factsSchema }),
-        });
+        const sdkClient = new PilotSwarmClient(internalClientConfig());
         try {
             await sdkClient.start();
             // This does both: CMS soft-delete + duroxide cancel

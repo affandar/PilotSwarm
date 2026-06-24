@@ -162,3 +162,136 @@ describe("child-notifications: shouldWakeParentForChildDigest", () => {
         expect(d.wake).toBe(true);
     });
 });
+
+describe("child-notifications: cron-origin (cyclic) completions", () => {
+    // A quiet periodic cron/cron_at cycle ends as a plain `completed` turn with no
+    // terminal verdict (cron re-arms automatically, so the child does not call
+    // wait()). The orchestration marks such turns `cyclic: true`. Under
+    // material_change/completion these must not wake the parent, regardless of
+    // prose. The decision still respects wakeOn (any still wakes). Non-cyclic
+    // completions are unchanged so genuine finished answers still reach the parent.
+
+    // ── classifier contract (direct, one assertion per intended rule) ──
+    it("classifyChildUpdate: cyclic completion w/o verdict is heartbeat", () => {
+        expect(classifyChildUpdate({ kind: "completed", summary: "Quiet.", cyclic: true })).toBe("heartbeat");
+        expect(classifyChildUpdate({ kind: "completed", cyclic: true })).toBe("heartbeat"); // no summary
+        expect(classifyChildUpdate({ kind: "completed", summary: "", cyclic: true })).toBe("heartbeat"); // empty summary
+    });
+    it("classifyChildUpdate: cyclic completion with material:false is heartbeat", () => {
+        expect(classifyChildUpdate({ kind: "completed", summary: "anything at all", cyclic: true, material: false })).toBe("heartbeat");
+    });
+    it("classifyChildUpdate: non-cyclic completion is unchanged", () => {
+        expect(classifyChildUpdate({ kind: "completed", summary: "Done — report ready." })).toBe("material");
+        // legacy explicit-heartbeat path preserved for non-cyclic completions
+        expect(classifyChildUpdate({ kind: "completed", summary: "No change", material: false })).toBe("heartbeat");
+    });
+
+    // ── observable wake behavior (assert wake + policy, not the internal label) ──
+    it("cyclic quiet completion does not wake under default (material_change)", () => {
+        const d = shouldWakeParentForChildUpdate({
+            update: { kind: "completed", summary: "Quiet.", cyclic: true },
+        }); // contract omitted → default policy path
+        expect(d.policy).toBe("material_change");
+        expect(d.wake).toBe(false);
+    });
+    it("cyclic completion does not wake with arbitrary quiet prose", () => {
+        // The live wake-storm came from prose no phrase list can match.
+        const d = shouldWakeParentForChildUpdate({
+            update: { kind: "completed", summary: "Same 23-id set, notes objectId unchanged. Quiet — ending silently.", cyclic: true },
+            contract: { wakeOn: "material_change" },
+        });
+        expect(d.wake).toBe(false);
+    });
+    it("cyclic completion with no summary does not wake", () => {
+        const d = shouldWakeParentForChildUpdate({
+            update: { kind: "completed", cyclic: true },
+            contract: { wakeOn: "material_change" },
+        });
+        expect(d.wake).toBe(false);
+    });
+    it("cyclic quiet completion does not wake under wakeOn=completion", () => {
+        const d = shouldWakeParentForChildUpdate({
+            update: { kind: "completed", summary: "Quiet.", cyclic: true },
+            contract: { wakeOn: "completion" },
+        });
+        expect(d.wake).toBe(false);
+    });
+    it("blocked cycle report wakes under wakeOn=completion", () => {
+        const d = shouldWakeParentForChildUpdate({
+            update: { kind: "completed", summary: "Blocked reading source.", cyclic: true, material: true, result: { verdict: "blocked" } },
+            contract: { wakeOn: "completion" },
+        });
+        expect(d.wake).toBe(true);
+    });
+
+    // ── guard rails: the fix must NOT over-suppress real signals ──
+    it("GUARD: non-cyclic completion still wakes (genuine finished answer)", () => {
+        const d = shouldWakeParentForChildUpdate({
+            update: { kind: "completed", summary: "Done — here is the report you asked for." },
+            contract: { wakeOn: "material_change" },
+        });
+        expect(d.wake).toBe(true);
+    });
+    it("GUARD: non-cyclic completion with no summary still wakes", () => {
+        const d = shouldWakeParentForChildUpdate({
+            update: { kind: "completed" },
+            contract: { wakeOn: "material_change" },
+        });
+        expect(d.wake).toBe(true);
+    });
+    it("GUARD: cyclic completion with explicit material:true wakes (escalation)", () => {
+        const d = shouldWakeParentForChildUpdate({
+            update: { kind: "completed", summary: "Found a new blocker this cycle.", cyclic: true, material: true },
+            contract: { wakeOn: "material_change" },
+        });
+        expect(d.wake).toBe(true);
+    });
+    it("GUARD: cyclic completion with a terminal verdict wakes (completion)", () => {
+        const d = shouldWakeParentForChildUpdate({
+            update: { kind: "completed", summary: "All done.", cyclic: true, result: { verdict: "success" } },
+            contract: { wakeOn: "material_change" },
+        });
+        expect(d.wake).toBe(true);
+    });
+    it("GUARD: cyclic quiet completion still wakes under wakeOn=any", () => {
+        const d = shouldWakeParentForChildUpdate({
+            update: { kind: "completed", summary: "Quiet.", cyclic: true },
+            contract: { wakeOn: "any" },
+        });
+        expect(d.wake).toBe(true);
+    });
+
+    // ── scope: wait-loop watchers (kind:"wait") are intentionally NOT changed here ──
+    it("SCOPE: non-cyclic wait-loop quiet prose still wakes under material_change", () => {
+        const d = shouldWakeParentForChildUpdate({
+            update: { kind: "wait", summary: "Same as before, ending silently." },
+            contract: { wakeOn: "material_change" },
+        });
+        expect(d.wake).toBe(true);
+    });
+
+    // ── digest path consumes the same classifier ──
+    it("digest: all-cyclic-quiet batch does not wake", () => {
+        const d = shouldWakeParentForChildDigest([
+            { update: { kind: "completed", summary: "Quiet.", cyclic: true } },
+            { update: { kind: "completed", summary: "Nothing this cycle, ending.", cyclic: true } },
+        ]);
+        expect(d.wake).toBe(false);
+    });
+    it("digest: cyclic-quiet plus one material wakes", () => {
+        const d = shouldWakeParentForChildDigest([
+            { update: { kind: "completed", summary: "Quiet.", cyclic: true } },
+            { update: { kind: "completed", summary: "New blocker found.", cyclic: true, material: true } },
+        ]);
+        expect(d.wake).toBe(true);
+    });
+    it("digest: blocked cycle report wakes under completion policy", () => {
+        const d = shouldWakeParentForChildDigest([
+            {
+                update: { kind: "completed", summary: "Blocked reading source.", cyclic: true, material: true, result: { verdict: "blocked" } },
+                contract: { wakeOn: "completion" },
+            },
+        ]);
+        expect(d.wake).toBe(true);
+    });
+});

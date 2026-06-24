@@ -1,7 +1,7 @@
 import path from "node:path";
 import os from "node:os";
 import { createRequire } from "node:module";
-import { PilotSwarmWorker } from "pilotswarm-sdk";
+import { PilotSwarmWorker, horizonConfigFromEnv } from "pilotswarm-sdk";
 import { getPluginDirsFromEnv } from "./plugin-config.js";
 
 export async function startEmbeddedWorkers({ count, store }) {
@@ -49,6 +49,10 @@ export async function startEmbeddedWorkers({ count, store }) {
                 blobAccountUrl: process.env.AZURE_STORAGE_ACCOUNT_URL || undefined,
                 blobConnectionString: process.env.AZURE_STORAGE_CONNECTION_STRING || undefined,
                 blobContainer: process.env.AZURE_STORAGE_CONTAINER || undefined,
+                // Optional EnhancedFactStore + knowledge graph (HorizonDB). Empty
+                // unless HORIZON_DATABASE_URL is set, so default deployments are
+                // unaffected (plain PgFactStore).
+                ...horizonConfigFromEnv(),
             });
 
             const workerTools = typeof workerModuleConfig.createTools === "function"

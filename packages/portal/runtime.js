@@ -234,12 +234,19 @@ export class PortalRuntime {
                     includeDeleted: safeParams.includeDeleted,
                     since: safeParams.since ? new Date(safeParams.since) : undefined,
                 });
+            case "getFleetRetrievalUsage":
+                return this.transport.getFleetRetrievalUsage({
+                    includeDeleted: safeParams.includeDeleted,
+                    since: safeParams.since ? new Date(safeParams.since) : undefined,
+                });
             case "getSessionFactsStats":
                 return this.transport.getSessionFactsStats(safeParams.sessionId);
             case "getSessionTreeFactsStats":
                 return this.transport.getSessionTreeFactsStats(safeParams.sessionId);
             case "getSharedFactsStats":
                 return this.transport.getSharedFactsStats();
+            case "getFactsTombstoneStats":
+                return this.transport.getFactsTombstoneStats({ ttlSeconds: safeParams.ttlSeconds });
             case "pruneDeletedSummaries":
                 return this.transport.pruneDeletedSummaries(new Date(safeParams.olderThan));
             case "getExecutionHistory":

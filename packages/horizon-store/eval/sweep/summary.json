@@ -1,0 +1,591 @@
+{
+  "generated": "2026-06-12T20:31:39.337Z",
+  "config": {
+    "harvesters": [
+      "gpt55",
+      "opus48",
+      "son46"
+    ],
+    "queries": [
+      "gpt55",
+      "opus48",
+      "son46"
+    ],
+    "judges": [
+      "gpt55",
+      "opus48",
+      "son46"
+    ],
+    "models": {
+      "gpt55": "gpt-5.5",
+      "son46": "claude-sonnet-4.6",
+      "opus48": "claude-opus-4.8"
+    },
+    "corpus": "pgsql-hackers-recent.json",
+    "questions": 8,
+    "configuredQuestionCount": 16,
+    "baselineRegime": {
+      "webSearchCap": 2,
+      "webFetchCap": 8,
+      "armIdleTimeoutMs": 90000
+    }
+  },
+  "coverage": {
+    "scoreCells": 27,
+    "expected": 27,
+    "rows": 216
+  },
+  "headline": {
+    "n": 216,
+    "graphMean": 4.76,
+    "baselineMean": 2.42,
+    "delta": 2.34,
+    "wins": {
+      "graph": 163,
+      "baseline": 4,
+      "tie": 49
+    }
+  },
+  "marginals": {
+    "byHarvester": [
+      {
+        "harvester": "gpt55",
+        "n": 72,
+        "graphMean": 4.82,
+        "baselineMean": 2.35,
+        "delta": 2.47,
+        "wins": {
+          "graph": 60,
+          "baseline": 0,
+          "tie": 12
+        }
+      },
+      {
+        "harvester": "opus48",
+        "n": 72,
+        "graphMean": 4.76,
+        "baselineMean": 2.58,
+        "delta": 2.18,
+        "wins": {
+          "graph": 51,
+          "baseline": 3,
+          "tie": 18
+        }
+      },
+      {
+        "harvester": "son46",
+        "n": 72,
+        "graphMean": 4.69,
+        "baselineMean": 2.33,
+        "delta": 2.36,
+        "wins": {
+          "graph": 52,
+          "baseline": 1,
+          "tie": 19
+        }
+      }
+    ],
+    "byQuery": [
+      {
+        "query": "gpt55",
+        "n": 72,
+        "graphMean": 4.63,
+        "baselineMean": 2.64,
+        "delta": 1.99,
+        "wins": {
+          "graph": 45,
+          "baseline": 2,
+          "tie": 25
+        }
+      },
+      {
+        "query": "opus48",
+        "n": 72,
+        "graphMean": 4.86,
+        "baselineMean": 3.08,
+        "delta": 1.78,
+        "wins": {
+          "graph": 48,
+          "baseline": 2,
+          "tie": 22
+        }
+      },
+      {
+        "query": "son46",
+        "n": 72,
+        "graphMean": 4.79,
+        "baselineMean": 1.54,
+        "delta": 3.25,
+        "wins": {
+          "graph": 70,
+          "baseline": 0,
+          "tie": 2
+        }
+      }
+    ],
+    "byJudge": [
+      {
+        "judge": "gpt55",
+        "n": 72,
+        "graphMean": 4.71,
+        "baselineMean": 2.31,
+        "delta": 2.4,
+        "wins": {
+          "graph": 54,
+          "baseline": 0,
+          "tie": 18
+        }
+      },
+      {
+        "judge": "opus48",
+        "n": 72,
+        "graphMean": 4.85,
+        "baselineMean": 2.44,
+        "delta": 2.4,
+        "wins": {
+          "graph": 55,
+          "baseline": 1,
+          "tie": 16
+        }
+      },
+      {
+        "judge": "son46",
+        "n": 72,
+        "graphMean": 4.72,
+        "baselineMean": 2.51,
+        "delta": 2.21,
+        "wins": {
+          "graph": 54,
+          "baseline": 3,
+          "tie": 15
+        }
+      }
+    ]
+  },
+  "judgeBias": [
+    {
+      "judge": "gpt55",
+      "judgeModel": "gpt-5.5",
+      "graphMean": 4.71,
+      "baselineMean": 2.31,
+      "delta": 2.4,
+      "sameFamilyQueryGraphMean": 4.38,
+      "diffFamilyQueryGraphMean": 4.88
+    },
+    {
+      "judge": "opus48",
+      "judgeModel": "claude-opus-4.8",
+      "graphMean": 4.85,
+      "baselineMean": 2.44,
+      "delta": 2.4,
+      "sameFamilyQueryGraphMean": 4.9,
+      "diffFamilyQueryGraphMean": 4.75
+    },
+    {
+      "judge": "son46",
+      "judgeModel": "claude-sonnet-4.6",
+      "graphMean": 4.72,
+      "baselineMean": 2.51,
+      "delta": 2.21,
+      "sameFamilyQueryGraphMean": 4.71,
+      "diffFamilyQueryGraphMean": 4.75
+    }
+  ],
+  "interJudge": {
+    "answersWithMultipleJudges": 72,
+    "meanGraphScoreSpread": 0.39,
+    "meanBaselineScoreSpread": 0.47,
+    "unanimousGraphWins": 52,
+    "splitDecisions": 7
+  },
+  "verbosity": {
+    "graphScoreVsLen": 0.15,
+    "baselineScoreVsLen": 0.026,
+    "avgGraphLen": 1150,
+    "avgBaselineLen": 1351
+  },
+  "abstention": {
+    "baselineLowScoreRate": 0.616,
+    "baselineUsedWebRate": 1
+  },
+  "tensor": [
+    {
+      "harvester": "gpt55",
+      "query": "gpt55",
+      "judge": "gpt55",
+      "n": 8,
+      "graphMean": 4.38,
+      "baselineMean": 2.63,
+      "delta": 1.75,
+      "wins": {
+        "graph": 4,
+        "baseline": 0,
+        "tie": 4
+      }
+    },
+    {
+      "harvester": "gpt55",
+      "query": "gpt55",
+      "judge": "opus48",
+      "n": 8,
+      "graphMean": 4.75,
+      "baselineMean": 2.88,
+      "delta": 1.88,
+      "wins": {
+        "graph": 5,
+        "baseline": 0,
+        "tie": 3
+      }
+    },
+    {
+      "harvester": "gpt55",
+      "query": "gpt55",
+      "judge": "son46",
+      "n": 8,
+      "graphMean": 4.88,
+      "baselineMean": 2.88,
+      "delta": 2,
+      "wins": {
+        "graph": 6,
+        "baseline": 0,
+        "tie": 2
+      }
+    },
+    {
+      "harvester": "gpt55",
+      "query": "opus48",
+      "judge": "gpt55",
+      "n": 8,
+      "graphMean": 5,
+      "baselineMean": 2.75,
+      "delta": 2.25,
+      "wins": {
+        "graph": 7,
+        "baseline": 0,
+        "tie": 1
+      }
+    },
+    {
+      "harvester": "gpt55",
+      "query": "opus48",
+      "judge": "opus48",
+      "n": 8,
+      "graphMean": 4.88,
+      "baselineMean": 2.63,
+      "delta": 2.25,
+      "wins": {
+        "graph": 7,
+        "baseline": 0,
+        "tie": 1
+      }
+    },
+    {
+      "harvester": "gpt55",
+      "query": "opus48",
+      "judge": "son46",
+      "n": 8,
+      "graphMean": 4.75,
+      "baselineMean": 2.75,
+      "delta": 2,
+      "wins": {
+        "graph": 7,
+        "baseline": 0,
+        "tie": 1
+      }
+    },
+    {
+      "harvester": "gpt55",
+      "query": "son46",
+      "judge": "gpt55",
+      "n": 8,
+      "graphMean": 5,
+      "baselineMean": 1.5,
+      "delta": 3.5,
+      "wins": {
+        "graph": 8,
+        "baseline": 0,
+        "tie": 0
+      }
+    },
+    {
+      "harvester": "gpt55",
+      "query": "son46",
+      "judge": "opus48",
+      "n": 8,
+      "graphMean": 5,
+      "baselineMean": 1.5,
+      "delta": 3.5,
+      "wins": {
+        "graph": 8,
+        "baseline": 0,
+        "tie": 0
+      }
+    },
+    {
+      "harvester": "gpt55",
+      "query": "son46",
+      "judge": "son46",
+      "n": 8,
+      "graphMean": 4.75,
+      "baselineMean": 1.63,
+      "delta": 3.13,
+      "wins": {
+        "graph": 8,
+        "baseline": 0,
+        "tie": 0
+      }
+    },
+    {
+      "harvester": "opus48",
+      "query": "gpt55",
+      "judge": "gpt55",
+      "n": 8,
+      "graphMean": 4.38,
+      "baselineMean": 2.38,
+      "delta": 2,
+      "wins": {
+        "graph": 5,
+        "baseline": 0,
+        "tie": 3
+      }
+    },
+    {
+      "harvester": "opus48",
+      "query": "gpt55",
+      "judge": "opus48",
+      "n": 8,
+      "graphMean": 4.75,
+      "baselineMean": 2.88,
+      "delta": 1.88,
+      "wins": {
+        "graph": 5,
+        "baseline": 1,
+        "tie": 2
+      }
+    },
+    {
+      "harvester": "opus48",
+      "query": "gpt55",
+      "judge": "son46",
+      "n": 8,
+      "graphMean": 4.63,
+      "baselineMean": 2.88,
+      "delta": 1.75,
+      "wins": {
+        "graph": 5,
+        "baseline": 1,
+        "tie": 2
+      }
+    },
+    {
+      "harvester": "opus48",
+      "query": "opus48",
+      "judge": "gpt55",
+      "n": 8,
+      "graphMean": 5,
+      "baselineMean": 3.38,
+      "delta": 1.63,
+      "wins": {
+        "graph": 4,
+        "baseline": 0,
+        "tie": 4
+      }
+    },
+    {
+      "harvester": "opus48",
+      "query": "opus48",
+      "judge": "opus48",
+      "n": 8,
+      "graphMean": 4.88,
+      "baselineMean": 3.25,
+      "delta": 1.63,
+      "wins": {
+        "graph": 4,
+        "baseline": 0,
+        "tie": 4
+      }
+    },
+    {
+      "harvester": "opus48",
+      "query": "opus48",
+      "judge": "son46",
+      "n": 8,
+      "graphMean": 4.75,
+      "baselineMean": 3.38,
+      "delta": 1.38,
+      "wins": {
+        "graph": 4,
+        "baseline": 1,
+        "tie": 3
+      }
+    },
+    {
+      "harvester": "opus48",
+      "query": "son46",
+      "judge": "gpt55",
+      "n": 8,
+      "graphMean": 5,
+      "baselineMean": 1.63,
+      "delta": 3.38,
+      "wins": {
+        "graph": 8,
+        "baseline": 0,
+        "tie": 0
+      }
+    },
+    {
+      "harvester": "opus48",
+      "query": "son46",
+      "judge": "opus48",
+      "n": 8,
+      "graphMean": 4.88,
+      "baselineMean": 1.63,
+      "delta": 3.25,
+      "wins": {
+        "graph": 8,
+        "baseline": 0,
+        "tie": 0
+      }
+    },
+    {
+      "harvester": "opus48",
+      "query": "son46",
+      "judge": "son46",
+      "n": 8,
+      "graphMean": 4.63,
+      "baselineMean": 1.88,
+      "delta": 2.75,
+      "wins": {
+        "graph": 8,
+        "baseline": 0,
+        "tie": 0
+      }
+    },
+    {
+      "harvester": "son46",
+      "query": "gpt55",
+      "judge": "gpt55",
+      "n": 8,
+      "graphMean": 4.38,
+      "baselineMean": 2.25,
+      "delta": 2.13,
+      "wins": {
+        "graph": 5,
+        "baseline": 0,
+        "tie": 3
+      }
+    },
+    {
+      "harvester": "son46",
+      "query": "gpt55",
+      "judge": "opus48",
+      "n": 8,
+      "graphMean": 4.75,
+      "baselineMean": 2.5,
+      "delta": 2.25,
+      "wins": {
+        "graph": 5,
+        "baseline": 0,
+        "tie": 3
+      }
+    },
+    {
+      "harvester": "son46",
+      "query": "gpt55",
+      "judge": "son46",
+      "n": 8,
+      "graphMean": 4.75,
+      "baselineMean": 2.5,
+      "delta": 2.25,
+      "wins": {
+        "graph": 5,
+        "baseline": 0,
+        "tie": 3
+      }
+    },
+    {
+      "harvester": "son46",
+      "query": "opus48",
+      "judge": "gpt55",
+      "n": 8,
+      "graphMean": 5,
+      "baselineMean": 3.13,
+      "delta": 1.88,
+      "wins": {
+        "graph": 6,
+        "baseline": 0,
+        "tie": 2
+      }
+    },
+    {
+      "harvester": "son46",
+      "query": "opus48",
+      "judge": "opus48",
+      "n": 8,
+      "graphMean": 4.88,
+      "baselineMean": 3.25,
+      "delta": 1.63,
+      "wins": {
+        "graph": 5,
+        "baseline": 0,
+        "tie": 3
+      }
+    },
+    {
+      "harvester": "son46",
+      "query": "opus48",
+      "judge": "son46",
+      "n": 8,
+      "graphMean": 4.63,
+      "baselineMean": 3.25,
+      "delta": 1.38,
+      "wins": {
+        "graph": 4,
+        "baseline": 1,
+        "tie": 3
+      }
+    },
+    {
+      "harvester": "son46",
+      "query": "son46",
+      "judge": "gpt55",
+      "n": 8,
+      "graphMean": 4.25,
+      "baselineMean": 1.13,
+      "delta": 3.13,
+      "wins": {
+        "graph": 7,
+        "baseline": 0,
+        "tie": 1
+      }
+    },
+    {
+      "harvester": "son46",
+      "query": "son46",
+      "judge": "opus48",
+      "n": 8,
+      "graphMean": 4.88,
+      "baselineMean": 1.5,
+      "delta": 3.38,
+      "wins": {
+        "graph": 8,
+        "baseline": 0,
+        "tie": 0
+      }
+    },
+    {
+      "harvester": "son46",
+      "query": "son46",
+      "judge": "son46",
+      "n": 8,
+      "graphMean": 4.75,
+      "baselineMean": 1.5,
+      "delta": 3.25,
+      "wins": {
+        "graph": 7,
+        "baseline": 0,
+        "tie": 1
+      }
+    }
+  ]
+}

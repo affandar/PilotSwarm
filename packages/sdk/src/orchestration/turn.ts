@@ -57,6 +57,7 @@ interface RetryContext {
     systemOnlyTurn: boolean;
     requiredTool?: string;
     turnSystemPrompt?: string;
+    cycleOrigin?: "cron" | "cron_at";
     /** Phase tag stamped on emitted lossy_handoff / dehydrate events. */
     phase: "runTurn.throw" | "turn.result.error";
 }
@@ -142,6 +143,7 @@ function retryContinueOverrides(state: DurableSessionRuntime["state"], rc: Retry
     if (rc.phase === "turn.result.error") {
         return {
             prompt: rc.sourcePrompt,
+            ...(rc.cycleOrigin ? { cycleOrigin: rc.cycleOrigin } : {}),
             retryCount: state.retryCount,
             needsHydration: state.blobEnabled ? true : state.needsHydration,
         };
@@ -150,6 +152,7 @@ function retryContinueOverrides(state: DurableSessionRuntime["state"], rc: Retry
         ...(rc.systemOnlyTurn ? {} : { prompt: rc.sourcePrompt }),
         ...(rc.requiredTool ? { requiredTool: rc.requiredTool } : {}),
         ...(rc.turnSystemPrompt ? { systemPrompt: rc.turnSystemPrompt } : {}),
+        ...(rc.cycleOrigin ? { cycleOrigin: rc.cycleOrigin } : {}),
         retryCount: state.retryCount,
         needsHydration: state.blobEnabled ? true : state.needsHydration,
     };
@@ -199,6 +202,7 @@ export function* processPrompt(
     isBootstrap: boolean,
     requiredTool?: string,
     clientMessageIds?: string[],
+    cycleOrigin?: "cron" | "cron_at",
 ): Generator<any, void, any> {
     const { ctx, state } = runtime;
     let prompt = promptText;
@@ -291,6 +295,7 @@ export function* processPrompt(
             ...(runtime.options.parentSessionId ? { parentSessionId: runtime.options.parentSessionId } : {}),
             nestingLevel: runtime.options.nestingLevel,
             ...(requiredTool ? { requiredTool } : {}),
+            ...(cycleOrigin ? { cycleOrigin } : {}),
             retryCount: state.retryCount,
             ...(clientMessageIds && clientMessageIds.length > 0 ? { clientMessageIds } : {}),
         });
@@ -325,6 +330,7 @@ export function* processPrompt(
             sourcePrompt: prompt,
             systemOnlyTurn,
             requiredTool,
+            cycleOrigin,
             turnSystemPrompt,
             phase: "runTurn.throw",
         };
@@ -354,7 +360,7 @@ export function* processPrompt(
     }
     yield* drainLeadingQueuedScheduleActions(runtime, prompt);
 
-    yield* handleTurnResult(runtime, result, prompt);
+    yield* handleTurnResult(runtime, result, prompt, cycleOrigin);
 }
 
 // ─── handleTurnResult: dispatch on TurnResult variant ───────
@@ -410,6 +416,7 @@ export function* handleTurnResult(
     runtime: DurableSessionRuntime,
     result: TurnResult,
     sourcePrompt: string,
+    cycleOrigin?: "cron" | "cron_at",
 ): Generator<any, void, any> {
     const { ctx, state, options } = runtime;
     result = coerceChildQuestionToWait(runtime, result);
@@ -426,21 +433,41 @@ export function* handleTurnResult(
             });
 
             if (options.parentSessionId) {
+                const cycleReport = (result as any).cycleReport;
+                const cycleMaterial = cycleReport?.status === "material" || cycleReport?.status === "blocked"
+                    ? true
+                    : cycleReport?.status === "quiet"
+                        ? false
+                        : undefined;
                 const wakeDecision = shouldWakeParentForChildUpdate({
-                    update: { kind: "completed", summary: result.content },
+                    update: {
+                        kind: "completed",
+                        summary: cycleReport?.summary || result.content,
+                        ...(cycleOrigin ? { cyclic: true } : {}),
+                        ...(cycleMaterial !== undefined ? { material: cycleMaterial } : {}),
+                        ...(cycleReport?.status === "blocked" ? { result: { verdict: "blocked" as const } } : {}),
+                    },
                     contract: state.config.childContract,
                 });
                 if (wakeDecision.wake) {
                     try {
+                        const meta = [
+                            `from=${runtime.input.sessionId}`,
+                            `type=completed`,
+                            `iter=${state.iteration}`,
+                            ...(cycleOrigin ? [`cycle=${cycleOrigin}`] : []),
+                            ...(cycleReport?.status ? [`status=${cycleReport.status}`] : []),
+                        ].join(" ");
+                        const notifyContent = cycleReport?.summary || result.content;
                         yield runtime.manager.sendToSession(options.parentSessionId,
-                            `[CHILD_UPDATE from=${runtime.input.sessionId} type=completed iter=${state.iteration}]\n${result.content.slice(0, 2000)}`);
+                            `[CHILD_UPDATE ${meta}]\n${notifyContent.slice(0, 2000)}`);
                     } catch (err: any) {
                         ctx.traceInfo(`[orch] sendToSession(parent) failed: ${err.message} (non-fatal)`);
                     }
                 } else {
                     yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
                         eventType: "session.child_update_suppressed",
-                        data: { direction: "child_to_parent", updateType: "completed", ...wakeDecision },
+                        data: { direction: "child_to_parent", updateType: "completed", cycleOrigin, cycleReport, ...wakeDecision },
                     }]);
                 }
 
@@ -802,6 +829,7 @@ export function* handleTurnResult(
             const rc: RetryContext = {
                 sourcePrompt,
                 systemOnlyTurn: false,
+                cycleOrigin,
                 phase: "turn.result.error",
             };
 
@@ -852,16 +880,20 @@ export function* processTimer(
                 data: {},
             }]);
             const activeCron = state.cronSchedule!;
-            const cronPrompt = `[SYSTEM: Scheduled cron wake-up for: "${activeCron.reason}". Resume your recurring task.]`;
+            const cycleReportGuidance = "If this cycle finds material changes or blockers that should wake your parent, call report_cycle(status='material' or status='blocked', summary='...') before finishing. If nothing material changed, omit report_cycle or call report_cycle(status='quiet').";
+            const cronPrompt = `[SYSTEM: Scheduled cron wake-up for: "${activeCron.reason}". Resume your recurring task. ${cycleReportGuidance}]`;
             if (timer.shouldRehydrate) {
                 yield* processPrompt(
                     runtime,
                     wrapWithResumeContext(runtime, "Resume your recurring task.",
-                        `Scheduled cron wake-up for: "${activeCron.reason}".`),
+                        `Scheduled cron wake-up for: "${activeCron.reason}". ${cycleReportGuidance}`),
                     true,
+                    undefined,
+                    undefined,
+                    "cron",
                 );
             } else {
-                yield* processPrompt(runtime, cronPrompt, true);
+                yield* processPrompt(runtime, cronPrompt, true, undefined, undefined, "cron");
             }
             return;
         }
@@ -905,17 +937,24 @@ export function* processTimer(
             const cronAtPrompt =
                 `[SYSTEM: Scheduled wall-clock cron wake-up for "${activeCronAt.reason}". ` +
                 `Schedule: ${description}. Scheduled fire: ${new Date(scheduledAtMs).toISOString()}. ` +
-                `Resume your recurring task now.]`;
+                `Resume your recurring task now. ` +
+                `If this cycle finds material changes or blockers that should wake your parent, call report_cycle(status='material' or status='blocked', summary='...') before finishing. ` +
+                `If nothing material changed, omit report_cycle or call report_cycle(status='quiet').]`;
             if (timer.shouldRehydrate) {
                 yield* processPrompt(
                     runtime,
                     wrapWithResumeContext(runtime, "Resume your recurring task.",
                         `Scheduled wall-clock cron wake-up for "${activeCronAt.reason}". ` +
-                        `Schedule: ${description}. Scheduled fire: ${new Date(scheduledAtMs).toISOString()}.`),
+                        `Schedule: ${description}. Scheduled fire: ${new Date(scheduledAtMs).toISOString()}. ` +
+                        `If this cycle finds material changes or blockers that should wake your parent, call report_cycle(status='material' or status='blocked', summary='...') before finishing. ` +
+                        `If nothing material changed, omit report_cycle or call report_cycle(status='quiet').`),
                     true,
+                    undefined,
+                    undefined,
+                    "cron_at",
                 );
             } else {
-                yield* processPrompt(runtime, cronAtPrompt, true);
+                yield* processPrompt(runtime, cronAtPrompt, true, undefined, undefined, "cron_at");
             }
             return;
         }

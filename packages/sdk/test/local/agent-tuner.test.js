@@ -87,17 +87,30 @@ describe("Agent Tuner: read-only diagnostic tools", () => {
             const userTools = createInspectTools({ catalog, agentIdentity: "alpha" });
             const tunerTools = createInspectTools({ catalog, agentIdentity: "agent-tuner" });
 
-            assertEqual(userTools.length, 1, "non-tuner gets only read_agent_events");
-            assertEqual(userTools[0].name, "read_agent_events", "non-tuner has read_agent_events");
+            const userNames = userTools.map((t) => t.name).sort();
+            const expectedUser = [
+                "read_agent_events",
+                "read_session_graph_edge_search_usage",
+                "read_session_graph_node_usage",
+                "read_session_retrieval_usage",
+                "read_session_tree_retrieval_usage",
+            ];
+            assertEqual(userNames.join(","), expectedUser.join(","), "non-tuner gets lineage-gated inspect tools only");
 
             const tunerNames = tunerTools.map((t) => t.name).sort();
             const expected = [
                 "list_all_sessions",
                 "read_agent_events",
                 "read_fleet_stats",
+                "read_fleet_graph_node_usage",
+                "read_fleet_retrieval_usage",
                 "read_session_info",
+                "read_session_graph_edge_search_usage",
+                "read_session_graph_node_usage",
                 "read_session_metric_summary",
+                "read_session_retrieval_usage",
                 "read_session_tree_stats",
+                "read_session_tree_retrieval_usage",
                 "read_user_stats",
             ];
             for (const name of expected) {

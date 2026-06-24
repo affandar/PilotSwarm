@@ -514,10 +514,12 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
         const prompt = state.pendingPrompt;
         const isBootstrap = state.bootstrapPrompt;
         const requiredTool = state.pendingRequiredTool;
+        const cycleOrigin = state.pendingCycleOrigin;
         state.pendingPrompt = undefined;
         state.bootstrapPrompt = false;
         state.pendingRequiredTool = undefined;
-        yield* processPrompt(runtime, prompt, isBootstrap, requiredTool);
+        state.pendingCycleOrigin = undefined;
+        yield* processPrompt(runtime, prompt, isBootstrap, requiredTool, undefined, cycleOrigin);
         return true;
     }
 
@@ -623,6 +625,13 @@ function* processPendingChildDigest(runtime: DurableSessionRuntime): Generator<a
                                     ? "completed"
                                     : "progress",
                     summary: update.content,
+                    ...(update.cycleOrigin ? { cyclic: true } : {}),
+                    ...(update.cycleStatus === "material" || update.cycleStatus === "blocked"
+                        ? { material: true }
+                        : update.cycleStatus === "quiet"
+                            ? { material: false }
+                            : {}),
+                            ...(update.verdict ? { result: { verdict: update.verdict } } : update.cycleStatus === "blocked" ? { result: { verdict: "blocked" as const } } : {}),
                 },
                 contract: agent?.contract,
             } as const;

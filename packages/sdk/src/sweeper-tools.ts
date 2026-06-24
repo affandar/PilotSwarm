@@ -13,7 +13,7 @@
  */
 
 import { defineTool } from "@github/copilot-sdk";
-import type { SessionCatalogProvider } from "./cms.js";
+import type { SessionCatalog } from "./cms.js";
 import type { FactStore } from "./facts-store.js";
 import type { Tool } from "@github/copilot-sdk";
 
@@ -24,7 +24,7 @@ import type { Tool } from "@github/copilot-sdk";
  * then register the returned tools via `worker.registerTools(tools)`.
  */
 export function createSweeperTools(opts: {
-    catalog: SessionCatalogProvider;
+    catalog: SessionCatalog;
     duroxideClient: any;
     factStore?: FactStore | null;
     duroxideSchema?: string;

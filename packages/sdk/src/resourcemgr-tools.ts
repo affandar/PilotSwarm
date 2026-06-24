@@ -14,7 +14,7 @@
 
 import { defineTool } from "@github/copilot-sdk";
 import { execSync } from "node:child_process";
-import type { SessionCatalogProvider } from "./cms.js";
+import type { SessionCatalog } from "./cms.js";
 import type { SessionBlobStore } from "./blob-store.js";
 import type { Tool } from "@github/copilot-sdk";
 
@@ -22,14 +22,14 @@ import type { Tool } from "@github/copilot-sdk";
  * Create resource manager tools bound to the given dependencies.
  */
 export function createResourceManagerTools(opts: {
-    catalog: SessionCatalogProvider;
+    catalog: SessionCatalog;
     duroxideClient: any;
     blobStore: SessionBlobStore | null;
     duroxideSchema?: string;
     cmsSchema?: string;
 }): Tool<any>[] {
     const { catalog, duroxideClient, blobStore } = opts;
-    const duroxideSchema = opts.duroxideSchema ?? "duroxide";
+    const duroxideSchema = opts.duroxideSchema ?? "ps_duroxide";
     const cmsSchema = opts.cmsSchema ?? "copilot_sessions";
 
     async function getOptionalInstanceStatusCount(status: string): Promise<number | null> {
