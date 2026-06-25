@@ -21,6 +21,7 @@ describe.skipIf(!HAS_DB)("migrations (MG1–MG6)", () => {
 
     const tokens = (names) => ({ schema: names.schema, graphName: names.graph, embeddingDim: 4 });
     const factMigrations = (names) => api.loadMigrations(tokens(names)).filter((m) => !api.isGraphOwnedMigration(m.version));
+    const factMigrationVersions = (names) => factMigrations(names).map((m) => m.version);
     const freshNames = (tag) => {
         const names = uniqueNames(tag);
         cleanups.push(() => dropSchemaAndGraph(names.schema, names.graph));
@@ -33,7 +34,7 @@ describe.skipIf(!HAS_DB)("migrations (MG1–MG6)", () => {
 
         const { rows: vers } = await pool.query(
             `SELECT version FROM "${names.schema}".schema_migrations ORDER BY version`);
-        assert.deepEqual(vers.map((r) => r.version), ["0001", "0002", "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0011", "0012"]);
+        assert.deepEqual(vers.map((r) => r.version), factMigrationVersions(names));
 
         const { rows: cols } = await pool.query(
             `SELECT column_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = 'facts'`,
@@ -105,7 +106,7 @@ describe.skipIf(!HAS_DB)("migrations (MG1–MG6)", () => {
         // bootstrap) and 0013 (graph namespace registry) belong to
         // HorizonDBGraphStore and are not recorded in the facts schema.
         assert.deepEqual(rows.map((r) => r.version),
-            ["0001", "0002", "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0011", "0012"],
+            factMigrationVersions(names),
             "facts store records exactly the non-graph-owned migrations");
     });
 
@@ -116,7 +117,7 @@ describe.skipIf(!HAS_DB)("migrations (MG1–MG6)", () => {
         await api.runMigrations(pool, names.schema, migs, api.HORIZON_FACTS_LOCK_SEED);
         const { rows } = await pool.query(
             `SELECT version FROM "${names.schema}".schema_migrations ORDER BY version`);
-        assert.deepEqual(rows.map((r) => r.version), ["0001", "0002", "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0011", "0012"]);
+        assert.deepEqual(rows.map((r) => r.version), migs.map((m) => m.version));
     });
 
     it("MG5 trigger semantics (direct SQL probes)", async () => {
