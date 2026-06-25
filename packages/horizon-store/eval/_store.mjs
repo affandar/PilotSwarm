@@ -11,7 +11,7 @@
 const FACT_METHODS = [
     "storeFact", "readFacts", "deleteFact", "deleteSessionFactsForSession",
     "getSessionFactsStats", "getFactsStatsForSessions", "getSharedFactsStats",
-    "searchFacts", "similarFacts", "readUncrawledFacts", "markFactsCrawled",
+    "searchFacts", "similarFacts", "readUncrawledFacts", "setFactsCrawled",
     "configureEmbedder", "startEmbedder", "stopEmbedder", "embedderStatus",
 ];
 const GRAPH_METHODS = [

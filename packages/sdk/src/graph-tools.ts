@@ -4,7 +4,7 @@ import type { AccessContext, FactStore } from "./facts-store.js";
 import type { GraphStore } from "./graph-store.js";
 
 // Roles that may run the privileged crawl work queue (`facts_read_uncrawled` /
-// `facts_mark_crawled`, which read facts across ALL scopes). The app assigns the
+// `facts_set_crawled`, which read facts across ALL scopes). The app assigns the
 // harvester role to its own agent; the facts-manager holds the queue too but is
 // dormant by default (07 §1.5). agent-tuner is read-only and never harvests.
 // NOTE: graph write/delete is NOT gated by this role — it is open to every
@@ -49,7 +49,7 @@ export interface CreateGraphToolsOptions {
     agentIdentity?: string;
     /**
      * Whether this session holds the app-assigned HARVESTER role. This now gates
-     * ONLY the crawl work queue (`facts_read_uncrawled` / `facts_mark_crawled`);
+     * ONLY the crawl work queue (`facts_read_uncrawled` / `facts_set_crawled`);
      * the facts-manager additionally receives the queue (dormant), and
      * agent-tuner never does. Graph write/delete is NOT gated by this flag — it
      * is available to every non-tuner session (see `canWriteGraph`).
@@ -79,7 +79,7 @@ export interface CreateGraphToolsOptions {
  * every session; graph write/delete (`graph_upsert_*` / `graph_merge_nodes` /
  * `graph_delete_*`) go to EVERY session EXCEPT the read-only agent-tuner, so any
  * agent can incorporate into the SHARED graph; the crawl work queue
- * (`facts_read_uncrawled` / `facts_mark_crawled`) stays harvester-role +
+ * (`facts_read_uncrawled` / `facts_set_crawled`) stays harvester-role +
  * facts-manager only (it reads facts across ALL scopes, bypassing per-session
  * ACL); `graph_stats` (read-only) goes to facts-manager + agent-tuner.
  * agent-tuner never gets a mutating tool.
@@ -338,7 +338,7 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
                 // beyond the probe is not needed for a health report.
                 const BACKLOG_PROBE = 500;
                 const statsFn = (graphStore as any).graphStats;
-                const uncrawled = await factStore.readUncrawledFacts({ namespace: a.namespace, limit: BACKLOG_PROBE });
+                const uncrawled = await factStore.readUncrawledFacts({ keyPrefix: a.namespace, limit: BACKLOG_PROBE });
                 const uncrawledFacts = uncrawled.count;
                 const uncrawledFactsCapped = uncrawled.count >= BACKLOG_PROBE;
                 if (typeof statsFn === "function") {
@@ -376,39 +376,49 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
         tools.push(defineTool("facts_read_uncrawled", {
             description:
                 "PRIVILEGED harvester work queue: facts not yet incorporated into the graph (new or edited since the " +
-                "last crawl), across ALL scopes. Keep each fact's scopeKey and etag — both are the receipt facts_mark_crawled needs.",
+                "last crawl), across ALL scopes. Keep each fact's scopeKey and etag — both are the receipt facts_set_crawled needs.",
             parameters: {
                 type: "object" as const,
                 properties: {
-                    namespace: { type: "string", description: "Restrict the queue to a literal key prefix." },
-                    limit: { type: "number", description: "Max facts this batch (default 20)." },
+                    keyPrefix: { type: "string", description: "Restrict the queue to a literal key prefix (a crawler may reuse its graph namespace as this prefix)." },
+                    namespace: { type: "string", description: "Deprecated alias for keyPrefix (accepted one release for existing prompts)." },
+                    limit: { type: "number", description: "Max facts this batch (default 20, capped at 500)." },
                 },
             },
-            handler: (a: any) => factStore.readUncrawledFacts({ namespace: a.namespace, limit: a.limit }),
+            handler: (a: any) => factStore.readUncrawledFacts({ keyPrefix: a.keyPrefix ?? a.namespace, limit: a.limit }),
         }));
 
-        tools.push(defineTool("facts_mark_crawled", {
+        tools.push(defineTool("facts_set_crawled", {
             description:
-                "Stamp facts as incorporated so they leave the queue. Pass each fact's scopeKey and etag from facts_read_uncrawled. " +
-                "A skipped stamp means the fact was already marked, changed since your read, or no longer exists; re-read if needed.",
+                "Set the crawled flag on a selection of facts. Provide EXACTLY one of: " +
+                "`scopeKeys` — after processing rows from facts_read_uncrawled, pass each row's { scopeKey, etag } " +
+                "(include etag to make the entry conditional/race-safe, or omit it entirely — not null — to force/stomp); or " +
+                "`keyPrefix` — flip a whole literal key prefix at once (coarse, no per-row etag). " +
+                "Set `crawled:false` to put facts BACK on the radar for recrawl (e.g. after changing extraction logic). " +
+                "A skipped entry means the fact changed since your read (etag mismatch) or was already in that state; " +
+                "a scopeKey that no longer exists is neither marked nor skipped.",
             parameters: {
                 type: "object" as const,
                 properties: {
-                    stamps: {
+                    scopeKeys: {
                         type: "array",
+                        description: "Explicit batch (max 500) of { scopeKey, etag? } receipts from facts_read_uncrawled.",
+                        minItems: 1,
+                        maxItems: 500,
                         items: {
                             type: "object",
                             properties: {
                                 scopeKey: { type: "string" },
                                 etag: { type: "number" },
                             },
-                            required: ["scopeKey", "etag"],
+                            required: ["scopeKey"],
                         },
                     },
+                    keyPrefix: { type: "string", description: "Literal key prefix to flip in one shot (coarse; no per-row etag)." },
+                    crawled: { type: "boolean", description: "Default true. false clears the flag to trigger a recrawl." },
                 },
-                required: ["stamps"] as const,
             },
-            handler: (a: any) => factStore.markFactsCrawled(a.stamps),
+            handler: (a: any) => factStore.setFactsCrawled({ scopeKeys: a.scopeKeys, keyPrefix: a.keyPrefix, crawled: a.crawled }),
         }));
 
         tools.push(defineTool("graph_remove_evidence", {

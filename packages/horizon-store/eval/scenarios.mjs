@@ -299,7 +299,7 @@ async function scenarioSC1a(sdk) {
 
         const { buildSdkTools, HARVESTER_SYSTEM_PROMPT } = await import("./tools.mjs");
         const record = [];
-        const { tools, toolNames } = await buildSdkTools(store, { role: "harvester", record });
+        const { tools, toolNames } = await buildSdkTools(store, { role: "harvester", embeddedOnly: HAS_EMBED, record });
 
         await runAgent({
             sdk, tools, toolNames, systemMessage: HARVESTER_SYSTEM_PROMPT, label: "sc1a-harvest",
@@ -332,7 +332,7 @@ async function scenarioSC1a(sdk) {
             edges.length > 0 && edges.every((e) => e.evidence.length >= 1), `${edges.length} edges`);
 
         check("SC1a", "queue drained", (await queueCount(store)) === 0);
-        const markCalls = record.filter((r) => r.name === "facts_mark_crawled" && r.result);
+        const markCalls = record.filter((r) => r.name === "facts_set_crawled" && r.result);
         const skippedTotal = markCalls.reduce((s, r) => s + (r.result.skipped ?? 0), 0);
         check("SC1a", "receipts: skipped == 0 across all mark calls", markCalls.length > 0 && skippedTotal === 0,
             `${markCalls.length} calls, skipped=${skippedTotal}`);
@@ -381,7 +381,7 @@ async function scenarioReal(sdk) {
 
         const { buildSdkTools, HARVESTER_SYSTEM_PROMPT, READER_SYSTEM_PROMPT, MUTATING_TOOLS } = await import("./tools.mjs");
         const record = [];
-        const { tools, handlers, toolNames } = await buildSdkTools(store, { role: "harvester", record });
+        const { tools, handlers, toolNames } = await buildSdkTools(store, { role: "harvester", embeddedOnly: HAS_EMBED, record });
 
         // ── SC1b: cold harvest at scale ──────────────────────────────────────
         await runAgent({
@@ -413,12 +413,12 @@ async function scenarioReal(sdk) {
         check("SC1b", "every edge carries >=1 evidence scopeKey",
             edges.length > 0 && edges.every((e) => e.evidence.length >= 1), `${edges.length} edges`);
         check("SC1b", "queue drained at scale", (await queueCount(store)) === 0);
-        const markCalls = record.filter((r) => r.name === "facts_mark_crawled" && r.result);
+        const markCalls = record.filter((r) => r.name === "facts_set_crawled" && r.result);
         const skippedTotal = markCalls.reduce((s, r) => s + (r.result.skipped ?? 0), 0);
         // A skipped stamp mid-run is the receipt guard WORKING (bad/stale hash
         // rejected); the invariant is that nothing is lost: every seeded fact
         // ends marked (markedTotal covers the corpus) and the queue drained.
-        const markedTotal = markCalls.reduce((s, r) => s + (r.result.marked ?? 0), 0);
+        const markedTotal = markCalls.reduce((s, r) => s + (r.result.affected ?? 0), 0);
         check("SC1b", "receipts honest: every fact marked; skips (if any) were retried",
             markedTotal >= messages.length + 1,
             `marked=${markedTotal} skipped=${skippedTotal} across ${markCalls.length} calls`);
@@ -459,8 +459,8 @@ async function scenarioReal(sdk) {
         let replayMarked = 0, replaySkipped = 0;
         for (const call of mutating) {
             const res = await handlers.get(call.name)(call.args);
-            if (call.name === "facts_mark_crawled" && res) {
-                replayMarked += res.marked ?? 0;
+            if (call.name === "facts_set_crawled" && res) {
+                replayMarked += res.affected ?? 0;
                 replaySkipped += res.skipped ?? 0;
             }
         }

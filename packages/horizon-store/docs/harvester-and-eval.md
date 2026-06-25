@@ -172,7 +172,7 @@ flowchart TD
     E --> F[graph_upsert_node per entity<br/>+ evidence scopeKey]
     F --> G[graph_upsert_edge per relationship<br/>resolved nodeKeys + predicate + evidence]
     G --> H[similarity refinement:<br/>facts_similar k=5 → cross-email edges]
-    H --> I[facts_mark_crawled<br/>scopeKey + etag]
+    H --> I[facts_set_crawled<br/>scopeKeys + etag]
     I --> C
     C -->|count 0| Z[done]
 ```
@@ -187,7 +187,7 @@ Key disciplines encoded in the prompt:
   handle (`tgl`) for an existing person merges in as an alias rather than minting
   a duplicate node.
 - **Carry one namespace.** Use the same namespace string for facts and graph,
-  for example `corpus/acme`: `facts_read_uncrawled({ namespace })`,
+  for example `corpus/acme`: `facts_read_uncrawled({ keyPrefix })`,
   `facts_search({ namespace })`, `graph_search_nodes({ namespace, ... })`, and
   `graph_upsert_node` / `graph_upsert_edge` with `namespace`. Graph namespace is
   a property, so `corpus/acme` also includes descendants such as
@@ -198,9 +198,9 @@ Key disciplines encoded in the prompt:
 - **Delete rows reconcile evidence.** A queue row with `deletedAt` set is a
   tombstone, not source content to re-incorporate. Call `graph_remove_evidence`
   for its `scopeKey`, then mark it with the same `{ scopeKey, etag }` receipt.
-- **Mark last.** `facts_mark_crawled` only after incorporation or delete
-  reconciliation; marking without doing the work permanently loses that email's
-  graph update.
+- **Mark last.** `facts_set_crawled({ scopeKeys: [{ scopeKey, etag }] })` only
+  after incorporation or delete reconciliation; marking without doing the work
+  permanently loses that email's graph update.
 
 ### III.3 The embedding gate (defer, don't drop)
 
@@ -279,7 +279,7 @@ the tools the model sees *are* the provider's descriptors.
 | `facts_similar` | reader + harvester | `similarFacts` (pgvector cosine) |
 | `facts_read` | reader + harvester | `readFacts` (full email by scopeKey) |
 | `facts_read_uncrawled` | harvester | gated queue read |
-| `facts_mark_crawled` | harvester | stamp `last_crawled_at` |
+| `facts_set_crawled` | harvester | set `last_crawled_at` or requeue by `scopeKeys` / `keyPrefix` |
 | `graph_list_namespaces` | reader + harvester | compact namespace/frontmatter discovery |
 | `graph_get_namespace` | reader + harvester | full namespace descriptor |
 | `graph_search_nodes` | reader + harvester | `searchGraphNodes` (namespace + seeds + depth) |

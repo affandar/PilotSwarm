@@ -315,11 +315,19 @@ Every base fact carries a `scopeKey` and a `last_crawled_at` stamp. Facts with
 `last_crawled_at IS NULL` (new or edited since the last crawl) are the
 **harvester work queue**:
 
-- `facts_read_uncrawled({ namespace?, limit? })` — returns queued facts, each with
-  its `scopeKey` + `etag` receipt (and `deletedAt` when the fact is a tombstone).
-- `facts_mark_crawled({ stamps: [{ scopeKey, etag }] })` — stamps facts as
-  incorporated so they leave the queue. A skipped stamp means the fact was already
-  marked, changed since your read (etag mismatch), or no longer exists.
+- `facts_read_uncrawled({ keyPrefix?, namespace?, limit? })` — returns queued facts,
+  each with its `scopeKey` + `etag` receipt (and `deletedAt` when the fact is a
+  tombstone). `keyPrefix` is a literal key prefix; `namespace` remains a deprecated
+  alias for the same read filter.
+- `facts_set_crawled({ scopeKeys: [{ scopeKey, etag }], crawled?: true })` — stamps
+  processed facts as incorporated so they leave the queue. Include `etag` to make each
+  entry conditional; omit it only for an intentional stomp. A skipped entry means the
+  fact was already in the target state, changed since your read (etag mismatch), or no
+  longer exists.
+- `facts_set_crawled({ keyPrefix, crawled })` — flips a whole literal prefix. Use
+  `crawled:false` to requeue a prefix for recrawl; `crawled:true` is a coarse flush and
+  skips tombstones, which should be reconciled with `graph_remove_evidence` and marked
+  by `scopeKeys`.
 
 ### The harvester role
 
@@ -340,7 +348,7 @@ but the **tools** are shipped by PilotSwarm:
 - Graph tools accept the same `namespace` concept as the crawl/search tools.
   `namespace: "corpus/acme"` matches graph nodes/edges stamped exactly with
   `corpus/acme` and descendants such as `corpus/acme/services`. Use the same
-  namespace string for `facts_read_uncrawled`, `facts_search`,
+  namespace string for `facts_read_uncrawled({ keyPrefix })`, `facts_search`,
   `graph_search_*`, `graph_upsert_*`, `graph_neighbourhood`, `graph_stats`,
   merge, and delete operations so a harvester can discover or maintain one
   corpus/domain without enumerating seed nodes first.

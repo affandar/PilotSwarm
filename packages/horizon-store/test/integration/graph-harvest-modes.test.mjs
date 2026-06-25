@@ -58,7 +58,7 @@ describe.skipIf(!HAS_DB)("graph add-on fill modes", () => {
             evidence: [fact.scopeKey],
             agentId: "code-harvest",
         });
-        assert.deepEqual(await factStore.markFactsCrawled([{ scopeKey: fact.scopeKey, etag: fact.etag }]), { marked: 1, skipped: 0 });
+        assert.deepEqual(await factStore.setFactsCrawled({ scopeKeys: [{ scopeKey: fact.scopeKey, etag: fact.etag }] }), { affected: 1, skipped: 0 });
 
         const edges = await graphStore.searchGraphEdges({ fromKey: service.nodeKey, namespace: "corpus/fill" }, { unrestricted: true });
         assert.ok(edges.some((edge) => edge.toKey === team.nodeKey && edge.evidence.includes(fact.scopeKey)),
@@ -85,7 +85,7 @@ describe.skipIf(!HAS_DB)("graph add-on fill modes", () => {
         });
 
         const readQueue = byName(tools, "facts_read_uncrawled");
-        const markQueue = byName(tools, "facts_mark_crawled");
+        const markQueue = byName(tools, "facts_set_crawled");
         const upsertNode = byName(tools, "graph_upsert_node");
         const upsertEdge = byName(tools, "graph_upsert_edge");
         const searchEdges = byName(tools, "graph_search_edges");
@@ -113,8 +113,8 @@ describe.skipIf(!HAS_DB)("graph add-on fill modes", () => {
             namespace: "corpus/fill",
             evidence: [fact.scopeKey],
         }, { sessionId: "harvester-session" });
-        assert.deepEqual(await markQueue.handler({ stamps: [{ scopeKey: fact.scopeKey, etag: fact.etag }] }, { sessionId: "harvester-session" }),
-            { marked: 1, skipped: 0 });
+        assert.deepEqual(await markQueue.handler({ scopeKeys: [{ scopeKey: fact.scopeKey, etag: fact.etag }] }, { sessionId: "harvester-session" }),
+            { affected: 1, skipped: 0 });
 
         const edges = await searchEdges.handler({ fromKey: inventory.nodeKey, namespace: "corpus/fill" }, { sessionId: "harvester-session" });
         assert.ok(edges.some((edge) => edge.toKey === checkout.nodeKey && edge.evidence.includes(fact.scopeKey)),
@@ -133,6 +133,6 @@ describe.skipIf(!HAS_DB)("graph add-on fill modes", () => {
         const names = new Set(tools.map((tool) => tool.name));
         assert.ok(names.has("graph_upsert_node"), "ordinary non-tuner agents can write graph facts they know");
         assert.ok(!names.has("facts_read_uncrawled"), "ordinary agents do not get privileged crawl queue read");
-        assert.ok(!names.has("facts_mark_crawled"), "ordinary agents do not get privileged crawl queue write");
+        assert.ok(!names.has("facts_set_crawled"), "ordinary agents do not get privileged crawl queue write");
     });
 });

@@ -191,7 +191,7 @@ describe.skipIf(!HAS_HDB)("Tier 2: base fact store + graph store (super basic ha
             factStore, graphStore, agentIdentity: "app-harvester", isHarvester: true, agentId: "app-harvester", ...graphAccess,
         });
         const readUncrawled = byName(harv, "facts_read_uncrawled");
-        const markCrawled = byName(harv, "facts_mark_crawled");
+        const markCrawled = byName(harv, "facts_set_crawled");
         const upsertNode = byName(harv, "graph_upsert_node");
         const searchNodes = byName(harv, "graph_search_nodes");
 
@@ -205,8 +205,8 @@ describe.skipIf(!HAS_HDB)("Tier 2: base fact store + graph store (super basic ha
         const node = await upsertNode.handler({ kind: "thing", name: `Widget-${runId}`, evidence: [queued.scopeKey] }, { sessionId: "h" });
         assert(node.nodeKey, "graph node created from the intake fact");
 
-        const marked = await markCrawled.handler({ stamps: [{ scopeKey: queued.scopeKey, etag: queued.etag }] }, { sessionId: "h" });
-        assertEqual(marked.marked, 1, "the receipt stamps the fact crawled");
+        const marked = await markCrawled.handler({ scopeKeys: [{ scopeKey: queued.scopeKey, etag: queued.etag }] }, { sessionId: "h" });
+        assertEqual(marked.affected, 1, "the receipt stamps the fact crawled");
         const after = await readUncrawled.handler({ namespace: ns, limit: 50 }, { sessionId: "h" });
         assert(!after.facts.some((f) => f.key === factKey), "harvested fact left the crawl queue");
 
@@ -326,7 +326,7 @@ describe.skipIf(!HAS_HDB)("Tier 4: enhanced fact store + graph store (super basi
             factStore, graphStore, agentIdentity: "app-harvester", isHarvester: true, agentId: "app-harvester", ...graphAccess,
         });
         const readUncrawled = byName(harv, "facts_read_uncrawled");
-        const markCrawled = byName(harv, "facts_mark_crawled");
+        const markCrawled = byName(harv, "facts_set_crawled");
         const upsertNode = byName(harv, "graph_upsert_node");
         const searchNodes = byName(harv, "graph_search_nodes");
 
@@ -340,8 +340,8 @@ describe.skipIf(!HAS_HDB)("Tier 4: enhanced fact store + graph store (super basi
         const node = await upsertNode.handler({ kind: "thing", name: `Gadget-${runId}`, evidence: [queued.scopeKey] }, { sessionId: "h" });
         assert(node.nodeKey, "graph node created from the enhanced-store intake fact");
 
-        const marked = await markCrawled.handler({ stamps: [{ scopeKey: queued.scopeKey, etag: queued.etag }] }, { sessionId: "h" });
-        assertEqual(marked.marked, 1, "receipt stamps the fact crawled");
+        const marked = await markCrawled.handler({ scopeKeys: [{ scopeKey: queued.scopeKey, etag: queued.etag }] }, { sessionId: "h" });
+        assertEqual(marked.affected, 1, "receipt stamps the fact crawled");
         const after = await readUncrawled.handler({ namespace: ns, limit: 50 }, { sessionId: "h" });
         assert(!after.facts.some((f) => f.key === factKey), "harvested fact left the crawl queue");
 

@@ -64,6 +64,11 @@ export function FACTS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "soft_delete_etag",
             sql: migration_0010_soft_delete_etag(schema),
         },
+        {
+            version: "0011",
+            name: "prefix_crawl_flag",
+            sql: migration_0011_prefix_crawl_flag(schema),
+        },
     ];
 }
 
@@ -1377,5 +1382,178 @@ BEGIN
     RETURN COALESCE(purged, 0);
 END;
 $$ LANGUAGE plpgsql;
+`;
+}
+
+// ─── Migration 0011: Prefix-scoped crawl flag (multi-crawler Phase 1) ─────────
+
+function migration_0011_prefix_crawl_flag(schema: string): string {
+    const s = `"${schema}"`;
+    const t = `${s}.facts`;
+    return `
+-- 0011_prefix_crawl_flag: generalize the single-crawler queue into N crawlers
+-- over DISJOINT key prefixes. No registry / lock / per-crawler state (Phase 2).
+-- Because each fact lives under exactly one crawler's prefix, no two crawlers
+-- touch the same row, so the single last_crawled_at column never contends.
+--
+--   - facts_like_prefix(text)     : escape % _ \\ in a literal prefix so LIKE
+--                                   matches it literally while still letting the
+--                                   planner use a text_pattern_ops index range.
+--   - facts_read_uncrawled        : param p_ns_prefix -> p_key_prefix, escaped
+--                                   literal-prefix LIKE, ORDER BY key,id.
+--   - facts_set_crawled_by_prefix : flip last_crawled_at for a whole literal prefix.
+--   - facts_set_crawled_by_keys   : flip last_crawled_at for an explicit batch of
+--                                   {scopeKey, etag?} receipts (1..500).
+--   - facts_mark_crawled          : DROPPED — replaced by facts_set_crawled_by_keys.
+--   - idx_${schema}_facts_uncrawled_key : (key text_pattern_ops, id) WHERE last_crawled_at IS NULL.
+--                                   Supersedes the id-only idx_${schema}_facts_uncrawled.
+--
+-- Crawl writes only touch last_crawled_at; facts_touch never bumps etag for a
+-- last_crawled_at-only write, so a {scopeKey, etag} receipt survives a recrawl.
+
+-- Escape a literal key prefix into a LIKE pattern (escape \\ % _, append %).
+-- Pair with \`ESCAPE chr(92)\` at the call site. chr(92) is a literal backslash;
+-- using it avoids backslash-quoting ambiguity across SQL string forms.
+CREATE OR REPLACE FUNCTION ${s}.facts_like_prefix(p_prefix TEXT)
+RETURNS TEXT LANGUAGE sql IMMUTABLE STRICT AS $$
+    SELECT replace(replace(replace(p_prefix, chr(92), chr(92) || chr(92)),
+                           '%', chr(92) || '%'), '_', chr(92) || '_') || '%';
+$$;
+
+-- Queue-prefix index: pending rows keyed by key for prefix range scans. The
+-- text_pattern_ops opclass is required because the database collation is not C.
+-- This supersedes the id-only uncrawled index (ORDER BY key,id uses this one).
+DROP INDEX IF EXISTS ${s}.idx_${schema}_facts_uncrawled;
+CREATE INDEX IF NOT EXISTS idx_${schema}_facts_uncrawled_key
+    ON ${t} (key text_pattern_ops, id) WHERE last_crawled_at IS NULL;
+
+-- Read: pending facts (last_crawled_at IS NULL) across ALL scopes, narrowed by a
+-- literal key prefix, oldest-first within the prefix. The param is renamed
+-- (p_ns_prefix -> p_key_prefix), which requires DROP before re-create.
+DROP FUNCTION IF EXISTS ${s}.facts_read_uncrawled(TEXT, INT);
+CREATE OR REPLACE FUNCTION ${s}.facts_read_uncrawled(
+    p_key_prefix TEXT,
+    p_limit      INT
+) RETURNS TABLE (
+    scope_key    TEXT,
+    key          TEXT,
+    value        JSONB,
+    agent_id     TEXT,
+    session_id   TEXT,
+    shared       BOOLEAN,
+    tags         TEXT[],
+    created_at   TIMESTAMPTZ,
+    updated_at   TIMESTAMPTZ,
+    deleted_at   TIMESTAMPTZ,
+    etag         BIGINT
+) LANGUAGE sql STABLE AS $$
+    SELECT f.scope_key, f.key, f.value, f.agent_id, f.session_id, f.shared,
+           f.tags, f.created_at, f.updated_at, f.deleted_at, f.etag
+    FROM ${t} f
+    WHERE f.last_crawled_at IS NULL
+      AND (p_key_prefix IS NULL
+           OR f.key LIKE ${s}.facts_like_prefix(p_key_prefix) ESCAPE chr(92))
+    ORDER BY f.key, f.id
+    LIMIT p_limit;
+$$;
+
+-- Prefix writer: flip last_crawled_at for a whole literal prefix.
+--   crawled=true  : queued (NULL) -> now(); NEVER a tombstone (a blind flush
+--                   must not turn unreconciled deletes into purgeable rows).
+--   crawled=false : crawled -> NULL (recrawl); tombstones included.
+-- affected = rows that changed state. skipped = rows that matched the prefix
+-- selector but were already in the requested state. An empty prefix is a no-op.
+CREATE OR REPLACE FUNCTION ${s}.facts_set_crawled_by_prefix(
+    p_key_prefix TEXT,
+    p_crawled    BOOLEAN
+) RETURNS TABLE (affected INT, skipped INT)
+LANGUAGE sql AS $$
+    WITH matched AS (
+        SELECT f.id
+        FROM ${t} f
+        WHERE p_key_prefix IS NOT NULL
+          AND p_key_prefix <> ''
+          AND f.key LIKE ${s}.facts_like_prefix(p_key_prefix) ESCAPE chr(92)
+          AND (NOT p_crawled OR f.deleted_at IS NULL)
+    ), upd AS (
+        UPDATE ${t} f
+           SET last_crawled_at = CASE WHEN p_crawled THEN now() ELSE NULL END
+          FROM matched m
+         WHERE f.id = m.id
+           AND ( (p_crawled     AND f.last_crawled_at IS NULL)
+              OR (NOT p_crawled AND f.last_crawled_at IS NOT NULL) )
+        RETURNING f.id
+    )
+    SELECT (SELECT count(*) FROM upd)::int AS affected,
+           ((SELECT count(*) FROM matched) - (SELECT count(*) FROM upd))::int AS skipped;
+$$;
+
+-- Explicit-batch writer: 1..500 {scopeKey, etag?} receipts.
+--   with etag    : conditional — facts.etag must match, else skipped.
+--   without etag : unconditional stomp of that key's crawl flag.
+-- affected = rows that changed state. skipped = an existing fact matched the
+-- scopeKey but did not change (etag mismatch, or already in the requested
+-- state). A non-existent scopeKey is neither affected nor skipped.
+CREATE OR REPLACE FUNCTION ${s}.facts_set_crawled_by_keys(
+    p_keys    JSONB,
+    p_crawled BOOLEAN
+) RETURNS TABLE (affected INT, skipped INT)
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_count INT;
+    v_bad   BOOLEAN;
+    v_dup   BOOLEAN;
+BEGIN
+    IF jsonb_typeof(p_keys) IS DISTINCT FROM 'array' THEN
+        RAISE EXCEPTION 'facts_set_crawled_by_keys requires a JSON array';
+    END IF;
+    v_count := jsonb_array_length(p_keys);
+    IF v_count = 0 OR v_count > 500 THEN
+        RAISE EXCEPTION 'facts_set_crawled_by_keys requires 1..500 entries';
+    END IF;
+
+    SELECT
+        bool_or(scope_key IS NULL OR scope_key = '' OR (has_etag AND (etag IS NULL OR etag <= 0))),
+        count(*) <> count(DISTINCT scope_key)
+      INTO v_bad, v_dup
+    FROM (
+        SELECT e->>'scopeKey' AS scope_key,
+               (e ? 'etag') AS has_etag,
+               CASE WHEN (e ? 'etag') AND (e->>'etag') ~ '^[0-9]+$'
+                    THEN (e->>'etag')::BIGINT ELSE NULL END AS etag
+        FROM jsonb_array_elements(p_keys) e
+    ) q;
+    IF v_bad OR v_dup THEN
+        RAISE EXCEPTION 'facts_set_crawled_by_keys entries require unique scopeKey values and optional numeric etags';
+    END IF;
+
+    RETURN QUERY
+    WITH input AS (
+        SELECT e->>'scopeKey' AS scope_key,
+               (e ? 'etag') AS has_etag,
+               CASE WHEN (e ? 'etag') AND (e->>'etag') ~ '^[0-9]+$'
+                    THEN (e->>'etag')::BIGINT ELSE NULL END AS etag
+        FROM jsonb_array_elements(p_keys) e
+    ), matched AS (
+        SELECT f.id, i.has_etag, i.etag AS input_etag
+        FROM ${t} f
+        JOIN input i ON i.scope_key = f.scope_key
+    ), upd AS (
+        UPDATE ${t} f
+           SET last_crawled_at = CASE WHEN p_crawled THEN now() ELSE NULL END
+          FROM matched m
+         WHERE f.id = m.id
+           AND (NOT m.has_etag OR f.etag = m.input_etag)
+           AND ( (p_crawled     AND f.last_crawled_at IS NULL)
+              OR (NOT p_crawled AND f.last_crawled_at IS NOT NULL) )
+        RETURNING f.id
+    )
+    SELECT (SELECT count(*) FROM upd)::int AS affected,
+           ((SELECT count(*) FROM matched) - (SELECT count(*) FROM upd))::int AS skipped;
+END;
+$$;
+
+-- The legacy single-shape receipt mark is replaced by facts_set_crawled_by_keys.
+DROP FUNCTION IF EXISTS ${s}.facts_mark_crawled(JSONB);
 `;
 }

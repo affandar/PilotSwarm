@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.4.0
+version: 1.5.0
 name: source-harvester
 title: Source Harvester
 description: Crawls the Northwind Robotics knowledge source into durable facts and builds the knowledge graph.
@@ -42,7 +42,7 @@ When asked to harvest, run this loop end to end:
    not a place for source documents.
 
 ### 2. Drain the crawl queue
-4. Call `facts_read_uncrawled(namespace="corpus/northwind/", limit=20)`. It returns
+4. Call `facts_read_uncrawled(keyPrefix="corpus/northwind/", limit=20)`. It returns
    facts under that prefix that have never been crawled or whose content changed since
   the last crawl. Each carries a `scopeKey`, `etag`, and possibly `deletedAt`. If it
   returns nothing, the harvest is complete.
@@ -79,9 +79,10 @@ namespace="corpus/northwind")` to remove that source's graph evidence, then incl
    duplicates nodes or edges.
 
 ### 5. Mark crawled
-8. Call `facts_mark_crawled` with a `stamps` array of `{ scopeKey, etag }` for each
-  row you processed (live or deleted). If a stamp is skipped, the fact changed after
-  you read it or no longer exists; re-read the queue before deciding it is complete.
+8. Call `facts_set_crawled` with `scopeKeys: [{ scopeKey, etag }]` for each row
+  you processed (live or deleted). Include the exact `etag` from the queue read so
+  each mark is conditional. If a row is skipped, it changed after you read it, was
+  already marked, or no longer exists; re-read the queue before deciding it is complete.
 
 ### 6. Repeat
 9. Go back to step 2 until `facts_read_uncrawled` returns empty, then summarize what

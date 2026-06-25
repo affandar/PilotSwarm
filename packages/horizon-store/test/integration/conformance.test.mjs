@@ -55,7 +55,7 @@ test("interface coverage: every public EnhancedFactStore/GraphInterface method i
     const METHODS = [
         "storeFact", "readFacts", "deleteFact", "deleteSessionFactsForSession",
         "getSessionFactsStats", "getFactsStatsForSessions", "getSharedFactsStats",
-        "searchFacts", "similarFacts", "readUncrawledFacts", "markFactsCrawled",
+        "searchFacts", "similarFacts", "readUncrawledFacts", "setFactsCrawled",
         "configureEmbedder", "startEmbedder", "stopEmbedder", "embedderStatus",
         "searchGraphNodes", "searchGraphEdges", "graphNeighbourhood",
         "upsertGraphNode", "upsertGraphEdge", "mergeGraphNodes",

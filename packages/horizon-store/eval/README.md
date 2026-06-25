@@ -15,7 +15,7 @@ one eval-side policy on top — the harvester role REQUIRES evidence on graph
 writes (the 05 golden-rule norm, enforced so the model self-corrects in-loop).
 
 ```
-corpus (emails) ──seed──▶ HorizonDB facts ◀── facts_read_uncrawled / facts_mark_crawled
+corpus (emails) ──seed──▶ HorizonDB facts ◀── facts_read_uncrawled / facts_set_crawled
                                    │
    Copilot SDK agent ── tools ─────┤  graph_search_nodes / graph_upsert_node / graph_upsert_edge
    (harvester / reader prompts)    ▼

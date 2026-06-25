@@ -23,7 +23,8 @@ export type {
     ForcePurgeFactsInput,
     AccessContext,
     FactStore,
-    CrawledFactStamp,
+    SetFactsCrawledInput,
+    SetFactsCrawledScopeKey,
     // enhanced retrieval + embedder
     EnhancedFactStore,
     FactsCapabilities,

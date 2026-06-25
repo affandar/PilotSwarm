@@ -142,7 +142,7 @@ HORIZON_EMBED_API_KEY=…
 > collision.
 
 **2. A `harvester: true` agent in the plugin.** The crawl-queue tools
-(`facts_read_uncrawled` / `facts_mark_crawled`) appear only when **both** the graph
+(`facts_read_uncrawled` / `facts_set_crawled`) appear only when **both** the graph
 store is configured (`HORIZON_GRAPH_DATABASE_URL`) **and** the session's own agent
 declares `harvester: true`. The graph-write tools (`graph_upsert_node` /
 `graph_upsert_edge` / `graph_merge_nodes` / `graph_delete_*`) need only the graph store
@@ -161,9 +161,10 @@ cron(seconds=3600, reason="hourly source harvest")
 cron_at(minute=0, hour=2, tz="America/Los_Angeles", reason="nightly harvest")
 ```
 
-The harvester wakes on its timer, drains `facts_read_uncrawled` into the graph, marks
-each processed row crawled with its exact `{ scopeKey, etag }` receipt, and returns
-dormant. Live rows are incorporated into the graph. Soft-deleted rows (`deletedAt`
+The harvester wakes on its timer, drains `facts_read_uncrawled({ keyPrefix, limit })`
+into the graph, marks each processed row crawled with
+`facts_set_crawled({ scopeKeys: [{ scopeKey, etag }] })`, and returns dormant.
+Live rows are incorporated into the graph. Soft-deleted rows (`deletedAt`
 set) are reconciled with `graph_remove_evidence(scopeKey, namespace)` before marking,
 so only that source fact's graph anchors/evidence are removed.
 
@@ -249,7 +250,7 @@ normal batched embedding.
 
 **Watch crawl-backlog health.** `graph_stats` reports graph size and the uncrawled
 backlog. A backlog that only grows means the harvester is not keeping up — increase its
-crawl frequency or replica count, or widen each crawl's `facts_read_uncrawled(limit=…)`.
+crawl frequency or replica count, or widen each crawl's `facts_read_uncrawled({ limit: … })`.
 
 **Run compatible store versions.** All services sharing a HorizonDB run the
 `pilotswarm-horizon-store` migrations against the shared schema (advisory-locked, so

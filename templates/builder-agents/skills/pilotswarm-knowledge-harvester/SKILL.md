@@ -36,7 +36,7 @@ enough; do **not** stand up the enhanced providers.
 ## Prerequisites: The Graph Store Is Mandatory
 
 **The entire harvest surface keys off `!!graphStore`.** The crawl queue
-(`facts_read_uncrawled` / `facts_mark_crawled`) and the graph-write tools
+(`facts_read_uncrawled` / `facts_set_crawled`) and the graph-write tools
 (`graph_upsert_*` / `graph_merge_nodes` / `graph_delete_*`) exist **only when a
 GraphStore is configured** (`graphDatabaseUrl` / `HORIZON_GRAPH_DATABASE_URL`).
 Without a graph store the `harvester: true` flag grants **nothing extra** — there is
@@ -99,7 +99,7 @@ harmlessly ignored).
 
 | Role | `harvester` frontmatter | Gets | Responsibility |
 |------|------------------------|------|----------------|
-| **Harvester** | `harvester: true` | crawl queue (`facts_read_uncrawled` / `facts_mark_crawled`) + graph reconciliation (`graph_remove_evidence`) + namespace registry (`graph_upsert_namespace` / `graph_archive_namespace`) + graph writes (`graph_upsert_node` / `graph_upsert_edge` / `graph_merge_nodes` / `graph_delete_node` / `graph_delete_edge`) | Register the corpus, crawl sources into a dedicated `corpus/*` (source-capture) namespace, build/reconcile the graph, mark facts crawled |
+| **Harvester** | `harvester: true` | crawl queue (`facts_read_uncrawled` / `facts_set_crawled`) + graph reconciliation (`graph_remove_evidence`) + namespace registry (`graph_upsert_namespace` / `graph_archive_namespace`) + graph writes (`graph_upsert_node` / `graph_upsert_edge` / `graph_merge_nodes` / `graph_delete_node` / `graph_delete_edge`) | Register the corpus, crawl sources into a dedicated `corpus/*` (source-capture) namespace, build/reconcile the graph, mark facts crawled |
 | **Reader** | (none) | `facts_search` / `facts_similar` + namespace discovery (`graph_list_namespaces` / `graph_get_namespace`) + namespace registration (`graph_upsert_namespace`) + graph reads (`graph_search_nodes` / `graph_search_edges` / `graph_neighbourhood`) + graph writes (`graph_upsert_*` / `graph_merge_nodes` / `graph_delete_*`) | Discover/register relevant corpora, retrieve knowledge, pivot fact↔graph; may also incorporate into the shared graph |
 | **Facts Manager** | system agent (dormant) | crawl + graph writes, but **does not crawl** unless an operator explicitly asks | Curate `intake/*` (task-agent observations) into reusable skills |
 
@@ -108,7 +108,7 @@ agent's own `harvester: true` frontmatter on every turn (replay-safe, survives
 hydration). It is **never inherited** through spawn: a harvester that spawns a child
 does not make the child a harvester. Only agents whose own definition declares
 `harvester: true` get the privileged **crawl queue** (`facts_read_uncrawled` /
-`facts_mark_crawled`), which reads facts across all scopes. The **graph-write** tools
+`facts_set_crawled`), which reads facts across all scopes. The **graph-write** tools
 (`graph_upsert_*` / `graph_merge_nodes` / `graph_delete_*`) are **not** gated by the
 harvester role — they are available to every session except the read-only `agent-tuner`,
 because the knowledge graph is shared. A harvester is simply the agent that owns the
@@ -150,7 +150,7 @@ deliberately and idempotently.
   is relevant with `graph_list_namespaces`.
 2. **Capture sources.** Write each raw source item as a fact under your own
    `corpus/<source>/...` namespace (NOT `intake/*` — see Boundaries). `scope: shared`.
-3. **Pull the backlog.** `facts_read_uncrawled(namespace="corpus/<source>/", limit=20)`
+3. **Pull the backlog.** `facts_read_uncrawled(keyPrefix="corpus/<source>/", limit=20)`
   returns facts that have never been crawled, whose content changed since the last
   crawl, or that were soft-deleted. Each row carries a `scopeKey`, `etag`, and
   possibly `deletedAt`.
@@ -164,10 +164,10 @@ deliberately and idempotently.
 5. **Build the graph.** For each entity: `graph_upsert_node(...)` with the fact's
    `scopeKey` as evidence. For each relationship: `graph_upsert_edge(...)`. Upserts
    are idempotent — re-running the same crawl converges, it does not duplicate.
-6. **Mark crawled.** `facts_mark_crawled` takes a `stamps` array of
-  `{ scopeKey, etag }` from the exact rows you processed. A skipped stamp means the
-  fact changed since your read, was already marked, or no longer exists; re-read
-  before declaring the backlog empty.
+6. **Mark crawled.** `facts_set_crawled` takes `scopeKeys: [{ scopeKey, etag }]`
+  from the exact rows you processed. Include the queue-read `etag` for conditional
+  marks. A skipped entry means the fact changed since your read, was already marked,
+  or no longer exists; re-read before declaring the backlog empty.
 7. Repeat until `facts_read_uncrawled` returns empty, then stop.
 
 ## Recurring Harvest
@@ -235,6 +235,6 @@ seed and navigate by graph topology alone (`graph_search_nodes` → `graph_neigh
 - [ ] Worker, client, and management client all spread `horizonConfigFromEnv()`.
 - [ ] Exactly the harvester agent(s) declare `harvester: true`; readers do not.
 - [ ] Recurring crawl uses `cron` / `cron_at`, not a polling loop.
-- [ ] `facts_mark_crawled` passes the unmodified `{ scopeKey, etag }` receipt in `stamps`.
+- [ ] `facts_set_crawled` passes unmodified `{ scopeKey, etag }` entries in `scopeKeys`.
 - [ ] Deleted crawl rows (`deletedAt` set) call `graph_remove_evidence` before marking.
 - [ ] Gating + composition tests added; composition test auto-skips without HDB.

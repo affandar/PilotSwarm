@@ -53,7 +53,7 @@ function baseFactSurface() {
         async getFactsStatsForSessions() { return []; },
         async getSharedFactsStats() { return []; },
         async readUncrawledFacts() { return { count: 0, facts: [] }; },
-        async markFactsCrawled() { return { marked: 0, skipped: 0 }; },
+        async setFactsCrawled() { return { affected: 0, skipped: 0 }; },
         async purgeExpiredFacts() { return 0; },
         async getFactsTombstoneStats() { return { pendingTotal: 0, unreconciled: 0, ttlBlocked: 0, oldestUnreconciledAgeSeconds: null, reconciledUnswept: 0 }; },
         async forcePurgeFacts() { return 0; },
@@ -156,7 +156,7 @@ async function register({ factStore, graphStore, agentIdentity, isHarvester, wor
 const SEARCH_TOOLS = ["facts_search", "facts_similar", "search_skills"];
 const GRAPH_READS = ["graph_search_nodes", "graph_search_edges", "graph_neighbourhood"];
 const GRAPH_WRITES = ["graph_upsert_node", "graph_upsert_edge", "graph_merge_nodes", "graph_delete_node", "graph_delete_edge"];
-const CRAWL_TOOLS = ["facts_read_uncrawled", "facts_mark_crawled", "graph_remove_evidence"];
+const CRAWL_TOOLS = ["facts_read_uncrawled", "facts_set_crawled", "graph_remove_evidence"];
 const TOMBSTONE_READS = ["facts_tombstone_stats"];
 const TOMBSTONE_MUTATIONS = ["facts_purge_tombstones", "facts_force_purge"];
 

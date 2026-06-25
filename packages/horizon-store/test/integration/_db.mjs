@@ -113,7 +113,7 @@ function combinedStore(factStore, graphStore) {
     const FACT = [
         "storeFact", "readFacts", "deleteFact", "deleteSessionFactsForSession",
         "getSessionFactsStats", "getFactsStatsForSessions", "getSharedFactsStats",
-        "searchFacts", "similarFacts", "readUncrawledFacts", "markFactsCrawled",
+        "searchFacts", "similarFacts", "readUncrawledFacts", "setFactsCrawled",
         "configureEmbedder", "startEmbedder", "stopEmbedder", "embedderStatus",
     ];
     const GRAPH = [

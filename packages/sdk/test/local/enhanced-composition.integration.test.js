@@ -11,7 +11,7 @@
  * to end —
  *
  *   store_fact(intake) → facts_read_uncrawled → graph_upsert_node(evidence)
- *     → facts_mark_crawled → graph_search_nodes → readFacts(evidence) round-trip
+ *     → facts_set_crawled → graph_search_nodes → readFacts(evidence) round-trip
  *
  * and that a BASE fact store yields NO search tools even with a graph present.
  *
@@ -131,7 +131,7 @@ describe.skipIf(!HAS_HDB)("E3: base PgFactStore + real graph composition (live H
             resolveAccess: async (sid) => ({ readerSessionId: sid ?? null, grantedSessionIds: [] }),
         });
         const readUncrawled = byName(harvesterTools, "facts_read_uncrawled");
-        const markCrawled = byName(harvesterTools, "facts_mark_crawled");
+        const markCrawled = byName(harvesterTools, "facts_set_crawled");
         const upsertNode = byName(harvesterTools, "graph_upsert_node");
         const searchNodes = byName(harvesterTools, "graph_search_nodes");
         assert(storeFact && readUncrawled && markCrawled && upsertNode && searchNodes, "store_fact + harvester tools present");
@@ -159,8 +159,8 @@ describe.skipIf(!HAS_HDB)("E3: base PgFactStore + real graph composition (live H
         assert(node.nodeKey, "graph node created");
 
         // 5. The receipt stamps it crawled → it leaves the queue.
-        const marked = await markCrawled.handler({ stamps: [{ scopeKey: queued.scopeKey, etag: queued.etag }] }, { sessionId: "harv1" });
-        assertEqual(marked.marked, 1, "exactly the one fact is stamped crawled");
+        const marked = await markCrawled.handler({ scopeKeys: [{ scopeKey: queued.scopeKey, etag: queued.etag }] }, { sessionId: "harv1" });
+        assertEqual(marked.affected, 1, "exactly the one fact is stamped crawled");
 
         const after = await readUncrawled.handler({ namespace: ns, limit: 50 }, { sessionId: "harv1" });
         assert(!after.facts.some((f) => f.key === factKey), "the harvested fact has left the crawl queue");
@@ -236,7 +236,7 @@ describe.skipIf(!HAS_HDB)("E3: base PgFactStore + real graph composition (live H
             resolveAccess: async (sid) => ({ readerSessionId: sid ?? null, grantedSessionIds: [] }),
         });
         const readUncrawled = byName(harvesterTools, "facts_read_uncrawled");
-        const markCrawled = byName(harvesterTools, "facts_mark_crawled");
+        const markCrawled = byName(harvesterTools, "facts_set_crawled");
         const upsertNode = byName(harvesterTools, "graph_upsert_node");
         const upsertEdge = byName(harvesterTools, "graph_upsert_edge");
         const searchEdges = byName(harvesterTools, "graph_search_edges");
@@ -261,7 +261,7 @@ describe.skipIf(!HAS_HDB)("E3: base PgFactStore + real graph composition (live H
             { sessionId: "harv1" },
         );
         assert(!edge.error, `edge A→B created (${edge.error ?? ""})`);
-        await markCrawled.handler({ stamps: [
+        await markCrawled.handler({ scopeKeys: [
             { scopeKey: xRow.scopeKey, etag: xRow.etag },
             { scopeKey: yRow.scopeKey, etag: yRow.etag },
         ] }, { sessionId: "harv1" });
@@ -281,8 +281,8 @@ describe.skipIf(!HAS_HDB)("E3: base PgFactStore + real graph composition (live H
         const stillEdges = await searchEdges.handler({ fromKey: a.nodeKey, toKey: b.nodeKey }, { sessionId: "harv1" });
         assert(Array.isArray(stillEdges) && stillEdges.length >= 1, "edge A→B survives X's deletion");
 
-        const stamp = await markCrawled.handler({ stamps: [{ scopeKey: xTomb.scopeKey, etag: xTomb.etag }] }, { sessionId: "harv1" });
-        assertEqual(stamp.marked, 1, "tombstone reconciliation marks crawled with the current etag");
+        const stamp = await markCrawled.handler({ scopeKeys: [{ scopeKey: xTomb.scopeKey, etag: xTomb.etag }] }, { sessionId: "harv1" });
+        assertEqual(stamp.affected, 1, "tombstone reconciliation marks crawled with the current etag");
 
         // Now delete Y too: edge A→B becomes evidence-less → edge removed; node B
         // (only evidenced by Y, now edge-less) is reaped.

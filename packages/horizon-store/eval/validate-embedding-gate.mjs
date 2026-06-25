@@ -139,9 +139,11 @@ async function main() {
 
         // 4) crawling drains the queue
         const stamps = gatedAfter.facts.map((f) => ({ scopeKey: f.scopeKey, etag: f.etag }));
-        const marked = await store.markFactsCrawled(stamps);
+        const marked = await store.setFactsCrawled({ scopeKeys: stamps });
         const gatedDrained = await store.readUncrawledFacts({ namespace: NS, limit: 100, embeddedOnly: true });
-        check("queue drains after crawl", gatedDrained.count === 0, `marked=${marked.marked}, remaining=${gatedDrained.count}`);
+        check("crawl mark affected every gated fact", marked.affected === N && marked.skipped === 0,
+            `affected=${marked.affected}, skipped=${marked.skipped}`);
+        check("queue drains after crawl", gatedDrained.count === 0, `marked=${marked.affected}, remaining=${gatedDrained.count}`);
 
         console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`}`);
     } finally {

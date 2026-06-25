@@ -78,10 +78,10 @@ const HARVEST_PROMPT =
 const DELETE_PROMPT =
     "Run the source-deletion reconciliation scenario for corpus/northwind/svc-telemetry. " +
     "First call delete_fact for key 'corpus/northwind/svc-telemetry' with shared=true. " +
-    "Then drain facts_read_uncrawled(namespace='corpus/northwind/', limit=20). " +
+    "Then drain facts_read_uncrawled(keyPrefix='corpus/northwind/', limit=20). " +
     "For every row with deletedAt set, call graph_remove_evidence(scopeKey=row.scopeKey, namespace='corpus/northwind') " +
     "to remove that source's node anchors and edge evidence. For live rows, do not rebuild unless they are uncrawled for another reason. " +
-    "Finally mark every processed row crawled with its exact scopeKey and etag, and summarize what evidence was removed.";
+    "Finally call facts_set_crawled with scopeKeys entries containing each processed row's exact scopeKey and etag, and summarize what evidence was removed.";
 
 const ASK_PROMPT =
     "Question: if telemetry-pipeline has an outage, which services are affected, and which " +

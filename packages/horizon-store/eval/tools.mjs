@@ -83,7 +83,7 @@ export const MUTATING_TOOLS = new Set([
     "graph_merge_nodes",
     "graph_delete_node",
     "graph_delete_edge",
-    "facts_mark_crawled",
+    "facts_set_crawled",
 ]);
 
 // ── prompts ──────────────────────────────────────────────────────────────────
@@ -127,7 +127,7 @@ export const HARVESTER_SYSTEM_PROMPT = [
     "     relevant nodes with a precise predicate and BOTH emails' scopeKeys as evidence. This is",
     "     how cross-thread structure (not just within-email facts) gets into the graph. Do NOT",
     "     invent relationships the texts do not support; skip weak/unrelated neighbours.",
-    "  6. facts_mark_crawled with stamps: [{ scopeKey, etag }] — use the EXACT scopeKey and etag",
+    "  6. facts_set_crawled with scopeKeys: [{ scopeKey, etag }] — use the EXACT scopeKey and etag",
     "     you read in step 1. NEVER mark an email crawled before you have incorporated it",
     "     (steps 3-5b): marking without incorporating permanently loses that email's knowledge.",
     "     If a stamp is skipped the fact changed under you: that is fine, it stays queued and",

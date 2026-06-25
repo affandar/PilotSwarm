@@ -89,10 +89,90 @@ export interface AccessContext {
     unrestricted?: boolean;
 }
 
-/** Crawl-queue receipt: the scope key + etag returned by readUncrawledFacts. */
-export interface CrawledFactStamp {
+/**
+ * One scope-key receipt for {@link FactStore.setFactsCrawled}. `etag` (optional)
+ * makes the entry a conditional compare-and-set against `facts.etag` — the
+ * receipt returned by `readUncrawledFacts`; omitting it stomps the crawl flag
+ * regardless of source version.
+ */
+export interface SetFactsCrawledScopeKey {
     scopeKey: string;
-    etag: number;
+    etag?: number;
+}
+
+/**
+ * Input to {@link FactStore.setFactsCrawled}. Provide EXACTLY one selection of
+ * `scopeKeys` (explicit batch) or `keyPrefix` (coarse prefix flush).
+ */
+export interface SetFactsCrawledInput {
+    /** Explicit batch of 1..500 receipts. Each entry's etag, when present, is a conditional CAS. */
+    scopeKeys?: SetFactsCrawledScopeKey[];
+    /** Literal key prefix flipped in one shot (no per-row etag). Must be non-empty. */
+    keyPrefix?: string;
+    /** Default true. false clears `last_crawled_at` to trigger a recrawl (includes tombstones). */
+    crawled?: boolean;
+}
+
+/**
+ * Validate + normalize {@link SetFactsCrawledInput} into a single proc call.
+ * Mirrors the SQL guards in `facts_set_crawled_by_keys` so misuse fails fast at
+ * the provider boundary with a clear message.
+ * @internal
+ */
+function normalizeSetFactsCrawled(input: SetFactsCrawledInput):
+    | { mode: "prefix"; prefix: string; crawled: boolean }
+    | { mode: "keys"; keys: SetFactsCrawledScopeKey[]; crawled: boolean } {
+    let crawled = true;
+    if (input?.crawled !== undefined && input?.crawled !== null) {
+        if (typeof input.crawled !== "boolean") {
+            throw new Error("setFactsCrawled: crawled must be a boolean.");
+        }
+        crawled = input.crawled;
+    }
+    const hasKeys = input?.scopeKeys !== undefined && input?.scopeKeys !== null;
+    const hasPrefix = input?.keyPrefix !== undefined && input?.keyPrefix !== null;
+    if (hasKeys === hasPrefix) {
+        throw new Error("setFactsCrawled: provide exactly one of { scopeKeys } or { keyPrefix }.");
+    }
+    if (hasPrefix) {
+        const prefix = input.keyPrefix;
+        if (typeof prefix !== "string" || prefix === "") {
+            throw new Error("setFactsCrawled: keyPrefix must be a non-empty string (it would otherwise select every fact).");
+        }
+        return { mode: "prefix", prefix, crawled };
+    }
+    const entries = input.scopeKeys;
+    if (!Array.isArray(entries) || entries.length === 0) {
+        throw new Error("setFactsCrawled: scopeKeys must be a non-empty array.");
+    }
+    if (entries.length > 500) {
+        throw new Error("setFactsCrawled: scopeKeys is capped at 500 entries; page larger batches.");
+    }
+    const seen = new Set<string>();
+    const keys = entries.map((e) => {
+        if (!e || typeof e.scopeKey !== "string" || e.scopeKey === "") {
+            throw new Error("setFactsCrawled: each scopeKeys entry needs a non-empty scopeKey.");
+        }
+        if (seen.has(e.scopeKey)) {
+            throw new Error(`setFactsCrawled: duplicate scopeKey "${e.scopeKey}" in batch.`);
+        }
+        seen.add(e.scopeKey);
+        // A present etag (even null) makes the entry a conditional CAS and MUST
+        // be a positive integer (number or clean digit-string, mirroring the SQL
+        // guard). To force/stomp, OMIT the field entirely — do NOT pass null,
+        // which would otherwise silently mark the wrong source version crawled.
+        if (e.etag === undefined) {
+            return { scopeKey: e.scopeKey };
+        }
+        const etag = typeof e.etag === "string" && /^[1-9][0-9]*$/.test(e.etag)
+            ? Number(e.etag)
+            : e.etag;
+        if (typeof etag !== "number" || !Number.isInteger(etag) || etag <= 0) {
+            throw new Error("setFactsCrawled: etag must be a positive integer when provided (omit it to force a stomp).");
+        }
+        return { scopeKey: e.scopeKey, etag };
+    });
+    return { mode: "keys", keys, crawled };
 }
 
 export interface FactsTombstoneStats {
@@ -143,19 +223,27 @@ export interface FactStore {
     /**
      * PRIVILEGED crawl-queue read (base-store bookkeeping, enhancedfactstore 07 D3):
      * facts not yet incorporated into a graph (`last_crawled_at IS NULL`), across
-     * ALL scopes. Each returned fact carries its `scopeKey` — the receipt for
-     * `markFactsCrawled`. Only useful when a graph harvester is running; inert otherwise.
+     * ALL scopes. Each returned fact carries its `scopeKey` (and `etag`) — the
+     * receipt for `setFactsCrawled`. Only useful when a graph harvester is running; inert otherwise.
      */
-    readUncrawledFacts(opts?: { namespace?: string; limit?: number }): Promise<{
+    readUncrawledFacts(opts?: { keyPrefix?: string; namespace?: string; limit?: number }): Promise<{
         count: number;
         facts: FactRecord[];
     }>;
     /**
-    * PRIVILEGED crawl-queue write: stamp `last_crawled_at = now()` for the
-    * supplied scope keys that are still uncrawled. Facts edited before marking
-    * remain uncrawled because writes reset `last_crawled_at` to NULL again.
+     * PRIVILEGED crawl-queue write: set the crawled flag on a selection. Provide
+     * EXACTLY one of:
+     *  - `scopeKeys`: up to 500 `{ scopeKey, etag? }` receipts. An entry with
+     *    `etag` is a conditional CAS (skipped on mismatch); without `etag` it
+     *    stomps. The `crawled: true` path is the per-fact receipt mark.
+     *  - `keyPrefix`: a non-empty literal key prefix flipped in one shot (coarse,
+     *    no per-row etag).
+     * `crawled` defaults to true; `crawled: false` clears `last_crawled_at` to
+     * requeue for recrawl (includes tombstones). Returns `affected` (rows that
+     * changed state) and `skipped` (matched the selector but already in the
+     * requested state, or etag mismatch).
      */
-    markFactsCrawled(stamps: CrawledFactStamp[]): Promise<{ marked: number; skipped: number }>;
+    setFactsCrawled(input: SetFactsCrawledInput): Promise<{ affected: number; skipped: number }>;
     purgeExpiredFacts(ttlSeconds: number, limit?: number): Promise<number>;
     getFactsTombstoneStats(ttlSeconds?: number): Promise<FactsTombstoneStats>;
     forcePurgeFacts(input: ForcePurgeFactsInput): Promise<number>;
@@ -324,7 +412,8 @@ function sqlForSchema(schema: string) {
             getFactsStatsForSessions:  `${schema}.facts_get_facts_stats_for_sessions`,
             getSharedFactsStats:       `${schema}.facts_get_shared_facts_stats`,
             readUncrawledFacts:        `${schema}.facts_read_uncrawled`,
-            markFactsCrawled:          `${schema}.facts_mark_crawled`,
+            setCrawledByKeys:          `${schema}.facts_set_crawled_by_keys`,
+            setCrawledByPrefix:        `${schema}.facts_set_crawled_by_prefix`,
             purgeExpiredFacts:         `${schema}.facts_purge_expired`,
             factsTombstoneStats:       `${schema}.facts_tombstone_stats`,
             forcePurgeFacts:           `${schema}.facts_force_purge`,
@@ -672,15 +761,17 @@ export class PgFactStore implements FactStore {
     }
 
     async readUncrawledFacts(
-        opts: { namespace?: string; limit?: number } = {},
+        opts: { keyPrefix?: string; namespace?: string; limit?: number } = {},
     ): Promise<{ count: number; facts: FactRecord[] }> {
-        // Literal key prefix (NOT a LIKE pattern) — the proc uses starts_with so
-        // any `_` / `%` in the namespace are matched literally, not as wildcards.
-        const nsPrefix = opts.namespace ?? null;
-        const limit = opts.limit ?? 20;
+        // Literal key prefix (NOT a LIKE pattern) — the proc escapes %/_/\ so any
+        // metacharacters match literally. `namespace` is a deprecated alias for
+        // `keyPrefix`. An empty prefix means "all scopes" (NULL to the proc).
+        const raw = opts.keyPrefix ?? opts.namespace ?? null;
+        const keyPrefix = typeof raw === "string" && raw !== "" ? raw : null;
+        const limit = Math.min(opts.limit ?? 20, 500);
         const { rows } = await this.pool.query(
             `SELECT * FROM ${this.sql.fn.readUncrawledFacts}($1, $2)`,
-            [nsPrefix, limit],
+            [keyPrefix, limit],
         );
         return {
             count: rows.length,
@@ -688,29 +779,17 @@ export class PgFactStore implements FactStore {
         };
     }
 
-    async markFactsCrawled(
-        stamps: CrawledFactStamp[],
-    ): Promise<{ marked: number; skipped: number }> {
-        // Coerce etag like the SQL does (it accepts numeric strings): LLM tool
-        // JSON frequently serializes numbers as strings. Reject only genuinely
-        // missing / non-numeric receipts so harvester bugs still surface loudly.
-        const normalized = stamps.map((s) => {
-            const etag = Number(s?.etag);
-            if (!s || typeof s.scopeKey !== "string" || !Number.isInteger(etag) || etag <= 0) {
-                throw new Error(
-                    "markFactsCrawled: every stamp requires { scopeKey, etag } " +
-                    "(the receipt returned by readUncrawledFacts).",
-                );
-            }
-            return { scopeKey: s.scopeKey, etag };
-        });
-        if (normalized.length === 0) return { marked: 0, skipped: 0 };
-        const { rows } = await this.pool.query(
-            `SELECT * FROM ${this.sql.fn.markFactsCrawled}($1::jsonb)`,
-            [JSON.stringify(normalized)],
-        );
+    async setFactsCrawled(
+        input: SetFactsCrawledInput,
+    ): Promise<{ affected: number; skipped: number }> {
+        const norm = normalizeSetFactsCrawled(input);
+        const sql = norm.mode === "prefix"
+            ? `SELECT * FROM ${this.sql.fn.setCrawledByPrefix}($1, $2)`
+            : `SELECT * FROM ${this.sql.fn.setCrawledByKeys}($1::jsonb, $2)`;
+        const arg = norm.mode === "prefix" ? norm.prefix : JSON.stringify(norm.keys);
+        const { rows } = await this.pool.query(sql, [arg, norm.crawled]);
         return {
-            marked: Number(rows[0]?.marked) || 0,
+            affected: Number(rows[0]?.affected) || 0,
             skipped: Number(rows[0]?.skipped) || 0,
         };
     }

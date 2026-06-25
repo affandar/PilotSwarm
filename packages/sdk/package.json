@@ -73,9 +73,18 @@
     "file-type": "^20.5.0",
     "pg": "^8.18.0"
   },
+  "peerDependencies": {
+    "pilotswarm-horizon-store": "^0.2.2"
+  },
+  "peerDependenciesMeta": {
+    "pilotswarm-horizon-store": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/pg": "^8.16.0",
+    "pilotswarm-horizon-store": "*",
     "typescript": "^5.0.0",
     "vitest": "^4.1.0"
   },

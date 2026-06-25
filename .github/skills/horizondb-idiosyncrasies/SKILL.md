@@ -326,7 +326,7 @@ trips**, not query cost. Measured in a 119-fact agent harvest:
 | --- | --- | --- |
 | `graph_upsert_edge` | ~610 ms | endpoint check + existing-edge read + create/reinforce = 3+ statements |
 | `graph_upsert_node` | ~730 ms | existence read + create/update + per-evidence anchor link |
-| single stored proc (`facts_mark_crawled`) | ~67 ms | one round trip |
+| single stored proc (`facts_set_crawled`) | ~67 ms | one round trip |
 
 A single round trip to the remote cluster is ~45–100 ms, so a multi-statement
 upsert is a half-second of pure latency. **The agent-driven harvest is too noisy

@@ -15,7 +15,7 @@ builder skill.
   `enhancedFactsDatabaseUrl` / `graphDatabaseUrl` / `horizonEmbed` / `*Schema` fields.
 - **The harvester role** — `source-harvester` declares `harvester: true`, so it (and
   only it) gets the privileged crawl queue (`facts_read_uncrawled` /
-  `facts_mark_crawled`). The graph-write tools (`graph_upsert_node` /
+  `facts_set_crawled`). The graph-write tools (`graph_upsert_node` /
   `graph_upsert_edge` / …) are available to every session except the read-only
   `agent-tuner` — the knowledge graph is shared, so what makes the harvester special is
   the crawl queue, not write access.
@@ -23,7 +23,7 @@ builder skill.
   source-capture namespace, kept separate from the Facts Manager's `intake/*` curation
   queue), drain the
   crawl queue, extract entities/edges into the graph anchored to fact `scopeKey`
-  evidence, mark facts crawled with their `{ scopeKey, etag }` receipt, then retrieve.
+  evidence, mark facts crawled with `facts_set_crawled({ scopeKeys: [{ scopeKey, etag }] })`, then retrieve.
 - **The reader role** — `librarian` has no harvester frontmatter; it gets
   `facts_search` / `facts_similar` and the graph **read** tools (plus, like any
   non-tuner session, the graph-write tools), and pivots from a seed fact into the

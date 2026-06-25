@@ -6,7 +6,7 @@
 //
 //   READER    — facts_search / facts_similar / facts_read + the graph READ tools.
 //   HARVESTER — everything the reader gets, plus the PRIVILEGED crawl-queue
-//               tools (facts_read_uncrawled / facts_mark_crawled) and the graph
+//               tools (facts_read_uncrawled / facts_set_crawled) and the graph
 //               WRITE tools. Crawling sees ALL facts across scopes by design
 //               (01 §6.6); only grant this bundle to the trusted harvester role.
 //
@@ -194,40 +194,50 @@ export function createFactsTools(
         name: "facts_read_uncrawled",
         description:
             "PRIVILEGED work queue: facts not yet incorporated into the graph (new or edited since last crawl), " +
-            "across ALL scopes. Keep each fact's scopeKey and etag — both are the receipt facts_mark_crawled needs.",
+            "across ALL scopes. Keep each fact's scopeKey and etag — both are the receipt facts_set_crawled needs.",
         parameters: {
             type: "object",
             properties: {
-                namespace: { type: "string", description: "Restrict the queue to a key prefix." },
-                limit: { type: "number", description: "Max facts this batch (default 20)." },
+                keyPrefix: { type: "string", description: "Restrict the queue to a literal key prefix (a crawler may reuse its graph namespace as this prefix)." },
+                namespace: { type: "string", description: "Deprecated alias for keyPrefix (accepted one release for existing prompts)." },
+                limit: { type: "number", description: "Max facts this batch (default 20, capped at 500)." },
             },
         },
-        handler: (a) => factStore.readUncrawledFacts({ namespace: a.namespace, limit: a.limit, embeddedOnly }),
+        handler: (a) => factStore.readUncrawledFacts({ keyPrefix: a.keyPrefix ?? a.namespace, limit: a.limit, embeddedOnly }),
     });
 
     tools.push({
-        name: "facts_mark_crawled",
+        name: "facts_set_crawled",
         description:
-            "Stamp facts as incorporated so they leave the queue. Pass each fact's scopeKey and etag from facts_read_uncrawled. " +
-            "A skipped stamp means the fact was already marked, changed since your read, or no longer exists; re-read if needed.",
+            "Set the crawled flag on a selection of facts. Provide EXACTLY one of: " +
+            "`scopeKeys` — after processing rows from facts_read_uncrawled, pass each row's { scopeKey, etag } " +
+            "(include etag to make the entry conditional/race-safe, or omit it entirely — not null — to force/stomp); or " +
+            "`keyPrefix` — flip a whole literal key prefix at once (coarse, no per-row etag). " +
+            "Set `crawled:false` to put facts BACK on the radar for recrawl (e.g. after changing extraction logic). " +
+            "A skipped entry means the fact changed since your read (etag mismatch) or was already in that state; " +
+            "a scopeKey that no longer exists is neither marked nor skipped.",
         parameters: {
             type: "object",
             properties: {
-                stamps: {
+                scopeKeys: {
                     type: "array",
+                    description: "Explicit batch (max 500) of { scopeKey, etag? } receipts from facts_read_uncrawled.",
+                    minItems: 1,
+                    maxItems: 500,
                     items: {
                         type: "object",
                         properties: {
                             scopeKey: { type: "string" },
                             etag: { type: "number" },
                         },
-                        required: ["scopeKey", "etag"],
+                        required: ["scopeKey"],
                     },
                 },
+                keyPrefix: { type: "string", description: "Literal key prefix to flip in one shot (coarse; no per-row etag)." },
+                crawled: { type: "boolean", description: "Default true. false clears the flag to trigger a recrawl." },
             },
-            required: ["stamps"],
         },
-        handler: (a) => factStore.markFactsCrawled(a.stamps),
+        handler: (a) => factStore.setFactsCrawled({ scopeKeys: a.scopeKeys, keyPrefix: a.keyPrefix, crawled: a.crawled }),
     });
 
     tools.push({

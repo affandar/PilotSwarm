@@ -25,7 +25,7 @@ function fakeEnhancedStore(caps = { search: true, embedder: true }) {
         deleteFact: async () => ({}), deleteSessionFactsForSession: async () => 0,
         getSessionFactsStats: async () => [], getFactsStatsForSessions: async () => [],
         getSharedFactsStats: async () => [], readUncrawledFacts: async () => ({ count: 0, facts: [] }),
-        markFactsCrawled: async () => ({ marked: 0, skipped: 0 }),
+        setFactsCrawled: async () => ({ affected: 0, skipped: 0 }),
         purgeExpiredFacts: async () => 0,
         getFactsTombstoneStats: async () => ({ pendingTotal: 0, unreconciled: 0, ttlBlocked: 0, oldestUnreconciledAgeSeconds: null, reconciledUnswept: 0 }),
         forcePurgeFacts: async () => 0,
@@ -38,7 +38,7 @@ function fakeBaseStore() {
         deleteFact: async () => ({}), deleteSessionFactsForSession: async () => 0,
         getSessionFactsStats: async () => [], getFactsStatsForSessions: async () => [],
         getSharedFactsStats: async () => [], readUncrawledFacts: async () => ({ count: 0, facts: [] }),
-        markFactsCrawled: async () => ({ marked: 0, skipped: 0 }),
+        setFactsCrawled: async () => ({ affected: 0, skipped: 0 }),
         purgeExpiredFacts: async () => 0,
         getFactsTombstoneStats: async () => ({ pendingTotal: 0, unreconciled: 0, ttlBlocked: 0, oldestUnreconciledAgeSeconds: null, reconciledUnswept: 0 }),
         forcePurgeFacts: async () => 0,
@@ -163,14 +163,14 @@ describe("P4: graph tool gating (createGraphTools)", () => {
         assert(n.has("graph_search_nodes") && n.has("graph_search_edges") && n.has("graph_neighbourhood"), "graph read tools present");
         assert(n.has("graph_upsert_node") && n.has("graph_upsert_edge") && n.has("graph_merge_nodes")
             && n.has("graph_delete_node") && n.has("graph_delete_edge"), "graph write/delete now available to every non-tuner session");
-        assert(!n.has("facts_read_uncrawled") && !n.has("facts_mark_crawled") && !n.has("graph_remove_evidence"), "crawl/reconcile tools stay harvester/facts-manager only");
+        assert(!n.has("facts_read_uncrawled") && !n.has("facts_set_crawled") && !n.has("graph_remove_evidence"), "crawl/reconcile tools stay harvester/facts-manager only");
         assert(!n.has("graph_stats"), "no graph_stats for an ordinary reader");
     });
 
     it("harvester role → read + crawl-queue + write/delete", () => {
         const n = names(createGraphTools({ ...base(), agentIdentity: "app-harvester", isHarvester: true }));
         assert(n.has("graph_search_nodes"), "reads present");
-        assert(n.has("facts_read_uncrawled") && n.has("facts_mark_crawled") && n.has("graph_remove_evidence"), "crawl/reconcile tools present for harvester");
+        assert(n.has("facts_read_uncrawled") && n.has("facts_set_crawled") && n.has("graph_remove_evidence"), "crawl/reconcile tools present for harvester");
         assert(n.has("graph_upsert_node") && n.has("graph_upsert_edge") && n.has("graph_merge_nodes")
             && n.has("graph_delete_node") && n.has("graph_delete_edge"), "graph write/delete present for harvester");
     });
@@ -186,7 +186,7 @@ describe("P4: graph tool gating (createGraphTools)", () => {
         assert(n.has("graph_search_nodes") && n.has("graph_neighbourhood"), "tuner gets graph reads");
         assert(n.has("graph_stats"), "tuner gets graph_stats");
         assert(!n.has("graph_upsert_node") && !n.has("graph_delete_node") && !n.has("graph_merge_nodes"), "tuner gets NO graph writes");
-        assert(!n.has("facts_read_uncrawled") && !n.has("facts_mark_crawled") && !n.has("graph_remove_evidence"), "tuner gets NO crawl/reconcile tools (even with isHarvester)");
+        assert(!n.has("facts_read_uncrawled") && !n.has("facts_set_crawled") && !n.has("graph_remove_evidence"), "tuner gets NO crawl/reconcile tools (even with isHarvester)");
     });
 
     it("namespace is forwarded through every graph read/write/delete/stat tool", async () => {
@@ -227,7 +227,7 @@ describe("P4: graph tool gating (createGraphTools)", () => {
         assertEqual(seen.searchEdges.namespace, ns, "graph_search_edges forwards namespace");
         assertEqual(seen.neighbourhood.namespace, ns, "graph_neighbourhood forwards namespace");
         assertEqual(seen.graphStats.namespace, ns, "graph_stats forwards namespace to provider aggregate");
-        assertEqual(seen.uncrawled.namespace, ns, "graph_stats/facts_read_uncrawled forward namespace to crawl queue");
+        assertEqual(seen.uncrawled.keyPrefix, ns, "facts_read_uncrawled canonicalizes the namespace alias to keyPrefix on the crawl queue");
         assertEqual(seen.upsertNode.namespace, ns, "graph_upsert_node forwards namespace");
         assertEqual(seen.upsertEdge.namespace, ns, "graph_upsert_edge forwards namespace");
         assertEqual(seen.mergeNodes.namespace, ns, "graph_merge_nodes forwards namespace guard");

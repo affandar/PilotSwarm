@@ -4,7 +4,7 @@
 // can replace PgFactStore anywhere a FactStore is expected. It ADDS:
 //   - searchFacts (lexical BM25 / semantic / hybrid — facts store only)
 //   - similarFacts (semantic kNN of a known fact; inaccessible anchor ≡ unknown)
-//   - crawl tracking (readUncrawledFacts / markFactsCrawled — PRIVILEGED)
+//   - crawl tracking (readUncrawledFacts / setFactsCrawled — PRIVILEGED)
 //   - the embedder lifecycle (configure/start/stop/status; restart-on-configure)
 //
 // The open knowledge graph is a SEPARATE provider — HorizonDBGraphStore in
@@ -17,7 +17,7 @@
 // access.
 
 import type {
-    AccessContext, CrawledFactStamp, DeletedFactResult, DeletedFactsResult, DeleteFactInput, EmbedderLoopStatus, EmbedderStatus,
+    AccessContext, SetFactsCrawledInput, DeletedFactResult, DeletedFactsResult, DeleteFactInput, EmbedderLoopStatus, EmbedderStatus,
     EmbeddingEndpointConfig, EnhancedFactStore, FactRecord, FactsStatsRow, FactsTombstoneStats, ForcePurgeFactsInput,
     ReadFactsQuery, ScoredFact, SearchOpts, SearchResult, SimilarOpts,
     StoreFactInput, StoredFactResult,
@@ -35,6 +35,68 @@ function computeScopeKey(key: string, shared: boolean, sessionId?: string | null
     if (shared) return `shared:${key}`;
     if (!sessionId) throw new Error("Session-scoped facts require a sessionId.");
     return `session:${sessionId}:${key}`;
+}
+
+/**
+ * Validate + normalize {@link SetFactsCrawledInput} into a single proc call.
+ * Mirrors the SQL guards in `facts_set_crawled_by_keys`. Duplicated from the SDK
+ * base store on purpose: this package keeps a type-only dependency on the SDK
+ * (no runtime import), so the two providers stay drop-in identical.
+ */
+function normalizeSetFactsCrawled(input: SetFactsCrawledInput):
+    | { mode: "prefix"; prefix: string; crawled: boolean }
+    | { mode: "keys"; keys: { scopeKey: string; etag?: number }[]; crawled: boolean } {
+    let crawled = true;
+    if (input?.crawled !== undefined && input?.crawled !== null) {
+        if (typeof input.crawled !== "boolean") {
+            throw new Error("setFactsCrawled: crawled must be a boolean.");
+        }
+        crawled = input.crawled;
+    }
+    const hasKeys = input?.scopeKeys !== undefined && input?.scopeKeys !== null;
+    const hasPrefix = input?.keyPrefix !== undefined && input?.keyPrefix !== null;
+    if (hasKeys === hasPrefix) {
+        throw new Error("setFactsCrawled: provide exactly one of { scopeKeys } or { keyPrefix }.");
+    }
+    if (hasPrefix) {
+        const prefix = input.keyPrefix;
+        if (typeof prefix !== "string" || prefix === "") {
+            throw new Error("setFactsCrawled: keyPrefix must be a non-empty string (it would otherwise select every fact).");
+        }
+        return { mode: "prefix", prefix, crawled };
+    }
+    const entries = input.scopeKeys;
+    if (!Array.isArray(entries) || entries.length === 0) {
+        throw new Error("setFactsCrawled: scopeKeys must be a non-empty array.");
+    }
+    if (entries.length > 500) {
+        throw new Error("setFactsCrawled: scopeKeys is capped at 500 entries; page larger batches.");
+    }
+    const seen = new Set<string>();
+    const keys = entries.map((e) => {
+        if (!e || typeof e.scopeKey !== "string" || e.scopeKey === "") {
+            throw new Error("setFactsCrawled: each scopeKeys entry needs a non-empty scopeKey.");
+        }
+        if (seen.has(e.scopeKey)) {
+            throw new Error(`setFactsCrawled: duplicate scopeKey "${e.scopeKey}" in batch.`);
+        }
+        seen.add(e.scopeKey);
+        // A present etag (even null) makes the entry a conditional CAS and MUST
+        // be a positive integer (number or clean digit-string, mirroring the SQL
+        // guard). To force/stomp, OMIT the field entirely — do NOT pass null,
+        // which would otherwise silently mark the wrong source version crawled.
+        if (e.etag === undefined) {
+            return { scopeKey: e.scopeKey };
+        }
+        const etag = typeof e.etag === "string" && /^[1-9][0-9]*$/.test(e.etag)
+            ? Number(e.etag)
+            : e.etag;
+        if (typeof etag !== "number" || !Number.isInteger(etag) || etag <= 0) {
+            throw new Error("setFactsCrawled: etag must be a positive integer when provided (omit it to force a stomp).");
+        }
+        return { scopeKey: e.scopeKey, etag };
+    });
+    return { mode: "keys", keys, crawled };
 }
 
 /** df-allow-list normalization: the Azure AI Foundry unified host is blocked
@@ -370,31 +432,31 @@ export class HorizonDBFactStore implements EnhancedFactStore {
 
     // ─── crawl tracking (02 §3a — PRIVILEGED harvester surface) ──────────────
 
-    async readUncrawledFacts(opts: { namespace?: string; limit?: number; embeddedOnly?: boolean } = {}):
+    async readUncrawledFacts(opts: { keyPrefix?: string; namespace?: string; limit?: number; embeddedOnly?: boolean } = {}):
         Promise<{ count: number; facts: FactRecord[] }> {
+        // Literal key prefix (the proc escapes %/_/\). `namespace` is a deprecated
+        // alias for `keyPrefix`; an empty prefix means "all scopes". Do NOT route
+        // through namespacePrefix() — that appends a LIKE wildcard for the search
+        // procs and would be matched literally (then escaped) by this proc.
+        const raw = opts.keyPrefix ?? opts.namespace ?? null;
+        const keyPrefix = typeof raw === "string" && raw !== "" ? raw : null;
         const { rows } = await withDbRetry<{ rows: any[] }>("facts_read_uncrawled", () => this.pool.query(
             `SELECT * FROM ${this.s}.facts_read_uncrawled($1, $2, $3)`,
-            [namespacePrefix(opts.namespace), Math.min(opts.limit ?? 20, 500), opts.embeddedOnly ?? false],
+            [keyPrefix, Math.min(opts.limit ?? 20, 500), opts.embeddedOnly ?? false],
         ));
         const facts = rows.map(mapFactRow);
         return { count: facts.length, facts };
     }
 
-    async markFactsCrawled(stamps: CrawledFactStamp[]): Promise<{ marked: number; skipped: number }> {
-        if (!Array.isArray(stamps) || stamps.length === 0) return { marked: 0, skipped: 0 };
-        // Coerce etag like the SQL does (numeric strings accepted): LLM tool JSON
-        // frequently serializes numbers as strings. Reject only genuinely missing
-        // / non-numeric receipts so harvester bugs still surface loudly.
-        const normalized = stamps.map((st) => {
-            const etag = Number(st?.etag);
-            if (!st?.scopeKey || !Number.isInteger(etag) || etag <= 0) {
-                throw new Error("markFactsCrawled: every stamp requires { scopeKey, etag } (the receipt from readUncrawledFacts)");
-            }
-            return { scopeKey: st.scopeKey, etag };
-        });
-        const { rows } = await withDbRetry<{ rows: any[] }>("facts_mark_crawled", () => this.pool.query(
-            `SELECT * FROM ${this.s}.facts_mark_crawled($1::jsonb)`, [JSON.stringify(normalized)]));
-        return { marked: Number(rows[0]?.marked ?? 0), skipped: Number(rows[0]?.skipped ?? 0) };
+    async setFactsCrawled(input: SetFactsCrawledInput): Promise<{ affected: number; skipped: number }> {
+        const norm = normalizeSetFactsCrawled(input);
+        const sql = norm.mode === "prefix"
+            ? `SELECT * FROM ${this.s}.facts_set_crawled_by_prefix($1, $2)`
+            : `SELECT * FROM ${this.s}.facts_set_crawled_by_keys($1::jsonb, $2)`;
+        const arg = norm.mode === "prefix" ? norm.prefix : JSON.stringify(norm.keys);
+        const label = norm.mode === "prefix" ? "facts_set_crawled_by_prefix" : "facts_set_crawled_by_keys";
+        const { rows } = await withDbRetry<{ rows: any[] }>(label, () => this.pool.query(sql, [arg, norm.crawled]));
+        return { affected: Number(rows[0]?.affected ?? 0), skipped: Number(rows[0]?.skipped ?? 0) };
     }
 
     async purgeExpiredFacts(ttlSeconds: number, limit = 1000): Promise<number> {

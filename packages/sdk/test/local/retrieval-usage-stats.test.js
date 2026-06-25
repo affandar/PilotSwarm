@@ -188,7 +188,7 @@ function createEnhancedFactStoreStub() {
         async getFactsStatsForSessions() { return []; },
         async getSharedFactsStats() { return []; },
         async readUncrawledFacts() { return { count: 0, facts: [] }; },
-        async markFactsCrawled() { return { marked: 0, skipped: 0 }; },
+        async setFactsCrawled() { return { affected: 0, skipped: 0 }; },
         async purgeExpiredFacts() { return 0; },
         async getFactsTombstoneStats() { return { pendingTotal: 0, unreconciled: 0, ttlBlocked: 0, oldestUnreconciledAgeSeconds: null, reconciledUnswept: 0 }; },
         async forcePurgeFacts() { return 0; },

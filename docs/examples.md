@@ -69,7 +69,7 @@ It demonstrates:
 - wiring the HorizonDB providers from `HORIZON_*` env via `horizonConfigFromEnv()`
 - the harvester role (`harvester: true`) and its crawl-queue + graph-write tools
 - the crawl→graph→reader flow (ingest → `facts_read_uncrawled` → `graph_upsert_*`
-  → `facts_mark_crawled` → `facts_search` + graph pivot)
+   → `facts_set_crawled` → `facts_search` + graph pivot)
 - fact-`scopeKey` evidence anchoring and reader/harvester tool gating
 
 Key files:

@@ -54,7 +54,7 @@ describe.skipIf(!HAS_DB)("migrations (MG1–MG6)", () => {
         const procSet = new Set(procs.map((r) => r.proname));
         for (const p of ["facts_store", "facts_read", "facts_delete", "facts_delete_session", "facts_stats",
                          "facts_search_lexical", "facts_search_semantic", "facts_similar",
-                         "facts_read_uncrawled", "facts_mark_crawled",
+                         "facts_read_uncrawled", "facts_set_crawled_by_keys", "facts_set_crawled_by_prefix", "facts_like_prefix",
                          "facts_touch", "embedder_workflow",
                          "facts_acl", "embed_error_code", "embed_error_label"]) {
             assert.ok(procSet.has(p), `proc ${p} exists`);
