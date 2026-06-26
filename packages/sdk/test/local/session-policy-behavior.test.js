@@ -636,6 +636,57 @@ async function testBundledDefaultAgentLoadsWithOptIn() {
     }
 }
 
+// Deterministic guard for the consultative crawler lifecycle prompt. The e2e
+// crawl test drives a scripted FakeCopilotClient, so it does NOT exercise the
+// LLM following the lifecycle guidance. This test pins the prompt structure so a
+// dropped/reordered stage or removed load-bearing guidance fails loudly.
+async function testGenericCrawlerLifecyclePrompt() {
+    const dir = makePolicyPlugin({
+        version: 1,
+        creation: { mode: "allowlist", allowGeneric: true, bundledAgents: ["generic-crawler"] },
+    });
+    try {
+        const worker = newPolicyOnlyWorker([dir]);
+        const agent = worker.loadedAgents.find((a) => a.name === "generic-crawler");
+        assertNotNull(agent, "generic-crawler loaded for lifecycle prompt check");
+        const prompt = agent.prompt;
+
+        // All ten lifecycle stages must be present, and in order.
+        const stages = [
+            "Scope the source and mining strategy",
+            "Understand the questions to answer",
+            "Understand the domain and propose",
+            "Design the fact keyspace and graph schema",
+            "Tune the schema to the domain's intent",
+            "Pick models per stage",
+            "Present the complete plan",
+            "Pilot first",
+            "Run the full crawl",
+            "Keep the corpus fresh",
+        ];
+        let lastIndex = -1;
+        for (const stage of stages) {
+            assertIncludes(prompt, stage, `lifecycle stage present: ${stage}`);
+            const idx = prompt.indexOf(stage);
+            assert(idx > lastIndex, `lifecycle stage in order: ${stage}`);
+            lastIndex = idx;
+        }
+
+        // Load-bearing guidance inside the stages.
+        assertIncludes(prompt, "Raw dump (uncrawled)", "three-tier keyspace: raw dump");
+        assertIncludes(prompt, "Curated facts (crawled)", "three-tier keyspace: curated facts");
+        assertIncludes(prompt, "Graph (nodes + edges)", "three-tier keyspace: graph");
+        assertIncludes(prompt, "GPT mini", "model split: cheap ingest model");
+        assertIncludes(prompt, "Claude Sonnet 4.6", "model split: stronger graph model");
+        assertIncludes(prompt, "spawn_agent", "per-stage model selection via spawn_agent override");
+        assertIncludes(prompt, "starter queries", "pilot hands the user starter queries");
+        assertIncludes(prompt, "cron(", "incremental refresh via cron");
+        assertIncludes(prompt, "cron_at(", "incremental refresh via cron_at");
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+}
+
 async function testBundledGenericCrawlerCrawlsPromptData(env) {
     const dir = makePolicyPlugin({
         version: 1,
@@ -689,7 +740,7 @@ Required exact workflow:
             const agent = worker.loadedAgents.find((candidate) => candidate.name === "generic-crawler");
             assertNotNull(agent, "bundled crawler agent loaded");
             assertEqual(agent.crawler, true, "bundled crawler definition carries crawler role");
-            assertIncludes(agent.prompt, "trusted crawler", "bundled crawler prompt loaded");
+            assertIncludes(agent.prompt, "Crawler Lifecycle", "bundled crawler prompt loaded");
 
             console.log(`  Crawler prompt fixture: ${prompt.slice(0, 120)}...`);
             const response = await session.sendAndWait(prompt, TIMEOUT);
@@ -857,6 +908,9 @@ describe("Level 10b: Session Policy — Behavior", () => {
     });
     it("Bundled Default Agent Loads With Opt-In", async () => {
         await testBundledDefaultAgentLoadsWithOptIn();
+    });
+    it("Generic Crawler Lifecycle Prompt", async () => {
+        await testGenericCrawlerLifecyclePrompt();
     });
     it("Bundled Generic Crawler Crawls Prompt Data", { timeout: TIMEOUT * 2 }, async () => {
         await testBundledGenericCrawlerCrawlsPromptData(getEnv());
