@@ -28,7 +28,7 @@ Start with the path that matches what you are trying to do.
 - [Building Agents For SDK Apps](./sdk/building-agents.md) — the canonical guide for `default.agent.md`, named agents, skills, tools, and system agents
 - [Builder Agent Templates](./builder-agents.md) — distributable Copilot custom agents for users building apps on top of PilotSwarm
 - [Configuration](./configuration.md) — environment variables, blob storage, worker/client options
-- [Deploying a Knowledge Harvester](./harvester-deployment.md) — run a `harvester: true` ingestion service over a shared HorizonDB facts + knowledge graph
+- [Deploying a Knowledge Harvester](./harvester-deployment.md) — run a `crawler: true` ingestion service over a shared HorizonDB facts + knowledge graph
 - [Examples](./examples.md) — runnable examples in the repo, including the DevOps Command Center layered-app sample
 
 ### I want to build an app with the CLI/TUI

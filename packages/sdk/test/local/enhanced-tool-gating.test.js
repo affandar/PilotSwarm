@@ -127,16 +127,18 @@ let stateDir;
 beforeEach(() => { stateDir = mkdtempSync(path.join(tmpdir(), "ps-e1-")); });
 afterEach(() => { if (stateDir) try { rmSync(stateDir, { recursive: true, force: true }); } catch { /* best-effort */ } });
 
-async function register({ factStore, graphStore, agentIdentity, isHarvester, workerDefaults }) {
+async function register({ factStore, graphStore, agentIdentity, isCrawler, isHarvester, workerDefaults }) {
     const manager = new SessionManager(process.env.GITHUB_TOKEN, null, workerDefaults ?? {}, stateDir);
     const fakeClient = new FakeCopilotClient();
     manager.client = fakeClient;
     if (factStore) manager.setFactStore(factStore);
     if (graphStore) manager.setGraphStore(graphStore);
     manager.setSessionCatalog(noopCatalog());
-    const sid = `e1-${agentIdentity ?? "default"}-${isHarvester ? "harv" : "x"}-${Math.random().toString(36).slice(2, 8)}`;
+    const hasCrawlerRole = isCrawler || isHarvester;
+    const sid = `e1-${agentIdentity ?? "default"}-${hasCrawlerRole ? "crawl" : "x"}-${Math.random().toString(36).slice(2, 8)}`;
     await manager.getOrCreate(sid, {
         agentIdentity: agentIdentity ?? "default",
+        ...(isCrawler ? { isCrawler: true } : {}),
         ...(isHarvester ? { isHarvester: true } : {}),
         toolNames: [],
     }, { turnIndex: 0 });
@@ -305,12 +307,17 @@ describe("E1: enhanced facts (search) + graph", () => {
         assert(hasNone(names, CRAWL_TOOLS), "tuner gets NO crawl queue");
     });
 
-    it("opt-in harvester role → reads + crawl queue + graph write/delete", async () => {
+    it("opt-in crawler role → reads + crawl queue + graph write/delete", async () => {
+        const { names } = await register({ factStore: enh(), graphStore: g(), agentIdentity: "app-crawler", isCrawler: true });
+        assert(hasAll(names, GRAPH_READS), "crawler gets graph reads");
+        assert(hasAll(names, CRAWL_TOOLS), "crawler gets the crawl queue");
+        assert(hasAll(names, GRAPH_WRITES), "crawler gets graph write/delete");
+        assert(!names.has("graph_stats"), "crawler does not need graph_stats (that is a reporter tool)");
+    });
+
+    it("legacy isHarvester alias still grants crawl queue through SessionManager", async () => {
         const { names } = await register({ factStore: enh(), graphStore: g(), agentIdentity: "app-harvester", isHarvester: true });
-        assert(hasAll(names, GRAPH_READS), "harvester gets graph reads");
-        assert(hasAll(names, CRAWL_TOOLS), "harvester gets the crawl queue");
-        assert(hasAll(names, GRAPH_WRITES), "harvester gets graph write/delete");
-        assert(!names.has("graph_stats"), "harvester does not need graph_stats (that is a reporter tool)");
+        assert(hasAll(names, CRAWL_TOOLS), "legacy alias still grants the crawl queue");
     });
 });
 
@@ -377,8 +384,8 @@ describe("E1: base facts + graph (composition tier)", () => {
         assert(hasNone(names, SEARCH_TOOLS), "a base fact store yields no search tools even with a graph present");
     });
 
-    it("harvester on base facts + graph gets crawl + graph write, still NO search tools", async () => {
-        const { names } = await register({ factStore: fakeBaseStore(), graphStore: fakeGraphStore(), agentIdentity: "app-harvester", isHarvester: true });
+    it("crawler on base facts + graph gets crawl + graph write, still NO search tools", async () => {
+        const { names } = await register({ factStore: fakeBaseStore(), graphStore: fakeGraphStore(), agentIdentity: "app-crawler", isCrawler: true });
         assert(hasAll(names, [...CRAWL_TOOLS, ...GRAPH_WRITES]), "base crawl queue + graph write drive an incremental harvest");
         assert(hasNone(names, SEARCH_TOOLS), "no search tools on a base store");
     });

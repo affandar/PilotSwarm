@@ -3,6 +3,7 @@ import fs from "node:fs";
 import https from "node:https";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
     FilesystemArtifactStore,
     loadAgentFiles,
@@ -20,6 +21,9 @@ const EXPORTS_DIR = path.resolve(
 );
 fs.mkdirSync(EXPORTS_DIR, { recursive: true });
 const K8S_SERVICE_ACCOUNT_DIR = "/var/run/secrets/kubernetes.io/serviceaccount";
+const CLI_SRC_DIR = path.dirname(fileURLToPath(import.meta.url));
+const CLI_PACKAGE_ROOT = path.resolve(CLI_SRC_DIR, "..");
+const PACKAGE_PARENT_DIR = path.resolve(CLI_PACKAGE_ROOT, "..");
 
 function fileExists(filePath) {
     try {
@@ -357,7 +361,33 @@ function normalizeCreatableAgent(agent) {
     };
 }
 
-function loadSessionCreationMetadataFromPluginDirs(pluginDirs = []) {
+function normalizeAgentIdentity(value) {
+    return String(value || "").trim().toLowerCase();
+}
+
+function loadBundledDefaultAgents() {
+    const agentsByKey = new Map();
+    const candidates = [
+        path.join(PACKAGE_PARENT_DIR, "sdk", "plugins", "default-agents", "agents"),
+        path.join(PACKAGE_PARENT_DIR, "pilotswarm-sdk", "plugins", "default-agents", "agents"),
+        path.join(CLI_PACKAGE_ROOT, "node_modules", "pilotswarm-sdk", "plugins", "default-agents", "agents"),
+    ];
+
+    for (const agentsDir of candidates) {
+        if (!fs.existsSync(agentsDir)) continue;
+        try {
+            for (const agent of loadAgentFiles(agentsDir)) {
+                if (!agent || agent.system || agent.name === "default") continue;
+                const normalized = normalizeCreatableAgent(agent);
+                if (!normalized) continue;
+                agentsByKey.set(normalizeAgentIdentity(normalized.name), normalized);
+            }
+        } catch {}
+    }
+    return agentsByKey;
+}
+
+export function loadSessionCreationMetadataFromPluginDirs(pluginDirs = []) {
     let sessionPolicy = null;
     const agentsByName = new Map();
 
@@ -382,6 +412,37 @@ function loadSessionCreationMetadataFromPluginDirs(pluginDirs = []) {
                 agentsByName.set(normalized.name, normalized);
             }
         } catch {}
+    }
+
+    const bundledAgents = loadBundledDefaultAgents();
+    const requestedBundledAgents = Array.isArray(sessionPolicy?.creation?.bundledAgents)
+        ? sessionPolicy.creation.bundledAgents
+        : [];
+    const appAgentKeys = new Set([...agentsByName.keys()].map((name) => normalizeAgentIdentity(name)));
+    const defaultAgentKey = normalizeAgentIdentity(sessionPolicy?.creation?.defaultAgent);
+
+    if (requestedBundledAgents.length === 0) {
+        if (defaultAgentKey && bundledAgents.has(defaultAgentKey) && !appAgentKeys.has(defaultAgentKey)) {
+            throw new Error(`[PilotSwarm] session-policy.json creation.defaultAgent=${JSON.stringify(sessionPolicy.creation.defaultAgent)} references a bundled default agent but creation.bundledAgents does not opt it in.`);
+        }
+    } else {
+        const requestedKeys = new Set();
+        for (const name of requestedBundledAgents) {
+            const key = normalizeAgentIdentity(name);
+            if (!key || !bundledAgents.has(key)) {
+                throw new Error(`[PilotSwarm] session-policy.json creation.bundledAgents contains unknown bundled agent ${JSON.stringify(name)}.`);
+            }
+            requestedKeys.add(key);
+        }
+        if (defaultAgentKey && bundledAgents.has(defaultAgentKey) && !requestedKeys.has(defaultAgentKey) && !appAgentKeys.has(defaultAgentKey)) {
+            throw new Error(`[PilotSwarm] session-policy.json creation.defaultAgent=${JSON.stringify(sessionPolicy.creation.defaultAgent)} references a bundled default agent but creation.bundledAgents does not opt it in.`);
+        }
+        for (const key of requestedKeys) {
+            if (appAgentKeys.has(key)) continue;
+            const agent = bundledAgents.get(key);
+            agentsByName.set(agent.name, agent);
+            appAgentKeys.add(key);
+        }
     }
 
     const creatableAgents = [...agentsByName.values()];

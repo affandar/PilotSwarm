@@ -79,7 +79,7 @@ Do not guess these answers when they materially affect the scaffold. If the user
 - Use `plugin.json.tui` only when the user explicitly wants the same title/splash across TUI and portal.
 - Keep agent prompts and personas in `plugin/agents/*.agent.md`, not inside portal UI files.
 - Every generated `.agent.md` must include `schemaVersion: 1` and a `version` string. Use `version: 1.0.0` for new agents by default, and bump `version` when editing an existing agent's prompt behavior, tools, workflow guidance, or metadata.
-- Use `session-policy.json` when the user wants the portal to offer only a curated agent roster instead of generic sessions.
+- Use `session-policy.json` when the user wants the portal to offer only a curated agent roster instead of generic sessions. To expose SDK-bundled optional agents such as the generic crawler, add `"bundledAgents": ["generic-crawler"]` under `creation`; the portal bootstrap must see that policy through `PLUGIN_DIRS` so `creatableAgents` includes the bundled agent.
 
 Example:
 
@@ -138,6 +138,7 @@ Logo notes:
   - `plugin.json.tui`
   - `plugin/agents/*`
   - `session-policy.json`
+- When `session-policy.json.creation.bundledAgents` is used, verify the portal bootstrap exposes the bundled agent in `creatableAgents`; seeing the worker log `Loaded: ... generic-crawler` is not sufficient for the browser picker.
 - When documenting Kubernetes secrets for portal settings, prefer `kubectl create secret generic ... --from-env-file=...` for env files that may contain shell-significant characters.
 
 ## Validation Guidance

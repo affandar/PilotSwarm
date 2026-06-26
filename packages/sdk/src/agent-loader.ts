@@ -88,13 +88,15 @@ export interface AgentConfig {
     /** Internal: identifies which prompt layering path this agent should use. */
     promptLayerKind?: "app-agent" | "app-system-agent" | "pilotswarm-system-agent";
     /**
-     * App-assigned HARVESTER role (enhancedfactstore 07 §1.5). When `true`, a
-    * session bound to this agent receives the privileged crawl queue when a
-    * graph store is configured. Graph extraction/fill is app-specific, so the
-    * app sets `harvester: true` in its own harvester agent's frontmatter. The
-     * role is derived from this definition on the worker every turn — never
-     * inherited from a parent session.
+     * App-assigned CRAWLER role. When `true`, a session bound to this agent
+     * receives the privileged crawl queue when a graph store is configured.
+     * Graph extraction/fill is app-specific, so the app sets `crawler: true` in
+     * its own crawler agent's frontmatter. The role is derived from this
+     * definition on the worker every turn — never inherited from a parent
+     * session.
      */
+    crawler?: boolean;
+    /** @deprecated Use `crawler: true`; accepted as a compatibility alias. */
     harvester?: boolean;
     /**
      * Frontmatter schema version. Defaults to 1 when the file omits it. Higher integers
@@ -117,10 +119,10 @@ export interface AgentConfig {
  * Handles simple `key: value` pairs and YAML list syntax for `tools`.
  */
 function parseAgentFrontmatter(content: string): {
-    meta: { name?: string; description?: string; tools?: string[]; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; initialPrompt?: string; harvester?: boolean; schemaVersion?: number; version?: string };
+    meta: { name?: string; description?: string; tools?: string[]; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; initialPrompt?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string };
     body: string;
 } {
-    const meta: { name?: string; description?: string; tools?: string[]; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; initialPrompt?: string; harvester?: boolean; schemaVersion?: number; version?: string } = {};
+    const meta: { name?: string; description?: string; tools?: string[]; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; initialPrompt?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string } = {};
 
     if (!content.startsWith("---")) {
         return { meta, body: content };
@@ -191,6 +193,7 @@ function parseAgentFrontmatter(content: string): {
         if (key === "name") meta.name = value;
         else if (key === "description") meta.description = value;
         else if (key === "system") meta.system = value === "true";
+        else if (key === "crawler") meta.crawler = value === "true";
         else if (key === "harvester") meta.harvester = value === "true";
         else if (key === "id") meta.id = value;
         else if (key === "title") meta.title = value;
@@ -265,6 +268,7 @@ export function loadAgentFiles(agentsDir: string): AgentConfig[] {
                 continue;
             }
 
+            const crawler = meta.crawler === true || meta.harvester === true;
             agents.push({
                 name: meta.name,
                 description: meta.description,
@@ -276,7 +280,8 @@ export function loadAgentFiles(agentsDir: string): AgentConfig[] {
                 parent: meta.parent,
                 splash: meta.splash,
                 initialPrompt: meta.initialPrompt,
-                harvester: meta.harvester,
+                crawler,
+                harvester: crawler,
                 schemaVersion: meta.schemaVersion,
                 version: meta.version,
                 sourcePath: filePath,

@@ -77,7 +77,7 @@ cp -R templates/builder-agents/skills/* .github/skills/
 - `pilotswarm-sdk-builder` helps users build SDK-first services and applications around `PilotSwarmClient` and `PilotSwarmWorker`.
 - `pilotswarm-azure-deployer` helps users package and deploy PilotSwarm-based apps to Azure / AKS, with explicit env-template and cross-cluster workload-identity guidance.
 - `pilotswarm-hybrid-datastore` (skill) helps builders wire the stock-PostgreSQL runtime store alongside optional HorizonDB enhanced facts/search/graph providers without changing the default Docker image.
-- `pilotswarm-knowledge-harvester` (skill) helps the SDK builder add a knowledge-harvesting capability: a `harvester: true` agent that crawls sources into the durable facts store, builds the open knowledge graph, and exposes multi-signal search to reader agents through the optional EnhancedFactStore / GraphStore providers.
+- `pilotswarm-knowledge-harvester` (skill) helps the SDK builder add a knowledge-harvesting capability: a `crawler: true` agent that crawls sources into the durable facts store, builds the open knowledge graph, and exposes multi-signal search to reader agents through the optional EnhancedFactStore / GraphStore providers.
 
 The CLI and SDK builder templates are intended to be guided builders, not guess-heavy code generators. They should ask about session policy, env-file setup, initial agent roster, and target topology before scaffolding files.
 
@@ -88,6 +88,7 @@ Builder templates should assume:
 - app `default.agent.md` files are overlays layered under the embedded PilotSwarm framework base
 - if an app needs a custom model catalog, check in `.model_providers.example.json`, create a local gitignored `.model_providers.json` from it, and keep provider keys in `.env` / `.env.remote`
 - builder templates should scaffold both `.env.example` and `.model_providers.example.json` from PilotSwarm's own example-file shape, then create local `.env` / `.model_providers.json` copies and add those real files to `.gitignore`
+- optional SDK-bundled named agents are hidden by default and should be exposed through `session-policy.json.creation.bundledAgents`, for example `"bundledAgents": ["generic-crawler"]`; templates should teach that policy opt-in instead of copying bundled agent files unless the app needs custom behavior
 - every generated app `.agent.md` should include `schemaVersion: 1` and a `version` string; new agents should default to `version: 1.0.0`, and edits to existing agents should bump the version string according to the app's versioning style
 - generated recurring agents should use `cron(seconds=N, reason="...")` for fixed intervals and `cron_at(minute=M, hour=H, tz="Area/City", reason="...")` for wall-clock schedules; do not build wall-clock jobs with wake-and-check polling loops
 - generated delegation flows should document `contract.wakeOn` for child sessions: `any` for chatty short-lived work, `material_change` for watchers, and `completion` for done/blocked/error-only children

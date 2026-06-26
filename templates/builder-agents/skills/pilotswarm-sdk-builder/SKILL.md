@@ -45,7 +45,7 @@ my-sdk-app/
 5. Register tool handlers on the worker.
 6. Reference those handlers from sessions via `toolNames`.
 7. Keep client session config serializable.
-8. Add `session-policy.json` if the user does not want generic sessions. The policy is enforced in both local and remote modes.
+8. Add `session-policy.json` if the user does not want generic sessions. The policy is enforced in both local and remote modes. If the app should expose SDK-bundled optional agents, add them under `creation.bundledAgents`, for example `"bundledAgents": ["generic-crawler"]`; app-authored agents and inline custom agents still load independently of that allowlist.
 9. Build `.env.example` and a gitignored `.env` by copying/adapting the PilotSwarm repo's example env shape when the user wants runnable scaffolding.
 10. Build `.model_providers.example.json` and a gitignored `.model_providers.json` by copying/adapting the PilotSwarm repo's example model-catalog shape when the scaffold needs a custom model catalog.
 11. Add a checked-in cleanup script that drops database schemas and removes session state (handles both local and remote modes).
@@ -55,7 +55,7 @@ my-sdk-app/
 15. When generated agents spawn long-running children, teach them to set `contract.wakeOn`: `any` for short-lived/high-signal children, `material_change` for watchers, and `completion` for done/blocked/error-only flows.
 15. Agents can read their context usage (current tokens, token limit) from the session status `contextUsage` field. Use this for agents that need to manage context window budgets or trigger compaction.
 16. When the scaffold needs downloadable files, keep using `write_artifact` / `export_artifact`; for binary files, require `contentType` plus `encoding: "base64"` and document that browser hosts download non-text artifacts instead of previewing them inline.
-17. When the app needs to ingest external sources into durable, searchable knowledge or an open knowledge graph, follow the `pilotswarm-knowledge-harvester` skill: enable the optional EnhancedFactStore / GraphStore providers via `horizonConfigFromEnv()`, author a `harvester: true` agent for the crawl→graph→mark loop, and keep reader agents free of harvester frontmatter.
+17. When the app needs to ingest external sources into durable, searchable knowledge or an open knowledge graph, follow the `pilotswarm-knowledge-harvester` skill: enable the optional EnhancedFactStore / GraphStore providers via `horizonConfigFromEnv()`, author a `crawler: true` agent for the crawl→graph→mark loop, and keep reader agents free of crawler frontmatter.
 18. When the app needs stock PostgreSQL runtime storage plus HorizonDB enhanced facts/search/graph, follow the `pilotswarm-hybrid-datastore` skill: keep `DATABASE_URL` as the runtime store, add `HORIZON_DATABASE_URL` / `HORIZON_GRAPH_DATABASE_URL` for optional providers, and wire `horizonConfigFromEnv()` into worker, client, and management client.
 
 ## Guided Intake Questions

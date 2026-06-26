@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.0.0
+version: 1.1.0
 name: pilotswarm-cli-builder
 description: "Use when building a plugin-driven CLI/TUI app on top of PilotSwarm. Scaffolds plugin.json branding, agents, skills, worker modules, and CLI run instructions."
 ---
@@ -47,6 +47,7 @@ Your job is to create or update application code in the user's repository, not t
 - do not start scaffolding until the required intake questions are answered or explicit assumptions are documented
 - do not assume generic sessions should be enabled; ask whether users should be allowed to create generic sessions under the default agent
 - do not assume the agent roster; if the user has not named agents, ask for workflow descriptions and derive a starter set from those answers
+- when the app should expose PilotSwarm's SDK-bundled `generic-crawler`, add `"bundledAgents": ["generic-crawler"]` under `session-policy.json.creation`; do not copy the SDK-bundled agent into the app unless the user wants to customize it
 - do not assume remote topology; ask whether the user wants local-only Docker Postgres, the standard AKS + PostgreSQL + Blob topology, or a custom topology
 - do not assume the local database name; ask for it or default it explicitly to the workspace name
 - do not silently copy secrets from another repo or machine state without explicit user approval

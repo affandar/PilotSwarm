@@ -7,7 +7,7 @@
 import { describe, it } from "vitest";
 import { assert, assertEqual } from "../helpers/assertions.js";
 import { createFactTools, createGraphTools } from "../../src/index.ts";
-import { resolveHarvesterRole } from "../../src/session-proxy.ts";
+import { resolveCrawlerRole, resolveHarvesterRole } from "../../src/session-proxy.ts";
 
 // Minimal fakes — the factories only read `.capabilities` and call methods on
 // demand; registration itself does no I/O.
@@ -133,6 +133,143 @@ describe("P4: enhanced facts tool gating (createFactTools)", () => {
         assert(!keys.some((k) => k.startsWith("intake/")), "reserved intake fact stripped from results");
     });
 
+    it("crawler read_facts scope=all is unrestricted but still strips ordinary-hidden namespaces", async () => {
+        let seenAccess;
+        const store = {
+            ...fakeBaseStore(),
+            readFacts: async (_query, access) => {
+                seenAccess = access;
+                return {
+                    count: 3,
+                    facts: [
+                        { key: "corpus/acme/a", scopeKey: "shared:corpus/acme/a" },
+                        { key: "intake/acme/secret", scopeKey: "shared:intake/acme/secret" },
+                        { key: "config/facts-manager/policy", scopeKey: "shared:config/facts-manager/policy" },
+                    ],
+                };
+            },
+        };
+        const tools = createFactTools({ factStore: store, agentIdentity: "app-crawler", isCrawler: true });
+        const res = await byName(tools, "read_facts").handler({ scope: "all" }, { sessionId: "s1" });
+        assertEqual(seenAccess.unrestricted, true, "crawler scope=all uses unrestricted read access");
+        const keys = res.facts.map((fact) => fact.key);
+        assert(keys.includes("corpus/acme/a"), "ordinary source fact remains visible");
+        assert(!keys.some((key) => key.startsWith("intake/")), "intake rows stripped for crawler broad reads");
+        assert(!keys.some((key) => key.startsWith("config/facts-manager/")), "facts-manager config stripped for crawler broad reads");
+    });
+
+    it("ordinary read_facts scope=all is rejected", async () => {
+        const tools = createFactTools({ factStore: fakeBaseStore(), agentIdentity: "default" });
+        const res = await byName(tools, "read_facts").handler({ scope: "all" }, { sessionId: "s1" });
+        assert(res && typeof res.error === "string" && /scope='all'/.test(res.error), "ordinary sessions cannot use broad reads");
+    });
+
+    it("facts-manager and tuner can use read_facts scope=all without reserved-prefix stripping", async () => {
+        for (const agentIdentity of ["facts-manager", "agent-tuner"]) {
+            let seenAccess;
+            const store = {
+                ...fakeBaseStore(),
+                readFacts: async (_query, access) => {
+                    seenAccess = access;
+                    return {
+                        count: 2,
+                        facts: [
+                            { key: "intake/acme/secret", scopeKey: "shared:intake/acme/secret" },
+                            { key: "config/facts-manager/policy", scopeKey: "shared:config/facts-manager/policy" },
+                        ],
+                    };
+                },
+            };
+            const tools = createFactTools({ factStore: store, agentIdentity });
+            const res = await byName(tools, "read_facts").handler({ scope: "all" }, { sessionId: "s1" });
+            assertEqual(seenAccess.unrestricted, true, `${agentIdentity}: scope=all uses unrestricted read access`);
+            assertEqual(res.facts.length, 2, `${agentIdentity}: reserved rows are not stripped`);
+        }
+    });
+
+    it("crawler facts_search uses unrestricted access but still strips ordinary-hidden namespaces", async () => {
+        const enh = fakeEnhancedStore();
+        let seenAccess;
+        enh.searchFacts = async (_query, _opts, access) => {
+            seenAccess = access;
+            return {
+                count: 3,
+                mode: "hybrid",
+                facts: [
+                    { key: "corpus/acme/a", scopeKey: "shared:corpus/acme/a", score: 0.9 },
+                    { key: "intake/acme/secret", scopeKey: "shared:intake/acme/secret", score: 0.8 },
+                    { key: "config/facts-manager/policy", scopeKey: "shared:config/facts-manager/policy", score: 0.7 },
+                ],
+            };
+        };
+        const tools = createFactTools({ factStore: enh, enhancedFactStore: enh, agentIdentity: "app-crawler", isCrawler: true });
+        const res = await byName(tools, "facts_search").handler({ query: "acme" }, { sessionId: "s1" });
+        assertEqual(seenAccess.unrestricted, true, "crawler facts_search uses unrestricted access");
+        const keys = res.facts.map((fact) => fact.key);
+        assert(keys.includes("corpus/acme/a"), "ordinary source fact remains visible");
+        assert(!keys.some((key) => key.startsWith("intake/")), "intake rows stripped for crawler search");
+        assert(!keys.some((key) => key.startsWith("config/facts-manager/")), "facts-manager config stripped for crawler search");
+    });
+
+    it("crawler facts_search blocks explicit reserved namespace queries", async () => {
+        const enh = fakeEnhancedStore();
+        const tools = createFactTools({ factStore: enh, enhancedFactStore: enh, agentIdentity: "app-crawler", isCrawler: true });
+        const res = await byName(tools, "facts_search").handler({ query: "x", namespace: "intake" }, { sessionId: "s1" });
+        assert(res && typeof res.error === "string" && /intake/.test(res.error), "crawler cannot explicitly search intake namespace");
+    });
+
+    it("crawler facts_similar uses unrestricted access but still strips ordinary-hidden namespaces", async () => {
+        const enh = fakeEnhancedStore();
+        let seenAccess;
+        enh.similarFacts = async (_scopeKey, _opts, access) => {
+            seenAccess = access;
+            return {
+                count: 3,
+                mode: "semantic",
+                facts: [
+                    { key: "corpus/acme/a", scopeKey: "shared:corpus/acme/a", score: 0.9 },
+                    { key: "intake/acme/secret", scopeKey: "shared:intake/acme/secret", score: 0.8 },
+                    { key: "config/facts-manager/policy", scopeKey: "shared:config/facts-manager/policy", score: 0.7 },
+                ],
+            };
+        };
+        const tools = createFactTools({ factStore: enh, enhancedFactStore: enh, agentIdentity: "app-crawler", isCrawler: true });
+        const res = await byName(tools, "facts_similar").handler({ scopeKey: "shared:corpus/acme/a" }, { sessionId: "s1" });
+        assertEqual(seenAccess.unrestricted, true, "crawler facts_similar uses unrestricted access");
+        const keys = res.facts.map((fact) => fact.key);
+        assert(keys.includes("corpus/acme/a"), "ordinary source fact remains visible");
+        assert(!keys.some((key) => key.startsWith("intake/")), "intake rows stripped for crawler similar");
+        assert(!keys.some((key) => key.startsWith("config/facts-manager/")), "facts-manager config stripped for crawler similar");
+    });
+
+    it("crawler delete_fact scope=all is allowed for non-reserved patterns", async () => {
+        let seenDelete;
+        const store = {
+            ...fakeBaseStore(),
+            deleteFact: async (input) => {
+                seenDelete = input;
+                return { keyPattern: input.key, scope: input.scope, deleted: 2 };
+            },
+        };
+        const tools = createFactTools({ factStore: store, agentIdentity: "app-crawler", isCrawler: true });
+        const res = await byName(tools, "delete_fact").handler({ key: "corpus/acme/%", pattern: true, scope: "all" }, { sessionId: "s1" });
+        assertEqual(res.deleted, 2, "delete result returned");
+        assertEqual(seenDelete.scope, "all", "scope=all forwarded");
+        assertEqual(seenDelete.unrestricted, true, "crawler delete scope=all uses unrestricted delete");
+    });
+
+    it("crawler delete_fact scope=all still blocks reserved namespaces", async () => {
+        const tools = createFactTools({ factStore: fakeBaseStore(), agentIdentity: "app-crawler", isCrawler: true });
+        const res = await byName(tools, "delete_fact").handler({ key: "skills/%", pattern: true, scope: "all" }, { sessionId: "s1" });
+        assert(res && typeof res.error === "string" && /reserved/.test(res.error), "reserved namespaces stay protected from crawler broad delete");
+    });
+
+    it("ordinary delete_fact scope=all is rejected", async () => {
+        const tools = createFactTools({ factStore: fakeBaseStore(), agentIdentity: "default" });
+        const res = await byName(tools, "delete_fact").handler({ key: "corpus/acme/%", pattern: true, scope: "all" }, { sessionId: "s1" });
+        assert(res && typeof res.error === "string" && /scope='all'/.test(res.error), "ordinary sessions cannot use broad deletes");
+    });
+
     it("facts_similar forwards namespace to the provider", async () => {
         const enh = fakeEnhancedStore();
         let seenOpts;
@@ -158,35 +295,40 @@ describe("P4: enhanced facts tool gating (createFactTools)", () => {
 describe("P4: graph tool gating (createGraphTools)", () => {
     const base = () => ({ graphStore: fakeGraphStore(), factStore: fakeBaseStore() });
 
-    it("reader (no harvester role) → reads + graph write/delete, but no crawl/stats", () => {
+    it("reader (no crawler role) → reads + graph write/delete, but no crawl/stats", () => {
         const n = names(createGraphTools({ ...base(), agentIdentity: "default" }));
         assert(n.has("graph_search_nodes") && n.has("graph_search_edges") && n.has("graph_neighbourhood"), "graph read tools present");
         assert(n.has("graph_upsert_node") && n.has("graph_upsert_edge") && n.has("graph_merge_nodes")
             && n.has("graph_delete_node") && n.has("graph_delete_edge"), "graph write/delete now available to every non-tuner session");
-        assert(!n.has("facts_read_uncrawled") && !n.has("facts_set_crawled") && !n.has("graph_remove_evidence"), "crawl/reconcile tools stay harvester/facts-manager only");
+        assert(!n.has("facts_read_uncrawled") && !n.has("facts_set_crawled") && !n.has("graph_remove_evidence"), "crawl/reconcile tools stay crawler/facts-manager only");
         assert(!n.has("graph_stats"), "no graph_stats for an ordinary reader");
     });
 
-    it("harvester role → read + crawl-queue + write/delete", () => {
-        const n = names(createGraphTools({ ...base(), agentIdentity: "app-harvester", isHarvester: true }));
+    it("crawler role → read + crawl-queue + write/delete", () => {
+        const n = names(createGraphTools({ ...base(), agentIdentity: "app-crawler", isCrawler: true }));
         assert(n.has("graph_search_nodes"), "reads present");
-        assert(n.has("facts_read_uncrawled") && n.has("facts_set_crawled") && n.has("graph_remove_evidence"), "crawl/reconcile tools present for harvester");
+        assert(n.has("facts_read_uncrawled") && n.has("facts_set_crawled") && n.has("graph_remove_evidence"), "crawl/reconcile tools present for crawler");
         assert(n.has("graph_upsert_node") && n.has("graph_upsert_edge") && n.has("graph_merge_nodes")
-            && n.has("graph_delete_node") && n.has("graph_delete_edge"), "graph write/delete present for harvester");
+            && n.has("graph_delete_node") && n.has("graph_delete_edge"), "graph write/delete present for crawler");
     });
 
-    it("facts-manager → harvester tools (dormant) + graph_stats", () => {
+    it("legacy isHarvester alias still grants crawler tools", () => {
+        const n = names(createGraphTools({ ...base(), agentIdentity: "app-harvester", isHarvester: true }));
+        assert(n.has("facts_read_uncrawled") && n.has("facts_set_crawled") && n.has("graph_remove_evidence"), "legacy alias grants crawl/reconcile tools");
+    });
+
+    it("facts-manager → crawler tools (dormant) + graph_stats", () => {
         const n = names(createGraphTools({ ...base(), agentIdentity: "facts-manager" }));
-        assert(n.has("facts_read_uncrawled") && n.has("graph_remove_evidence") && n.has("graph_upsert_node"), "facts-manager holds harvester tools");
+        assert(n.has("facts_read_uncrawled") && n.has("graph_remove_evidence") && n.has("graph_upsert_node"), "facts-manager holds crawler tools");
         assert(n.has("graph_stats"), "facts-manager gets graph_stats");
     });
 
     it("agent-tuner → reads + graph_stats, NEVER write/crawl/delete", () => {
-        const n = names(createGraphTools({ ...base(), agentIdentity: "agent-tuner", isHarvester: true }));
+        const n = names(createGraphTools({ ...base(), agentIdentity: "agent-tuner", isCrawler: true }));
         assert(n.has("graph_search_nodes") && n.has("graph_neighbourhood"), "tuner gets graph reads");
         assert(n.has("graph_stats"), "tuner gets graph_stats");
         assert(!n.has("graph_upsert_node") && !n.has("graph_delete_node") && !n.has("graph_merge_nodes"), "tuner gets NO graph writes");
-        assert(!n.has("facts_read_uncrawled") && !n.has("facts_set_crawled") && !n.has("graph_remove_evidence"), "tuner gets NO crawl/reconcile tools (even with isHarvester)");
+        assert(!n.has("facts_read_uncrawled") && !n.has("facts_set_crawled") && !n.has("graph_remove_evidence"), "tuner gets NO crawl/reconcile tools (even with isCrawler)");
     });
 
     it("namespace is forwarded through every graph read/write/delete/stat tool", async () => {
@@ -318,22 +460,22 @@ describe("P4: graph tool gating (createGraphTools)", () => {
 describe("graph namespace registry tool gating (createGraphTools)", () => {
     const base = (seen = {}) => ({ graphStore: fakeNamespaceGraphStore(seen), factStore: fakeBaseStore() });
 
-    it("role matrix: reader can upsert namespaces; harvester adds archive; facts-manager adds delete; tuner read-only", () => {
+    it("role matrix: reader can upsert namespaces; crawler adds archive; facts-manager adds delete; tuner read-only", () => {
         const reader = names(createGraphTools({ ...base(), agentIdentity: "default" }));
         assert(reader.has("graph_list_namespaces") && reader.has("graph_get_namespace"), "reader gets namespace read tools");
         assert(reader.has("graph_upsert_namespace"), "reader gets namespace upsert for graph incorporation");
         assert(!reader.has("graph_archive_namespace") && !reader.has("graph_delete_namespace"), "reader cannot archive/delete namespaces");
 
-        const harvester = names(createGraphTools({ ...base(), agentIdentity: "app-harvester", isHarvester: true }));
-        assert(harvester.has("graph_upsert_namespace") && harvester.has("graph_archive_namespace"), "harvester gets namespace upsert/archive");
-        assert(!harvester.has("graph_delete_namespace"), "harvester cannot delete namespaces");
+        const crawler = names(createGraphTools({ ...base(), agentIdentity: "app-crawler", isCrawler: true }));
+        assert(crawler.has("graph_upsert_namespace") && crawler.has("graph_archive_namespace"), "crawler gets namespace upsert/archive");
+        assert(!crawler.has("graph_delete_namespace"), "crawler cannot delete namespaces");
 
         const manager = names(createGraphTools({ ...base(), agentIdentity: "facts-manager" }));
         assert(manager.has("graph_upsert_namespace") && manager.has("graph_archive_namespace") && manager.has("graph_delete_namespace"), "facts-manager gets all namespace mutation tools");
 
-        const tuner = names(createGraphTools({ ...base(), agentIdentity: "agent-tuner", isHarvester: true }));
+        const tuner = names(createGraphTools({ ...base(), agentIdentity: "agent-tuner", isCrawler: true }));
         assert(tuner.has("graph_list_namespaces") && tuner.has("graph_get_namespace"), "tuner gets namespace reads");
-        assert(!tuner.has("graph_upsert_namespace") && !tuner.has("graph_archive_namespace") && !tuner.has("graph_delete_namespace"), "tuner gets no namespace mutations even if isHarvester is forged");
+        assert(!tuner.has("graph_upsert_namespace") && !tuner.has("graph_archive_namespace") && !tuner.has("graph_delete_namespace"), "tuner gets no namespace mutations even if isCrawler is forged");
     });
 
     it("provider without namespace methods still gets normal graph tools and no namespace tools", () => {
@@ -412,75 +554,83 @@ describe("graph namespace registry tool gating (createGraphTools)", () => {
     });
 });
 
-// ─── BLOCKER#2: harvester role derives from the agent definition ─────────────
-// The harvester role is a property of the AGENT, resolved from static worker
+// ─── BLOCKER#2: crawler role derives from the agent definition ───────────────
+// The crawler role is a property of the AGENT, resolved from static worker
 // config every turn — never inherited from a parent, never trusted from a stale
-// serialized config. resolveHarvesterRole is the single authoritative derive.
-describe("BLOCKER#2: resolveHarvesterRole (agent-definition-derived)", () => {
+// serialized config. resolveCrawlerRole is the canonical authoritative derive;
+// resolveHarvesterRole remains as a compatibility alias.
+describe("BLOCKER#2: resolveCrawlerRole (agent-definition-derived)", () => {
     const userAgents = [
-        { name: "crawler", id: "crawler", title: "Knowledge Crawler", harvester: true },
+        { name: "crawler", id: "crawler", title: "Knowledge Crawler", crawler: true },
+        { name: "legacy-harvester", id: "legacy-harvester", title: "Legacy Harvester", harvester: true },
         { name: "researcher", id: "researcher", title: "Researcher", harvester: false },
         { name: "writer", id: "writer", title: "Writer" }, // no harvester field
     ];
     const systemAgents = [
         { name: "facts-manager", id: "facts-manager", title: "Facts Manager" },
-        { name: "harvest-sys", id: "harvest-sys", title: "System Harvester", harvester: true },
+        { name: "crawl-sys", id: "crawl-sys", title: "System Crawler", crawler: true },
     ];
 
-    it("a top-level harvester agent resolves true (by id)", () => {
+    it("a top-level crawler agent resolves true (by id)", () => {
+        assertEqual(resolveCrawlerRole("crawler", undefined, userAgents, systemAgents), true);
+    });
+
+    it("legacy harvester frontmatter remains a compatibility alias", () => {
+        assertEqual(resolveCrawlerRole("legacy-harvester", undefined, userAgents, systemAgents), true);
+        assertEqual(resolveHarvesterRole("legacy-harvester", undefined, userAgents, systemAgents), true);
         assertEqual(resolveHarvesterRole("crawler", undefined, userAgents, systemAgents), true);
     });
 
-    it("a non-harvester agent resolves false", () => {
-        assertEqual(resolveHarvesterRole("researcher", undefined, userAgents, systemAgents), false);
+    it("a non-crawler agent resolves false", () => {
+        assertEqual(resolveCrawlerRole("researcher", undefined, userAgents, systemAgents), false);
     });
 
-    it("an agent with no harvester field resolves false (fail-closed)", () => {
-        assertEqual(resolveHarvesterRole("writer", undefined, userAgents, systemAgents), false);
+    it("an agent with no crawler field resolves false (fail-closed)", () => {
+        assertEqual(resolveCrawlerRole("writer", undefined, userAgents, systemAgents), false);
     });
 
     it("SECURITY: title is NOT an authorization key — a title match does not grant the role", () => {
         // 'Knowledge Crawler' is the crawler's TITLE (display metadata). Identity
         // is always the canonical id/name, never the title; matching on title
         // would be a privilege vector. So a title string must resolve false.
-        assertEqual(resolveHarvesterRole("Knowledge Crawler", undefined, userAgents, systemAgents), false);
+        assertEqual(resolveCrawlerRole("Knowledge Crawler", undefined, userAgents, systemAgents), false);
         // ...but the canonical name/id still grants.
-        assertEqual(resolveHarvesterRole(undefined, "crawler", userAgents, systemAgents), true);
+        assertEqual(resolveCrawlerRole(undefined, "crawler", userAgents, systemAgents), true);
     });
 
     it("SECURITY: fail closed on a normalized-id collision (no false-positive escalation)", () => {
         // Two agents whose ids normalize to the SAME target, one harvester and
         // one not. An ambiguous match must NOT escalate to the privileged role.
         const colliding = [
-            { name: "data-crawler", id: "data-crawler", harvester: true },
-            { name: "datacrawler", id: "datacrawler", harvester: false }, // normalizes identically
+            { name: "data-crawler", id: "data-crawler", crawler: true },
+            { name: "datacrawler", id: "datacrawler", crawler: false }, // normalizes identically
         ];
-        assertEqual(resolveHarvesterRole("datacrawler", undefined, colliding, undefined), false);
-        // All-harvester collisions are unambiguous → grant.
+        assertEqual(resolveCrawlerRole("datacrawler", undefined, colliding, undefined), false);
+        // All-crawler collisions are unambiguous → grant.
         const allHarvest = [
-            { name: "data-crawler", id: "data-crawler", harvester: true },
+            { name: "data-crawler", id: "data-crawler", crawler: true },
             { name: "datacrawler", id: "datacrawler", harvester: true },
         ];
-        assertEqual(resolveHarvesterRole("datacrawler", undefined, allHarvest, undefined), true);
+        assertEqual(resolveCrawlerRole("datacrawler", undefined, allHarvest, undefined), true);
     });
 
     it("a system agent can carry the role too", () => {
-        assertEqual(resolveHarvesterRole("harvest-sys", undefined, userAgents, systemAgents), true);
+        assertEqual(resolveCrawlerRole("crawl-sys", undefined, userAgents, systemAgents), true);
     });
 
-    it("NO inheritance: an unknown identity resolves false even when a harvester exists in the list", () => {
-        // Simulates a child whose own identity is not a harvester agent — the
-        // presence of a harvester agent elsewhere in worker config must not leak.
-        assertEqual(resolveHarvesterRole("some-child-id", undefined, userAgents, systemAgents), false);
+    it("NO inheritance: an unknown identity resolves false even when a crawler exists in the list", () => {
+        // Simulates a child whose own identity is not a crawler agent — the
+        // presence of a crawler agent elsewhere in worker config must not leak.
+        assertEqual(resolveCrawlerRole("some-child-id", undefined, userAgents, systemAgents), false);
     });
 
     it("empty / missing identity resolves false", () => {
-        assertEqual(resolveHarvesterRole(undefined, undefined, userAgents, systemAgents), false);
-        assertEqual(resolveHarvesterRole("", "", userAgents, systemAgents), false);
+        assertEqual(resolveCrawlerRole(undefined, undefined, userAgents, systemAgents), false);
+        assertEqual(resolveCrawlerRole("", "", userAgents, systemAgents), false);
     });
 
-    it("no agent lists → false (a deployment with no loaded agents has no harvesters)", () => {
-        assertEqual(resolveHarvesterRole("crawler", undefined, undefined, undefined), false);
+    it("no agent lists → false (a deployment with no loaded agents has no crawlers)", () => {
+        assertEqual(resolveCrawlerRole("crawler", undefined, undefined, undefined), false);
     });
 });
 

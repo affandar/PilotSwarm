@@ -46,7 +46,7 @@ my-app/
 6. Treat `plugin/agents/default.agent.md` as the app-wide default overlay under PilotSwarm's embedded framework base. It is **not** a selectable session agent — PilotSwarm excludes it from the agent picker, the client rejects `createSession` calls with `agentId: "default"`, and the worker never adds it to `allowedAgentNames`. Do not name any other agent file `default`.
 6. Put reusable domain knowledge in `plugin/skills/*/SKILL.md`.
 7. Put runtime tool handlers in `worker-module.js`.
-8. Add `session-policy.json` if the user does not want generic sessions. The policy is enforced in both local and remote modes — the TUI reads it from the plugin directory even when there are no embedded workers.
+8. Add `session-policy.json` if the user does not want generic sessions. The policy is enforced in both local and remote modes — the TUI reads it from the plugin directory even when there are no embedded workers. If the app should expose SDK-bundled optional agents, add them under `creation.bundledAgents`, for example `"bundledAgents": ["generic-crawler"]`; remote-mode picker metadata expands those names into creatable agents.
 9. Build `.env.example` and a gitignored `.env` by copying/adapting the PilotSwarm repo's example env shape when the user wants runnable scaffolding.
 10. Build `.model_providers.example.json` and a gitignored `.model_providers.json` by copying/adapting the PilotSwarm repo's example model-catalog shape when the scaffold needs a custom model catalog.
 11. Add checked-in scripts for launch and database cleanup (both local and remote modes).

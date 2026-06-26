@@ -33,7 +33,8 @@ plugin/
   "creation": {
     "mode": "allowlist",
     "allowGeneric": false,
-    "defaultAgent": "supervisor"
+    "defaultAgent": "supervisor",
+    "bundledAgents": ["generic-crawler"]
   },
   "deletion": {
     "protectSystem": true
@@ -44,12 +45,15 @@ plugin/
 - `mode: "allowlist"` — only loaded non-system agents are creatable as top-level sessions.
 - `mode: "open"` — any session can be created (current behavior).
 - `allowGeneric` — whether blank sessions (no agent binding) are allowed.
-- `defaultAgent` — the default agent for `n` in TUI when only one is needed.
+- `defaultAgent` — a preferred named agent hint for app UIs. The shared TUI/portal `n` shortcut still fast-starts a generic session when `allowGeneric=true`; `Shift+N` exposes the picker after model selection.
+- `bundledAgents` — optional PilotSwarm-shipped named agents to make available in this app. Bundled agents are hidden unless explicitly listed. For example, `"generic-crawler"` enables the SDK's built-in crawler agent.
 - `protectSystem` — whether system sessions are deletion-protected (default `true`).
 
-### No agent enumeration in policy
+### Agent enumeration in policy
 
-The policy does NOT list agents. The allowed agents are derived from the loaded plugin agents at startup. If a plugin defines `supervisor.agent.md`, then `supervisor` is creatable. If it defines `sweeper.agent.md` with `system: true`, then `sweeper` is NOT user-creatable.
+Ordinary app agents are not listed in policy. They are derived from loaded plugin agents at startup. If a plugin defines `supervisor.agent.md`, then `supervisor` is creatable. If it defines `sweeper.agent.md` with `system: true`, then `sweeper` is NOT user-creatable.
+
+`bundledAgents` is the exception: it opts into optional SDK-shipped user agents. Unknown bundled names fail worker construction, and `defaultAgent` cannot point at a bundled agent unless that bundled agent is opted in. App plugin agents and inline `customAgents` with the same normalized name take precedence over bundled agents.
 
 ## Agent Namespacing
 

@@ -154,8 +154,9 @@ Do not change a TUI keybinding in code without keeping those surfaces in sync.
 
 Current overlap to preserve unless intentionally changed:
 
-- `n` opens a new-session flow; in apps with named creatable agents it should open the agent picker rather than blindly creating a generic session
-- `Shift+N` opens the model picker, and model selection should flow into the same new-session/agent-picker path
+- `n` fast-starts a generic session with the default model when generic sessions are allowed; if generic sessions are disabled, it falls back to the model-first creation flow when models are available, or the agent picker
+- `Shift+N` opens the model picker, then reasoning effort when applicable, then the generic/named-agent picker
+- Agent picker availability comes from `transport.listCreatableAgents()` / portal `/api/bootstrap.creatableAgents`. In remote mode, if `session-policy.json.creation.bundledAgents` opts into SDK-bundled agents such as `generic-crawler`, the CLI transport must expand those names from `packages/sdk/plugins/default-agents/`; worker logs alone are not enough to prove the TUI/portal picker can show them.
 - `f` in the sessions pane opens the session owner filter
 - `Ctrl+G` in the sessions pane opens the move-to-group picker for the selected top-level non-system sessions, or for the active top-level non-system session when multi-select is off
 - `t` in the sessions pane opens the rename-title dialog
@@ -270,7 +271,7 @@ It ships three repo-root entry-point scripts; all three must keep working:
 
 When you change harvester-relevant behavior, keep these in sync in the same change:
 
-- the sample agents `plugin/agents/source-harvester.agent.md` (`harvester: true`) and `plugin/agents/librarian.agent.md` (reader), bumping each agent's `version` per the `agent-versioning` skill
+- the sample agents `plugin/agents/source-harvester.agent.md` (`crawler: true`) and `plugin/agents/librarian.agent.md` (reader), bumping each agent's `version` per the `agent-versioning` skill
 - the three scripts above and the sample `README.md` (Run / Visualize / Cleanup sections)
 - the builder skill `templates/builder-agents/skills/pilotswarm-knowledge-harvester/SKILL.md` and `docs/harvester-deployment.md`, which teach the same patterns
 

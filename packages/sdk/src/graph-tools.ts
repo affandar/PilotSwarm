@@ -5,8 +5,8 @@ import type { GraphStore } from "./graph-store.js";
 
 // Roles that may run the privileged crawl work queue (`facts_read_uncrawled` /
 // `facts_set_crawled`, which read facts across ALL scopes). The app assigns the
-// harvester role to its own agent; the facts-manager holds the queue too but is
-// dormant by default (07 §1.5). agent-tuner is read-only and never harvests.
+// crawler role to its own agent; the facts-manager holds the queue too but is
+// dormant by default. agent-tuner is read-only and never crawls.
 // NOTE: graph write/delete is NOT gated by this role — it is open to every
 // non-tuner session (the knowledge graph is shared).
 const TUNER_AGENT_ID = "agent-tuner";
@@ -48,12 +48,14 @@ export interface CreateGraphToolsOptions {
     /** The session's agent identity, used for role gating. */
     agentIdentity?: string;
     /**
-     * Whether this session holds the app-assigned HARVESTER role. This now gates
-     * ONLY the crawl work queue (`facts_read_uncrawled` / `facts_set_crawled`);
-     * the facts-manager additionally receives the queue (dormant), and
-     * agent-tuner never does. Graph write/delete is NOT gated by this flag — it
-     * is available to every non-tuner session (see `canWriteGraph`).
+     * Whether this session holds the app-assigned CRAWLER role. This gates ONLY
+     * the crawl work queue (`facts_read_uncrawled` / `facts_set_crawled`); the
+     * facts-manager additionally receives the queue (dormant), and agent-tuner
+     * never does. Graph write/delete is NOT gated by this flag — it is available
+     * to every non-tuner session (see `canWriteGraph`).
      */
+    isCrawler?: boolean;
+    /** @deprecated Use `isCrawler`; accepted as a compatibility alias. */
     isHarvester?: boolean;
     /**
      * Resolve the caller's ACL context for graph reads (evidence filtering +
@@ -79,14 +81,15 @@ export interface CreateGraphToolsOptions {
  * every session; graph write/delete (`graph_upsert_*` / `graph_merge_nodes` /
  * `graph_delete_*`) go to EVERY session EXCEPT the read-only agent-tuner, so any
  * agent can incorporate into the SHARED graph; the crawl work queue
- * (`facts_read_uncrawled` / `facts_set_crawled`) stays harvester-role +
+ * (`facts_read_uncrawled` / `facts_set_crawled`) stays crawler-role +
  * facts-manager only (it reads facts across ALL scopes, bypassing per-session
  * ACL); `graph_stats` (read-only) goes to facts-manager + agent-tuner.
  * agent-tuner never gets a mutating tool.
  */
 export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
-    const { graphStore, factStore, agentIdentity, isHarvester, recordEvent } = opts;
-    const agentId = opts.agentId ?? agentIdentity ?? "harvester";
+    const { graphStore, factStore, agentIdentity, recordEvent } = opts;
+    const isCrawler = opts.isCrawler === true || opts.isHarvester === true;
+    const agentId = opts.agentId ?? agentIdentity ?? "crawler";
     const isTuner = agentIdentity === TUNER_AGENT_ID;
     const isFactsManager = agentIdentity === FACTS_MANAGER_AGENT_ID;
     // ACL resolver. FAIL CLOSED: with no resolver, restrict reads to the
@@ -98,9 +101,9 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
         if (opts.resolveAccess) return opts.resolveAccess(sessionId);
         return { readerSessionId: sessionId ?? null, grantedSessionIds: [] };
     };
-    // Harvester powers (the crawl work queue): the app-assigned harvester role OR
+    // Crawler powers (the crawl work queue): the app-assigned crawler role OR
     // the facts-manager (which holds them dormant). Never the tuner.
-    const canHarvest = !isTuner && (isHarvester === true || isFactsManager);
+    const canHarvest = !isTuner && (isCrawler || isFactsManager);
     // Graph write/delete is open to EVERY session that can run tools, so any
     // agent can incorporate into the SHARED knowledge graph. The only exception
     // is the read-only agent-tuner, which never receives a mutating tool.
@@ -334,7 +337,7 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
                 // returned` (capped by `limit`), so a limit:1 read would always
                 // report 0 or 1 — useless as a backlog signal. We probe up to
                 // BACKLOG_PROBE and flag `uncrawledFactsCapped` when the queue is
-                // at least that deep ("harvester is well behind"); the exact depth
+                // at least that deep ("crawler is well behind"); the exact depth
                 // beyond the probe is not needed for a health report.
                 const BACKLOG_PROBE = 500;
                 const statsFn = (graphStore as any).graphStats;
@@ -368,14 +371,14 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
         }));
     }
 
-    // ── Crawl-queue tools (HARVESTER / facts-manager — privileged, all scopes) ─
+    // ── Crawl-queue tools (CRAWLER / facts-manager — privileged, all scopes) ─
     // The crawl work queue reads facts across ALL scopes (bypassing per-session
-    // ACL), so it stays restricted to the harvester role and the (dormant)
+    // ACL), so it stays restricted to the crawler role and the (dormant)
     // facts-manager — it is NOT opened up to every session.
     if (canHarvest) {
         tools.push(defineTool("facts_read_uncrawled", {
             description:
-                "PRIVILEGED harvester work queue: facts not yet incorporated into the graph (new or edited since the " +
+                "PRIVILEGED crawler work queue: facts not yet incorporated into the graph (new or edited since the " +
                 "last crawl), across ALL scopes. Keep each fact's scopeKey and etag — both are the receipt facts_set_crawled needs.",
             parameters: {
                 type: "object" as const,
@@ -440,7 +443,7 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
 
     // ── Namespace registry writes. Upsert follows normal graph-write policy so
     // ordinary graph-aware agents can register corpora they just incorporated.
-    // Archive remains harvester/facts-manager only; delete is facts-manager only.
+    // Archive remains crawler/facts-manager only; delete is facts-manager only.
     if (canWriteGraph && canUpsertNamespace) {
         tools.push(defineTool("graph_upsert_namespace", {
             description:
@@ -486,7 +489,7 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
     if (canHarvest && canArchiveNamespace) {
         tools.push(defineTool("graph_archive_namespace", {
             description:
-                "Archive a graph namespace so it disappears from ordinary discovery. Non-destructive: graph data remains searchable when directly targeted. Harvester/facts-manager only. 'default' cannot be archived.",
+                "Archive a graph namespace so it disappears from ordinary discovery. Non-destructive: graph data remains searchable when directly targeted. Crawler/facts-manager only. 'default' cannot be archived.",
             parameters: {
                 type: "object" as const,
                 properties: {

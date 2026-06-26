@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.0.0
+version: 1.1.0
 name: pilotswarm-portal-builder
 description: "Use when building or customizing a PilotSwarm browser portal app. Scaffolds portal branding, plugin metadata, auth add-on configuration, and deployment wiring."
 ---
@@ -44,6 +44,7 @@ Your job is to create or update application code in the user's repository, not t
 - do not assume Entra ID is mandatory; auth must stay pluggable
 - use only canonical `PORTAL_AUTH_*` / `PORTAL_AUTHZ_*` env vars when documenting portal auth; do not rely on legacy `ENTRA_*` aliases
 - do not assume the portal can infer named agents from remote workers alone; explicitly wire plugin packaging and `PLUGIN_DIRS`
+- when `session-policy.json.creation.bundledAgents` opts into SDK-bundled agents such as `generic-crawler`, ensure the portal image includes the app plugin policy and a current `pilotswarm-cli` transport so `/api/bootstrap.creatableAgents` includes the bundled agent
 - do not silently reuse credentials or identity-provider settings from another project without user approval
 - do not invent app-specific auth protocols when the user really wants auth disabled; `none` is a valid first-class choice
 - when the user asks for a custom provider, separate browser login UX, token acquisition, and server-side request validation clearly

@@ -37,7 +37,7 @@ PilotSwarm resolves four targets independently (see
 | Knowledge graph | `graphDatabaseUrl` (`HORIZON_GRAPH_DATABASE_URL`) | entities/edges (Apache AGE) — **shareable** |
 
 > **A graph store is what enables harvesting.** The crawl queue and graph-write tools
-> key off `!!graphStore` — without `HORIZON_GRAPH_DATABASE_URL` the `harvester: true`
+> key off `!!graphStore` — without `HORIZON_GRAPH_DATABASE_URL` the `crawler: true`
 > role grants nothing to harvest with. The enhanced facts target is **recommended but
 > not required**: on a base fact store the harvest still runs (the crawl queue is plain
 > Postgres, no extension), but agents lose `facts_search` / `facts_similar` and
@@ -63,7 +63,7 @@ without stepping on each other.
    ┌──────────┴───────────┐            ┌────────────┴─────────────┐
    │  Harvester service   │            │   Reader app(s)          │
    │  own DATABASE_URL    │            │   own DATABASE_URL       │
-   │  harvester: true     │            │   reader agents          │
+    │  crawler: true       │            │   reader agents          │
    │  crawl → graph → mark│            │   facts_search + graph   │
    └──────────────────────┘            └──────────────────────────┘
 ```
@@ -77,7 +77,7 @@ harvester agent and reader agents, because they all share one orchestration stor
 one HorizonDB.
 
 - **Pro:** nothing new to deploy — just add the `HORIZON_*` env to your existing
-  workers and ship a `harvester: true` agent in your plugin.
+  workers and ship a `crawler: true` agent in your plugin.
 - **Con:** no workload isolation. PilotSwarm workers in a single fleet are
   **homogeneous** — they all poll the same orchestration store and any worker may pick
   up any session (with warm-pod affinity for `runTurn`). There is **no per-agent queue
@@ -85,6 +85,11 @@ one HorizonDB.
   occupy pods that would otherwise serve interactive turns.
 
 Use Topology A unless crawl volume is large enough to warrant isolation.
+
+For a general-purpose operator-driven crawler, apps may opt into the SDK-bundled
+`generic-crawler` agent with `creation.bundledAgents: ["generic-crawler"]` in
+`session-policy.json`. Use an app-authored `crawler: true` agent when extraction,
+scheduling, or source credentials are domain-specific.
 
 ### Topology B — dedicated harvester service + shared HorizonDB
 
@@ -141,15 +146,15 @@ HORIZON_EMBED_API_KEY=…
 > (`horizon_facts` vs `horizon_graph`) are already distinct; the worker fails fast on a
 > collision.
 
-**2. A `harvester: true` agent in the plugin.** The crawl-queue tools
+**2. A `crawler: true` agent in the plugin.** The crawl-queue tools
 (`facts_read_uncrawled` / `facts_set_crawled`) appear only when **both** the graph
 store is configured (`HORIZON_GRAPH_DATABASE_URL`) **and** the session's own agent
-declares `harvester: true`. The graph-write tools (`graph_upsert_node` /
+declares `crawler: true`. The graph-write tools (`graph_upsert_node` /
 `graph_upsert_edge` / `graph_merge_nodes` / `graph_delete_*`) need only the graph store
 — they are available to **every** session except the read-only `agent-tuner`, because
-the knowledge graph is shared. The harvester role is derived per turn from the resolved
+the knowledge graph is shared. The crawler role is derived per turn from the resolved
 agent — it is **not** granted by a `tools:` list and is **not** inherited when a
-harvester spawns a non-harvester child; what it uniquely unlocks is the privileged crawl
+harvester spawns a non-crawler child; what it uniquely unlocks is the privileged crawl
 queue. Model the agent on the sample's
 [`source-harvester.agent.md`](../examples/horizon-harvester/plugin/agents/source-harvester.agent.md).
 
@@ -263,7 +268,7 @@ store versions so their migrations converge.
       **shared** HorizonDB.
 - [ ] Reader app's `HORIZON_*` (including `HORIZON_EMBED_*`) matches the harvester's —
       same schemas, same embedding endpoint/model/dim.
-- [ ] Exactly the harvester agent declares `harvester: true`; readers do not.
+- [ ] Exactly the harvester/crawler agent declares `crawler: true`; readers do not.
 - [ ] `HORIZON_GRAPH_SCHEMA` differs from `HORIZON_FACTS_SCHEMA` when sharing one DB.
 - [ ] `HORIZON_GRAPH_REGISTRY_SCHEMA` differs from `HORIZON_GRAPH_SCHEMA` (AGE owns the graph schema).
 - [ ] Recurring crawl uses `cron` / `cron_at`, not a polling loop.

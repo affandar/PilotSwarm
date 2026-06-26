@@ -459,7 +459,6 @@ export function buildContinueInput(
         parentSessionId: options.parentSessionId,
         nestingLevel: options.nestingLevel,
         ...(options.isSystem ? { isSystem: true } : {}),
-        ...(input.agentId ? { agentId: input.agentId } : {}),
         retryCount: 0,
         ...(state.pendingInputQuestion ? { pendingInputQuestion: state.pendingInputQuestion } : {}),
         ...(state.waitingForAgentIds ? { waitingForAgentIds: state.waitingForAgentIds } : {}),

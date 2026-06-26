@@ -89,6 +89,8 @@ Timer context: {seconds}s timer (reason: "{reason}"), {elapsed}s elapsed, {remai
 
 - 2026-06-21: Added count-only retrieval usage diagnostics to Agent Tuner and graph-debug guidance. Agent Tuner now starts facts/skills/graph investigations with `read_session_retrieval_usage`, `read_session_tree_retrieval_usage`, graph node/edge usage aggregates, and fleet retrieval summaries before falling back to raw `read_session_graph_searches` timelines. Bumped `packages/sdk/plugins/mgmt/agents/agent-tuner.agent.md` to 1.3.0. Expected behavior: retrieval investigations use aggregate counts first and avoid implying returned facts/nodes/edges are persisted in telemetry. Not model-specific; `retrieval-usage`, `agent-tuner`, and `contracts` suites passed.
 
+- 2026-06-25: Clarified the bundled `generic-crawler` prompt so it asks for source/prefix/namespace/action only when missing; when a request already supplies all crawl inputs, it proceeds without another question. Bumped `packages/sdk/plugins/default-agents/agents/generic-crawler.agent.md` to 1.0.1. Expected behavior: caller-provided crawl prompts can run directly while the crawler still refuses blind crawls. Added deterministic bundled-crawler regression coverage for crawl queue + graph construction. Not model-specific.
+
 ### Other Options Considered (not implemented)
 - **Option A (dual-action):** "You MUST do BOTH: 1. Reply with text. 2. Call wait." — Not tried, likely same result with GPT-5.1.
 - **Option C (role-based):** "You are in a conversation — respond naturally." — Not tried.

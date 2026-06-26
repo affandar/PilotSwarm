@@ -17,6 +17,7 @@
     "prepack": "node ./src/sync-workspace-ui.js",
     "start": "node ./bin/tui.js local --env ../../.env.remote",
     "start:remote": "node ./bin/tui.js remote --env ../../.env.remote",
+    "test": "node --test test/*.test.mjs",
     "clean": "true"
   },
   "keywords": [

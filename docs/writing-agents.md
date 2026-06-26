@@ -261,6 +261,7 @@ initialPrompt: >
 | `parent` | string | No | Parent system agent `id`. Makes this a child system agent. |
 | `splash` | string | No | TUI banner (terminal markup). Use YAML `|` block syntax. |
 | `initialPrompt` | string | No | First user message. Use YAML `>` folded syntax for multi-line. |
+| `crawler` | boolean | No | Grants the trusted crawler role for source-ingestion agents when graph/facts providers are configured. Legacy `harvester` is accepted as an alias. |
 
 ---
 

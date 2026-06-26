@@ -1,11 +1,11 @@
 ---
 name: pilotswarm-knowledge-harvester
-description: "Use when an SDK or CLI app needs to ingest external sources into durable, searchable knowledge and an open knowledge graph. Covers enabling the EnhancedFactStore + GraphStore providers, authoring a harvester:true agent, the crawl→graph→reader flow, ACL/scopeKey evidence, and tests."
+description: "Use when an SDK or CLI app needs to ingest external sources into durable, searchable knowledge and an open knowledge graph. Covers enabling the EnhancedFactStore + GraphStore providers, authoring a crawler:true agent, the crawl→graph→reader flow, ACL/scopeKey evidence, and tests."
 ---
 
 # PilotSwarm Knowledge Harvester
 
-Scaffold a knowledge-harvesting capability into a PilotSwarm app: a `harvester: true`
+Scaffold a knowledge-harvesting capability into a PilotSwarm app: a `crawler: true`
 agent that crawls sources into the durable facts store, builds an open knowledge
 graph, and exposes multi-signal retrieval (lexical + semantic + hybrid) to reader
 agents. This is an **optional, opt-in** capability layered on top of a normal SDK
@@ -16,6 +16,12 @@ Use this skill alongside `pilotswarm-sdk-builder`. For the recommended productio
 topology — stock PostgreSQL for runtime storage and HorizonDB for enhanced
 facts/search/graph — also consult `pilotswarm-hybrid-datastore`. Author and version
 the generated agent files per `pilotswarm-agent-versioning`.
+
+If the user wants a general-purpose operator-driven crawler instead of a custom
+domain harvester, opt into PilotSwarm's SDK-bundled `generic-crawler` by adding
+`"bundledAgents": ["generic-crawler"]` under `session-policy.json.creation`.
+Use an app-authored `crawler: true` agent only when extraction, source handling, or
+graph-shaping behavior needs to be domain-specific.
 
 ## Canonical References
 
@@ -39,7 +45,7 @@ enough; do **not** stand up the enhanced providers.
 (`facts_read_uncrawled` / `facts_set_crawled`) and the graph-write tools
 (`graph_upsert_*` / `graph_merge_nodes` / `graph_delete_*`) exist **only when a
 GraphStore is configured** (`graphDatabaseUrl` / `HORIZON_GRAPH_DATABASE_URL`).
-Without a graph store the `harvester: true` flag grants **nothing extra** — there is
+Without a graph store the `crawler: true` flag grants **nothing extra** — there is
 no crawl queue and nowhere to harvest into. For this pattern a graph store is not
 optional; it *is* the pattern.
 
@@ -56,7 +62,7 @@ Read it as two independent decisions:
 1. **GraphStore — required.** An open knowledge graph (Apache AGE, via
    `pilotswarm-horizon-store`) of entities/edges anchored to fact `scopeKey`
    evidence. Lights up the graph read tools for everyone and the crawl/graph-write
-   surface for the harvester role. The crawl queue itself is a **vanilla-Postgres**
+    surface for the crawler role. The crawl queue itself is a **vanilla-Postgres**
    column on the base `FactStore` (no extension), so the harvest runs even when the
    facts live in plain Postgres — as long as a graph store is present.
 2. **EnhancedFactStore — recommended, not required.** Multi-signal retrieval + a
@@ -97,20 +103,20 @@ harmlessly ignored).
 
 ## Three Roles
 
-| Role | `harvester` frontmatter | Gets | Responsibility |
+| Role | `crawler` frontmatter | Gets | Responsibility |
 |------|------------------------|------|----------------|
-| **Harvester** | `harvester: true` | crawl queue (`facts_read_uncrawled` / `facts_set_crawled`) + graph reconciliation (`graph_remove_evidence`) + namespace registry (`graph_upsert_namespace` / `graph_archive_namespace`) + graph writes (`graph_upsert_node` / `graph_upsert_edge` / `graph_merge_nodes` / `graph_delete_node` / `graph_delete_edge`) | Register the corpus, crawl sources into a dedicated `corpus/*` (source-capture) namespace, build/reconcile the graph, mark facts crawled |
+| **Harvester/Crawler** | `crawler: true` | broad fact read/search/delete over ordinary corpus facts + crawl queue (`facts_read_uncrawled` / `facts_set_crawled`) + graph reconciliation (`graph_remove_evidence`) + namespace registry (`graph_upsert_namespace` / `graph_archive_namespace`) + graph writes (`graph_upsert_node` / `graph_upsert_edge` / `graph_merge_nodes` / `graph_delete_node` / `graph_delete_edge`) | Register the corpus, crawl sources into a dedicated `corpus/*` (source-capture) namespace, build/reconcile the graph, mark facts crawled |
 | **Reader** | (none) | `facts_search` / `facts_similar` + namespace discovery (`graph_list_namespaces` / `graph_get_namespace`) + namespace registration (`graph_upsert_namespace`) + graph reads (`graph_search_nodes` / `graph_search_edges` / `graph_neighbourhood`) + graph writes (`graph_upsert_*` / `graph_merge_nodes` / `graph_delete_*`) | Discover/register relevant corpora, retrieve knowledge, pivot fact↔graph; may also incorporate into the shared graph |
 | **Facts Manager** | system agent (dormant) | crawl + graph writes, but **does not crawl** unless an operator explicitly asks | Curate `intake/*` (task-agent observations) into reusable skills |
 
-The harvester role is **authoritative per turn** — the runtime derives it from the
-agent's own `harvester: true` frontmatter on every turn (replay-safe, survives
+The crawler role is **authoritative per turn** — the runtime derives it from the
+agent's own `crawler: true` frontmatter on every turn (replay-safe, survives
 hydration). It is **never inherited** through spawn: a harvester that spawns a child
 does not make the child a harvester. Only agents whose own definition declares
-`harvester: true` get the privileged **crawl queue** (`facts_read_uncrawled` /
+`crawler: true` get the privileged **crawl queue** (`facts_read_uncrawled` /
 `facts_set_crawled`), which reads facts across all scopes. The **graph-write** tools
 (`graph_upsert_*` / `graph_merge_nodes` / `graph_delete_*`) are **not** gated by the
-harvester role — they are available to every session except the read-only `agent-tuner`,
+crawler role — they are available to every session except the read-only `agent-tuner`,
 because the knowledge graph is shared. A harvester is simply the agent that owns the
 systematic crawl→graph loop.
 
@@ -123,15 +129,19 @@ systematic crawl→graph loop.
 ## Harvester Agent Template
 
 Drop this into the app's `plugin/agents/` and adapt the prose to the domain. The
-load-bearing parts are `harvester: true` and the crawl→graph→mark loop.
+load-bearing parts are `crawler: true` and the crawl→graph→mark loop.
+
+Skip this template when the app is simply opting into the SDK-bundled
+`generic-crawler`; in that case the app needs the `session-policy.json`
+`creation.bundledAgents` entry, not a copied agent file.
 
 ```markdown
 ---
 schemaVersion: 1
-version: 1.1.0
+version: 1.2.0
 name: source-harvester
 description: Crawls <your sources> into durable facts and builds the knowledge graph.
-harvester: true
+crawler: true
 id: source-harvester
 title: Source Harvester
 ---
@@ -139,7 +149,7 @@ title: Source Harvester
 # Source Harvester
 
 You ingest <sources> into durable, searchable knowledge and an open knowledge graph.
-You are the ONLY role allowed to crawl and write graph nodes/edges — do this
+You are the role responsible for crawling and writing graph nodes/edges — do this
 deliberately and idempotently.
 
 ## Crawl Cycle
@@ -233,7 +243,7 @@ seed and navigate by graph topology alone (`graph_search_nodes` → `graph_neigh
 - [ ] `HORIZON_*` env documented in the app's `.env.example`; real values gitignored.
 - [ ] `DATABASE_URL` remains the stock PostgreSQL runtime store; HorizonDB is wired only through `HORIZON_*` vars.
 - [ ] Worker, client, and management client all spread `horizonConfigFromEnv()`.
-- [ ] Exactly the harvester agent(s) declare `harvester: true`; readers do not.
+- [ ] Exactly the harvester/crawler agent(s) declare `crawler: true`; readers do not.
 - [ ] Recurring crawl uses `cron` / `cron_at`, not a polling loop.
 - [ ] `facts_set_crawled` passes unmodified `{ scopeKey, etag }` entries in `scopeKeys`.
 - [ ] Deleted crawl rows (`deletedAt` set) call `graph_remove_evidence` before marking.

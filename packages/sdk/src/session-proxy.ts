@@ -524,34 +524,34 @@ export function buildRunTurnConfig(
 }
 
 /**
- * Derive the app-assigned HARVESTER role from the bound agent definition
- * (enhancedfactstore 07 §1.5 / P4 review BLOCKER#2).
+ * Derive the app-assigned CRAWLER role from the bound agent definition.
  *
- * The harvester role is a property of the AGENT, not of a session: it is
- * resolved from the worker's static, loaded agent definitions every turn by
- * matching the session's resolved identity (agentIdentity / boundAgentName)
- * against each agent's CANONICAL identifier (id / name). Because the agent list
- * is static worker configuration, this is deterministic and replay-safe.
+ * The crawler role is a property of the AGENT, not of a session: it is resolved
+ * from the worker's static, loaded agent definitions every turn by matching the
+ * session's resolved identity (agentIdentity / boundAgentName) against each
+ * agent's CANONICAL identifier (id / name). Because the agent list is static
+ * worker configuration, this is deterministic and replay-safe.
  *
- * Deriving it here (rather than trusting a persisted `isHarvester`) means the
- * role can NEVER be inherited from a parent session or smuggled in via a stale
- * serialized config — a child only becomes a harvester if its OWN bound agent
- * declares `harvester: true`. System agents (e.g. facts-manager) that should be
- * harvester-capable get the tools through the SessionManager gating, not here.
+ * Deriving it here (rather than trusting a persisted `isCrawler` / legacy
+ * `isHarvester`) means the role can NEVER be inherited from a parent session or
+ * smuggled in via a stale serialized config — a child only becomes a crawler if
+ * its OWN bound agent declares `crawler: true` (or legacy `harvester: true`).
+ * System agents (e.g. facts-manager) that should be crawler-capable get the
+ * tools through the SessionManager gating, not here.
  *
  * SECURITY (P5 review BLOCKER#2): `title` is display metadata, NOT an
- * authorization key — matching on it would let a non-harvester whose title
- * normalizes to a harvester's identity receive the privileged crawl queue
+ * authorization key — matching on it would let a non-crawler whose title
+ * normalizes to a crawler's identity receive the privileged crawl queue
  * (`facts_read_uncrawled` / `facts_set_crawled`, which read facts across ALL
  * scopes). We match only `id` / `name`, and we FAIL CLOSED on ambiguity: when
  * more than one loaded agent resolves to the same normalized identity, the
- * privileged role is granted only if EVERY one of them declares `harvester`.
+ * privileged role is granted only if EVERY one declares the crawler role.
  */
-export function resolveHarvesterRole(
+export function resolveCrawlerRole(
     identity: string | undefined,
     boundAgentName: string | undefined,
-    userAgents?: Array<{ name?: string; id?: string; title?: string; harvester?: boolean }>,
-    systemAgents?: Array<{ name?: string; id?: string; title?: string; harvester?: boolean }>,
+    userAgents?: Array<{ name?: string; id?: string; title?: string; crawler?: boolean; harvester?: boolean }>,
+    systemAgents?: Array<{ name?: string; id?: string; title?: string; crawler?: boolean; harvester?: boolean }>,
 ): boolean {
     const norm = (v?: string) => (v || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
     const target = norm(identity) || norm(boundAgentName);
@@ -563,10 +563,14 @@ export function resolveHarvesterRole(
         return candidates.includes(target);
     });
     if (matches.length === 0) return false;
+    const hasCrawlerRole = (agent: { crawler?: boolean; harvester?: boolean }) => agent.crawler === true || agent.harvester === true;
     // Fail closed on a normalized-id/name collision: do not let an ambiguous
-    // match between a harvester and a non-harvester escalate to the role.
-    return matches.every((a) => a.harvester === true);
+    // match between a crawler and a non-crawler escalate to the role.
+    return matches.every(hasCrawlerRole);
 }
+
+/** @deprecated Use `resolveCrawlerRole`; retained for compatibility. */
+export const resolveHarvesterRole = resolveCrawlerRole;
 
 
 
@@ -693,7 +697,7 @@ export function registerActivities(
     /** Names of loaded non-system agents — used by getWorkerSessionPolicy activity. */
     workerAllowedAgentNames?: string[],
     /** Loaded user-creatable agents — used by resolveAgentConfig activity. */
-    userAgents?: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; namespace?: string; id?: string; title?: string; initialPrompt?: string; splash?: string; parent?: string; harvester?: boolean; promptLayerKind?: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" }>,
+    userAgents?: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; namespace?: string; id?: string; title?: string; initialPrompt?: string; splash?: string; parent?: string; crawler?: boolean; harvester?: boolean; promptLayerKind?: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" }>,
     /** Fact store instance for the loadKnowledgeIndex activity. */
     factStore?: import("./facts-store.js").FactStore | null,
     /** Worker node identifier — written on every CMS event for worker tracking. */
@@ -779,14 +783,15 @@ export function registerActivities(
         }
 
         const runConfig = buildRunTurnConfig(input.config, hostname, fallbackAgentIdentity);
-        // Derive the app-assigned harvester role authoritatively from the bound
-        // agent definition EVERY turn (enhancedfactstore 07 §1.5 / BLOCKER#2).
+        // Derive the app-assigned crawler role authoritatively from the bound
+        // agent definition EVERY turn.
         // It is a property of the agent, resolved from static worker config, so
         // it survives hydration, is replay-safe, and can never be inherited from
         // a parent or trusted from a stale serialized config.
-        runConfig.isHarvester = resolveHarvesterRole(
+        runConfig.isCrawler = resolveCrawlerRole(
             runConfig.agentIdentity, runConfig.boundAgentName, userAgents, systemAgents,
         );
+        runConfig.isHarvester = runConfig.isCrawler;
         const trace = activityTrace(activityCtx, "runTurn");
 
         const failForMissingState = async (message: string) => {
@@ -1069,6 +1074,7 @@ export function registerActivities(
                     const {
                         boundAgentName: _parentBoundAgentName,
                         promptLayering: _parentPromptLayering,
+                        isCrawler: _parentIsCrawler,
                         isHarvester: _parentIsHarvester,
                         ...parentConfig
                     } = input.config;

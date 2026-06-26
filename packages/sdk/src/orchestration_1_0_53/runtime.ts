@@ -18,7 +18,7 @@ import {
     type DurableSessionRuntime,
 } from "./state.js";
 
-export const CURRENT_ORCHESTRATION_VERSION = DURABLE_SESSION_LATEST_VERSION;
+export const CURRENT_ORCHESTRATION_VERSION = "1.0.53";
 
 /** Wraps `ctx.traceInfo` so every line is tagged with the running orchestration version. */
 function installVersionedTracing(ctx: any, sourceVersion: string): void {
@@ -114,8 +114,6 @@ function* resolveTopLevelAgentConfig(runtime: DurableSessionRuntime): Generator<
             state.config.toolNames = mergedToolNames;
             runtime.ctx.traceInfo(`[orch] merged top-level agent tools for ${input.agentId}: ${mergedToolNames.join(", ")}`);
         }
-        if (agentDef.crawler === true) state.config.isCrawler = true;
-        if (agentDef.harvester === true) state.config.isHarvester = true;
         runtime.session = createSessionProxy(runtime.ctx, input.sessionId, state.affinityKey, state.config);
     }
 }

@@ -3301,14 +3301,26 @@ export class PilotSwarmUiController {
     }
 
     async openNewSessionFlow(options = {}) {
+        const sessionPolicy = typeof this.transport.getSessionCreationPolicy === "function"
+            ? this.transport.getSessionCreationPolicy()
+            : null;
+        const allowGeneric = sessionPolicy?.creation?.allowGeneric ?? true;
+        if (allowGeneric) {
+            await this.createSession(options);
+            return;
+        }
+        if (typeof this.transport.listModels === "function") {
+            await this.openModelPicker(options);
+            return;
+        }
         await this.openSessionAgentPicker(options);
     }
 
-    openReasoningEffortPicker(modelItem, sessionOptions = {}) {
+    async openReasoningEffortPicker(modelItem, sessionOptions = {}) {
         const supported = normalizeReasoningEfforts(modelItem?.supportedReasoningEfforts);
         const selectedEffort = resolveDefaultReasoningEffort(modelItem);
         if (!supported.length || !selectedEffort) {
-            this.openNewSessionFlow(sessionOptions).catch(() => {});
+            await this.openSessionAgentPicker(sessionOptions);
             return;
         }
 
@@ -3334,9 +3346,9 @@ export class PilotSwarmUiController {
         this.dispatch({ type: "ui/status", text: "Select a reasoning effort and press Enter" });
     }
 
-    async openModelPicker() {
+    async openModelPicker(sessionOptions = {}) {
         if (typeof this.transport.listModels !== "function") {
-            await this.openNewSessionFlow();
+            await this.openSessionAgentPicker(sessionOptions);
             return;
         }
 
@@ -3386,6 +3398,7 @@ export class PilotSwarmUiController {
                 groups,
                 selectedIndex,
                 previousFocus: this.getState().ui.focusRegion,
+                sessionOptions,
             },
         });
         this.dispatch({ type: "ui/status", text: "Select a model and press Enter" });
@@ -4135,10 +4148,11 @@ export class PilotSwarmUiController {
                 this.setFocus(previousFocus);
             }
             if (!item) {
-                await this.openNewSessionFlow({});
+                await this.openSessionAgentPicker({});
                 return;
             }
-            this.openReasoningEffortPicker(item, {
+            await this.openReasoningEffortPicker(item, {
+                ...(modal.sessionOptions || {}),
                 model: item.id,
                 ...(resolveDefaultReasoningEffort(item) ? { reasoningEffort: resolveDefaultReasoningEffort(item) } : {}),
             });
@@ -4152,7 +4166,7 @@ export class PilotSwarmUiController {
             if (previousFocus) {
                 this.setFocus(previousFocus);
             }
-            await this.openNewSessionFlow({
+            await this.openSessionAgentPicker({
                 ...sessionOptions,
                 ...(item?.id ? { reasoningEffort: item.id } : {}),
             });

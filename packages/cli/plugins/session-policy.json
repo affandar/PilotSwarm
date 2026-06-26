@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "creation": {
+    "mode": "open",
+    "allowGeneric": true,
+    "bundledAgents": ["generic-crawler"]
+  }
+}

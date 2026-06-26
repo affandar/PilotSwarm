@@ -4,7 +4,7 @@
  * Horizon Harvester — SDK Example
  *
  * Demonstrates PilotSwarm's optional EnhancedFactStore + knowledge-graph providers:
- *   - A `harvester: true` agent crawls a mock knowledge source into durable facts
+ *   - A `crawler: true` agent crawls a mock knowledge source into durable facts
  *     and builds an open knowledge graph (nodes + edges with fact-scopeKey evidence)
  *   - A reader agent answers questions using multi-signal search + graph traversal
  *   - Worker/client wire the providers from HORIZON_* env via horizonConfigFromEnv()

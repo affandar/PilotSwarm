@@ -18,7 +18,7 @@ They are not active in this repository. Copy them into the target repository you
 - `pilotswarm-sdk-builder` — SDK app scaffold guidance, client/worker split, tests
 - `pilotswarm-agent-versioning` — `.agent.md` schema/version frontmatter and version bump guidance
 - `pilotswarm-hybrid-datastore` — stock PostgreSQL runtime storage plus optional HorizonDB enhanced facts/search/graph wiring
-- `pilotswarm-knowledge-harvester` — optional EnhancedFactStore + knowledge-graph wiring, `harvester: true` agent template, crawl→graph→reader flow, ACL/evidence model, tests
+- `pilotswarm-knowledge-harvester` — optional EnhancedFactStore + knowledge-graph wiring, `crawler: true` agent template, crawl→graph→reader flow, ACL/evidence model, tests
 - `pilotswarm-duroxide-versioning` — durable orchestration versioning, continue-as-new upgrades, compatibility rules
 - `pilotswarm-azure-deployer` — deployment workflow, manifests, env checklist, `RUST_LOG` observability
 - `pilotswarm-aks-identity` — cross-cluster AKS access, Workload Identity, kubectl patterns
@@ -42,6 +42,8 @@ and that PilotSwarm's built-in framework and management plugins are embedded in 
 If the target app needs a custom model catalog, check in `.model_providers.example.json`, create a local gitignored `.model_providers.json` from it, and keep actual credentials in `.env` / `.env.remote`. Runnable scaffolds should copy and adapt PilotSwarm's own example files, set up both `.env` and `.model_providers.json` from those corresponding examples, and add the real files to `.gitignore`.
 
 PilotSwarm includes built-in facts tools (`store_fact`, `read_facts`, `delete_fact`) on workers, and they are available to every agent session by default, including system agents. Use them for durable structured memory and shared cross-agent state instead of inventing an app-specific facts table unless the app truly needs one.
+
+PilotSwarm also ships optional SDK-bundled named agents under its `default-agents` tier. They stay hidden unless an app opts in through `session-policy.json` with `creation.bundledAgents`, for example `"bundledAgents": ["generic-crawler"]`. Builder templates should teach that opt-in instead of copying bundled agent files, unless the app needs to customize the agent.
 
 Every generated app `.agent.md` should include `schemaVersion: 1` and a `version` string. Use `version: 1.0.0` for new agents by default, prefer SemVer for app convenience, and bump the version string when changing an existing agent's prompt behavior, tool expectations, workflow guidance, metadata, output shape, or child-contract expectations.
 

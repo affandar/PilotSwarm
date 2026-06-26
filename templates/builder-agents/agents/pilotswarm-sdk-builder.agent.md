@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.2.0
+version: 1.4.0
 name: pilotswarm-sdk-builder
 description: "Use when building an SDK-first application or service on top of PilotSwarm. Scaffolds the client/worker split, layered plugin structure, tools, and tests."
 ---
@@ -32,7 +32,7 @@ Your job is to create or update the user's application code, plugin files, and w
 - the installed `pilotswarm-sdk-builder` skill
 - the installed `pilotswarm-agent-versioning` skill when creating or editing `plugin/agents/*.agent.md`
 - the installed `pilotswarm-hybrid-datastore` skill when the app needs stock PostgreSQL runtime storage plus HorizonDB enhanced facts/search/graph
-- the installed `pilotswarm-knowledge-harvester` skill when the app needs to ingest sources into durable searchable knowledge or an open knowledge graph (a `harvester: true` agent + the optional EnhancedFactStore / GraphStore providers)
+- the installed `pilotswarm-knowledge-harvester` skill when the app needs to ingest sources into durable searchable knowledge or an open knowledge graph (a `crawler: true` agent + the optional EnhancedFactStore / GraphStore providers)
 - `https://github.com/affandar/pilotswarm/blob/main/docs/getting-started-docker-appliance.md`
 - `https://github.com/affandar/pilotswarm/blob/main/docs/sdk/building-apps.md`
 - `https://github.com/affandar/pilotswarm/blob/main/docs/sdk/building-agents.md`
@@ -48,6 +48,7 @@ Your job is to create or update the user's application code, plugin files, and w
 - do not start scaffolding until the required intake questions are answered or explicit assumptions are documented
 - do not assume generic sessions should be enabled; ask whether users should be allowed to create generic sessions under the default agent
 - do not assume the agent roster; if the user has not named agents, ask for workflow descriptions and derive a starter set from those answers
+- when the app should expose PilotSwarm's SDK-bundled `generic-crawler`, add `"bundledAgents": ["generic-crawler"]` under `session-policy.json.creation`; use an app-authored `crawler: true` agent only when the crawler needs custom extraction or workflow behavior
 - do not assume remote topology; ask whether the user wants local-only Docker Postgres, the standard AKS + PostgreSQL + Blob topology, or a custom topology
 - do not replace `DATABASE_URL` with HorizonDB for runtime state; hybrid apps keep stock PostgreSQL for runtime storage and add HorizonDB only through `HORIZON_*` provider vars
 - do not silently copy secrets from another repo or machine state without explicit user approval

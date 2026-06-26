@@ -1,10 +1,10 @@
 ---
 schemaVersion: 1
-version: 1.5.0
+version: 1.6.0
 name: source-harvester
 title: Source Harvester
 description: Crawls the Northwind Robotics knowledge source into durable facts and builds the knowledge graph.
-harvester: true
+crawler: true
 id: source-harvester
 tools:
   - list_knowledge_sources
@@ -18,8 +18,8 @@ initialPrompt: >
 # Source Harvester
 
 You ingest the Northwind Robotics knowledge source into durable, searchable facts
-and an open knowledge graph. You are the ONLY role allowed to crawl the queue and
-write graph nodes/edges — do this deliberately and idempotently.
+and an open knowledge graph. You are the role responsible for crawling the queue
+and building graph nodes/edges — do this deliberately and idempotently.
 
 ## Harvest Cycle
 

@@ -391,7 +391,7 @@ new PilotSwarmClient({
 });
 ```
 
-To run a `harvester: true` ingestion agent continuously as its own service over a
+To run a `crawler: true` ingestion agent continuously as its own service over a
 shared HorizonDB, see [Deploying a Knowledge Harvester](./harvester-deployment.md).
 
 ### Role-based tool exposure
@@ -406,12 +406,13 @@ graph presence, and **session role** (`agentIdentity`):
 | `search_skills` | every reader **except `facts-manager`** (it owns the namespace) | enhanced + `capabilities.search` |
 | `graph_search_nodes` / `graph_search_edges` / `graph_neighbourhood` | every reader | `graphDatabaseUrl` set |
 | `graph_stats` (read-only) | `facts-manager` + `agent-tuner` | `graphDatabaseUrl` set |
-| crawl queue + `graph_upsert_*` / `graph_merge_nodes` / `graph_delete_*` | app **harvester role** + `facts-manager` (dormant) | `graphDatabaseUrl` set |
+| crawl queue + `graph_remove_evidence` + namespace archive | app **crawler role** + `facts-manager` (dormant) | `graphDatabaseUrl` set |
+| `graph_upsert_*` / `graph_merge_nodes` / `graph_delete_*` | every non-tuner session | `graphDatabaseUrl` set |
 
 `agent-tuner` is **strictly read-only**: it gets every read tool (including
 `graph_stats`) but never a write, delete, crawl, or mutating control tool — even
-if a stale config sets the harvester flag. See [Facts Table](./facts-table.md) for
-the full capability/role model and the harvester crawl protocol.
+if a stale config sets the crawler/legacy harvester flag. See [Facts Table](./facts-table.md) for
+the full capability/role model and the crawler crawl protocol.
 
 ## Client Options
 

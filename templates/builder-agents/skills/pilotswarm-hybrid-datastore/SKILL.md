@@ -114,10 +114,10 @@ and generate a `plugin/agents/<source>-harvester.agent.md` with:
 ```yaml
 ---
 schemaVersion: 1
-version: 1.0.0
+version: 1.1.0
 name: source-harvester
 description: Crawls source documents into durable facts and the graph.
-harvester: true
+crawler: true
 ---
 ```
 
@@ -162,6 +162,6 @@ selected by env/provider configuration at runtime.
 - [ ] `HORIZON_DATABASE_URL` documented only for enhanced facts/search.
 - [ ] `HORIZON_GRAPH_DATABASE_URL` documented only for graph/harvester crawl.
 - [ ] Worker, client, and management client spread `horizonConfigFromEnv()`.
-- [ ] Harvester agent has `harvester: true` and source-specific corpus namespace.
+- [ ] Harvester/crawler agent has `crawler: true` and source-specific corpus namespace.
 - [ ] Azure secret docs include both runtime and Horizon vars.
 - [ ] Docker/starter docs still default to stock PostgreSQL.

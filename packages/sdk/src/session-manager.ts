@@ -633,6 +633,7 @@ export class SessionManager {
             factStore: this.factStore,
             getLineageSessionIds: this._getLineageSessionIds ?? undefined,
             agentIdentity: effectiveSerializableConfig.agentIdentity,
+            isCrawler: effectiveSerializableConfig.isCrawler === true || effectiveSerializableConfig.isHarvester === true,
             // Enhanced tools light up only when the store is an EnhancedFactStore.
             // Pass it when EITHER capability is present: search powers
             // facts_search / facts_similar / search_skills; embedder powers the
@@ -678,14 +679,14 @@ export class SessionManager {
         // Graph tools (07 P4) — registered ONLY when a graph store is configured.
         // Reader tools AND graph write/delete go to every session (so any agent
         // can incorporate into the SHARED graph) EXCEPT the read-only agent-tuner;
-        // the crawl queue stays app-harvester-role + facts-manager only; graph_stats
+        // the crawl queue stays app-crawler-role + facts-manager only; graph_stats
         // to facts-manager + agent-tuner. Tuner never gets a mutating tool.
         const graphTools = this.graphStore
             ? createGraphTools({
                 graphStore: this.graphStore,
                 factStore: this.factStore,
                 agentIdentity: effectiveSerializableConfig.agentIdentity,
-                isHarvester: effectiveSerializableConfig.isHarvester === true,
+                isCrawler: effectiveSerializableConfig.isCrawler === true || effectiveSerializableConfig.isHarvester === true,
                 agentId: effectiveSerializableConfig.agentIdentity,
                 // Graph reads use the SAME lineage visibility as read_facts. The
                 // tuner branch inside createGraphTools forces unrestricted; for

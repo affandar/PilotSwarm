@@ -244,7 +244,7 @@ to run ingestion as a dedicated service over a shared HorizonDB.
 | Axis | Provider | Lights up |
 |------|----------|-----------|
 | **Facts capability** | `EnhancedFactStore` (HorizonDB: pgvector + pg_textsearch + pg_durable) | `facts_search`, `facts_similar`, `search_skills` |
-| **Graph presence** | `GraphStore` (Apache AGE) | `graph_search_nodes`, `graph_search_edges`, `graph_neighbourhood`, + harvester crawl/write surface |
+| **Graph presence** | `GraphStore` (Apache AGE) | `graph_search_nodes`, `graph_search_edges`, `graph_neighbourhood`, + graph writes and crawler crawl/reconcile surface |
 
 They are **independent**: an enhanced fact store with no graph gets search tools
 but no graph tools; a base fact store with a graph gets the full graph surface
@@ -309,11 +309,11 @@ graph_search_nodes(...) -> node.evidence (scopeKeys) -> read_facts({ scopeKeys }
   duplicate — it bumps `observations` and combines confidence (noisy-OR) only
   when **new** evidence is supplied; same-evidence replays are harmless no-ops.
 
-### The crawl queue (harvester work queue)
+### The crawl queue (crawler work queue)
 
 Every base fact carries a `scopeKey` and a `last_crawled_at` stamp. Facts with
 `last_crawled_at IS NULL` (new or edited since the last crawl) are the
-**harvester work queue**:
+**crawler work queue**:
 
 - `facts_read_uncrawled({ keyPrefix?, namespace?, limit? })` — returns queued facts,
   each with its `scopeKey` + `etag` receipt (and `deletedAt` when the fact is a
@@ -329,20 +329,20 @@ Every base fact carries a `scopeKey` and a `last_crawled_at` stamp. Facts with
   skips tombstones, which should be reconciled with `graph_remove_evidence` and marked
   by `scopeKeys`.
 
-### The harvester role
+### The crawler role
 
 Active graph harvesting is **app-specific** (deciding *what* to crawl and *how* to
 extract entities/edges is domain knowledge PilotSwarm cannot supply generically),
 but the **tools** are shipped by PilotSwarm:
 
-- An **app harvester agent** (an agent the operator marks with `harvester: true`)
-  is the active crawler — it is granted the crawl queue + `graph_upsert_*` /
-  `graph_merge_nodes` / `graph_delete_*` tools **and** prompted to crawl with
-  app-specific extraction.
-- The **`facts-manager`** holds the same harvester tools but is **dormant** — not
+- An **app crawler agent** (an agent the operator marks with `crawler: true`; legacy
+  `harvester: true` remains an alias) is the active crawler — it is granted the crawl queue,
+  graph evidence reconciliation, namespace archive, broad corpus fact access, and app-specific
+  extraction guidance.
+- The **`facts-manager`** holds the same crawler tools but is **dormant** — not
   prompted to crawl, so nothing is harvested out of the box. It additionally gets
   read-only `graph_stats` to *report* on graph size / last-crawled time.
-- A harvester should **resolve before it creates**: `graph_search_nodes` by
+- A crawler should **resolve before it creates**: `graph_search_nodes` by
   `nameLike` first, then `graph_upsert_node` with the source fact's `scopeKey` as
   evidence — this is what makes reinforcement dedup work.
 - Graph tools accept the same `namespace` concept as the crawl/search tools.
@@ -350,7 +350,7 @@ but the **tools** are shipped by PilotSwarm:
   `corpus/acme` and descendants such as `corpus/acme/services`. Use the same
   namespace string for `facts_read_uncrawled({ keyPrefix })`, `facts_search`,
   `graph_search_*`, `graph_upsert_*`, `graph_neighbourhood`, `graph_stats`,
-  merge, and delete operations so a harvester can discover or maintain one
+  merge, and delete operations so a crawler can discover or maintain one
   corpus/domain without enumerating seed nodes first.
 
 ### Access control (evidence is ACL-filtered, topology is shared)
@@ -373,7 +373,7 @@ The `agent-tuner` investigator gets **every read tool** — base `read_facts`,
 `facts_search` / `facts_similar`, `search_skills`, the graph reads, and
 `graph_stats` — with graph reads resolving **unrestricted** (it is the privileged
 investigator). It is **never** granted a write, delete, crawl, or mutating control
-tool, even if a stale config sets the harvester flag. The sweeper is unchanged: it
+tool, even if a stale config sets the crawler/legacy harvester flag. The sweeper is unchanged: it
 sweeps facts via the existing cascading session delete and never touches graph
 nodes.
 

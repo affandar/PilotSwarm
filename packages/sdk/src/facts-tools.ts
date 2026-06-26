@@ -6,7 +6,7 @@ import type { EnhancedFactStore, FactStore } from "./facts-store.js";
 const FACTS_MANAGER_AGENT_ID = "facts-manager";
 const TUNER_AGENT_ID = "agent-tuner";
 const RESERVED_WRITE_PREFIXES = ["skills/", "asks/", "config/facts-manager/"];
-const RESERVED_READ_PREFIXES = ["intake/"];
+const RESERVED_READ_PREFIXES = ["intake/", "config/facts-manager/"];
 const RESERVED_DELETE_PREFIXES = ["intake/", "skills/", "asks/", "config/facts-manager/"];
 
 function boundedPreview(value: unknown, max = 80): string | undefined {
@@ -92,6 +92,10 @@ export function createFactTools(opts: {
     getDescendantSessionIds?: (sessionId: string) => Promise<string[]>;
     getLineageSessionIds?: (sessionId: string) => Promise<string[]>;
     agentIdentity?: string;
+    /** Internal: app-assigned crawler role, derived from bound agent metadata. */
+    isCrawler?: boolean;
+    /** @deprecated Use `isCrawler`; accepted as a compatibility alias. */
+    isHarvester?: boolean;
     /**
      * Optional fire-and-forget hook invoked from inside tool handlers when
      * a `read_facts` call touches the `skills/` knowledge namespace. Used
@@ -110,6 +114,10 @@ export function createFactTools(opts: {
     enhancedFactStore?: EnhancedFactStore;
 }): Tool<any>[] {
     const { factStore, getDescendantSessionIds, getLineageSessionIds, agentIdentity, recordEvent, onSharedIntakeFactStored, enhancedFactStore } = opts;
+    const isCrawler = opts.isCrawler === true || opts.isHarvester === true;
+    const isFactsManager = agentIdentity === FACTS_MANAGER_AGENT_ID;
+    const isTuner = agentIdentity === TUNER_AGENT_ID;
+    const canReadAllFacts = isCrawler || isFactsManager || isTuner;
 
     const recordRetrievalEvent = (sessionId: string | undefined, eventType: string, data: Record<string, unknown>) => {
         if (!recordEvent || !sessionId) return;
@@ -120,7 +128,7 @@ export function createFactTools(opts: {
     };
 
     const filterReservedReadFacts = (result: any) => {
-        if (agentIdentity === FACTS_MANAGER_AGENT_ID || agentIdentity === TUNER_AGENT_ID) return result;
+        if (isFactsManager || isTuner) return result;
         if (!result || !Array.isArray(result.facts)) return result;
         const facts = result.facts.filter((fact: any) => {
             const key = String(fact?.key || "");
@@ -248,12 +256,13 @@ export function createFactTools(opts: {
                 },
                 scope: {
                     type: "string",
-                    enum: ["accessible", "shared", "session", "descendants"],
+                    enum: ["accessible", "shared", "session", "descendants", "all"],
                     description:
                         "accessible = current session facts + spawn-tree facts (ancestors, descendants, siblings, cousins) + globally-shared facts (default). " +
                         "shared = globally-shared facts only. " +
                         "session = current session facts only. " +
-                        "descendants = same spawn-tree visibility as accessible, kept as an explicit family-tree view.",
+                        "descendants = same spawn-tree visibility as accessible, kept as an explicit family-tree view. " +
+                        "all = privileged broad read across shared and non-shared facts for crawler/facts-manager/tuner sessions only; curation namespaces remain excluded for crawlers.",
                 },
             },
         },
@@ -264,10 +273,13 @@ export function createFactTools(opts: {
                 session_id?: string;
                 agent_id?: string;
                 limit?: number;
-                scope?: "accessible" | "shared" | "session" | "descendants";
+                scope?: "accessible" | "shared" | "session" | "descendants" | "all";
             },
             ctx?: { sessionId?: string },
         ) => {
+            if (args.scope === "all" && !canReadAllFacts) {
+                return { error: "Error: read_facts scope='all' is reserved for crawler, facts-manager, and agent-tuner sessions." };
+            }
             const nsError = checkNamespaceRead(args.key_pattern, agentIdentity);
             if (nsError) return { error: nsError };
 
@@ -282,12 +294,12 @@ export function createFactTools(opts: {
             // not just its own lineage. Bypass the visibility filter for it
             // — optional filters (key_pattern, session_id, agent_id, tags)
             // still apply so queries remain targeted.
-            const isTuner = agentIdentity === TUNER_AGENT_ID;
+            const unrestrictedRead = isTuner || args.scope === "all";
 
             let lineageSessionIds: string[] = [];
             let grantedSessionIds: string[] = [];
 
-            if (!isTuner && ctx?.sessionId) {
+            if (!unrestrictedRead && ctx?.sessionId) {
                 const rawLineageSessionIds = getLineageSessionIds
                     ? await getLineageSessionIds(ctx.sessionId)
                     : getDescendantSessionIds
@@ -310,7 +322,7 @@ export function createFactTools(opts: {
 
             // Determine effective scope: if we've granted lineage access,
             // force "accessible" so the visibility clause includes granted IDs.
-            let effectiveScope = args.scope;
+            let effectiveScope: "accessible" | "shared" | "session" | "descendants" | undefined = args.scope === "all" ? "accessible" : args.scope;
             if (effectiveScope === "descendants" || grantedSessionIds.length > 0) {
                 effectiveScope = "accessible";
             }
@@ -325,7 +337,7 @@ export function createFactTools(opts: {
             }, {
                 readerSessionId: ctx?.sessionId ?? null,
                 grantedSessionIds,
-                unrestricted: isTuner,
+                unrestricted: unrestrictedRead,
             }).then((result) => {
                 // Emit a learned_skill.read event when the call touched the
                 // `skills/` knowledge namespace. Single event per call — we
@@ -372,7 +384,7 @@ export function createFactTools(opts: {
                 scope: {
                     type: "string",
                     enum: ["session", "shared", "all"],
-                    description: "Pattern-delete scope. session=current session only, shared=shared facts only, all=Facts Manager unrestricted cleanup.",
+                    description: "Pattern-delete scope. session=current session only, shared=shared facts only, all=crawler/facts-manager unrestricted cleanup (reserved namespaces still protected for crawlers).",
                 },
             },
             required: ["key"] as const,
@@ -388,15 +400,15 @@ export function createFactTools(opts: {
 
             if (args.pattern) {
                 const scope = args.scope ?? (args.shared === true ? "shared" : "session");
-                if (scope === "all" && agentIdentity !== FACTS_MANAGER_AGENT_ID) {
-                    return { error: "Error: delete_fact scope='all' is reserved for the Facts Manager." };
+                if (scope === "all" && !(isFactsManager || isCrawler)) {
+                    return { error: "Error: delete_fact scope='all' is reserved for crawler and facts-manager sessions." };
                 }
                 return factStore.deleteFact({
                     key: args.key,
                     pattern: true,
                     scope,
                     sessionId: ctx?.sessionId ?? null,
-                    unrestricted: agentIdentity === FACTS_MANAGER_AGENT_ID,
+                    unrestricted: scope === "all" && (isFactsManager || isCrawler),
                 });
             }
 
@@ -476,13 +488,13 @@ export function createFactTools(opts: {
 
     const enhancedTools: Tool<any>[] = [];
     if (enhancedFactStore && enhancedFactStore.capabilities.search) {
-        const isTuner = agentIdentity === TUNER_AGENT_ID;
+        const isPrivilegedSearchReader = isTuner || isCrawler || isFactsManager;
         // Resolve the SAME lineage visibility read_facts uses: the tuner is an
         // unrestricted investigator; everyone else sees their own session plus
         // granted lineage sessions (ancestors/descendants). FAIL CLOSED — with
         // no lineage resolver, a non-tuner sees only its own session.
         const resolveSearchAccess = async (ctx?: { sessionId?: string }) => {
-            if (isTuner) return { readerSessionId: ctx?.sessionId ?? null, grantedSessionIds: [] as string[], unrestricted: true };
+            if (isPrivilegedSearchReader) return { readerSessionId: ctx?.sessionId ?? null, grantedSessionIds: [] as string[], unrestricted: true };
             let granted: string[] = [];
             if (ctx?.sessionId && getLineageSessionIds) {
                 const raw = await getLineageSessionIds(ctx.sessionId);
@@ -502,7 +514,7 @@ export function createFactTools(opts: {
         // "intake/*"), so match it against the reserved prefixes' leading
         // segment as well as the slash form checkNamespaceRead expects.
         const blockReservedSearch = (namespace?: string) => {
-            if (!namespace || agentIdentity === FACTS_MANAGER_AGENT_ID || agentIdentity === TUNER_AGENT_ID) return null;
+            if (!namespace || isFactsManager || isTuner) return null;
             const ns = namespace.replace(/\/+$/, "");
             const hitsReserved = RESERVED_READ_PREFIXES.some((p) => {
                 const seg = p.replace(/\/+$/, "");
@@ -516,7 +528,7 @@ export function createFactTools(opts: {
             return checkNamespaceRead(namespace, agentIdentity);
         };
         const stripReserved = (result: any) => {
-            if (agentIdentity === FACTS_MANAGER_AGENT_ID || agentIdentity === TUNER_AGENT_ID) return result;
+            if (isFactsManager || isTuner) return result;
             if (!result || !Array.isArray(result.facts)) return result;
             const facts = result.facts.filter((f: any) =>
                 !RESERVED_READ_PREFIXES.some((p) => String(f?.key || "").startsWith(p)));

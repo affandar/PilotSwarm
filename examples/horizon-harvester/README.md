@@ -1,7 +1,7 @@
 # Horizon Harvester (SDK Example)
 
 Demonstrates PilotSwarm's **optional** EnhancedFactStore + knowledge-graph
-providers: a `harvester: true` agent crawls a mock knowledge source into durable,
+providers: a `crawler: true` agent crawls a mock knowledge source into durable,
 searchable facts and builds an open knowledge graph, and a reader agent answers
 questions over the result using multi-signal search + graph traversal.
 
@@ -13,7 +13,7 @@ builder skill.
 - **Wiring the providers from env** — the worker and client are configured with
   `horizonConfigFromEnv()`, which maps the `HORIZON_*` env vars to the worker's
   `enhancedFactsDatabaseUrl` / `graphDatabaseUrl` / `horizonEmbed` / `*Schema` fields.
-- **The harvester role** — `source-harvester` declares `harvester: true`, so it (and
+- **The crawler role** — `source-harvester` declares `crawler: true`, so it (and
   only it) gets the privileged crawl queue (`facts_read_uncrawled` /
   `facts_set_crawled`). The graph-write tools (`graph_upsert_node` /
   `graph_upsert_edge` / …) are available to every session except the read-only
@@ -24,7 +24,7 @@ builder skill.
   queue), drain the
   crawl queue, extract entities/edges into the graph anchored to fact `scopeKey`
   evidence, mark facts crawled with `facts_set_crawled({ scopeKeys: [{ scopeKey, etag }] })`, then retrieve.
-- **The reader role** — `librarian` has no harvester frontmatter; it gets
+- **The reader role** — `librarian` has no crawler frontmatter; it gets
   `facts_search` / `facts_similar` and the graph **read** tools (plus, like any
   non-tuner session, the graph-write tools), and pivots from a seed fact into the
   graph neighbourhood.
@@ -48,7 +48,7 @@ plain fact store.
 
 Harvesting **requires a knowledge graph**. The crawl queue and graph-write tools the
 `source-harvester` uses appear only when `HORIZON_GRAPH_DATABASE_URL` is set — the
-`harvester: true` flag alone grants nothing. This sample enforces that: it fails fast
+`crawler: true` flag alone grants nothing. This sample enforces that: it fails fast
 if either `HORIZON_DATABASE_URL` or `HORIZON_GRAPH_DATABASE_URL` is missing.
 
 The fact store underneath the graph decides what **search** the agents also get:
@@ -113,7 +113,7 @@ horizon-harvester/
 ├── plugin/
 │   ├── agents/
 │   │   ├── default.agent.md        # app-wide overlay
-│   │   ├── source-harvester.agent.md  # harvester: true — crawls + builds the graph
+│   │   ├── source-harvester.agent.md  # crawler: true — crawls + builds the graph
 │   │   └── librarian.agent.md      # reader — search + graph pivot
 │   ├── plugin.json
 │   ├── session-policy.json         # allowlist: only the two named agents

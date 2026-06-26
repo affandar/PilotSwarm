@@ -149,13 +149,14 @@ export interface SerializableSessionConfig {
      */
     agentIdentity?: string;
     /**
-     * Internal: when `true`, this session holds the app-assigned HARVESTER role
-     * (enhancedfactstore 07 §1.5) and receives the privileged crawl-queue +
-     * graph write/delete tools (only when a graph store is configured). Graph
-     * extraction is app-specific, so the app sets this on its own harvester
-     * agent. The facts-manager receives those tools regardless (dormant), and
-     * agent-tuner never does.
+     * Internal: when `true`, this session holds the app-assigned CRAWLER role
+     * and receives privileged crawl-queue tools when a graph store is
+     * configured. The role is derived from the bound agent's `crawler: true`
+     * frontmatter (or legacy `harvester: true` alias), never trusted from user
+     * input.
      */
+    isCrawler?: boolean;
+    /** @deprecated Use `isCrawler`; accepted as a compatibility alias. */
     isHarvester?: boolean;
 }
 
@@ -505,8 +506,10 @@ export interface SessionPolicy {
         mode?: "allowlist" | "open";
         /** Whether generic (blank, no agent) sessions are allowed. Default: true. */
         allowGeneric?: boolean;
-        /** Default agent name for TUI single-step creation. */
+        /** Preferred named agent for app UIs; hosts may use it as a picker/default selection hint. */
         defaultAgent?: string;
+        /** PilotSwarm-bundled optional named agents to make available in this app. */
+        bundledAgents?: string[];
     };
     deletion?: {
         /** Whether system sessions are protected from deletion. Default: true. */

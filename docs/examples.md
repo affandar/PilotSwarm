@@ -60,14 +60,14 @@ If you are pointing other LLMs at one example first, point them here.
 ## Horizon Harvester (`examples/horizon-harvester/`)
 
 Demonstrates PilotSwarm's **optional** EnhancedFactStore + knowledge-graph
-providers. A `harvester: true` agent crawls a mock knowledge source into durable,
+providers. A `crawler: true` agent crawls a mock knowledge source into durable,
 searchable facts and builds an open knowledge graph; a reader agent answers
 questions over the result using multi-signal search + graph traversal.
 
 It demonstrates:
 
 - wiring the HorizonDB providers from `HORIZON_*` env via `horizonConfigFromEnv()`
-- the harvester role (`harvester: true`) and its crawl-queue + graph-write tools
+- the crawler role (`crawler: true`) and its crawl-queue + graph-building workflow
 - the crawl→graph→reader flow (ingest → `facts_read_uncrawled` → `graph_upsert_*`
    → `facts_set_crawled` → `facts_search` + graph pivot)
 - fact-`scopeKey` evidence anchoring and reader/harvester tool gating

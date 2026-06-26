@@ -42,6 +42,10 @@ const DEFAULT_ORCHESTRATION_CONCURRENCY = 2;
 const DEFAULT_WORKER_CONCURRENCY = 2;
 const DEFAULT_DUROXIDE_PG_POOL_MAX = 10;
 
+function normalizeAgentIdentity(value: unknown): string {
+    return String(value ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
 function parsePositiveInt(raw: unknown): number | undefined {
     const normalized = typeof raw === "string" ? Number.parseInt(raw, 10) : Number(raw);
     if (!Number.isFinite(normalized) || normalized <= 0) return undefined;
@@ -126,7 +130,9 @@ export class PilotSwarmWorker {
     /** Loaded skill directories from plugins + direct config. */
     private _loadedSkillDirs: string[] = [];
     /** Raw loaded user-creatable agent configs from plugins + direct config. */
-    private _rawLoadedAgents: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; namespace?: string; harvester?: boolean; promptLayerKind?: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" }> = [];
+    private _rawLoadedAgents: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; namespace?: string; crawler?: boolean; harvester?: boolean; promptLayerKind?: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" }> = [];
+    /** Optional PilotSwarm-bundled user agents, loaded only when session policy opts in. */
+    private _availableBundledAgents = new Map<string, AgentConfig>();
     /** Loaded agent configs from plugins + direct config, composed for SDK customAgents. */
     private _loadedAgents: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; namespace?: string }> = [];
     /** Loaded MCP server configs from plugins + direct config. */
@@ -644,11 +650,12 @@ export class PilotSwarmWorker {
     /**
      * Load plugin contents from SDK bundled plugins + app plugin directories.
      *
-     * Three-tier loading order:
+    * Tiered loading order:
      *   1. system/  — SDK core (always loaded: base system prompt, durable-timers, sub-agents)
      *   2. mgmt/    — SDK management agents (loaded unless disableManagementAgents is true)
-     *   3. app      — Consumer-provided plugin dirs (from pluginDirs option)
-     *   4. direct   — Inline config (skillDirectories, customAgents, mcpServers options)
+    *   3. default-agents/ — optional SDK user agents, read into a separate registry
+    *   4. app      — Consumer-provided plugin dirs (from pluginDirs option)
+    *   5. direct   — Inline config (skillDirectories, customAgents, mcpServers options)
      *
      * Agents merge by name (later tiers override earlier).
      * Skills merge additively (all dirs combined).
@@ -666,7 +673,11 @@ export class PilotSwarmWorker {
             this._loadPluginDir(mgmtDir, "management");
         }
 
-        // ── Tier 3: App plugins (from pluginDirs option) ─────────────
+        // ── Tier 3: SDK bundled default agents (policy opt-in) ───────
+        const defaultAgentsDir = path.join(sdkPluginsDir, "default-agents");
+        this._loadBundledDefaultAgents(defaultAgentsDir);
+
+        // ── Tier 4: App plugins (from pluginDirs option) ─────────────
         const pluginDirs = this.config.pluginDirs ?? [];
         for (const pluginDir of pluginDirs) {
             const absDir = path.resolve(pluginDir);
@@ -677,7 +688,9 @@ export class PilotSwarmWorker {
             this._loadPluginDir(absDir, "app");
         }
 
-        // ── Tier 4: Direct config (inline options override all) ──────
+        this._mergeOptedBundledAgents();
+
+        // ── Tier 5: Direct config (inline options override all) ──────
         if (this.config.skillDirectories?.length) {
             this._loadedSkillDirs.push(...this.config.skillDirectories);
         }
@@ -762,6 +775,68 @@ export class PilotSwarmWorker {
             type: isSystemAuthored ? "system" : "app",
             ...(agent.sourcePath ? { source: agent.sourcePath } : {}),
         };
+    }
+
+    private _loadBundledDefaultAgents(absDir: string): void {
+        if (!fs.existsSync(absDir)) return;
+        const agentsDir = path.join(absDir, "agents");
+        if (!fs.existsSync(agentsDir)) return;
+
+        for (const agent of loadAgentFiles(agentsDir)) {
+            if (agent.name === "default" || agent.system) {
+                console.warn(`[PilotSwarmWorker] Ignoring bundled default agent ${agent.name}: optional bundled agents must be user-creatable named agents.`);
+                continue;
+            }
+            agent.namespace = "pilotswarm";
+            agent.promptLayerKind = "app-agent";
+            const key = normalizeAgentIdentity(agent.name);
+            if (!key) continue;
+            this._availableBundledAgents.set(key, agent);
+        }
+    }
+
+    private _mergeOptedBundledAgents(): void {
+        const requested = this._sessionPolicy?.creation?.bundledAgents ?? [];
+        const appAgentKeys = new Set([
+            ...this._rawLoadedAgents.map((agent) => normalizeAgentIdentity(agent.name)),
+            ...(this.config.customAgents ?? []).map((agent) => normalizeAgentIdentity(agent.name)),
+        ]);
+        if (requested.length === 0) {
+            const defaultAgent = this._sessionPolicy?.creation?.defaultAgent;
+            const defaultKey = normalizeAgentIdentity(defaultAgent);
+            if (defaultKey && this._availableBundledAgents.has(defaultKey) && !appAgentKeys.has(defaultKey)) {
+                throw new Error(`[PilotSwarmWorker] session-policy.json creation.defaultAgent=${JSON.stringify(defaultAgent)} references a bundled default agent but creation.bundledAgents does not opt it in.`);
+            }
+            return;
+        }
+
+        const requestedKeys = new Set<string>();
+        for (const name of requested) {
+            const key = normalizeAgentIdentity(name);
+            if (!key || !this._availableBundledAgents.has(key)) {
+                throw new Error(`[PilotSwarmWorker] session-policy.json creation.bundledAgents contains unknown bundled agent ${JSON.stringify(name)}.`);
+            }
+            requestedKeys.add(key);
+        }
+
+        const defaultAgent = this._sessionPolicy?.creation?.defaultAgent;
+        const defaultKey = normalizeAgentIdentity(defaultAgent);
+        if (defaultKey && this._availableBundledAgents.has(defaultKey) && !requestedKeys.has(defaultKey) && !appAgentKeys.has(defaultKey)) {
+            throw new Error(`[PilotSwarmWorker] session-policy.json creation.defaultAgent=${JSON.stringify(defaultAgent)} references a bundled default agent but creation.bundledAgents does not opt it in.`);
+        }
+
+        for (const key of requestedKeys) {
+            if (appAgentKeys.has(key)) continue;
+            const agent = this._availableBundledAgents.get(key)!;
+            const descriptor = this._buildLayerDescriptor(agent, "app", agent.namespace || "pilotswarm");
+            this._agentPromptLookup[agent.name] = {
+                prompt: agent.prompt,
+                kind: "app-agent",
+                descriptor,
+            };
+            this._rawLoadedAgents.push(agent);
+            appAgentKeys.add(key);
+        }
     }
 
     /**

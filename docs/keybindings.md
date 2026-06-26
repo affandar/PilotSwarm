@@ -14,8 +14,8 @@ These keys work whenever focus is not in the prompt editor.
 | `Tab` / `Shift+Tab` | Cycle focus between panes |
 | `h` / `l` | Move focus left / right |
 | `p` | Focus the prompt editor |
-| `n` | Create a new session |
-| `Shift+N` | Open the model picker before creating a session |
+| `n` | Create a generic session immediately when generic sessions are allowed; otherwise open the model-first creation flow when models are available, or the agent picker |
+| `Shift+N` | Pick model/reasoning first, then choose generic or a named agent |
 | `r` | Refresh sessions and visible data |
 | `a` | Open the linked-item picker for current chat artifacts and visible URLs |
 | `Shift+A` | Open or close the per-user Admin Console (profile + GitHub Copilot key) |
