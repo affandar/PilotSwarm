@@ -1,5 +1,63 @@
 # Changelog
 
+## 0.3.0 — 2026-06-26
+
+### Crawler Role + Bundled Default-Agent Tier
+
+- Renamed the privileged crawl-queue role from "harvester" to **crawler**. Agents
+  declare it with `crawler: true` frontmatter; legacy `harvester: true` is still
+  accepted as an alias. The runtime derives the role authoritatively from the
+  bound agent every turn (`resolveCrawlerRole` / `isCrawler`), with
+  `resolveHarvesterRole` / `isHarvester` retained as deprecated aliases.
+- Added an opt-in **bundled default-agent tier**: optional SDK-bundled named
+  agents (shipped under `plugins/default-agents/`, e.g. `generic-crawler`) stay
+  hidden unless an app opts in through `session-policy.json` with
+  `creation.bundledAgents`. Added the `bundledAgents` field to
+  `SessionPolicy.creation`; the worker and the CLI transport expand opted-in
+  bundled agents into the creatable-agent picker and fail closed on an unknown or
+  un-opted `defaultAgent`.
+- Added prefix-scoped crawl controls for deliberate recrawl of a key prefix.
+
+### Generic Crawler
+
+- Formalized a 10-stage **consultative lifecycle** (scope the source & mining
+  strategy → elicit the questions → understand the domain & propose → design the
+  fact/graph schema → tune the schema to intent → pick per-stage models → present
+  the plan → pilot → run the full crawl → keep the corpus fresh). (agent v1.2.0)
+- The crawler now **advertises each knowledge base it builds**: it writes a
+  `proposed_skill` intake under `intake/knowledge-base/<corpus>` that documents
+  the graph-query recipe with concrete examples (`facts_search` →
+  `graph_search_nodes` via `EVIDENCED_BY` → `graph_neighbourhood` → `read_facts`),
+  and the Facts Manager promotes it into `skills/knowledge-base/<corpus>`.
+
+### Facts Manager
+
+- Recognizes knowledge-base advertisement intakes as a corpus's authoritative
+  self-description and promotes them immediately (independent of the
+  corroboration threshold), preserving the provided name/description/tools and the
+  query examples verbatim. (agent v1.8.0)
+
+### SDK / Runtime
+
+- Live session orchestration advances to `1.0.54`, with `1.0.53` frozen for warm
+  resume compatibility.
+- `openNewSessionFlow` respects `creation.allowGeneric`: when generic sessions are
+  disabled it falls back to the model picker / agent picker, threading session
+  options through the model and reasoning-effort pickers.
+- Fixed Horizon migration version assertions.
+
+### Tests
+
+- Added session-policy guard and behavior suites, a CLI session-creation-metadata
+  test, a ui-core new-session-flow test, and a deterministic generic-crawler
+  lifecycle prompt guard (now also pinning the knowledge-base advertisement
+  section).
+
+### Docs / Proposals
+
+- Added the crawler-authority + default-agent-tier proposal and a proposal for a
+  sticky, fixed-format crawler session-summary table.
+
 ## 0.2.2 — 2026-06-23
 
 ### HorizonDB Enhanced Facts + Graph

@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.2.2** — Adds the HorizonDB enhanced facts + graph provider package, the Horizon Harvester sample, hybrid datastore builder/deployer guidance, and cycle-aware child watcher cron wake handling. The starter Docker image still defaults to stock PostgreSQL; HorizonDB is opt-in through `HORIZON_*` provider configuration.
+> **Latest release: v0.3.0** — Renames the privileged crawl role to `crawler` (legacy `harvester` accepted as an alias) and adds an opt-in bundled default-agent tier (`generic-crawler`) gated by `session-policy.json`. The generic crawler gains a 10-stage consultative lifecycle and now advertises each knowledge base it builds as a Facts-Manager-promoted skill that documents the graph-query APIs with examples. Live orchestration advances to `1.0.54`.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 
