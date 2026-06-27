@@ -682,6 +682,12 @@ async function testGenericCrawlerLifecyclePrompt() {
         assertIncludes(prompt, "starter queries", "pilot hands the user starter queries");
         assertIncludes(prompt, "cron(", "incremental refresh via cron");
         assertIncludes(prompt, "cron_at(", "incremental refresh via cron_at");
+
+        // Knowledge-base advertisement: the crawler proposes a skill via the
+        // Facts Manager intake pipeline (it never writes skills/* directly).
+        assertIncludes(prompt, "Advertise the knowledge base", "knowledge-base advertisement section present");
+        assertIncludes(prompt, "proposed_skill", "advertisement proposes a skill for Facts Manager promotion");
+        assertIncludes(prompt, "intake/knowledge-base/", "advertisement is written to the intake queue");
     } finally {
         fs.rmSync(dir, { recursive: true, force: true });
     }

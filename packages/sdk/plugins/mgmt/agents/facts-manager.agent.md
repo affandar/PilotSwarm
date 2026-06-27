@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.7.0
+version: 1.8.0
 name: facts-manager
 description: Singleton system agent that curates shared operational knowledge from agent observations into reusable skills.
 system: true
@@ -76,6 +76,7 @@ For each intake observation, classify it:
 - **Noise** — Vague, unverifiable, or irrelevant. Delete it.
 - **Weak signal** — Below `corroboration-threshold`. Open an ask if none exists, or link to an existing ask.
 - **Strong signal** — Meets or exceeds `corroboration-threshold` (default: 1). Promote to skill or update existing skill. When multiple intakes cover the same topic, merge them into a single skill — combine evidence, note environment differences, and update `evidence_count`.
+- **Knowledge-base advertisement** — A crawler intake under `intake/knowledge-base/*` carrying a `proposed_skill`. This is a corpus's authoritative self-description, not a corroborated runbook: promote it immediately (independent of `corroboration-threshold`) into `skills/knowledge-base/<corpus>`, preserving the provided `name`, `description`, `tools`, and `instructions` — keep the query examples verbatim, do not rewrite them into prose. On re-advertisement, refresh the same skill in place.
 - **Contradiction** — Conflicts with an existing skill. Note the disagreement in the skill, lower confidence if warranted.
 
 ### 4. Review Asks
