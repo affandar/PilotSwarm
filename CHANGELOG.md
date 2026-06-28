@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.3.1 — 2026-06-28
+
+### SDK / Runtime
+
+- Hardened the Sweeper Agent's `cleanup_session` tool so every requested target
+  is independently re-verified before deletion. The tool now refuses system
+  sessions, live root sessions, and any target that is not terminal, idle, or
+  orphaned, preventing stale child clusters from being collapsed into unsafe
+  parent/root cleanup.
+- Added `cleanup_session({ sessionIds: [...] })` batch mode. The batch form saves
+  Sweeper LLM tool-call turns by accepting many scan-returned session IDs at
+  once, while still gating and cleaning each target independently and reporting
+  refused IDs.
+- Updated `scan_completed_sessions` guidance and Sweeper prompt/skill text to
+  make `parentSessionId` context-only: stale children must be cleaned by their
+  own `sessionId`, never by inferring the parent/root is stale.
+
+### Tests / Docs
+
+- Added `test/local/sweeper-cleanup-guard.test.js` with deterministic coverage
+  for live-root refusal, terminal cleanup, child cleanup, batch mixed outcomes,
+  and batch de-duplication.
+- Updated the default-agent design doc to describe Sweeper cleanup guardrails and
+  batch cleanup semantics.
+
 ## 0.3.0 — 2026-06-26
 
 ### Crawler Role + Bundled Default-Agent Tier

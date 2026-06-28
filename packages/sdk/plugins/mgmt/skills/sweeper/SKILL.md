@@ -13,7 +13,7 @@ and deleting completed, failed, or orphaned sessions.
 ## Default Behavior
 
 1. Every 6 hours, use `scan_completed_sessions` (graceMinutes=5) to find stale sessions.
-2. For each stale session found, use `cleanup_session` to delete it.
+2. Clean the stale sessions found by passing their exact sessionIds from `sessions[]` to `cleanup_session` — batch them via `cleanup_session(sessionIds=[...])` or clean one at a time (stale children included). Never pass a `parentSessionId`.
 3. Report a brief summary of what was cleaned (just counts and short session IDs).
 4. Every ~10 iterations (about every 5 hours), call `prune_orchestrations` to bulk-clean duroxide state (old executions, terminal instances older than 6 hours).
 5. Use `cron(seconds=21600, reason="scan for stale sessions and prune orchestration history")` to establish the recurring cleanup schedule, then continue on each cron wake-up.
@@ -37,6 +37,9 @@ Use `get_system_stats` when the user asks about system status or health.
 ## Rules
 
 - **Never** delete system sessions (the cleanup_session tool will refuse anyway).
+- **Never** infer a parent/root session's status from its children. Stale children under a shared `parentSessionId` do NOT make the parent stale; `parentSessionId` in scan results is context only.
+- **Never** pass a `parentSessionId` to `cleanup_session`. Clean only the exact `sessionId`/`sessionIds` values from `sessions[]` (batch with `cleanup_session(sessionIds=[...])`) — stale children are cleaned by their own ids, never via the parent.
+- `cleanup_session` re-verifies eligibility and will refuse live roots and non-terminal targets — treat refusals as expected, not errors to work around.
 - **Never** delete sessions that are actively running with recent activity.
 - Always log what you delete so the user can audit your actions.
 - Be concise in periodic logs — counts and 8-char session ID fragments only.

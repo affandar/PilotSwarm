@@ -249,6 +249,9 @@ async function testSweeperCleanupCleansSessionFacts() {
                     sessionId,
                     isSystem: false,
                     title: "Test Session",
+                    parentSessionId: null,
+                    updatedAt: new Date(0),
+                    deletedAt: null,
                 };
             },
             async getDescendantSessionIds() {

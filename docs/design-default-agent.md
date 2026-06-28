@@ -78,7 +78,7 @@ Queries CMS for sessions where:
 - OR the CMS state is `running` but the orchestration's custom status says `completed`/`idle` with a `turnResult`
 - AND `updated_at` is older than the configurable grace period
 
-Returns a JSON list of `{ sessionId, parentSessionId, status, completedAt, age }`.
+Returns a JSON list of `{ sessionId, parentSessionId, status, age, reason }`, plus guidance that `parentSessionId` is diagnostic context only. Callers must clean the returned `sessionId` values, not inferred parents.
 
 ```typescript
 defineTool("scan_completed_sessions", {
@@ -107,23 +107,30 @@ defineTool("scan_completed_sessions", {
 
 #### `cleanup_session`
 
-Deletes a session and its descendants (cascading). Calls `catalog.softDeleteSession()` + `duroxideClient.cancelInstance()`.
+Deletes one or more independently eligible sessions and their descendants (cascading). Calls `catalog.softDeleteSession()` + `duroxideClient.deleteInstance()`.
+
+The tool accepts either `sessionId` for a single target or `sessionIds` for a batch. Batch mode reduces Sweeper LLM tool-call turns; execution still validates and cleans each target one at a time. Every target is re-checked before delete, so a live root accidentally included beside stale children is refused and reported rather than deleted.
 
 ```typescript
 defineTool("cleanup_session", {
-    description: "Delete a completed/zombie session and all its descendants",
+    description: "Delete completed/zombie/orphaned session(s) and all descendants",
     parameters: {
         type: "object",
         properties: {
-            sessionId: { type: "string", description: "Session ID to clean up" },
+            sessionId: { type: "string", description: "Single scan-returned session ID to clean up" },
+            sessionIds: {
+                type: "array",
+                items: { type: "string" },
+                description: "Batch of scan-returned session IDs to clean up"
+            },
             reason: { type: "string", description: "Reason for cleanup" },
+            graceMinutes: { type: "number", description: "Staleness threshold for re-verification" },
         },
-        required: ["sessionId"]
     },
-    handler: async ({ sessionId, reason }) => {
-        // Refuses to delete system sessions
-        // Cascades to descendants
-        // Cancels duroxide orchestration
+    handler: async ({ sessionId, sessionIds, reason, graceMinutes }) => {
+        // Refuses system sessions, live roots, and non-terminal/non-idle targets.
+        // Never infer parent/root status from stale children; parentSessionId is context only.
+        // Batch mode gates each target independently and reports refused ids.
         // ...
     }
 });
@@ -153,7 +160,7 @@ and deleting completed, failed, or orphaned sessions.
 
 ## Default Behavior
 1. Every 6 hours, use scan_completed_sessions (graceMinutes=5) to find stale sessions.
-2. For each stale session, use cleanup_session to delete it.
+2. Pass the exact scan-returned session IDs to cleanup_session, preferably as a `sessionIds` batch. Never pass or infer a `parentSessionId` as a cleanup target.
 3. Log a brief summary of what was cleaned up.
 4. Use `cron(seconds=21600, reason="scan for stale sessions and prune orchestration history")` to keep the recurring schedule active.
 
@@ -169,7 +176,8 @@ Then resume your cleanup loop with the new settings.
 
 ## Rules
 - Never delete system sessions (the tool will refuse anyway).
-- Never delete sessions that are actively running (status=running with recent activity).
+- Never infer a parent/root session's state from its children. A cluster of stale children under one `parentSessionId` does not make the parent stale.
+- Never delete sessions that are actively running; cleanup_session re-verifies every target and refuses live roots / non-terminal targets.
 - Always log what you delete so the user can see the activity.
 - Be concise in your periodic logs — just counts and IDs.
 ```
@@ -192,7 +200,7 @@ runtime clean by periodically scanning for and cleaning up stale sessions.
 ## Cleanup Loop
 
 1. Use `scan_completed_sessions` with the configured grace period.
-2. For each result, call `cleanup_session` with the session ID.
+2. Call `cleanup_session` with the exact returned `sessionId` values, either one at a time or batched as `sessionIds`. Never pass `parentSessionId`.
 3. Use `wait` to sleep for the configured interval.
 4. Repeat.
 
@@ -287,7 +295,7 @@ sweeper.send("Begin your maintenance loop. Scan every 60 seconds, clean up sessi
 │                                                      │
 │   Loop:                                              │
 │     1. scan_completed_sessions(graceMinutes=5)       │
-│     2. cleanup_session(id) for each stale session    │
+│     2. cleanup_session(sessionIds=[...scan ids...])  │
 │     3. wait(60)                                      │
 │     4. → repeat                                      │
 └──────────────────────────┬──────────────────────────┘
@@ -301,9 +309,11 @@ sweeper.send("Begin your maintenance loop. Scan every 60 seconds, clean up sessi
 │     → Filter: completed > grace period               │
 │                                                      │
 │   cleanup_session:                                   │
+│     → Re-verify each target is itself eligible       │
+│     → Refuse live roots / non-terminal targets       │
 │     → catalog.getDescendantSessionIds()              │
 │     → catalog.softDeleteSession() (cascade)          │
-│     → duroxideClient.cancelInstance() (cascade)      │
+│     → duroxideClient.deleteInstance() (cascade)      │
 └─────────────────────────────────────────────────────┘
 ```
 
