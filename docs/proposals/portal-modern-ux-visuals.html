@@ -1,0 +1,1935 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PilotSwarm Modern Portal Visuals</title>
+  <style>
+    :root {
+      --ink: #17202a;
+      --muted: #667085;
+      --faint: #8a94a6;
+      --paper: #f7f8fb;
+      --surface: #ffffff;
+      --surface-2: #f1f5f9;
+      --line: #d8dee8;
+      --line-strong: #bdc7d8;
+      --blue: #2563eb;
+      --teal: #0f9f8f;
+      --green: #198754;
+      --amber: #b7791f;
+      --rose: #d64550;
+      --grape: #7353ba;
+      --navy: #20304a;
+      --shadow: 0 18px 50px rgba(25, 36, 59, 0.13);
+      --radius: 8px;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: var(--paper);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      min-width: 320px;
+    }
+
+    body {
+      margin: 0;
+      background:
+        linear-gradient(180deg, #f9fafc 0%, #eef3f8 42%, #f7f8fb 100%);
+      color: var(--ink);
+    }
+
+    button,
+    input,
+    textarea,
+    select {
+      font: inherit;
+    }
+
+    .page {
+      width: min(1440px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 28px 0 56px;
+    }
+
+    .board-header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 20px;
+      align-items: end;
+      margin-bottom: 24px;
+    }
+
+    .eyebrow {
+      margin: 0 0 8px;
+      color: var(--teal);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    h1,
+    h2,
+    h3,
+    p {
+      margin: 0;
+    }
+
+    h1 {
+      font-size: 34px;
+      line-height: 1.08;
+      letter-spacing: 0;
+    }
+
+    .lead {
+      margin-top: 12px;
+      max-width: 820px;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.55;
+    }
+
+    .persona-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: flex-end;
+      align-items: center;
+    }
+
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 32px;
+      padding: 6px 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.85);
+      color: var(--navy);
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .chip.user {
+      border-color: rgba(37, 99, 235, 0.32);
+      color: var(--blue);
+    }
+
+    .chip.power {
+      border-color: rgba(15, 159, 143, 0.34);
+      color: var(--teal);
+    }
+
+    .chip.admin {
+      border-color: rgba(214, 69, 80, 0.3);
+      color: var(--rose);
+    }
+
+    .section {
+      margin-top: 32px;
+    }
+
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: flex-end;
+      margin-bottom: 14px;
+    }
+
+    .section h2 {
+      font-size: 22px;
+      letter-spacing: 0;
+    }
+
+    .section-note {
+      max-width: 720px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .mock-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 22px;
+      align-items: start;
+    }
+
+    .wide-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 22px;
+      align-items: start;
+    }
+
+    .caption {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      margin: 0 0 10px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .caption span:last-child {
+      color: var(--faint);
+      font-weight: 600;
+    }
+
+    .phone {
+      width: min(100%, 382px);
+      margin: 0 auto;
+      padding: 12px;
+      border-radius: 28px;
+      background: #111827;
+      box-shadow: var(--shadow);
+    }
+
+    .phone-screen {
+      min-height: 760px;
+      overflow: hidden;
+      border-radius: 20px;
+      background: #fbfcfe;
+      border: 1px solid rgba(255, 255, 255, 0.35);
+      display: flex;
+      flex-direction: column;
+    }
+
+    .mobile-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 14px 14px 10px;
+      border-bottom: 1px solid #e7ebf2;
+      background: rgba(255, 255, 255, 0.92);
+    }
+
+    .mobile-title {
+      min-width: 0;
+    }
+
+    .mobile-title strong {
+      display: block;
+      font-size: 17px;
+      line-height: 1.1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .mobile-title small {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 11px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .icon-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+
+    .icon-btn {
+      width: 34px;
+      height: 34px;
+      display: inline-grid;
+      place-items: center;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+      color: var(--navy);
+      box-shadow: 0 1px 0 rgba(17, 24, 39, 0.03);
+    }
+
+    .icon-btn.primary {
+      border-color: var(--blue);
+      background: var(--blue);
+      color: #ffffff;
+    }
+
+    .icon-btn.danger {
+      color: var(--rose);
+    }
+
+    .icon {
+      width: 17px;
+      height: 17px;
+      stroke: currentColor;
+      stroke-width: 2;
+      fill: none;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .mobile-body {
+      flex: 1;
+      min-height: 0;
+      overflow: hidden;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .scroll-body {
+      overflow: hidden;
+    }
+
+    .bottom-nav {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 2px;
+      padding: 8px 8px 10px;
+      border-top: 1px solid #e3e8f0;
+      background: rgba(255, 255, 255, 0.96);
+    }
+
+    .nav-item {
+      min-width: 0;
+      height: 46px;
+      border-radius: var(--radius);
+      display: grid;
+      place-items: center;
+      gap: 2px;
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 700;
+    }
+
+    .nav-item .icon {
+      width: 16px;
+      height: 16px;
+    }
+
+    .nav-item.active {
+      background: #e8f0ff;
+      color: var(--blue);
+    }
+
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+
+    .metric {
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+      padding: 10px;
+    }
+
+    .metric strong {
+      display: block;
+      color: var(--ink);
+      font-size: 16px;
+      line-height: 1.1;
+    }
+
+    .metric span {
+      display: block;
+      margin-top: 5px;
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 700;
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+      box-shadow: 0 8px 22px rgba(31, 45, 71, 0.06);
+    }
+
+    .card.pad {
+      padding: 12px;
+    }
+
+    .card-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      padding: 12px 12px 8px;
+    }
+
+    .card-title {
+      font-size: 13px;
+      font-weight: 800;
+      color: var(--ink);
+    }
+
+    .card-subtitle {
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.35;
+    }
+
+    .agent-list {
+      display: grid;
+      gap: 8px;
+      padding: 0 12px 12px;
+    }
+
+    .agent-row {
+      display: grid;
+      grid-template-columns: 38px minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      min-height: 58px;
+      padding: 9px;
+      border: 1px solid #e2e8f0;
+      border-radius: var(--radius);
+      background: #fbfdff;
+    }
+
+    .agent-mark {
+      width: 38px;
+      height: 38px;
+      display: grid;
+      place-items: center;
+      border-radius: var(--radius);
+      color: #ffffff;
+      font-weight: 900;
+      font-size: 15px;
+    }
+
+    .agent-mark.blue {
+      background: var(--blue);
+    }
+
+    .agent-mark.teal {
+      background: var(--teal);
+    }
+
+    .agent-mark.amber {
+      background: var(--amber);
+    }
+
+    .agent-mark.grape {
+      background: var(--grape);
+    }
+
+    .agent-row strong {
+      display: block;
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .agent-row span {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 10px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      min-height: 22px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: #eef4ff;
+      color: var(--blue);
+      font-size: 10px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .status-pill.green {
+      background: #e9f7ef;
+      color: var(--green);
+    }
+
+    .status-pill.amber {
+      background: #fff6df;
+      color: var(--amber);
+    }
+
+    .status-pill.rose {
+      background: #fff0f1;
+      color: var(--rose);
+    }
+
+    .session-card {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: start;
+      padding: 12px;
+      border-left: 4px solid var(--teal);
+    }
+
+    .session-card h3 {
+      font-size: 13px;
+      line-height: 1.25;
+    }
+
+    .session-card p {
+      margin-top: 5px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.35;
+    }
+
+    .quota-ring {
+      width: 54px;
+      height: 54px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background:
+        conic-gradient(var(--teal) 0 72%, #edf2f7 72% 100%);
+      color: var(--ink);
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .quota-ring span {
+      width: 42px;
+      height: 42px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background: #ffffff;
+    }
+
+    .message-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .msg {
+      max-width: 88%;
+      padding: 10px 11px;
+      border-radius: var(--radius);
+      font-size: 12px;
+      line-height: 1.42;
+    }
+
+    .msg.user {
+      align-self: flex-end;
+      background: var(--blue);
+      color: #ffffff;
+    }
+
+    .msg.agent {
+      align-self: flex-start;
+      background: #ffffff;
+      border: 1px solid var(--line);
+      color: var(--ink);
+    }
+
+    .tool-card {
+      border: 1px solid #d8e2ef;
+      border-radius: var(--radius);
+      background: #fbfdff;
+      padding: 10px;
+      display: grid;
+      gap: 8px;
+    }
+
+    .tool-line {
+      display: grid;
+      grid-template-columns: 20px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+      color: var(--ink);
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .tool-line small {
+      color: var(--muted);
+      font-weight: 700;
+    }
+
+    .dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--green);
+    }
+
+    .dot.amber {
+      background: var(--amber);
+    }
+
+    .dot.rose {
+      background: var(--rose);
+    }
+
+    .artifact {
+      display: grid;
+      grid-template-columns: 34px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 10px;
+      padding: 9px;
+      border: 1px solid #e0e7ef;
+      border-radius: var(--radius);
+      background: #ffffff;
+    }
+
+    .file-icon {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      border-radius: var(--radius);
+      background: #e8f0ff;
+      color: var(--blue);
+    }
+
+    .artifact strong {
+      display: block;
+      font-size: 11px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .artifact span {
+      display: block;
+      color: var(--muted);
+      font-size: 10px;
+    }
+
+    .composer {
+      display: grid;
+      grid-template-columns: 36px minmax(0, 1fr) 38px;
+      gap: 8px;
+      align-items: center;
+      padding: 10px;
+      border-top: 1px solid var(--line);
+      background: #ffffff;
+    }
+
+    .composer .input {
+      height: 38px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      display: flex;
+      align-items: center;
+      padding: 0 11px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .tab-strip {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 6px;
+    }
+
+    .tab {
+      min-height: 32px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #ffffff;
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 800;
+    }
+
+    .tab.active {
+      border-color: var(--blue);
+      background: #e8f0ff;
+      color: var(--blue);
+    }
+
+    .summary-block {
+      display: grid;
+      gap: 9px;
+    }
+
+    .summary-row {
+      display: grid;
+      grid-template-columns: 22px minmax(0, 1fr);
+      gap: 8px;
+      align-items: start;
+      color: var(--ink);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .check {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background: #e9f7ef;
+      color: var(--green);
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .form-grid {
+      display: grid;
+      gap: 9px;
+    }
+
+    .field {
+      display: grid;
+      gap: 5px;
+    }
+
+    .field label {
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0;
+    }
+
+    .fake-input,
+    .fake-textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #ffffff;
+      color: var(--ink);
+      font-size: 12px;
+      padding: 9px 10px;
+    }
+
+    .fake-textarea {
+      min-height: 118px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      line-height: 1.45;
+      color: #253044;
+      background: #f9fbfd;
+    }
+
+    .tool-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 8px;
+    }
+
+    .mini-toggle {
+      min-height: 44px;
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #ffffff;
+      font-size: 11px;
+      font-weight: 800;
+    }
+
+    .mini-toggle.on {
+      border-color: rgba(15, 159, 143, 0.42);
+      background: #ecfbf8;
+      color: var(--teal);
+    }
+
+    .pipeline {
+      display: grid;
+      gap: 9px;
+    }
+
+    .pipeline-step {
+      display: grid;
+      grid-template-columns: 34px minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #ffffff;
+    }
+
+    .graph-card {
+      min-height: 152px;
+      position: relative;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background:
+        linear-gradient(0deg, rgba(247, 250, 252, 0.95), rgba(247, 250, 252, 0.95)),
+        repeating-linear-gradient(90deg, transparent 0 31px, #e7edf5 31px 32px),
+        repeating-linear-gradient(0deg, transparent 0 31px, #e7edf5 31px 32px);
+    }
+
+    .graph-line {
+      position: absolute;
+      height: 2px;
+      background: #b8c3d4;
+      transform-origin: left center;
+    }
+
+    .graph-node {
+      position: absolute;
+      width: 44px;
+      height: 44px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      background: #ffffff;
+      border: 2px solid var(--teal);
+      color: var(--teal);
+      font-size: 10px;
+      font-weight: 900;
+      box-shadow: 0 8px 18px rgba(20, 36, 56, 0.1);
+    }
+
+    .health-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 8px;
+    }
+
+    .health-card {
+      min-height: 78px;
+      padding: 10px;
+      border-radius: var(--radius);
+      border: 1px solid var(--line);
+      background: #ffffff;
+    }
+
+    .health-card b {
+      display: block;
+      font-size: 20px;
+      line-height: 1.1;
+    }
+
+    .health-card span {
+      display: block;
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 800;
+    }
+
+    .log-box {
+      border-radius: var(--radius);
+      background: #182032;
+      color: #dbe7ff;
+      padding: 11px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 10px;
+      line-height: 1.5;
+      overflow: hidden;
+    }
+
+    .log-box .warn {
+      color: #ffd166;
+    }
+
+    .log-box .error {
+      color: #ff8b94;
+    }
+
+    .worker-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      padding: 9px 0;
+      border-top: 1px solid #e7ebf2;
+      font-size: 12px;
+    }
+
+    .worker-row:first-child {
+      border-top: 0;
+    }
+
+    .desktop {
+      border: 1px solid var(--line-strong);
+      border-radius: 16px;
+      overflow: hidden;
+      background: #ffffff;
+      box-shadow: var(--shadow);
+    }
+
+    .desktop-top {
+      height: 58px;
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 16px;
+      padding: 0 18px;
+      border-bottom: 1px solid var(--line);
+      background: #ffffff;
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      font-weight: 900;
+      color: var(--navy);
+      white-space: nowrap;
+    }
+
+    .brand-mark {
+      width: 31px;
+      height: 31px;
+      border-radius: var(--radius);
+      display: grid;
+      place-items: center;
+      background: var(--navy);
+      color: #ffffff;
+      font-size: 13px;
+    }
+
+    .desktop-nav {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      min-width: 0;
+    }
+
+    .desktop-nav .tab {
+      min-width: 82px;
+      padding: 0 10px;
+    }
+
+    .desktop-grid {
+      display: grid;
+      grid-template-columns: 260px minmax(0, 1fr) 330px;
+      min-height: 620px;
+    }
+
+    .side-panel,
+    .right-panel {
+      min-width: 0;
+      background: #f8fafc;
+      border-right: 1px solid var(--line);
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .right-panel {
+      border-right: 0;
+      border-left: 1px solid var(--line);
+    }
+
+    .main-panel {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      background: #ffffff;
+    }
+
+    .panel-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      min-height: 34px;
+      color: var(--ink);
+      font-size: 13px;
+      font-weight: 900;
+    }
+
+    .search-box {
+      height: 38px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #ffffff;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 10px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .desktop-session {
+      display: grid;
+      grid-template-columns: 9px minmax(0, 1fr);
+      gap: 9px;
+      align-items: start;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #ffffff;
+    }
+
+    .desktop-session.active {
+      border-color: rgba(37, 99, 235, 0.38);
+      background: #eef4ff;
+    }
+
+    .desktop-session strong {
+      display: block;
+      font-size: 12px;
+      line-height: 1.25;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .desktop-session span {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 10px;
+    }
+
+    .session-dot {
+      width: 9px;
+      height: 9px;
+      margin-top: 3px;
+      border-radius: 50%;
+      background: var(--green);
+    }
+
+    .session-dot.waiting {
+      background: var(--amber);
+    }
+
+    .chat-header {
+      min-height: 72px;
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: center;
+    }
+
+    .chat-header h3 {
+      font-size: 17px;
+    }
+
+    .chat-header p {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .chat-canvas {
+      flex: 1;
+      padding: 20px;
+      display: grid;
+      align-content: start;
+      gap: 14px;
+      background:
+        linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
+    }
+
+    .desktop .msg {
+      font-size: 13px;
+      max-width: 72%;
+    }
+
+    .desktop-composer {
+      padding: 14px 18px 18px;
+      border-top: 1px solid var(--line);
+      background: #ffffff;
+    }
+
+    .composer-box {
+      min-height: 72px;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius);
+      display: grid;
+      grid-template-columns: 42px minmax(0, 1fr) 42px;
+      gap: 8px;
+      align-items: end;
+      padding: 10px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .desktop-two {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 380px;
+      min-height: 660px;
+    }
+
+    .editor-area {
+      padding: 16px;
+      display: grid;
+      grid-template-rows: auto auto minmax(0, 1fr);
+      gap: 14px;
+      min-width: 0;
+    }
+
+    .editor-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+    }
+
+    .code-editor {
+      min-height: 330px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      overflow: hidden;
+      background: #101828;
+      color: #dbe7ff;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.62;
+    }
+
+    .code-toolbar {
+      height: 38px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 12px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+      color: #aab9d3;
+      font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+      font-size: 11px;
+      font-weight: 800;
+    }
+
+    .code-lines {
+      padding: 13px 16px;
+      white-space: pre-wrap;
+    }
+
+    .test-panel {
+      background: #f8fafc;
+      border-left: 1px solid var(--line);
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .admin-grid {
+      display: grid;
+      grid-template-columns: 300px minmax(0, 1fr);
+      min-height: 660px;
+    }
+
+    .ops-main {
+      padding: 16px;
+      display: grid;
+      grid-template-rows: auto auto minmax(0, 1fr);
+      gap: 14px;
+      min-width: 0;
+    }
+
+    .ops-metrics {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .table {
+      width: 100%;
+      border-collapse: collapse;
+      overflow: hidden;
+      border-radius: var(--radius);
+      border: 1px solid var(--line);
+      background: #ffffff;
+      font-size: 12px;
+    }
+
+    .table th,
+    .table td {
+      padding: 11px 12px;
+      text-align: left;
+      border-bottom: 1px solid #edf1f6;
+      vertical-align: top;
+    }
+
+    .table th {
+      color: var(--muted);
+      background: #f8fafc;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0;
+    }
+
+    .bar-set {
+      display: grid;
+      gap: 9px;
+      padding: 12px;
+    }
+
+    .bar-row {
+      display: grid;
+      grid-template-columns: 82px minmax(0, 1fr) 44px;
+      gap: 10px;
+      align-items: center;
+      font-size: 11px;
+      color: var(--muted);
+      font-weight: 700;
+    }
+
+    .bar-track {
+      height: 8px;
+      border-radius: 999px;
+      background: #e6ecf4;
+      overflow: hidden;
+    }
+
+    .bar-fill {
+      height: 100%;
+      border-radius: 999px;
+      background: var(--blue);
+    }
+
+    .bar-fill.teal {
+      background: var(--teal);
+    }
+
+    .bar-fill.amber {
+      background: var(--amber);
+    }
+
+    .bar-fill.rose {
+      background: var(--rose);
+    }
+
+    .matrix {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+    }
+
+    .matrix-card {
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, 0.78);
+    }
+
+    .matrix-card h3 {
+      font-size: 15px;
+      margin-bottom: 9px;
+    }
+
+    .matrix-card ul {
+      margin: 0;
+      padding-left: 18px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    @media (max-width: 1180px) {
+      .mock-grid,
+      .wide-grid,
+      .matrix {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .desktop-grid {
+        grid-template-columns: 220px minmax(0, 1fr) 280px;
+      }
+    }
+
+    @media (max-width: 860px) {
+      .page {
+        width: min(100% - 20px, 620px);
+        padding-top: 18px;
+      }
+
+      .board-header,
+      .mock-grid,
+      .wide-grid,
+      .matrix {
+        grid-template-columns: 1fr;
+      }
+
+      .persona-strip {
+        justify-content: flex-start;
+      }
+
+      h1 {
+        font-size: 28px;
+      }
+
+      .section-head {
+        display: block;
+      }
+
+      .section-note {
+        margin-top: 8px;
+      }
+
+      .desktop {
+        overflow-x: auto;
+      }
+
+      .desktop-top,
+      .desktop-grid,
+      .desktop-two,
+      .admin-grid {
+        min-width: 1040px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="board-header">
+      <div>
+        <p class="eyebrow">PilotSwarm portal vNext</p>
+        <h1>Modern agent workspace visual system</h1>
+        <p class="lead">A mobile-first portal direction for users, power users, and administrators. Chat stays primary, while files, summaries, stats, agent editing, knowledge building, and cluster operations become role-aware depth.</p>
+      </div>
+      <div class="persona-strip" aria-label="Personas">
+        <span class="chip user">User</span>
+        <span class="chip power">Power user</span>
+        <span class="chip admin">Administrator</span>
+      </div>
+    </header>
+
+    <section class="section">
+      <div class="section-head">
+        <h2>Mobile First Screens</h2>
+        <p class="section-note">Phone layouts use bottom navigation, sticky composers, compact quota/status chips, and sheets instead of always-on inspector panes.</p>
+      </div>
+      <div class="mock-grid">
+        <article>
+          <div class="caption"><span>User Home</span><span>Start, resume, quota</span></div>
+          <div class="phone">
+            <div class="phone-screen">
+              <div class="mobile-top">
+                <div class="mobile-title">
+                  <strong>Good morning</strong>
+                  <small>3 active sessions, 1 needs input</small>
+                </div>
+                <div class="icon-row">
+                  <button class="icon-btn" aria-label="Search">
+                    <svg class="icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-4-4"></path></svg>
+                  </button>
+                  <button class="icon-btn" aria-label="Settings">
+                    <svg class="icon" viewBox="0 0 24 24"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z"></path><path d="M3 12h2m14 0h2M12 3v2m0 14v2m-6.3-3.7 1.4-1.4m9.8-9.8 1.4-1.4m0 12.6-1.4-1.4M7.1 7.1 5.7 5.7"></path></svg>
+                  </button>
+                </div>
+              </div>
+              <div class="mobile-body">
+                <div class="card pad session-card">
+                  <div>
+                    <h3>Incident Reporter is waiting</h3>
+                    <p>Approval requested before the deploy summary is sent to the on-call channel.</p>
+                    <div style="margin-top:9px"><span class="status-pill amber">Needs input</span></div>
+                  </div>
+                  <div class="quota-ring"><span>72%</span></div>
+                </div>
+                <div class="metric-grid">
+                  <div class="metric"><strong>42k</strong><span>tokens today</span></div>
+                  <div class="metric"><strong>8</strong><span>files ready</span></div>
+                  <div class="metric"><strong>3</strong><span>agents active</span></div>
+                </div>
+                <div class="card">
+                  <div class="card-head">
+                    <div>
+                      <div class="card-title">Start with an agent</div>
+                      <div class="card-subtitle">Pinned agents from your workspace</div>
+                    </div>
+                    <button class="icon-btn" aria-label="View agents">
+                      <svg class="icon" viewBox="0 0 24 24"><path d="M5 12h14"></path><path d="m13 6 6 6-6 6"></path></svg>
+                    </button>
+                  </div>
+                  <div class="agent-list">
+                    <div class="agent-row">
+                      <div class="agent-mark blue">R</div>
+                      <div><strong>Research Assistant</strong><span>Finds, compares, cites, summarizes</span></div>
+                      <span class="status-pill green">Ready</span>
+                    </div>
+                    <div class="agent-row">
+                      <div class="agent-mark teal">D</div>
+                      <div><strong>DevOps Reporter</strong><span>Incident reports and daily summaries</span></div>
+                      <span class="status-pill">New</span>
+                    </div>
+                    <div class="agent-row">
+                      <div class="agent-mark amber">A</div>
+                      <div><strong>Data Analyst</strong><span>Works with CSV, SQL, charts</span></div>
+                      <span class="status-pill green">Ready</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="card pad">
+                  <div class="card-title">Recent result</div>
+                  <p class="card-subtitle">report-2026-06-27.md generated 14 minutes ago</p>
+                  <div style="margin-top:10px" class="artifact">
+                    <div class="file-icon">
+                      <svg class="icon" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"></path><path d="M14 2v6h6"></path></svg>
+                    </div>
+                    <div><strong>incident-report.md</strong><span>Markdown, 18 KB</span></div>
+                    <button class="icon-btn" aria-label="Download">
+                      <svg class="icon" viewBox="0 0 24 24"><path d="M12 3v12"></path><path d="m7 10 5 5 5-5"></path><path d="M5 21h14"></path></svg>
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <nav class="bottom-nav" aria-label="Mobile navigation">
+                <div class="nav-item active"><svg class="icon" viewBox="0 0 24 24"><path d="M3 11 12 3l9 8"></path><path d="M5 10v10h14V10"></path></svg><span>Home</span></div>
+                <div class="nav-item"><svg class="icon" viewBox="0 0 24 24"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"></path></svg><span>Chat</span></div>
+                <div class="nav-item"><svg class="icon" viewBox="0 0 24 24"><path d="M12 8V4H8"></path><rect x="4" y="8" width="16" height="12" rx="3"></rect><path d="M9 13h.01M15 13h.01"></path></svg><span>Agents</span></div>
+                <div class="nav-item"><svg class="icon" viewBox="0 0 24 24"><path d="M4 4h6l2 3h8v13H4Z"></path></svg><span>Files</span></div>
+                <div class="nav-item"><svg class="icon" viewBox="0 0 24 24"><path d="M4 12h16M4 6h16M4 18h16"></path></svg><span>More</span></div>
+              </nav>
+            </div>
+          </div>
+        </article>
+
+        <article>
+          <div class="caption"><span>User Chat</span><span>Agentic chat, files, activity</span></div>
+          <div class="phone">
+            <div class="phone-screen">
+              <div class="mobile-top">
+                <button class="icon-btn" aria-label="Back">
+                  <svg class="icon" viewBox="0 0 24 24"><path d="M15 18 9 12l6-6"></path></svg>
+                </button>
+                <div class="mobile-title">
+                  <strong>Incident Reporter</strong>
+                  <small>Running on Sonnet - 12.4k tokens</small>
+                </div>
+                <button class="icon-btn" aria-label="Session details">
+                  <svg class="icon" viewBox="0 0 24 24"><path d="M4 12h16M4 6h16M4 18h16"></path></svg>
+                </button>
+              </div>
+              <div class="mobile-body">
+                <div class="tab-strip">
+                  <div class="tab active">Chat</div>
+                  <div class="tab">Summary</div>
+                  <div class="tab">Files</div>
+                  <div class="tab">Stats</div>
+                </div>
+                <div class="message-stack">
+                  <div class="msg user">Create a concise incident report from the last 24 hours. Include impact, likely cause, and follow-ups.</div>
+                  <div class="msg agent">
+                    I will gather the recent incident facts, compare them with deployment history, and write the report as an artifact.
+                  </div>
+                  <div class="tool-card">
+                    <div class="tool-line"><span class="dot"></span><span>Search facts</span><small>1.8s</small></div>
+                    <div class="tool-line"><span class="dot"></span><span>Read deployment graph</span><small>2.6s</small></div>
+                    <div class="tool-line"><span class="dot amber"></span><span>Generate report</span><small>running</small></div>
+                  </div>
+                  <div class="artifact">
+                    <div class="file-icon">
+                      <svg class="icon" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"></path><path d="M14 2v6h6"></path></svg>
+                    </div>
+                    <div><strong>incident-report-draft.md</strong><span>Preview available</span></div>
+                    <button class="icon-btn" aria-label="Open file">
+                      <svg class="icon" viewBox="0 0 24 24"><path d="M5 12h14"></path><path d="m13 6 6 6-6 6"></path></svg>
+                    </button>
+                  </div>
+                </div>
+                <div class="card pad">
+                  <div class="card-title">Activity</div>
+                  <p class="card-subtitle">3 tools complete - 1 tool running - no worker errors</p>
+                </div>
+              </div>
+              <div class="composer">
+                <button class="icon-btn" aria-label="Upload">
+                  <svg class="icon" viewBox="0 0 24 24"><path d="M12 3v12"></path><path d="m17 8-5-5-5 5"></path><path d="M5 21h14"></path></svg>
+                </button>
+                <div class="input">Message Incident Reporter...</div>
+                <button class="icon-btn primary" aria-label="Send">
+                  <svg class="icon" viewBox="0 0 24 24"><path d="M22 2 11 13"></path><path d="m22 2-7 20-4-9-9-4Z"></path></svg>
+                </button>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article>
+          <div class="caption"><span>User Results</span><span>Summary, files, quota</span></div>
+          <div class="phone">
+            <div class="phone-screen">
+              <div class="mobile-top">
+                <button class="icon-btn" aria-label="Back">
+                  <svg class="icon" viewBox="0 0 24 24"><path d="M15 18 9 12l6-6"></path></svg>
+                </button>
+                <div class="mobile-title">
+                  <strong>Session Summary</strong>
+                  <small>Incident Reporter - completed</small>
+                </div>
+                <button class="icon-btn" aria-label="Share">
+                  <svg class="icon" viewBox="0 0 24 24"><path d="M4 12v8h16v-8"></path><path d="M12 16V4"></path><path d="m7 9 5-5 5 5"></path></svg>
+                </button>
+              </div>
+              <div class="mobile-body">
+                <div class="card pad">
+                  <div class="card-title">Final result</div>
+                  <div class="summary-block" style="margin-top:11px">
+                    <div class="summary-row"><span class="check">1</span><span>Impact window was 42 minutes across checkout and account settings.</span></div>
+                    <div class="summary-row"><span class="check">2</span><span>Most likely cause was a health-check timeout introduced in deploy 4812.</span></div>
+                    <div class="summary-row"><span class="check">3</span><span>Follow-up owners were extracted from the deployment graph.</span></div>
+                  </div>
+                </div>
+                <div class="card pad">
+                  <div class="card-title">Generated files</div>
+                  <div style="display:grid;gap:8px;margin-top:10px">
+                    <div class="artifact">
+                      <div class="file-icon">
+                        <svg class="icon" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"></path><path d="M14 2v6h6"></path></svg>
+                      </div>
+                      <div><strong>incident-report.md</strong><span>Markdown, 18 KB</span></div>
+                      <button class="icon-btn" aria-label="Download"><svg class="icon" viewBox="0 0 24 24"><path d="M12 3v12"></path><path d="m7 10 5 5 5-5"></path><path d="M5 21h14"></path></svg></button>
+                    </div>
+                    <div class="artifact">
+                      <div class="file-icon">
+                        <svg class="icon" viewBox="0 0 24 24"><path d="M4 4h16v16H4Z"></path><path d="M4 9h16M9 4v16"></path></svg>
+                      </div>
+                      <div><strong>timeline.csv</strong><span>CSV, 6 KB</span></div>
+                      <button class="icon-btn" aria-label="Download"><svg class="icon" viewBox="0 0 24 24"><path d="M12 3v12"></path><path d="m7 10 5 5 5-5"></path><path d="M5 21h14"></path></svg></button>
+                    </div>
+                  </div>
+                </div>
+                <div class="metric-grid">
+                  <div class="metric"><strong>31k</strong><span>input tokens</span></div>
+                  <div class="metric"><strong>4k</strong><span>output tokens</span></div>
+                  <div class="metric"><strong>6</strong><span>tool calls</span></div>
+                </div>
+                <div class="card pad">
+                  <div class="card-title">Quota</div>
+                  <p class="card-subtitle">This session used 5.8% of your daily PilotSwarm allocation.</p>
+                  <div class="bar-set" style="padding:12px 0 0">
+                    <div class="bar-row"><span>Daily</span><div class="bar-track"><div class="bar-fill teal" style="width:58%"></div></div><span>58%</span></div>
+                    <div class="bar-row"><span>Monthly</span><div class="bar-track"><div class="bar-fill" style="width:34%"></div></div><span>34%</span></div>
+                  </div>
+                </div>
+              </div>
+              <nav class="bottom-nav" aria-label="Mobile navigation">
+                <div class="nav-item"><svg class="icon" viewBox="0 0 24 24"><path d="M3 11 12 3l9 8"></path><path d="M5 10v10h14V10"></path></svg><span>Home</span></div>
+                <div class="nav-item active"><svg class="icon" viewBox="0 0 24 24"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"></path></svg><span>Chat</span></div>
+                <div class="nav-item"><svg class="icon" viewBox="0 0 24 24"><path d="M12 8V4H8"></path><rect x="4" y="8" width="16" height="12" rx="3"></rect><path d="M9 13h.01M15 13h.01"></path></svg><span>Agents</span></div>
+                <div class="nav-item"><svg class="icon" viewBox="0 0 24 24"><path d="M4 4h6l2 3h8v13H4Z"></path></svg><span>Files</span></div>
+                <div class="nav-item"><svg class="icon" viewBox="0 0 24 24"><path d="M4 12h16M4 6h16M4 18h16"></path></svg><span>More</span></div>
+              </nav>
+            </div>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <h2>Power User Mobile</h2>
+        <p class="section-note">Agent Studio and Knowledge Builder move plugin-like work into the portal without making normal users manage deployment files.</p>
+      </div>
+      <div class="mock-grid">
+        <article>
+          <div class="caption"><span>Agent Studio</span><span>Create, test, publish</span></div>
+          <div class="phone">
+            <div class="phone-screen">
+              <div class="mobile-top">
+                <div class="mobile-title">
+                  <strong>Agent Studio</strong>
+                  <small>DevOps Reporter - draft v4</small>
+                </div>
+                <div class="icon-row">
+                  <button class="icon-btn" aria-label="Preview"><svg class="icon" viewBox="0 0 24 24"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Z"></path><circle cx="12" cy="12" r="3"></circle></svg></button>
+                  <button class="icon-btn primary" aria-label="Publish"><svg class="icon" viewBox="0 0 24 24"><path d="M12 19V5"></path><path d="m5 12 7-7 7 7"></path></svg></button>
+                </div>
+              </div>
+              <div class="mobile-body">
+                <div class="tab-strip">
+                  <div class="tab active">Prompt</div>
+                  <div class="tab">Tools</div>
+                  <div class="tab">Access</div>
+                  <div class="tab">Test</div>
+                </div>
+                <div class="form-grid">
+                  <div class="field"><label>Name</label><div class="fake-input">DevOps Reporter</div></div>
+                  <div class="field"><label>Default model</label><div class="fake-input">claude-sonnet-4 - medium reasoning</div></div>
+                  <div class="field"><label>Instructions</label><div class="fake-textarea">You are a concise incident reporter.
+
+Ask for missing context.
+Use facts before speculation.
+Write markdown artifacts for final reports.</div></div>
+                </div>
+                <div class="card pad">
+                  <div class="card-title">Allowed tools</div>
+                  <div class="tool-grid" style="margin-top:10px">
+                    <div class="mini-toggle on">read_facts</div>
+                    <div class="mini-toggle on">write_artifact</div>
+                    <div class="mini-toggle on">spawn_agent</div>
+                    <div class="mini-toggle">deploy</div>
+                  </div>
+                </div>
+                <div class="card pad">
+                  <div class="card-title">Publish target</div>
+                  <p class="card-subtitle">Available to Users group after approval. Current version remains active until publish.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article>
+          <div class="caption"><span>Knowledge Builder</span><span>Crawlers, facts, graphs</span></div>
+          <div class="phone">
+            <div class="phone-screen">
+              <div class="mobile-top">
+                <div class="mobile-title">
+                  <strong>Knowledge Builder</strong>
+                  <small>3 crawlers - 21,804 facts</small>
+                </div>
+                <button class="icon-btn primary" aria-label="New crawler"><svg class="icon" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"></path></svg></button>
+              </div>
+              <div class="mobile-body">
+                <div class="graph-card">
+                  <div class="graph-line" style="left:74px;top:68px;width:118px;transform:rotate(16deg)"></div>
+                  <div class="graph-line" style="left:178px;top:92px;width:82px;transform:rotate(-32deg)"></div>
+                  <div class="graph-line" style="left:88px;top:95px;width:88px;transform:rotate(52deg)"></div>
+                  <div class="graph-node" style="left:42px;top:47px">Docs</div>
+                  <div class="graph-node" style="left:180px;top:67px;border-color:var(--blue);color:var(--blue)">APIs</div>
+                  <div class="graph-node" style="left:246px;top:39px;border-color:var(--amber);color:var(--amber)">Run</div>
+                  <div class="graph-node" style="left:115px;top:112px;border-color:var(--grape);color:var(--grape)">Svc</div>
+                </div>
+                <div class="metric-grid">
+                  <div class="metric"><strong>92%</strong><span>fresh</span></div>
+                  <div class="metric"><strong>41</strong><span>sources</span></div>
+                  <div class="metric"><strong>3.2k</strong><span>retrievals</span></div>
+                </div>
+                <div class="pipeline">
+                  <div class="pipeline-step">
+                    <div class="file-icon"><svg class="icon" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7 0l2-2a5 5 0 0 0-7-7l-1 1"></path><path d="M14 11a5 5 0 0 0-7 0l-2 2a5 5 0 0 0 7 7l1-1"></path></svg></div>
+                    <div><div class="card-title">Docs crawler</div><div class="card-subtitle">Next sync in 2h</div></div>
+                    <span class="status-pill green">Fresh</span>
+                  </div>
+                  <div class="pipeline-step">
+                    <div class="file-icon"><svg class="icon" viewBox="0 0 24 24"><path d="M6 3v12"></path><path d="M18 9v12"></path><path d="M6 15a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z"></path><path d="M18 3a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z"></path><path d="M6 6h9"></path></svg></div>
+                    <div><div class="card-title">Repo graph</div><div class="card-subtitle">14 changed entities</div></div>
+                    <span class="status-pill amber">Review</span>
+                  </div>
+                  <div class="pipeline-step">
+                    <div class="file-icon"><svg class="icon" viewBox="0 0 24 24"><path d="M4 4h16v16H4Z"></path><path d="M8 8h8M8 12h8M8 16h5"></path></svg></div>
+                    <div><div class="card-title">Incident archive</div><div class="card-subtitle">Auth expired</div></div>
+                    <span class="status-pill rose">Failed</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article>
+          <div class="caption"><span>Admin Mobile</span><span>Cluster at a glance</span></div>
+          <div class="phone">
+            <div class="phone-screen">
+              <div class="mobile-top">
+                <div class="mobile-title">
+                  <strong>Cluster Admin</strong>
+                  <small>prod-west - healthy</small>
+                </div>
+                <button class="icon-btn danger" aria-label="Alerts"><svg class="icon" viewBox="0 0 24 24"><path d="M10 2h4l1 7 5 4-2 4-7-2-7 2-2-4 5-4Z"></path><path d="M12 17v4"></path></svg></button>
+              </div>
+              <div class="mobile-body">
+                <div class="health-grid">
+                  <div class="health-card"><b>12/12</b><span>workers online</span></div>
+                  <div class="health-card"><b>48</b><span>active sessions</span></div>
+                  <div class="health-card"><b>7</b><span>waiting timers</span></div>
+                  <div class="health-card"><b>0.8%</b><span>failed turns</span></div>
+                </div>
+                <div class="card pad">
+                  <div class="panel-title"><span>Workers</span><span class="status-pill green">Healthy</span></div>
+                  <div class="worker-row"><span>worker-7x92k - 9 sessions</span><span class="status-pill green">OK</span></div>
+                  <div class="worker-row"><span>worker-3m41n - 3 sessions</span><span class="status-pill green">OK</span></div>
+                  <div class="worker-row"><span>worker-9p21a - 0 sessions</span><span class="status-pill amber">Draining</span></div>
+                </div>
+                <div class="card pad">
+                  <div class="panel-title"><span>Logs</span><button class="icon-btn" aria-label="Filter logs"><svg class="icon" viewBox="0 0 24 24"><path d="M4 6h16M7 12h10M10 18h4"></path></svg></button></div>
+                  <div class="log-box">12:34:09 worker-7x92k turn complete
+12:34:12 worker-3m41n hydrate session
+<span class="warn">12:34:20 provider retry after 429</span>
+12:34:25 timer fired session-a8f2
+<span class="error">12:34:40 artifact scan timeout</span></div>
+                </div>
+                <div class="card pad">
+                  <div class="card-title">Admin actions</div>
+                  <p class="card-subtitle">Drain, restart, and hard-delete actions are visible only to cluster operators.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <h2>Desktop Workbench</h2>
+        <p class="section-note">Desktop keeps the same objects but gives more horizontal context. Chat remains central for users; studios and consoles get split-pane layouts.</p>
+      </div>
+      <div class="wide-grid">
+        <article>
+          <div class="caption"><span>User Desktop</span><span>Chat with progressive details</span></div>
+          <div class="desktop">
+            <div class="desktop-top">
+              <div class="brand"><span class="brand-mark">PS</span><span>PilotSwarm</span></div>
+              <nav class="desktop-nav">
+                <div class="tab active">Chat</div>
+                <div class="tab">Agents</div>
+                <div class="tab">Files</div>
+                <div class="tab">Usage</div>
+              </nav>
+              <div class="icon-row">
+                <span class="status-pill green">GH key active</span>
+                <button class="icon-btn" aria-label="Theme"><svg class="icon" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9Z"></path></svg></button>
+              </div>
+            </div>
+            <div class="desktop-grid">
+              <aside class="side-panel">
+                <div class="panel-title"><span>Sessions</span><button class="icon-btn primary" aria-label="New session"><svg class="icon" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"></path></svg></button></div>
+                <div class="search-box"><svg class="icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-4-4"></path></svg><span>Search sessions</span></div>
+                <div class="desktop-session active"><span class="session-dot"></span><div><strong>Incident report</strong><span>running - 12.4k tokens</span></div></div>
+                <div class="desktop-session"><span class="session-dot waiting"></span><div><strong>Daily metrics report</strong><span>waiting until midnight</span></div></div>
+                <div class="desktop-session"><span class="session-dot"></span><div><strong>Research checkout failure</strong><span>completed - 2 files</span></div></div>
+                <div class="card pad">
+                  <div class="card-title">Pinned agents</div>
+                  <p class="card-subtitle">Research Assistant, DevOps Reporter, Data Analyst</p>
+                </div>
+              </aside>
+              <section class="main-panel">
+                <div class="chat-header">
+                  <div><h3>Incident report</h3><p>DevOps Reporter - running - child agents: 2 - artifacts: 1</p></div>
+                  <div class="icon-row"><span class="status-pill">Summary</span><span class="status-pill green">Healthy</span></div>
+                </div>
+                <div class="chat-canvas">
+                  <div class="msg user">Summarize the impact from the checkout incident and create a report artifact.</div>
+                  <div class="msg agent">I found a 42 minute checkout degradation. I am comparing deployment history with user-impact metrics now.</div>
+                  <div class="tool-card">
+                    <div class="tool-line"><span class="dot"></span><span>Read facts: checkout incidents</span><small>2.1s</small></div>
+                    <div class="tool-line"><span class="dot"></span><span>Spawn analyst: deployment graph</span><small>done</small></div>
+                    <div class="tool-line"><span class="dot amber"></span><span>Write artifact: incident-report.md</span><small>running</small></div>
+                  </div>
+                </div>
+                <div class="desktop-composer">
+                  <div class="composer-box">
+                    <button class="icon-btn" aria-label="Attach"><svg class="icon" viewBox="0 0 24 24"><path d="M12 3v12"></path><path d="m17 8-5-5-5 5"></path><path d="M5 21h14"></path></svg></button>
+                    <span>Message DevOps Reporter...</span>
+                    <button class="icon-btn primary" aria-label="Send"><svg class="icon" viewBox="0 0 24 24"><path d="M22 2 11 13"></path><path d="m22 2-7 20-4-9-9-4Z"></path></svg></button>
+                  </div>
+                </div>
+              </section>
+              <aside class="right-panel">
+                <div class="panel-title"><span>Session Details</span><button class="icon-btn" aria-label="More"><svg class="icon" viewBox="0 0 24 24"><path d="M4 12h16M4 6h16M4 18h16"></path></svg></button></div>
+                <div class="card pad">
+                  <div class="card-title">Summary</div>
+                  <p class="card-subtitle">Likely deploy-related health-check timeout. Report draft is ready for review.</p>
+                </div>
+                <div class="metric-grid">
+                  <div class="metric"><strong>12.4k</strong><span>tokens</span></div>
+                  <div class="metric"><strong>6</strong><span>tools</span></div>
+                  <div class="metric"><strong>2</strong><span>children</span></div>
+                </div>
+                <div class="card pad">
+                  <div class="card-title">Files</div>
+                  <div style="margin-top:10px" class="artifact">
+                    <div class="file-icon"><svg class="icon" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"></path><path d="M14 2v6h6"></path></svg></div>
+                    <div><strong>incident-report.md</strong><span>18 KB</span></div>
+                    <button class="icon-btn" aria-label="Download"><svg class="icon" viewBox="0 0 24 24"><path d="M12 3v12"></path><path d="m7 10 5 5 5-5"></path><path d="M5 21h14"></path></svg></button>
+                  </div>
+                </div>
+                <div class="card pad">
+                  <div class="card-title">Optional activity</div>
+                  <p class="card-subtitle">Tool timeline and raw events are available under Advanced.</p>
+                </div>
+              </aside>
+            </div>
+          </div>
+        </article>
+
+        <article>
+          <div class="caption"><span>Power User Desktop</span><span>Agent editor with live test</span></div>
+          <div class="desktop">
+            <div class="desktop-top">
+              <div class="brand"><span class="brand-mark">PS</span><span>Agent Studio</span></div>
+              <nav class="desktop-nav">
+                <div class="tab active">Agents</div>
+                <div class="tab">Knowledge</div>
+                <div class="tab">Versions</div>
+                <div class="tab">Usage</div>
+              </nav>
+              <div class="icon-row">
+                <span class="status-pill amber">Draft v4</span>
+                <button class="icon-btn primary" aria-label="Publish"><svg class="icon" viewBox="0 0 24 24"><path d="M12 19V5"></path><path d="m5 12 7-7 7 7"></path></svg></button>
+              </div>
+            </div>
+            <div class="desktop-two">
+              <section class="editor-area">
+                <div class="panel-title"><span>DevOps Reporter</span><span class="status-pill">Private draft</span></div>
+                <div class="editor-grid">
+                  <div class="field"><label>Name</label><div class="fake-input">DevOps Reporter</div></div>
+                  <div class="field"><label>Model</label><div class="fake-input">Sonnet - medium</div></div>
+                  <div class="field"><label>Access</label><div class="fake-input">Users group</div></div>
+                </div>
+                <div class="code-editor">
+                  <div class="code-toolbar"><span>instructions.md</span><span>Validated</span></div>
+                  <div class="code-lines">01  You are a concise incident reporter.
+02
+03  Use fact retrieval before speculation.
+04  Ask for approval before external posts.
+05  Write final reports as markdown artifacts.
+06
+07  Allowed child agents:
+08  - Deployment Analyst
+09  - Metrics Investigator</div>
+                </div>
+                <div class="tool-grid">
+                  <div class="mini-toggle on">read_facts</div>
+                  <div class="mini-toggle on">write_artifact</div>
+                  <div class="mini-toggle on">spawn_agent</div>
+                  <div class="mini-toggle on">wait_for_agents</div>
+                </div>
+              </section>
+              <aside class="test-panel">
+                <div class="panel-title"><span>Live Test</span><span class="status-pill green">Sandbox</span></div>
+                <div class="msg user" style="max-width:100%">Create an incident report from this uploaded timeline.</div>
+                <div class="msg agent" style="max-width:100%">I will parse the timeline, retrieve related facts, and draft a report artifact.</div>
+                <div class="tool-card">
+                  <div class="tool-line"><span class="dot"></span><span>read_artifact timeline.csv</span><small>done</small></div>
+                  <div class="tool-line"><span class="dot amber"></span><span>retrieve facts</span><small>running</small></div>
+                </div>
+                <div class="card pad">
+                  <div class="card-title">Publish checklist</div>
+                  <p class="card-subtitle">Instructions validated. Tool policy valid. Requires one reviewer.</p>
+                </div>
+                <div class="card pad">
+                  <div class="card-title">Version history</div>
+                  <p class="card-subtitle">v3 live - 184 sessions - 98.1% successful turns</p>
+                </div>
+              </aside>
+            </div>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <h2>Administrator Desktop</h2>
+        <p class="section-note">Cluster operations are separated from everyday chat so worker logs and destructive controls stay in an explicit admin context.</p>
+      </div>
+      <div class="desktop">
+        <div class="desktop-top">
+          <div class="brand"><span class="brand-mark">PS</span><span>Operations Console</span></div>
+          <nav class="desktop-nav">
+            <div class="tab active">Fleet</div>
+            <div class="tab">Workers</div>
+            <div class="tab">Logs</div>
+            <div class="tab">Users</div>
+            <div class="tab">Quotas</div>
+          </nav>
+          <div class="icon-row">
+            <span class="status-pill green">prod-west healthy</span>
+            <button class="icon-btn danger" aria-label="Alerts"><svg class="icon" viewBox="0 0 24 24"><path d="M10 2h4l1 7 5 4-2 4-7-2-7 2-2-4 5-4Z"></path><path d="M12 17v4"></path></svg></button>
+          </div>
+        </div>
+        <div class="admin-grid">
+          <aside class="side-panel">
+            <div class="panel-title"><span>Clusters</span><button class="icon-btn" aria-label="Refresh"><svg class="icon" viewBox="0 0 24 24"><path d="M21 12a9 9 0 0 1-15 6.7L3 16"></path><path d="M3 12a9 9 0 0 1 15-6.7L21 8"></path><path d="M3 21v-5h5"></path><path d="M21 3v5h-5"></path></svg></button></div>
+            <div class="desktop-session active"><span class="session-dot"></span><div><strong>prod-west</strong><span>12 workers - 48 sessions</span></div></div>
+            <div class="desktop-session"><span class="session-dot"></span><div><strong>prod-east</strong><span>8 workers - 31 sessions</span></div></div>
+            <div class="desktop-session"><span class="session-dot waiting"></span><div><strong>staging</strong><span>2 workers - maintenance</span></div></div>
+            <div class="card pad">
+              <div class="card-title">System sessions</div>
+              <p class="card-subtitle">Watchdog, crawler scheduler, cleanup janitor, usage summarizer.</p>
+            </div>
+          </aside>
+          <section class="ops-main">
+            <div class="ops-metrics">
+              <div class="health-card"><b>12/12</b><span>workers online</span></div>
+              <div class="health-card"><b>48</b><span>active sessions</span></div>
+              <div class="health-card"><b>231k</b><span>tokens last hour</span></div>
+              <div class="health-card"><b>0.8%</b><span>failed turns</span></div>
+            </div>
+            <div class="wide-grid">
+              <div class="card">
+                <div class="card-head"><div><div class="card-title">Usage by model</div><div class="card-subtitle">Last 24 hours</div></div></div>
+                <div class="bar-set">
+                  <div class="bar-row"><span>Sonnet</span><div class="bar-track"><div class="bar-fill" style="width:74%"></div></div><span>74%</span></div>
+                  <div class="bar-row"><span>GPT</span><div class="bar-track"><div class="bar-fill teal" style="width:46%"></div></div><span>46%</span></div>
+                  <div class="bar-row"><span>Mini</span><div class="bar-track"><div class="bar-fill amber" style="width:28%"></div></div><span>28%</span></div>
+                  <div class="bar-row"><span>Failed</span><div class="bar-track"><div class="bar-fill rose" style="width:8%"></div></div><span>0.8%</span></div>
+                </div>
+              </div>
+              <div class="card pad">
+                <div class="panel-title"><span>Live logs</span><button class="icon-btn" aria-label="Filter"><svg class="icon" viewBox="0 0 24 24"><path d="M4 6h16M7 12h10M10 18h4"></path></svg></button></div>
+                <div class="log-box">12:34:09 worker-7x92k turn complete session-a8f2
+12:34:12 worker-3m41n hydrate session-c910
+<span class="warn">12:34:20 provider retry after 429 user=ada</span>
+12:34:25 timer fired reporter-nightly
+<span class="error">12:34:40 artifact scan timeout session-f19b</span>
+12:34:43 worker-9p21a drain requested</div>
+              </div>
+            </div>
+            <table class="table">
+              <thead>
+                <tr><th>Worker</th><th>Status</th><th>Sessions</th><th>CPU</th><th>Action</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>worker-7x92k</td><td><span class="status-pill green">Healthy</span></td><td>9</td><td>46%</td><td>View logs</td></tr>
+                <tr><td>worker-3m41n</td><td><span class="status-pill green">Healthy</span></td><td>3</td><td>32%</td><td>View logs</td></tr>
+                <tr><td>worker-9p21a</td><td><span class="status-pill amber">Draining</span></td><td>0</td><td>9%</td><td>Restart</td></tr>
+                <tr><td>worker-2q80d</td><td><span class="status-pill rose">Noisy</span></td><td>12</td><td>81%</td><td>Drain</td></tr>
+              </tbody>
+            </table>
+          </section>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <h2>Role Disclosure Model</h2>
+        <p class="section-note">The same platform objects appear across roles, but each persona gets a different default depth.</p>
+      </div>
+      <div class="matrix">
+        <div class="matrix-card">
+          <h3>User</h3>
+          <ul>
+            <li>Agent catalog and session chat</li>
+            <li>Summaries, files, and quotas</li>
+            <li>Theme and GitHub Copilot key</li>
+            <li>Friendly activity, optional details</li>
+          </ul>
+        </div>
+        <div class="matrix-card">
+          <h3>Power User</h3>
+          <ul>
+            <li>Agent Studio with test chat</li>
+            <li>Tool, skill, MCP, and access policy</li>
+            <li>Crawlers, fact graphs, retrieval tests</li>
+            <li>Advanced session diagnostics</li>
+          </ul>
+        </div>
+        <div class="matrix-card">
+          <h3>Administrator</h3>
+          <ul>
+            <li>Fleet and worker health</li>
+            <li>Raw logs and failure analysis</li>
+            <li>User, quota, and model usage controls</li>
+            <li>Cluster actions with audit trail</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

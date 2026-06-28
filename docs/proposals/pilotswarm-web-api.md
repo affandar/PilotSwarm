@@ -1,8 +1,10 @@
 # PilotSwarm Web API Control Plane
 
-> **Status:** Proposal  
-> **Date:** 2026-06-11  
+> **Status:** Proposal (active)  
+> **Date:** 2026-06-11 · **Refreshed:** 2026-06-27 (re-validated against v0.3.0)  
 > **Goal:** Give PilotSwarm a versioned Web API hosted by the portal server, keep direct SDK access as the backward-compatible default, and move the TUI and the browser portal onto that API so neither needs direct PostgreSQL or Azure access. The API supports the portal's existing `none` and `entra` auth modes, and the TUI gets a first-class sign-in design for both.
+
+> **Refresh note (2026-06-27):** Nothing in this proposal has been implemented yet — `packages/api-client/` does not exist, the portal still serves only `/api/rpc` + `/portal-ws` (no `/api/v1`), and the SDK clients have no `provider: "direct" | "web"` mode. The "Current Architecture" section below still holds verbatim. The only drift since the original draft is the RPC dispatch list growing by two observability methods (`getFleetRetrievalUsage`, `getFactsTombstoneStats`), now folded into the Management Surface for parity. The v0.3.0 crawler/harvester work (crawler role, bundled default-agent tier, KB advertisement) is orthogonal — it adds agents and facts surfaces but does not change the transport seam this proposal rides.
 
 ---
 
@@ -217,7 +219,7 @@ Versioned under `/api/v1`, mounted beside the existing portal routes. The prefix
 
 The existing `/api/rpc` + `/portal-ws` surface remains as a compatibility shim until the browser portal migrates, then is retired.
 
-The route surface below is complete against the current RPC dispatch list (`packages/portal/runtime.js`) plus the SDK client/management surface — i.e., everything `ui-core` needs. The dispatch list is the ground truth for what the UIs require; full parity is what lets the TUI and portal switch transports with zero feature loss. That includes recently added product surfaces that are easy to overlook: session groups, paginated session listing, child outcomes, system-session restart, execution-history export, and top-event-emitter queries. (The deferred system-tooling methods noted under Management are SDK-only and not on the dispatch list.)
+The route surface below is complete against the current RPC dispatch list (`packages/portal/runtime.js`) plus the SDK client/management surface — i.e., everything `ui-core` needs. The dispatch list is the ground truth for what the UIs require; full parity is what lets the TUI and portal switch transports with zero feature loss. That includes recently added product surfaces that are easy to overlook: session groups, paginated session listing, child outcomes, system-session restart, execution-history export, top-event-emitter queries, and the v0.3.0 retrieval/facts observability stats (`getFleetRetrievalUsage`, `getFactsTombstoneStats`). (The deferred system-tooling methods noted under Management are SDK-only and not on the dispatch list.)
 
 ### Bootstrap, Auth, System
 
@@ -299,8 +301,10 @@ POST   /api/v1/management/session-groups/move                     { groupId | nu
 
 GET    /api/v1/management/fleet/stats?since=…&includeDeleted=…
 GET    /api/v1/management/fleet/skill-usage?since=…
+GET    /api/v1/management/fleet/retrieval-usage?since=…&includeDeleted=…
 GET    /api/v1/management/users/stats?since=…
 GET    /api/v1/management/facts/shared-stats
+GET    /api/v1/management/facts/tombstone-stats?ttlSeconds=…
 GET    /api/v1/management/events/top-emitters?since=…&limit=…
 POST   /api/v1/management/summaries/prune-deleted                 { olderThan }
 
