@@ -166,9 +166,45 @@ an expandable turn-finish divider from event data (no extra fetch); TUI keeps th
 
 ## Test Plan
 
-- **Switch core**: updates `sessions.model`/effort; invalid model/effort rejected; switch during a turn only affects next turn; warm session rebuilt next turn; system session switches via `restartSystemSession`; pre/post-switch turns split into model buckets.
-- **Writeback**: one SP updates state, increments `session_metrics`, inserts one turn row, records `turn_completed`.
-- **Aggregates**: one session, models A+B → two buckets, each with turn count; totals = A+B; later `sessions.model` change doesn't relabel turn rows.
-- **Backfill**: nonzero summary → one `legacy_summary` row; idempotent.
-- **Switch UX**: picker opens in switch mode, preselected; transport gets `setSessionModel`; busy shows pending; labels update; dividers keep per-turn model.
-- **Portal divider**: collapsed/expanded render; legacy events safe; TUI text line unchanged.
+Use default model except where a test is explicitly about switching/multi-model. No
+retries, no sleeps. Each block names where it lives.
+
+### 1. Migration + catalog (`test/local/cms-turn-metrics.integration.test.js`)
+
+- After `initialize()`: `session_metrics` exists, `session_metric_summaries` does not; the three new indexes exist; `session_turn_metrics.reasoning_effort` exists.
+- `insertTurnMetric` round-trips `reasoningEffort`; `getSessionTurnMetrics` returns it.
+- `getHourlyTokenBuckets` aggregates after the signature change.
+- Re-running migrations is a no-op (rename + backfill idempotent; no dup `legacy_summary` rows).
+
+### 2. Backfill (same file)
+
+- Seed a `session_metrics` row (nonzero tokens, model `A:high`, no turn rows) → migration inserts one `turn_index 0` `legacy_summary` row with matching tokens/model/effort and summary timestamps.
+- Zero-token summary → no row. Existing turn rows → not duplicated.
+
+### 3. Writeback SP (new `test/local/turn-writeback.test.js`)
+
+- `completeTurnWriteback` once: `sessions` state/`last_active_at`/`current_iteration`/`last_error`/`wait_reason` set; `session_metrics` tokens incremented; exactly one `session_turn_metrics` row with model+effort; one `session.turn_completed` with the metric payload.
+- No per-`assistant.usage` summary write needed for totals; verify only one writeback per turn.
+- Error/lock-timeout turns store `result_type`/`error_message`.
+
+### 4. By-model aggregates (`session-stats.test.js`)
+
+- One session, turns on `A:high` then `B:medium` → two buckets, per-bucket tokens + turn count; session total = A+B.
+- Tree/fleet/user split correctly; one session in two buckets → `COUNT(DISTINCT session_id)` not inflated.
+- Change `sessions.model` after turns → historical buckets unchanged. `since` filters on `started_at`.
+
+### 5. Switch core (`model-selection.test.js`)
+
+- `setModel` updates `sessions.model`/effort; emits `session.model_changed`; continues-as-new.
+- Switch mid-turn applies only to the next turn (verify via turn-metric model). Idle/waiting → next turn uses new model.
+- Invalid model and unsupported effort rejected; config unchanged. Warm `CopilotSession` rebuilt next turn.
+- LLM `set_session_model` tool: stub/handler schema in sync; rejects non-exact ids.
+
+### 6. System session (`system-agents.test.js`)
+
+- Switch on a system session routes through `restartSystemSession` with new model/effort; post-restart turns run on it; pre-restart turn metrics retain old model.
+
+### 7. UX (`packages/ui-core` selector + portal)
+
+- Switch action on non-group sessions incl. system; picker opens in switch mode, preselected; submit calls `setSessionModel`, not create.
+- Stats pane: rows by `provider/model/reasoning` with turn count; portal divider collapsed/expanded fields; legacy `iteration`-only event safe; TUI keeps `turn N done`.
