@@ -1,8 +1,17 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { fileURLToPath } from "node:url";
+
+const workspacePackageAlias = {
+  "pilotswarm-ui-core": fileURLToPath(new URL("../ui-core/src/index.js", import.meta.url)),
+  "pilotswarm-ui-react": fileURLToPath(new URL("../ui-react/src/index.js", import.meta.url)),
+};
 
 export default defineConfig({
   plugins: [react()],
+  resolve: {
+    alias: workspacePackageAlias,
+  },
   server: {
     port: 5173,
     proxy: {

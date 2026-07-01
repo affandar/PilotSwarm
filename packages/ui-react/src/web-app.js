@@ -45,6 +45,12 @@ import { useControllerSelector } from "./use-controller-state.js";
 const MOBILE_BREAKPOINT = 920;
 const GRID_CELL_WIDTH = 7;
 const GRID_CELL_HEIGHT = 19;
+const PORTAL_SESSION_COLUMN_RATIO = 0.24;
+const PORTAL_SESSION_CHAT_DIVIDER_PX = 16;
+const PORTAL_WORKSPACE_GAP_PX = 8;
+const PORTAL_MIN_CHAT_COLUMN_PX = 224;
+const PORTAL_SESSION_COMPACT_COLUMN_PX = 190;
+const PORTAL_SESSION_HIDDEN_COLUMN_PX = 48;
 const SCROLL_ROW_HEIGHT = 16;
 const SCROLL_BOTTOM_EPSILON_PX = 0.5;
 const PROGRAMMATIC_SCROLL_TOLERANCE_PX = SCROLL_BOTTOM_EPSILON_PX;
@@ -175,6 +181,7 @@ function profileSettingsFromViewState(state) {
         layoutAdjustments: {
             paneAdjust: state.paneAdjust,
             sessionPaneAdjust: state.sessionPaneAdjust,
+            portalSessionColumnAdjust: state.portalSessionColumnAdjust,
             activityPaneAdjust: state.activityPaneAdjust,
         },
         pinnedSessionIds: state.pinnedIds,
@@ -255,6 +262,41 @@ function shallowEqualObject(left, right) {
         if (!Object.is(left[key], right[key])) return false;
     }
     return true;
+}
+
+function clampNumber(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+}
+
+function portalSessionColumnBounds(width) {
+    const safeWidth = Math.max(0, Number(width) || 0);
+    const availableWidth = Math.max(
+        0,
+        safeWidth - PORTAL_SESSION_CHAT_DIVIDER_PX - (PORTAL_WORKSPACE_GAP_PX * 2),
+    );
+    const baseWidth = availableWidth * PORTAL_SESSION_COLUMN_RATIO;
+    const maxSessionWidth = Math.max(0, availableWidth - PORTAL_MIN_CHAT_COLUMN_PX);
+    return {
+        minAdjust: -baseWidth,
+        maxAdjust: maxSessionWidth - baseWidth,
+    };
+}
+
+function portalSessionColumnWidth(width, adjust) {
+    const bounds = portalSessionColumnBounds(width);
+    const safeWidth = Math.max(0, Number(width) || 0);
+    const availableWidth = Math.max(
+        0,
+        safeWidth - PORTAL_SESSION_CHAT_DIVIDER_PX - (PORTAL_WORKSPACE_GAP_PX * 2),
+    );
+    const baseWidth = availableWidth * PORTAL_SESSION_COLUMN_RATIO;
+    return clampNumber(baseWidth + (Number(adjust) || 0), 0, baseWidth + bounds.maxAdjust);
+}
+
+function portalSessionColumnMode(width) {
+    if (width <= PORTAL_SESSION_HIDDEN_COLUMN_PX) return "hidden";
+    if (width <= PORTAL_SESSION_COMPACT_COLUMN_PX) return "compact";
+    return "wrap";
 }
 
 function getStatePromptRows(state) {
@@ -1564,7 +1606,7 @@ function PortalSequenceLines({ lines, theme, completionByTurn }) {
     );
 }
 
-function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, lines, stickyLines = [], bottomStickyLines = [], scrollOffset = 0, scrollMode = "top", paneKey, controller, className = "", panelClassName = "", topContent = null, structuredBlocks = false, stickyBottom = false, renderBody = null }) {
+function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, lines, stickyLines = [], bottomStickyLines = [], scrollOffset = 0, scrollMode = "top", paneKey, controller, className = "", panelClassName = "", topContent = null, bottomContent = null, structuredBlocks = false, stickyBottom = false, renderBody = null }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
     const ref = React.useRef(null);
@@ -1620,10 +1662,40 @@ function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, l
             },
                 normalizedBottomSticky.map((line, index) => React.createElement(Line, { key: `bottom-sticky:${index}`, line, theme })),
             )
+            : null,
+        bottomContent);
+}
+
+function SessionRowContent({ row, theme, structured = false }) {
+    const hasStructuredRuns = structured && Array.isArray(row.titleRuns);
+    if (!hasStructuredRuns) {
+        return Array.isArray(row.runs)
+            ? React.createElement(Runs, { runs: row.runs, theme })
+            : row.text;
+    }
+
+    const hasMeta = Array.isArray(row.metaRuns) && row.metaRuns.length > 0;
+    const hasBadges = Array.isArray(row.badgeRuns) && row.badgeRuns.length > 0;
+    const hasSelectedMeta = row.active && Array.isArray(row.selectedMetaRuns) && row.selectedMetaRuns.length > 0;
+
+    return React.createElement(React.Fragment, null,
+        React.createElement("div", { className: "ps-session-row-title" },
+            React.createElement(Runs, { runs: row.titleRuns, theme })),
+        hasMeta
+            ? React.createElement("div", { className: "ps-session-row-meta" },
+                React.createElement(Runs, { runs: row.metaRuns, theme }))
+            : null,
+        hasBadges
+            ? React.createElement("div", { className: "ps-session-row-badges" },
+                React.createElement(Runs, { runs: row.badgeRuns, theme }))
+            : null,
+        hasSelectedMeta
+            ? React.createElement("div", { className: "ps-session-row-selected-meta" },
+                React.createElement(Runs, { runs: row.selectedMetaRuns, theme }))
             : null);
 }
 
-function SessionPane({ controller, actions = null, panelClassName = "" }) {
+function SessionPane({ controller, actions = null, panelClassName = "", structuredRows = false }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
     const sessionButtonRefs = React.useRef(new Map());
@@ -1850,14 +1922,12 @@ function SessionPane({ controller, actions = null, panelClassName = "" }) {
                 className: "ps-line ps-session-row-content",
                 style: { paddingInlineStart: `${Math.max(0, row.depth) * 18}px` },
             },
-                Array.isArray(row.runs)
-                    ? React.createElement(Runs, { runs: row.runs, theme })
-                    : row.text),
+                React.createElement(SessionRowContent, { row, theme, structured: structuredRows })),
             )),
     ));
 }
 
-function ChatPane({ controller, mobile = false, fullWidth = false }) {
+function ChatPane({ controller, mobile = false, fullWidth = false, showComposer = true }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
     const viewState = useControllerSelector(controller, (state) => {
@@ -1935,6 +2005,10 @@ function ChatPane({ controller, mobile = false, fullWidth = false }) {
         () => selectOutboxOverlayLines(selectorState, viewState.contentWidth, { tableMode: "sentinel" }),
         [selectorState, viewState.contentWidth],
     );
+    const composer = showComposer && !viewState.activeSessionIsGroup && viewState.chatViewMode !== "summary"
+        ? React.createElement("div", { className: "ps-chat-composer" },
+            React.createElement(PromptComposer, { controller, mobile, active: true }))
+        : null;
 
     return React.createElement(ScrollLinesPanel, {
         controller,
@@ -1952,6 +2026,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false }) {
         paneKey: "chat",
         className: "is-wrapped",
         panelClassName: "ps-chat-panel",
+        bottomContent: composer,
         structuredBlocks: true,
     });
 }
@@ -2438,7 +2513,7 @@ const CHAT_FOCUS_PANES = [
     { id: "activity", label: "Activity", side: "right" },
 ];
 
-function ChatFocusOverlay({ controller, pane, onClose }) {
+function ChatFocusOverlay({ controller, pane, onClose, mobile = false }) {
     if (!pane) return null;
 
     let content = null;
@@ -2446,6 +2521,7 @@ function ChatFocusOverlay({ controller, pane, onClose }) {
         content = React.createElement(SessionPane, {
             controller,
             panelClassName: "ps-chat-focus-pane",
+            structuredRows: mobile,
             actions: React.createElement("button", {
                 type: "button",
                 className: "ps-mini-button",
@@ -2517,6 +2593,7 @@ function ChatFocusWorkspace({ controller, openPane, onTogglePane, onExitFocus, m
                 controller,
                 pane: openPane,
                 onClose: () => onTogglePane(openPane),
+                mobile,
             })));
 }
 
@@ -2683,7 +2760,6 @@ function StatusStrip({ controller }) {
 }
 
 function Toolbar({ controller, mobile, chatFocusMode = false, onToggleChatFocus = null, chatFocusDisabled = false }) {
-    const status = useControllerSelector(controller, (state) => selectStatusBar(state), shallowEqualObject);
     const adminVisible = useControllerSelector(controller, (state) => Boolean(state.admin?.visible));
     const chatView = useControllerSelector(controller, (state) => ({
         mode: state.ui.chatViewMode || "transcript",
@@ -2764,18 +2840,12 @@ function Toolbar({ controller, mobile, chatFocusMode = false, onToggleChatFocus 
             React.createElement("div", { className: "ps-toolbar-row ps-toolbar-row-primary" },
                 firstRowButtons.map(renderButton)),
             React.createElement("div", { className: "ps-toolbar-row ps-toolbar-row-secondary" },
-                React.createElement("div", { className: "ps-toolbar-row-actions" }, secondRowButtons.map(renderButton)),
-                status.left
-                    ? React.createElement("div", { className: "ps-toolbar-status" }, status.left)
-                    : null),
+                React.createElement("div", { className: "ps-toolbar-row-actions" }, secondRowButtons.map(renderButton))),
         );
     }
 
     return React.createElement("div", { className: "ps-toolbar" },
         React.createElement("div", { className: "ps-toolbar-actions" }, buttonDefs.map(renderButton)),
-        status.left
-            ? React.createElement("div", { className: "ps-toolbar-status" }, status.left)
-            : null,
     );
 }
 
@@ -2921,6 +2991,98 @@ function RowResizeHandle({ controller, sessionPaneAdjust = 0 }) {
         React.createElement("span", { className: "ps-row-resizer-dot" }),
         React.createElement("span", { className: "ps-row-resizer-dot" }),
         React.createElement("span", { className: "ps-row-resizer-dot" })));
+}
+
+function SessionColumnResizeHandle({ controller, portalSessionColumnAdjust = 0 }) {
+    const dragStateRef = React.useRef(null);
+    const [dragging, setDragging] = React.useState(false);
+
+    React.useEffect(() => {
+        if (!dragging) return undefined;
+
+        const stopDragging = () => {
+            dragStateRef.current = null;
+            setDragging(false);
+            document.body.classList.remove("is-resizing-pane-x");
+        };
+
+        const onPointerMove = (event) => {
+            const dragState = dragStateRef.current;
+            if (!dragState) return;
+            const nextAdjust = clampNumber(
+                dragState.startAdjust + (event.clientX - dragState.startX),
+                dragState.minAdjust,
+                dragState.maxAdjust,
+            );
+            controller.dispatch({
+                type: "ui/portalSessionColumnAdjust",
+                portalSessionColumnAdjust: nextAdjust,
+            });
+        };
+
+        window.addEventListener("pointermove", onPointerMove);
+        window.addEventListener("pointerup", stopDragging);
+        window.addEventListener("pointercancel", stopDragging);
+
+        return () => {
+            window.removeEventListener("pointermove", onPointerMove);
+            window.removeEventListener("pointerup", stopDragging);
+            window.removeEventListener("pointercancel", stopDragging);
+            document.body.classList.remove("is-resizing-pane-x");
+        };
+    }, [controller, dragging]);
+
+    return React.createElement("button", {
+        type: "button",
+        className: `ps-column-resizer${dragging ? " is-dragging" : ""}`,
+        title: "Drag to resize the sessions and chat columns. Double-click to reset.",
+        "aria-label": "Resize sessions and chat columns",
+        onPointerDown: (event) => {
+            if (event.button !== 0) return;
+            event.preventDefault();
+            const gridNode = event.currentTarget.closest(".ps-workspace-main-grid");
+            const bounds = portalSessionColumnBounds(gridNode?.getBoundingClientRect?.().width);
+            dragStateRef.current = {
+                startX: event.clientX,
+                startAdjust: Number(portalSessionColumnAdjust) || 0,
+                minAdjust: bounds.minAdjust,
+                maxAdjust: bounds.maxAdjust,
+            };
+            setDragging(true);
+            document.body.classList.add("is-resizing-pane-x");
+        },
+        onDoubleClick: () => {
+            controller.dispatch({ type: "ui/portalSessionColumnAdjust", portalSessionColumnAdjust: 0 });
+        },
+        onKeyDown: (event) => {
+            const gridNode = event.currentTarget.closest(".ps-workspace-main-grid");
+            const bounds = portalSessionColumnBounds(gridNode?.getBoundingClientRect?.().width);
+            const adjustBy = (delta) => {
+                const nextAdjust = clampNumber(
+                    (Number(portalSessionColumnAdjust) || 0) + delta,
+                    bounds.minAdjust,
+                    bounds.maxAdjust,
+                );
+                controller.dispatch({
+                    type: "ui/portalSessionColumnAdjust",
+                    portalSessionColumnAdjust: nextAdjust,
+                });
+            };
+            if (event.key === "ArrowLeft") {
+                event.preventDefault();
+                adjustBy(-24);
+                return;
+            }
+            if (event.key === "ArrowRight") {
+                event.preventDefault();
+                adjustBy(24);
+            }
+        },
+    },
+    React.createElement("span", { className: "ps-column-resizer-handle", "aria-hidden": "true" },
+        React.createElement("span", { className: "ps-column-resizer-dot" }),
+        React.createElement("span", { className: "ps-column-resizer-dot" }),
+        React.createElement("span", { className: "ps-column-resizer-dot" })));
 }
 
 function ActivityRowResizeHandle({ controller, activityPaneAdjust = 0 }) {
@@ -3152,7 +3314,7 @@ function ModalLayer({ controller }) {
                 }))));
 
         return React.createElement("div", { className: "ps-modal-backdrop", onClick: close },
-        React.createElement("div", { className: "ps-modal", onClick: (event) => event.stopPropagation() },
+        React.createElement("div", { className: `ps-modal${modal.type === "themePicker" ? " is-theme-picker" : ""}`, onClick: (event) => event.stopPropagation() },
             React.createElement("div", { className: "ps-modal-header" },
                 React.createElement("div", { className: "ps-modal-title" }, presentation.title),
                 React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close }, "Close"),
@@ -3863,7 +4025,9 @@ export function createWebPilotSwarmController({ transport, mode = "remote", bran
 
 export function PilotSwarmWebApp({ controller }) {
     const viewportRef = React.useRef(null);
+    const mainGridRef = React.useRef(null);
     const viewport = useMeasuredViewport(viewportRef);
+    const mainGridViewport = useMeasuredViewport(mainGridRef);
     const gridViewport = computeGridViewport(viewport);
     const [chatFocusMode, setChatFocusMode] = React.useState(false);
     const [chatFocusPane, setChatFocusPane] = React.useState(null);
@@ -3881,6 +4045,7 @@ export function PilotSwarmWebApp({ controller }) {
         activeSessionIsGroup: Boolean(rootState.sessions.activeSessionId && rootState.sessions.byId[rootState.sessions.activeSessionId]?.isGroup),
         paneAdjust: rootState.ui.layout?.paneAdjust ?? 0,
         sessionPaneAdjust: rootState.ui.layout?.sessionPaneAdjust ?? 0,
+        portalSessionColumnAdjust: rootState.ui.layout?.portalSessionColumnAdjust ?? 0,
         activityPaneAdjust: rootState.ui.layout?.activityPaneAdjust ?? 0,
         focusRegion: rootState.ui.focusRegion,
         inspectorTab: rootState.ui.inspectorTab,
@@ -4006,7 +4171,7 @@ export function PilotSwarmWebApp({ controller }) {
                 });
         }, 400);
         return undefined;
-    }, [controller, state.activeSessionId, state.activityPaneAdjust, state.chatViewMode, state.collapsedSessionIds, state.ownerFilter, state.paneAdjust, state.pinnedIds, state.sessionPaneAdjust, state.themeId]);
+    }, [controller, state.activeSessionId, state.activityPaneAdjust, state.chatViewMode, state.collapsedSessionIds, state.ownerFilter, state.paneAdjust, state.pinnedIds, state.portalSessionColumnAdjust, state.sessionPaneAdjust, state.themeId]);
 
     React.useEffect(() => {
         applyDocumentTheme(state.themeId);
@@ -4061,6 +4226,14 @@ export function PilotSwarmWebApp({ controller }) {
         });
     }, [controller]);
 
+    const estimatedMainGridWidth = Math.max(0, (viewport.width || 0) * 0.68);
+    const measuredMainGridWidth = mainGridViewport.width || estimatedMainGridWidth;
+    const sessionColumnWidth = portalSessionColumnWidth(measuredMainGridWidth, state.portalSessionColumnAdjust);
+    const sessionColumnMode = portalSessionColumnMode(sessionColumnWidth);
+    const sessionColumnTrack = sessionColumnMode === "hidden"
+        ? "0px"
+        : `clamp(0px, calc(${PORTAL_SESSION_COLUMN_RATIO * 100}% + ${Number(state.portalSessionColumnAdjust) || 0}px), max(0px, calc(100% - 14rem - 32px)))`;
+
     const desktopWorkspace = React.createElement("div", {
         className: "ps-workspace-grid",
         style: {
@@ -4068,28 +4241,30 @@ export function PilotSwarmWebApp({ controller }) {
         },
     },
     React.createElement("div", {
-        className: "ps-workspace-column",
-        style: { gridTemplateRows: `${layout.sessionPaneHeight}fr 16px ${layout.chatPaneHeight}fr` },
-    },
-    React.createElement("div", {
-        className: "ps-workspace-pane-slot",
-        style: { gridRow: "1" },
-    },
-        !layout.sessionHidden ? React.createElement(SessionPane, { controller }) : null),
-    React.createElement("div", {
+        ref: mainGridRef,
+        className: `ps-workspace-main-grid is-session-${sessionColumnMode}`,
         style: {
-            gridRow: "2",
-            minHeight: 0,
-            display: "flex",
-            flexDirection: "column",
+            gridTemplateColumns: `${sessionColumnTrack} 16px minmax(14rem, 1fr)`,
         },
     },
-        React.createElement(RowResizeHandle, { controller, sessionPaneAdjust: state.sessionPaneAdjust })),
+    sessionColumnMode !== "hidden" ? React.createElement("div", {
+        className: "ps-workspace-pane-slot",
+        style: { gridColumn: "1" },
+    },
+        React.createElement(SessionPane, { controller, structuredRows: true })) : null,
+    React.createElement("div", {
+        style: {
+            gridColumn: "2",
+            minWidth: 0,
+            display: "flex",
+        },
+    },
+        React.createElement(SessionColumnResizeHandle, { controller, portalSessionColumnAdjust: state.portalSessionColumnAdjust })),
     React.createElement("div", {
         className: "ps-workspace-pane-slot",
-        style: { gridRow: "3" },
+        style: { gridColumn: "3" },
     },
-        !layout.chatHidden ? React.createElement(ChatPane, { controller }) : null)),
+        React.createElement(ChatPane, { controller }))),
     React.createElement(ColumnResizeHandle, { controller, paneAdjust: state.paneAdjust }),
     React.createElement("div", {
         className: "ps-workspace-column",
@@ -4161,15 +4336,6 @@ export function PilotSwarmWebApp({ controller }) {
                     : (chatFocusMode
                         ? chatFocusWorkspace
                         : (mobile ? mobileContent : desktopWorkspace)))),
-        // Hide the prompt composer on mobile when on the inspector or
-        // activity pane. Those panes are read-only inspection surfaces;
-        // the prompt is only useful in the Main pane. Hiding it gives
-        // the inspector roughly 5 more lines of vertical real estate on
-        // a phone.
-        (readOnlyChatPane || (mobile && !chatFocusMode && (mobilePane === "inspector" || mobilePane === "activity")))
-            ? null
-            : React.createElement("div", { className: "ps-footer-shell" },
-                React.createElement(PromptComposer, { controller, mobile, active: true })),
         mobile && !chatFocusMode ? React.createElement(MobileNav, { activePane: mobilePane, setActivePane: setMobilePane, controller }) : null,
         React.createElement(ModalLayer, { controller }));
 }

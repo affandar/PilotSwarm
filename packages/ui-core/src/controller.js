@@ -4069,6 +4069,9 @@ export class PilotSwarmUiController {
         const modal = this.getState().ui.modal;
         if (!modal) return;
         this.dispatch({ type: "ui/modal", modal: null });
+        if (modal.type === "themePicker" && modal.currentThemeId) {
+            this.dispatch({ type: "ui/theme", themeId: modal.currentThemeId });
+        }
         if (modal.previousFocus) {
             this.setFocus(modal.previousFocus);
         }
@@ -4183,7 +4186,6 @@ export class PilotSwarmUiController {
             }
             const previousFocus = modal.previousFocus;
             this.dispatch({ type: "ui/modal", modal: null });
-            this.dispatch({ type: "ui/theme", themeId: nextTheme.id });
             if (previousFocus) {
                 this.setFocus(previousFocus);
             }

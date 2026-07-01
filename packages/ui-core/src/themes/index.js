@@ -13,6 +13,12 @@ import noctisTheme from "./noctis.js";
 import noctisObscuroTheme from "./noctis-obscuro.js";
 import noctisViolaTheme from "./noctis-viola.js";
 import darkHighContrastTheme from "./dark-high-contrast.js";
+import terminalGreenTheme from "./terminal-green.js";
+import paperTrailTheme from "./paper-trail.js";
+import solarizedOpsTheme from "./solarized-ops.js";
+import highContrastMonoTheme from "./high-contrast-mono.js";
+import workbenchLightTheme from "./workbench-light.js";
+import nightShiftTheme from "./night-shift.js";
 
 const THEMES = Object.freeze([
     draculaTheme,
@@ -30,6 +36,12 @@ const THEMES = Object.freeze([
     noctisObscuroTheme,
     noctisViolaTheme,
     darkHighContrastTheme,
+    terminalGreenTheme,
+    paperTrailTheme,
+    solarizedOpsTheme,
+    highContrastMonoTheme,
+    workbenchLightTheme,
+    nightShiftTheme,
 ].sort((left, right) => left.label.localeCompare(right.label, undefined, { sensitivity: "base" })));
 
 const THEME_MAP = new Map(THEMES.map((theme) => [theme.id, theme]));

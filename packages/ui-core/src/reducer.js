@@ -637,6 +637,18 @@ export function appReducer(state, action) {
                 },
             };
 
+        case "ui/portalSessionColumnAdjust":
+            return {
+                ...state,
+                ui: {
+                    ...state.ui,
+                    layout: {
+                        ...(state.ui.layout || {}),
+                        portalSessionColumnAdjust: Number(action.portalSessionColumnAdjust) || 0,
+                    },
+                },
+            };
+
         case "ui/activityPaneAdjust":
             return {
                 ...state,
@@ -693,10 +705,12 @@ export function appReducer(state, action) {
                 return state;
             }
             const nextIndex = Math.max(0, Math.min(action.index ?? 0, modal.items.length - 1));
+            const previewThemeId = modal.type === "themePicker" ? modal.items[nextIndex]?.id : null;
             return {
                 ...state,
                 ui: {
                     ...state.ui,
+                    ...(previewThemeId ? { themeId: previewThemeId } : {}),
                     modal: {
                         ...modal,
                         selectedIndex: nextIndex,

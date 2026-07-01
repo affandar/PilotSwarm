@@ -479,15 +479,43 @@ function canPinSessionRow(session) {
     );
 }
 
-function buildSessionRowRuns(entry, session, state, totalDescendantCounts, visibleDescendantCounts) {
+function buildSelectedSessionMetaRuns(session, mode) {
     const runs = [];
+    const statusLabel = getSessionSummaryStatusLabel(session);
+    if (statusLabel) {
+        runs.push({ text: statusLabel, color: sessionStatusColor(session, mode) });
+    }
+
+    const modelLabel = shortModelReasoningLabel(session?.model, session?.reasoningEffort);
+    if (modelLabel) {
+        if (runs.length > 0) runs.push({ text: " · ", color: "gray" });
+        runs.push({ text: modelLabel, color: "cyan" });
+    }
+
+    const contextBadge = getContextHeaderBadge(session?.contextUsage);
+    if (contextBadge) {
+        if (runs.length > 0) runs.push({ text: " · ", color: "gray" });
+        runs.push({ text: contextBadge.text, color: contextBadge.color });
+    }
+
+    const compactionBadge = getContextCompactionBadge(session?.contextUsage);
+    if (compactionBadge) {
+        if (runs.length > 0) runs.push({ text: " · ", color: "gray" });
+        runs.push({ text: compactionBadge.text, color: compactionBadge.color });
+    }
+
+    return runs;
+}
+
+function buildSessionRowView(entry, session, state, totalDescendantCounts, visibleDescendantCounts) {
+    const prefixRuns = [];
     const mode = state.connection?.mode || "local";
     const depthPrefix = entry.depth > 0
         ? `${"  ".repeat(Math.max(0, entry.depth - 1))}└ `
         : "";
 
     if (depthPrefix) {
-        runs.push({ text: depthPrefix, color: "gray" });
+        prefixRuns.push({ text: depthPrefix, color: "gray" });
     }
 
     const pinnedSet = new Set(Array.isArray(state.sessions?.pinnedIds) ? state.sessions.pinnedIds : []);
@@ -497,7 +525,7 @@ function buildSessionRowRuns(entry, session, state, totalDescendantCounts, visib
     const isPinned = pinnedSet.has(entry.sessionId);
 
     if (selectMode) {
-        runs.push({
+        prefixRuns.push({
             text: isSelected ? "[x] " : "[ ] ",
             color: isSelected ? "cyan" : "gray",
             bold: isSelected,
@@ -510,21 +538,21 @@ function buildSessionRowRuns(entry, session, state, totalDescendantCounts, visib
     // system rows skip the column.
     if (entry.depth === 0 && canPinSessionRow(session)) {
         if (isPinned && !session?.isSystem) {
-            runs.push({ text: "📌 ", color: "yellow" });
+            prefixRuns.push({ text: "📌 ", color: "yellow" });
         } else {
             // 📌 plus a trailing space measures ~3 cells in a typical
             // monospace terminal/portal; keep the spacer the same width.
-            runs.push({ text: "   ", color: "gray" });
+            prefixRuns.push({ text: "   ", color: "gray" });
         }
     }
 
     if (session?.isGroup) {
-        runs.push({ text: "🗂  ", color: "cyan", bold: true });
+        prefixRuns.push({ text: "🗂  ", color: "cyan", bold: true });
     } else if (session?.isSystem) {
-        runs.push({ text: "⚙ ", color: "yellow", bold: true });
+        prefixRuns.push({ text: "⚙ ", color: "yellow", bold: true });
     } else {
         const icon = sessionStatusIcon(session, mode);
-        runs.push({
+        prefixRuns.push({
             text: icon ? `${icon} ` : "  ",
             color: sessionStatusColor(session, mode),
         });
@@ -548,33 +576,53 @@ function buildSessionRowRuns(entry, session, state, totalDescendantCounts, visib
         || session?.createdAt
         || 0;
     const formattedRowTimestamp = rowTimestampMs ? formatDisplayDateTime(rowTimestampMs) : "";
-    let suffixText = "";
-    if (session?.isGroup) {
-        if (session?.memberCount != null) {
-            suffixText += ` ${session.memberCount} member${session.memberCount === 1 ? "" : "s"}`;
-        }
-        if (formattedRowTimestamp) {
-            suffixText += ` · ${formattedRowTimestamp}`;
-        }
-    } else if (formattedRowTimestamp) {
-        suffixText = ` ${formattedRowTimestamp}`;
-    }
-    runs.push({
-        text: `${titleText}${suffixText}`,
+    const titleRuns = [
+        ...prefixRuns,
+        {
+        text: titleText,
         color: mainColor,
         bold: Boolean(session?.isSystem),
-    });
+        },
+    ];
+    const collapseBadge = getCollapseBadge(session?.sessionId, entry, totalDescendantCounts, visibleDescendantCounts);
+    if (collapseBadge) {
+        titleRuns.push({ text: ` ${collapseBadge.text}`, color: collapseBadge.color, bold: collapseBadge.bold });
+    }
+
+    const metaRuns = [];
+    if (session?.isGroup && session?.memberCount != null) {
+        metaRuns.push({ text: `${session.memberCount} member${session.memberCount === 1 ? "" : "s"}`, color: "gray" });
+    }
+    if (formattedRowTimestamp) {
+        if (metaRuns.length > 0) metaRuns.push({ text: " · ", color: "gray" });
+        metaRuns.push({ text: formattedRowTimestamp, color: "gray" });
+    }
+
+    const badgeRuns = [];
 
     for (const badge of [
         getCronBadge(session),
         getContextListBadge(session?.contextUsage),
-        getCollapseBadge(session?.sessionId, entry, totalDescendantCounts, visibleDescendantCounts),
     ]) {
         if (!badge) continue;
-        runs.push({ text: ` ${badge.text}`, color: badge.color, bold: badge.bold });
+        if (badgeRuns.length > 0) badgeRuns.push({ text: " ", color: "gray" });
+        badgeRuns.push({ text: badge.text, color: badge.color, bold: badge.bold });
     }
 
-    return runs;
+    const selectedMetaRuns = buildSelectedSessionMetaRuns(session, mode);
+    const runs = [
+        ...titleRuns,
+        ...(metaRuns.length > 0 ? [{ text: " ", color: "gray" }, ...metaRuns] : []),
+        ...(badgeRuns.length > 0 ? [{ text: " ", color: "gray" }, ...badgeRuns] : []),
+    ];
+
+    return {
+        runs,
+        titleRuns,
+        metaRuns,
+        badgeRuns,
+        selectedMetaRuns,
+    };
 }
 
 function normalizeSearchQuery(value) {
@@ -598,11 +646,11 @@ export function selectSessionRows(state) {
 
     return state.sessions.flat.map((entry) => {
         const session = state.sessions.byId[entry.sessionId];
-        const runs = buildSessionRowRuns(entry, session, state, totalDescendantCounts, visibleDescendantCounts);
+        const rowView = buildSessionRowView(entry, session, state, totalDescendantCounts, visibleDescendantCounts);
         return {
             sessionId: entry.sessionId,
-            text: flattenRunsText(runs),
-            runs,
+            text: flattenRunsText(rowView.runs),
+            ...rowView,
             depth: entry.depth,
             status: session?.status,
             statusColor: sessionStatusColor(session, state.connection?.mode || "local"),
@@ -1930,26 +1978,6 @@ export function selectChatPaneChrome(state, options = {}) {
     const progress = state.ui?.chatViewMode === "summary"
         ? null
         : buildLiveProgressState(session, history, history?.chat || [], outboxItems);
-
-    const modelName = shortModelReasoningLabel(session.model, session.reasoningEffort);
-    if (modelName) {
-        title.push({ text: ` ${modelName}`, color: "cyan" });
-    }
-
-    const contextBadge = getContextHeaderBadge(session.contextUsage);
-    if (contextBadge) {
-        title.push({ text: ` ${contextBadge.text}`, color: "gray" });
-    }
-
-    const compactionBadge = getContextCompactionBadge(session.contextUsage);
-    if (compactionBadge) {
-        title.push({ text: ` ${compactionBadge.text}`, color: "gray" });
-    }
-
-    const inspectorTab = state.ui?.inspectorTab;
-    if (!compactSecondaryMeta && (inspectorTab === "sequence" || inspectorTab === "nodes")) {
-        title.push({ text: " [last 5m window]", color: "gray" });
-    }
 
     return {
         color: session.isSystem ? "yellow" : "cyan",
@@ -5283,19 +5311,20 @@ export function selectThemePickerModal(state, maxWidth = 80) {
     const items = Array.isArray(modal.items) ? modal.items : [];
     const selectedIndex = Math.max(0, Number(modal.selectedIndex) || 0);
     const selectedItem = items[selectedIndex] || null;
-    const currentThemeId = modal.currentThemeId || state.ui.themeId || null;
-    const currentTheme = items.find((item) => item.id === currentThemeId) || null;
+    const originalThemeId = modal.currentThemeId || state.ui.themeId || null;
+    const originalTheme = items.find((item) => item.id === originalThemeId) || null;
+    const previewingTheme = selectedItem && selectedItem.id !== originalThemeId;
     const contentWidth = Math.max(24, maxWidth - 4);
     const rows = items.map((item, index) => {
-        const suffix = item.id === currentThemeId ? " [current]" : "";
+        const suffix = item.id === originalThemeId ? " [current]" : "";
         const text = `${item.label}${suffix}`.slice(0, contentWidth);
         if (index === selectedIndex) {
             return buildActiveHighlightLine(text.padEnd(contentWidth, " "));
         }
         return [{
             text,
-            color: item.id === currentThemeId ? "cyan" : "white",
-            bold: item.id === currentThemeId,
+            color: item.id === originalThemeId ? "cyan" : "white",
+            bold: item.id === originalThemeId,
         }];
     });
 
@@ -5304,10 +5333,10 @@ export function selectThemePickerModal(state, maxWidth = 80) {
             [{ text: `theme: ${selectedItem.description || "Shared theme for the portal and native TUI."}`, color: "white" }],
             { text: "", color: "gray" },
             [{
-                text: currentTheme?.id === selectedItem.id
-                    ? "Currently active in this TUI session."
-                    : `Current theme: ${currentTheme?.label || "Unknown"}`,
-                color: currentTheme?.id === selectedItem.id ? "green" : "gray",
+                text: previewingTheme
+                    ? `Previewing now. Cancel reverts to ${originalTheme?.label || "the previous theme"}.`
+                    : "Currently active in this TUI session.",
+                color: previewingTheme ? "yellow" : "green",
             }],
             buildThemeSwatchRuns([
                 { label: "bg", color: selectedItem.tui?.background || selectedItem.terminal?.background || "#000000" },
@@ -5321,7 +5350,7 @@ export function selectThemePickerModal(state, maxWidth = 80) {
                 { label: "yellow", color: selectedItem.tui?.yellow || selectedItem.terminal?.yellow || "#ffff55" },
             ]),
             { text: "", color: "gray" },
-            [{ text: "Press Enter to apply. The portal browser picker uses this same shared registry.", color: "gray" }],
+            [{ text: "Selecting previews immediately. Apply Theme keeps it; Cancel restores the previous theme.", color: "gray" }],
         ]
         : [{ text: "No themes available.", color: "gray" }];
 

@@ -1,5 +1,6 @@
 import React from "react";
 import { createWebPilotSwarmController, PilotSwarmWebApp } from "pilotswarm-ui-react";
+import { selectStatusBar } from "pilotswarm-ui-core";
 import { BrowserPortalTransport } from "./browser-transport.js";
 import { usePortalAuth } from "./auth-client.js";
 import { PILOTSWARM_PORTAL_VERSION_LABEL } from "./version.js";
@@ -177,6 +178,17 @@ function useVisualViewportHeight() {
     return height;
 }
 
+function usePortalControllerStatusText(controller) {
+    const [statusText, setStatusText] = React.useState(() => selectStatusBar(controller.getState()).left || "");
+
+    React.useEffect(() => controller.subscribe((nextState) => {
+        const nextStatusText = selectStatusBar(nextState).left || "";
+        setStatusText((current) => current === nextStatusText ? current : nextStatusText);
+    }), [controller]);
+
+    return statusText;
+}
+
 function DefaultPortalLogo({ className = "portal-logo" }) {
     return React.createElement("svg", {
         className,
@@ -268,7 +280,7 @@ function PortalForbidden({ branding, authUi, authConfig, error, onSignOut, shell
         ));
 }
 
-function PortalHeader({ account, authEnabled, branding, onSignOut, versionLabel = null }) {
+function PortalHeader({ account, authEnabled, branding, onSignOut, versionLabel = null, statusText = "" }) {
     const name = account?.name || account?.username || "Signed in";
     const email = account?.username || account?.idTokenClaims?.preferred_username || "";
     return React.createElement("header", { className: "portal-header" },
@@ -283,11 +295,15 @@ function PortalHeader({ account, authEnabled, branding, onSignOut, versionLabel 
                             ? React.createElement("span", { className: "portal-header-email" }, email)
                             : null)
                     : React.createElement("span", { className: "portal-header-identity is-muted" }, "Auth disabled"))),
-        (authEnabled || versionLabel)
+        (authEnabled || versionLabel || statusText)
             ? React.createElement("div", { className: "portal-header-user" },
-                versionLabel
-                    ? React.createElement("span", { className: "portal-header-version" }, versionLabel)
-                    : null,
+                React.createElement("div", { className: "portal-header-meta" },
+                    versionLabel
+                        ? React.createElement("span", { className: "portal-header-version" }, versionLabel)
+                        : null,
+                    statusText
+                        ? React.createElement("span", { className: "portal-header-status" }, statusText)
+                        : null),
                 authEnabled
                     ? React.createElement("button", {
                         type: "button",
@@ -313,6 +329,7 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
             splash: portal?.branding?.splash || "{bold}{cyan-fg}PilotSwarm{/cyan-fg}{/bold}",
         },
     }), [portal?.branding?.splash, portal?.branding?.title, transport]);
+    const statusText = usePortalControllerStatusText(controller);
 
     React.useEffect(() => {
         let active = true;
@@ -338,6 +355,7 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
             branding: portal?.branding,
             onSignOut: auth.signOut,
             versionLabel: PILOTSWARM_PORTAL_VERSION_LABEL,
+            statusText,
         }),
         React.createElement("main", { className: "portal-main" },
             React.createElement(PilotSwarmWebApp, { controller })),

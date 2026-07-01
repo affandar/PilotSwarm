@@ -70,10 +70,12 @@ export function normalizeStoredLayoutAdjustments(layoutAdjustments) {
         : {};
     const paneAdjust = Number(candidate.paneAdjust);
     const sessionPaneAdjust = Number(candidate.sessionPaneAdjust);
+    const portalSessionColumnAdjust = Number(candidate.portalSessionColumnAdjust);
     const activityPaneAdjust = Number(candidate.activityPaneAdjust);
     return {
         paneAdjust: Number.isFinite(paneAdjust) ? Math.trunc(paneAdjust) : 0,
         sessionPaneAdjust: Number.isFinite(sessionPaneAdjust) ? Math.trunc(sessionPaneAdjust) : 0,
+        portalSessionColumnAdjust: Number.isFinite(portalSessionColumnAdjust) ? Math.trunc(portalSessionColumnAdjust) : 0,
         activityPaneAdjust: Number.isFinite(activityPaneAdjust) ? Math.trunc(activityPaneAdjust) : 0,
     };
 }
