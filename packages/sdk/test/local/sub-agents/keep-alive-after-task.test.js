@@ -22,6 +22,7 @@
 import { describe, it, beforeAll } from "vitest";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { PilotSwarmManagementClient } from "../../../src/index.ts";
 import { preflightChecks, useSuiteEnv } from "../../helpers/local-env.js";
 import { withClient } from "../../helpers/local-workers.js";
 import { assertNotNull, assertGreaterOrEqual, assertEqual } from "../../helpers/assertions.js";
@@ -47,12 +48,11 @@ async function testChildStaysAliveAfterTask(env) {
 
             // Step 1: spawn a single echoer child via the parent's LLM.
             console.log("  Spawning echoer child via parent LLM...");
-            await session.sendAndWait(
+            await session.send(
                 "Use spawn_agent to spawn one sub-agent with agent_name='echoer' and the task " +
                 "exactly: 'TOKEN=ALPHA'. After the spawn_agent tool returns, reply with " +
                 "exactly the single word DONE and stop. Do NOT call complete_agent, " +
                 "cancel_agent, delete_agent, message_agent, wait_for_agents, or check_agents.",
-                TIMEOUT,
             );
 
             // Step 2: locate the child in CMS.
@@ -87,36 +87,41 @@ async function testChildStaysAliveAfterTask(env) {
                 );
             }
 
-            // Step 5: send a follow-up via message_agent and verify the child
-            // wakes up and emits a SECOND assistant.message.
-            console.log("  asking parent to send a follow-up via message_agent...");
-            await session.sendAndWait(
-                "Use message_agent to send the message exactly: 'TOKEN=BETA' to the sub-agent " +
-                `with agent_id='${child.sessionId}'. After message_agent returns, reply with the ` +
-                "single word OK and stop. Do NOT call any other tools.",
-                TIMEOUT,
-            );
+            // Step 5: send a follow-up directly to the child and verify it wakes
+            // up and emits a SECOND assistant.message. This keeps the assertion
+            // focused on child liveness instead of depending on the parent LLM
+            // to produce an incidental sentinel after a non-terminal tool call.
+            console.log("  sending follow-up directly to child via management...");
+            const mgmt = new PilotSwarmManagementClient({
+                store: env.store,
+                duroxideSchema: env.duroxideSchema,
+                cmsSchema: env.cmsSchema,
+                factsSchema: env.factsSchema,
+                modelProvidersPath: env.modelProvidersPath,
+            });
+            await mgmt.start();
+            try {
+                await mgmt.sendMessage(child.sessionId, "TOKEN=BETA");
 
-            await waitForEventCount(catalog, child.sessionId, "assistant.message", 2, 90_000);
+                await waitForEventCount(catalog, child.sessionId, "assistant.message", 2, 90_000);
 
-            const events = await getEvents(catalog, child.sessionId);
-            const replies = events
-                .filter((e) => e.eventType === "assistant.message")
-                .map((e) => e.data?.content ?? "");
-            console.log(`  child assistant replies: ${JSON.stringify(replies)}`);
-            assertGreaterOrEqual(
-                replies.length,
-                2,
-                "child must emit a second assistant message after the parent's follow-up",
-            );
+                const events = await getEvents(catalog, child.sessionId);
+                const replies = events
+                    .filter((e) => e.eventType === "assistant.message")
+                    .map((e) => e.data?.content ?? "");
+                console.log(`  child assistant replies: ${JSON.stringify(replies)}`);
+                assertGreaterOrEqual(
+                    replies.length,
+                    2,
+                    "child must emit a second assistant message after a follow-up message",
+                );
 
-            // Final cleanup: parent gracefully completes the child.
-            console.log("  asking parent to gracefully complete the child...");
-            await session.sendAndWait(
-                `Use complete_agent with agent_id='${child.sessionId}'. After it returns, reply ` +
-                "with the single word CLOSED and stop.",
-                TIMEOUT,
-            );
+                // Final cleanup: gracefully complete the child.
+                console.log("  completing child via management...");
+                await mgmt.completeSession(child.sessionId, "keep-alive regression test cleanup");
+            } finally {
+                await mgmt.stop().catch(() => {});
+            }
         });
     } finally {
         await catalog.close();

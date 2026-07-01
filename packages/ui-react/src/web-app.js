@@ -49,6 +49,7 @@ const SCROLL_ROW_HEIGHT = 16;
 const SCROLL_BOTTOM_EPSILON_PX = 0.5;
 const PROGRAMMATIC_SCROLL_TOLERANCE_PX = SCROLL_BOTTOM_EPSILON_PX;
 const PROFILE_SETTINGS_POLL_MS = 5000;
+const REASONING_EFFORT_LABELS = new Set(["low", "medium", "high", "xhigh"]);
 const LEGACY_BROWSER_PREFERENCE_STORAGE_KEYS = [
     "pilotswarm.theme",
     "pilotswarm.sessionOwnerFilter",
@@ -1468,7 +1469,102 @@ function Panel({ title, titleRight = null, color = "gray", focused = false, acti
     React.createElement("div", { className: "ps-panel-body" }, children));
 }
 
-function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, lines, stickyLines = [], bottomStickyLines = [], scrollOffset = 0, scrollMode = "top", paneKey, controller, className = "", panelClassName = "", topContent = null, structuredBlocks = false, stickyBottom = false }) {
+function PortalSequenceLines({ lines, theme, completionByTurn }) {
+    const [expanded, setExpanded] = React.useState(() => new Set());
+    const toggle = React.useCallback((key) => {
+        setExpanded((current) => {
+            const next = new Set(current);
+            if (next.has(key)) next.delete(key);
+            else next.add(key);
+            return next;
+        });
+    }, []);
+    const compactNumber = (value) => Number(value || 0).toLocaleString("en-US");
+    const formatTokenK = (value) => {
+        const tokens = Number(value || 0);
+        if (!Number.isFinite(tokens)) return "?K";
+        const scaled = tokens / 1000;
+        const decimals = Math.abs(scaled) >= 10 ? 1 : 2;
+        return `${scaled.toFixed(decimals)}K`;
+    };
+    const formatDurationSeconds = (value) => {
+        const ms = Number(value || 0);
+        if (!Number.isFinite(ms)) return "?s";
+        return `${(ms / 1000).toFixed(1)}s`;
+    };
+    const shortModelOnly = (value) => {
+        const model = String(value || "").trim();
+        if (!model) return "unknown";
+        const parts = model.split(":").filter(Boolean);
+        const last = parts[parts.length - 1] || "";
+        const modelIndex = parts.length > 1 && REASONING_EFFORT_LABELS.has(last.toLowerCase())
+            ? parts.length - 2
+            : parts.length - 1;
+        const maybeModel = parts[Math.max(0, modelIndex)] || parts[0];
+        return maybeModel || "unknown";
+    };
+
+    return React.createElement(React.Fragment, null,
+        lines.map((line, index) => {
+            const text = lineText(line);
+            const match = /turn\s+(\d+)\s+done/i.exec(text);
+            const completion = match ? completionByTurn.get(Number(match[1])) : null;
+            if (!completion) {
+                return React.createElement(Line, { key: `line:${index}`, line, theme });
+            }
+            const data = completion.data || {};
+            const key = String(completion.seq ?? `${data.turnIndex ?? match[1]}:${completion.createdAt ?? index}`);
+            const isExpanded = expanded.has(key);
+            const fullModelLabel = data.reasoningEffort ? `${data.model || "(unknown)"}:${data.reasoningEffort}` : (data.model || "(unknown)");
+            const modelLabel = shortModelOnly(data.model);
+            const duration = data.durationMs != null ? formatDurationSeconds(data.durationMs) : "duration n/a";
+            const durationDetail = data.durationMs != null ? `${compactNumber(data.durationMs)} ms` : "duration n/a";
+            const tokens = `${formatTokenK(data.tokensInput)} / ${formatTokenK(data.tokensOutput)}`;
+            const details = [
+                ["model", fullModelLabel],
+                ["started", data.startedAt ? new Date(data.startedAt).toLocaleString() : null],
+                ["ended", data.endedAt ? new Date(data.endedAt).toLocaleString() : null],
+                ["duration", durationDetail],
+                ["tokens", `${compactNumber(data.tokensInput)} in / ${compactNumber(data.tokensOutput)} out`],
+                ["cache", `${compactNumber(data.tokensCacheRead)} read / ${compactNumber(data.tokensCacheWrite)} write`],
+                ["tools", `${compactNumber(data.toolCalls)} calls / ${compactNumber(data.toolErrors)} errors`],
+                ["names", Array.isArray(data.toolNames) && data.toolNames.length ? data.toolNames.join(", ") : null],
+                ["worker", data.workerNodeId || null],
+                ["result", data.resultType || null],
+                ["error", data.errorMessage || null],
+            ].filter(([, value]) => value != null && value !== "");
+            return React.createElement(React.Fragment, { key: `seq:${index}` },
+                React.createElement(Line, { line, theme }),
+                React.createElement("button", {
+                    type: "button",
+                    className: "ps-sequence-turn-divider",
+                    onClick: () => toggle(key),
+                },
+                    React.createElement("span", { className: "ps-sequence-turn-caret" }, isExpanded ? "v" : ">"),
+                    React.createElement("span", { className: "ps-sequence-turn-rule" }, "--- "),
+                    React.createElement("span", { className: "ps-sequence-turn-key" }, "Mod: "),
+                    React.createElement("span", { className: "ps-sequence-turn-model" }, modelLabel),
+                    React.createElement("span", { className: "ps-sequence-turn-rule" }, " ("),
+                    React.createElement("span", { className: "ps-sequence-turn-key" }, "tok: "),
+                    React.createElement("span", { className: "ps-sequence-turn-tokens" }, tokens),
+                    React.createElement("span", { className: "ps-sequence-turn-rule" }, ", "),
+                    React.createElement("span", { className: "ps-sequence-turn-key" }, "dur: "),
+                    React.createElement("span", { className: "ps-sequence-turn-duration" }, duration),
+                    React.createElement("span", { className: "ps-sequence-turn-rule" }, ") ---"),
+                ),
+                isExpanded
+                    ? React.createElement("div", { className: "ps-sequence-turn-details" },
+                        details.map(([label, value]) => React.createElement("div", { key: label },
+                            React.createElement("span", { className: "ps-sequence-turn-detail-label" }, `${label}: `),
+                            React.createElement("span", null, String(value)),
+                        )))
+                    : null,
+            );
+        }),
+    );
+}
+
+function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, lines, stickyLines = [], bottomStickyLines = [], scrollOffset = 0, scrollMode = "top", paneKey, controller, className = "", panelClassName = "", topContent = null, structuredBlocks = false, stickyBottom = false, renderBody = null }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
     const ref = React.useRef(null);
@@ -1512,7 +1608,9 @@ function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, l
             )
             : null,
         React.createElement("div", { ref, className: `ps-scroll-panel ${className}`.trim(), onScroll: handleBodyScroll, onWheel },
-            structuredBlocks
+            typeof renderBody === "function"
+                ? renderBody(normalizedLines, theme)
+                : structuredBlocks
                 ? React.createElement(StructuredChatBlocks, { lines: normalizedLines, theme })
                 : normalizedLines.map((line, index) => React.createElement(Line, { key: `line:${index}`, line, theme })),
         ),
@@ -2200,6 +2298,21 @@ function InspectorPane({ controller, mobile = false, panelClassName = "", extraA
         width: viewState.contentWidth,
         allowWideColumns: mobile,
     }), [mobile, selectorState, viewState.contentWidth]);
+    const completionByTurn = React.useMemo(() => {
+        const history = viewState.activeSessionId
+            ? viewState.historyBySessionId?.get(viewState.activeSessionId) || null
+            : null;
+        const map = new Map();
+        for (const event of history?.events || []) {
+            if (event?.eventType !== "session.turn_completed") continue;
+            const turn = Number(event?.data?.turnIndex ?? event?.data?.iteration);
+            if (Number.isFinite(turn)) map.set(turn, event);
+        }
+        return map;
+    }, [viewState.activeSessionId, viewState.historyBySessionId]);
+    const renderSequenceBody = React.useCallback((lines, theme) => (
+        React.createElement(PortalSequenceLines, { lines, theme, completionByTurn })
+    ), [completionByTurn]);
 
     if (viewState.inspectorTab === "files" && !inspector.disabled) {
         return React.createElement(FilesPane, { controller, focused: viewState.focused, mobile });
@@ -2256,6 +2369,7 @@ function InspectorPane({ controller, mobile = false, panelClassName = "", extraA
         topContent: React.createElement(InspectorTabs, { activeTab: inspector.activeTab, controller }),
         stickyLines: inspector.stickyLines || [],
         lines: inspector.lines,
+        renderBody: inspector.activeTab === "sequence" ? renderSequenceBody : null,
         scrollOffset: viewState.scroll,
         scrollMode: inspector.activeTab === "sequence"
             ? "bottom"
@@ -2568,121 +2682,15 @@ function StatusStrip({ controller }) {
     );
 }
 
-function buildPortalKeybindingSections({ canUpload, canOpenLocally }) {
-    return [
-        {
-            title: "Global",
-            items: [
-                ["n", "New session"],
-                ["Shift+N", "New session with model"],
-                ["T", "Theme picker"],
-                ["Tab / Shift+Tab", "Cycle focus"],
-                ["[ / ]", "Resize side panes"],
-                ["{ / }", "Resize session list vertically"],
-                ["?", "Toggle this legend"],
-            ],
-        },
-        {
-            title: "Navigation",
-            items: [
-                ["j / k", "Move or scroll the focused pane"],
-                ["Ctrl+U / Ctrl+D", "Page up/down"],
-                ["Ctrl+G", "Move selected session(s) to a group"],
-                ["g / G", "Jump top/bottom"],
-                ["s", "Toggle chat summary"],
-                ["m", "Cycle inspector tabs"],
-                ["p", "Focus prompt"],
-                ["Esc", "Focus sessions"],
-            ],
-        },
-        {
-            title: "Prompt",
-            items: [
-                ["Enter", "Send prompt or queue behind pending outbox"],
-                ["Up / Down", "Recall or exit queued pending prompts at prompt boundaries"],
-                ["Esc", "Exit selected queued prompt"],
-                ["d", "Delete selected queued prompt in the TUI"],
-                ["Tab", "Accept @ / @@ autocomplete"],
-                ["@", "Browse this session's artifacts and attach the selection"],
-                ["@@", "Filter sessions and insert a durable session reference"],
-            ],
-        },
-        {
-            title: "Files",
-            items: [
-                [canUpload ? "u / Ctrl+A" : "u", "Upload artifact to the active session"],
-                ["a", "Download selected artifact"],
-                ["x", "Delete selected artifact"],
-                ...(canOpenLocally ? [["o", "Open downloaded file locally"]] : []),
-                ["f", "Filter the artifact browser"],
-                ["v", "Toggle fullscreen preview"],
-            ],
-        },
-    ];
-}
-
-function KeybindingLegend({ open, onClose, canUpload, canOpenLocally }) {
-    if (!open) return null;
-    const sections = buildPortalKeybindingSections({ canUpload, canOpenLocally });
-    return React.createElement("div", { className: "ps-modal-backdrop", onClick: onClose },
-        React.createElement("div", {
-            className: "ps-modal is-wide ps-keybinding-modal",
-            role: "dialog",
-            "aria-modal": "true",
-            "aria-label": "Keyboard shortcuts",
-            onClick: (event) => event.stopPropagation(),
-        },
-        React.createElement("div", { className: "ps-modal-header" },
-            React.createElement("div", { className: "ps-modal-title" }, "Keyboard Shortcuts"),
-            React.createElement("button", { type: "button", className: "ps-modal-close", onClick: onClose }, "Close")),
-        React.createElement("div", { className: "ps-keybinding-grid" },
-            sections.map((section) => React.createElement("section", { key: section.title, className: "ps-keybinding-section" },
-                React.createElement("h3", { className: "ps-keybinding-title" }, section.title),
-                React.createElement("div", { className: "ps-keybinding-list" },
-                    section.items.map(([binding, description]) => React.createElement("div", { key: `${section.title}:${binding}`, className: "ps-keybinding-row" },
-                        React.createElement("kbd", { className: "ps-keybinding-kbd" }, binding),
-                        React.createElement("span", { className: "ps-keybinding-description" }, description)))))),
-        ),
-        React.createElement("div", { className: "ps-modal-footer" },
-            React.createElement("button", { type: "button", className: "ps-modal-button is-primary", onClick: onClose }, "Done"))));
-}
-
-function PromptOverlay({ controller, open, onClose }) {
-    if (!open) return null;
-    return React.createElement("div", {
-        className: "ps-modal-backdrop ps-compose-backdrop",
-        onClick: onClose,
-    },
-    React.createElement("div", {
-        className: "ps-compose-card",
-        role: "dialog",
-        "aria-modal": "true",
-        "aria-label": "Compose prompt",
-        onClick: (event) => event.stopPropagation(),
-    },
-    React.createElement("div", { className: "ps-compose-header" },
-        React.createElement("div", { className: "ps-modal-title" }, "Prompt"),
-        React.createElement("button", {
-            type: "button",
-            className: "ps-modal-close",
-            onClick: onClose,
-        }, "Close")),
-    React.createElement(PromptComposer, {
-        controller,
-        mobile: false,
-        active: open,
-        onAfterSend: onClose,
-    })));
-}
-
-function Toolbar({ controller, mobile, onToggleLegend, onOpenPrompt, chatFocusMode = false, onToggleChatFocus = null, chatFocusDisabled = false }) {
+function Toolbar({ controller, mobile, chatFocusMode = false, onToggleChatFocus = null, chatFocusDisabled = false }) {
     const status = useControllerSelector(controller, (state) => selectStatusBar(state), shallowEqualObject);
     const adminVisible = useControllerSelector(controller, (state) => Boolean(state.admin?.visible));
     const chatView = useControllerSelector(controller, (state) => ({
         mode: state.ui.chatViewMode || "transcript",
         activeSessionIsGroup: Boolean(state.sessions.activeSessionId && state.sessions.byId[state.sessions.activeSessionId]?.isGroup),
+        hasActiveSession: Boolean(state.sessions.activeSessionId && state.sessions.byId[state.sessions.activeSessionId]),
     }), shallowEqualObject);
-    const promptDisabled = chatView.activeSessionIsGroup || chatView.mode === "summary";
+    const switchModelDisabled = !chatView.hasActiveSession || chatView.activeSessionIsGroup;
 
     const buttonDefs = [
         {
@@ -2696,11 +2704,13 @@ function Toolbar({ controller, mobile, onToggleLegend, onOpenPrompt, chatFocusMo
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_MODEL_PICKER).catch(() => {}),
         },
         {
-            key: "prompt",
-            label: "Prompt",
-            onClick: onOpenPrompt,
-            disabled: promptDisabled,
-            title: promptDisabled ? "Prompt is hidden for read-only summary and group views" : "Open prompt composer",
+            key: "switch-model",
+            label: mobile ? "Switch" : "Switch Model",
+            onClick: () => controller.openSwitchModelPicker().catch((err) => {
+                controller.dispatch({ type: "ui/status", text: err?.message || String(err) || "Failed to switch model" });
+            }),
+            disabled: switchModelDisabled,
+            title: switchModelDisabled ? "Select a session to switch its model" : "Switch the selected session model at the next turn boundary",
         },
         {
             key: "filter",
@@ -2734,11 +2744,6 @@ function Toolbar({ controller, mobile, onToggleLegend, onOpenPrompt, chatFocusMo
             label: adminVisible ? "Close Admin" : "Admin",
             onClick: () => controller.handleCommand(adminVisible ? UI_COMMANDS.CLOSE_ADMIN_CONSOLE : UI_COMMANDS.OPEN_ADMIN_CONSOLE).catch(() => {}),
             active: adminVisible,
-        },
-        {
-            key: "keys",
-            label: "Keys",
-            onClick: onToggleLegend,
         },
     ];
 
@@ -3195,11 +3200,14 @@ function ModalLayer({ controller }) {
     if (modal.type === "themePicker" && modalState.themePicker) {
         return renderListModal(modalState.themePicker, "Apply Theme");
     }
+    // In switch-model mode the model/reasoning pickers retarget an existing
+    // session, so the confirm action is "Switch Model", not "Create Session".
+    const pickerConfirmLabel = modal.sessionOptions?.mode === "switchModel" ? "Switch Model" : "Create Session";
     if (modal.type === "modelPicker" && modalState.modelPicker) {
-        return renderListModal(modalState.modelPicker, "Create Session");
+        return renderListModal(modalState.modelPicker, pickerConfirmLabel);
     }
     if (modal.type === "reasoningEffortPicker" && modalState.reasoningEffortPicker) {
-        return renderListModal(modalState.reasoningEffortPicker, "Create Session");
+        return renderListModal(modalState.reasoningEffortPicker, pickerConfirmLabel);
     }
     if (modal.type === "sessionAgentPicker" && modalState.sessionAgentPicker) {
         return renderListModal(modalState.sessionAgentPicker, "Create Session");
@@ -3435,18 +3443,7 @@ function ModalLayer({ controller }) {
     return null;
 }
 
-function useKeyboardShortcuts(
-    controller,
-    mobile,
-    {
-        legendOpen = false,
-        onToggleLegend = null,
-        onCloseLegend = null,
-        promptOverlayOpen = false,
-        onOpenPromptOverlay = null,
-        onClosePromptOverlay = null,
-    } = {},
-) {
+function useKeyboardShortcuts(controller, mobile) {
     React.useEffect(() => {
         const handler = (event) => {
             const target = event.target;
@@ -3463,30 +3460,6 @@ function useKeyboardShortcuts(
                 const nextTab = cycleTabs(visibleInspectorTabs, currentInspectorTab, delta);
                 controller.selectInspectorTab(nextTab).catch(() => {});
             };
-
-            if (!editable && (event.key === "?" || (event.shiftKey && event.key === "/")) && !event.metaKey && !event.ctrlKey && !event.altKey) {
-                event.preventDefault();
-                if (legendOpen) {
-                    onCloseLegend?.();
-                } else {
-                    onToggleLegend?.();
-                }
-                return;
-            }
-
-            if (legendOpen) {
-                if (event.key === "Escape") {
-                    event.preventDefault();
-                    onCloseLegend?.();
-                }
-                return;
-            }
-
-            if (promptOverlayOpen && !modal && event.key === "Escape") {
-                event.preventDefault();
-                onClosePromptOverlay?.();
-                return;
-            }
 
             if (!editable && isShiftTheme) {
                 event.preventDefault();
@@ -3533,11 +3506,6 @@ function useKeyboardShortcuts(
             }
 
             if (editable) {
-                if (promptOverlayOpen && event.key === "Escape") {
-                    event.preventDefault();
-                    onClosePromptOverlay?.();
-                    return;
-                }
                 return;
             }
 
@@ -3630,11 +3598,7 @@ function useKeyboardShortcuts(
             }
             if (event.key === "p" && isPlainShortcut) {
                 event.preventDefault();
-                if (onOpenPromptOverlay) {
-                    onOpenPromptOverlay();
-                } else {
-                    controller.handleCommand(UI_COMMANDS.FOCUS_PROMPT).catch(() => {});
-                }
+                controller.handleCommand(UI_COMMANDS.FOCUS_PROMPT).catch(() => {});
                 return;
             }
             if (event.key === "c" && isPlainShortcut) {
@@ -3765,7 +3729,7 @@ function useKeyboardShortcuts(
 
         window.addEventListener("keydown", handler);
         return () => window.removeEventListener("keydown", handler);
-    }, [controller, legendOpen, mobile, onCloseLegend, onToggleLegend, onClosePromptOverlay, onOpenPromptOverlay, promptOverlayOpen]);
+    }, [controller, mobile]);
 }
 
 function formatAdminPrincipalLabel(principal) {
@@ -3901,8 +3865,6 @@ export function PilotSwarmWebApp({ controller }) {
     const viewportRef = React.useRef(null);
     const viewport = useMeasuredViewport(viewportRef);
     const gridViewport = computeGridViewport(viewport);
-    const [showKeyLegend, setShowKeyLegend] = React.useState(false);
-    const [showPromptOverlay, setShowPromptOverlay] = React.useState(false);
     const [chatFocusMode, setChatFocusMode] = React.useState(false);
     const [chatFocusPane, setChatFocusPane] = React.useState(null);
     const state = useControllerSelector(controller, (rootState) => ({
@@ -3936,27 +3898,10 @@ export function PilotSwarmWebApp({ controller }) {
     const [mobilePane, setMobilePane] = React.useState("workspace");
     const [mobileSessionsCollapsed, setMobileSessionsCollapsed] = React.useState(false);
     const mobile = (viewport.width || window.innerWidth || 0) < MOBILE_BREAKPOINT;
-    const canUploadArtifacts = supportsBrowserFileUploads(controller) || supportsPathArtifactUploads(controller);
-    const canOpenLocally = supportsLocalFileOpen(controller);
     const readOnlyChatPane = state.activeSessionIsGroup || state.chatViewMode === "summary";
     const effectivePromptRows = readOnlyChatPane ? 0 : state.promptRows;
-    const openPromptOverlay = React.useCallback(() => {
-        if (readOnlyChatPane) return;
-        controller.handleCommand(UI_COMMANDS.FOCUS_PROMPT).catch(() => {});
-        setShowPromptOverlay(true);
-    }, [controller, readOnlyChatPane]);
-    const closePromptOverlay = React.useCallback(() => {
-        setShowPromptOverlay(false);
-    }, []);
 
-    useKeyboardShortcuts(controller, mobile, {
-        legendOpen: showKeyLegend,
-        onToggleLegend: () => setShowKeyLegend((current) => !current),
-        onCloseLegend: () => setShowKeyLegend(false),
-        promptOverlayOpen: showPromptOverlay,
-        onOpenPromptOverlay: openPromptOverlay,
-        onClosePromptOverlay: closePromptOverlay,
-    });
+    useKeyboardShortcuts(controller, mobile);
 
     React.useEffect(() => {
         controller.setViewport(gridViewport);
@@ -4084,12 +4029,6 @@ export function PilotSwarmWebApp({ controller }) {
         }
     }, [controller, state.inspectorTab]);
 
-    React.useEffect(() => {
-        if (readOnlyChatPane && showPromptOverlay) {
-            setShowPromptOverlay(false);
-        }
-    }, [readOnlyChatPane, showPromptOverlay]);
-
     const layout = React.useMemo(
         () => computeLegacyLayout(gridViewport, state.paneAdjust, effectivePromptRows, state.sessionPaneAdjust, state.activityPaneAdjust),
         [gridViewport, state.activityPaneAdjust, state.paneAdjust, effectivePromptRows, state.sessionPaneAdjust],
@@ -4210,8 +4149,6 @@ export function PilotSwarmWebApp({ controller }) {
             : React.createElement(Toolbar, {
             controller,
             mobile,
-            onToggleLegend: () => setShowKeyLegend((current) => !current),
-            onOpenPrompt: openPromptOverlay,
             chatFocusMode,
             onToggleChatFocus: toggleChatFocusMode,
             chatFocusDisabled: filesFullscreenActive,
@@ -4232,18 +4169,7 @@ export function PilotSwarmWebApp({ controller }) {
         (readOnlyChatPane || (mobile && !chatFocusMode && (mobilePane === "inspector" || mobilePane === "activity")))
             ? null
             : React.createElement("div", { className: "ps-footer-shell" },
-                React.createElement(PromptComposer, { controller, mobile, active: !showPromptOverlay })),
+                React.createElement(PromptComposer, { controller, mobile, active: true })),
         mobile && !chatFocusMode ? React.createElement(MobileNav, { activePane: mobilePane, setActivePane: setMobilePane, controller }) : null,
-        React.createElement(ModalLayer, { controller }),
-        React.createElement(KeybindingLegend, {
-            open: showKeyLegend,
-            onClose: () => setShowKeyLegend(false),
-            canUpload: canUploadArtifacts,
-            canOpenLocally,
-        }),
-        React.createElement(PromptOverlay, {
-            controller,
-            open: showPromptOverlay,
-            onClose: closePromptOverlay,
-        }));
+        React.createElement(ModalLayer, { controller }));
 }

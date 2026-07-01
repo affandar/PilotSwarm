@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.3.2 — 2026-07-01
+
+### SDK / Runtime
+
+- Added model-facing current-runtime-model visibility to `list_available_models`.
+  The tool now reports the session's configured provider, model, qualified model
+  id, and reasoning effort for the current turn before listing the available
+  model catalog.
+- Hardened mid-session model switching. Model changes continue to flow through
+  the durable `set_model` command path, write through to CMS, and rebind warm
+  SDK sessions at the next turn boundary.
+- Added sticky session title support through `update_session_summary(title=...)`,
+  so agents and clients can intentionally rename sessions without later automatic
+  summarization overwriting the title.
+- Tightened Sweeper cleanup semantics: sessions are cleanup-eligible only when
+  their own orchestration is terminal (`Completed`, `Failed`, `Terminated`, or
+  `NotFound`). Idle, zombie, orphaned, or otherwise live child sessions are no
+  longer swept.
+- Added runtime protection for malformed assistant text that looks like a tool
+  call. Literal `<invoke ...>` / `<parameter>` markup is now treated as a tool
+  protocol error instead of being silently accepted as normal assistant content.
+
+### Portal / TUI
+
+- Updated the shared session UI and portal runtime around model-aware session
+  state, sticky titles, and session metadata so the browser and terminal surfaces
+  stay aligned with the SDK runtime behavior.
+- Extended portal/browser transport contracts for session model and title state.
+
+### Observability / Agent Tuning
+
+- Expanded agent-tuner inspection guidance and management surfaces for
+  investigating model switches, title updates, turn metrics, and model-specific
+  token attribution.
+
+### Tests / Docs
+
+- Added focused coverage for summary/title updates, inline control-tool model
+  metadata, terminal-only Sweeper cleanup, model-selection behavior, portal
+  browser contracts, and restart/session metric paths.
+- Updated system reference, portal user guide, model-switch proposal notes,
+  agent-tuning log, TUI maintenance guidance, and contributor instructions.
+
 ## 0.3.1 — 2026-06-28
 
 ### SDK / Runtime

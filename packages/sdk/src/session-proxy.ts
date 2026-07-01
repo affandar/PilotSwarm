@@ -40,6 +40,7 @@ function normalizeJsonObject(value: unknown): Record<string, unknown> | null {
 
 const SUMMARY_STATE_TEMPLATE =
     '{"schemaVersion":1,"updatedAt":"2026-05-18T00:00:00.000Z","intent":"...","summary":"...","state":{},"openQuestions":[],"blockers":[],"nextActions":[],"links":[],"structureChangeLog":[]}';
+const MAX_SESSION_TITLE_LENGTH = 60;
 
 function normalizeSummaryArray(value: unknown): unknown[] {
     if (Array.isArray(value)) return value;
@@ -86,6 +87,47 @@ function normalizeSummaryState(value: unknown): { ok: true; summaryState: Record
             structureChangeLog: normalizeSummaryArray(normalized.structureChangeLog),
         },
     };
+}
+
+function normalizeSessionTitleInput(title: unknown, maxLength = MAX_SESSION_TITLE_LENGTH): string {
+    return String(title || "").trim().slice(0, maxLength);
+}
+
+function getNamedAgentTitlePrefix(session: { agentId?: string | null; title?: string | null } | null | undefined): string | null {
+    if (!session?.agentId) return null;
+    const currentTitle = String(session.title || "").trim();
+    if (!currentTitle) return null;
+    const separatorIndex = currentTitle.indexOf(": ");
+    if (separatorIndex > 0) return currentTitle.slice(0, separatorIndex).trim() || null;
+    return currentTitle || null;
+}
+
+function buildStickySessionTitle(
+    session: { agentId?: string | null; title?: string | null } | null | undefined,
+    requestedTitle: unknown,
+): string {
+    const normalizedTitle = normalizeSessionTitleInput(requestedTitle);
+    const prefix = getNamedAgentTitlePrefix(session);
+    if (!prefix) return normalizedTitle;
+
+    const prefixLabel = `${prefix}: `;
+    const maxSuffixLength = Math.max(0, MAX_SESSION_TITLE_LENGTH - prefixLabel.length);
+    if (maxSuffixLength <= 0) return prefix.slice(0, MAX_SESSION_TITLE_LENGTH);
+    return `${prefixLabel}${normalizedTitle.slice(0, maxSuffixLength)}`;
+}
+
+export async function prepareStickySessionTitleUpdate(
+    catalog: Pick<SessionCatalog, "getSession">,
+    sessionId: string,
+    requestedTitle: unknown,
+): Promise<{ ok: true; updates: { title: string; titleLocked: true } } | { ok: false; message: string }> {
+    const session = await catalog.getSession(sessionId);
+    if (!session) return { ok: false, message: `Session ${sessionId.slice(0, 8)} was not found.` };
+    if (session.isSystem) return { ok: false, message: "System session titles are fixed" };
+
+    const title = buildStickySessionTitle(session, requestedTitle);
+    if (!title) return { ok: false, message: "Title cannot be empty" };
+    return { ok: true, updates: { title, titleLocked: true } };
 }
 
 function buildContractJson(contract: unknown, parentSessionId: string, childSessionId: string): Record<string, unknown> | null {
@@ -644,6 +686,10 @@ export function createSessionManagerProxy(ctx: any) {
             if (waitReason !== undefined) payload.waitReason = waitReason;
             return ctx.scheduleActivity("updateCmsState", payload);
         },
+        /** Persist this session's model metadata in CMS. */
+        updateSessionModel(sessionId: string, model: string, reasoningEffort?: string | null) {
+            return ctx.scheduleActivity("updateSessionModel", { sessionId, model, reasoningEffort });
+        },
         /** Get the worker's authoritative session policy + allowed agent names. */
         getWorkerSessionPolicy() {
             return ctx.scheduleActivity("getWorkerSessionPolicy", {});
@@ -750,6 +796,7 @@ export function registerActivities(
             toolNames: new Set<string>(),
             modelSummary: sessionManager.getModelSummary(),
         };
+        const turnStartedAt = new Date();
         const turnSpan = otelTrace.getTracer("pilotswarm-turns").startSpan("session.turn", {
             attributes: {
                 "pilotswarm.session_id": input.sessionId,
@@ -1201,6 +1248,43 @@ export function registerActivities(
                     return `[SYSTEM: spawn_agent failed: ${err?.message || String(err)}]`;
                 }
             },
+            setSessionModel: async (args: { model: string; reasoning_effort?: import("./model-providers.js").ReasoningEffort | null }) => {
+                try {
+                    const requestedModel = String(args.model || "").trim();
+                    if (!requestedModel) return "[SYSTEM: set_session_model failed: model is required.]";
+                    if (!storeUrl) return "[SYSTEM: set_session_model failed: no storeUrl is configured.]";
+                    const resolved = sessionManager.resolveModelSwitchConfig(
+                        requestedModel,
+                        "reasoning_effort" in args ? args.reasoning_effort ?? null : undefined,
+                    );
+
+                    const sdkClient = new PilotSwarmClient(internalClientConfig());
+                    try {
+                        await sdkClient.start();
+                        await (sdkClient as any).duroxideClient.enqueueEvent(
+                            `session-${input.sessionId}`,
+                            "messages",
+                            JSON.stringify({
+                                type: "cmd",
+                                cmd: "set_model",
+                                id: `set-model-tool-${randomUUID()}`,
+                                args: {
+                                    model: resolved.model,
+                                    reasoningEffort: resolved.reasoningEffort,
+                                    source: "tool",
+                                },
+                            }),
+                        );
+                    } finally {
+                        await sdkClient.stop().catch(() => {});
+                    }
+
+                    const effortText = resolved.reasoningEffort ? `:${resolved.reasoningEffort}` : "";
+                    return `[SYSTEM: Model switch accepted. Stop this turn now; the runtime will automatically continue on ${resolved.model}${effortText}.]`;
+                } catch (err: any) {
+                    return `[SYSTEM: set_session_model failed: ${err?.message || String(err)}]`;
+                }
+            },
             messageAgent: async (args: { agent_id: string; message: string; contract_patch?: Record<string, unknown> }) => {
                 try {
                     const child = await resolveManagedChild(args.agent_id);
@@ -1330,14 +1414,38 @@ export function registerActivities(
                     return `[SYSTEM: list_sessions failed: ${err?.message || String(err)}]`;
                 }
             },
-            updateSessionSummary: async (args: { summary_state: any; short_summary?: string }) => {
+            updateSessionSummary: async (args: { summary_state?: any; short_summary?: string; title?: string }) => {
                 try {
                     if (isReadOnlyTuner()) return `[SYSTEM: update_session_summary is disabled for read-only agent-tuner sessions.]`;
                     if (!catalog) return `[SYSTEM: update_session_summary failed: CMS catalog is unavailable.]`;
-                    const normalizedSummary = normalizeSummaryState(args.summary_state);
-                    if (!normalizedSummary.ok) return `[SYSTEM: update_session_summary failed: ${normalizedSummary.message}]`;
-                    await catalog.updateSessionSummary(input.sessionId, normalizedSummary.summaryState as any, args.short_summary);
-                    return `[SYSTEM: Session summary updated.]`;
+                    const hasSummaryState = Object.prototype.hasOwnProperty.call(args ?? {}, "summary_state") && args.summary_state !== undefined && args.summary_state !== null;
+                    const hasTitle = Object.prototype.hasOwnProperty.call(args ?? {}, "title");
+                    if (!hasSummaryState && !hasTitle) {
+                        return `[SYSTEM: update_session_summary failed: summary_state or title is required.]`;
+                    }
+
+                    let normalizedSummary: { ok: true; summaryState: Record<string, unknown> } | undefined;
+                    if (hasSummaryState) {
+                        const summaryResult = normalizeSummaryState(args.summary_state);
+                        if (!summaryResult.ok) return `[SYSTEM: update_session_summary failed: ${summaryResult.message}]`;
+                        normalizedSummary = summaryResult;
+                    }
+
+                    const titleUpdate = hasTitle
+                        ? await prepareStickySessionTitleUpdate(catalog, input.sessionId, args.title)
+                        : undefined;
+                    if (titleUpdate && !titleUpdate.ok) return `[SYSTEM: update_session_summary failed: ${titleUpdate.message}]`;
+
+                    const updated: string[] = [];
+                    if (normalizedSummary) {
+                        await catalog.updateSessionSummary(input.sessionId, normalizedSummary.summaryState as any, args.short_summary);
+                        updated.push("summary");
+                    }
+                    if (titleUpdate?.ok) {
+                        await catalog.updateSession(input.sessionId, titleUpdate.updates);
+                        updated.push("title");
+                    }
+                    return `[SYSTEM: Session ${updated.join(" and ")} updated.]`;
                 } catch (err: any) {
                     return `[SYSTEM: update_session_summary failed: ${err?.message || String(err)}]`;
                 }
@@ -1558,11 +1666,6 @@ export function registerActivities(
                             turnTelemetry.tokensOutput += usageUpsert.tokensOutputIncrement ?? 0;
                             turnTelemetry.tokensCacheRead += usageUpsert.tokensCacheReadIncrement ?? 0;
                             turnTelemetry.tokensCacheWrite += usageUpsert.tokensCacheWriteIncrement ?? 0;
-                            void cmsRetryBestEffort(
-                                `runTurn.onEvent upsertSummary usage session=${input.sessionId}`,
-                                () => catalog.upsertSessionMetricSummary(input.sessionId, usageUpsert),
-                                (msg) => activityCtx.traceInfo(msg),
-                            );
                         }
                     } else if (event.eventType === "tool.execution_start") {
                         turnTelemetry.toolCalls += 1;
@@ -1798,7 +1901,8 @@ export function registerActivities(
             }
             activityCtx.traceInfo(`[runTurn] ManagedSession.runTurn completed for ${input.sessionId} type=${result.type}`);
 
-            // Record turn_completed CMS event.
+            // Drain event writes before the atomic post-turn writeback records
+            // session.turn_completed.
             //
             // Ordering matters here: every per-event CMS write fired by the
             // SDK's onEvent callback (assistant.message, tool calls, usage,
@@ -1827,14 +1931,6 @@ export function registerActivities(
                 if (pendingWritesAtBarrier.length > 0) {
                     await Promise.allSettled(pendingWritesAtBarrier);
                 }
-                await cmsRetryBestEffort(
-                    `runTurn.recordEvent turn_completed session=${input.sessionId}`,
-                    () => catalog!.recordEvents(input.sessionId, [{
-                        eventType: "session.turn_completed",
-                        data: { iteration: input.turnIndex ?? 0 },
-                    }], workerNodeId),
-                    (msg) => activityCtx.traceInfo(msg),
-                );
             }
 
             if (cancelled) return { type: "cancelled" };
@@ -1877,10 +1973,34 @@ export function registerActivities(
                     updates.waitReason = null;
                     updates.lastError = null;
                 }
-                const capturedUpdates = updates;
+                const turnEndedAt = new Date();
                 await cmsRetryBestEffort(
-                    `runTurn.postTurn updateSession state=${capturedUpdates.state} session=${input.sessionId}`,
-                    () => catalog!.updateSession(input.sessionId, capturedUpdates),
+                    `runTurn.postTurn completeTurnWriteback state=${updates.state} session=${input.sessionId}`,
+                    () => catalog!.completeTurnWriteback({
+                        sessionId: input.sessionId,
+                        agentId: null,
+                        model: input.config.model ?? null,
+                        reasoningEffort: input.config.reasoningEffort ?? null,
+                        turnIndex: input.turnIndex ?? 0,
+                        startedAt: turnStartedAt,
+                        endedAt: turnEndedAt,
+                        durationMs: Math.max(0, turnEndedAt.getTime() - turnStartedAt.getTime()),
+                        tokensInput: turnTelemetry.tokensInput,
+                        tokensOutput: turnTelemetry.tokensOutput,
+                        tokensCacheRead: turnTelemetry.tokensCacheRead,
+                        tokensCacheWrite: turnTelemetry.tokensCacheWrite,
+                        toolCalls: turnTelemetry.toolCalls,
+                        toolErrors: turnTelemetry.toolErrors,
+                        toolNames: Array.from(turnTelemetry.toolNames).sort(),
+                        resultType: result.type,
+                        errorMessage: result.type === "error" ? ((result as any).message ?? null) : null,
+                        workerNodeId: workerNodeId ?? null,
+                        state: updates.state ?? "idle",
+                        lastActiveAt: (updates.lastActiveAt as Date | undefined) ?? turnEndedAt,
+                        lastError: updates.lastError ?? null,
+                        waitReason: updates.waitReason ?? null,
+                        currentIteration: input.turnIndex ?? 0,
+                    }),
                     (msg) => activityCtx.traceInfo(msg),
                 );
             }
@@ -2461,6 +2581,7 @@ export function registerActivities(
                 parentSessionId: input.parentSessionId,
                 nestingLevel: input.nestingLevel,
                 model: input.config.model,
+                reasoningEffort: input.config.reasoningEffort,
                 systemMessage: input.config.systemMessage,
                 boundAgentName: input.config.boundAgentName,
                 promptLayering: input.config.promptLayering,
@@ -2814,6 +2935,21 @@ export function registerActivities(
             await cmsRetryCritical(
                 `updateCmsState session=${input.sessionId} state=${input.state}`,
                 () => catalog.updateSession(input.sessionId, { ...updates }),
+                (msg) => activityCtx.traceInfo(msg),
+            );
+        });
+
+        runtime.registerActivity("updateSessionModel", async (
+            activityCtx: any,
+            input: { sessionId: string; model: string; reasoningEffort?: string | null },
+        ): Promise<void> => {
+            activityCtx.traceInfo(`[updateSessionModel] session=${input.sessionId} model=${input.model}`);
+            await cmsRetryCritical(
+                `updateSessionModel session=${input.sessionId}`,
+                () => catalog.updateSession(input.sessionId, {
+                    model: input.model,
+                    reasoningEffort: input.reasoningEffort ?? null,
+                }),
                 (msg) => activityCtx.traceInfo(msg),
             );
         });

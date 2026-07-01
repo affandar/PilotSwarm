@@ -24,8 +24,8 @@ model attribution, so a single session can be attributed across multiple models.
 - Native TUI keybinding for switching (shared command path only; binding optional later).
 - Cross-model cost normalization or pricing.
 
-System sessions are switchable too; the switch applies through `restartSystemSession`
-(carry the new model/effort into the restart input) rather than the live continue-as-new path.
+System sessions are switchable too; they use the same durable `set_model` command path as ordinary sessions.
+Explicit system-agent restart controls remain separate recovery actions.
 
 ## Behavior
 
@@ -57,9 +57,26 @@ compatibility label but is no longer used for token-by-model attribution.
    - reasoning effort is supported by that model, or null
    - on switch with no effort, use target default, else clear effort
 4. Update orchestration config + `sessions.model` / `sessions.reasoning_effort` together.
-5. Recycle any warm `CopilotSession` whose model/effort changed, so the next
-   `SessionManager.getOrCreate(...)` rebuilds `sessionConfig`.
-6. Continue-as-new so the new config is the durable input for future turns.
+5. Treat LLM `set_session_model` calls as turn boundaries for success and
+   failure. After the tool returns an accepted or failed switch result, the model
+   must stop the current turn and let the orchestration continue.
+6. For same-provider and cross-provider switches alike, disconnect the warm
+   handle without deleting persisted SDK state, then resume the same session id
+   with the new provider/model config. The selected `model` and `reasoningEffort`
+   are supplied through `ResumeSessionConfig`; do not issue a pre-send SDK
+   `setModel` call on a freshly resumed handle.
+7. After recording `session.model_changed`, schedule an automatic bootstrap
+   `Continue on <model[:effort]>.` prompt. The continuation runs on the selected
+   model and is not persisted as a user-authored transcript message.
+8. Carry a one-shot runtime model notice into that continuation turn after an
+   actual model change, e.g. `Runtime model for this turn is <model[:effort]>`.
+   The notice is short, durable across continue-as-new, and consumed by the
+   bootstrap continuation.
+   If LLM `set_session_model` fails, carry an equally short one-shot correction
+   into an automatic bootstrap continuation that states the switch failed and
+   names the current runtime model. Control-plane validation failures are
+   rejected before command acceptance and do not schedule a chat continuation.
+9. Continue-as-new so the new config is the durable input for future turns.
 
 ### API / Tools
 
@@ -76,6 +93,7 @@ Shared:
 
 - Header/details show current model via `model:reasoning` label.
 - "Switch Model" action on non-group sessions, including system sessions; reuse model + reasoning pickers in switch mode.
+- System sessions use the same durable `set_model` command path as ordinary sessions; the Restart / Complete & Restart / Terminate & Restart / Hard Delete & Restart controls remain separate lifecycle actions.
 - Preselect current model/effort; confirm copy states "applies next turn".
 - Status after submit: `Next turn will use <model:effort>`.
 - Stats panes break tokens down by full model id (`provider/model/reasoning`); each effort variant is its own row with per-bucket turn count, fed from `session_turn_metrics`.
@@ -195,14 +213,18 @@ retries, no sleeps. Each block names where it lives.
 
 ### 5. Switch core (`model-selection.test.js`)
 
-- `setModel` updates `sessions.model`/effort; emits `session.model_changed`; continues-as-new.
-- Switch mid-turn applies only to the next turn (verify via turn-metric model). Idle/waiting → next turn uses new model.
-- Invalid model and unsupported effort rejected; config unchanged. Warm `CopilotSession` rebuilt next turn.
+- `setModel` updates `sessions.model`/effort; emits `session.model_changed`; continues-as-new with a bootstrap `Continue on <model[:effort]>.` prompt.
+- Switch mid-turn ends the current turn; the automatic continuation and later user turns use the new model (verify via turn-metric model). Idle/waiting → automatic continuation uses the new model.
+- Warm same-worker model switch preserves SDK session state by disconnecting/resuming the same session id: no `session.lossy_handoff`, `lossyHandoffCount === 0`, same session id, and turn metrics show old model then new model.
+- The automatic continuation after a successful switch includes a short runtime-model notice, so the assistant can answer its current model from durable runtime state rather than older transcript self-reports.
+- A failed LLM `set_session_model` call ends the turn and schedules a bootstrap correction continuation naming the unchanged current model.
+- Invalid control-plane model and unsupported effort are rejected; config unchanged and no chat continuation is scheduled.
 - LLM `set_session_model` tool: stub/handler schema in sync; rejects non-exact ids.
+- Model switches while a wait/cron timer is active interrupt the timer for the immediate continuation, then preserve the remaining wait/cron state for auto-resume.
 
-### 6. System session (`system-agents.test.js`)
+### 6. System session (`system-session-restart.test.js` / `model-selection.test.js`)
 
-- Switch on a system session routes through `restartSystemSession` with new model/effort; post-restart turns run on it; pre-restart turn metrics retain old model.
+- Switch on a system session enqueues the normal durable `set_model` command, does not archive/restart/delete the deterministic system session, emits `session.model_changed`, and schedules the same bootstrap continuation as ordinary sessions. Explicit restart actions continue to route through `restartSystemSession`.
 
 ### 7. UX (`packages/ui-core` selector + portal)
 

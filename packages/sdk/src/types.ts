@@ -18,6 +18,7 @@ export interface CycleReport {
 }
 
 export type TurnAction =
+    | { type: "completed"; content: string; forceContinuePrompt?: string; events?: CapturedEvent[] }
     | { type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; content?: string; events?: CapturedEvent[] }
     | { type: "cron"; action: "set"; intervalSeconds: number; reason: string; events?: CapturedEvent[] }
     | { type: "cron"; action: "cancel"; events?: CapturedEvent[] }
@@ -38,7 +39,7 @@ type QueuedTurnActionCarrier = {
 };
 
 export type TurnResult =
-    | ({ type: "completed"; content: string; events?: CapturedEvent[]; cycleReport?: CycleReport } & QueuedTurnActionCarrier)
+    | ({ type: "completed"; content: string; forceContinuePrompt?: string; events?: CapturedEvent[]; cycleReport?: CycleReport } & QueuedTurnActionCarrier)
     | ({ type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; content?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron"; action: "set"; intervalSeconds: number; reason: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron"; action: "cancel"; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
@@ -89,6 +90,7 @@ export interface TurnOptions {
             title?: string;
             contract?: Record<string, unknown>;
         }): Promise<string>;
+        setSessionModel(args: { model: string; reasoning_effort?: ReasoningEffort | null }): Promise<string>;
         messageAgent(args: { agent_id: string; message: string; contract_patch?: Record<string, unknown> }): Promise<string>;
         checkAgents(): Promise<string>;
         resolveWaitForAgents(agentIds?: string[]): Promise<string[]>;
@@ -110,7 +112,7 @@ export interface TurnOptions {
         completeAgent(args: { agent_id: string; result?: Record<string, unknown> }): Promise<string>;
         cancelAgent(args: { agent_id: string; reason?: string; partial_result?: Record<string, unknown> }): Promise<string>;
         deleteAgent(args: { agent_id: string; reason?: string }): Promise<string>;
-        updateSessionSummary(args: { summary_state: SessionSummaryState; short_summary?: string }): Promise<string>;
+        updateSessionSummary(args: { summary_state?: SessionSummaryState; short_summary?: string; title?: string }): Promise<string>;
         sendSessionMessage(args: { session_id: string; subject: string; body: string; reason?: string; expects_response?: boolean; expires_at?: string }): Promise<string>;
         replySessionMessage(args: { request_id: string; session_id: string; body: string; verdict?: string }): Promise<string>;
     };
@@ -365,6 +367,8 @@ export interface OrchestrationInput {
     requiredTool?: string;
     /** Internal: system guidance carried alongside the next prompt without becoming user text. */
     systemPrompt?: string;
+    /** Internal: one-shot current-model guidance attached to the next real prompt after a model switch. */
+    runtimeModelNotice?: string;
     /** Internal: pending prompt is a bootstrap message, not a user-authored prompt. */
     bootstrapPrompt?: boolean;
     /** Internal: the pending prompt was produced by a recurring cron/cron_at timer fire. */

@@ -195,6 +195,8 @@ export class PortalRuntime {
                 return this.transport.getOrchestrationStats(safeParams.sessionId);
             case "getSessionMetricSummary":
                 return this.transport.getSessionMetricSummary(safeParams.sessionId);
+            case "getSessionTokensByModel":
+                return this.transport.getSessionTokensByModel(safeParams.sessionId);
             case "getSessionTreeStats":
                 return this.transport.getSessionTreeStats(safeParams.sessionId);
             case "getFleetStats":
@@ -292,6 +294,8 @@ export class PortalRuntime {
                 return this.transport.deleteSession(safeParams.sessionId);
             case "restartSystemSession":
                 return this.transport.restartSystemSession(safeParams.agentIdOrSessionId, safeParams.options || {});
+            case "setSessionModel":
+                return this.transport.setSessionModel(safeParams.sessionId, safeParams.options || {});
             case "deleteSessionGroup":
                 return this.transport.deleteSessionGroup(safeParams.groupId);
             case "listModels":

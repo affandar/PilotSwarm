@@ -268,6 +268,10 @@ export class BrowserPortalTransport {
         return this.rpc("getSessionMetricSummary", { sessionId });
     }
 
+    async getSessionTokensByModel(sessionId) {
+        return this.rpc("getSessionTokensByModel", { sessionId });
+    }
+
     async getSessionTreeStats(sessionId) {
         return this.rpc("getSessionTreeStats", { sessionId });
     }
@@ -417,6 +421,10 @@ export class BrowserPortalTransport {
 
     async restartSystemSession(agentIdOrSessionId, options = {}) {
         return this.rpc("restartSystemSession", { agentIdOrSessionId, options });
+    }
+
+    async setSessionModel(sessionId, options = {}) {
+        return this.rpc("setSessionModel", { sessionId, options });
     }
 
     async deleteSessionGroup(groupId) {

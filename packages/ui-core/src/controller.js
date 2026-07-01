@@ -1982,8 +1982,11 @@ export class PilotSwarmUiController {
 
         this.dispatch({ type: "sessionStats/loading", sessionId });
         try {
-            const [summary, treeStats, skillUsage, treeSkillUsage, factsStats, treeFactsStats] = await Promise.all([
+            const [summary, tokensByModel, treeStats, skillUsage, treeSkillUsage, factsStats, treeFactsStats] = await Promise.all([
                 this.transport.getSessionMetricSummary(sessionId),
+                typeof this.transport.getSessionTokensByModel === "function"
+                    ? this.transport.getSessionTokensByModel(sessionId).catch(() => [])
+                    : [],
                 typeof this.transport.getSessionTreeStats === "function"
                     ? this.transport.getSessionTreeStats(sessionId)
                     : null,
@@ -2000,9 +2003,9 @@ export class PilotSwarmUiController {
                     ? this.transport.getSessionTreeFactsStats(sessionId).catch(() => null)
                     : null,
             ]);
-            this.dispatch({ type: "sessionStats/loaded", sessionId, summary, treeStats, skillUsage, treeSkillUsage, factsStats, treeFactsStats });
+            this.dispatch({ type: "sessionStats/loaded", sessionId, summary, tokensByModel, treeStats, skillUsage, treeSkillUsage, factsStats, treeFactsStats });
         } catch {
-            this.dispatch({ type: "sessionStats/loaded", sessionId, summary: null, treeStats: null, skillUsage: null, treeSkillUsage: null, factsStats: null, treeFactsStats: null });
+            this.dispatch({ type: "sessionStats/loaded", sessionId, summary: null, tokensByModel: [], treeStats: null, skillUsage: null, treeSkillUsage: null, factsStats: null, treeFactsStats: null });
         }
     }
 
@@ -3318,8 +3321,12 @@ export class PilotSwarmUiController {
 
     async openReasoningEffortPicker(modelItem, sessionOptions = {}) {
         const supported = normalizeReasoningEfforts(modelItem?.supportedReasoningEfforts);
-        const selectedEffort = resolveDefaultReasoningEffort(modelItem);
+        const selectedEffort = sessionOptions?.reasoningEffort || resolveDefaultReasoningEffort(modelItem);
         if (!supported.length || !selectedEffort) {
+            if (sessionOptions?.mode === "switchModel") {
+                await this.switchSessionModel({ ...sessionOptions, model: modelItem?.id });
+                return;
+            }
             await this.openSessionAgentPicker(sessionOptions);
             return;
         }
@@ -3335,7 +3342,9 @@ export class PilotSwarmUiController {
             type: "ui/modal",
             modal: {
                 type: "reasoningEffortPicker",
-                title: `Reasoning effort for ${modelItem?.modelName || modelItem?.qualifiedName || "model"}`,
+                title: sessionOptions?.mode === "switchModel"
+                    ? `Switch reasoning for ${modelItem?.modelName || modelItem?.qualifiedName || "model"}`
+                    : `Reasoning effort for ${modelItem?.modelName || modelItem?.qualifiedName || "model"}`,
                 items,
                 selectedIndex,
                 previousFocus: this.getState().ui.focusRegion,
@@ -3388,12 +3397,13 @@ export class PilotSwarmUiController {
             }))
             .filter((group) => group.models.length > 0);
 
-        const selectedIndex = Math.max(0, items.findIndex((model) => model.qualifiedName === defaultModel));
+        const preferredModel = sessionOptions?.model || defaultModel;
+        const selectedIndex = Math.max(0, items.findIndex((model) => model.qualifiedName === preferredModel));
         this.dispatch({
             type: "ui/modal",
             modal: {
                 type: "modelPicker",
-                title: "Select model for new session",
+            title: sessionOptions?.mode === "switchModel" ? "Switch model for session" : "Select model for new session",
                 items,
                 groups,
                 selectedIndex,
@@ -3402,6 +3412,46 @@ export class PilotSwarmUiController {
             },
         });
         this.dispatch({ type: "ui/status", text: "Select a model and press Enter" });
+    }
+
+    async openSwitchModelPicker() {
+        const state = this.getState();
+        const sessionId = state.sessions.activeSessionId;
+        const session = sessionId ? state.sessions.byId[sessionId] || null : null;
+        if (!session || session.isGroup) {
+            this.dispatch({ type: "ui/status", text: "Select a session before switching model" });
+            return;
+        }
+        if (typeof this.transport.setSessionModel !== "function") {
+            this.dispatch({ type: "ui/status", text: "Model switching is not supported by this transport" });
+            return;
+        }
+        await this.openModelPicker({
+            mode: "switchModel",
+            sessionId,
+            model: session.model || undefined,
+            reasoningEffort: session.reasoningEffort || undefined,
+        });
+    }
+
+    async switchSessionModel(options = {}) {
+        const sessionId = options.sessionId || this.getState().sessions.activeSessionId;
+        const model = String(options.model || "").trim();
+        if (!sessionId || !model) {
+            this.dispatch({ type: "ui/status", text: "Select a model before switching" });
+            return;
+        }
+        if (typeof this.transport.setSessionModel !== "function") {
+            this.dispatch({ type: "ui/status", text: "Model switching is not supported by this transport" });
+            return;
+        }
+        await this.transport.setSessionModel(sessionId, {
+            model,
+            ...("reasoningEffort" in options ? { reasoningEffort: options.reasoningEffort ?? null } : {}),
+            source: "ui",
+        });
+        this.dispatch({ type: "ui/status", text: `Next turn will use ${options.reasoningEffort ? `${model}:${options.reasoningEffort}` : model}` });
+        await this.refreshSessions();
     }
 
     openThemePicker() {
@@ -4148,13 +4198,26 @@ export class PilotSwarmUiController {
                 this.setFocus(previousFocus);
             }
             if (!item) {
+                if (modal.sessionOptions?.mode === "switchModel") {
+                    this.dispatch({ type: "ui/status", text: "No model selected" });
+                    return;
+                }
                 await this.openSessionAgentPicker({});
+                return;
+            }
+            const defaultReasoning = resolveDefaultReasoningEffort(item);
+            if (modal.sessionOptions?.mode === "switchModel") {
+                await this.openReasoningEffortPicker(item, {
+                    ...(modal.sessionOptions || {}),
+                    model: item.id,
+                    reasoningEffort: defaultReasoning ?? null,
+                });
                 return;
             }
             await this.openReasoningEffortPicker(item, {
                 ...(modal.sessionOptions || {}),
                 model: item.id,
-                ...(resolveDefaultReasoningEffort(item) ? { reasoningEffort: resolveDefaultReasoningEffort(item) } : {}),
+                ...(defaultReasoning ? { reasoningEffort: defaultReasoning } : {}),
             });
             return;
         }
@@ -4165,6 +4228,13 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "ui/modal", modal: null });
             if (previousFocus) {
                 this.setFocus(previousFocus);
+            }
+            if (sessionOptions?.mode === "switchModel") {
+                await this.switchSessionModel({
+                    ...sessionOptions,
+                    ...(item?.id ? { reasoningEffort: item.id } : {}),
+                });
+                return;
             }
             await this.openSessionAgentPicker({
                 ...sessionOptions,

@@ -660,6 +660,7 @@ ENTRYPOINT ["node", "examples/worker.js"]
 | `waitForStatusChange(id, afterVersion, ...)` | Block until custom status advances |
 | `deleteSession(id)` | Soft-delete + cancel orchestration |
 | `restartSystemSession(agentOrSessionId, { disposition })` | Privileged system-agent reset: `complete`, `terminate`, or `hard_delete` the current deterministic system session, archive it, clear transcript/metrics/session-scoped facts, and start a fresh replacement |
+| `setSessionModel(id, model, opts?)` | Durable model switch for any active session, including system sessions. Enqueues `/set_model`, records `session.model_changed`, and continues on the selected model at the next turn boundary; it does not restart system sessions. |
 | `renameSession(id, title)` | Update session title in CMS |
 | `listModels()` / `getModelsByProvider()` | List configured models after env filtering |
 | `getDefaultModel()` | Read the configured default model |

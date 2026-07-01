@@ -9,10 +9,11 @@ import {
 
 function makeController(transportOverrides = {}) {
     const sessions = Array.isArray(transportOverrides.sessions) ? [...transportOverrides.sessions] : [];
-    const calls = { createSession: [], createSessionForAgent: [] };
+    const calls = { createSession: [], createSessionForAgent: [], setSessionModel: [] };
     const transport = {
         listSessions: async () => sessions,
         getSession: async (sessionId) => sessions.find((session) => session.sessionId === sessionId) || null,
+        subscribeSession: () => () => {},
         createSession: async (options = {}) => {
             calls.createSession.push(options);
             const session = { sessionId: `s${calls.createSession.length}`, title: "Session", status: "idle" };
@@ -24,6 +25,9 @@ function makeController(transportOverrides = {}) {
             const session = { sessionId: `a${calls.createSessionForAgent.length}`, agentId: agentName, title: agentName, status: "idle" };
             sessions.push(session);
             return session;
+        },
+        setSessionModel: async (sessionId, options = {}) => {
+            calls.setSessionModel.push({ sessionId, options });
         },
         listCreatableAgents: async () => [],
         getSessionCreationPolicy: () => ({ creation: { allowGeneric: true } }),
@@ -157,4 +161,60 @@ test("New+Model with reasoning effort opens the agent picker with model and effo
     assert.equal(calls.createSessionForAgent[0].agentName, "alpha");
     assert.equal(calls.createSessionForAgent[0].options.model, "openai:gpt-reasoning");
     assert.equal(calls.createSessionForAgent[0].options.reasoningEffort, "high");
+});
+
+test("Switch Model applies the target model default reasoning effort", async () => {
+    const session = { sessionId: "s-existing", title: "Existing", status: "idle", model: "openai:gpt-old", reasoningEffort: "low" };
+    const model = {
+        qualifiedName: "openai:gpt-reasoning",
+        providerId: "openai",
+        modelName: "gpt-reasoning",
+        supportedReasoningEfforts: ["low", "high"],
+        defaultReasoningEffort: "high",
+    };
+    const { controller, calls, store } = makeController({
+        sessions: [session],
+        listModels: async () => [model],
+        getDefaultModel: () => "openai:gpt-old",
+        getModelsByProvider: () => [{ providerId: "openai", type: "openai", models: [model] }],
+    });
+    store.dispatch({ type: "sessions/loaded", sessions: [session] });
+    store.dispatch({ type: "sessions/selected", sessionId: session.sessionId });
+
+    await controller.openSwitchModelPicker();
+    assert.equal(store.getState().ui.modal?.type, "modelPicker");
+    assert.equal(store.getState().ui.modal?.sessionOptions?.mode, "switchModel");
+    await controller.confirmModal();
+    assert.equal(store.getState().ui.modal?.type, "reasoningEffortPicker");
+    await controller.confirmModal();
+
+    assert.equal(calls.setSessionModel.length, 1);
+    assert.equal(calls.setSessionModel[0].sessionId, session.sessionId);
+    assert.equal(calls.setSessionModel[0].options.model, "openai:gpt-reasoning");
+    assert.equal(calls.setSessionModel[0].options.reasoningEffort, "high");
+    assert.equal(calls.setSessionModel[0].options.source, "ui");
+});
+
+test("Switch Model clears reasoning effort when the target model has no efforts", async () => {
+    const session = { sessionId: "s-existing", title: "Existing", status: "idle", model: "openai:gpt-old", reasoningEffort: "high" };
+    const model = { qualifiedName: "openai:gpt-simple", providerId: "openai", modelName: "gpt-simple" };
+    const { controller, calls, store } = makeController({
+        sessions: [session],
+        listModels: async () => [model],
+        getDefaultModel: () => "openai:gpt-old",
+        getModelsByProvider: () => [{ providerId: "openai", type: "openai", models: [model] }],
+    });
+    store.dispatch({ type: "sessions/loaded", sessions: [session] });
+    store.dispatch({ type: "sessions/selected", sessionId: session.sessionId });
+
+    await controller.openSwitchModelPicker();
+    assert.equal(store.getState().ui.modal?.type, "modelPicker");
+    await controller.confirmModal();
+
+    assert.equal(calls.setSessionModel.length, 1);
+    assert.equal(calls.setSessionModel[0].sessionId, session.sessionId);
+    assert.equal(calls.setSessionModel[0].options.model, "openai:gpt-simple");
+    assert.equal(calls.setSessionModel[0].options.reasoningEffort, null);
+    assert.equal(calls.setSessionModel[0].options.source, "ui");
+    assert.equal(store.getState().ui.modal, null);
 });

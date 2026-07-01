@@ -7,6 +7,7 @@
  *   - read_session_info
  *   - read_user_stats
  *   - read_session_metric_summary
+ *   - read_session_tokens_by_model
  *   - read_session_tree_stats
  *   - read_fleet_stats
  *   - read_agent_events with lineage gate bypassed
@@ -108,6 +109,7 @@ describe("Agent Tuner: read-only diagnostic tools", () => {
                 "read_session_graph_edge_search_usage",
                 "read_session_graph_node_usage",
                 "read_session_metric_summary",
+                "read_session_tokens_by_model",
                 "read_session_retrieval_usage",
                 "read_session_tree_stats",
                 "read_session_tree_retrieval_usage",
@@ -120,6 +122,35 @@ describe("Agent Tuner: read-only diagnostic tools", () => {
         } finally {
             await catalog.close();
         }
+    });
+
+    it("read_session_tokens_by_model returns per-session model buckets", async () => {
+        const rows = [{
+            model: "github-copilot:gpt-5.5:medium",
+            turnCount: 2,
+            totalTokensInput: 1200,
+            totalTokensOutput: 150,
+            totalTokensCacheRead: 600,
+            totalTokensCacheWrite: 40,
+        }];
+        const catalog = {
+            async getSessionTokensByModel(sessionId) {
+                assertEqual(sessionId, "session-123", "tool normalizes session id before querying catalog");
+                return rows;
+            },
+        };
+        const tools = createInspectTools({ catalog, agentIdentity: "agent-tuner" });
+        const result = await findTool(tools, "read_session_tokens_by_model").handler(
+            { session_id: "session-session-123" },
+            { sessionId: "tuner-1" },
+        );
+
+        assertEqual(result.sessionId, "session-123", "result echoes normalized session id");
+        assertEqual(result.rows, rows, "result includes catalog rows");
+        assertEqual(result.modelBucketCount, 1, "result includes bucket count");
+        assertEqual(result.totalTurnCount, 2, "result includes total turn count");
+        assertEqual(result.totalTokensInput, 1200, "result includes input total");
+        assertEqual(result.totalTokensOutput, 150, "result includes output total");
     });
 
     it("Tuner bypasses lineage gate on read_agent_events", { timeout: TIMEOUT * 2 }, async () => {
@@ -179,6 +210,14 @@ describe("Agent Tuner: read-only diagnostic tools", () => {
             // Summary may not be populated yet for very-fast sessions; just shape-check.
             assert("exists" in summary, "summary returns exists field");
 
+            const byModel = await findTool(tools, "read_session_tokens_by_model").handler(
+                { session_id: parentId },
+                { sessionId: "tuner-1" },
+            );
+            assertEqual(byModel.sessionId, parentId, "tokens-by-model echoes id");
+            assert(Array.isArray(byModel.rows), "tokens-by-model returns rows array");
+            assert(typeof byModel.modelBucketCount === "number", "tokens-by-model returns bucket count");
+
             const tree = await findTool(tools, "read_session_tree_stats").handler(
                 { session_id: parentId },
                 { sessionId: "tuner-1" },
@@ -216,6 +255,7 @@ describe("Agent Tuner: read-only diagnostic tools", () => {
                 "read_session_info",
                 "read_user_stats",
                 "read_session_metric_summary",
+                "read_session_tokens_by_model",
                 "read_session_tree_stats",
                 "read_fleet_stats",
                 "read_orchestration_stats",

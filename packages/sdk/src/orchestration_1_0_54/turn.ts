@@ -62,42 +62,6 @@ interface RetryContext {
     phase: "runTurn.throw" | "turn.result.error";
 }
 
-function currentModelLabel(runtime: DurableSessionRuntime): string {
-    const model = runtime.state.config.model || "(default)";
-    const effort = runtime.state.config.reasoningEffort;
-    return effort ? `${model}:${effort}` : model;
-}
-
-/**
- * Scan a finished turn's captured events for a failed `set_session_model` tool
- * call. The inline control tool returns its outcome as a plain string (see
- * session-proxy `setSessionModel`), so `tool.execution_complete.data.result`
- * is usually a string; some transports wrap it as `{ content }`. We match the
- * `set_session_model failed` marker across both shapes. Exported for unit tests.
- */
-export function detectFailedModelSwitch(events: Array<{ eventType?: string; data?: any }> | undefined): string | null {
-    if (!Array.isArray(events)) return null;
-    for (const event of events) {
-        if (event?.eventType !== "tool.execution_complete") continue;
-        const data = event.data || {};
-        const result = data.result ?? data.output;
-        const content = typeof result === "string"
-            ? result
-            : String(result?.content ?? result?.detailedContent ?? data.content ?? "");
-        if (/set_session_model (?:failed|is unavailable|rejected)/i.test(content)) return content.trim();
-    }
-    return null;
-}
-
-function captureFailedModelSwitchNotice(runtime: DurableSessionRuntime, result: TurnResult): string | null {
-    const failure = detectFailedModelSwitch((result as any)?.events);
-    if (!failure) return null;
-    const modelLabel = currentModelLabel(runtime);
-    runtime.state.runtimeModelNotice = `Previous model switch failed; current runtime model is ${modelLabel}. If asked what model you are using, answer this value.`;
-    runtime.ctx.traceInfo(`[orch] queued failed model-switch correction: ${failure.slice(0, 160)}`);
-    return `Continue on ${modelLabel}; the requested model switch failed.`;
-}
-
 function* handleConnectionClosedRetry(
     runtime: DurableSessionRuntime,
     errorMessage: string,
@@ -261,10 +225,6 @@ export function* processPrompt(
     const extractedPrompt = extractPromptSystemContext(prompt);
     prompt = extractedPrompt.prompt ?? "";
     turnSystemPrompt = mergePrompt(turnSystemPrompt, extractedPrompt.systemPrompt);
-    if (prompt && state.runtimeModelNotice) {
-        turnSystemPrompt = mergePrompt(turnSystemPrompt, state.runtimeModelNotice);
-        state.runtimeModelNotice = undefined;
-    }
     const systemOnlyTurn = !prompt && !!turnSystemPrompt;
     if (systemOnlyTurn) {
         prompt = INTERNAL_SYSTEM_TURN_PROMPT;
@@ -386,16 +346,9 @@ export function* processPrompt(
     state.config.turnSystemPrompt = undefined;
     state.retryCount = 0;
 
-    let result: TurnResult = typeof turnResult === "string" ? JSON.parse(turnResult) : turnResult;
+    const result: TurnResult = typeof turnResult === "string" ? JSON.parse(turnResult) : turnResult;
     const observedAt: number = yield ctx.utcNow();
     state.contextUsage = updateContextUsageFromEvents(state.contextUsage, (result as any)?.events, observedAt);
-    const failedModelSwitchContinuePrompt = captureFailedModelSwitchNotice(runtime, result);
-    if (failedModelSwitchContinuePrompt && result.type === "completed") {
-        result = {
-            ...result,
-            forceContinuePrompt: failedModelSwitchContinuePrompt,
-        } as TurnResult;
-    }
 
     state.iteration++;
     yield* maybeSummarize(runtime);
@@ -478,14 +431,6 @@ export function* handleTurnResult(
                 content: result.content,
                 model: (result as any).model,
             });
-
-            if (result.forceContinuePrompt) {
-                ctx.traceInfo(`[orch] continuing after terminal model switch failure`);
-                yield* versionedContinueAsNew(runtime, continueInputWithPrompt(runtime, result.forceContinuePrompt, {
-                    bootstrapPrompt: true,
-                }));
-                return;
-            }
 
             if (options.parentSessionId) {
                 const cycleReport = (result as any).cycleReport;
@@ -935,7 +880,7 @@ export function* processTimer(
                 data: {},
             }]);
             const activeCron = state.cronSchedule!;
-            const cycleReportGuidance = "If this cycle finds material changes or blockers that should wake your parent, call report_cycle(status='material' or status='blocked', summary='...') before finishing. If nothing material changed, do NOT call report_cycle at all — just end the turn silently. Do not emit report_cycle(status='quiet') on an uneventful cycle, and never write a tool call as text.";
+            const cycleReportGuidance = "If this cycle finds material changes or blockers that should wake your parent, call report_cycle(status='material' or status='blocked', summary='...') before finishing. If nothing material changed, omit report_cycle or call report_cycle(status='quiet').";
             const cronPrompt = `[SYSTEM: Scheduled cron wake-up for: "${activeCron.reason}". Resume your recurring task. ${cycleReportGuidance}]`;
             if (timer.shouldRehydrate) {
                 yield* processPrompt(
@@ -994,8 +939,7 @@ export function* processTimer(
                 `Schedule: ${description}. Scheduled fire: ${new Date(scheduledAtMs).toISOString()}. ` +
                 `Resume your recurring task now. ` +
                 `If this cycle finds material changes or blockers that should wake your parent, call report_cycle(status='material' or status='blocked', summary='...') before finishing. ` +
-                `If nothing material changed, do NOT call report_cycle at all — just end the turn silently. ` +
-                `Do not emit report_cycle(status='quiet') on an uneventful cycle, and never write a tool call as text.]`;
+                `If nothing material changed, omit report_cycle or call report_cycle(status='quiet').]`;
             if (timer.shouldRehydrate) {
                 yield* processPrompt(
                     runtime,
@@ -1003,8 +947,7 @@ export function* processTimer(
                         `Scheduled wall-clock cron wake-up for "${activeCronAt.reason}". ` +
                         `Schedule: ${description}. Scheduled fire: ${new Date(scheduledAtMs).toISOString()}. ` +
                         `If this cycle finds material changes or blockers that should wake your parent, call report_cycle(status='material' or status='blocked', summary='...') before finishing. ` +
-                        `If nothing material changed, do NOT call report_cycle at all — just end the turn silently. ` +
-                        `Do not emit report_cycle(status='quiet') on an uneventful cycle, and never write a tool call as text.`),
+                        `If nothing material changed, omit report_cycle or call report_cycle(status='quiet').`),
                     true,
                     undefined,
                     undefined,

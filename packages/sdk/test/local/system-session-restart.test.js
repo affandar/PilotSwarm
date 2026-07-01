@@ -128,7 +128,25 @@ function createRestartHarness() {
     mgmt._catalog = catalog;
     mgmt._duroxideClient = duroxide;
     mgmt._factStore = facts;
-    mgmt._modelProviders = { defaultModel: "test:model" };
+    mgmt._modelProviders = {
+        defaultModel: "test:model",
+        allModels: [
+            {
+                qualifiedName: "test:model",
+                providerId: "test",
+                providerType: "test-provider",
+                modelName: "model",
+            },
+            {
+                qualifiedName: "test:sonnet-4.6",
+                providerId: "test",
+                providerType: "test-provider",
+                modelName: "sonnet-4.6",
+                supportedReasoningEfforts: ["low", "medium", "high"],
+                defaultReasoningEffort: "medium",
+            },
+        ],
+    };
     mgmt._systemAgents = [agent];
 
     return { mgmt, rows, calls, agent, sessionId };
@@ -139,6 +157,28 @@ function callTypes(calls) {
 }
 
 describe("system session restart management", () => {
+    it("switches a system session model through the durable set_model command without restarting", async () => {
+        const { mgmt, rows, calls, sessionId } = createRestartHarness();
+
+        await mgmt.setSessionModel(sessionId, "test:sonnet-4.6");
+
+        const commandCall = calls.find((call) => call.type === "enqueueEvent");
+        assert(commandCall, "system model switch should enqueue a durable command");
+        assertEqual(commandCall.orchId, `session-${sessionId}`, "system model switch targets the existing orchestration");
+        assertEqual(commandCall.name, "messages", "system model switch uses the orchestration message queue");
+        assertEqual(commandCall.body.cmd, "set_model", "system model switch should use the normal set_model command");
+        assertEqual(commandCall.body.args.model, "test:sonnet-4.6", "system model switch command should carry target model");
+        assertEqual(commandCall.body.args.reasoningEffort, "medium", "system model switch should use target default effort");
+        assertEqual(commandCall.body.args.source, "user", "control-plane system switch source");
+        assertEqual(rows.get(sessionId).deletedAt, null, "system model switch should not archive/delete the CMS row");
+        assertEqual(rows.get(sessionId).state, "running", "system model switch should leave the existing row running until command processing");
+        assert(!callTypes(calls).includes("cancelInstance"), "system model switch should not cancel the orchestration");
+        assert(!callTypes(calls).includes("deleteInstance"), "system model switch should not delete the orchestration");
+        assert(!callTypes(calls).includes("archiveSystemSessionForRestart"), "system model switch should not archive for restart");
+        assert(!callTypes(calls).includes("startOrchestrationVersioned"), "system model switch should not recreate the system agent");
+        assert(!callTypes(calls).includes("deleteSessionFactsForSession"), "system model switch should not clear session facts");
+    });
+
     it("hard-deletes a system session through the privileged restart path and recreates it", async () => {
         const { mgmt, rows, calls, sessionId } = createRestartHarness();
 

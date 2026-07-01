@@ -1,6 +1,6 @@
 /**
  * Sweeper Agent Tools — system maintenance tools for scanning and cleaning
- * up completed/zombie sessions.
+ * up terminal sessions.
  *
  * Leverages duroxide's bulk prune APIs (deleteInstanceBulk, pruneExecutionsBulk)
  * for efficient cleanup, plus CMS-level soft-delete for session metadata.
@@ -37,32 +37,25 @@ export function createSweeperTools(opts: {
     /**
      * Re-derive whether a session is independently cleanable, mirroring the
      * eligibility rules used by scan_completed_sessions. This is the guardrail
-     * that stops cleanup_session from deleting a LIVE root just because the model
-     * inferred it from a cluster of stale children: a root is only cleanable when
-     * its OWN orchestration is terminal, and a non-terminal session is only
-     * cleanable when it is an idle or orphaned child.
+    * that stops cleanup_session from deleting any LIVE session just because it
+    * is idle, orphaned, or a child of a stale-looking parent. A session is only
+    * cleanable when its OWN orchestration is terminal.
      */
     async function evaluateCleanupEligibility(
         session: { sessionId: string; parentSessionId: string | null; updatedAt: Date },
         graceMinutes: number,
     ): Promise<{ eligible: boolean; status: string; reason: string }> {
         let orchStatus = "NotFound";
-        let customStatus: any = {};
         try {
             const st = await duroxideClient.getStatus(`session-${session.sessionId}`);
             orchStatus = st?.status ?? "NotFound";
-            if (st?.customStatus) {
-                customStatus = typeof st.customStatus === "string"
-                    ? JSON.parse(st.customStatus)
-                    : st.customStatus;
-            }
         } catch {
             orchStatus = "NotFound";
         }
 
         const isRoot = !session.parentSessionId;
         const terminal = TERMINAL_ORCH.has(orchStatus);
-        const stale = session.updatedAt.getTime() < Date.now() - graceMinutes * 60 * 1000;
+        const stale = graceMinutes <= 0 || session.updatedAt.getTime() < Date.now() - graceMinutes * 60 * 1000;
 
         // Rule A: terminal orchestration (Completed/Failed/Terminated/NotFound).
         if (terminal) {
@@ -76,17 +69,6 @@ export function createSweeperTools(opts: {
             return { eligible: true, status: orchStatus, reason: `Orchestration ${orchStatus.toLowerCase()}` };
         }
 
-        // Non-terminal (live orchestration): only idle or orphaned CHILDREN qualify.
-        if (!isRoot && customStatus?.status === "idle" && stale) {
-            return { eligible: true, status: "zombie", reason: "Sub-agent idle (zombie)" };
-        }
-        if (!isRoot && stale) {
-            const parent = await catalog.getSession(session.parentSessionId!);
-            if (!parent || parent.deletedAt != null) {
-                return { eligible: true, status: "orphan", reason: "Parent session no longer exists" };
-            }
-        }
-
         if (isRoot) {
             return {
                 eligible: false,
@@ -94,13 +76,13 @@ export function createSweeperTools(opts: {
                 reason:
                     `Refusing to clean a ROOT session with a live (${orchStatus}) orchestration. ` +
                     `A root is only cleanable when its OWN orchestration is Completed/Failed/Terminated/NotFound. ` +
-                    `Never infer a parent's status from stale children — clean each stale child by its own sessionId, never the parent.`,
+                    `Never infer a parent's status from stale children.`,
             };
         }
         return {
             eligible: false,
             status: orchStatus,
-            reason: `Target is not terminal, idle, or orphaned (orchestration ${orchStatus}); not eligible for cleanup.`,
+            reason: `Refusing to clean a CHILD session with a live (${orchStatus}) orchestration. Only terminal child sessions are eligible for cleanup. Idle or orphaned live children must not be swept.`,
         };
     }
 
@@ -108,11 +90,10 @@ export function createSweeperTools(opts: {
 
     const scanTool = defineTool("scan_completed_sessions", {
         description:
-            "Scan for completed, failed, or orphaned sessions that are eligible for cleanup. " +
-            "Returns CHILD/leaf candidates that have been idle/completed longer than the specified grace period. " +
-            "IMPORTANT: the parentSessionId on each result is diagnostic CONTEXT ONLY — it is NOT a cleanup target. " +
-            "Never infer that a parent/root is stale because its children are. Pass only sessionId values from sessions[] " +
-            "to cleanup_session — including stale children, which are cleaned by their own sessionId (singly or as a sessionIds[] batch).",
+            "Scan for terminal sessions that are eligible for cleanup. " +
+            "Only sessions whose OWN orchestration is Completed, Failed, Terminated, or NotFound are returned. " +
+            "Idle, zombie, orphaned, or otherwise live sessions are not cleanup candidates, including child sessions. " +
+            "Pass only sessionId values from sessions[] to cleanup_session.",
         parameters: {
             type: "object" as const,
             properties: {
@@ -124,13 +105,12 @@ export function createSweeperTools(opts: {
                 includeOrphans: {
                     type: "boolean",
                     description:
-                        "Include orphaned sub-agents whose parent session no longer exists. Default: true",
+                        "Deprecated/no-op. Orphaned live sessions are no longer cleanup candidates; only terminal sessions are returned.",
                 },
             },
         },
         handler: async (args: { graceMinutes?: number; includeOrphans?: boolean }) => {
             const graceMinutes = args.graceMinutes ?? 5;
-            const includeOrphans = args.includeOrphans ?? true;
             const results: Array<{
                 sessionId: string;
                 parentSessionId?: string;
@@ -142,7 +122,6 @@ export function createSweeperTools(opts: {
 
             try {
                 const allSessions = await catalog.listSessions();
-                const sessionIds = new Set(allSessions.map(s => s.sessionId));
                 const cutoff = new Date(Date.now() - graceMinutes * 60 * 1000);
 
                 for (const session of allSessions) {
@@ -150,15 +129,8 @@ export function createSweeperTools(opts: {
                     if (session.isSystem) continue;
 
                     let orchStatus: any = {};
-                    let customStatus: any = {};
-
                     try {
                         orchStatus = await duroxideClient.getStatus(`session-${session.sessionId}`);
-                        if (orchStatus.customStatus) {
-                            customStatus = typeof orchStatus.customStatus === "string"
-                                ? JSON.parse(orchStatus.customStatus)
-                                : orchStatus.customStatus;
-                        }
                     } catch {
                         // Orchestration not found — treat as completed
                         orchStatus = { status: "NotFound" };
@@ -188,40 +160,6 @@ export function createSweeperTools(opts: {
                         }
                         continue;
                     }
-
-                    // Check for idle sub-agents (completed their task but orch still running)
-                    if (
-                        session.parentSessionId &&
-                        customStatus.status === "idle" &&
-                        session.updatedAt < cutoff
-                    ) {
-                        results.push({
-                            sessionId: session.sessionId,
-                            parentSessionId: session.parentSessionId,
-                            status: "zombie",
-                            title: session.title ?? undefined,
-                            age: ageStr,
-                            reason: "Sub-agent idle (zombie)",
-                        });
-                        continue;
-                    }
-
-                    // Check for orphaned sub-agents
-                    if (
-                        includeOrphans &&
-                        session.parentSessionId &&
-                        !sessionIds.has(session.parentSessionId) &&
-                        session.updatedAt < cutoff
-                    ) {
-                        results.push({
-                            sessionId: session.sessionId,
-                            parentSessionId: session.parentSessionId,
-                            status: "orphan",
-                            title: session.title ?? undefined,
-                            age: ageStr,
-                            reason: "Parent session no longer exists",
-                        });
-                    }
                 }
 
                 return {
@@ -229,9 +167,9 @@ export function createSweeperTools(opts: {
                     graceMinutes,
                     sessions: results,
                     guidance:
-                        "parentSessionId on each result is context only. Never pass a parentSessionId to cleanup_session " +
-                        "and never infer a parent's status from its children. Clean the returned sessions by their own sessionId — " +
-                        "batch them via cleanup_session(sessionIds=[...]) or clean one at a time — never the parent.",
+                        "Only terminal sessions are returned. Clean the returned sessions by their own sessionId — " +
+                        "batch them via cleanup_session(sessionIds=[...]) or clean one at a time. " +
+                        "Never sweep idle/zombie/orphaned live sessions; wait for their own orchestration to become terminal.",
                 };
             } catch (err: any) {
                 return { error: err.message, found: 0, sessions: [] };
@@ -293,12 +231,11 @@ export function createSweeperTools(opts: {
 
     const cleanupTool = defineTool("cleanup_session", {
         description:
-            "Delete completed/zombie/orphaned session(s) and all their descendants. " +
+            "Delete terminal session(s) and all their descendants. " +
             "Accepts a single sessionId OR a batch sessionIds[] — clean many stale sessions (e.g. all the children a scan returned) in one call. " +
             "Removes from CMS (soft-delete) and deletes the duroxide orchestration instance. " +
-            "Independently re-verifies EACH target is itself cleanable and REFUSES system sessions, live root sessions, " +
-            "and any target that is not terminal/idle/orphaned (refused targets are reported, not deleted). " +
-            "Only pass sessionIds that scan_completed_sessions returned in sessions[] — never a parentSessionId.",
+            "Independently re-verifies EACH target is terminal and REFUSES system sessions plus any live/non-terminal root or child session. " +
+            "Only pass sessionIds that scan_completed_sessions returned in sessions[]. Idle/zombie/orphaned live sessions are never cleanup targets.",
         parameters: {
             type: "object" as const,
             properties: {
@@ -309,7 +246,7 @@ export function createSweeperTools(opts: {
                 sessionIds: {
                     type: "array",
                     items: { type: "string" },
-                    description: "A batch of session IDs to clean up in one call (e.g. all stale children a scan returned). Each is gated independently; live roots / non-terminal targets are refused and reported, not deleted.",
+                    description: "A batch of terminal session IDs to clean up in one call. Each is gated independently; live/non-terminal targets are refused and reported, not deleted.",
                 },
                 reason: {
                     type: "string",
@@ -468,7 +405,7 @@ export function createSweeperTools(opts: {
     const statsTool = defineTool("get_system_stats", {
         description:
             "Get runtime statistics: total sessions, active count, completed count, " +
-            "zombie count, memory usage, uptime, and database connection info.",
+            "memory usage, uptime, and database connection info.",
         parameters: {
             type: "object" as const,
             properties: {},

@@ -704,6 +704,10 @@ export class NodeSdkTransport {
         return this.mgmt.getSessionMetricSummary(sessionId);
     }
 
+    async getSessionTokensByModel(sessionId) {
+        return this.mgmt.getSessionTokensByModel(sessionId);
+    }
+
     async getSessionTreeStats(sessionId) {
         return this.mgmt.getSessionTreeStats(sessionId);
     }
@@ -944,6 +948,13 @@ export class NodeSdkTransport {
 
     async restartSystemSession(agentIdOrSessionId, options) {
         return this.mgmt.restartSystemSession(agentIdOrSessionId, options || {});
+    }
+
+    async setSessionModel(sessionId, options = {}) {
+        return this.mgmt.setSessionModel(sessionId, options.model, {
+            ...("reasoningEffort" in options ? { reasoningEffort: options.reasoningEffort ?? null } : {}),
+            source: options.source || "ui",
+        });
     }
 
     async deleteSessionGroup(groupId) {

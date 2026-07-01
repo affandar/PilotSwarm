@@ -34,6 +34,7 @@ export function buildSystemAgentBootstrapPayload(
         blobEnabled?: boolean;
         dehydrateThreshold: number;
         parentSessionId?: string;
+        defaultReasoningEffort?: SerializableSessionConfig["reasoningEffort"];
     },
 ): {
     serializableConfig: SerializableSessionConfig;
@@ -41,6 +42,7 @@ export function buildSystemAgentBootstrapPayload(
 } {
     const serializableConfig: SerializableSessionConfig = {
         model: defaultModel,
+        ...(opts.defaultReasoningEffort ? { reasoningEffort: opts.defaultReasoningEffort } : {}),
         boundAgentName: agent.name,
         agentIdentity: agent.id,
         promptLayering: {
@@ -190,6 +192,7 @@ export async function startSystemAgents(opts: {
     duroxideClient: any;
     agents: AgentConfig[];
     defaultModel: string;
+    defaultReasoningEffort?: SerializableSessionConfig["reasoningEffort"];
     blobEnabled?: boolean;
     dehydrateThreshold: number;
     agentId?: string;
@@ -226,11 +229,13 @@ export async function startSystemAgents(opts: {
                 sessionId,
                 blobEnabled: opts.blobEnabled,
                 dehydrateThreshold: opts.dehydrateThreshold,
+                ...(opts.defaultReasoningEffort ? { defaultReasoningEffort: opts.defaultReasoningEffort } : {}),
                 ...(parentSessionId ? { parentSessionId } : {}),
             });
 
             await opts.catalog.createSession(sessionId, {
                 model: opts.defaultModel,
+                ...(opts.defaultReasoningEffort ? { reasoningEffort: opts.defaultReasoningEffort } : {}),
                 ...(parentSessionId ? { parentSessionId } : {}),
                 isSystem: true,
                 agentId: agent.id,

@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.3.1** — Hardens the Sweeper Agent cleanup tool so stale child sessions cannot be collapsed into unsafe live parent/root cleanup. `cleanup_session` now independently re-verifies every target, refuses live roots and non-terminal targets, and supports `sessionIds[]` batch cleanup to reduce Sweeper LLM tool-call turns while preserving per-session safety checks.
+> **Latest release: v0.3.2** — Adds current configured model visibility to `list_available_models`, hardens durable mid-session model switching, supports sticky session titles through `update_session_summary(title=...)`, tightens Sweeper cleanup to terminal sessions only, and guards against malformed text-emitted tool calls.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 

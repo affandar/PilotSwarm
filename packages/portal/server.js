@@ -12,6 +12,7 @@ import { PortalRuntime } from "./runtime.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST_DIR = path.join(__dirname, "dist");
+const DIST_ASSETS_DIR = path.join(DIST_DIR, "assets");
 
 function getPortalMode() {
     const explicitMode = process.env.PORTAL_TUI_MODE || process.env.PORTAL_MODE;
@@ -49,6 +50,11 @@ function createJsonRpcError(error, status = 500) {
             error: error?.message || String(error),
         },
     };
+}
+
+function sendSpaIndex(res) {
+    res.set("Cache-Control", "no-store, max-age=0");
+    res.sendFile(path.join(DIST_DIR, "index.html"));
 }
 
 export async function startServer(opts = {}) {
@@ -211,9 +217,17 @@ export async function startServer(opts = {}) {
     });
 
     if (fs.existsSync(DIST_DIR)) {
-        app.use(express.static(DIST_DIR));
+        app.use("/assets", express.static(DIST_ASSETS_DIR, {
+            immutable: true,
+            maxAge: "1y",
+            fallthrough: true,
+        }));
+        app.use("/assets", (_req, res) => {
+            res.status(404).type("text/plain").send("Asset not found");
+        });
+        app.use(express.static(DIST_DIR, { index: false }));
         app.get(/^\/(?!api\/).*/, (_req, res) => {
-            res.sendFile(path.join(DIST_DIR, "index.html"));
+            sendSpaIndex(res);
         });
     }
 

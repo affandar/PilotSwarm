@@ -1321,6 +1321,7 @@ export function appReducer(state, action) {
                 loading: false,
                 fetchedAt: Date.now(),
                 summary: action.summary || null,
+                tokensByModel: Array.isArray(action.tokensByModel) ? action.tokensByModel : [],
                 treeStats: action.treeStats || null,
                 skillUsage: action.skillUsage || null,
                 treeSkillUsage: action.treeSkillUsage || null,

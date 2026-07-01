@@ -120,6 +120,16 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "retrieval_usage_procs",
             sql: migration_0021_retrieval_usage_procs(schema),
         },
+        {
+            version: "0022",
+            name: "turn_metrics_reasoning_effort",
+            sql: migration_0022_turn_metrics_reasoning_effort(schema),
+        },
+        {
+            version: "0023",
+            name: "turn_metrics_stats_fallbacks_and_group_owner_patch",
+            sql: migration_0023_turn_metrics_stats_fallbacks_and_group_owner_patch(schema),
+        },
     ];
 }
 
@@ -2787,7 +2797,7 @@ BEGIN
         is_system         = CASE WHEN p_updates ? 'isSystem'        THEN (p_updates->>'isSystem')::BOOLEAN                         ELSE is_system         END,
         agent_id          = CASE WHEN p_updates ? 'agentId'         THEN (p_updates->>'agentId')                                   ELSE agent_id          END,
         splash            = CASE WHEN p_updates ? 'splash'          THEN (p_updates->>'splash')                                    ELSE splash            END,
-        group_id          = CASE WHEN p_updates ? 'groupId'         THEN NULLIF(BTRIM(p_updates->>'groupId'), '')                  ELSE group_id          END,
+        group_id          = group_id,
         updated_at        = now()
     WHERE session_id = p_session_id;
 
@@ -3427,4 +3437,836 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 `;
+}
+
+// ─── Migration 0022: Turn Metrics Reasoning Effort ──────────────
+
+function migration_0022_turn_metrics_reasoning_effort(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- 0022_turn_metrics_reasoning_effort:
+--   - Add reasoning_effort to per-turn metrics so token attribution aligns with
+--     the session row model:effort convention and survives mid-session switches.
+--   - Add model+effort composite indexes for by-model aggregation.
+--   - Extend insert/read procs; add per-session by-model rollup with turn count.
+
+DO $$
+BEGIN
+    IF to_regclass('${schema}.session_metrics') IS NULL
+       AND to_regclass('${schema}.session_metric_summaries') IS NOT NULL THEN
+        ALTER TABLE ${s}.session_metric_summaries RENAME TO session_metrics;
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+DO $$
+BEGIN
+    IF to_regclass('${schema}.session_metric_summaries') IS NULL
+       AND to_regclass('${schema}.session_metrics') IS NOT NULL THEN
+        EXECUTE 'CREATE VIEW ${s}.session_metric_summaries AS SELECT * FROM ${s}.session_metrics';
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE INDEX IF NOT EXISTS idx_${schema}_session_metrics_agent_model
+    ON ${s}.session_metrics(agent_id, model);
+CREATE INDEX IF NOT EXISTS idx_${schema}_session_metrics_agent_model_effort
+    ON ${s}.session_metrics(agent_id, model, reasoning_effort);
+CREATE INDEX IF NOT EXISTS idx_${schema}_session_metrics_parent
+    ON ${s}.session_metrics(parent_session_id);
+CREATE INDEX IF NOT EXISTS idx_${schema}_session_metrics_updated
+    ON ${s}.session_metrics(updated_at DESC);
+
+DROP INDEX IF EXISTS ${s}.idx_${schema}_sms_agent_model;
+DROP INDEX IF EXISTS ${s}.idx_${schema}_sms_agent_model_reasoning;
+DROP INDEX IF EXISTS ${s}.idx_${schema}_sms_parent;
+DROP INDEX IF EXISTS ${s}.idx_${schema}_sms_updated;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_update_session_group(
+    p_group_id TEXT,
+    p_patch    JSONB
+) RETURNS VOID AS $$
+BEGIN
+    UPDATE ${s}.session_groups
+    SET title = CASE WHEN p_patch ? 'title' THEN NULLIF(BTRIM(p_patch->>'title'), '') ELSE title END,
+        description = CASE WHEN p_patch ? 'description' THEN p_patch->>'description' ELSE description END,
+        owner = CASE WHEN p_patch ? 'owner' THEN p_patch->'owner' ELSE owner END,
+        metadata = CASE WHEN p_patch ? 'metadataPatch' THEN metadata || COALESCE(p_patch->'metadataPatch', '{}'::jsonb) ELSE metadata END,
+        updated_at = now()
+    WHERE group_id = p_group_id;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_get_session_metric_summary(
+    p_session_id TEXT
+) RETURNS SETOF ${s}.session_metrics AS $$
+BEGIN
+    RETURN QUERY
+    SELECT * FROM ${s}.session_metrics
+    WHERE session_id = p_session_id;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_create_session(
+    p_session_id        TEXT,
+    p_model             TEXT,
+    p_reasoning_effort  TEXT,
+    p_parent_session_id TEXT,
+    p_is_system         BOOLEAN,
+    p_agent_id          TEXT,
+    p_splash            TEXT,
+    p_group_id          TEXT
+) RETURNS VOID AS $$
+DECLARE
+    v_reasoning_effort TEXT := NULLIF(BTRIM(p_reasoning_effort), '');
+    v_group_id TEXT := NULLIF(BTRIM(p_group_id), '');
+BEGIN
+    IF v_group_id IS NULL AND p_parent_session_id IS NOT NULL THEN
+        SELECT group_id INTO v_group_id
+        FROM ${s}.sessions
+        WHERE session_id = p_parent_session_id;
+    END IF;
+
+    INSERT INTO ${s}.sessions
+        (session_id, model, reasoning_effort, parent_session_id, is_system, agent_id, splash, group_id)
+    VALUES
+        (p_session_id, p_model, v_reasoning_effort, p_parent_session_id, p_is_system, p_agent_id, p_splash, v_group_id)
+    ON CONFLICT (session_id) DO UPDATE
+    SET model             = EXCLUDED.model,
+        reasoning_effort  = EXCLUDED.reasoning_effort,
+        parent_session_id = EXCLUDED.parent_session_id,
+        is_system         = EXCLUDED.is_system,
+        agent_id          = EXCLUDED.agent_id,
+        splash            = EXCLUDED.splash,
+        group_id          = EXCLUDED.group_id,
+        deleted_at        = NULL,
+        updated_at        = now(),
+        state             = 'pending',
+        orchestration_id  = NULL,
+        last_error        = NULL,
+        last_active_at    = NULL,
+        current_iteration = 0,
+        wait_reason       = NULL,
+        title_locked      = FALSE
+    WHERE ${s}.sessions.deleted_at IS NOT NULL;
+
+    INSERT INTO ${s}.session_metrics
+        (session_id, agent_id, model, reasoning_effort, parent_session_id)
+    VALUES
+        (p_session_id, p_agent_id, p_model, v_reasoning_effort, p_parent_session_id)
+    ON CONFLICT (session_id) DO UPDATE
+    SET agent_id          = COALESCE(${s}.session_metrics.agent_id, EXCLUDED.agent_id),
+        model             = COALESCE(${s}.session_metrics.model, EXCLUDED.model),
+        reasoning_effort  = COALESCE(${s}.session_metrics.reasoning_effort, EXCLUDED.reasoning_effort),
+        parent_session_id = COALESCE(${s}.session_metrics.parent_session_id, EXCLUDED.parent_session_id),
+        updated_at        = now();
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_update_session(
+    p_session_id TEXT,
+    p_updates    JSONB
+) RETURNS VOID AS $$
+BEGIN
+    UPDATE ${s}.sessions SET
+        orchestration_id  = CASE WHEN p_updates ? 'orchestrationId'  THEN (p_updates->>'orchestrationId')                         ELSE orchestration_id  END,
+        title             = CASE WHEN p_updates ? 'title'            THEN (p_updates->>'title')                                    ELSE title             END,
+        title_locked      = CASE WHEN p_updates ? 'titleLocked'     THEN (p_updates->>'titleLocked')::BOOLEAN                     ELSE title_locked      END,
+        state             = CASE WHEN p_updates ? 'state'           THEN (p_updates->>'state')                                     ELSE state             END,
+        model             = CASE WHEN p_updates ? 'model'           THEN (p_updates->>'model')                                     ELSE model             END,
+        reasoning_effort  = CASE WHEN p_updates ? 'reasoningEffort' THEN NULLIF(BTRIM(p_updates->>'reasoningEffort'), '')          ELSE reasoning_effort  END,
+        last_active_at    = CASE WHEN p_updates ? 'lastActiveAt'    THEN (p_updates->>'lastActiveAt')::TIMESTAMPTZ                 ELSE last_active_at    END,
+        current_iteration = CASE WHEN p_updates ? 'currentIteration' THEN (p_updates->>'currentIteration')::INT                   ELSE current_iteration END,
+        last_error        = CASE WHEN p_updates ? 'lastError'       THEN (p_updates->>'lastError')                                 ELSE last_error        END,
+        wait_reason       = CASE WHEN p_updates ? 'waitReason'      THEN (p_updates->>'waitReason')                                ELSE wait_reason       END,
+        is_system         = CASE WHEN p_updates ? 'isSystem'        THEN (p_updates->>'isSystem')::BOOLEAN                         ELSE is_system         END,
+        agent_id          = CASE WHEN p_updates ? 'agentId'         THEN (p_updates->>'agentId')                                   ELSE agent_id          END,
+        splash            = CASE WHEN p_updates ? 'splash'          THEN (p_updates->>'splash')                                    ELSE splash            END,
+        group_id          = group_id,
+        updated_at        = now()
+    WHERE session_id = p_session_id;
+
+    IF p_updates ? 'groupId' THEN
+        PERFORM ${s}.cms_assign_session_group(p_session_id, p_updates->>'groupId');
+    END IF;
+
+    UPDATE ${s}.session_metrics
+    SET model = CASE WHEN p_updates ? 'model' THEN (p_updates->>'model') ELSE model END,
+        reasoning_effort = CASE WHEN p_updates ? 'reasoningEffort' THEN NULLIF(BTRIM(p_updates->>'reasoningEffort'), '') ELSE reasoning_effort END,
+        updated_at = CASE WHEN p_updates ? 'model' OR p_updates ? 'reasoningEffort' THEN now() ELSE updated_at END
+    WHERE session_id = p_session_id
+      AND (p_updates ? 'model' OR p_updates ? 'reasoningEffort');
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_upsert_session_metric_summary(
+    p_session_id TEXT,
+    p_updates    JSONB
+) RETURNS VOID AS $$
+DECLARE
+    v_snapshot       BIGINT  := COALESCE((p_updates->>'snapshotSizeBytes')::BIGINT, 0);
+    v_dehydration    INT     := COALESCE((p_updates->>'dehydrationCountIncrement')::INT, 0);
+    v_hydration      INT     := COALESCE((p_updates->>'hydrationCountIncrement')::INT, 0);
+    v_lossy          INT     := COALESCE((p_updates->>'lossyHandoffCountIncrement')::INT, 0);
+    v_tokens_in      BIGINT  := COALESCE((p_updates->>'tokensInputIncrement')::BIGINT, 0);
+    v_tokens_out     BIGINT  := COALESCE((p_updates->>'tokensOutputIncrement')::BIGINT, 0);
+    v_tokens_cread   BIGINT  := COALESCE((p_updates->>'tokensCacheReadIncrement')::BIGINT, 0);
+    v_tokens_cwrite  BIGINT  := COALESCE((p_updates->>'tokensCacheWriteIncrement')::BIGINT, 0);
+    v_set_dehydrated BOOLEAN := COALESCE((p_updates->>'lastDehydratedAt')::BOOLEAN, FALSE);
+    v_set_hydrated   BOOLEAN := COALESCE((p_updates->>'lastHydratedAt')::BOOLEAN, FALSE);
+    v_set_checkpoint BOOLEAN := COALESCE((p_updates->>'lastCheckpointAt')::BOOLEAN, FALSE);
+BEGIN
+    INSERT INTO ${s}.session_metrics (
+        session_id, snapshot_size_bytes,
+        dehydration_count, hydration_count, lossy_handoff_count,
+        tokens_input, tokens_output, tokens_cache_read, tokens_cache_write
+    ) VALUES (
+        p_session_id, v_snapshot,
+        v_dehydration, v_hydration, v_lossy,
+        v_tokens_in, v_tokens_out, v_tokens_cread, v_tokens_cwrite
+    )
+    ON CONFLICT (session_id) DO UPDATE SET
+        snapshot_size_bytes = CASE
+            WHEN p_updates ? 'snapshotSizeBytes'
+            THEN v_snapshot
+            ELSE ${s}.session_metrics.snapshot_size_bytes
+        END,
+        dehydration_count   = ${s}.session_metrics.dehydration_count   + v_dehydration,
+        hydration_count     = ${s}.session_metrics.hydration_count     + v_hydration,
+        lossy_handoff_count = ${s}.session_metrics.lossy_handoff_count + v_lossy,
+        tokens_input        = ${s}.session_metrics.tokens_input        + v_tokens_in,
+        tokens_output       = ${s}.session_metrics.tokens_output       + v_tokens_out,
+        tokens_cache_read   = ${s}.session_metrics.tokens_cache_read   + v_tokens_cread,
+        tokens_cache_write  = ${s}.session_metrics.tokens_cache_write  + v_tokens_cwrite,
+        last_dehydrated_at  = CASE WHEN v_set_dehydrated THEN now() ELSE ${s}.session_metrics.last_dehydrated_at END,
+        last_hydrated_at    = CASE WHEN v_set_hydrated   THEN now() ELSE ${s}.session_metrics.last_hydrated_at   END,
+        last_checkpoint_at  = CASE WHEN v_set_checkpoint  THEN now() ELSE ${s}.session_metrics.last_checkpoint_at  END,
+        updated_at          = now();
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_prune_deleted_summaries(
+    p_older_than TIMESTAMPTZ
+) RETURNS BIGINT AS $$
+DECLARE
+    deleted_count BIGINT;
+BEGIN
+    DELETE FROM ${s}.session_metrics
+    WHERE deleted_at IS NOT NULL AND deleted_at < p_older_than;
+    GET DIAGNOSTICS deleted_count = ROW_COUNT;
+    RETURN deleted_count;
+END;
+$$ LANGUAGE plpgsql;
+
+ALTER TABLE ${s}.session_turn_metrics ADD COLUMN IF NOT EXISTS reasoning_effort TEXT;
+
+INSERT INTO ${s}.session_turn_metrics (
+        session_id, agent_id, model, reasoning_effort, turn_index,
+        started_at, ended_at, duration_ms,
+        tokens_input, tokens_output, tokens_cache_read, tokens_cache_write,
+        tool_calls, tool_errors, result_type, error_message, worker_node_id
+)
+SELECT
+        m.session_id,
+        m.agent_id,
+        m.model,
+        m.reasoning_effort,
+        0,
+        COALESCE(m.created_at, now()),
+        GREATEST(COALESCE(m.updated_at, m.created_at, now()), COALESCE(m.created_at, now())),
+        GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (GREATEST(COALESCE(m.updated_at, m.created_at, now()), COALESCE(m.created_at, now())) - COALESCE(m.created_at, now()))) * 1000)::INT),
+        m.tokens_input,
+        m.tokens_output,
+        m.tokens_cache_read,
+        m.tokens_cache_write,
+        0,
+        0,
+        'legacy_summary',
+        NULL,
+        NULL
+FROM ${s}.session_metrics m
+WHERE (COALESCE(m.tokens_input, 0) <> 0
+        OR COALESCE(m.tokens_output, 0) <> 0
+        OR COALESCE(m.tokens_cache_read, 0) <> 0
+        OR COALESCE(m.tokens_cache_write, 0) <> 0)
+    AND NOT EXISTS (
+            SELECT 1
+            FROM ${s}.session_turn_metrics t
+            WHERE t.session_id = m.session_id
+    );
+
+CREATE INDEX IF NOT EXISTS idx_${schema}_turn_metrics_session_model
+    ON ${s}.session_turn_metrics(session_id, model, reasoning_effort);
+CREATE INDEX IF NOT EXISTS idx_${schema}_turn_metrics_model_effort_started
+    ON ${s}.session_turn_metrics(model, reasoning_effort, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_${schema}_turn_metrics_agent_model_started
+    ON ${s}.session_turn_metrics(agent_id, model, reasoning_effort, started_at DESC);
+
+-- Signature/return-type changes require drop-then-create.
+DROP FUNCTION IF EXISTS ${s}.cms_insert_turn_metric(
+    TEXT, TEXT, TEXT, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ, INTEGER,
+    BIGINT, BIGINT, BIGINT, BIGINT, INTEGER, INTEGER, TEXT, TEXT, TEXT);
+DROP FUNCTION IF EXISTS ${s}.cms_get_session_turn_metrics(TEXT, TIMESTAMPTZ, INT);
+
+CREATE OR REPLACE FUNCTION ${s}.cms_insert_turn_metric(
+    p_session_id         TEXT,
+    p_agent_id           TEXT,
+    p_model              TEXT,
+    p_reasoning_effort   TEXT,
+    p_turn_index         INTEGER,
+    p_started_at         TIMESTAMPTZ,
+    p_ended_at           TIMESTAMPTZ,
+    p_duration_ms        INTEGER,
+    p_tokens_input       BIGINT,
+    p_tokens_output      BIGINT,
+    p_tokens_cache_read  BIGINT,
+    p_tokens_cache_write BIGINT,
+    p_tool_calls         INTEGER,
+    p_tool_errors        INTEGER,
+    p_result_type        TEXT,
+    p_error_message      TEXT,
+    p_worker_node_id     TEXT
+) RETURNS VOID AS $$
+BEGIN
+    INSERT INTO ${s}.session_turn_metrics (
+        session_id, agent_id, model, reasoning_effort, turn_index,
+        started_at, ended_at, duration_ms,
+        tokens_input, tokens_output, tokens_cache_read, tokens_cache_write,
+        tool_calls, tool_errors, result_type, error_message, worker_node_id
+    ) VALUES (
+        p_session_id, p_agent_id, p_model, NULLIF(BTRIM(p_reasoning_effort), ''), p_turn_index,
+        p_started_at, p_ended_at, p_duration_ms,
+        p_tokens_input, p_tokens_output, p_tokens_cache_read, p_tokens_cache_write,
+        p_tool_calls, p_tool_errors, p_result_type, p_error_message, p_worker_node_id
+    );
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_complete_turn_writeback(
+    p_session_id         TEXT,
+    p_agent_id           TEXT,
+    p_model              TEXT,
+    p_reasoning_effort   TEXT,
+    p_turn_index         INTEGER,
+    p_started_at         TIMESTAMPTZ,
+    p_ended_at           TIMESTAMPTZ,
+    p_duration_ms        INTEGER,
+    p_tokens_input       BIGINT,
+    p_tokens_output      BIGINT,
+    p_tokens_cache_read  BIGINT,
+    p_tokens_cache_write BIGINT,
+    p_tool_calls         INTEGER,
+    p_tool_errors        INTEGER,
+    p_tool_names         TEXT[],
+    p_result_type        TEXT,
+    p_error_message      TEXT,
+    p_worker_node_id     TEXT,
+    p_state              TEXT,
+    p_last_active_at     TIMESTAMPTZ,
+    p_last_error         TEXT,
+    p_wait_reason        TEXT,
+    p_current_iteration  INTEGER
+) RETURNS VOID AS $$
+DECLARE
+    v_reasoning_effort TEXT := NULLIF(BTRIM(p_reasoning_effort), '');
+    v_ended_at TIMESTAMPTZ := COALESCE(p_ended_at, now());
+    v_started_at TIMESTAMPTZ := COALESCE(p_started_at, v_ended_at);
+    v_duration_ms INTEGER := GREATEST(0, COALESCE(p_duration_ms, FLOOR(EXTRACT(EPOCH FROM (v_ended_at - v_started_at)) * 1000)::INT));
+BEGIN
+    UPDATE ${s}.sessions
+    SET state = COALESCE(p_state, state),
+        last_active_at = COALESCE(p_last_active_at, v_ended_at),
+        current_iteration = COALESCE(p_current_iteration, current_iteration),
+        last_error = p_last_error,
+        wait_reason = p_wait_reason,
+        updated_at = now()
+    WHERE session_id = p_session_id;
+
+    INSERT INTO ${s}.session_metrics (
+        session_id, agent_id, model, reasoning_effort,
+        tokens_input, tokens_output, tokens_cache_read, tokens_cache_write
+    ) VALUES (
+        p_session_id, p_agent_id, p_model, v_reasoning_effort,
+        COALESCE(p_tokens_input, 0), COALESCE(p_tokens_output, 0),
+        COALESCE(p_tokens_cache_read, 0), COALESCE(p_tokens_cache_write, 0)
+    )
+    ON CONFLICT (session_id) DO UPDATE SET
+        agent_id = COALESCE(${s}.session_metrics.agent_id, EXCLUDED.agent_id),
+        model = COALESCE(EXCLUDED.model, ${s}.session_metrics.model),
+        reasoning_effort = COALESCE(EXCLUDED.reasoning_effort, ${s}.session_metrics.reasoning_effort),
+        tokens_input = ${s}.session_metrics.tokens_input + EXCLUDED.tokens_input,
+        tokens_output = ${s}.session_metrics.tokens_output + EXCLUDED.tokens_output,
+        tokens_cache_read = ${s}.session_metrics.tokens_cache_read + EXCLUDED.tokens_cache_read,
+        tokens_cache_write = ${s}.session_metrics.tokens_cache_write + EXCLUDED.tokens_cache_write,
+        updated_at = now();
+
+    INSERT INTO ${s}.session_turn_metrics (
+        session_id, agent_id, model, reasoning_effort, turn_index,
+        started_at, ended_at, duration_ms,
+        tokens_input, tokens_output, tokens_cache_read, tokens_cache_write,
+        tool_calls, tool_errors, result_type, error_message, worker_node_id
+    ) VALUES (
+        p_session_id, p_agent_id, p_model, v_reasoning_effort, COALESCE(p_turn_index, 0),
+        v_started_at, v_ended_at, v_duration_ms,
+        COALESCE(p_tokens_input, 0), COALESCE(p_tokens_output, 0),
+        COALESCE(p_tokens_cache_read, 0), COALESCE(p_tokens_cache_write, 0),
+        COALESCE(p_tool_calls, 0), COALESCE(p_tool_errors, 0),
+        p_result_type, p_error_message, p_worker_node_id
+    );
+
+    INSERT INTO ${s}.session_events (session_id, event_type, data, worker_node_id)
+    VALUES (
+        p_session_id,
+        'session.turn_completed',
+        jsonb_build_object(
+            'iteration', COALESCE(p_turn_index, 0),
+            'turnIndex', COALESCE(p_turn_index, 0),
+            'model', p_model,
+            'reasoningEffort', v_reasoning_effort,
+            'startedAt', v_started_at,
+            'endedAt', v_ended_at,
+            'durationMs', v_duration_ms,
+            'tokensInput', COALESCE(p_tokens_input, 0),
+            'tokensOutput', COALESCE(p_tokens_output, 0),
+            'tokensCacheRead', COALESCE(p_tokens_cache_read, 0),
+            'tokensCacheWrite', COALESCE(p_tokens_cache_write, 0),
+            'toolCalls', COALESCE(p_tool_calls, 0),
+            'toolErrors', COALESCE(p_tool_errors, 0),
+            'toolNames', to_jsonb(COALESCE(p_tool_names, ARRAY[]::TEXT[])),
+            'resultType', p_result_type,
+            'errorMessage', p_error_message,
+            'workerNodeId', p_worker_node_id
+        ),
+        p_worker_node_id
+    );
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_get_session_turn_metrics(
+    p_session_id TEXT,
+    p_since      TIMESTAMPTZ DEFAULT NULL,
+    p_limit      INT         DEFAULT 200
+) RETURNS TABLE (
+    id                  BIGINT,
+    session_id          TEXT,
+    agent_id            TEXT,
+    model               TEXT,
+    reasoning_effort    TEXT,
+    turn_index          INT,
+    started_at          TIMESTAMPTZ,
+    ended_at            TIMESTAMPTZ,
+    duration_ms         INT,
+    tokens_input        BIGINT,
+    tokens_output       BIGINT,
+    tokens_cache_read   BIGINT,
+    tokens_cache_write  BIGINT,
+    tool_calls          INT,
+    tool_errors         INT,
+    result_type         TEXT,
+    error_message       TEXT,
+    worker_node_id      TEXT,
+    created_at          TIMESTAMPTZ
+) AS $$
+DECLARE
+    v_limit INT := GREATEST(1, LEAST(COALESCE(p_limit, 200), 500));
+BEGIN
+    RETURN QUERY
+    SELECT
+        t.id, t.session_id, t.agent_id, t.model, t.reasoning_effort, t.turn_index,
+        t.started_at, t.ended_at, t.duration_ms,
+        t.tokens_input, t.tokens_output, t.tokens_cache_read, t.tokens_cache_write,
+        t.tool_calls, t.tool_errors, t.result_type, t.error_message,
+        t.worker_node_id, t.created_at
+    FROM ${s}.session_turn_metrics t
+    WHERE t.session_id = p_session_id
+      AND (p_since IS NULL OR t.started_at >= p_since)
+    ORDER BY t.turn_index DESC, t.id DESC
+    LIMIT v_limit;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Per-session token totals grouped by model:effort label, with per-bucket turn count.
+CREATE OR REPLACE FUNCTION ${s}.cms_get_session_tokens_by_model(
+    p_session_id TEXT
+) RETURNS TABLE (
+    model                    TEXT,
+    turn_count               BIGINT,
+    total_tokens_input       BIGINT,
+    total_tokens_output      BIGINT,
+    total_tokens_cache_read  BIGINT,
+    total_tokens_cache_write BIGINT
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        norm.label                                          AS model,
+        COUNT(*)::bigint                                     AS turn_count,
+        COALESCE(SUM(norm.tokens_input), 0)::bigint         AS total_tokens_input,
+        COALESCE(SUM(norm.tokens_output), 0)::bigint        AS total_tokens_output,
+        COALESCE(SUM(norm.tokens_cache_read), 0)::bigint    AS total_tokens_cache_read,
+        COALESCE(SUM(norm.tokens_cache_write), 0)::bigint   AS total_tokens_cache_write
+    FROM (
+        SELECT
+            CASE
+                WHEN NULLIF(BTRIM(t.reasoning_effort), '') IS NULL
+                    THEN COALESCE(NULLIF(BTRIM(t.model), ''), '(unknown)')
+                ELSE COALESCE(NULLIF(BTRIM(t.model), ''), '(unknown)') || ':' || BTRIM(t.reasoning_effort)
+            END AS label,
+            t.tokens_input, t.tokens_output, t.tokens_cache_read, t.tokens_cache_write
+        FROM ${s}.session_turn_metrics t
+        WHERE t.session_id = p_session_id
+    ) norm
+    GROUP BY norm.label
+    ORDER BY COALESCE(SUM(norm.tokens_input), 0) DESC, norm.label;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP FUNCTION IF EXISTS ${s}.cms_get_session_tree_stats_by_model(TEXT);
+CREATE FUNCTION ${s}.cms_get_session_tree_stats_by_model(
+    p_session_id TEXT
+) RETURNS TABLE (
+    model                       TEXT,
+    session_count               INT,
+    turn_count                  BIGINT,
+    total_tokens_input          BIGINT,
+    total_tokens_output         BIGINT,
+    total_tokens_cache_read     BIGINT,
+    total_tokens_cache_write    BIGINT,
+    total_snapshot_size_bytes   BIGINT
+) AS $$
+BEGIN
+    RETURN QUERY
+    WITH RECURSIVE tree AS (
+        SELECT m.session_id FROM ${s}.session_metrics m
+        WHERE m.session_id = p_session_id
+        UNION ALL
+        SELECT m.session_id FROM ${s}.session_metrics m
+        INNER JOIN tree tr ON m.parent_session_id = tr.session_id
+    ), token_rows AS (
+        SELECT
+            CASE
+                WHEN NULLIF(BTRIM(t.reasoning_effort), '') IS NULL
+                    THEN COALESCE(NULLIF(BTRIM(t.model), ''), '(unknown)')
+                ELSE COALESCE(NULLIF(BTRIM(t.model), ''), '(unknown)') || ':' || BTRIM(t.reasoning_effort)
+            END AS model_label,
+            t.session_id,
+            t.tokens_input,
+            t.tokens_output,
+            t.tokens_cache_read,
+            t.tokens_cache_write
+        FROM ${s}.session_turn_metrics t
+        INNER JOIN tree tr ON tr.session_id = t.session_id
+        UNION ALL
+        SELECT
+            CASE
+                WHEN NULLIF(BTRIM(m.reasoning_effort), '') IS NULL
+                    THEN COALESCE(NULLIF(BTRIM(m.model), ''), '(unknown)')
+                ELSE COALESCE(NULLIF(BTRIM(m.model), ''), '(unknown)') || ':' || BTRIM(m.reasoning_effort)
+            END AS model_label,
+            m.session_id,
+            m.tokens_input,
+            m.tokens_output,
+            m.tokens_cache_read,
+            m.tokens_cache_write
+        FROM ${s}.session_metrics m
+        INNER JOIN tree tr ON tr.session_id = m.session_id
+        WHERE NOT EXISTS (
+            SELECT 1 FROM ${s}.session_turn_metrics existing
+            WHERE existing.session_id = m.session_id
+        )
+    ), token_rollup AS (
+        SELECT
+            model_label,
+            COUNT(DISTINCT session_id)::INT AS session_count,
+            COUNT(*)::BIGINT AS turn_count,
+            COALESCE(SUM(tokens_input), 0)::BIGINT AS total_tokens_input,
+            COALESCE(SUM(tokens_output), 0)::BIGINT AS total_tokens_output,
+            COALESCE(SUM(tokens_cache_read), 0)::BIGINT AS total_tokens_cache_read,
+            COALESCE(SUM(tokens_cache_write), 0)::BIGINT AS total_tokens_cache_write
+        FROM token_rows
+        GROUP BY model_label
+    ), metric_rollup AS (
+        SELECT
+            CASE
+                WHEN NULLIF(BTRIM(m.reasoning_effort), '') IS NULL
+                    THEN COALESCE(NULLIF(BTRIM(m.model), ''), '(unknown)')
+                ELSE COALESCE(NULLIF(BTRIM(m.model), ''), '(unknown)') || ':' || BTRIM(m.reasoning_effort)
+            END AS model_label,
+            COUNT(*)::INT AS session_count,
+            COALESCE(SUM(m.snapshot_size_bytes), 0)::BIGINT AS total_snapshot_size_bytes
+        FROM ${s}.session_metrics m
+        INNER JOIN tree tr ON tr.session_id = m.session_id
+        GROUP BY model_label
+    )
+    SELECT
+        COALESCE(t.model_label, m.model_label) AS model,
+        COALESCE(t.session_count, m.session_count, 0)::INT AS session_count,
+        COALESCE(t.turn_count, 0)::BIGINT AS turn_count,
+        COALESCE(t.total_tokens_input, 0)::BIGINT AS total_tokens_input,
+        COALESCE(t.total_tokens_output, 0)::BIGINT AS total_tokens_output,
+        COALESCE(t.total_tokens_cache_read, 0)::BIGINT AS total_tokens_cache_read,
+        COALESCE(t.total_tokens_cache_write, 0)::BIGINT AS total_tokens_cache_write,
+        COALESCE(m.total_snapshot_size_bytes, 0)::BIGINT AS total_snapshot_size_bytes
+    FROM token_rollup t
+    FULL OUTER JOIN metric_rollup m ON m.model_label = t.model_label
+    ORDER BY COALESCE(t.total_tokens_input, 0) DESC, COALESCE(t.model_label, m.model_label);
+END;
+$$ LANGUAGE plpgsql;
+
+DROP FUNCTION IF EXISTS ${s}.cms_get_fleet_stats_by_agent(BOOLEAN, TIMESTAMPTZ);
+CREATE FUNCTION ${s}.cms_get_fleet_stats_by_agent(
+    p_include_deleted BOOLEAN,
+    p_since           TIMESTAMPTZ
+) RETURNS TABLE (
+    agent_id                    TEXT,
+    model                       TEXT,
+    session_count               INT,
+    turn_count                  BIGINT,
+    total_snapshot_size_bytes    BIGINT,
+    total_dehydration_count     INT,
+    total_hydration_count       INT,
+    total_lossy_handoff_count   INT,
+    total_tokens_input          BIGINT,
+    total_tokens_output         BIGINT,
+    total_tokens_cache_read     BIGINT,
+    total_tokens_cache_write    BIGINT
+) AS $$
+BEGIN
+    RETURN QUERY
+    WITH token_rows AS (
+        SELECT
+            COALESCE(t.agent_id, m.agent_id, sess.agent_id) AS agent_id_value,
+            CASE
+                WHEN NULLIF(BTRIM(t.reasoning_effort), '') IS NULL
+                    THEN COALESCE(NULLIF(BTRIM(t.model), ''), '(unknown)')
+                ELSE COALESCE(NULLIF(BTRIM(t.model), ''), '(unknown)') || ':' || BTRIM(t.reasoning_effort)
+            END AS model_label,
+            t.session_id,
+            t.tokens_input,
+            t.tokens_output,
+            t.tokens_cache_read,
+            t.tokens_cache_write
+        FROM ${s}.session_turn_metrics t
+        INNER JOIN ${s}.sessions sess ON sess.session_id = t.session_id
+        LEFT JOIN ${s}.session_metrics m ON m.session_id = t.session_id
+        WHERE (p_include_deleted OR sess.deleted_at IS NULL)
+          AND (p_since IS NULL OR t.started_at >= p_since)
+        UNION ALL
+        SELECT
+            COALESCE(m.agent_id, sess.agent_id) AS agent_id_value,
+            CASE
+                WHEN NULLIF(BTRIM(m.reasoning_effort), '') IS NULL
+                    THEN COALESCE(NULLIF(BTRIM(m.model), ''), '(unknown)')
+                ELSE COALESCE(NULLIF(BTRIM(m.model), ''), '(unknown)') || ':' || BTRIM(m.reasoning_effort)
+            END AS model_label,
+            m.session_id,
+            m.tokens_input,
+            m.tokens_output,
+            m.tokens_cache_read,
+            m.tokens_cache_write
+        FROM ${s}.session_metrics m
+        INNER JOIN ${s}.sessions sess ON sess.session_id = m.session_id
+        WHERE (p_include_deleted OR m.deleted_at IS NULL)
+          AND (p_since IS NULL OR m.created_at >= p_since)
+          AND NOT EXISTS (
+              SELECT 1 FROM ${s}.session_turn_metrics existing
+              WHERE existing.session_id = m.session_id
+          )
+    ), token_rollup AS (
+        SELECT
+            agent_id_value,
+            model_label,
+            COUNT(DISTINCT session_id)::INT AS session_count,
+            COUNT(*)::BIGINT AS turn_count,
+            COALESCE(SUM(tokens_input), 0)::BIGINT AS total_tokens_input,
+            COALESCE(SUM(tokens_output), 0)::BIGINT AS total_tokens_output,
+            COALESCE(SUM(tokens_cache_read), 0)::BIGINT AS total_tokens_cache_read,
+            COALESCE(SUM(tokens_cache_write), 0)::BIGINT AS total_tokens_cache_write
+        FROM token_rows
+        GROUP BY agent_id_value, model_label
+    ), metric_rollup AS (
+        SELECT
+            m.agent_id AS agent_id_value,
+            CASE
+                WHEN NULLIF(BTRIM(m.reasoning_effort), '') IS NULL
+                    THEN COALESCE(NULLIF(BTRIM(m.model), ''), '(unknown)')
+                ELSE COALESCE(NULLIF(BTRIM(m.model), ''), '(unknown)') || ':' || BTRIM(m.reasoning_effort)
+            END AS model_label,
+            COUNT(*)::INT AS session_count,
+            COALESCE(SUM(m.snapshot_size_bytes), 0)::BIGINT AS total_snapshot_size_bytes,
+            COALESCE(SUM(m.dehydration_count), 0)::INT AS total_dehydration_count,
+            COALESCE(SUM(m.hydration_count), 0)::INT AS total_hydration_count,
+            COALESCE(SUM(m.lossy_handoff_count), 0)::INT AS total_lossy_handoff_count
+        FROM ${s}.session_metrics m
+        WHERE (p_include_deleted OR m.deleted_at IS NULL)
+          AND (p_since IS NULL OR m.created_at >= p_since)
+        GROUP BY m.agent_id, model_label
+    )
+    SELECT
+        COALESCE(t.agent_id_value, m.agent_id_value) AS agent_id,
+        COALESCE(t.model_label, m.model_label) AS model,
+        COALESCE(t.session_count, m.session_count, 0)::INT AS session_count,
+        COALESCE(t.turn_count, 0)::BIGINT AS turn_count,
+        COALESCE(m.total_snapshot_size_bytes, 0)::BIGINT AS total_snapshot_size_bytes,
+        COALESCE(m.total_dehydration_count, 0)::INT AS total_dehydration_count,
+        COALESCE(m.total_hydration_count, 0)::INT AS total_hydration_count,
+        COALESCE(m.total_lossy_handoff_count, 0)::INT AS total_lossy_handoff_count,
+        COALESCE(t.total_tokens_input, 0)::BIGINT AS total_tokens_input,
+        COALESCE(t.total_tokens_output, 0)::BIGINT AS total_tokens_output,
+        COALESCE(t.total_tokens_cache_read, 0)::BIGINT AS total_tokens_cache_read,
+        COALESCE(t.total_tokens_cache_write, 0)::BIGINT AS total_tokens_cache_write
+    FROM token_rollup t
+    FULL OUTER JOIN metric_rollup m
+    ON m.agent_id_value IS NOT DISTINCT FROM t.agent_id_value
+      AND m.model_label = t.model_label
+     ORDER BY COALESCE(t.total_tokens_input, 0) DESC, COALESCE(t.model_label, m.model_label);
+END;
+$$ LANGUAGE plpgsql;
+
+DROP FUNCTION IF EXISTS ${s}.cms_get_user_stats_by_model(BOOLEAN, TIMESTAMPTZ);
+CREATE FUNCTION ${s}.cms_get_user_stats_by_model(
+    p_include_deleted BOOLEAN,
+    p_since           TIMESTAMPTZ
+) RETURNS TABLE (
+    owner_kind                  TEXT,
+    owner_provider              TEXT,
+    owner_subject               TEXT,
+    owner_email                 TEXT,
+    owner_display_name          TEXT,
+    model                       TEXT,
+    session_ids                 TEXT[],
+    session_count               INT,
+    turn_count                  BIGINT,
+    total_snapshot_size_bytes    BIGINT,
+    total_dehydration_count     INT,
+    total_hydration_count       INT,
+    total_lossy_handoff_count   INT,
+    total_tokens_input          BIGINT,
+    total_tokens_output         BIGINT,
+    total_tokens_cache_read     BIGINT,
+    total_tokens_cache_write    BIGINT,
+    earliest_session_created_at TIMESTAMPTZ
+) AS $$
+BEGIN
+    RETURN QUERY
+    WITH session_owner AS (
+        SELECT
+            sess.session_id,
+            CASE
+                WHEN sess.is_system THEN 'system'
+                WHEN u.user_id IS NULL THEN 'unowned'
+                ELSE 'user'
+            END::TEXT AS owner_kind_value,
+            u.provider AS owner_provider_value,
+            u.subject AS owner_subject_value,
+            u.email AS owner_email_value,
+            u.display_name AS owner_display_name_value
+        FROM ${s}.sessions sess
+        LEFT JOIN ${s}.session_owners so ON so.session_id = sess.session_id
+        LEFT JOIN ${s}.users u ON u.user_id = so.user_id
+    ), token_rows AS (
+        SELECT
+            so.owner_kind_value, so.owner_provider_value, so.owner_subject_value, so.owner_email_value, so.owner_display_name_value,
+            CASE
+                WHEN NULLIF(BTRIM(t.reasoning_effort), '') IS NULL
+                    THEN COALESCE(NULLIF(BTRIM(t.model), ''), '(unknown)')
+                ELSE COALESCE(NULLIF(BTRIM(t.model), ''), '(unknown)') || ':' || BTRIM(t.reasoning_effort)
+            END AS model_label,
+            t.session_id,
+            t.tokens_input, t.tokens_output, t.tokens_cache_read, t.tokens_cache_write
+        FROM ${s}.session_turn_metrics t
+        INNER JOIN ${s}.sessions sess ON sess.session_id = t.session_id
+        INNER JOIN session_owner so ON so.session_id = t.session_id
+        WHERE (p_include_deleted OR sess.deleted_at IS NULL)
+          AND (p_since IS NULL OR t.started_at >= p_since)
+        UNION ALL
+        SELECT
+            so.owner_kind_value, so.owner_provider_value, so.owner_subject_value, so.owner_email_value, so.owner_display_name_value,
+            CASE
+                WHEN NULLIF(BTRIM(m.reasoning_effort), '') IS NULL
+                    THEN COALESCE(NULLIF(BTRIM(m.model), ''), '(unknown)')
+                ELSE COALESCE(NULLIF(BTRIM(m.model), ''), '(unknown)') || ':' || BTRIM(m.reasoning_effort)
+            END AS model_label,
+            m.session_id,
+            m.tokens_input, m.tokens_output, m.tokens_cache_read, m.tokens_cache_write
+        FROM ${s}.session_metrics m
+        INNER JOIN ${s}.sessions sess ON sess.session_id = m.session_id
+        INNER JOIN session_owner so ON so.session_id = m.session_id
+        WHERE (p_include_deleted OR m.deleted_at IS NULL)
+          AND (p_since IS NULL OR m.created_at >= p_since)
+          AND NOT EXISTS (
+              SELECT 1 FROM ${s}.session_turn_metrics existing
+              WHERE existing.session_id = m.session_id
+          )
+    ), token_rollup AS (
+        SELECT
+            owner_kind_value, owner_provider_value, owner_subject_value, owner_email_value, owner_display_name_value, model_label,
+            ARRAY_AGG(DISTINCT session_id ORDER BY session_id) AS session_ids,
+            COUNT(DISTINCT session_id)::INT AS session_count,
+            COUNT(*)::BIGINT AS turn_count,
+            COALESCE(SUM(tokens_input), 0)::BIGINT AS total_tokens_input,
+            COALESCE(SUM(tokens_output), 0)::BIGINT AS total_tokens_output,
+            COALESCE(SUM(tokens_cache_read), 0)::BIGINT AS total_tokens_cache_read,
+            COALESCE(SUM(tokens_cache_write), 0)::BIGINT AS total_tokens_cache_write
+        FROM token_rows
+        GROUP BY owner_kind_value, owner_provider_value, owner_subject_value, owner_email_value, owner_display_name_value, model_label
+    ), metric_rollup AS (
+        SELECT
+            so.owner_kind_value, so.owner_provider_value, so.owner_subject_value, so.owner_email_value, so.owner_display_name_value,
+            CASE
+                WHEN NULLIF(BTRIM(m.reasoning_effort), '') IS NULL
+                    THEN COALESCE(NULLIF(BTRIM(m.model), ''), '(unknown)')
+                ELSE COALESCE(NULLIF(BTRIM(m.model), ''), '(unknown)') || ':' || BTRIM(m.reasoning_effort)
+            END AS model_label,
+            ARRAY_AGG(DISTINCT m.session_id ORDER BY m.session_id) AS session_ids,
+            COUNT(*)::INT AS session_count,
+            COALESCE(SUM(m.snapshot_size_bytes), 0)::BIGINT AS total_snapshot_size_bytes,
+            COALESCE(SUM(m.dehydration_count), 0)::INT AS total_dehydration_count,
+            COALESCE(SUM(m.hydration_count), 0)::INT AS total_hydration_count,
+            COALESCE(SUM(m.lossy_handoff_count), 0)::INT AS total_lossy_handoff_count,
+            MIN(m.created_at) AS earliest_session_created_at
+        FROM ${s}.session_metrics m
+        INNER JOIN ${s}.sessions sess ON sess.session_id = m.session_id
+        INNER JOIN session_owner so ON so.session_id = m.session_id
+        WHERE (p_include_deleted OR m.deleted_at IS NULL)
+          AND (p_since IS NULL OR m.created_at >= p_since)
+        GROUP BY so.owner_kind_value, so.owner_provider_value, so.owner_subject_value, so.owner_email_value, so.owner_display_name_value, model_label
+    )
+    SELECT
+        COALESCE(t.owner_kind_value, m.owner_kind_value) AS owner_kind,
+        COALESCE(t.owner_provider_value, m.owner_provider_value) AS owner_provider,
+        COALESCE(t.owner_subject_value, m.owner_subject_value) AS owner_subject,
+        COALESCE(t.owner_email_value, m.owner_email_value) AS owner_email,
+        COALESCE(t.owner_display_name_value, m.owner_display_name_value) AS owner_display_name,
+        COALESCE(t.model_label, m.model_label) AS model,
+        ARRAY(SELECT DISTINCT unnest(COALESCE(t.session_ids, ARRAY[]::TEXT[]) || COALESCE(m.session_ids, ARRAY[]::TEXT[])) ORDER BY 1) AS session_ids,
+        COALESCE(t.session_count, m.session_count, 0)::INT AS session_count,
+        COALESCE(t.turn_count, 0)::BIGINT AS turn_count,
+        COALESCE(m.total_snapshot_size_bytes, 0)::BIGINT AS total_snapshot_size_bytes,
+        COALESCE(m.total_dehydration_count, 0)::INT AS total_dehydration_count,
+        COALESCE(m.total_hydration_count, 0)::INT AS total_hydration_count,
+        COALESCE(m.total_lossy_handoff_count, 0)::INT AS total_lossy_handoff_count,
+        COALESCE(t.total_tokens_input, 0)::BIGINT AS total_tokens_input,
+        COALESCE(t.total_tokens_output, 0)::BIGINT AS total_tokens_output,
+        COALESCE(t.total_tokens_cache_read, 0)::BIGINT AS total_tokens_cache_read,
+        COALESCE(t.total_tokens_cache_write, 0)::BIGINT AS total_tokens_cache_write,
+        m.earliest_session_created_at AS earliest_session_created_at
+    FROM token_rollup t
+    FULL OUTER JOIN metric_rollup m
+    ON m.owner_kind_value = t.owner_kind_value
+     AND m.owner_provider_value IS NOT DISTINCT FROM t.owner_provider_value
+     AND m.owner_subject_value IS NOT DISTINCT FROM t.owner_subject_value
+      AND m.model_label = t.model_label
+     ORDER BY COALESCE(t.total_tokens_input, 0) DESC, COALESCE(t.model_label, m.model_label);
+END;
+$$ LANGUAGE plpgsql;
+`;
+}
+
+// ─── Migration 0023: Turn Metrics Stats Fallbacks And Group Owner Patch ───
+function migration_0023_turn_metrics_stats_fallbacks_and_group_owner_patch(schema: string): string {
+    // Migration 0022 was deployed before these stored-procedure fixes landed.
+    // Its SQL is idempotent, so reapplying the corrected procedure layer under
+    // a new version updates already-migrated schemas without requiring a reset.
+    return migration_0022_turn_metrics_reasoning_effort(schema);
 }

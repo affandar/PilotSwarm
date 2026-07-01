@@ -82,6 +82,7 @@ const EXPECTED_LLM_VISIBLE_TOOL_NAMES = [
     "parallel",
     "rg",
     "skill",
+    "set_session_model",
     "sql",
     "stop_bash",
     "view",

@@ -254,6 +254,26 @@ export class SessionManager {
         return normalized;
     }
 
+    resolveModelSwitchConfig(
+        model: string,
+        reasoningEffort?: import("./model-providers.js").ReasoningEffort | null,
+    ): { model: string; reasoningEffort: import("./model-providers.js").ReasoningEffort | null } {
+        const normalized = this.normalizeModelRef(model, { requireQualified: true });
+        const registry = this.workerDefaults.modelProviders;
+        const descriptor = registry?.getDescriptor(normalized);
+        if (reasoningEffort) {
+            const supported = descriptor?.supportedReasoningEfforts ?? [];
+            if (!supported.includes(reasoningEffort)) {
+                throw new Error(`Model ${normalized} does not support reasoning effort '${reasoningEffort}'`);
+            }
+            return { model: normalized!, reasoningEffort };
+        }
+        return {
+            model: normalized!,
+            reasoningEffort: descriptor?.defaultReasoningEffort ?? null,
+        };
+    }
+
     /** Set the worker-level tool registry. Called by PilotSwarmWorker. */
     setToolRegistry(registry: Map<string, Tool<any>>): void {
         this.toolRegistry = registry;
@@ -790,6 +810,13 @@ export class SessionManager {
                     `discarding it and creating a fresh session.`,
                 );
                 await this._resetSessionState(sessionId);
+            } else if (existing.requiresModelRebind(config)) {
+                console.warn(
+                    `[SessionManager] model config changed for ${sessionId}; ` +
+                    `disconnecting warm Copilot session so it can resume with the new model config.`,
+                );
+                await existing.destroy();
+                this.sessions.delete(sessionId);
             } else {
                 existing.updateConfig(config);
                 return existing;

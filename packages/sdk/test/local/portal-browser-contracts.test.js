@@ -114,6 +114,7 @@ describe("portal browser contracts", () => {
         const cliPlatform = readRepoFile("packages/cli/src/platform.js");
         const cliApp = readRepoFile("packages/cli/src/app.js");
         const cliIndex = readRepoFile("packages/cli/src/index.js");
+        const nodeTransport = readRepoFile("packages/cli/src/node-sdk-transport.js");
         const layout = readRepoFile("packages/ui-core/src/layout.js");
         const state = readRepoFile("packages/ui-core/src/state.js");
         const selectors = readRepoFile("packages/ui-core/src/selectors.js");
@@ -145,13 +146,16 @@ describe("portal browser contracts", () => {
         assertIncludes(webApp, "appliedProfileSettingsJsonRef.current !== settingsJson", "portal should skip profile-settings re-dispatch when payload is unchanged");
         assertIncludes(webApp, "supportsArtifactBrowser(controller)", "portal should keep the artifact browser available when transport-backed artifacts exist");
         assertIncludes(webApp, '}, "Delete")', "portal files pane should surface artifact deletion directly from the viewer");
-        assertIncludes(webApp, "Keyboard Shortcuts", "portal should render a dedicated keybinding legend");
-        assertIncludes(webApp, '}, "Prompt")', "portal toolbar should expose a prompt overlay affordance");
+        assert(!webApp.includes("Keyboard Shortcuts"), "portal keybinding legend should be removed");
+        assert(!webApp.includes('label: "Keys"'), "portal toolbar should no longer expose a Keys button");
+        assert(!webApp.includes('label: "Prompt"'), "portal toolbar should no longer expose a Prompt button");
         assertIncludes(webApp, 'key: `stats-view:${mode}`', "portal stats pane should render explicit session/fleet/users buttons");
         assertIncludes(webApp, "controller.setStatsViewMode(mode)", "portal stats buttons should use the shared controller stats-view path");
-        assertIncludes(webApp, "PromptOverlay", "portal should support a dedicated prompt overlay for remote/mobile access");
+        assert(!webApp.includes("PromptOverlay"), "portal prompt overlay should be removed");
         assertIncludes(webApp, "controller.acceptPromptReferenceAutocomplete()", "portal prompt should accept @ / @@ autocomplete on Tab");
-        assertIncludes(webApp, '["Tab", "Accept @ / @@ autocomplete"]', "portal legend should document prompt reference autocomplete");
+        assertIncludes(webApp, 'modal.sessionOptions?.mode === "switchModel" ? "Switch Model" : "Create Session"', "portal switch-model picker should label its confirm action as Switch Model");
+        assertIncludes(nodeTransport, "async getSessionTokensByModel(sessionId)", "node transport should expose per-session model buckets to portal and TUI stats");
+        assertIncludes(nodeTransport, "return this.mgmt.getSessionTokensByModel(sessionId);", "node transport should forward per-session model buckets to management API");
         assertIncludes(webApp, 'controller.handleCommand(UI_COMMANDS.DOWNLOAD_SELECTED_FILE)', "portal files pane should download the selected artifact");
         assertIncludes(webApp, 'controller.handleCommand(UI_COMMANDS.DELETE_SELECTED_FILE)', "portal files pane should delete the selected artifact through the shared command");
         assertIncludes(webApp, '}, "Up")', "portal files pane should surface a shortened upload label directly in the files pane");

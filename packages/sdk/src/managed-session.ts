@@ -128,7 +128,7 @@ function acknowledgeTurnBoundary(action: string): string {
         `Finish any remaining tool results for the current step, then stop.]`;
 }
 
-const TERMINAL_TURN_BOUNDARY_ACTIONS = new Set(["wait", "input_required", "wait_for_agents", "list_sessions", "check_agents"]);
+const TERMINAL_TURN_BOUNDARY_ACTIONS = new Set(["completed", "wait", "input_required", "wait_for_agents", "list_sessions", "check_agents"]);
 
 function hasTerminalTurnBoundary(turnState: TurnState): boolean {
     return turnState.pendingActions.some((action) => TERMINAL_TURN_BOUNDARY_ACTIONS.has(action.type));
@@ -137,6 +137,78 @@ function hasTerminalTurnBoundary(turnState: TurnState): boolean {
 function blockedAfterTurnBoundary(toolName: string): string {
     return `[SYSTEM: ${toolName} was not executed because a previous control tool already scheduled this turn to suspend. ` +
         `Stop now; the runtime will resume with the control-tool result.]`;
+}
+
+function splitQualifiedModel(model: string | undefined): { provider: string; model: string } {
+    const configured = String(model || "").trim();
+    if (!configured) return { provider: "(default)", model: "(default)" };
+    const separator = configured.indexOf(":");
+    if (separator <= 0) return { provider: "(unqualified)", model: configured };
+    return {
+        provider: configured.slice(0, separator),
+        model: configured.slice(separator + 1),
+    };
+}
+
+function formatCurrentModelConfig(config: ManagedSessionConfig): string {
+    const configured = String(config.model || "").trim() || "(default)";
+    const { provider, model } = splitQualifiedModel(config.model);
+    const reasoningEffort = config.reasoningEffort ?? "(default)";
+    return [
+        "Current session configured model (this turn):",
+        `- provider: ${provider}`,
+        `- model: ${model}`,
+        `- qualified_model: ${configured}`,
+        `- reasoning_effort: ${reasoningEffort}`,
+    ].join("\n");
+}
+
+// ── Tool-call-as-text guard ──────────────────────────────────────
+// Some models (observed on claude-opus-4.8, especially on repetitive keepalive
+// cron cycles) intermittently emit a tool call as literal
+// `<invoke name="...">`/`<parameter>` text inside the assistant message instead
+// of a real tool_use block. That text is never executed, so a consequential
+// call (store_fact, complete_agent, an ADO write, etc.) would be silently
+// dropped while the transcript implies it happened. We detect the malformed
+// text and re-prompt the model — bounded — to actually invoke the tool.
+const MAX_TEXT_TOOL_CALL_CORRECTIONS = 2;
+const TEXT_TOOL_CALL_INVOKE_RE = /<(?:antml:)?invoke\s+name\s*=\s*"([^"]+)"/i;
+const TEXT_TOOL_CALL_STRUCTURE_RE = /<\/(?:antml:)?invoke\s*>|<(?:antml:)?parameter\b/i;
+const FENCED_CODE_BLOCK_RE = /```[\s\S]*?```/g;
+
+/**
+ * Detect a tool call the model emitted as literal text instead of a real
+ * tool_use block. Requires both the `<invoke name="...">` opener and a closing
+ * `</invoke>` or a `<parameter>` tag so prose that merely mentions the word
+ * "invoke" does not trip the guard. Returns the tool name, or null.
+ */
+function detectTextEmittedToolCall(content: unknown): { toolName: string; rawContent: string } | null {
+    if (typeof content !== "string" || content.length === 0) return null;
+    const withoutExamples = content.replace(FENCED_CODE_BLOCK_RE, "");
+    const nameMatch = withoutExamples.match(TEXT_TOOL_CALL_INVOKE_RE);
+    if (!nameMatch) return null;
+    if (!TEXT_TOOL_CALL_STRUCTURE_RE.test(withoutExamples)) return null;
+
+    const beforeInvoke = withoutExamples.slice(0, nameMatch.index ?? 0).trim();
+    const afterClose = withoutExamples.replace(/[\s\S]*<\/(?:antml:)?invoke\s*>/i, "").trim();
+    if (afterClose) return null;
+
+    // Allow the common one-token junk prefix observed from claude-opus-4.8
+    // (for example "court\n<invoke ...>") but do not flag explanatory prose,
+    // markdown docs, or examples that happen to contain Anthropic XML syntax.
+    if (beforeInvoke && beforeInvoke.split(/\s+/).length > 1) return null;
+
+    return { toolName: (nameMatch[1] || "").trim() || "the requested tool", rawContent: content };
+}
+
+function buildTextEmittedToolCallCorrection(toolName: string): string {
+    const named = toolName && toolName !== "the requested tool" ? `the "${toolName}" tool` : "the intended tool";
+    return `[SYSTEM: Tool-call protocol error. Your previous message contained a tool call written as literal text ` +
+        `(for example \`<invoke name="${toolName}">\` with <parameter> tags). Text formatted like that is NOT executed — ` +
+        `the tool did not run and produced no result, so anything you implied there has NOT actually happened. ` +
+        `Come to your senses and actually invoke ${named} now using the real tool-calling mechanism, not text. ` +
+        `Do not write <invoke> or <parameter> tags as message content. ` +
+        `If you did not actually need a tool this turn, reply with plain prose only and no tool-call markup.]`;
 }
 
 function failureToolResult(error: unknown) {
@@ -324,9 +396,9 @@ export class ManagedSession {
 
         const reportCycleTool = defineTool("report_cycle", {
             description:
-                "Report the outcome of the current recurring cron/cron_at watcher cycle. " +
-                "Use status='quiet' when nothing material changed, status='material' when the parent should be notified, " +
-                "and status='blocked' when the cycle found a blocker or failure that needs parent attention. " +
+                "Report the outcome of the current recurring cron/cron_at watcher cycle when something material happened. " +
+                "Use status='material' when the parent should be notified, and status='blocked' when the cycle found a blocker or failure that needs parent attention. " +
+                "On an uneventful cycle, prefer NOT calling this tool at all — just end the turn silently; status='quiet' is accepted but unnecessary. " +
                 "This tool does not end the turn; after calling it, finish normally. It is ignored outside recurring watcher cycles.",
             parameters: {
                 type: "object",
@@ -344,6 +416,7 @@ export class ManagedSession {
             description:
                 "List all available LLM models across all configured providers. " +
                 "Returns each model's exact qualified name (provider:model), description, and cost tier. " +
+                "Also returns this session's current configured provider, model, and reasoning effort for the current turn. " +
                 "This output is the authoritative source for model selection. " +
                 "Use this when choosing the best model for a sub-agent task, or when the user asks about available models. " +
                 "If you plan to pass spawn_agent(model=...), you must choose an exact provider:model value from this list and must not invent or shorten names. " +
@@ -357,14 +430,31 @@ export class ManagedSession {
             handler: async () => "stub",
         });
 
+        const setSessionModelTool = defineTool("set_session_model", {
+            description:
+                "Switch this session's model for the next turn boundary. " +
+                "Call list_available_models first and pass an exact provider:model value returned there. " +
+                "This ends the current turn. After it succeeds, stop; the runtime will continue on the selected model.",
+            parameters: {
+                type: "object",
+                properties: {
+                    model: { type: "string", description: "Exact provider:model value from list_available_models." },
+                    reasoning_effort: { type: "string", enum: ["low", "medium", "high", "xhigh"], description: "Optional reasoning effort supported by the selected model." },
+                },
+                required: ["model"],
+            },
+            handler: async () => "stub",
+        });
+
         const updateSessionSummaryTool = defineTool("update_session_summary", {
             description:
-                "Update this session's short live summary for session lists, discovery, and the Summary tab. " +
+                "Update this session's short live summary and optionally set this session's sticky title for session lists, discovery, and the Summary tab. " +
                 "Call it automatically after first meaningful work and after each notable update: changed intent, tangible progress toward the user's goal, received cross-session replies, delivered outputs, blockers, open questions, next actions, key links, schedule/delegate changes, or terminal state. " +
+                "Pass title when the user asks you to rename this session or when a durable human-readable title should stick; title updates lock the title against future automatic title summarization. " +
                 "Keep it concise and scannable; use compact bullets or short Markdown tables for structured progress, comparisons, rankings, decisions, or result sets instead of prose blobs. " +
                 "Do not paste long transcripts, raw logs, or bulky JSON into summary fields. " +
                 "Do not call it for no-op heartbeats, timer wakes, or unchanged cron cycles. " +
-                "Do not pass a string for summary_state. " + SESSION_SUMMARY_STATE_TEMPLATE,
+                "Do not pass a string for summary_state. summary_state is optional only when title is provided. " + SESSION_SUMMARY_STATE_TEMPLATE,
             parameters: {
                 type: "object",
                 properties: {
@@ -373,8 +463,8 @@ export class ManagedSession {
                         description: "Structured live summary state. Must be an object, not a string. Missing arrays should be [].",
                     },
                     short_summary: { type: "string", description: "Optional concise summary for session lists. If omitted, summary_state.summary is used." },
+                    title: { type: "string", description: "Optional sticky session title. When set, it behaves like a manual rename and prevents future automatic title changes." },
                 },
-                required: ["summary_state"],
             },
             handler: async () => "stub",
         });
@@ -416,7 +506,7 @@ export class ManagedSession {
             handler: async () => "stub",
         });
 
-        return [waitTool, waitOnWorkerTool, cronTool, cronAtTool, askUserTool, reportCycleTool, listModelsTool, updateSessionSummaryTool, sendSessionMessageTool, replySessionMessageTool];
+        return [waitTool, waitOnWorkerTool, cronTool, cronAtTool, askUserTool, reportCycleTool, listModelsTool, setSessionModelTool, updateSessionSummaryTool, sendSessionMessageTool, replySessionMessageTool];
     }
 
     /**
@@ -706,9 +796,9 @@ export class ManagedSession {
 
         const reportCycleTool = defineTool("report_cycle", {
             description:
-                "Report the outcome of the current recurring cron/cron_at watcher cycle. " +
-                "Use status='quiet' when nothing material changed, status='material' when the parent should be notified, " +
-                "and status='blocked' when the cycle found a blocker or failure that needs parent attention. " +
+                "Report the outcome of the current recurring cron/cron_at watcher cycle when something material happened. " +
+                "Use status='material' when the parent should be notified, and status='blocked' when the cycle found a blocker or failure that needs parent attention. " +
+                "On an uneventful cycle, prefer NOT calling this tool at all — just end the turn silently; status='quiet' is accepted but unnecessary. " +
                 "This tool does not end the turn; after calling it, finish normally. It is ignored outside recurring watcher cycles.",
             parameters: {
                 type: "object",
@@ -978,6 +1068,7 @@ export class ManagedSession {
             description:
                 "List all available LLM models across all configured providers. " +
                 "Returns each model's exact qualified name (provider:model), description, and cost tier. " +
+                "Also returns this session's current configured provider, model, and reasoning effort for the current turn. " +
                 "This output is the authoritative source for model selection. " +
                 "Use this when choosing the best model for a sub-agent task, or when the user asks about available models. " +
                 "If you plan to pass spawn_agent(model=...), you must choose an exact provider:model value from this list and must not invent or shorten names. " +
@@ -989,18 +1080,63 @@ export class ManagedSession {
                 properties: {},
             },
             handler: async () => {
-                return opts?.modelSummary || "No model providers configured.";
+                return [
+                    formatCurrentModelConfig(this.config),
+                    opts?.modelSummary || "No model providers configured.",
+                ].join("\n\n");
+            },
+        });
+
+        const setSessionModelTool = defineTool("set_session_model", {
+            description:
+                "Switch this session's model for the next turn boundary. " +
+                "Call list_available_models first and pass an exact provider:model value returned there. " +
+                "This ends the current turn. After it succeeds, stop; the runtime will continue on the selected model.",
+            parameters: {
+                type: "object",
+                properties: {
+                    model: { type: "string", description: "Exact provider:model value from list_available_models." },
+                    reasoning_effort: { type: "string", enum: ["low", "medium", "high", "xhigh"], description: "Optional reasoning effort supported by the selected model." },
+                },
+                required: ["model"],
+            },
+            handler: async (args: { model: string; reasoning_effort?: ReasoningEffort }) => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("set_session_model");
+                const model = String(args.model || "").trim();
+                if (!model) return "Error: model is required.";
+                const reasoningEffort = args.reasoning_effort ? normalizeReasoningEffort(args.reasoning_effort) : undefined;
+                if (args.reasoning_effort && !reasoningEffort) {
+                    return "Error: reasoning_effort must be one of low, medium, high, xhigh.";
+                }
+                if (!controlBridge) return "Error: set_session_model is unavailable in this session.";
+                const result = await controlBridge.setSessionModel({ model, ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}) });
+                if (/model switch accepted/i.test(String(result))) {
+                    turnState.pendingActions.push({
+                        type: "completed",
+                        content: "Model switch requested. Continuing on the selected model.",
+                    });
+                    return `${result}\n${acknowledgeTurnBoundary("set_session_model")}`;
+                }
+                if (/set_session_model failed/i.test(String(result)) || !/model switch accepted/i.test(String(result))) {
+                    turnState.pendingActions.push({
+                        type: "completed",
+                        content: "Model switch failed. Continuing on the unchanged model.",
+                    });
+                    return `${result}\n${acknowledgeTurnBoundary("set_session_model")}`;
+                }
+                return result;
             },
         });
 
         const updateSessionSummaryTool = defineTool("update_session_summary", {
             description:
-                "Update this session's short live summary for session lists, discovery, and the Summary tab. " +
+                "Update this session's short live summary and optionally set this session's sticky title for session lists, discovery, and the Summary tab. " +
                 "Call it automatically after first meaningful work and after each notable update: changed intent, tangible progress toward the user's goal, received cross-session replies, delivered outputs, blockers, open questions, next actions, key links, schedule/delegate changes, or terminal state. " +
+                "Pass title when the user asks you to rename this session or when a durable human-readable title should stick; title updates lock the title against future automatic title summarization. " +
                 "Keep it concise and scannable; use compact bullets or short Markdown tables for structured progress, comparisons, rankings, decisions, or result sets instead of prose blobs. " +
                 "Do not paste long transcripts, raw logs, or bulky JSON into summary fields. " +
                 "Do not call it for no-op heartbeats, timer wakes, or unchanged cron cycles. " +
-                "Do not pass a string for summary_state. " + SESSION_SUMMARY_STATE_TEMPLATE,
+                "Do not pass a string for summary_state. summary_state is optional only when title is provided. " + SESSION_SUMMARY_STATE_TEMPLATE,
             parameters: {
                 type: "object",
                 properties: {
@@ -1009,10 +1145,10 @@ export class ManagedSession {
                         description: "Structured live summary state. Must be an object, not a string. Missing arrays should be [].",
                     },
                     short_summary: { type: "string", description: "Optional concise summary for session lists. If omitted, summary_state.summary is used." },
+                    title: { type: "string", description: "Optional sticky session title. When set, it behaves like a manual rename and prevents future automatic title changes." },
                 },
-                required: ["summary_state"],
             },
-            handler: async (args: { summary_state: any; short_summary?: string }) => {
+            handler: async (args: { summary_state?: any; short_summary?: string; title?: string }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("update_session_summary");
                 if (!controlBridge) return "Error: update_session_summary is unavailable in this session.";
                 return await controlBridge.updateSessionSummary(args);
@@ -1380,7 +1516,7 @@ export class ManagedSession {
             },
         });
 
-        const SYSTEM_TOOL_NAMES = new Set(["wait", "wait_on_worker", "cron", "cron_at", "ask_user", "report_cycle", "list_available_models", "update_session_summary", "send_session_message", "reply_session_message", "spawn_agent", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "delete_agent"]);
+        const SYSTEM_TOOL_NAMES = new Set(["wait", "wait_on_worker", "cron", "cron_at", "ask_user", "report_cycle", "list_available_models", "set_session_model", "update_session_summary", "send_session_message", "reply_session_message", "spawn_agent", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "delete_agent"]);
 
         // Merge user tools with system tools
         const userTools = this.config.tools ?? [];
@@ -1420,6 +1556,7 @@ export class ManagedSession {
             askUserTool,
             reportCycleTool,
             listModelsTool,
+            setSessionModelTool,
             updateSessionSummaryTool,
             sendSessionMessageTool,
             replySessionMessageTool,
@@ -1455,6 +1592,7 @@ export class ManagedSession {
         let lastPublishedReasoning = "";
         let lastReasoningPublishAt = 0;
         let deferredSessionError: CapturedEvent | null = null;
+        const textEmittedToolCallRef: { current: { toolName: string; rawContent: string } | null } = { current: null };
 
         // Streaming progress + turn timing state.
         // Token-level deltas (`assistant.message_delta`,
@@ -1601,6 +1739,17 @@ export class ManagedSession {
                         return;
                     }
 
+                    if (eventType === "assistant.message") {
+                        const content = extractAssistantMessageContent({ data: eventData });
+                        const textToolCall = detectTextEmittedToolCall(content);
+                        if (textToolCall) {
+                            textEmittedToolCallRef.current = textToolCall;
+                            return;
+                        }
+                        finalContent = content ?? finalContent;
+                        publishReasoningSnapshot("assistant.message", true);
+                    }
+
                     // Track turn boundaries so we can stamp turn_end with a
                     // durationMs and the streaming counters.
                     if (eventType === "assistant.turn_start") {
@@ -1659,14 +1808,6 @@ export class ManagedSession {
                     if (opts?.onEvent) {
                         try { opts.onEvent(captured); } catch {}
                     }
-                }),
-            );
-
-            // Capture the final assistant message
-            unsubscribers.push(
-                this.copilotSession.on("assistant.message", (event: any) => {
-                    finalContent = extractAssistantMessageContent(event) ?? finalContent;
-                    publishReasoningSnapshot("assistant.message", true);
                 }),
             );
 
@@ -1731,6 +1872,19 @@ export class ManagedSession {
             })
             : null;
 
+        // Re-armable idle waiter used by the tool-call-as-text guard to wait for
+        // the model's response to a mid-turn correction without tearing down the
+        // event subscriptions set up above.
+        const waitForNextIdle = (): Promise<void> => new Promise<void>((resolve) => {
+            const unsub = this.copilotSession.on("session.idle", () => {
+                flushStreamingProgress(true);
+                publishReasoningSnapshot("session.idle", true);
+                unsub();
+                resolve();
+            });
+            unsubscribers.push(unsub);
+        });
+
         const effectivePrompt = opts?.requiredTool
             ? [
                 `[SYSTEM: For this request, you MUST invoke the tool "${opts.requiredTool}" before giving your answer.`,
@@ -1756,6 +1910,55 @@ export class ManagedSession {
                 await Promise.race([turnComplete, timeoutPromise]);
             } else {
                 await turnComplete;
+            }
+
+            // ── Guard: tool call emitted as text instead of executed ──────────
+            // If the model typed a tool call as `<invoke .../>` text rather than
+            // calling it, that call did not run. Re-prompt it (bounded) to
+            // actually invoke the tool so a consequential call is never silently
+            // dropped. If a control tool already scheduled a turn boundary, we
+            // still return an error rather than accepting a transcript that
+            // implied another unexecuted tool side effect.
+            let textToolCallCorrections = 0;
+            while (
+                textToolCallCorrections < MAX_TEXT_TOOL_CALL_CORRECTIONS &&
+                !hasTerminalTurnBoundary(turnState) &&
+                textEmittedToolCallRef.current
+            ) {
+                const offendingTool = textEmittedToolCallRef.current.toolName;
+                const rawContent = textEmittedToolCallRef.current.rawContent;
+                textEmittedToolCallRef.current = null;
+                textToolCallCorrections++;
+                const diagnostic: CapturedEvent = {
+                    eventType: "runtime.tool_call_as_text",
+                    data: { toolName: offendingTool, rawContent, attempt: textToolCallCorrections, sessionId: this.sessionId },
+                };
+                collectedEvents.push(diagnostic);
+                if (opts?.onEvent) { try { opts.onEvent(diagnostic); } catch {} }
+
+                finalContent = undefined;
+                const nextIdle = waitForNextIdle();
+                await this.copilotSession.send({ prompt: buildTextEmittedToolCallCorrection(offendingTool) });
+                if (timeoutPromise) {
+                    await Promise.race([nextIdle, timeoutPromise]);
+                } else {
+                    await nextIdle;
+                }
+            }
+
+            if (textEmittedToolCallRef.current) {
+                const diagnostic: CapturedEvent = {
+                    eventType: "runtime.tool_call_as_text",
+                    data: { toolName: textEmittedToolCallRef.current.toolName, rawContent: textEmittedToolCallRef.current.rawContent, final: true, sessionId: this.sessionId },
+                };
+                collectedEvents.push(diagnostic);
+                if (opts?.onEvent) { try { opts.onEvent(diagnostic); } catch {} }
+                const message = buildTextEmittedToolCallCorrection(textEmittedToolCallRef.current.toolName);
+                return {
+                    type: "error",
+                    message,
+                    events: collectedEvents,
+                } as any;
             }
         } catch (err: any) {
             // Timeout — kill it
@@ -1783,6 +1986,8 @@ export class ManagedSession {
             const queuedActions = combinedQueuedActions.length > 0 ? combinedQueuedActions : undefined;
 
             switch (firstAction.type) {
+                case "completed":
+                    return { ...firstAction, events: collectedEvents, queuedActions };
                 case "input_required":
                     return { ...firstAction, events: collectedEvents, queuedActions };
                 case "wait":
@@ -1862,10 +2067,24 @@ export class ManagedSession {
      */
     updateConfig(config: Partial<ManagedSessionConfig>): void {
         if (config.model !== undefined) this.config.model = config.model;
+        if (config.reasoningEffort !== undefined) this.config.reasoningEffort = config.reasoningEffort;
         if (config.tools !== undefined) this.config.tools = config.tools;
         if (config.systemMessage !== undefined) this.config.systemMessage = config.systemMessage;
         if (config.turnSystemPrompt !== undefined) this.config.turnSystemPrompt = config.turnSystemPrompt;
         if (config.waitThreshold !== undefined) this.config.waitThreshold = config.waitThreshold;
+    }
+
+    requiresModelRebind(config: Partial<ManagedSessionConfig>): boolean {
+        const currentModel = this.config.model;
+        const nextModel = config.model ?? this.config.model;
+        const currentReasoningEffort = this.config.reasoningEffort ?? null;
+        const nextReasoningEffort = config.reasoningEffort !== undefined
+            ? config.reasoningEffort ?? null
+            : this.config.reasoningEffort ?? null;
+        return Boolean(
+            (currentModel || nextModel)
+            && (currentModel !== nextModel || currentReasoningEffort !== nextReasoningEffort)
+        );
     }
 
     /** Get the underlying CopilotSession (for direct access when needed). */

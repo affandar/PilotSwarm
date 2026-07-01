@@ -21,7 +21,6 @@ import {
     type ShutdownMode,
 } from "./agents.js";
 import {
-    type ActiveTimer,
     FIRST_SUMMARIZE_DELAY,
     INTERNAL_SYSTEM_TURN_PROMPT,
     REPEAT_SUMMARIZE_DELAY,
@@ -451,7 +450,6 @@ export function buildContinueInput(
         ...(state.cronAtSchedule ? { cronAtSchedule: state.cronAtSchedule } : {}),
         ...(state.contextUsage ? { contextUsage: state.contextUsage } : {}),
         ...(carriedSystemPrompt ? { systemPrompt: carriedSystemPrompt } : {}),
-        ...(state.runtimeModelNotice ? { runtimeModelNotice: state.runtimeModelNotice } : {}),
         ...(promptForInput ? { prompt: promptForInput } : {}),
         ...(carriedRequiredTool ? { requiredTool: carriedRequiredTool } : {}),
         ...(carriedCycleOrigin ? { cycleOrigin: carriedCycleOrigin } : {}),
@@ -557,46 +555,17 @@ export function* handleCommand(
 
     switch (cmdMsg.cmd) {
         case "set_model": {
-            const newModel = String(cmdMsg.args?.model || "").trim();
-            if (!newModel) {
-                const resp: CommandResponse = {
-                    id: cmdMsg.id,
-                    cmd: cmdMsg.cmd,
-                    error: "set_model requires a non-empty model",
-                };
-                yield* writeCommandResponse(runtime, resp);
-                publishStatus(runtime, "idle");
-                return;
-            }
+            const newModel = String(cmdMsg.args?.model || "");
             const oldModel = runtime.state.config.model || "(default)";
-            const hasEffort = cmdMsg.args?.reasoningEffort !== undefined;
-            const oldEffort = runtime.state.config.reasoningEffort ?? null;
-            const newEffort = hasEffort
-                ? (cmdMsg.args?.reasoningEffort ? String(cmdMsg.args.reasoningEffort) : null)
-                : oldEffort;
-            runtime.state.config = {
-                ...runtime.state.config,
-                model: newModel,
-                ...(hasEffort ? { reasoningEffort: (newEffort ?? undefined) as typeof runtime.state.config.reasoningEffort } : {}),
-            };
-            const newModelLabel = newEffort ? `${newModel}:${newEffort}` : newModel;
-            runtime.state.runtimeModelNotice = `Runtime model for this turn is ${newModelLabel}. If asked what model you are using, answer this value.`;
-            yield* captureModelSwitchInterruptedTimer(runtime, newModelLabel);
-            yield runtime.manager.updateSessionModel(runtime.input.sessionId, newModel, newEffort);
-            yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
-                eventType: "session.model_changed",
-                data: { oldModel, newModel, oldReasoningEffort: oldEffort, newReasoningEffort: newEffort, source: cmdMsg.args?.source ?? "user" },
-            }]);
+            runtime.state.config = { ...runtime.state.config, model: newModel };
             const resp: CommandResponse = {
                 id: cmdMsg.id,
                 cmd: cmdMsg.cmd,
-                result: { ok: true, oldModel, newModel, oldReasoningEffort: oldEffort, newReasoningEffort: newEffort, appliesOn: "next_turn" },
+                result: { ok: true, oldModel, newModel },
             };
             yield* writeCommandResponse(runtime, resp);
             publishStatus(runtime, "idle");
-            yield* versionedContinueAsNew(runtime, continueInputWithPrompt(runtime, `Continue on ${newModelLabel}.`, {
-                bootstrapPrompt: true,
-            }));
+            yield* versionedContinueAsNew(runtime, continueInput(runtime));
             return;
         }
         case "list_models": {
@@ -661,45 +630,5 @@ export function* handleCommand(
             publishStatus(runtime, "idle");
             return;
         }
-    }
-}
-
-function* captureModelSwitchInterruptedTimer(runtime: DurableSessionRuntime, newModelLabel: string): Generator<any, void, any> {
-    const timer: ActiveTimer | null = runtime.state.activeTimer;
-    if (!timer) return;
-    const now: number = yield runtime.ctx.utcNow();
-    const notePrefix = `Model switch accepted; continuing immediately on ${newModelLabel}`;
-    switch (timer.type) {
-        case "wait": {
-            const remainingMs = Math.max(0, timer.deadlineMs - now);
-            runtime.state.interruptedWaitTimer = {
-                remainingSec: Math.max(1, Math.round(remainingMs / 1000)),
-                reason: timer.reason,
-                shouldRehydrate: timer.shouldRehydrate ?? false,
-                ...(timer.waitPlan ? { waitPlan: timer.waitPlan } : {}),
-            };
-            runtime.ctx.traceInfo(`[orch-cmd] ${notePrefix}; will auto-resume interrupted wait (${runtime.state.interruptedWaitTimer.remainingSec}s remain)`);
-            runtime.state.activeTimer = null;
-            return;
-        }
-        case "cron": {
-            const remainingMs = Math.max(0, timer.deadlineMs - now);
-            runtime.state.interruptedCronTimer = {
-                remainingMs,
-                reason: timer.reason,
-                originalDurationMs: timer.originalDurationMs,
-                ...(timer.shouldRehydrate ? { shouldRehydrate: true } : {}),
-            };
-            runtime.ctx.traceInfo(`[orch-cmd] ${notePrefix}; will auto-resume interrupted cron (${Math.round(remainingMs / 1000)}s remain)`);
-            runtime.state.activeTimer = null;
-            return;
-        }
-        case "cron_at":
-        case "idle":
-        case "agent-poll":
-        case "input-grace":
-            runtime.ctx.traceInfo(`[orch-cmd] ${notePrefix}; clearing active ${timer.type} timer`);
-            runtime.state.activeTimer = null;
-            return;
     }
 }

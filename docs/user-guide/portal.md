@@ -506,8 +506,7 @@ as your app's portal.
 | Toggle session summary | Click **Summary** / **Chat** in the top toolbar; Summary is read-only and hides the prompt box |
 | Open Admin Console | Admin / settings menu |
 
-For keyboard shortcuts inside the portal (when supported), check the
-help icon — many of the TUI keys (`j`/`k` to navigate, `r` to refresh,
+Many of the TUI keys (`j`/`k` to navigate, `r` to refresh,
 etc.) work inside the portal too when no input is focused.
 
 ## Mobile

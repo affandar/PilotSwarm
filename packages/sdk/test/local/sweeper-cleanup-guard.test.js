@@ -15,8 +15,8 @@
  *
  *   - cleanup_session REFUSES a live root inferred from stale children
  *   - cleanup_session still cleans a genuinely terminal target
- *   - cleanup_session cleans stale children individually (by their own
- *     sessionId) while the live parent root is preserved
+ *   - cleanup_session cleans terminal children individually (by their own
+ *     sessionId), refuses live/idle children, and preserves the live parent
  *   - cleanup_session batch (sessionIds[]) gates each target independently:
  *     cleans eligible ones, refuses live roots, de-dupes
  *
@@ -47,9 +47,14 @@ function findTool(tools, name) {
  * the eligibility guard, so controlling it is the point of the test.
  */
 function makeStubDuroxide(statusByInstance) {
+    const enqueuedEvents = [];
     return {
+        enqueuedEvents,
         async getStatus(instanceId) {
             return statusByInstance.get(instanceId) ?? { status: "NotFound" };
+        },
+        async enqueueEvent(orchestrationId, eventName, payload) {
+            enqueuedEvents.push({ orchestrationId, eventName, payload });
         },
         // CMS soft-delete is what we assert against; the duroxide instance
         // delete is best-effort in the tool and irrelevant to the guard.
@@ -123,7 +128,7 @@ async function testCleansTerminalTarget(env) {
     }
 }
 
-async function testCleanupCleansStaleChildrenIndividually(env) {
+async function testCleanupOnlyCleansTerminalChildren(env) {
     const catalog = await createCatalog(env);
     try {
         const rootId = randomUUID();
@@ -136,25 +141,28 @@ async function testCleanupCleansStaleChildrenIndividually(env) {
         const status = new Map([
             // Live root, idle between cron wake-ups.
             [`session-${rootId}`, { status: "Running", customStatus: JSON.stringify({ status: "idle", cronActive: true }) }],
-            // childA finished (terminal); childB is an idle sub-agent (zombie).
+            // childA finished (terminal); childB is an idle live sub-agent.
             [`session-${childA}`, { status: "Completed" }],
             [`session-${childB}`, { status: "Running", customStatus: JSON.stringify({ status: "idle" }) }],
         ]);
-        const tools = createSweeperTools({ catalog, duroxideClient: makeStubDuroxide(status), factStore: null });
+        const duroxide = makeStubDuroxide(status);
+        const tools = createSweeperTools({ catalog, duroxideClient: duroxide, factStore: null });
         const cleanup = findTool(tools, "cleanup_session");
 
-        // The generic cleanup_session tool is enough to clean children: call it
-        // once per stale child's own sessionId. No special children tool needed.
+        // Terminal children still clean directly by their own sessionId.
         const a = await cleanup.handler({ sessionId: childA, graceMinutes: 0 });
-        const b = await cleanup.handler({ sessionId: childB, graceMinutes: 0 });
-        console.log(`  cleanup_session(childA)=${a.ok} cleanup_session(childB)=${b.ok}`);
+        // Idle children are live sessions and are no longer cleanup targets.
+        const refusedB = await cleanup.handler({ sessionId: childB, graceMinutes: 0 });
+        console.log(`  cleanup_session(childA)=${a.ok} cleanup_session(idle childB)=${refusedB.ok}`);
         assertEqual(a.ok, true, "terminal child should be cleaned via cleanup_session");
-        assertEqual(b.ok, true, "idle (zombie) child should be cleaned via cleanup_session");
+        assertEqual(refusedB.ok, false, "idle child should be refused even when stale");
+        assertEqual(refusedB.refused, true, "idle child refusal should be explicit");
+        assertEqual(duroxide.enqueuedEvents.length, 0, "cleanup should not ask parents about idle children");
 
         assertEqual(await isLive(catalog, childA), false, "child A should be deleted");
-        assertEqual(await isLive(catalog, childB), false, "child B should be deleted");
+        assertEqual(await isLive(catalog, childB), true, "child B should survive because it is live/idle");
         assertEqual(await isLive(catalog, rootId), true, "live parent root must remain after cleaning its children");
-        console.log("  ✓ cleanup_session cleans children individually; live parent preserved");
+        console.log("  ✓ cleanup_session cleans only terminal children; live parent and idle child preserved");
     } finally {
         await catalog.close();
     }
@@ -179,23 +187,27 @@ async function testBatchGatesEachTarget(env) {
         const cleanup = findTool(tools, "cleanup_session");
 
         // One batch call that (wrongly) includes the live parent root alongside
-        // its two stale children. Each id is gated independently: the children
-        // are cleaned, the live root is refused — not deleted.
+        // its two stale children. Each id is gated independently: the terminal
+        // child is cleaned, the idle child is refused because it is live,
+        // and the live root is refused — not deleted.
         const res = await cleanup.handler({ sessionIds: [childA, childB, rootId], graceMinutes: 0 });
         console.log(`  batch -> ok=${res.ok} cleaned=${res.cleanedCount} refused=${res.refusedCount} totalDeleted=${res.totalDeleted}`);
         assertEqual(res.ok, true, "batch call returns ok");
         assertEqual(res.batch, true, "batch flag set");
-        assertEqual(res.cleanedCount, 2, "both stale children cleaned");
-        assertEqual(res.refusedCount, 1, "the live root is refused");
-        assertEqual(res.totalDeleted, 2, "exactly two sessions deleted");
+        assertEqual(res.cleanedCount, 1, "terminal child cleaned");
+        assertEqual(res.refusedCount, 2, "the idle child and live root are refused");
+        assertEqual(res.totalDeleted, 1, "exactly one session deleted");
 
         assertEqual(await isLive(catalog, childA), false, "child A deleted");
-        assertEqual(await isLive(catalog, childB), false, "child B deleted");
+        assertEqual(await isLive(catalog, childB), true, "child B survives because it is live/idle");
         assertEqual(await isLive(catalog, rootId), true, "live root survives batch (refused)");
 
         const rootResult = res.results.find(r => r.sessionId === rootId);
         assertNotNull(rootResult, "root has a per-id result");
         assertEqual(rootResult.refused, true, "root result marked refused");
+        const idleChildResult = res.results.find(r => r.sessionId === childB);
+        assertNotNull(idleChildResult, "idle child has a per-id result");
+        assertEqual(idleChildResult.refused, true, "idle child result marked refused");
         console.log("  ✓ batch gates each target independently");
     } finally {
         await catalog.close();
@@ -235,8 +247,8 @@ describe("Sweeper cleanup guardrails", () => {
         await testCleansTerminalTarget(getEnv());
     });
 
-    it("cleanup_session cleans stale children individually while preserving the live parent", { timeout: TIMEOUT }, async () => {
-        await testCleanupCleansStaleChildrenIndividually(getEnv());
+    it("cleanup_session cleans only terminal children while preserving live children", { timeout: TIMEOUT }, async () => {
+        await testCleanupOnlyCleansTerminalChildren(getEnv());
     });
 
     it("cleanup_session batch gates each target (cleans children, refuses live root)", { timeout: TIMEOUT }, async () => {

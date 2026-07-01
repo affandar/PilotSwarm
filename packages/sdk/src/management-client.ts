@@ -27,6 +27,7 @@ import type {
 import type { SessionCatalog, SessionRow, TopEventEmitterRow } from "./cms.js";
 import type {
     SessionMetricSummary,
+    TokensByModelRow,
     SessionTreeStats,
     FleetStats,
     UserStats,
@@ -185,6 +186,8 @@ export interface RestartSystemSessionOptions {
     disposition: SystemSessionRestartDisposition;
     reason?: string;
     timeoutMs?: number;
+    model?: string;
+    reasoningEffort?: ReasoningEffort | null;
 }
 
 export interface RestartSystemSessionResult {
@@ -934,6 +937,12 @@ export class PilotSwarmManagementClient {
                     `into group ${targetGroup.title || targetGroup.groupId} owned by ${ownerLabel(targetGroup.owner)}.`,
                 );
             }
+            if (canAdoptOwner) {
+                const ownerToAdopt = movableSessions.find((session) => session.owner)?.owner ?? null;
+                if (ownerToAdopt) {
+                    await this._catalog!.updateSessionGroup(targetGroup.groupId, { owner: ownerToAdopt });
+                }
+            }
         }
 
         for (const session of movableSessions) {
@@ -1090,6 +1099,44 @@ export class PilotSwarmManagementClient {
         );
     }
 
+    /**
+     * Switch a session's model (and optionally reasoning effort) at the next
+     * turn boundary. Applies via the durable set_model command; never affects an
+     * in-flight turn. Allowed for system sessions too.
+     */
+    async setSessionModel(
+        sessionId: string,
+        model: string,
+        opts?: { reasoningEffort?: ReasoningEffort | null; source?: string },
+    ): Promise<void> {
+        this._ensureStarted();
+        const trimmed = String(model || "").trim();
+        if (!trimmed) throw new Error("setSessionModel requires a model id");
+        const models = this.listModels();
+        const match = models.find((m) => m.qualifiedName === trimmed);
+        if (!match) throw new Error(`Unknown model: ${trimmed}`);
+        const nextReasoningEffort = opts && "reasoningEffort" in opts
+            ? (opts.reasoningEffort ?? null)
+            : (match.defaultReasoningEffort ?? null);
+        if (nextReasoningEffort) {
+            const supported = match.supportedReasoningEfforts ?? [];
+            if (!supported.includes(nextReasoningEffort)) {
+                throw new Error(`Model ${trimmed} does not support reasoning effort '${nextReasoningEffort}'`);
+            }
+        }
+        const session = await this.getSession(sessionId).catch(() => null);
+        if (!session) throw new Error(`Session ${sessionId.slice(0, 8)} was not found`);
+        await this.sendCommand(sessionId, {
+            cmd: "set_model",
+            id: buildLifecycleCommandId("set-model"),
+            args: {
+                model: trimmed,
+                reasoningEffort: nextReasoningEffort,
+                source: opts?.source ?? "user",
+            },
+        });
+    }
+
     async restartSystemSession(
         agentIdOrSessionId: string,
         options: RestartSystemSessionOptions,
@@ -1140,7 +1187,7 @@ export class PilotSwarmManagementClient {
             }
         }
 
-        const defaultModel = this._modelProviders?.defaultModel ?? existingRow?.model;
+        const defaultModel = options.model ?? this._modelProviders?.defaultModel ?? existingRow?.model;
         if (!defaultModel) {
             throw new Error("Cannot restart system session without a configured default model");
         }
@@ -1150,6 +1197,7 @@ export class PilotSwarmManagementClient {
             duroxideClient: this._duroxideClient,
             agents: this._systemAgents,
             defaultModel,
+            ...(options.reasoningEffort ? { defaultReasoningEffort: options.reasoningEffort } : {}),
             blobEnabled: this.config.blobEnabled,
             dehydrateThreshold: this.config.waitThreshold ?? DEFAULT_SYSTEM_AGENT_DEHYDRATE_THRESHOLD,
             agentId: plan.agent.id,
@@ -1327,6 +1375,12 @@ export class PilotSwarmManagementClient {
     async getSessionMetricSummary(sessionId: string): Promise<SessionMetricSummary | null> {
         this._ensureStarted();
         return this._catalog!.getSessionMetricSummary(sessionId);
+    }
+
+    /** Per-session token totals grouped by provider:model:reasoning, with turn count. */
+    async getSessionTokensByModel(sessionId: string): Promise<TokensByModelRow[]> {
+        this._ensureStarted();
+        return this._catalog!.getSessionTokensByModel(sessionId);
     }
 
     async getSessionTreeStats(sessionId: string): Promise<SessionTreeStats | null> {

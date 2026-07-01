@@ -37,6 +37,7 @@ export interface InsertTurnMetricInput {
     sessionId: string;
     agentId: string | null;
     model: string | null;
+    reasoningEffort: string | null;
     turnIndex: number;
     startedAt: Date;
     endedAt: Date;
@@ -52,11 +53,21 @@ export interface InsertTurnMetricInput {
     workerNodeId: string | null;
 }
 
+export interface CompleteTurnWritebackInput extends InsertTurnMetricInput {
+    toolNames?: string[];
+    state: string;
+    lastActiveAt: Date;
+    lastError: string | null;
+    waitReason: string | null;
+    currentIteration: number;
+}
+
 export interface TurnMetricRow {
     id: number;
     sessionId: string;
     agentId: string | null;
     model: string | null;
+    reasoningEffort: string | null;
     turnIndex: number;
     startedAt: Date;
     endedAt: Date;
@@ -71,6 +82,16 @@ export interface TurnMetricRow {
     errorMessage: string | null;
     workerNodeId: string | null;
     createdAt: Date;
+}
+
+export interface TokensByModelRow {
+    /** Combined model:effort label (or provider/model when no effort). */
+    model: string;
+    turnCount: number;
+    totalTokensInput: number;
+    totalTokensOutput: number;
+    totalTokensCacheRead: number;
+    totalTokensCacheWrite: number;
 }
 
 export interface HourlyTokenBucketRow {
@@ -217,6 +238,7 @@ export interface FleetStats {
         agentId: string | null;
         model: string | null;
         sessionCount: number;
+        turnCount: number;
         totalSnapshotSizeBytes: number;
         totalDehydrationCount: number;
         totalHydrationCount: number;
@@ -245,6 +267,7 @@ export interface UserStatsModelBucket {
     model: string | null;
     sessionIds: string[];
     sessionCount: number;
+    turnCount: number;
     totalSnapshotSizeBytes: number;
     totalOrchestrationHistorySizeBytes: number;
     totalDehydrationCount: number;
@@ -339,6 +362,7 @@ export interface SessionTreeStats {
     byModel: Array<{
         model: string;
         sessionCount: number;
+        turnCount: number;
         totalTokensInput: number;
         totalTokensOutput: number;
         totalTokensCacheRead: number;
@@ -544,8 +568,8 @@ export interface SessionCatalog {
     /** Create a visual session group. */
     createSessionGroup(input: { groupId: string; title: string; description?: string | null; owner?: SessionOwnerInfo | null; metadata?: Record<string, unknown> }): Promise<void>;
 
-    /** Update title/description/metadata for a session group. */
-    updateSessionGroup(groupId: string, patch: { title?: string; description?: string | null; metadataPatch?: Record<string, unknown> }): Promise<void>;
+    /** Update title/description/owner/metadata for a session group. */
+    updateSessionGroup(groupId: string, patch: { title?: string; description?: string | null; owner?: SessionOwnerInfo | null; metadataPatch?: Record<string, unknown> }): Promise<void>;
 
     /** List session groups with aggregate member status. */
     listSessionGroups(): Promise<SessionGroupRow[]>;
@@ -597,8 +621,14 @@ export interface SessionCatalog {
     /** Insert one per-turn metrics row. */
     insertTurnMetric(input: InsertTurnMetricInput): Promise<void>;
 
+    /** Complete one turn's CMS writeback atomically. */
+    completeTurnWriteback(input: CompleteTurnWritebackInput): Promise<void>;
+
     /** Get bounded per-session turn metrics, newest-first. */
     getSessionTurnMetrics(sessionId: string, opts?: { since?: Date; limit?: number }): Promise<TurnMetricRow[]>;
+
+    /** Get per-session token totals grouped by model:effort, with per-bucket turn count. */
+    getSessionTokensByModel(sessionId: string): Promise<TokensByModelRow[]>;
 
     /** Aggregate hourly token buckets from session turn metrics. */
     getHourlyTokenBuckets(since: Date, opts?: { agentId?: string; model?: string }): Promise<HourlyTokenBucketRow[]>;
@@ -728,7 +758,9 @@ function sqlForSchema(schema: string) {
             getSessionEventsBefore:     `${s}.cms_get_session_events_before`,
             getTopEventEmitters:        `${s}.cms_get_top_event_emitters`,
             insertTurnMetric:           `${s}.cms_insert_turn_metric`,
+            completeTurnWriteback:      `${s}.cms_complete_turn_writeback`,
             getSessionTurnMetrics:      `${s}.cms_get_session_turn_metrics`,
+            getSessionTokensByModel:    `${s}.cms_get_session_tokens_by_model`,
             getHourlyTokenBuckets:      `${s}.cms_get_hourly_token_buckets`,
             pruneTurnMetrics:           `${s}.cms_prune_turn_metrics`,
             getSessionMetricSummary:    `${s}.cms_get_session_metric_summary`,
@@ -994,7 +1026,7 @@ export class PgSessionCatalog implements SessionCatalog {
         );
     }
 
-    async updateSessionGroup(groupId: string, patch: { title?: string; description?: string | null; metadataPatch?: Record<string, unknown> }): Promise<void> {
+    async updateSessionGroup(groupId: string, patch: { title?: string; description?: string | null; owner?: SessionOwnerInfo | null; metadataPatch?: Record<string, unknown> }): Promise<void> {
         await this.pool.query(
             `SELECT ${this.sql.fn.updateSessionGroup}($1, $2)`,
             [groupId, JSON.stringify(patch)],
@@ -1102,11 +1134,12 @@ export class PgSessionCatalog implements SessionCatalog {
 
     async insertTurnMetric(input: InsertTurnMetricInput): Promise<void> {
         await this.pool.query(
-            `SELECT ${this.sql.fn.insertTurnMetric}($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+            `SELECT ${this.sql.fn.insertTurnMetric}($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
             [
                 input.sessionId,
                 input.agentId,
                 input.model,
+                input.reasoningEffort,
                 input.turnIndex,
                 input.startedAt,
                 input.endedAt,
@@ -1124,12 +1157,58 @@ export class PgSessionCatalog implements SessionCatalog {
         );
     }
 
+    async completeTurnWriteback(input: CompleteTurnWritebackInput): Promise<void> {
+        await this.pool.query(
+            `SELECT ${this.sql.fn.completeTurnWriteback}($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)`,
+            [
+                input.sessionId,
+                input.agentId,
+                input.model,
+                input.reasoningEffort,
+                input.turnIndex,
+                input.startedAt,
+                input.endedAt,
+                input.durationMs,
+                input.tokensInput,
+                input.tokensOutput,
+                input.tokensCacheRead,
+                input.tokensCacheWrite,
+                input.toolCalls,
+                input.toolErrors,
+                input.toolNames ?? [],
+                input.resultType,
+                input.errorMessage,
+                input.workerNodeId,
+                input.state,
+                input.lastActiveAt,
+                input.lastError,
+                input.waitReason,
+                input.currentIteration,
+            ],
+        );
+    }
+
     async getSessionTurnMetrics(sessionId: string, opts?: { since?: Date; limit?: number }): Promise<TurnMetricRow[]> {
         const { rows } = await this.pool.query(
             `SELECT * FROM ${this.sql.fn.getSessionTurnMetrics}($1, $2, $3)`,
             [sessionId, opts?.since ?? null, opts?.limit ?? null],
         );
         return rows.map(rowToTurnMetricRow);
+    }
+
+    async getSessionTokensByModel(sessionId: string): Promise<TokensByModelRow[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.getSessionTokensByModel}($1)`,
+            [sessionId],
+        );
+        return rows.map((r: any): TokensByModelRow => ({
+            model: r.model ?? "(unknown)",
+            turnCount: Number(r.turn_count) || 0,
+            totalTokensInput: Number(r.total_tokens_input) || 0,
+            totalTokensOutput: Number(r.total_tokens_output) || 0,
+            totalTokensCacheRead: Number(r.total_tokens_cache_read) || 0,
+            totalTokensCacheWrite: Number(r.total_tokens_cache_write) || 0,
+        }));
     }
 
     async getHourlyTokenBuckets(since: Date, opts?: { agentId?: string; model?: string }): Promise<HourlyTokenBucketRow[]> {
@@ -1182,6 +1261,7 @@ export class PgSessionCatalog implements SessionCatalog {
             return {
                 model: String(mr.model || "(unknown)"),
                 sessionCount: Number(mr.session_count) || 0,
+                turnCount: Number(mr.turn_count) || 0,
                 totalTokensInput: input,
                 totalTokensOutput: Number(mr.total_tokens_output) || 0,
                 totalTokensCacheRead: cacheRead,
@@ -1240,6 +1320,7 @@ export class PgSessionCatalog implements SessionCatalog {
                     agentId: g.agent_id ?? null,
                     model: g.model ?? null,
                     sessionCount: Number(g.session_count) || 0,
+                    turnCount: Number(g.turn_count) || 0,
                     totalSnapshotSizeBytes: Number(g.total_snapshot_size_bytes) || 0,
                     totalDehydrationCount: Number(g.total_dehydration_count) || 0,
                     totalHydrationCount: Number(g.total_hydration_count) || 0,
@@ -1304,6 +1385,7 @@ export class PgSessionCatalog implements SessionCatalog {
                 model: row.model ?? null,
                 sessionIds,
                 sessionCount: Number(row.session_count) || 0,
+                turnCount: Number(row.turn_count) || 0,
                 totalSnapshotSizeBytes: Number(row.total_snapshot_size_bytes) || 0,
                 totalOrchestrationHistorySizeBytes: 0,
                 totalDehydrationCount: Number(row.total_dehydration_count) || 0,
@@ -1766,6 +1848,7 @@ function rowToTurnMetricRow(row: any): TurnMetricRow {
         sessionId: row.session_id,
         agentId: row.agent_id ?? null,
         model: row.model ?? null,
+        reasoningEffort: row.reasoning_effort ?? null,
         turnIndex: Number(row.turn_index) || 0,
         startedAt: new Date(row.started_at),
         endedAt: new Date(row.ended_at),

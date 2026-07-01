@@ -508,6 +508,33 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
         },
     });
 
+    const readSessionTokensByModelTool = defineTool("read_session_tokens_by_model", {
+        description:
+            "Read per-session token totals grouped by provider:model:reasoning effort, with turn counts. " +
+            "Use this when diagnosing model switches, model self-identification, or cost/latency attribution within one session.",
+        parameters: {
+            type: "object" as const,
+            properties: { session_id: { type: "string" } },
+            required: ["session_id"],
+        },
+        handler: async (args: { session_id: string }) => {
+            const id = normalizeSessionId(args.session_id);
+            try {
+                const rows = await catalog.getSessionTokensByModel(id);
+                return {
+                    sessionId: id,
+                    rows,
+                    modelBucketCount: rows.length,
+                    totalTurnCount: rows.reduce((sum, row) => sum + (Number((row as any).turnCount) || 0), 0),
+                    totalTokensInput: rows.reduce((sum, row) => sum + (Number((row as any).totalTokensInput) || 0), 0),
+                    totalTokensOutput: rows.reduce((sum, row) => sum + (Number((row as any).totalTokensOutput) || 0), 0),
+                };
+            } catch (err: any) {
+                return { error: `read_session_tokens_by_model: ${err?.message || String(err)}` };
+            }
+        },
+    });
+
     const readSessionGraphSearchesTool = defineTool("read_session_graph_searches", {
         description:
             "Graph-search forensics: the `graph.searched` events a session emitted — what graph queries it ran " +
@@ -998,6 +1025,7 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
         readAgentEventsTool,
         ...systemReadTools,
         readSessionMetricSummaryTool,
+        readSessionTokensByModelTool,
         readSessionGraphSearchesTool,
         readSessionTreeStatsTool,
         readFleetStatsTool,

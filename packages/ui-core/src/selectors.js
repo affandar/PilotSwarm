@@ -1883,6 +1883,10 @@ function shortModelReasoningLabel(model, reasoningEffort) {
     return effort ? `${modelName}:${effort}` : modelName;
 }
 
+function shortBucketModelLabel(model) {
+    return shortModelName(model) || "(unknown)";
+}
+
 export function selectChatPaneChrome(state, options = {}) {
     const session = selectActiveSession(state);
     const sessionsById = state.sessions?.byId || {};
@@ -4344,6 +4348,21 @@ function buildSessionStatsLines(state, session, maxWidth) {
     }
     lines.push(plainInspectorLine(""));
 
+    const tokensByModel = Array.isArray(entry.tokensByModel) ? entry.tokensByModel : [];
+    if (tokensByModel.length > 1) {
+        lines.push(...buildMessageCardLines({
+            title: "Models",
+            body: tokensByModel
+                .map((row) => `${shortBucketModelLabel(row.model)} · ${row.turnCount || 0} turns · ${formatCompactNumber(row.totalTokensInput)} in / ${formatCompactNumber(row.totalTokensOutput)} out`)
+                .join("\n"),
+            width: w,
+            titleColor: "cyan",
+            borderColor: "gray",
+            fitToContent: true,
+        }));
+        lines.push(plainInspectorLine(""));
+    }
+
     // Token usage card
     const tokTotal = (summary.tokensInput || 0) + (summary.tokensOutput || 0);
     const hitRatio = summary.cacheHitRatio;
@@ -4686,12 +4705,14 @@ function buildFleetStatsLines(state, maxWidth) {
             totalTokensCacheRead: 0,
             totalTokensCacheWrite: 0,
             totalSnapshotSizeBytes: 0,
+            turnCount: 0,
         };
         current.totalTokensInput += Number(group.totalTokensInput) || 0;
         current.totalTokensOutput += Number(group.totalTokensOutput) || 0;
         current.totalTokensCacheRead += Number(group.totalTokensCacheRead) || 0;
         current.totalTokensCacheWrite += Number(group.totalTokensCacheWrite) || 0;
         current.totalSnapshotSizeBytes += Number(group.totalSnapshotSizeBytes) || 0;
+        current.turnCount += Number(group.turnCount) || 0;
         byModel.set(modelLabel, current);
     }
 
@@ -4850,7 +4871,7 @@ function buildTreeByModelBody(rows) {
     const out = [];
     for (const r of sorted) {
         const ratio = r.cacheHitRatio;
-        out.push(`${String(r.model || "(unknown)")}  · ${r.sessionCount || 0} sess`);
+        out.push(`${String(r.model || "(unknown)")}  · ${r.sessionCount || 0} sess · ${r.turnCount || 0} turns`);
         out.push(formatModelTotalsTable(r, ratio));
         out.push("");
     }
@@ -4869,6 +4890,7 @@ function formatModelTotalsTable(totals, cacheHitRatio) {
         ["Input",       formatCompactNumber(totals.totalTokensInput || 0)],
         ["Output",      formatCompactNumber(totals.totalTokensOutput || 0)],
         ["Total",       formatCompactNumber(total)],
+        ["Turns",       formatCompactNumber(totals.turnCount || 0)],
         ["Cache Read",  formatCompactNumber(totals.totalTokensCacheRead || 0)],
         ["Cache Write", formatCompactNumber(totals.totalTokensCacheWrite || 0)],
         ["Hit Ratio",   ratioLabel],
@@ -4904,7 +4926,7 @@ function buildUserModelsBody(user, maxWidth) {
     const lines = [];
     for (const row of top) {
         const model = ellipsize(String(row.model || "(default)"), Math.max(12, maxWidth - 10));
-        lines.push(`${model} · ${row.sessionCount || 0} sess`);
+        lines.push(`${model} · ${row.sessionCount || 0} sess · ${row.turnCount || 0} turns`);
         lines.push(formatModelTotalsTable(row, row.cacheHitRatio));
         lines.push("");
     }
