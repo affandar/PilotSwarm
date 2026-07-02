@@ -2978,8 +2978,18 @@ function mapEventToSequenceEntry(event) {
     switch (event?.eventType) {
         case "session.turn_started":
             return { ...base, type: "turn_start", color: "gray", detail: `turn ${event?.data?.iteration ?? "?"}` };
-        case "session.turn_completed":
-            return { ...base, type: "turn_end", color: "gray", detail: `turn ${event?.data?.iteration ?? "?"} done` };
+        case "session.turn_completed": {
+            const completedTurn = Number(event?.data?.turnIndex ?? event?.data?.iteration);
+            return {
+                ...base,
+                type: "turn_end",
+                color: "gray",
+                detail: `turn ${event?.data?.iteration ?? "?"} done`,
+                // Structural turn marker: renderers must not infer the turn
+                // from `detail`, which gets width-truncated in narrow columns.
+                ...(Number.isFinite(completedTurn) ? { completedTurn } : {}),
+            };
+        }
         case "user.message":
             return { ...base, type: "user_msg", color: "white", detail: preview ? `>> ${preview}` : ">> user" };
         case "assistant.message":
@@ -3294,6 +3304,7 @@ function buildSequenceEventLine(entry, nodeLabels, timeWidth, colWidth) {
                 color: entry.color || "white",
                 bold: Boolean(entry.bold),
                 underline: Boolean(entry.underline),
+                ...(entry.completedTurn != null ? { completedTurn: entry.completedTurn } : {}),
             });
         } else {
             runs.push({

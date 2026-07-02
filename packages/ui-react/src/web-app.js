@@ -1576,14 +1576,17 @@ function PortalSequenceLines({ lines, theme, completionByTurn }) {
 
     return React.createElement(React.Fragment, null,
         lines.map((line, index) => {
-            const text = lineText(line);
-            const match = /turn\s+(\d+)\s+done/i.exec(text);
-            const completion = match ? completionByTurn.get(Number(match[1])) : null;
+            // The selector tags the completed-turn run structurally; the display
+            // text is width-truncated in narrow columns, so never regex it.
+            const completedTurn = line?.kind === "runs" && Array.isArray(line.runs)
+                ? line.runs.find((run) => run?.completedTurn != null)?.completedTurn
+                : null;
+            const completion = completedTurn != null ? completionByTurn.get(Number(completedTurn)) : null;
             if (!completion) {
                 return React.createElement(Line, { key: `line:${index}`, line, theme });
             }
             const data = completion.data || {};
-            const key = String(completion.seq ?? `${data.turnIndex ?? match[1]}:${completion.createdAt ?? index}`);
+            const key = String(completion.seq ?? `${data.turnIndex ?? completedTurn}:${completion.createdAt ?? index}`);
             const isExpanded = expanded.has(key);
             const fullModelLabel = data.reasoningEffort ? `${data.model || "(unknown)"}:${data.reasoningEffort}` : (data.model || "(unknown)");
             const modelLabel = shortModelOnly(data.model);
