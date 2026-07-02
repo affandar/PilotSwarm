@@ -2,7 +2,7 @@
 
 > **Status:** Proposal  
 > **Date:** 2026-04-24  
-> **Goal:** Let app layers such as Waldemort contribute TUI and portal themes without hardcoding downstream palettes into PilotSwarm's built-in theme registry.
+> **Goal:** Let downstream app layers contribute TUI and portal themes without hardcoding downstream palettes into PilotSwarm's built-in theme registry.
 
 ---
 
@@ -10,13 +10,13 @@
 
 PilotSwarm already has a shared theme system used by both the native TUI and browser portal. Today the list of available themes is compiled into `pilotswarm-ui-core`, so a downstream app that wants a domain-specific palette must either patch the vendored UI package or request that its app-specific theme be added to PilotSwarm itself.
 
-This proposal adds a generic app-layer theme extension point. A plugin or deployment can define extra themes in its local `plugin.json`; PilotSwarm loads, validates, and merges those themes with the built-in list at runtime. Waldemort can then ship themes such as `waldemort-cauldron` from the Waldemort plugin layer while PilotSwarm remains product-neutral.
+This proposal adds a generic app-layer theme extension point. A plugin or deployment can define extra themes in its local `plugin.json`; PilotSwarm loads, validates, and merges those themes with the built-in list at runtime. A downstream app can then ship themes such as `acme-ember` from its own plugin layer while PilotSwarm remains product-neutral.
 
 ---
 
 ## Motivation
 
-- **Keep app identity in the app layer.** Waldemort-specific colors, labels, and visual tone belong beside Waldemort's existing `plugin/plugin.json` branding, not inside PilotSwarm's core packages.
+- **Keep app identity in the app layer.** App-specific colors, labels, and visual tone belong beside the app's existing `plugin/plugin.json` branding, not inside PilotSwarm's core packages.
 - **Preserve shared TUI/portal behavior.** A selected theme should apply to both the native TUI and the browser portal, using the existing theme picker and persistence paths.
 - **Avoid vendored package churn.** Downstream apps should not need to edit `pilotswarm-ui-core-local/src/themes/*` just to add an app palette.
 - **Support deployment branding.** The same mechanism can serve other PilotSwarm-based apps without expanding the built-in theme catalog indefinitely.
@@ -38,14 +38,14 @@ Downstream app metadata already flows from `plugin/plugin.json` into the TUI and
 
 ```json
 {
-  "name": "waldemort",
+  "name": "acme",
   "tui": {
-    "title": "Waldemort",
+    "title": "Acme",
     "splashFile": "./tui-splash.txt"
   },
   "portal": {
-    "title": "Waldemort",
-    "pageTitle": "Waldemort - Postgres Stress Testing",
+    "title": "Acme",
+    "pageTitle": "Acme - Database Ops",
     "logoFile": "./assets/logo.svg"
   }
 }
@@ -61,14 +61,14 @@ Add an optional shared `ui` section for cross-surface UI configuration:
 
 ```json
 {
-  "name": "waldemort",
+  "name": "acme",
   "ui": {
-    "defaultTheme": "waldemort-cauldron",
+    "defaultTheme": "acme-ember",
     "themes": [
       {
-        "id": "waldemort-cauldron",
-        "label": "Waldemort Cauldron",
-        "description": "Dark operational palette with green, blue, and red accents for Postgres stress analysis.",
+        "id": "acme-ember",
+        "label": "Acme Ember",
+        "description": "Dark operational palette with green, blue, and red accents for database operations.",
         "page": {
           "background": "#05070b",
           "foreground": "#e5edf5",
@@ -127,7 +127,7 @@ Rules:
 - `ui.themes` is optional. Missing means use only built-in themes.
 - `ui.defaultTheme` is optional. Missing means use PilotSwarm's built-in default.
 - Theme objects use the same `createTheme()` input shape as built-in themes.
-- `id` must be stable, lower-case, and app-scoped, for example `waldemort-cauldron`.
+- `id` must be stable, lower-case, and app-scoped, for example `acme-ember`.
 - A plugin theme id must not collide with a built-in theme id unless a future explicit override mechanism exists.
 
 ---
@@ -176,7 +176,7 @@ If the persisted user theme no longer exists, fall back to the app default and o
 {
   "portal": {
     "theme": {
-      "defaultTheme": "waldemort-cauldron",
+      "defaultTheme": "acme-ember",
       "themes": []
     }
   }
@@ -191,7 +191,7 @@ The portal registers these themes before creating the shared controller. Initial
 
 ### Theme picker
 
-The existing theme picker should list built-in and plugin themes together. Plugin themes should sort by label like built-ins. Optionally, the details pane can display a source label such as `Source: Waldemort`, but this is not required for the first version.
+The existing theme picker should list built-in and plugin themes together. Plugin themes should sort by label like built-ins. Optionally, the details pane can display a source label such as `Source: Acme`, but this is not required for the first version.
 
 ---
 
@@ -226,7 +226,7 @@ This keeps portal theming safe to serve through `/api/portal-config` and avoids 
 
 ## Non-Goals
 
-- No built-in Waldemort theme inside PilotSwarm's core theme list.
+- No built-in app-specific themes inside PilotSwarm's core theme list.
 - No marketplace or registry for themes.
 - No live theme editor in the TUI or portal.
 - No arbitrary CSS overrides in `plugin.json`.
@@ -261,19 +261,19 @@ If a user has a persisted theme id that disappears after an app removes a plugin
 
 ---
 
-## Waldemort Example
+## Example App Layout
 
-Waldemort can then stay entirely in its own layer:
+A downstream app stays entirely in its own layer:
 
 ```text
-waldemort/
+acme/
   plugin/
-    plugin.json        # declares Waldemort themes
+    plugin.json        # declares app themes
     assets/logo.svg
     tui-splash.txt
 ```
 
-No Waldemort-specific file is added to:
+No app-specific file is added to:
 
 ```text
 packages/ui-core/src/themes/
@@ -289,5 +289,5 @@ The only PilotSwarm change is the generic ability to accept and validate app-sup
 
 - Should plugin themes be grouped under `ui.themes`, or should the key be `themes` at the root for shorter manifests?
 - Should TUI and portal be allowed to specify separate defaults, or should one shared `ui.defaultTheme` be required for consistency?
-- Should theme picker details show theme source (`Built-in`, `Waldemort`, etc.)?
+- Should theme picker details show theme source (`Built-in`, `Acme`, etc.)?
 - Should validation enforce contrast ratios, or only basic structural/color validity in the first version?

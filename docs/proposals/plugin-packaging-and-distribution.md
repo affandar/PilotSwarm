@@ -1,5 +1,7 @@
 # Plugin Packaging and Distribution
 
+> **Status update (2026-07-01):** For layered-app delivery, [app-manifest-and-image-deploy](./app-manifest-and-image-deploy.md) supersedes the *distribution* half of this proposal (the `plugin_registry` blob store, pack/fetch mgmt APIs, worker rosters, and per-session version binding) — apps now ship as worker images baked with their config, rolled out from the Admin console. The **plugin folder layout and loader contract** defined here remain canonical: they describe exactly what an app image bakes at `/app/plugin` and how the worker loads it.
+
 ## Summary
 
 Plugins live as blobs in Postgres. A mgmt-API pair packs (`pointed-at-folder → validated → tarball → INSERT`) and unpacks (`SELECT → extract to cache`). `(name, version)` is the unique identity; sessions record what they were created against so resume is deterministic across worker restarts. The plugin format is scoped to **agents, skills, and MCP server configuration** — nothing else. No editor UX, no external registries, no filesystem sources for user plugins.

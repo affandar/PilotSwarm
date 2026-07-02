@@ -3,7 +3,7 @@
 **Status:** Draft
 **Date:** 2026-04-19
 **Depends on:** [binary-artifacts.md](./binary-artifacts.md) — Phase 1 + 2 must ship first.
-**Author:** Waldemort team (filed cross-repo per copilot-instructions.md repo-boundary rule)
+**Author:** Downstream app team (filed cross-repo per copilot-instructions.md repo-boundary rule)
 
 ## Problem
 

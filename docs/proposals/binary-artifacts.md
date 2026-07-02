@@ -2,7 +2,7 @@
 
 **Status:** Approved (implementation-ready, revised v1)
 **Date:** 2026-04-19
-**Author:** Waldemort team (filed cross-repo per copilot-instructions.md repo-boundary rule)
+**Author:** Downstream app team (filed cross-repo per copilot-instructions.md repo-boundary rule)
 
 ## Problem
 
