@@ -11,3 +11,4 @@ Current implemented proposals:
 - [npm Packaging and Embedded PilotSwarm Plugins](./npm-packaging-and-embedded-plugins.md)
 - [Prompt Layering and Framework Precedence](./prompt-layering-and-precedence.md)
 - [Preserve Worker Affinity For Durable Waits](./wait-preserve-worker-affinity.md)
+- [Stop Button / Turn Abort](./stop-button-turn-abort-plan.md)

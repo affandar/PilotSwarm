@@ -5447,6 +5447,48 @@ export class PilotSwarmUiController {
         await this.refreshSessions();
     }
 
+    /**
+     * Stop the active session's in-flight LLM turn without touching session
+     * lifecycle. Applies to user AND system sessions; only group/container
+     * rows are rejected. No confirmation modal — the action is non-destructive
+     * (the session returns to idle and accepts the next prompt).
+     */
+    async stopActiveSessionTurn() {
+        const state = this.getState();
+        const sessionId = state.sessions.activeSessionId;
+        if (!sessionId) return;
+        const session = state.sessions.byId[sessionId];
+        if (!session || session.isGroup) {
+            this.dispatch({ type: "ui/status", text: "Select a session to stop its turn." });
+            return;
+        }
+        if (typeof this.transport.stopSessionTurn !== "function") {
+            this.dispatch({ type: "ui/status", text: "Stop turn is not supported by this transport" });
+            return;
+        }
+        if (!this._stopTurnInFlight) this._stopTurnInFlight = new Set();
+        if (this._stopTurnInFlight.has(sessionId)) return;
+        this._stopTurnInFlight.add(sessionId);
+        this.dispatch({ type: "ui/status", text: `Stopping turn for ${sessionId.slice(0, 8)}…` });
+        try {
+            const result = await this.transport.stopSessionTurn(sessionId, { reason: "Stopped by user" });
+            const outcome = result?.outcome || "stopped";
+            if (outcome === "no_active_turn") {
+                this.dispatch({ type: "ui/status", text: "No active turn to stop" });
+            } else if (outcome === "timeout") {
+                this.dispatch({ type: "ui/status", text: "Stop requested — waiting for the turn to unwind" });
+            } else {
+                this.dispatch({ type: "ui/status", text: `Stopped turn for ${sessionId.slice(0, 8)}` });
+            }
+        } catch (err) {
+            this.dispatch({ type: "ui/status", text: `Stop turn failed: ${err?.message || err}` });
+        } finally {
+            this._stopTurnInFlight.delete(sessionId);
+        }
+        await this.refreshSessions();
+        await this.refreshActiveSessionDetail?.().catch?.(() => {});
+    }
+
     togglePinActiveSession() {
         const state = this.getState();
         const sessionId = state.sessions.activeSessionId;
@@ -5943,6 +5985,9 @@ export class PilotSwarmUiController {
                 return;
             case UI_COMMANDS.CANCEL_SESSION:
                 await this.cancelActiveSession();
+                return;
+            case UI_COMMANDS.STOP_TURN:
+                await this.stopActiveSessionTurn();
                 return;
             case UI_COMMANDS.DONE_SESSION:
                 await this.completeActiveSession();

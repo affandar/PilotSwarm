@@ -117,6 +117,12 @@ pause between two messages.
   warm to avoid the round-trip cost.
 - Try `cron`: ask the agent `Tell me the time every 30 seconds, three
   times`. The session uses `cron(30)` and re-arms itself.
+- **Stop a turn mid-flight**: while the agent is working, a red **■**
+  button appears next to Send. Click it — the in-flight turn aborts,
+  the transcript records `Turn stopped by user.`, and the session
+  returns to `idle` ready for your next prompt. This stops only the
+  current turn: the session (and any cron schedule it has) stays
+  alive, unlike **Terminate**, which ends the session.
 
 ---
 
@@ -495,6 +501,7 @@ as your app's portal.
 | New session | **New Session** button (top-left) |
 | Switch session | Click in list |
 | Send prompt | Type, press `Enter` (Shift+Enter for newline) |
+| Stop the current turn | Red `■` button next to Send while the session is running; session stays alive and returns to idle |
 | Attach file | Paperclip icon, or drag-and-drop |
 | Cycle inspector tabs | Click the tab; on mobile, swipe |
 | Rename session | Row menu → Rename |

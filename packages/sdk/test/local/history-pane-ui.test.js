@@ -895,9 +895,12 @@ describe("history pane UI behavior", () => {
         const narrowInspectorTitle = selectInspector(state, { width: 64 }).title.map((run) => run.text).join("");
 
         assertIncludes(wideChatTitle, "[ad23bbff]", "wide chat panes should keep the session id in the title");
-        assertIncludes(wideChatTitle, "[last 5m window]", "wide chat panes should keep the recent-window label in the title");
+        // Since the portal sessions/themes refresh, the chat title is
+        // title + [shortId] only; the recent-window label lives on the
+        // inspector pane titles instead.
+        assert(!wideChatTitle.includes("[last 5m window]"), "chat pane titles should not carry the recent-window label");
         assert(!narrowChatTitle.includes("[ad23bbff]"), "narrow chat panes should drop the session id from the title");
-        assert(!narrowChatTitle.includes("[last 5m window]"), "narrow chat panes should drop the recent-window label from the title");
+        assert(!narrowChatTitle.includes("[last 5m window]"), "narrow chat panes should not carry the recent-window label");
 
         assertIncludes(wideInspectorTitle, "Sequence: ad23bbff", "wide inspector panes should keep the session id in the title");
         assertIncludes(wideInspectorTitle, "[last 5m]", "wide inspector panes should keep the recent-window label in the title");

@@ -713,6 +713,15 @@ export function selectActiveSession(state) {
     return sessionId ? state.sessions.byId[sessionId] || null : null;
 }
 
+/**
+ * True when the session row is actively running a turn that Stop can target.
+ * Applies to user AND system sessions; group/container rows are not sessions.
+ */
+export function canStopSessionTurn(session) {
+    if (!session || session.isGroup) return false;
+    return (session.status || "") === "running";
+}
+
 function buildPendingQuestionMessage(session) {
     const pendingQuestion = session?.pendingQuestion;
     if (!pendingQuestion?.question) return null;

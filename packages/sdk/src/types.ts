@@ -55,6 +55,7 @@ export type TurnResult =
     | ({ type: "cancel_agent"; agentId: string; reason?: string; partialResult?: Record<string, unknown>; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "delete_agent"; agentId: string; reason?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | { type: "cancelled" }
+    | { type: "stopped"; reason?: string; events?: CapturedEvent[] }
     | { type: "error"; message: string; events?: CapturedEvent[] };
 
 /** A raw event captured from CopilotSession.on() during a turn. */
@@ -70,6 +71,8 @@ export interface TurnOptions {
     onToolStart?: (name: string, args: any) => void;
     /** Called for every event as it fires during the turn. */
     onEvent?: (event: CapturedEvent) => void;
+    /** Orchestration turn index for this turn — used by stop-turn targeting. */
+    turnIndex?: number;
     /** Model summary text for the list_available_models tool. */
     modelSummary?: string;
     /** Internal: startup/bootstrap turn that should not be recorded as a user message. */
@@ -906,6 +909,40 @@ export const RESPONSE_LATEST_KEY = "response.latest";
 
 export function commandResponseKey(cmdId: string): string {
     return `command.response.${cmdId}`;
+}
+
+// ─── Stop Turn ───────────────────────────────────────────────────
+
+/**
+ * Turn-scoped stop queue name. The session orchestration races the in-flight
+ * `runTurn` activity against a dequeue on this queue; scoping the queue name
+ * to the turn index makes stale stop events structurally unable to kill a
+ * later turn (a race loser is dropped and cannot be un-dropped).
+ */
+export function stopTurnQueueName(turnIndex: number): string {
+    return `stopTurn.${turnIndex}`;
+}
+
+/** Payload enqueued on the turn-scoped stop queue by stopSessionTurn(). */
+export interface StopTurnEventPayload {
+    /** Command id used for the KV command-response channel. */
+    id: string;
+    reason?: string;
+    requestedAt?: number;
+}
+
+/** Result of the worker-local abortTurn activity. */
+export interface AbortTurnResult {
+    outcome: "stopped" | "stop_forced" | "no_active_turn";
+    turnIndex?: number;
+    detail?: string;
+}
+
+/** Client-facing result of stopSessionTurn(). */
+export interface StopTurnResult {
+    outcome: "stopped" | "stop_forced" | "no_active_turn" | "timeout";
+    turnIndex?: number;
+    detail?: string;
 }
 
 export interface SessionResponsePayload {

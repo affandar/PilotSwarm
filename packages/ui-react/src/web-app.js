@@ -4,6 +4,7 @@ import {
     UI_COMMANDS,
     INSPECTOR_TABS,
     appReducer,
+    canStopSessionTurn,
     computeLegacyLayout,
     createInitialState,
     createStore,
@@ -2610,6 +2611,7 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
             focused: state.ui.focusRegion === "prompt",
             modalOpen: Boolean(state.ui.modal),
             answerMode: Boolean(activeSession?.pendingQuestion?.question),
+            canStopTurn: canStopSessionTurn(activeSession),
             hasOutbox: outbox.length > 0,
             hasPendingOutbox: outbox.some((item) => item?.phase === "pending"),
             pendingCount: outbox.filter((item) => item?.phase === "pending").length,
@@ -2642,6 +2644,14 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
             });
     }, [controller, onAfterSend]);
 
+    const [stoppingTurn, setStoppingTurn] = React.useState(false);
+    const stopTurn = React.useCallback(() => {
+        setStoppingTurn(true);
+        controller.handleCommand(UI_COMMANDS.STOP_TURN)
+            .catch(() => {})
+            .finally(() => setStoppingTurn(false));
+    }, [controller]);
+
     const cancelPending = React.useCallback(() => {
         if (controller.getState().ui.promptEdit) {
             if (typeof controller.cancelSelectedOutboxPrompt === "function") {
@@ -2657,12 +2667,10 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
     }, [controller]);
 
     const sendLabel = promptState.editingPending || (promptState.hasPendingOutbox && !promptState.value.trim())
-        ? (mobile ? "⇪" : "Send batch")
+        ? "⇪"
         : promptState.hasOutbox
-            ? (mobile ? "+" : "Queue")
-            : mobile
-                ? "↩"
-                : "Send";
+            ? "+"
+            : "❯";
     const selectedQueued = promptState.selectedOutboxPhase === "queued";
     const selectedCancelling = promptState.selectedOutboxPhase === "cancelling";
     const selectedReadOnly = selectedQueued || selectedCancelling;
@@ -2731,6 +2739,16 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
                     "aria-label": selectedQueued ? "Delete selected queued prompt" : "Cancel selected pending prompt",
                     onClick: cancelPending,
                 }, selectedQueued ? "Delete" : "Cancel")
+                : null,
+            promptState.canStopTurn || stoppingTurn
+                ? React.createElement("button", {
+                    type: "button",
+                    className: `ps-stop-button${stoppingTurn ? " is-stopping" : ""}`,
+                    title: "Stop the current turn (the session stays alive and returns to idle)",
+                    "aria-label": "Stop the current turn",
+                    disabled: stoppingTurn,
+                    onClick: stopTurn,
+                }, "■")
                 : null,
             React.createElement("button", {
                 type: "button",

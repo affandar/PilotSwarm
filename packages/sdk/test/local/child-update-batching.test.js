@@ -103,6 +103,15 @@ function createHarness({ messages = [], inputOverrides = {} } = {}) {
     }
 
     function resolveRace(left, right) {
+        // Stop-turn race (orchestration v1.0.56+): processPrompt yields
+        // race(runTurnTask, dequeueEvent(stopTurn.<iteration>)) instead of a
+        // bare runTurn. The harness treats reaching runTurn as its stopping
+        // point exactly like the old direct yield; callers resume the
+        // generator with the race envelope { index: 0, value: turnResult }.
+        if (left?.effect === "runTurn") {
+            state.runTurnCall = left;
+            return STOP;
+        }
         const timerMs = right?.effect === "scheduleTimer" ? right.ms : 0;
         const next = scheduledMessages[0];
         if (left?.effect === "dequeueEvent" && next && next.atMs <= state.nowMs) {
@@ -286,7 +295,7 @@ function createHarness({ messages = [], inputOverrides = {} } = {}) {
                 state.continueAsNew = null;
                 const resolved = resolve(next.value);
                 if (resolved === STOP) {
-                    input = turnResult;
+                    input = { index: 0, value: turnResult };
                     continue;
                 }
                 input = resolved;
@@ -350,7 +359,7 @@ function createHarness({ messages = [], inputOverrides = {} } = {}) {
                 if (resolved === STOP) {
                     runTurnCount += 1;
                     if (runTurnCount === 1) {
-                        input = firstTurnResult;
+                        input = { index: 0, value: firstTurnResult };
                         continue;
                     }
                     return {

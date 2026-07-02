@@ -957,6 +957,13 @@ export class NodeSdkTransport {
         });
     }
 
+    async stopSessionTurn(sessionId, options = {}) {
+        return this.mgmt.stopSessionTurn(sessionId, {
+            reason: options.reason || "Stopped by user",
+            ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
+        });
+    }
+
     async deleteSessionGroup(groupId) {
         await this.mgmt.deleteSessionGroup(groupId);
     }

@@ -1,5 +1,62 @@
 # Changelog
 
+## 0.3.3 — 2026-07-01
+
+### SDK / Runtime
+
+- Added mid-flight turn Stop. `PilotSwarmManagementClient.stopSessionTurn(sessionId)`
+  aborts the session's in-flight LLM turn without completing, cancelling, or
+  deleting the session; the session returns to `idle` and accepts the next
+  prompt normally. Outcomes: `stopped`, `stop_forced`, `no_active_turn`,
+  `timeout`. Applies to system sessions too.
+- New durable-session orchestration `v1.0.56` (`v1.0.55` frozen): `processPrompt`
+  races the `runTurn` activity against a turn-scoped stop queue
+  (`stopTurn.<turnIndex>`), so a stale stop event can never kill a later turn.
+  When the stop wins, duroxide's dropped-future cancellation is the guaranteed
+  backstop interrupt and a same-affinity `abortTurn` activity delivers the
+  sub-second fast path (requires a stable `workerNodeId` and a free worker
+  slot; the worker now warns at startup when `workerNodeId` is unset).
+- `ManagedSession` gained active-turn tracking and a stop marker: a user stop
+  classifies the unwind as the new `stopped` turn result (never `completed` or
+  a retryable `error`), wins over a racing `wait()`/`ask_user` control-tool
+  abort, and `forceSettleTurn()` force-unwinds turns whose SDK never fires
+  `session.idle` (`stop_forced`, with warm-session invalidation).
+- Stopped turns keep recurring sessions alive: cron / wall-clock schedules
+  re-arm and interrupted waits resume exactly like a completed turn; the
+  parent `CHILD_UPDATE` notification and latest-response write are skipped.
+- CMS migration `0024`: `sessions.active_turn_index` is published by the
+  pre-turn writeback and cleared on turn end and on any state transition away
+  from `running`; `cms_get_session` returns it for stop-queue targeting.
+- New durable events: `session.turn_stopped` (with an `interrupt` delivery
+  annotation) plus a visible `Turn stopped by user.` system message;
+  `session.turn_completed` carries `resultType: "stopped"` on the fast path.
+- Worked around a duroxide-node select limitation (filed
+  microsoft/duroxide-node#9): a raced activity failure resolves as its raw
+  error string instead of throwing, so raced `runTurn` failures are detected
+  and re-thrown into the existing retry machinery.
+
+### Portal / TUI
+
+- Stop button in the portal prompt bar: a red `■` appears next to Send while
+  the active session is running a turn (pulses while stopping); Send is now an
+  icon button (`❯`, `+` when queueing, `⇪` for batch sends).
+- Six new UI themes: night-shift, paper-trail, solarized-ops, terminal-green,
+  workbench-light, and high-contrast-mono.
+- Refined portal session chrome: the chat header shows the session title and
+  short id; model, reasoning effort, and context usage now live on the session
+  list rows and the Stats tab.
+
+### Tests / Docs
+
+- New stop-turn suites: deterministic unit coverage (stop classification,
+  lock-bypass contract, wrong-turn guard, hang escalation, management API) and
+  a live integration suite (mid-flight stop with a blocking tool, idempotent
+  no-op, stale-stop immunity).
+- Orchestration test harnesses updated for the new turn race envelope; UI
+  contract tests updated to the refreshed portal chrome.
+- Stop-turn design doc moved to `docs/proposals-impl/`; portal user guide
+  documents the Stop control.
+
 ## 0.3.2 — 2026-07-01
 
 ### SDK / Runtime

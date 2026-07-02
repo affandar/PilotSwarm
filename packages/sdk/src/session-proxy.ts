@@ -2,7 +2,7 @@ import { isSessionLockAcquireTimeoutError, type SessionManager } from "./session
 import type { SessionStateStore } from "./session-store.js";
 import type { SessionCatalog } from "./cms.js";
 import type { StorageConfig } from "./storage-config.js";
-import { SESSION_STATE_MISSING_PREFIX, type SerializableSessionConfig, type TurnResult, type OrchestrationInput } from "./types.js";
+import { SESSION_STATE_MISSING_PREFIX, type AbortTurnResult, type SerializableSessionConfig, type TurnResult, type OrchestrationInput } from "./types.js";
 import type { AgentConfig } from "./agent-loader.js";
 import { systemChildAgentUUID } from "./agent-loader.js";
 import { PilotSwarmClient } from "./client.js";
@@ -539,6 +539,23 @@ export function createSessionProxy(
             return ctx.scheduleActivityOnSession(
                 "checkpointSession",
                 { sessionId },
+                affinityKey,
+            );
+        },
+        /**
+         * Stop-turn fast-path interrupt: lands on the worker owning the warm
+         * session and aborts the in-flight turn CONCURRENTLY with the still
+         * running `runTurn` activity (requires stable workerNodeId + a free
+         * worker slot; otherwise the dropped-future backstop still stops it).
+         */
+        abortTurn(reason: string, expectedTurnIndex?: number) {
+            return ctx.scheduleActivityOnSession(
+                "abortTurn",
+                {
+                    sessionId,
+                    reason,
+                    ...(expectedTurnIndex != null ? { expectedTurnIndex } : {}),
+                },
                 affinityKey,
             );
         },
@@ -1734,7 +1751,9 @@ export function registerActivities(
                 );
             }
 
-            // Mark session as "running" in CMS before the turn
+            // Mark session as "running" in CMS before the turn, and publish the
+            // in-flight turn index so stopSessionTurn() can address the
+            // turn-scoped stop queue (stopTurn.<turnIndex>).
             if (catalog) {
                 await cmsRetryBestEffort(
                     `runTurn.preTurn updateSession state=running session=${input.sessionId}`,
@@ -1742,6 +1761,11 @@ export function registerActivities(
                         state: "running",
                         lastActiveAt: new Date(),
                     }),
+                    (msg) => activityCtx.traceInfo(msg),
+                );
+                await cmsRetryBestEffort(
+                    `runTurn.preTurn setActiveTurnIndex session=${input.sessionId} turn=${input.turnIndex ?? 0}`,
+                    () => catalog!.setActiveTurnIndex(input.sessionId, input.turnIndex ?? 0),
                     (msg) => activityCtx.traceInfo(msg),
                 );
             }
@@ -1767,6 +1791,7 @@ export function registerActivities(
                     bootstrap: input.bootstrap,
                     requiredTool: input.requiredTool,
                     cycleOrigin: input.cycleOrigin,
+                    turnIndex: input.turnIndex,
                     controlToolBridge,
                 });
             };
@@ -1946,6 +1971,7 @@ export function registerActivities(
                     input_required: "input_required",
                     error: "error",
                     cancelled: "idle",
+                    stopped: "idle",
                     spawn_agent: "running",
                     message_agent: "running",
                     check_agents: "running",
@@ -2070,6 +2096,30 @@ export function registerActivities(
                 try { await (clientToStop as any).stop(); } catch {}
             }
         }
+    });
+
+    // ── abortTurn ────────────────────────────────────────────
+    // Stop-turn fast-path interrupt. Routed on the session affinity key so it
+    // lands on the worker owning the warm ManagedSession and runs CONCURRENTLY
+    // with the in-flight runTurn activity (stable workerNodeId + free slot).
+    // Bypasses the per-session run-turn lock by design; only touches in-memory
+    // state and returns its outcome — the orchestration owns CMS bookkeeping.
+    runtime.registerActivity("abortTurn", async (
+        activityCtx: any,
+        input: { sessionId: string; reason?: string; expectedTurnIndex?: number },
+    ): Promise<AbortTurnResult> => {
+        const reason = input.reason || "Stopped by user";
+        activityCtx.traceInfo(
+            `[abortTurn] session=${input.sessionId} expectedTurn=${input.expectedTurnIndex ?? "any"}`,
+        );
+        const result = await sessionManager.abortWarmSessionTurn(input.sessionId, {
+            reason,
+            ...(input.expectedTurnIndex != null ? { expectedTurnIndex: input.expectedTurnIndex } : {}),
+        });
+        activityCtx.traceInfo(
+            `[abortTurn] session=${input.sessionId} outcome=${result.outcome}${result.detail ? ` (${result.detail})` : ""}`,
+        );
+        return result;
     });
 
     // ── dehydrateSession ────────────────────────────────────

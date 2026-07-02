@@ -38,6 +38,12 @@ function createHarness({ values = new Map(), messages = [] } = {}) {
     }
 
     function resolveRace(left, right) {
+        // Stop-turn race (v1.0.56+): the turn branch wins unless a test
+        // explicitly enqueues a stop event; delegate to the runTurn resolver
+        // and wrap in the race envelope.
+        if (left?.effect === "runTurn") {
+            return { index: 0, value: resolve(left) };
+        }
         const timerMs = right?.effect === "scheduleTimer" ? right.ms : 0;
         const next = scheduledMessages[0];
         if (left?.effect === "dequeueEvent" && next && next.atMs <= state.nowMs + timerMs) {

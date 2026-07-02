@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.3.2** — Adds current configured model visibility to `list_available_models`, hardens durable mid-session model switching, supports sticky session titles through `update_session_summary(title=...)`, tightens Sweeper cleanup to terminal sessions only, and guards against malformed text-emitted tool calls.
+> **Latest release: v0.3.3** — Adds mid-flight turn Stop (portal `■` button + `stopSessionTurn` management API, durable stop-turn race in orchestration v1.0.56), six new UI themes, and refined portal session chrome.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 

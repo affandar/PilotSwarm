@@ -12,5 +12,5 @@
  *
  * @internal
  */
-export const DURABLE_SESSION_LATEST_VERSION = "1.0.55";
+export const DURABLE_SESSION_LATEST_VERSION = "1.0.56";
 export const DURABLE_SESSION_COMPATIBILITY_FLOOR_VERSION = "1.0.47";

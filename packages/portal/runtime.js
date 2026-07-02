@@ -296,6 +296,8 @@ export class PortalRuntime {
                 return this.transport.restartSystemSession(safeParams.agentIdOrSessionId, safeParams.options || {});
             case "setSessionModel":
                 return this.transport.setSessionModel(safeParams.sessionId, safeParams.options || {});
+            case "stopSessionTurn":
+                return this.transport.stopSessionTurn(safeParams.sessionId, safeParams.options || {});
             case "deleteSessionGroup":
                 return this.transport.deleteSessionGroup(safeParams.groupId);
             case "listModels":

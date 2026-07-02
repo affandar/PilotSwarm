@@ -66,6 +66,7 @@ export const UI_COMMANDS = {
     SCROLL_BOTTOM: "scrollBottom",
     DONE_SESSION: "doneSession",
     CANCEL_SESSION: "cancelSession",
+    STOP_TURN: "stopTurn",
     DELETE_SESSION: "deleteSession",
     PIN_SESSION: "pinSession",
     TOGGLE_SELECT_MODE: "toggleSelectMode",

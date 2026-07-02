@@ -595,7 +595,7 @@ describe("session refresh UI recovery", () => {
         assert(!chromeTitle.includes("M61 Conductor · R2D Train Watcher"), "chat header should not reorder normal colon text");
     });
 
-    it("shows reasoning effort next to the model in the chat header", () => {
+    it("keeps the chat header to title + short id (model/effort live in stats and the session list)", () => {
         const { store } = createController();
 
         store.dispatch({
@@ -612,8 +612,13 @@ describe("session refresh UI recovery", () => {
         });
         store.dispatch({ type: "sessions/selected", sessionId: "reason-title-session" });
 
+        // Since the portal sessions/themes refresh, the chat header no longer
+        // carries the model label; model:effort is shown in session stats
+        // (covered below) and on the session list row.
         const chromeTitle = selectChatPaneChrome(store.getState()).title.map((run) => run.text).join("");
-        assertIncludes(chromeTitle, "gpt-5.5:xhigh", "chat header should append reasoning effort to the model label");
+        assertIncludes(chromeTitle, "Reasoning Session", "chat header should show the session title");
+        assertIncludes(chromeTitle, "[reason-t]", "chat header should show the short session id");
+        assert(!chromeTitle.includes("gpt-5.5"), "chat header should not carry the model label");
     });
 
     it("shows reasoning effort next to the model in session stats", () => {

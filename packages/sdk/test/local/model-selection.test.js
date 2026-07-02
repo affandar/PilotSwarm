@@ -449,6 +449,13 @@ function createFakeModelSwitchRuntime(timerKind) {
             clearValue(key) { kv.delete(key); },
             setCustomStatus(value) { runtime.customStatus = value; },
             utcNow() { return now; },
+            // Stop-turn race (v1.0.56+): processPrompt yields
+            // race(runTurnTask, dequeueEvent(stopTurn.<iteration>)). The fake
+            // session's runTurn() returns the TurnResult object directly, so
+            // resolving the race with the left branch as the winner preserves
+            // the old direct-yield behavior for these tests.
+            dequeueEvent(queueName) { return { effect: "dequeueEvent", queueName }; },
+            race(left) { return { index: 0, value: left }; },
             continueAsNewVersioned(input, version) {
                 continuations.push({ input, version });
                 return { input, version };

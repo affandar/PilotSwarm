@@ -1,6 +1,6 @@
 {
   "name": "pilotswarm-cli",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Terminal UI for PilotSwarm.",
   "type": "module",
   "bin": {
@@ -39,7 +39,7 @@
   },
   "dependencies": {
     "ink": "^6.8.0",
-    "pilotswarm-sdk": "^0.3.2",
+    "pilotswarm-sdk": "^0.3.3",
     "pilotswarm-ui-core": "0.1.0",
     "pilotswarm-ui-react": "0.1.0",
     "react": "^19.2.4"

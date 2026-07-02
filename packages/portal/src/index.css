@@ -1843,6 +1843,39 @@ body.is-resizing-pane-y * {
   padding: 0 12px;
 }
 
+.ps-stop-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  min-width: 40px;
+  padding: 0;
+  font-size: 15px;
+  line-height: 1;
+  border: 1px solid color-mix(in srgb, #e5534b 55%, var(--ps-modal-border));
+  border-radius: var(--ps-radius-sm);
+  background: color-mix(in srgb, #e5534b 16%, var(--ps-surface));
+  color: #ff8a80;
+  transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+
+.ps-stop-button:hover:not(:disabled) {
+  background: color-mix(in srgb, #e5534b 30%, var(--ps-surface));
+  border-color: #e5534b;
+}
+
+.ps-stop-button:disabled {
+  cursor: default;
+}
+
+.ps-stop-button.is-stopping {
+  animation: ps-stop-pulse 1s ease-in-out infinite;
+}
+
+@keyframes ps-stop-pulse {
+  50% { opacity: 0.35; }
+}
+
 .ps-send-button.is-inline {
   min-height: 40px;
   min-width: 40px;

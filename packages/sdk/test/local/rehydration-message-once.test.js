@@ -100,6 +100,11 @@ function createHarness() {
                 return normalizePayload(next);
             }
             case "race": {
+                // Stop-turn race (v1.0.56+): the turn branch wins; delegate to
+                // the runTurn resolver and wrap in the race envelope.
+                if (effect.left?.effect === "runTurn") {
+                    return { index: 0, value: resolve(effect.left) };
+                }
                 const timerMs = effect.right?.effect === "scheduleTimer" ? effect.right.ms : 0;
                 const next = nextMessageIfReady(state.nowMs);
                 if (effect.left?.effect === "dequeueEvent" && next) {

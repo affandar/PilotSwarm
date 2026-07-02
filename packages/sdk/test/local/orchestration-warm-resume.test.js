@@ -253,7 +253,21 @@ describe("orchestration warm resume durability", () => {
                     input = false;
                     break;
                 case "race":
-                    input = { index: 1, value: undefined };
+                    // Stop-turn race (v1.0.56+): a race whose left branch is
+                    // runTurn is the turn itself — resolve it like the old
+                    // direct runTurn yield. Other races are drain's
+                    // dequeue-vs-timer, where the timer (index 1) wins.
+                    input = effect.left?.effect === "runTurn"
+                        ? {
+                            index: 0,
+                            value: {
+                                type: "input_required",
+                                question: "Which city should I use?",
+                                allowFreeform: true,
+                                events: [],
+                            },
+                        }
+                        : { index: 1, value: undefined };
                     break;
                 case "loadKnowledgeIndex":
                 case "recordSessionEvent":

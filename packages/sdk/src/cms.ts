@@ -120,6 +120,13 @@ export interface SessionRow {
     lastError: string | null;
     /** Live wait reason (e.g. "waiting for build"). Synced from runTurn activity. */
     waitReason: string | null;
+    /**
+     * In-flight turn index while a turn is running, else null. Written by the
+     * runTurn activity's pre-turn writeback; cleared by the post-turn
+     * writeback and by any state transition away from "running". Used by
+     * stopSessionTurn() to address the turn-scoped stop queue.
+     */
+    activeTurnIndex: number | null;
     /** If this session is a sub-agent, the parent session's ID. */
     parentSessionId: string | null;
     /** Whether this is a system session (e.g. Sweeper Agent). */
@@ -533,6 +540,8 @@ export interface SessionCatalog {
 
     /** Update one or more fields on an existing session. */
     updateSession(sessionId: string, updates: SessionRowUpdates): Promise<void>;
+    /** Publish the in-flight turn index (stop-turn targeting). */
+    setActiveTurnIndex(sessionId: string, turnIndex: number): Promise<void>;
 
     /** Soft-delete a session (set deleted_at). */
     softDeleteSession(sessionId: string): Promise<void>;
@@ -759,6 +768,7 @@ function sqlForSchema(schema: string) {
             getTopEventEmitters:        `${s}.cms_get_top_event_emitters`,
             insertTurnMetric:           `${s}.cms_insert_turn_metric`,
             completeTurnWriteback:      `${s}.cms_complete_turn_writeback`,
+            setActiveTurnIndex:         `${s}.cms_set_active_turn_index`,
             getSessionTurnMetrics:      `${s}.cms_get_session_turn_metrics`,
             getSessionTokensByModel:    `${s}.cms_get_session_tokens_by_model`,
             getHourlyTokenBuckets:      `${s}.cms_get_hourly_token_buckets`,
@@ -928,6 +938,13 @@ export class PgSessionCatalog implements SessionCatalog {
         await this.pool.query(
             `SELECT ${this.sql.fn.updateSession}($1, $2)`,
             [sessionId, JSON.stringify(jsonUpdates)],
+        );
+    }
+
+    async setActiveTurnIndex(sessionId: string, turnIndex: number): Promise<void> {
+        await this.pool.query(
+            `SELECT ${this.sql.fn.setActiveTurnIndex}($1, $2)`,
+            [sessionId, turnIndex],
         );
     }
 
@@ -1764,6 +1781,7 @@ function rowToSessionRow(row: any): SessionRow {
         currentIteration: row.current_iteration ?? 0,
         lastError: row.last_error ?? null,
         waitReason: row.wait_reason ?? null,
+        activeTurnIndex: row.active_turn_index ?? null,
         parentSessionId: row.parent_session_id ?? null,
         isSystem: row.is_system ?? false,
         agentId: row.agent_id ?? null,

@@ -1,5 +1,5 @@
 import type { OrchestrationInput, TurnResult } from "../types.js";
-import { SESSION_STATE_MISSING_PREFIX, stopTurnQueueName } from "../types.js";
+import { SESSION_STATE_MISSING_PREFIX } from "../types.js";
 import { createSessionProxy } from "../session-proxy.js";
 import { planWaitHandling } from "../wait-affinity.js";
 import {
@@ -24,7 +24,6 @@ import {
     publishStatus,
     versionedContinueAsNew,
     wrapWithResumeContext,
-    writeCommandResponse,
     writeLatestResponse,
 } from "./lifecycle.js";
 import { describeCronAt } from "../cron-at.js";
@@ -332,15 +331,7 @@ export function* processPrompt(
     let turnResult: any;
     try {
         state.lastLiveSessionAction = "session-activity";
-        // Stop-turn race: the in-flight runTurn activity vs a dequeue on the
-        // TURN-SCOPED stop queue (stopTurn.<iteration>). Scoping the queue to
-        // the turn index makes stale stop events structurally unable to kill a
-        // later turn — a race loser is dropped and cannot be un-dropped.
-        // When the stop wins, duroxide cancel-requests the dropped runTurn
-        // work item (lock-steal → isCancelled poll → SDK abort) as the
-        // guaranteed backstop; handleTurnStopped layers the fast-path
-        // same-affinity abortTurn on top.
-        const turnTask = runtime.session.runTurn(prompt, promptIsBootstrap, state.iteration, {
+        turnResult = yield runtime.session.runTurn(prompt, promptIsBootstrap, state.iteration, {
             ...(runtime.options.parentSessionId ? { parentSessionId: runtime.options.parentSessionId } : {}),
             nestingLevel: runtime.options.nestingLevel,
             ...(requiredTool ? { requiredTool } : {}),
@@ -348,23 +339,6 @@ export function* processPrompt(
             retryCount: state.retryCount,
             ...(clientMessageIds && clientMessageIds.length > 0 ? { clientMessageIds } : {}),
         });
-        const stopTask = ctx.dequeueEvent(stopTurnQueueName(state.iteration));
-        const race: any = yield ctx.race(turnTask, stopTask);
-
-        if (race.index === 1) {
-            yield* handleTurnStopped(runtime, race.value);
-            return;
-        }
-
-        // The select bridge flattens activity failures into their raw error
-        // string (duroxide-node make_select_future) instead of throwing, so a
-        // failed runTurn must be re-thrown here to reach the existing retry
-        // machinery in the catch below.
-        const raced = normalizeRacedTurnValue(race.value);
-        if (raced.kind === "error") {
-            throw new Error(raced.message);
-        }
-        turnResult = raced.result;
     } catch (err: any) {
         state.config.turnSystemPrompt = undefined;
         const errorMsg = err.message || String(err);
@@ -434,297 +408,6 @@ export function* processPrompt(
     yield* drainLeadingQueuedScheduleActions(runtime, prompt);
 
     yield* handleTurnResult(runtime, result, prompt, cycleOrigin);
-}
-
-// ─── Stop-turn race support ─────────────────────────────────
-
-/**
- * Normalize a raced runTurn branch value. The duroxide-node select bridge
- * flattens activity failures into their raw error string (make_select_future:
- * `Ok(v) => v, Err(e) => e`) instead of throwing into the generator, so the
- * caller must distinguish a TurnResult payload from an error message.
- */
-export function normalizeRacedTurnValue(value: any): { kind: "result"; result: any } | { kind: "error"; message: string } {
-    let v = value;
-    if (typeof v === "string") {
-        try {
-            v = JSON.parse(v);
-        } catch {
-            return { kind: "error", message: value };
-        }
-    }
-    if (v && typeof v === "object" && typeof (v as any).type === "string") {
-        return { kind: "result", result: v };
-    }
-    return { kind: "error", message: typeof value === "string" ? value : JSON.stringify(value ?? null) };
-}
-
-/**
- * Stop won the race against the in-flight runTurn activity.
- *
- * The dropped runTurn future is already cancel-requested by duroxide (the
- * guaranteed backstop: lock-steal → isCancelled poll → SDK abort, ~2-7s).
- * This path layers the fast-path interrupt on top and owns the authoritative
- * durable bookkeeping — the aborted activity's own writeback is best-effort
- * (it is skipped entirely when the backstop delivered the abort).
- */
-function* handleTurnStopped(
-    runtime: DurableSessionRuntime,
-    stopEventRaw: any,
-): Generator<any, void, any> {
-    const { ctx, state } = runtime;
-    let stopEvent: any = stopEventRaw;
-    if (typeof stopEvent === "string") {
-        try { stopEvent = JSON.parse(stopEvent); } catch { stopEvent = {}; }
-    }
-    if (!stopEvent || typeof stopEvent !== "object") stopEvent = {};
-    const reason = typeof stopEvent.reason === "string" && stopEvent.reason ? stopEvent.reason : "Stopped by user";
-    const stoppedIteration = state.iteration;
-
-    ctx.traceInfo(`[orch] stop_turn won the race for turn ${stoppedIteration}; aborting in-flight turn`);
-    state.config.turnSystemPrompt = undefined;
-    state.retryCount = 0;
-
-    // Fast-path interrupt: same-affinity abortTurn lands on the worker owning
-    // the warm session and aborts the SDK request immediately (concurrent
-    // dispatch requires stable workerNodeId + a free slot; otherwise the
-    // backstop still stops the turn, just slower). Awaiting it also
-    // guarantees the per-session run-turn lock is free again before this
-    // loop can dispatch the next prompt.
-    let abortOutcome: any = null;
-    try {
-        const raw: any = yield runtime.session.abortTurn(reason, stoppedIteration);
-        abortOutcome = typeof raw === "string" ? JSON.parse(raw) : raw;
-    } catch (err: any) {
-        ctx.traceInfo(`[orch] abortTurn activity failed (backstop cancellation still applies): ${err?.message ?? err}`);
-        abortOutcome = { outcome: "no_active_turn", detail: `abortTurn failed: ${err?.message ?? err}` };
-    }
-
-    // The race already decided the turn's fate: even when abortTurn reports
-    // no_active_turn (the backstop got there first, or the turn had just
-    // ended), the user's stop is the durable outcome. Record turn_stopped
-    // unconditionally and annotate how the interrupt was delivered.
-    yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [
-        {
-            eventType: "session.turn_stopped",
-            data: {
-                reason,
-                turnIndex: stoppedIteration,
-                interrupt: abortOutcome?.outcome ?? "unknown",
-                ...(abortOutcome?.detail ? { detail: abortOutcome.detail } : {}),
-            },
-        },
-        { eventType: "system.message", data: { content: "Turn stopped by user." } },
-    ]);
-    // Authoritative CMS transition — also clears active_turn_index (migration
-    // 0024 clears it on any state transition away from "running").
-    yield runtime.manager.updateCmsState(runtime.input.sessionId, "idle");
-
-    // The turn ran and consumed context even though its result was discarded.
-    state.iteration++;
-
-    if (typeof stopEvent.id === "string" && stopEvent.id) {
-        yield* writeCommandResponse(runtime, {
-            id: stopEvent.id,
-            cmd: "stop_turn",
-            result: {
-                outcome: abortOutcome?.outcome === "stop_forced" ? "stop_forced" : "stopped",
-                turnIndex: stoppedIteration,
-                ...(abortOutcome?.detail ? { detail: abortOutcome.detail } : {}),
-            },
-        });
-    }
-
-    // Same scheduling semantics as a completed turn: resume interrupted
-    // timers, re-arm cron schedules, else idle (skips: writeLatestResponse,
-    // parent CHILD_UPDATE notify, forgotten-timer nudge).
-    yield* schedulePostTurnContinuation(runtime);
-}
-
-
-// ─── Post-turn continuation: resume timers / re-arm schedules / go idle ───
-//
-// Extracted verbatim from the tail of the `completed` turn-result case so the
-// stop-turn path shares identical scheduling semantics: stopping a turn must
-// not silently kill a recurring session's cron loop or a resumable wait
-// (stop-turn plan, edge E9).
-
-function* schedulePostTurnContinuation(runtime: DurableSessionRuntime): Generator<any, void, any> {
-    const { ctx, state, options } = runtime;
-
-    if (state.interruptedWaitTimer && state.interruptedWaitTimer.remainingSec > 0) {
-        const saved = state.interruptedWaitTimer;
-        state.interruptedWaitTimer = null;
-        ctx.traceInfo(`[orch] auto-resuming interrupted wait: ${saved.remainingSec}s (${saved.reason})`);
-
-        if (saved.shouldRehydrate) {
-            yield* dehydrateForNextTurn(runtime, "timer", saved.waitPlan?.resetAffinityOnDehydrate ?? true);
-        }
-
-        const resumeNow: number = yield ctx.utcNow();
-        publishStatus(runtime, "waiting", {
-            waitSeconds: saved.remainingSec,
-            waitReason: saved.reason,
-            waitStartedAt: resumeNow,
-        });
-
-        if (!saved.shouldRehydrate) yield* maybeCheckpoint(runtime);
-
-        state.activeTimer = {
-            deadlineMs: resumeNow + saved.remainingSec * 1000,
-            originalDurationMs: saved.remainingSec * 1000,
-            reason: saved.reason,
-            type: "wait",
-            shouldRehydrate: saved.shouldRehydrate,
-            waitPlan: saved.waitPlan,
-        };
-        return;
-    }
-
-    if (state.interruptedCronTimer && state.interruptedCronTimer.remainingMs > 0) {
-        const saved = state.interruptedCronTimer;
-        state.interruptedCronTimer = null;
-        const remainingMs = Math.max(0, saved.remainingMs);
-        const remainingSec = Math.max(1, Math.round(remainingMs / 1000));
-        ctx.traceInfo(`[orch] auto-resuming interrupted cron: ${remainingSec}s remain (${saved.reason})`);
-
-        const cronResumePlan = planWaitHandling({
-            blobEnabled: state.blobEnabled,
-            seconds: remainingSec,
-            dehydrateThreshold: options.dehydrateThreshold,
-        });
-        if (cronResumePlan.shouldDehydrate) {
-            yield* dehydrateForNextTurn(runtime, "cron", cronResumePlan.resetAffinityOnDehydrate);
-        }
-
-        const resumeNow: number = yield ctx.utcNow();
-        publishStatus(runtime, "waiting", {
-            waitSeconds: remainingSec,
-            waitReason: saved.reason,
-            waitStartedAt: resumeNow,
-        });
-
-        if (!cronResumePlan.shouldDehydrate) yield* maybeCheckpoint(runtime);
-
-        state.activeTimer = {
-            deadlineMs: resumeNow + remainingMs,
-            originalDurationMs: remainingMs,
-            reason: saved.reason,
-            type: "cron",
-            shouldRehydrate: cronResumePlan.shouldDehydrate,
-        };
-        return;
-    }
-
-    if (state.cronSchedule) {
-        const activeCron = { ...state.cronSchedule };
-        const cronPlan = planWaitHandling({
-            blobEnabled: state.blobEnabled,
-            seconds: activeCron.intervalSeconds,
-            dehydrateThreshold: options.dehydrateThreshold,
-        });
-        if (cronPlan.shouldDehydrate) {
-            yield* dehydrateForNextTurn(runtime, "cron", cronPlan.resetAffinityOnDehydrate);
-        }
-        yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
-            eventType: "session.cron_started",
-            data: { intervalSeconds: activeCron.intervalSeconds, reason: activeCron.reason },
-        }]);
-        const cronStartedAt: number = yield ctx.utcNow();
-        ctx.traceInfo(`[orch] cron timer: ${activeCron.intervalSeconds}s (${activeCron.reason})`);
-        publishStatus(runtime, "waiting", {
-            waitSeconds: activeCron.intervalSeconds,
-            waitReason: activeCron.reason,
-            waitStartedAt: cronStartedAt,
-        });
-        if (!cronPlan.shouldDehydrate) yield* maybeCheckpoint(runtime);
-
-        state.activeTimer = {
-            deadlineMs: cronStartedAt + activeCron.intervalSeconds * 1000,
-            originalDurationMs: activeCron.intervalSeconds * 1000,
-            reason: activeCron.reason,
-            type: "cron",
-            shouldRehydrate: cronPlan.shouldDehydrate,
-        };
-        return;
-    }
-
-    if (state.cronAtSchedule) {
-        const activeCronAt = { ...state.cronAtSchedule };
-        if (activeCronAt.maxFires !== undefined && activeCronAt.firesCompleted >= activeCronAt.maxFires) {
-            state.cronAtSchedule = undefined;
-            yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
-                eventType: "session.cron_at_completed",
-                data: { reason: activeCronAt.reason, firesCompleted: activeCronAt.firesCompleted, maxFires: activeCronAt.maxFires },
-            }]);
-            return;
-        }
-
-        const nowMs: number = yield ctx.utcNow();
-        let nextFireAtMs = activeCronAt.nextFireAtMs;
-        let nextOccurrenceKey = activeCronAt.nextOccurrenceKey;
-        if (!nextFireAtMs || !nextOccurrenceKey) {
-            const nextFire = yield runtime.manager.computeCronAtNextFire(activeCronAt, nowMs, activeCronAt.lastOccurrenceKey);
-            nextFireAtMs = nextFire.nextFireAtMs;
-            nextOccurrenceKey = nextFire.occurrenceKey;
-            state.cronAtSchedule = {
-                ...activeCronAt,
-                nextFireAtMs,
-                nextOccurrenceKey,
-            };
-        }
-        if (nextFireAtMs === undefined || !nextOccurrenceKey) {
-            throw new Error("cron_at next-fire computation did not return a fire time");
-        }
-
-        const waitMs = Math.max(0, nextFireAtMs - nowMs);
-        const waitSeconds = Math.max(0, Math.ceil(waitMs / 1000));
-        const cronAtPlan = planWaitHandling({
-            blobEnabled: state.blobEnabled,
-            seconds: waitSeconds,
-            dehydrateThreshold: options.dehydrateThreshold,
-        });
-        if (cronAtPlan.shouldDehydrate) {
-            yield* dehydrateForNextTurn(runtime, "cron_at", cronAtPlan.resetAffinityOnDehydrate);
-        }
-        yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
-            eventType: "session.cron_at_started",
-            data: {
-                ...state.cronAtSchedule,
-                nextFireAt: new Date(nextFireAtMs).toISOString(),
-            },
-        }]);
-        publishStatus(runtime, "waiting", {
-            waitSeconds,
-            waitReason: activeCronAt.reason,
-            waitStartedAt: nowMs,
-        });
-        if (!cronAtPlan.shouldDehydrate) yield* maybeCheckpoint(runtime);
-
-        state.activeTimer = {
-            deadlineMs: nowMs + waitMs,
-            originalDurationMs: waitMs,
-            reason: activeCronAt.reason,
-            type: "cron_at",
-            shouldRehydrate: cronAtPlan.shouldDehydrate,
-        };
-        return;
-    }
-
-    if (!state.blobEnabled || options.idleTimeout < 0) {
-        yield* maybeCheckpoint(runtime);
-        return;
-    }
-
-    publishStatus(runtime, "idle");
-    yield* maybeCheckpoint(runtime);
-    const idleNow: number = yield ctx.utcNow();
-    state.activeTimer = {
-        deadlineMs: idleNow + options.idleTimeout * 1000,
-        originalDurationMs: options.idleTimeout * 1000,
-        reason: "idle timeout",
-        type: "idle",
-    };
 }
 
 // ─── handleTurnResult: dispatch on TurnResult variant ───────
@@ -866,7 +549,179 @@ export function* handleTurnResult(
                 }
             }
 
-            yield* schedulePostTurnContinuation(runtime);
+            if (state.interruptedWaitTimer && state.interruptedWaitTimer.remainingSec > 0) {
+                const saved = state.interruptedWaitTimer;
+                state.interruptedWaitTimer = null;
+                ctx.traceInfo(`[orch] auto-resuming interrupted wait: ${saved.remainingSec}s (${saved.reason})`);
+
+                if (saved.shouldRehydrate) {
+                    yield* dehydrateForNextTurn(runtime, "timer", saved.waitPlan?.resetAffinityOnDehydrate ?? true);
+                }
+
+                const resumeNow: number = yield ctx.utcNow();
+                publishStatus(runtime, "waiting", {
+                    waitSeconds: saved.remainingSec,
+                    waitReason: saved.reason,
+                    waitStartedAt: resumeNow,
+                });
+
+                if (!saved.shouldRehydrate) yield* maybeCheckpoint(runtime);
+
+                state.activeTimer = {
+                    deadlineMs: resumeNow + saved.remainingSec * 1000,
+                    originalDurationMs: saved.remainingSec * 1000,
+                    reason: saved.reason,
+                    type: "wait",
+                    shouldRehydrate: saved.shouldRehydrate,
+                    waitPlan: saved.waitPlan,
+                };
+                return;
+            }
+
+            if (state.interruptedCronTimer && state.interruptedCronTimer.remainingMs > 0) {
+                const saved = state.interruptedCronTimer;
+                state.interruptedCronTimer = null;
+                const remainingMs = Math.max(0, saved.remainingMs);
+                const remainingSec = Math.max(1, Math.round(remainingMs / 1000));
+                ctx.traceInfo(`[orch] auto-resuming interrupted cron: ${remainingSec}s remain (${saved.reason})`);
+
+                const cronResumePlan = planWaitHandling({
+                    blobEnabled: state.blobEnabled,
+                    seconds: remainingSec,
+                    dehydrateThreshold: options.dehydrateThreshold,
+                });
+                if (cronResumePlan.shouldDehydrate) {
+                    yield* dehydrateForNextTurn(runtime, "cron", cronResumePlan.resetAffinityOnDehydrate);
+                }
+
+                const resumeNow: number = yield ctx.utcNow();
+                publishStatus(runtime, "waiting", {
+                    waitSeconds: remainingSec,
+                    waitReason: saved.reason,
+                    waitStartedAt: resumeNow,
+                });
+
+                if (!cronResumePlan.shouldDehydrate) yield* maybeCheckpoint(runtime);
+
+                state.activeTimer = {
+                    deadlineMs: resumeNow + remainingMs,
+                    originalDurationMs: remainingMs,
+                    reason: saved.reason,
+                    type: "cron",
+                    shouldRehydrate: cronResumePlan.shouldDehydrate,
+                };
+                return;
+            }
+
+            if (state.cronSchedule) {
+                const activeCron = { ...state.cronSchedule };
+                const cronPlan = planWaitHandling({
+                    blobEnabled: state.blobEnabled,
+                    seconds: activeCron.intervalSeconds,
+                    dehydrateThreshold: options.dehydrateThreshold,
+                });
+                if (cronPlan.shouldDehydrate) {
+                    yield* dehydrateForNextTurn(runtime, "cron", cronPlan.resetAffinityOnDehydrate);
+                }
+                yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
+                    eventType: "session.cron_started",
+                    data: { intervalSeconds: activeCron.intervalSeconds, reason: activeCron.reason },
+                }]);
+                const cronStartedAt: number = yield ctx.utcNow();
+                ctx.traceInfo(`[orch] cron timer: ${activeCron.intervalSeconds}s (${activeCron.reason})`);
+                publishStatus(runtime, "waiting", {
+                    waitSeconds: activeCron.intervalSeconds,
+                    waitReason: activeCron.reason,
+                    waitStartedAt: cronStartedAt,
+                });
+                if (!cronPlan.shouldDehydrate) yield* maybeCheckpoint(runtime);
+
+                state.activeTimer = {
+                    deadlineMs: cronStartedAt + activeCron.intervalSeconds * 1000,
+                    originalDurationMs: activeCron.intervalSeconds * 1000,
+                    reason: activeCron.reason,
+                    type: "cron",
+                    shouldRehydrate: cronPlan.shouldDehydrate,
+                };
+                return;
+            }
+
+            if (state.cronAtSchedule) {
+                const activeCronAt = { ...state.cronAtSchedule };
+                if (activeCronAt.maxFires !== undefined && activeCronAt.firesCompleted >= activeCronAt.maxFires) {
+                    state.cronAtSchedule = undefined;
+                    yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
+                        eventType: "session.cron_at_completed",
+                        data: { reason: activeCronAt.reason, firesCompleted: activeCronAt.firesCompleted, maxFires: activeCronAt.maxFires },
+                    }]);
+                    return;
+                }
+
+                const nowMs: number = yield ctx.utcNow();
+                let nextFireAtMs = activeCronAt.nextFireAtMs;
+                let nextOccurrenceKey = activeCronAt.nextOccurrenceKey;
+                if (!nextFireAtMs || !nextOccurrenceKey) {
+                    const nextFire = yield runtime.manager.computeCronAtNextFire(activeCronAt, nowMs, activeCronAt.lastOccurrenceKey);
+                    nextFireAtMs = nextFire.nextFireAtMs;
+                    nextOccurrenceKey = nextFire.occurrenceKey;
+                    state.cronAtSchedule = {
+                        ...activeCronAt,
+                        nextFireAtMs,
+                        nextOccurrenceKey,
+                    };
+                }
+                if (nextFireAtMs === undefined || !nextOccurrenceKey) {
+                    throw new Error("cron_at next-fire computation did not return a fire time");
+                }
+
+                const waitMs = Math.max(0, nextFireAtMs - nowMs);
+                const waitSeconds = Math.max(0, Math.ceil(waitMs / 1000));
+                const cronAtPlan = planWaitHandling({
+                    blobEnabled: state.blobEnabled,
+                    seconds: waitSeconds,
+                    dehydrateThreshold: options.dehydrateThreshold,
+                });
+                if (cronAtPlan.shouldDehydrate) {
+                    yield* dehydrateForNextTurn(runtime, "cron_at", cronAtPlan.resetAffinityOnDehydrate);
+                }
+                yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
+                    eventType: "session.cron_at_started",
+                    data: {
+                        ...state.cronAtSchedule,
+                        nextFireAt: new Date(nextFireAtMs).toISOString(),
+                    },
+                }]);
+                publishStatus(runtime, "waiting", {
+                    waitSeconds,
+                    waitReason: activeCronAt.reason,
+                    waitStartedAt: nowMs,
+                });
+                if (!cronAtPlan.shouldDehydrate) yield* maybeCheckpoint(runtime);
+
+                state.activeTimer = {
+                    deadlineMs: nowMs + waitMs,
+                    originalDurationMs: waitMs,
+                    reason: activeCronAt.reason,
+                    type: "cron_at",
+                    shouldRehydrate: cronAtPlan.shouldDehydrate,
+                };
+                return;
+            }
+
+            if (!state.blobEnabled || options.idleTimeout < 0) {
+                yield* maybeCheckpoint(runtime);
+                return;
+            }
+
+            publishStatus(runtime, "idle");
+            yield* maybeCheckpoint(runtime);
+            const idleNow: number = yield ctx.utcNow();
+            state.activeTimer = {
+                deadlineMs: idleNow + options.idleTimeout * 1000,
+                originalDurationMs: options.idleTimeout * 1000,
+                reason: "idle timeout",
+                type: "idle",
+            };
             return;
         }
 
@@ -1001,27 +856,6 @@ export function* handleTurnResult(
         case "cancelled":
             ctx.traceInfo("[session] turn cancelled");
             return;
-
-        case "stopped": {
-            // Defensive: a turn only classifies "stopped" when the stop marker
-            // was set, which normally means handleTurnStopped already ran via
-            // the race. Handle it anyway so a marker-set turn that somehow
-            // returns through the normal path still lands idle with the event
-            // trail (processPrompt already incremented state.iteration).
-            ctx.traceInfo("[session] turn reported stopped");
-            state.retryCount = 0;
-            yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
-                eventType: "session.turn_stopped",
-                data: {
-                    reason: (result as any).reason ?? "Stopped by user",
-                    turnIndex: state.iteration - 1,
-                    interrupt: "turn-result",
-                },
-            }]);
-            yield runtime.manager.updateCmsState(runtime.input.sessionId, "idle");
-            yield* schedulePostTurnContinuation(runtime);
-            return;
-        }
 
         case "spawn_agent":
         case "message_agent":

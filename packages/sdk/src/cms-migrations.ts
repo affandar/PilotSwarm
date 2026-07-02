@@ -130,6 +130,11 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "turn_metrics_stats_fallbacks_and_group_owner_patch",
             sql: migration_0023_turn_metrics_stats_fallbacks_and_group_owner_patch(schema),
         },
+        {
+            version: "0024",
+            name: "stop_turn_active_turn_index",
+            sql: migration_0024_stop_turn_active_turn_index(schema),
+        },
     ];
 }
 
@@ -4269,4 +4274,250 @@ function migration_0023_turn_metrics_stats_fallbacks_and_group_owner_patch(schem
     // Its SQL is idempotent, so reapplying the corrected procedure layer under
     // a new version updates already-migrated schemas without requiring a reset.
     return migration_0022_turn_metrics_reasoning_effort(schema);
+}
+
+// ─── Migration 0024: Stop Turn Active Turn Index ──────────────────
+function migration_0024_stop_turn_active_turn_index(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- 0024_stop_turn_active_turn_index: track the in-flight turn index on the
+-- sessions row so stopSessionTurn() can address the turn-scoped stop queue
+-- (stopTurn.<turnIndex>). Written by the runTurn activity's pre-turn
+-- writeback; cleared by the post-turn writeback and by any state transition
+-- away from 'running' (stop-turn plan, docs/proposals-impl/stop-button-turn-abort-plan.md).
+
+ALTER TABLE ${s}.sessions ADD COLUMN IF NOT EXISTS active_turn_index INTEGER;
+
+-- ── cms_set_active_turn_index ─────────────────────────────────────
+-- Pre-turn: publish the in-flight turn index.
+CREATE OR REPLACE FUNCTION ${s}.cms_set_active_turn_index(
+    p_session_id TEXT,
+    p_turn_index INTEGER
+) RETURNS VOID AS $$
+BEGIN
+    UPDATE ${s}.sessions
+    SET active_turn_index = p_turn_index,
+        updated_at = now()
+    WHERE session_id = p_session_id;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── cms_get_session ──────────────────────────────────────────────
+-- Same as the owner-join version, plus active_turn_index in the returned
+-- column set (RETURNS TABLE is a fixed list — new table columns are not
+-- returned automatically). stopSessionTurn() reads it for the pre-check and
+-- the turn-scoped stop queue name.
+DROP FUNCTION IF EXISTS ${s}.cms_get_session(TEXT);
+CREATE FUNCTION ${s}.cms_get_session(
+    p_session_id TEXT
+) RETURNS TABLE (
+    session_id         TEXT,
+    orchestration_id   TEXT,
+    title              TEXT,
+    title_locked       BOOLEAN,
+    state              TEXT,
+    model              TEXT,
+    reasoning_effort   TEXT,
+    group_id           TEXT,
+    short_summary      TEXT,
+    summary_state      JSONB,
+    summary_updated_at TIMESTAMPTZ,
+    created_at         TIMESTAMPTZ,
+    updated_at         TIMESTAMPTZ,
+    last_active_at     TIMESTAMPTZ,
+    deleted_at         TIMESTAMPTZ,
+    current_iteration  INTEGER,
+    last_error         TEXT,
+    parent_session_id  TEXT,
+    wait_reason        TEXT,
+    is_system          BOOLEAN,
+    agent_id           TEXT,
+    splash             TEXT,
+    owner_provider     TEXT,
+    owner_subject      TEXT,
+    owner_email        TEXT,
+    owner_display_name TEXT,
+    active_turn_index  INTEGER
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        sess.session_id,
+        sess.orchestration_id,
+        sess.title,
+        sess.title_locked,
+        sess.state,
+        sess.model,
+        sess.reasoning_effort,
+        sess.group_id,
+        sess.short_summary,
+        sess.summary_state,
+        sess.summary_updated_at,
+        sess.created_at,
+        sess.updated_at,
+        sess.last_active_at,
+        sess.deleted_at,
+        sess.current_iteration,
+        sess.last_error,
+        sess.parent_session_id,
+        sess.wait_reason,
+        sess.is_system,
+        sess.agent_id,
+        sess.splash,
+        u.provider AS owner_provider,
+        u.subject AS owner_subject,
+        u.email AS owner_email,
+        u.display_name AS owner_display_name,
+        sess.active_turn_index
+    FROM ${s}.sessions sess
+    LEFT JOIN ${s}.session_owners so ON so.session_id = sess.session_id
+    LEFT JOIN ${s}.users u ON u.user_id = so.user_id
+    WHERE sess.session_id = p_session_id AND sess.deleted_at IS NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── cms_update_session ───────────────────────────────────────────
+-- Same as 0022/0023, plus: any state transition away from 'running' clears
+-- active_turn_index, so the orchestration's authoritative stop bookkeeping
+-- (updateCmsState idle) and error transitions retire the stop-queue target.
+CREATE OR REPLACE FUNCTION ${s}.cms_update_session(
+    p_session_id TEXT,
+    p_updates    JSONB
+) RETURNS VOID AS $$
+BEGIN
+    UPDATE ${s}.sessions SET
+        orchestration_id  = CASE WHEN p_updates ? 'orchestrationId'  THEN (p_updates->>'orchestrationId')                         ELSE orchestration_id  END,
+        title             = CASE WHEN p_updates ? 'title'            THEN (p_updates->>'title')                                    ELSE title             END,
+        title_locked      = CASE WHEN p_updates ? 'titleLocked'     THEN (p_updates->>'titleLocked')::BOOLEAN                     ELSE title_locked      END,
+        state             = CASE WHEN p_updates ? 'state'           THEN (p_updates->>'state')                                     ELSE state             END,
+        model             = CASE WHEN p_updates ? 'model'           THEN (p_updates->>'model')                                     ELSE model             END,
+        reasoning_effort  = CASE WHEN p_updates ? 'reasoningEffort' THEN NULLIF(BTRIM(p_updates->>'reasoningEffort'), '')          ELSE reasoning_effort  END,
+        last_active_at    = CASE WHEN p_updates ? 'lastActiveAt'    THEN (p_updates->>'lastActiveAt')::TIMESTAMPTZ                 ELSE last_active_at    END,
+        current_iteration = CASE WHEN p_updates ? 'currentIteration' THEN (p_updates->>'currentIteration')::INT                   ELSE current_iteration END,
+        last_error        = CASE WHEN p_updates ? 'lastError'       THEN (p_updates->>'lastError')                                 ELSE last_error        END,
+        wait_reason       = CASE WHEN p_updates ? 'waitReason'      THEN (p_updates->>'waitReason')                                ELSE wait_reason       END,
+        is_system         = CASE WHEN p_updates ? 'isSystem'        THEN (p_updates->>'isSystem')::BOOLEAN                         ELSE is_system         END,
+        agent_id          = CASE WHEN p_updates ? 'agentId'         THEN (p_updates->>'agentId')                                   ELSE agent_id          END,
+        splash            = CASE WHEN p_updates ? 'splash'          THEN (p_updates->>'splash')                                    ELSE splash            END,
+        active_turn_index = CASE WHEN (p_updates ? 'state') AND (p_updates->>'state') <> 'running' THEN NULL                       ELSE active_turn_index END,
+        group_id          = group_id,
+        updated_at        = now()
+    WHERE session_id = p_session_id;
+
+    IF p_updates ? 'groupId' THEN
+        PERFORM ${s}.cms_assign_session_group(p_session_id, p_updates->>'groupId');
+    END IF;
+
+    UPDATE ${s}.session_metrics
+    SET model = CASE WHEN p_updates ? 'model' THEN (p_updates->>'model') ELSE model END,
+        reasoning_effort = CASE WHEN p_updates ? 'reasoningEffort' THEN NULLIF(BTRIM(p_updates->>'reasoningEffort'), '') ELSE reasoning_effort END,
+        updated_at = CASE WHEN p_updates ? 'model' OR p_updates ? 'reasoningEffort' THEN now() ELSE updated_at END
+    WHERE session_id = p_session_id
+      AND (p_updates ? 'model' OR p_updates ? 'reasoningEffort');
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── cms_complete_turn_writeback ───────────────────────────────────
+-- Same as 0022/0023, plus: the turn ended, so always clear active_turn_index.
+CREATE OR REPLACE FUNCTION ${s}.cms_complete_turn_writeback(
+    p_session_id         TEXT,
+    p_agent_id           TEXT,
+    p_model              TEXT,
+    p_reasoning_effort   TEXT,
+    p_turn_index         INTEGER,
+    p_started_at         TIMESTAMPTZ,
+    p_ended_at           TIMESTAMPTZ,
+    p_duration_ms        INTEGER,
+    p_tokens_input       BIGINT,
+    p_tokens_output      BIGINT,
+    p_tokens_cache_read  BIGINT,
+    p_tokens_cache_write BIGINT,
+    p_tool_calls         INTEGER,
+    p_tool_errors        INTEGER,
+    p_tool_names         TEXT[],
+    p_result_type        TEXT,
+    p_error_message      TEXT,
+    p_worker_node_id     TEXT,
+    p_state              TEXT,
+    p_last_active_at     TIMESTAMPTZ,
+    p_last_error         TEXT,
+    p_wait_reason        TEXT,
+    p_current_iteration  INTEGER
+) RETURNS VOID AS $$
+DECLARE
+    v_reasoning_effort TEXT := NULLIF(BTRIM(p_reasoning_effort), '');
+    v_ended_at TIMESTAMPTZ := COALESCE(p_ended_at, now());
+    v_started_at TIMESTAMPTZ := COALESCE(p_started_at, v_ended_at);
+    v_duration_ms INTEGER := GREATEST(0, COALESCE(p_duration_ms, FLOOR(EXTRACT(EPOCH FROM (v_ended_at - v_started_at)) * 1000)::INT));
+BEGIN
+    UPDATE ${s}.sessions
+    SET state = COALESCE(p_state, state),
+        last_active_at = COALESCE(p_last_active_at, v_ended_at),
+        current_iteration = COALESCE(p_current_iteration, current_iteration),
+        last_error = p_last_error,
+        wait_reason = p_wait_reason,
+        active_turn_index = NULL,
+        updated_at = now()
+    WHERE session_id = p_session_id;
+
+    INSERT INTO ${s}.session_metrics (
+        session_id, agent_id, model, reasoning_effort,
+        tokens_input, tokens_output, tokens_cache_read, tokens_cache_write
+    ) VALUES (
+        p_session_id, p_agent_id, p_model, v_reasoning_effort,
+        COALESCE(p_tokens_input, 0), COALESCE(p_tokens_output, 0),
+        COALESCE(p_tokens_cache_read, 0), COALESCE(p_tokens_cache_write, 0)
+    )
+    ON CONFLICT (session_id) DO UPDATE SET
+        agent_id = COALESCE(${s}.session_metrics.agent_id, EXCLUDED.agent_id),
+        model = COALESCE(EXCLUDED.model, ${s}.session_metrics.model),
+        reasoning_effort = COALESCE(EXCLUDED.reasoning_effort, ${s}.session_metrics.reasoning_effort),
+        tokens_input = ${s}.session_metrics.tokens_input + EXCLUDED.tokens_input,
+        tokens_output = ${s}.session_metrics.tokens_output + EXCLUDED.tokens_output,
+        tokens_cache_read = ${s}.session_metrics.tokens_cache_read + EXCLUDED.tokens_cache_read,
+        tokens_cache_write = ${s}.session_metrics.tokens_cache_write + EXCLUDED.tokens_cache_write,
+        updated_at = now();
+
+    INSERT INTO ${s}.session_turn_metrics (
+        session_id, agent_id, model, reasoning_effort, turn_index,
+        started_at, ended_at, duration_ms,
+        tokens_input, tokens_output, tokens_cache_read, tokens_cache_write,
+        tool_calls, tool_errors, result_type, error_message, worker_node_id
+    ) VALUES (
+        p_session_id, p_agent_id, p_model, v_reasoning_effort, COALESCE(p_turn_index, 0),
+        v_started_at, v_ended_at, v_duration_ms,
+        COALESCE(p_tokens_input, 0), COALESCE(p_tokens_output, 0),
+        COALESCE(p_tokens_cache_read, 0), COALESCE(p_tokens_cache_write, 0),
+        COALESCE(p_tool_calls, 0), COALESCE(p_tool_errors, 0),
+        p_result_type, p_error_message, p_worker_node_id
+    );
+
+    INSERT INTO ${s}.session_events (session_id, event_type, data, worker_node_id)
+    VALUES (
+        p_session_id,
+        'session.turn_completed',
+        jsonb_build_object(
+            'iteration', COALESCE(p_turn_index, 0),
+            'turnIndex', COALESCE(p_turn_index, 0),
+            'model', p_model,
+            'reasoningEffort', v_reasoning_effort,
+            'startedAt', v_started_at,
+            'endedAt', v_ended_at,
+            'durationMs', v_duration_ms,
+            'tokensInput', COALESCE(p_tokens_input, 0),
+            'tokensOutput', COALESCE(p_tokens_output, 0),
+            'tokensCacheRead', COALESCE(p_tokens_cache_read, 0),
+            'tokensCacheWrite', COALESCE(p_tokens_cache_write, 0),
+            'toolCalls', COALESCE(p_tool_calls, 0),
+            'toolErrors', COALESCE(p_tool_errors, 0),
+            'toolNames', to_jsonb(COALESCE(p_tool_names, ARRAY[]::TEXT[])),
+            'resultType', p_result_type,
+            'errorMessage', p_error_message,
+            'workerNodeId', p_worker_node_id
+        ),
+        p_worker_node_id
+    );
+END;
+$$ LANGUAGE plpgsql;
+`;
 }

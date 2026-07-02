@@ -252,6 +252,12 @@ export class ManagedSession {
     readonly sessionId: string;
     private copilotSession: CopilotSession;
     private config: ManagedSessionConfig;
+    /** Set for the duration of runTurn(); read by the lock-bypassing stop path. */
+    private activeTurn: { turnIndex: number; startedAt: number } | null = null;
+    /** Set only by requestStop(); classifies the turn unwind as "stopped". */
+    private stopRequest: { reason: string; requestedAt: number } | null = null;
+    /** Resolver for the current turn's completion promise — hang escalation hook. */
+    private settleTurnResolver: (() => void) | null = null;
 
     constructor(
         sessionId: string,
@@ -735,8 +741,69 @@ export class ManagedSession {
      *
      * Similarly, if onUserInputRequest fires, we abort and return
      * "input_required" so the orchestration can wait for the user's answer.
+     *
+     * Stop classification: a user stop (requestStop → abort) reclassifies the
+     * unwind as `{ type: "stopped" }` regardless of how the inner turn settled
+     * — checked BEFORE pendingActions so a stop that races a wait()/ask_user
+     * control-tool abort wins instead of being swallowed into a durable timer,
+     * and applied to error unwinds so a forced settle/disconnect is not
+     * misclassified as a retryable error.
      */
     async runTurn(prompt: string, opts?: TurnOptions): Promise<TurnResult> {
+        this.activeTurn = { turnIndex: opts?.turnIndex ?? -1, startedAt: Date.now() };
+        try {
+            const result = await this._runTurnInner(prompt, opts);
+            if (this.stopRequest) {
+                return {
+                    type: "stopped",
+                    reason: this.stopRequest.reason,
+                    ...((result as any)?.events ? { events: (result as any).events } : {}),
+                };
+            }
+            return result;
+        } catch (err) {
+            if (this.stopRequest) {
+                return { type: "stopped", reason: this.stopRequest.reason };
+            }
+            throw err;
+        } finally {
+            this.activeTurn = null;
+            this.stopRequest = null;
+            this.settleTurnResolver = null;
+        }
+    }
+
+    /** The in-flight turn, if any. Read by the lock-bypassing stop path. */
+    getActiveTurn(): { turnIndex: number; startedAt: number } | null {
+        return this.activeTurn;
+    }
+
+    /**
+     * Mark the in-flight turn as user-stopped so its unwind classifies as
+     * `stopped`. Returns the active turn info, or null when no turn is
+     * running. Does NOT abort by itself — callers pair this with abort().
+     */
+    requestStop(reason: string): { turnIndex: number } | null {
+        if (!this.activeTurn) return null;
+        this.stopRequest = { reason, requestedAt: Date.now() };
+        return { turnIndex: this.activeTurn.turnIndex };
+    }
+
+    /**
+     * Hang escalation: resolve the current turn's completion promise directly.
+     * runTurn() settles only on the SDK's `session.idle` event; if a wedged
+     * stream never fires it, this forces the unwind without depending on any
+     * further SDK behavior. Pair with requestStop() so the unwind classifies
+     * as `stopped`. Returns false when no turn is in flight.
+     */
+    forceSettleTurn(reason: string): boolean {
+        if (!this.activeTurn) return false;
+        if (!this.stopRequest) this.stopRequest = { reason, requestedAt: Date.now() };
+        try { this.settleTurnResolver?.(); } catch {}
+        return true;
+    }
+
+    private async _runTurnInner(prompt: string, opts?: TurnOptions): Promise<TurnResult> {
         const turnState: TurnState = {
             pendingActions: [],
             queuedActions: [],
@@ -1684,6 +1751,9 @@ export class ManagedSession {
         }
 
         const turnComplete = new Promise<void>((resolve, reject) => {
+            // Hang-escalation hook: forceSettleTurn() resolves this promise when
+            // the SDK never fires session.idle (see stop-turn plan, edge E3).
+            this.settleTurnResolver = resolve;
             // Catch-all event handler — captures every event and fires onEvent immediately.
             unsubscribers.push(
                 this.copilotSession.on((event: any) => {

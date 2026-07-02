@@ -1,7 +1,7 @@
 import { CopilotClient, type CopilotSession, type SectionOverride, type SystemMessageConfig, type Tool } from "@github/copilot-sdk";
 import { ManagedSession } from "./managed-session.js";
 import type { SessionStateStore } from "./session-store.js";
-import { SESSION_STATE_MISSING_PREFIX, type ManagedSessionConfig, type SerializableSessionConfig } from "./types.js";
+import { SESSION_STATE_MISSING_PREFIX, type AbortTurnResult, type ManagedSessionConfig, type SerializableSessionConfig } from "./types.js";
 import type { ModelProviderRegistry } from "./model-providers.js";
 import { createFactTools } from "./facts-tools.js";
 import { createGraphTools } from "./graph-tools.js";
@@ -536,6 +536,76 @@ export class SessionManager {
         options?: { trace?: SessionTraceWriter },
     ): Promise<T> {
         return this._withSessionLock(sessionId, operation, fn, options);
+    }
+
+    /**
+     * Stop-turn interrupt primitive: abort the warm session's in-flight turn.
+     *
+     * LOCK-BYPASSING BY DESIGN — never take _withSessionLock here. runTurn
+     * holds the session lock for the entire turn, so a lock-taking stop would
+     * run only after the turn ended (defeating mid-flight stop). This method
+     * only reads the warm map and touches ManagedSession in-memory state; the
+     * runTurn activity remains the single writer of turn results.
+     *
+     * Sequence: set the stop marker (so the unwind classifies as "stopped"),
+     * send the SDK abort, wait bounded time for the turn to unwind, and if the
+     * SDK never fires session.idle escalate with forceSettleTurn() + warm
+     * session invalidation (stop-turn plan, edge E3).
+     */
+    async abortWarmSessionTurn(
+        sessionId: string,
+        opts: { reason: string; expectedTurnIndex?: number; unwindGraceMs?: number },
+    ): Promise<AbortTurnResult> {
+        const managed = this.sessions.get(sessionId);
+        if (!managed) {
+            return { outcome: "no_active_turn", detail: "no warm session on this worker" };
+        }
+        const active = managed.getActiveTurn();
+        if (!active) {
+            return { outcome: "no_active_turn", detail: "warm session has no turn in flight" };
+        }
+        if (
+            opts.expectedTurnIndex != null
+            && active.turnIndex >= 0
+            && active.turnIndex !== opts.expectedTurnIndex
+        ) {
+            return {
+                outcome: "no_active_turn",
+                turnIndex: active.turnIndex,
+                detail: `active turn ${active.turnIndex} does not match expected ${opts.expectedTurnIndex}`,
+            };
+        }
+
+        // Marker first, then abort — the unwind classification can never miss it.
+        managed.requestStop(opts.reason);
+        try {
+            managed.abort();
+        } catch (err: any) {
+            // Abort RPC failure is non-fatal: the force-settle escalation below
+            // still unwinds the turn.
+            void err;
+        }
+
+        const graceMs = opts.unwindGraceMs ?? 8_000;
+        const deadline = Date.now() + graceMs;
+        while (managed.getActiveTurn() && Date.now() < deadline) {
+            await sleep(200);
+        }
+        if (!managed.getActiveTurn()) {
+            return { outcome: "stopped", turnIndex: active.turnIndex };
+        }
+
+        // Escalation: the SDK never fired session.idle. Settle the turn promise
+        // ourselves, then drop the warm session so the next turn recreates it.
+        // invalidateWarmSession takes the session lock, so fire-and-forget: the
+        // lock serializes it behind the (now settling) turn's unwind.
+        managed.forceSettleTurn(opts.reason);
+        const settleDeadline = Date.now() + 2_000;
+        while (managed.getActiveTurn() && Date.now() < settleDeadline) {
+            await sleep(100);
+        }
+        void this.invalidateWarmSession(sessionId).catch(() => {});
+        return { outcome: "stop_forced", turnIndex: active.turnIndex };
     }
 
     /**

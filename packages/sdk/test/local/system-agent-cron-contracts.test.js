@@ -106,7 +106,9 @@ describe("system agent cron contracts", () => {
         assertIncludes(selectors, "for (const badge of [", "session rows should build badges in one canonical place");
         assertIncludes(selectors, "getCronBadge(session),", "session-row suffixes should lead with the cron badge");
         assertIncludes(selectors, "getContextListBadge(session?.contextUsage),", "context badge should follow the cron badge");
-        assertIncludes(selectors, "getCollapseBadge(session?.sessionId, entry, totalDescendantCounts, visibleDescendantCounts),", "collapse badge should follow cron and context badges");
+        // Since the portal sessions/themes refresh, the collapse badge renders
+        // inline with the session title rather than in the suffix badge array.
+        assertIncludes(selectors, "getCollapseBadge(session?.sessionId, entry, totalDescendantCounts, visibleDescendantCounts);", "collapse badge should render inline with the session title");
     });
 
     it("keeps cron rows non-magenta in the session list while preserving the cron badge", () => {

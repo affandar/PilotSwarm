@@ -445,6 +445,18 @@ export class PilotSwarmWorker {
             `sessionIdleTimeoutMs=${runtimeOptions.sessionIdleTimeoutMs}, ` +
             `workerNodeId=${runtimeOptions.workerNodeId ?? "(unset)"}`,
         );
+        if (!runtimeOptions.workerNodeId) {
+            // Without a stable process-level session identity, duroxide
+            // serializes same-session activities, so the stop-turn fast path
+            // (same-affinity abortTurn) cannot run concurrently with an
+            // in-flight runTurn. Stop still works via dropped-future
+            // cancellation, just slower (~lock-renewal interval + poll).
+            console.warn(
+                "[PilotSwarmWorker] workerNodeId is not set: stop-turn will rely on the slow " +
+                "cancellation backstop (~2-7s) instead of the fast same-affinity interrupt. " +
+                "Set workerNodeId (e.g. POD_NAME or hostname) for mid-flight stop responsiveness.",
+            );
+        }
 
         registerActivities(
             this.runtime,

@@ -427,6 +427,10 @@ export class BrowserPortalTransport {
         return this.rpc("setSessionModel", { sessionId, options });
     }
 
+    async stopSessionTurn(sessionId, options = {}) {
+        return this.rpc("stopSessionTurn", { sessionId, options });
+    }
+
     async deleteSessionGroup(groupId) {
         return this.rpc("deleteSessionGroup", { groupId });
     }

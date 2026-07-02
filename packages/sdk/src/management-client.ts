@@ -14,6 +14,7 @@
 import {
     RESPONSE_LATEST_KEY,
     commandResponseKey,
+    stopTurnQueueName,
 } from "./types.js";
 import type {
     PilotSwarmSessionStatus,
@@ -23,6 +24,7 @@ import type {
     SessionContextUsage,
     SessionOwnerInfo,
     SessionSummaryState,
+    StopTurnResult,
 } from "./types.js";
 import type { SessionCatalog, SessionRow, TopEventEmitterRow } from "./cms.js";
 import type {
@@ -1135,6 +1137,80 @@ export class PilotSwarmManagementClient {
                 source: opts?.source ?? "user",
             },
         });
+    }
+
+    /**
+     * Stop the session's in-flight LLM turn without completing, cancelling,
+     * or deleting the session (stop-turn plan,
+     * docs/proposals-impl/stop-button-turn-abort-plan.md).
+     *
+     * Enqueues a stop event on the TURN-SCOPED stop queue
+     * (stopTurn.<activeTurnIndex>) that the session orchestration races
+     * against the in-flight runTurn activity, then polls the KV
+     * command-response channel for the outcome. Valid for system sessions
+     * too; only group/container rows are not sessions and cannot be stopped.
+     *
+     * Outcomes:
+     *  - stopped / stop_forced: the turn was aborted mid-flight; session idle.
+     *  - no_active_turn: nothing was running (idempotent no-op).
+     *  - timeout: no response before timeoutMs — the stop may still land;
+     *    refresh session state rather than assuming failure.
+     */
+    async stopSessionTurn(
+        sessionId: string,
+        opts?: { reason?: string; timeoutMs?: number },
+    ): Promise<StopTurnResult> {
+        this._ensureStarted();
+        const row = await this._catalog!.getSession(sessionId).catch(() => null);
+        if (!row || row.deletedAt) {
+            return { outcome: "no_active_turn", detail: "session not found" };
+        }
+        const turnIndex = row.activeTurnIndex;
+        if (row.state !== "running" || turnIndex == null) {
+            return {
+                outcome: "no_active_turn",
+                detail: `session is not running a turn (state=${row.state})`,
+            };
+        }
+
+        const orchId = `session-${sessionId}`;
+        await this._assertOrchestrationLive(orchId, sessionId, "stopSessionTurn");
+        const id = buildLifecycleCommandId("stop-turn");
+        await this._duroxideClient.enqueueEvent(
+            orchId,
+            stopTurnQueueName(turnIndex),
+            JSON.stringify({
+                id,
+                reason: opts?.reason ?? "Stopped by user",
+                requestedAt: Date.now(),
+            }),
+        );
+
+        const timeoutMs = opts?.timeoutMs ?? 30_000;
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+            const resp = await this.getCommandResponse(sessionId, id).catch(() => null);
+            if (resp) {
+                if (resp.error) {
+                    return { outcome: "no_active_turn", turnIndex, detail: resp.error };
+                }
+                const result = (resp.result ?? {}) as Partial<StopTurnResult>;
+                return {
+                    outcome: result.outcome ?? "stopped",
+                    turnIndex: result.turnIndex ?? turnIndex,
+                    ...(result.detail ? { detail: result.detail } : {}),
+                };
+            }
+            await sleep(400);
+        }
+        // If the turn ended between the CMS read and the enqueue, the stop
+        // event rots unread in a dead turn-scoped queue (harmless) and no
+        // response will ever appear.
+        return {
+            outcome: "timeout",
+            turnIndex,
+            detail: "no stop response before timeout; refresh session state",
+        };
     }
 
     async restartSystemSession(
