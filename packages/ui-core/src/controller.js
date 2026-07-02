@@ -158,13 +158,28 @@ function resolveDefaultReasoningEffort(model) {
 }
 
 function extractSessionModelFromEvents(events = []) {
+    // Only explicit model-change events may update the session's model.
+    // Deriving it from any event that happens to carry a `model` field lets
+    // transient payloads (e.g. sub-activities reporting the default model)
+    // flap the row between the configured model and the default, with the
+    // periodic list/detail syncs flipping it back. The CMS session row is the
+    // source of truth; session.model_changed is the only event that alters it.
     for (let index = events.length - 1; index >= 0; index -= 1) {
-        const data = events[index]?.data;
-        if (data && typeof data === "object") {
-            if (typeof data.model === "string" && data.model) return data.model;
-            if (typeof data.currentModel === "string" && data.currentModel) return data.currentModel;
-            if (typeof data.newModel === "string" && data.newModel) return data.newModel;
-        }
+        const event = events[index];
+        if (event?.eventType !== "session.model_changed") continue;
+        const data = event?.data;
+        if (!data || typeof data !== "object") continue;
+        const model = typeof data.newModel === "string" && data.newModel
+            ? data.newModel
+            : (typeof data.model === "string" && data.model ? data.model : undefined);
+        if (!model) continue;
+        return {
+            model,
+            // newReasoningEffort travels with the switch; null means cleared.
+            ...(typeof data.newReasoningEffort === "string" || data.newReasoningEffort === null
+                ? { reasoningEffort: data.newReasoningEffort }
+                : {}),
+        };
     }
     return undefined;
 }
@@ -1859,7 +1874,7 @@ export class PilotSwarmUiController {
                     type: "sessions/merged",
                     session: {
                         sessionId,
-                        ...(derivedModel ? { model: derivedModel } : {}),
+                        ...(derivedModel || {}),
                         ...(derivedContextUsage ? { contextUsage: derivedContextUsage } : {}),
                     },
                 });
@@ -2875,7 +2890,7 @@ export class PilotSwarmUiController {
                 type: "sessions/merged",
                 session: {
                     sessionId,
-                    ...(derivedModel ? { model: derivedModel } : {}),
+                    ...(derivedModel || {}),
                     ...(derivedContextUsage ? { contextUsage: derivedContextUsage } : {}),
                 },
             });

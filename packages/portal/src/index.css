@@ -482,6 +482,9 @@ button {
 
 .ps-workspace-grid {
   display: grid;
+  /* Explicit single row: implicit auto rows can size to content in some
+     engines and push panes past the container, clipping the bottom. */
+  grid-template-rows: minmax(0, 1fr);
   gap: 8px;
   min-width: 0;
   width: 100%;
@@ -503,11 +506,13 @@ button {
 
 .ps-workspace-main-grid {
   display: grid;
+  grid-template-rows: minmax(0, 1fr);
   gap: 8px;
   min-width: 0;
   width: 100%;
   max-width: 100%;
   min-height: 0;
+  height: 100%;
   overflow: hidden;
 }
 
@@ -960,6 +965,22 @@ body.is-resizing-pane-y * {
   min-width: max-content;
 }
 
+/* Preformatted markup blocks (splash art) in the chat pane. Wrapping a wide
+   art line scrambles the image, so keep every line intact and let the block
+   scroll horizontally when the art is wider than the pane. */
+.ps-chat-preserve-block {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.ps-scroll-panel.is-wrapped .ps-line.ps-line-preserve,
+.ps-line-preserve {
+  white-space: pre;
+  word-break: normal;
+  overflow-wrap: normal;
+  min-width: max-content;
+}
+
 .ps-sequence-turn-divider {
   width: 100%;
   margin: 4px 0;
@@ -1278,9 +1299,11 @@ body.is-resizing-pane-y * {
 .ps-action-list {
   display: flex;
   flex-direction: column;
+  flex: 1 1 auto;
   gap: 4px;
   padding: 6px 10px 10px;
   min-width: 0;
+  min-height: 0;
   width: 100%;
   max-width: 100%;
   overflow-x: hidden;
@@ -1295,6 +1318,8 @@ body.is-resizing-pane-y * {
 .ps-session-pane.ps-chat-focus-pane .ps-action-list.ps-session-list {
   overflow-x: auto;
   touch-action: pan-x pan-y;
+  /* Keep the horizontal scrollbar from overlaying the last row's meta. */
+  padding-bottom: calc(6px + var(--ps-scrollbar-size));
 }
 
 .ps-session-pane.ps-chat-focus-pane .ps-session-list-button {
@@ -1346,13 +1371,17 @@ body.is-resizing-pane-y * {
   padding: 2px 0 6px;
 }
 
-.ps-workspace-main-grid.is-session-compact .ps-session-pane .ps-session-list {
+/* Session rows never wrap: whenever a row is wider than the pane the list
+   scrolls horizontally, at any pane width. (Mobile keeps ellipsis rows.) */
+.ps-session-pane:not(.ps-mobile-session-pane) .ps-session-list {
   overflow-x: auto;
   overflow-y: auto;
   touch-action: pan-x pan-y;
+  /* Keep the horizontal scrollbar from overlaying the last row's meta. */
+  padding-bottom: calc(6px + var(--ps-scrollbar-size));
 }
 
-.ps-workspace-main-grid.is-session-compact .ps-session-pane .ps-session-list-button {
+.ps-session-pane:not(.ps-mobile-session-pane) .ps-session-list-button {
   width: max-content;
   min-width: 100%;
   max-width: none;
@@ -1413,7 +1442,6 @@ body.is-resizing-pane-y * {
 }
 
 .ps-session-row-title,
-.ps-session-row-meta,
 .ps-session-row-badges,
 .ps-session-row-selected-meta {
   min-width: 0;
@@ -1424,7 +1452,11 @@ body.is-resizing-pane-y * {
   line-height: 1.25;
 }
 
-.ps-session-row-meta,
+/* Meta (timestamp / member count) renders inline after the title. */
+.ps-session-row-meta {
+  font-size: 0.94em;
+}
+
 .ps-session-row-badges,
 .ps-session-row-selected-meta {
   margin-top: 2px;
@@ -1438,11 +1470,10 @@ body.is-resizing-pane-y * {
   opacity: 0.94;
 }
 
-.ps-workspace-main-grid.is-session-compact .ps-session-row-content,
-.ps-workspace-main-grid.is-session-compact .ps-session-row-title,
-.ps-workspace-main-grid.is-session-compact .ps-session-row-meta,
-.ps-workspace-main-grid.is-session-compact .ps-session-row-badges,
-.ps-workspace-main-grid.is-session-compact .ps-session-row-selected-meta {
+.ps-session-pane:not(.ps-mobile-session-pane) .ps-session-row-content,
+.ps-session-pane:not(.ps-mobile-session-pane) .ps-session-row-title,
+.ps-session-pane:not(.ps-mobile-session-pane) .ps-session-row-badges,
+.ps-session-pane:not(.ps-mobile-session-pane) .ps-session-row-selected-meta {
   display: block;
   width: max-content;
   min-width: max-content;
@@ -1450,11 +1481,12 @@ body.is-resizing-pane-y * {
 }
 
 .ps-session-pane .ps-action-list .ps-line {
-  white-space: normal;
+  white-space: nowrap;
   overflow: visible;
   text-overflow: clip;
-  overflow-wrap: anywhere;
-  word-break: break-word;
+  overflow-wrap: normal;
+  word-break: normal;
+  max-width: none;
 }
 
 .ps-session-pane.ps-mobile-session-pane .ps-action-list .ps-line {
@@ -1463,15 +1495,6 @@ body.is-resizing-pane-y * {
   text-overflow: ellipsis;
   overflow-wrap: normal;
   word-break: normal;
-}
-
-.ps-workspace-main-grid.is-session-compact .ps-session-pane .ps-action-list .ps-line {
-  white-space: nowrap;
-  overflow: visible;
-  text-overflow: clip;
-  overflow-wrap: normal;
-  word-break: normal;
-  max-width: none;
 }
 
 .ps-list-button.is-selected,

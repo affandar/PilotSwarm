@@ -332,8 +332,12 @@ function normalizeLines(lines) {
 
     for (const line of lines || []) {
         if (line?.kind === "markup") {
+            // Markup lines carry preformatted art (splash screens). Tag them
+            // so the chat renderer keeps each line intact: the pane's
+            // pre-wrap/overflow-wrap rules would rewrap wide art lines at
+            // arbitrary points and scramble the image.
             for (const parsedLine of parseTerminalMarkupRuns(line.value || "")) {
-                normalized.push({ kind: "runs", runs: parsedLine });
+                normalized.push({ kind: "runs", runs: parsedLine, preserve: true });
             }
             continue;
         }
@@ -1247,6 +1251,19 @@ function parseStructuredChatBlocks(lines = []) {
     for (let index = 0; index < lines.length;) {
         const currentLine = lines[index];
 
+        // Preformatted markup lines (splash art) bypass box/table/card
+        // detection entirely and render as one preserve block, so no line
+        // ever rewraps or gets reinterpreted as a structured element.
+        if (currentLine?.preserve) {
+            const preserveLines = [];
+            while (index < lines.length && lines[index]?.preserve) {
+                preserveLines.push(lines[index]);
+                index += 1;
+            }
+            blocks.push({ type: "preserve", lines: preserveLines });
+            continue;
+        }
+
         // Sentinel markdown-table line emitted by parseMarkdownLines when
         // tableMode === "sentinel". Carries the raw header + rows so the
         // portal renders a real HTML table with markdown cell content (so
@@ -1398,6 +1415,16 @@ function StructuredChatBlocks({ lines, theme }) {
 
     return React.createElement(React.Fragment, null,
         blocks.map((block, index) => {
+            if (block.type === "preserve") {
+                return React.createElement("div", { key: `preserve:${index}`, className: "ps-chat-preserve-block" },
+                    block.lines.map((line, lineIndex) => React.createElement(Line, {
+                        key: `preserve:${index}:${lineIndex}`,
+                        line,
+                        theme,
+                        className: "ps-line-preserve",
+                    })));
+            }
+
             if (block.type === "code") {
                 return React.createElement("section", { key: `code:${index}`, className: "ps-md-code-block ps-chat-code-block" },
                     React.createElement("div", { className: "ps-md-code-header" }, block.language || "text"),
@@ -1681,11 +1708,12 @@ function SessionRowContent({ row, theme, structured = false }) {
 
     return React.createElement(React.Fragment, null,
         React.createElement("div", { className: "ps-session-row-title" },
-            React.createElement(Runs, { runs: row.titleRuns, theme })),
-        hasMeta
-            ? React.createElement("div", { className: "ps-session-row-meta" },
-                React.createElement(Runs, { runs: row.metaRuns, theme }))
-            : null,
+            React.createElement(Runs, { runs: row.titleRuns, theme }),
+            // Meta (timestamp / member count) sits inline on the title line.
+            hasMeta
+                ? React.createElement("span", { className: "ps-session-row-meta" },
+                    React.createElement(Runs, { runs: [{ text: " ", color: "gray" }, ...row.metaRuns], theme }))
+                : null),
         hasBadges
             ? React.createElement("div", { className: "ps-session-row-badges" },
                 React.createElement(Runs, { runs: row.badgeRuns, theme }))

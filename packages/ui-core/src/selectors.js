@@ -91,6 +91,18 @@ function getSessionSummaryStatusLabel(session) {
     return status === "cron_waiting" ? "waiting" : status;
 }
 
+function getSessionRowStatusLabel(session) {
+    // List-row text uses the debounced row status (5s hold, see
+    // mergeSessionRowVisualStatus) rather than the raw one: the 4s catalog
+    // poll (CMS row state) and the post-event detail sync (live orchestration
+    // customStatus) can disagree mid-turn, and rendering the raw value makes
+    // the label flap even though the row color (sessionStatusColor) is
+    // already smoothed. The summary view keeps the immediate raw label above.
+    const status = getSessionRowVisualStatus(session);
+    if (!status || status === "unknown") return "";
+    return status === "cron_waiting" ? "waiting" : status;
+}
+
 function getSessionRowVisualStatus(session) {
     return session?.rowVisualStatus || getSessionVisualStatus(session);
 }
@@ -481,7 +493,7 @@ function canPinSessionRow(session) {
 
 function buildSelectedSessionMetaRuns(session, mode) {
     const runs = [];
-    const statusLabel = getSessionSummaryStatusLabel(session);
+    const statusLabel = getSessionRowStatusLabel(session);
     if (statusLabel) {
         runs.push({ text: statusLabel, color: sessionStatusColor(session, mode) });
     }
