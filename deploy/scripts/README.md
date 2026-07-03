@@ -5,7 +5,7 @@ A multi-platform Node.js deploy driver for PilotSwarm on AKS that
 
 | Path | What it is | When to use |
 |---|---|---|
-| `scripts/deploy-aks.sh` | Imperative bash script targeting an existing dev cluster (`docs/deploying-to-aks.md`). | Engineer smoke loop on a one-off cluster. |
+| `scripts/deploy-aks.sh` | Imperative bash script targeting an existing dev cluster (`docs/developer/deploy/aks.md`). | Engineer smoke loop on a one-off cluster. |
 | _enterprise deployment orchestrator_ (internal-only) | Enterprise-driven GitOps deploy (Bicep + Kustomize + Flux Storage Bucket). | Production rollouts via the enterprise deployment path. |
 | **`deploy/scripts/deploy.mjs`** *(this README)* | OSS-friendly equivalent of the enterprise path, runnable from any contributor's box without the enterprise path. | Reproducing the GitOps deploy locally; future GitHub Actions wrapper. |
 
@@ -173,7 +173,7 @@ Files are flat `KEY=value`, no quoting, no shell expansion.
 | `PORTAL_RESOURCE_NAME` | bicep (portal) | Portal logical name. |
 | `NAMESPACE` | manifests, rollout | Target Kubernetes namespace (`pilotswarm` per A-11). |
 | `EDGE_MODE` | bicep, manifests, rollout | `afd` (default) or `private`. Controls AFD/AppGw/AGIC vs AKS web-app-routing addon. Drives Portal overlay path. |
-| `TLS_SOURCE` | bicep, manifests | `letsencrypt` \| `akv` \| `akv-selfsigned`. Drives Portal overlay path and AKV cert issuer. See [docs/deploying-to-aks.md](../../docs/deploying-to-aks.md) for the supported `(EDGE_MODE × TLS_SOURCE)` combos. |
+| `TLS_SOURCE` | bicep, manifests | `letsencrypt` \| `akv` \| `akv-selfsigned`. Drives Portal overlay path and AKV cert issuer. See [docs/developer/deploy/aks.md](../../docs/developer/deploy/aks.md) for the supported `(EDGE_MODE × TLS_SOURCE)` combos. |
 | `HOST`, `PRIVATE_DNS_ZONE` | bicep (portal), rollout (portal) | Required when `EDGE_MODE=private`. Bicep provisions the Private DNS Zone + VNet link; deploy.mjs writes the A record `${HOST}.${PRIVATE_DNS_ZONE}` → internal LB IP after Portal rollout. |
 | `ACME_EMAIL` | bicep (cert-manager-issuers) | Required when `TLS_SOURCE=letsencrypt`. Let's Encrypt registration / renewal-failure notices. |
 | `PORTAL_TLS_ISSUER_NAME` | bicep (portal) | Optional override for the AKV cert issuer name. Defaults to `OneCertV2-PublicCA` (afd) / `OneCertV2-PrivateCA` (private), auto-registered by Portal bicep. |
@@ -472,5 +472,5 @@ hard-code the URL.
 ## Cross-references
 
 - Enterprise / production path: handled by an internal-only orchestrator (out of scope for this OSS repo)
-- Imperative engineer-smoke path: [`docs/deploying-to-aks.md`](../../docs/deploying-to-aks.md)
+- Imperative engineer-smoke path: [`docs/developer/deploy/aks.md`](../../docs/developer/deploy/aks.md)
 - Spec / plan / as-built record: [`.paw/work/oss-deploy-script/`](../../.paw/work/oss-deploy-script/)

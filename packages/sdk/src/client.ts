@@ -23,6 +23,8 @@ import type { FactStore } from "./facts-store.js";
 import { resolveStorageConfig } from "./storage-config.js";
 import { getDuroxideStorageProvider, getRuntimeStorageProvider } from "./storage-providers.js";
 import { deriveStatusFromCmsAndRuntime, shouldSyncCompletedStatus, shouldSyncFailedStatus } from "./session-status.js";
+import { assertUnambiguousProvider, isWebOptions, type PilotSwarmWebOptions } from "./web/api-connection.js";
+import { WebPilotSwarmClient } from "./web/web-client.js";
 
 // duroxide is CommonJS — use createRequire for ESM compatibility
 import { createRequire } from "node:module";
@@ -55,7 +57,7 @@ function throwIfAborted(signal: AbortSignal | undefined, message: string): void 
  * Completely independent of PilotSwarmWorker.
  */
 export class PilotSwarmClient {
-    private config: PilotSwarmClientOptions & { waitThreshold: number };
+    private config!: PilotSwarmClientOptions & { waitThreshold: number };
     private _catalog!: SessionCatalog;
     private _factStore: FactStore | null = null;
     private duroxideClient: any = null;
@@ -84,7 +86,14 @@ export class PilotSwarmClient {
         return this.config.allowedAgentNames ?? [];
     }
 
-    constructor(options: PilotSwarmClientOptions) {
+    constructor(options: PilotSwarmClientOptions | PilotSwarmWebOptions) {
+        assertUnambiguousProvider(options, "PilotSwarmClient");
+        if (isWebOptions(options)) {
+            // Web mode — the supported public mode: talk to a deployment's
+            // Web API instead of the datastore. The returned object carries
+            // the same session-handle programming model (WebPilotSwarmClient).
+            return new WebPilotSwarmClient(options) as unknown as PilotSwarmClient;
+        }
         this.config = {
             ...options,
             waitThreshold: options.waitThreshold ?? 30,

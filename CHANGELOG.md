@@ -1,5 +1,57 @@
 # Changelog
 
+## 0.4.0 — 2026-07-03
+
+### Packaging — the big consolidation (9 directories → 3 packages)
+
+- **New `pilotswarm` npm package** — the application package. One install
+  ships every user-facing surface with the same bin names as before:
+  `pilotswarm` (TUI; `pilotswarm-cli` alias), `pilotswarm-web` (portal server
+  + Web API), `pilotswarm-mcp` (MCP server). Internal layers are subpath
+  exports: `pilotswarm/ui-core`, `pilotswarm/ui-react`, `pilotswarm/host`,
+  `pilotswarm/web`.
+- **`pilotswarm-sdk` is self-contained** — the isomorphic Web API wire client
+  (operations table, `ApiClient`, `HttpApiTransport`) now ships inside it as
+  the browser-safe subpath `pilotswarm-sdk/api` (typed). A CI guard bundles
+  the subpath with esbuild `platform=browser` and fails on any external or
+  `node:` import.
+- **Retired npm names**: `pilotswarm-cli`, `pilotswarm-web`,
+  `pilotswarm-api-client`, `pilotswarm-mcp-server`. The publish workflow now
+  releases exactly `pilotswarm-sdk` → `pilotswarm-horizon-store` →
+  `pilotswarm`. The MCP prepack bundling hack and workspace-UI sync hacks are
+  gone.
+- Dockerfiles (worker/portal/starter), k8s + GitOps manifests, and deploy
+  scripts rewired for the 3-package workspace; starter image verified
+  end-to-end (portal + embedded-worker LLM turn) on the new layout.
+
+### Web API / MCP
+
+- MCP server defaults to Web API mode everywhere user-facing; live test
+  suites now run the real bin over `--api-url` against an in-process portal
+  (no DB credentials in the MCP process). `list_models`/`switch_model` work
+  in web mode; `send_command` returns a clear direct-mode-only error.
+- Unknown-model validation errors now surface as `400` with the message
+  preserved (previously a generic `500`).
+
+### Portal / TUI
+
+- Session list: the pin column renders only when a session is actually
+  pinned — no more phantom indent on every user row.
+- TUI renders colorless text (agent message bodies, markdown prose) in the
+  theme's foreground instead of the terminal profile's default — light
+  themes are readable in dark-profile terminals.
+- Themes: removed Workbench Light, Solarized Dark, Paper Trail, Nord,
+  Noctis Viola, Night Shift; added three sharp light themes (Daylight,
+  Paper Ink, Light High Contrast) with AA contrast on every color slot.
+  Persisted ids of removed themes fall back to the default.
+
+### Docs
+
+- Documentation overhauled into five sections (quickstart / user guide /
+  architecture / API / developer), ~45 code-verified staleness fixes, new
+  `docs/architecture/layering.md`, `docs/api/building-a-custom-ux.md`, and
+  `docs/api/clients.md`. Builder-agent templates teach the Web API topology.
+
 ## 0.3.3 — 2026-07-01
 
 ### SDK / Runtime

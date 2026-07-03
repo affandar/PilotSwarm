@@ -77,7 +77,7 @@ describe("system agent cron contracts", () => {
 
     it("releases affinity for cron waits and renders cron wait state in the TUI", () => {
         const orchestration = readRepoFile("packages/sdk/src/orchestration.ts");
-        const selectors = readRepoFile("packages/ui-core/src/selectors.js");
+        const selectors = readRepoFile("packages/app/ui/core/src/selectors.js");
 
         assertIncludes(orchestration, "const cronPlan = planWaitHandling({", "cron waits should compute dehydration behavior through the shared wait planner");
         assertIncludes(orchestration, 'yield* dehydrateForNextTurn("cron", cronPlan.resetAffinityOnDehydrate);', "cron waits should pass the planner affinity decision into dehydration");
@@ -101,7 +101,7 @@ describe("system agent cron contracts", () => {
     });
 
     it("keeps cron, collapse, and unread badges in a stable order", () => {
-        const selectors = readRepoFile("packages/ui-core/src/selectors.js");
+        const selectors = readRepoFile("packages/app/ui/core/src/selectors.js");
 
         assertIncludes(selectors, "for (const badge of [", "session rows should build badges in one canonical place");
         assertIncludes(selectors, "getCronBadge(session),", "session-row suffixes should lead with the cron badge");
@@ -112,7 +112,7 @@ describe("system agent cron contracts", () => {
     });
 
     it("keeps cron rows non-magenta in the session list while preserving the cron badge", () => {
-        const selectors = readRepoFile("packages/ui-core/src/selectors.js");
+        const selectors = readRepoFile("packages/app/ui/core/src/selectors.js");
 
         assertIncludes(selectors, 'case "cron_waiting": return "yellow";', "session-list cron waits should use the normal waiting row color");
         assertIncludes(selectors, 'case "cron_waiting": return "~";', "session-list cron icon should stay the regular wait icon");

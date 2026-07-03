@@ -153,7 +153,7 @@ If the user gets `Couldn't load packet length bytes` or
 `Server did not respond properly to VPN Control Packets` errors,
 their network egress (often a corp managed proxy) is intercepting
 TCP 443 and killing the OpenVPN handshake — see PR #53 history and
-`docs/deploying-to-aks.md` for the diagnostic. The profile is fine;
+`docs/developer/deploy/aks.md` for the diagnostic. The profile is fine;
 the problem is the network they are on.
 
 ## Cross-references
@@ -161,5 +161,5 @@ the problem is the network they are on.
 - `deploy/scripts/auth/Get-VpnClientProfile.ps1` — the script
 - `deploy/scripts/auth/Setup-PortalAuth.ps1` + skill `pilotswarm-portal-app-reg` — companion portal auth setup
 - `deploy/scripts/auth/Set-PortalAuthAssignments.ps1` + skill `pilotswarm-portal-auth-assignments` — companion portal access management
-- `docs/deploying-to-aks.md` (§ "Optional: VPN Gateway P2S") — full VPN ingress documentation
+- `docs/developer/deploy/aks.md` (§ "Optional: VPN Gateway P2S") — full VPN ingress documentation
 - `docs/proposals/vpn-access-management.md` — future-work proposal to fold VPN access into the deployer-owned per-stamp app model

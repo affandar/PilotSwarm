@@ -1,15 +1,20 @@
 {
   "name": "pilotswarm-sdk",
-  "version": "0.3.3",
-  "description": "A durable execution runtime for GitHub Copilot SDK agents. Crash recovery, durable timers, session dehydration, and multi-node scaling \u2014 powered by duroxide.",
+  "version": "0.4.0",
+  "description": "A durable execution runtime for GitHub Copilot SDK agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by duroxide.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
-    }
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./api": {
+      "types": "./api/index.d.ts",
+      "import": "./api/index.js"
+    },
+    "./package.json": "./package.json"
   },
   "scripts": {
     "build": "tsc",
@@ -44,7 +49,8 @@
     "test:perf": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs --config vitest.perf.config.js run",
     "test:perf:spawn": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs --config vitest.perf.config.js run test/perf/spawn.perf.test.js",
     "lint": "tsc --noEmit",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "test:api": "node --test api/test/*.test.mjs"
   },
   "keywords": [
     "copilot",
@@ -75,7 +81,7 @@
     "pg": "^8.18.0"
   },
   "peerDependencies": {
-    "pilotswarm-horizon-store": "^0.3.3"
+    "pilotswarm-horizon-store": "^0.4.0"
   },
   "peerDependenciesMeta": {
     "pilotswarm-horizon-store": {
@@ -95,6 +101,10 @@
   "files": [
     "dist/**/*",
     "plugins/**/*",
+    "api/index.js",
+    "api/index.d.ts",
+    "api/src/**/*",
+    "api/README.md",
     "README.md"
   ]
 }

@@ -185,4 +185,4 @@ Once customize mode is live, tune section assignments per agent type:
 
 - [Prompt Layering and Precedence](prompt-layering-and-precedence.md) — current (implemented) design
 - [Shared Skills Pipeline](../proposals/shared-skills-pipeline.md) — curated skills architecture
-- [Plugin Architecture Guide](../plugin-architecture-guide.md) — plugin loading and layering
+- [Plugin Architecture Guide](../developer/building/plugins.md) — plugin loading and layering

@@ -1,28 +1,28 @@
 ---
 name: pilotswarm-tui
-description: Modify or extend the PilotSwarm terminal UI. Covers the shared-first architecture across ui-core, ui-react, and packages/cli, the current layout and visual conventions, prompt/question behavior, and the requirement to keep maintainer docs updated as the TUI evolves.
+description: Modify or extend the PilotSwarm terminal UI. Covers the shared-first architecture across ui-core, ui-react, and packages/app/tui, the current layout and visual conventions, prompt/question behavior, and the requirement to keep maintainer docs updated as the TUI evolves.
 ---
 
 # PilotSwarm TUI
 
 Use this skill when changing any of:
 
-- `packages/ui-core/`
-- `packages/ui-react/`
-- `packages/cli/`
+- `packages/app/ui/core/`
+- `packages/app/ui/react/`
+- `packages/app/tui/`
 - `run.sh`
 - TUI-specific docs or UI behavior
 
 ## Read First
 
-- [docs/tui-architecture.md](../../../docs/tui-architecture.md)
-- [docs/tui-implementor-guide.md](../../../docs/tui-implementor-guide.md)
-- [docs/keybindings.md](../../../docs/keybindings.md)
-- [packages/ui-core/src/controller.js](../../../packages/ui-core/src/controller.js)
-- [packages/ui-core/src/selectors.js](../../../packages/ui-core/src/selectors.js)
-- [packages/ui-react/src/components.js](../../../packages/ui-react/src/components.js)
-- [packages/cli/src/app.js](../../../packages/cli/src/app.js)
-- [packages/cli/src/platform.js](../../../packages/cli/src/platform.js)
+- [docs/architecture/tui.md](../../../docs/architecture/tui.md)
+- [docs/developer/contributing/tui-implementor-guide.md](../../../docs/developer/contributing/tui-implementor-guide.md)
+- [docs/user-guide/keybindings.md](../../../docs/user-guide/keybindings.md)
+- [packages/app/ui/core/src/controller.js](../../../packages/app/ui/core/src/controller.js)
+- [packages/app/ui/core/src/selectors.js](../../../packages/app/ui/core/src/selectors.js)
+- [packages/app/ui/react/src/components.js](../../../packages/app/ui/react/src/components.js)
+- [packages/app/tui/src/app.js](../../../packages/app/tui/src/app.js)
+- [packages/app/tui/src/platform.js](../../../packages/app/tui/src/platform.js)
 
 ## Core Architecture
 
@@ -30,10 +30,10 @@ The terminal UI is not a monolith.
 
 - `ui-core` owns state, controller logic, selectors, formatting, and transport-facing behavior.
 - `ui-react` owns shared React composition and stays host-neutral.
-- `packages/cli` is the thin terminal host: keyboard wiring, terminal rendering, process lifecycle, clipboard, downloads, and OS integration.
+- `packages/app/tui` is the thin terminal host: keyboard wiring, terminal rendering, process lifecycle, clipboard, downloads, and OS integration.
 
 Do not move host rendering details into `ui-core`.
-Do not move controller or selector semantics into `packages/cli`.
+Do not move controller or selector semantics into `packages/app/tui`.
 Do not bypass shared selectors/components with host-only UI logic unless the behavior is truly terminal-specific.
 
 ## Product Rules
@@ -73,11 +73,11 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
 - In the sessions pane, `V` toggles multi-select mode (seeded with the active session). `Space` toggles selection on the active row, `Ctrl+G` moves every selected top-level non-system session through the move-to-group picker, `c` cancels every selected session in one confirmation (system sessions and groups are skipped), `d` completes selected sessions, `D` hard-deletes selected sessions, and `Esc` exits select mode. The portal mirrors selection with Cmd/Ctrl-click and Shift-click on session rows; the panel header reveals `Clear`, `Group (n)`, and `Terminate (n)`. `Terminate (n)` opens the same three-disposition picker for Complete, Cancel, and Hard Delete.
 - In the stats inspector, `f` cycles between the session, fleet, and users views; keep terminal and portal behavior aligned.
 - In the sessions pane, `n` fast-starts a generic session with the default model when generic sessions are allowed; if generic sessions are disabled, it falls back to the model-first creation flow when models are available, or the agent picker. `Shift+N` opens the model picker, then reasoning effort when applicable, then the generic/named-agent picker.
-- The New/New+Model agent picker is fed by `transport.listCreatableAgents()`, not by worker logs. In remote mode, `packages/cli/src/node-sdk-transport.js` builds that metadata from `PLUGIN_DIRS`; if `session-policy.json.creation.bundledAgents` opts into SDK-bundled agents such as `generic-crawler`, the transport must expand those names from `packages/sdk/plugins/default-agents/` into `creatableAgents` so both native remote TUI and portal bootstrap show them.
+- The New/New+Model agent picker is fed by `transport.listCreatableAgents()`, not by worker logs. In remote mode, `packages/app/tui/src/node-sdk-transport.js` builds that metadata from `PLUGIN_DIRS`; if `session-policy.json.creation.bundledAgents` opts into SDK-bundled agents such as `generic-crawler`, the transport must expand those names from `packages/sdk/plugins/default-agents/` into `creatableAgents` so both native remote TUI and portal bootstrap show them.
 - The fleet stats view shows a compact `Fact Tombstones` card when facts tombstone
 	backlog is nonzero. The card is fed by `getFactsTombstoneStats` through the shared
 	transport/controller/reducer path and renders pending, unreconciled, TTL-blocked,
-	oldest, and reconciled counts in `packages/ui-core/src/selectors.js`.
+	oldest, and reconciled counts in `packages/app/ui/core/src/selectors.js`.
 - In the files inspector, `x` deletes the selected artifact after confirmation; keep terminal and portal behavior aligned.
 - In the native TUI, the files inspector should render inside the standard outer inspector shell rather than introducing a second files-specific top-level shell.
 - In the portal inspector, reserve a consistent header row height so tabs with header actions and tabs without them start their tab strip at the same vertical position; keep inspector tab/action buttons compact rather than oversized.
@@ -88,14 +88,14 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
 - Pending-question answers render an optimistic asked/answered transcript item as soon as the user submits. Keep that item visible while `sendAnswer` is in flight and after it is accepted, then let the durable `user.message` transcript replace it once history sync catches up; stale session refreshes must not restore the old question card or hide the submitted exchange.
 - Recoverable live Copilot transport warnings (`Connection is closed` / `Live Copilot connection lost`) should remain stable in the chat pane while the session is still running a retry; running detail refreshes must not clear and re-add the same warning card.
 - The Admin Console (`Shift+A` in the native TUI; toolbar `Admin` button in the portal) is a workspace-replacing surface for per-user settings. It must never display the raw GitHub Copilot key text — `selectAdminConsole` and `selectAdminGhcpKeyEditorModal` only carry the `githubCopilotKeySet` boolean and a masked editor value. The TUI and portal share the `state.admin` slice in `ui-core` and route every mutation through the controller (`beginAdminEditGhcpKey`, `setAdminGhcpKeyDraft`, `cancelAdminEditGhcpKey`, `saveAdminGhcpKey`, `clearAdminGhcpKey`, `refreshAdminProfile`); keep both hosts in sync if you add a new admin setting. Do not globally block New/New+Model when the per-user GitHub key is unset: GitHub models should fail only at create time when neither env `GITHUB_TOKEN` nor the per-user key is available, and non-GitHub providers must remain usable.
-- Outbox items render with three visible delivery states next to the user-message label: `○` pending (client only), `✓` queued (durably enqueued), `✓✓` sent (persisted as a transcript `user.message`). Synchronous sends coalesce into a single durable enqueue; merge boundaries are not user-visible. Keep the glyph mapping in [packages/ui-core/src/selectors.js](../../../packages/ui-core/src/selectors.js) consistent across portal and TUI.
+- Outbox items render with three visible delivery states next to the user-message label: `○` pending (client only), `✓` queued (durably enqueued), `✓✓` sent (persisted as a transcript `user.message`). Synchronous sends coalesce into a single durable enqueue; merge boundaries are not user-visible. Keep the glyph mapping in [packages/app/ui/core/src/selectors.js](../../../packages/app/ui/core/src/selectors.js) consistent across portal and TUI.
 
 ## Keybinding Rule
 
 When a keybinding changes, update all user-facing surfaces together:
 
-- the actual binding in `packages/cli/src/app.js`
-- status-bar hints in `packages/ui-core/src/selectors.js`
+- the actual binding in `packages/app/tui/src/app.js`
+- status-bar hints in `packages/app/ui/core/src/selectors.js`
 - prompt affordance / placeholder copy
 - modal/footer/detail help copy
 - startup/help copy if present
@@ -105,7 +105,7 @@ When a keybinding changes, update all user-facing surfaces together:
 
 The native TUI and browser portal share `ui-core` state and `ui-react` components but diverge in these areas:
 
-| Aspect | Native TUI (`packages/cli`) | Portal (`packages/portal`) |
+| Aspect | Native TUI (`packages/app/tui`) | Portal (`packages/app/web`) |
 |--------|----------------------------|---------------------------|
 | Border radius | N/A (terminal box-drawing) | **Slight rounding** (`6px` / `8px`) — subtle corners, not pills |
 | Scrollbars | Native terminal scrolling | **Custom dark scrollbars** — slim, theme-matched thumbs/tracks instead of browser-default white scrollbars |
@@ -130,7 +130,7 @@ The auto-collapse-on-load logic lives in `ui-core/src/reducer.js` (shared). It c
 Prefer fast local checks for TUI work:
 
 ```bash
-node --input-type=module -e "await import('./packages/ui-react/src/components.js'); await import('./packages/cli/src/platform.js')"
+node --input-type=module -e "await import('./packages/app/ui/react/src/components.js'); await import('./packages/app/tui/src/platform.js')"
 ./run.sh local --db
 ```
 

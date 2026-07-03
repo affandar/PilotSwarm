@@ -1,72 +1,66 @@
 # PilotSwarm Documentation
 
-Start with the path that matches what you are trying to do.
+Five sections, in reading order. Pick your door.
 
-## I want to use PilotSwarm
+## 1. [Quick Start](./quickstart/docker.md)
 
-- [User Guide](./user-guide/README.md) — scenario-based walkthroughs from "say hello" to multi-hour multi-agent workflows. Picks up after the Docker quickstart and forks into [TUI](./user-guide/tui.md) and [Portal](./user-guide/portal.md) tracks.
+Running in minutes.
 
-## Choose Your Path
+- [Docker Quickstart](./quickstart/docker.md) — the fastest path: browser portal + SSH TUI + two workers from one `pilotswarm-starter` image
+- [Local Setup](./quickstart/local.md) — from source: install, PostgreSQL, first run
 
-### I want to work on PilotSwarm itself
+## 2. [User Guide](./user-guide/README.md)
 
-- [Working On PilotSwarm](./contributors/working-on-pilotswarm.md) — repo map, runtime/TUI/orchestration workflows, and contributor checklists
-- [Architecture](./architecture.md) — how the durable runtime, CMS, client, and worker fit together
-- [Orchestration Design](./orchestration-design.md) — comprehensive reference for the durable session orchestration: modules, runtime model, drain/decide pseudocode, TurnResult dispatch, sub-agents, shutdown, CAN, hydration, replay invariants
-- [Main Orchestration Loop](./orchestration-loop.md) — short orientation; links into the design doc above
-- [SigNoZ Observability And Metrics](./signoz-observability.md) — current OpenTelemetry/SigNoZ architecture, implemented spans, missing deployment wiring, and next metrics
-- [TUI Architecture](./tui-architecture.md) — the current shared terminal UI stack across `packages/cli`, `ui-core`, and `ui-react`
-- [TUI Design And Implementor Guide](./tui-implementor-guide.md) — detailed contributor guide for terminal UI ownership, runtime flow, rendering, state, and change patterns
-- [Plugin Architecture & Layering Guide](./plugin-architecture-guide.md) — deep reference for agents, skills, MCP, and merge semantics
-- [System Reference](./system-reference.md) — file map, orchestration lifecycle, CMS schema, and invariants
+Driving sessions as an end user — scenario-based, from "say hello" to
+multi-hour multi-agent workflows.
 
-### I want to build an app with the SDK
+- [Terminal UI track](./user-guide/tui.md) · [Browser portal track](./user-guide/portal.md)
+- [Keybindings](./user-guide/keybindings.md) — TUI controls and slash commands
 
-- [Starter Docker Quickstart](./getting-started-docker-appliance.md) — fastest browser-first path with the self-contained `pilotswarm-starter` image
-- [Getting Started](./getting-started.md) — install, configure PostgreSQL, and run locally
-- [Building SDK Apps](./sdk/building-apps.md) — the recommended path for app developers using `PilotSwarmClient` and `PilotSwarmWorker`
-- [Building Agents For SDK Apps](./sdk/building-agents.md) — the canonical guide for `default.agent.md`, named agents, skills, tools, and system agents
-- [Builder Agent Templates](./builder-agents.md) — distributable Copilot custom agents for users building apps on top of PilotSwarm
-- [Configuration](./configuration.md) — environment variables, blob storage, worker/client options
-- [Deploying a Knowledge Harvester](./harvester-deployment.md) — run a `crawler: true` ingestion service over a shared HorizonDB facts + knowledge graph
-- [Examples](./examples.md) — runnable examples in the repo, including the DevOps Command Center layered-app sample
+## 3. [Architecture](./architecture/README.md)
 
-### I want to build an app with the CLI/TUI
+How the system works. Start at the layering map, then descend.
 
-- [Starter Docker Quickstart](./getting-started-docker-appliance.md) — run the browser portal and SSH TUI from one Docker image with two bundled workers
-- [Building CLI Apps](./cli/building-cli-apps.md) — how the shipped TUI works today, local vs remote mode, and where plugins and worker modules fit
-- [Building Agents For CLI Apps](./cli/building-agents.md) — the agent-authoring path for plugin-driven CLI apps
-- [Builder Agent Templates](./builder-agents.md) — distributable Copilot custom agents for users building layered PilotSwarm apps
-- [Keybindings](./keybindings.md) — TUI controls and slash commands
-- [Getting Started](./getting-started.md) — environment setup and first run
-- [Examples](./examples.md) — includes the DevOps Command Center sample that uses CLI branding, system agents, and session policy
+- [Layering — One Way In](./architecture/layering.md) — every user-facing surface rides the Web API; the map of the whole system
+- [Architecture deep dive](./architecture/system.md) — durable runtime, CMS, client, worker
+- [Orchestration design](./architecture/orchestration/design.md) (+ [the loop, oriented](./architecture/orchestration/loop.md))
+- [System reference](./architecture/system-reference.md) — file map, lifecycle, schema, invariants
+- [Facts store design](./architecture/facts.md) · [Session creation policy](./architecture/session-creation-policy.md) · [TUI architecture](./architecture/tui.md)
+- [Internals](./architecture/internals/README.md) — CMS schema, session manager
 
-## Contracts And Reference
+## 4. [API Reference](./api/reference.md)
 
-- [Agent Contracts](./contracts/agent-contracts.md) — prompt, tool, runtime, and naming rules that should stay true across code, docs, and tests
-- [Deploying To AKS](./deploying-to-aks.md) — remote worker deployment and rollout workflow
-- [Component Interactions](./component-interactions.md) — message flow and lifecycle diagrams
-- [Layer Diagram](./layer-diagram.md) — fast mental model for the stack
+The Web API — the one integration surface — and every client over it.
 
-## Internal Notes And Point-In-Time Docs
+- [Web API Reference](./api/reference.md) — every operation, auth, errors, WebSocket streaming (generated from the operations table)
+- [Building a Custom UX](./api/building-a-custom-ux.md) — your own UI over the API: bootstrap, subscribe, replay, browser sign-in
+- [Choosing a Client](./api/clients.md) — raw HTTP vs `ApiClient` vs SDK clients vs MCP: which to use when
 
-These are useful for contributors but are not the main onboarding path:
+## 5. [Developer Guide](./developer/README.md)
 
-- [Orchestration Hardening Plan](./orchestration-hardening-plan.md)
-- [TUI Cleanup Status](./tui-cleanup-status.md)
-- [Implemented Proposals](./proposals-impl/README.md)
-- [Proposal: Prompt Layering and Framework Precedence](./proposals-impl/prompt-layering-and-precedence.md)
-- [Proposal: npm Packaging and Embedded PilotSwarm Plugins](./proposals-impl/npm-packaging-and-embedded-plugins.md)
-- [Proposal: Preserve Worker Affinity For Durable Waits](./proposals-impl/wait-preserve-worker-affinity.md)
-- [`docs/proposals/`](./proposals/)
+Building **on** PilotSwarm, deploying it, and contributing **to** it.
 
-## Legacy Guides
+**Building apps**
+- [SDK apps](./developer/building/sdk-apps.md) (+ [agents](./developer/building/sdk-agents.md), [facts & graph](./developer/building/facts-and-graph.md))
+- [CLI/TUI apps](./developer/building/cli-apps.md) (+ [agents](./developer/building/cli-agents.md))
+- [Plugin architecture & layering](./developer/building/plugins.md) · [Builder agent templates](./developer/building/builder-agents.md)
+- [Examples](./developer/building/examples.md) — runnable samples incl. the DevOps Command Center
 
-These older guides still contain useful detail, but they are no longer the primary entry points:
+**Deploying**
+- [Deploying to AKS](./developer/deploy/aks.md) (+ [topology](./developer/deploy/aks-topology.md))
+- [Portal Entra app roles](./developer/deploy/entra-app-roles.md) · [Knowledge harvester](./developer/deploy/harvester.md) · [Observability](./developer/deploy/observability.md)
 
-- [Building Apps On PilotSwarm](./building-apps.md)
-- [Writing Agents, Skills, Tools & MCP Servers](./writing-agents.md)
-- [TUI Apps](./tui-apps.md)
-- [User Guide](./guide.md)
+**Reference**
+- [Configuration](./developer/reference/configuration.md) — env vars, storage, worker/client options
+- [Agent contracts](./developer/reference/agent-contracts.md) — prompt/tool/runtime rules that stay true across code, docs, tests
 
-If you are new to the repo, prefer the persona-based docs above.
+**Contributing to PilotSwarm**
+- [Working on PilotSwarm](./developer/contributing/working-on-pilotswarm.md) — repo map, workflows, checklists
+- [TUI implementor guide](./developer/contributing/tui-implementor-guide.md)
+- [Local test spec](./developer/contributing/local-test-spec.md) · [integration test plan](./developer/contributing/local-integration-test-plan.md) · [facts table tests](./developer/contributing/facts-table-tests.md)
+
+---
+
+**Design records** (not onboarding material): [proposals](./proposals/) — open designs ·
+[proposals-impl](./proposals-impl/README.md) — implemented designs, kept as history ·
+[bugreports](./bugreports/) · [_archive](./_archive/) — retired point-in-time docs.

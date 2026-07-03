@@ -48,13 +48,24 @@ import type {
     SessionGroupRow,
     ChildOutcomeRow,
 } from "./cms.js";
-import type { FactStore, FactsStatsRow, FactsTombstoneStats } from "./facts-store.js";
-import { isEnhancedFactStore } from "./facts-store.js";
+import type {
+    FactStore, EnhancedFactStore, FactsStatsRow, FactsTombstoneStats, FactRecord, StoreFactInput,
+    StoredFactResult, ReadFactsQuery, DeleteFactInput, DeletedFactResult, DeletedFactsResult,
+    SearchOpts, SimilarOpts, SearchResult, FactsCapabilities, AccessContext, ForcePurgeFactsInput,
+} from "./facts-store.js";
+import { isEnhancedFactStore, EnhancedFactsUnsupportedError } from "./facts-store.js";
+import type {
+    GraphStore, GraphNodeInput, GraphEdgeInput, GraphNodeQuery, GraphEdgeQuery, GraphNodeHit,
+    GraphEdgeHit, GraphNodeRef, GraphEdgeRef, SubGraph, GraphNamespaceInfo, GraphNamespaceListQuery,
+    GraphNamespaceInput, GraphNamespaceQuery,
+} from "./graph-store.js";
 import { resolveStorageConfig, type StorageConfig } from "./storage-config.js";
 import { getDuroxideStorageProvider, getRuntimeStorageProvider } from "./storage-providers.js";
 import { SessionDumper } from "./session-dumper.js";
 import { loadModelProviders, type ModelProviderRegistry, type ModelDescriptor, type ReasoningEffort } from "./model-providers.js";
 import { deriveStatusFromCmsAndRuntime, shouldSyncCompletedStatus, shouldSyncFailedStatus } from "./session-status.js";
+import { assertUnambiguousProvider, isWebOptions, type PilotSwarmWebOptions } from "./web/api-connection.js";
+import { WebPilotSwarmManagementClient } from "./web/web-management-client.js";
 import type { AgentConfig } from "./agent-loader.js";
 import {
     loadSystemAgentConfigs,
@@ -403,9 +414,10 @@ export interface PilotSwarmManagementClientOptions {
 // ─── Management Client ──────────────────────────────────────────
 
 export class PilotSwarmManagementClient {
-    private config: PilotSwarmManagementClientOptions;
+    private config!: PilotSwarmManagementClientOptions;
     private _catalog: SessionCatalog | null = null;
     private _factStore: FactStore | null = null;
+    private _graphStore: GraphStore | null = null;
     private _duroxideClient: any = null;
     private _modelProviders: ModelProviderRegistry | null = null;
     private _systemAgents: AgentConfig[] = [];
@@ -413,7 +425,15 @@ export class PilotSwarmManagementClient {
     private _activeStatusWaitPromises = new Set<Promise<unknown>>();
     private _started = false;
 
-    constructor(options: PilotSwarmManagementClientOptions) {
+    constructor(options: PilotSwarmManagementClientOptions | PilotSwarmWebOptions) {
+        assertUnambiguousProvider(options, "PilotSwarmManagementClient");
+        if (isWebOptions(options)) {
+            // Web mode — the supported public mode: talk to a deployment's
+            // Web API instead of the datastore. The returned object carries
+            // the same management surface (see WebPilotSwarmManagementClient
+            // for the few direct-mode-only methods).
+            return new WebPilotSwarmManagementClient(options) as unknown as PilotSwarmManagementClient;
+        }
         this.config = options;
     }
 
@@ -456,6 +476,22 @@ export class PilotSwarmManagementClient {
         await this._factStore.initialize();
         _trace("[mgmt] facts initialize done");
 
+        // Graph store: SEPARATE, opt-in provider — present iff graph is
+        // configured (mirrors the worker; see worker.ts). A failed init leaves
+        // graph disabled without taking down facts.
+        if (storage.runtime.graph?.enabled && runtimeStorageProvider.createGraphStore) {
+            let candidate: GraphStore | undefined;
+            try {
+                candidate = await runtimeStorageProvider.createGraphStore(storage.runtime);
+                if (candidate) await candidate.initialize();
+                this._graphStore = candidate ?? null;
+            } catch (err) {
+                await candidate?.close().catch(() => {});
+                this._graphStore = null;
+                _trace(`[mgmt] graph store init failed (graph API disabled): ${(err as any)?.message ?? err}`);
+            }
+        }
+
         // Load model providers
         this._modelProviders = loadModelProviders(this.config.modelProvidersPath);
         this._systemAgents = loadSystemAgentConfigs({
@@ -473,6 +509,10 @@ export class PilotSwarmManagementClient {
         }
         await Promise.allSettled([...this._activeStatusWaitPromises]);
 
+        if (this._graphStore) {
+            try { await this._graphStore.close(); } catch {}
+            this._graphStore = null;
+        }
         if (this._factStore) {
             try { await this._factStore.close(); } catch {}
             this._factStore = null;
@@ -1671,6 +1711,190 @@ export class PilotSwarmManagementClient {
             totalCount: rows.reduce((acc, r) => acc + r.factCount, 0),
             totalBytes: rows.reduce((acc, r) => acc + r.totalValueBytes, 0),
         };
+    }
+
+    // ─── Facts data-plane (Web API surface) ──────────────────────────
+    //
+    // These expose the FactStore/EnhancedFactStore data-plane so the Web API
+    // can serve remote callers (e.g. the MCP server over --api-url) without a
+    // direct database connection. The runtime derives the AccessContext from
+    // the authenticated principal (see _apiAccessContext): under today's
+    // binary-admission model an admitted caller is a privileged operator
+    // (equivalent to the direct-DB placement the MCP server uses today), so
+    // reads are unrestricted. Per-user fact scoping is future work; the derived
+    // context — never client-supplied — is where it will land.
+
+    private _requireFactStore(): FactStore {
+        this._ensureStarted();
+        if (!this._factStore) throw new Error("Facts store is not available on this deployment.");
+        return this._factStore;
+    }
+
+    private _requireEnhancedFactStore(method: string) {
+        const store = this._requireFactStore();
+        if (!isEnhancedFactStore(store)) {
+            const err = new EnhancedFactsUnsupportedError(method);
+            (err as any).code = "FACTS_ENHANCED_UNSUPPORTED";
+            throw err;
+        }
+        return store;
+    }
+
+    private _requireGraphStore(): GraphStore {
+        this._ensureStarted();
+        if (!this._graphStore) {
+            const err = new Error("Graph store is not available on this deployment.");
+            (err as any).code = "GRAPH_UNSUPPORTED";
+            throw err;
+        }
+        return this._graphStore;
+    }
+
+    /**
+     * Access context for API-brokered facts/graph reads — server-derived,
+     * never from the client. Admin callers (and no-auth deployments) read
+     * unrestricted, like an operator with direct DB access. A non-admin
+     * admitted caller is limited to SHARED facts: private/session-scoped facts
+     * of other sessions are off-limits (see _scopeReadForRole, which also drops
+     * a client-supplied sessionId so it cannot target another session).
+     */
+    private _apiAccessContext(admin: boolean): AccessContext {
+        return admin ? { unrestricted: true } : {};
+    }
+
+    /** Restrict a non-admin facts read to shared visibility; admins read as requested. */
+    private _scopeReadForRole<T extends { scope?: string; sessionId?: string; namespace?: string }>(query: T, admin: boolean): T {
+        if (admin) return query;
+        return { ...query, scope: "shared", sessionId: undefined };
+    }
+
+    /** Capabilities of this deployment's fact/graph stores — the remote form of isEnhancedFactStore/isGraphStore. */
+    factsCapabilities(): FactsCapabilities & { graph: boolean } {
+        this._ensureStarted();
+        const enhanced = Boolean(this._factStore && isEnhancedFactStore(this._factStore));
+        const caps = enhanced ? (this._factStore as EnhancedFactStore).capabilities : { search: false, embedder: false };
+        return { search: caps.search, embedder: caps.embedder, graph: Boolean(this._graphStore) };
+    }
+
+    async readFacts(query: ReadFactsQuery, opts?: { admin?: boolean }): Promise<{ count: number; facts: FactRecord[] }> {
+        const admin = opts?.admin === true;
+        return this._requireFactStore().readFacts(this._scopeReadForRole(query, admin), this._apiAccessContext(admin));
+    }
+
+    async storeFact(input: StoreFactInput | StoreFactInput[]): Promise<StoredFactResult | { stored: number; facts: StoredFactResult[] }> {
+        return Array.isArray(input)
+            ? this._requireFactStore().storeFact(input)
+            : this._requireFactStore().storeFact(input);
+    }
+
+    async deleteFact(input: DeleteFactInput): Promise<DeletedFactResult | DeletedFactsResult> {
+        // Never honor a client-supplied `unrestricted`, and refuse scope="all"
+        // on this Tier-1 (non-admin) op: an all-scope delete spans every
+        // session's private facts and would be a mass-delete escalation for a
+        // plain admitted caller. Cross-cutting purges go through the
+        // admin-gated forcePurgeFacts instead. Targeted / session / shared
+        // deletes are the operator-level facts management the MCP server does.
+        const { unrestricted: _drop, ...safe } = input as DeleteFactInput & { unrestricted?: boolean };
+        if (safe.scope === "all") {
+            const err = new Error("deleteFact scope='all' is not permitted over the Web API; use the admin forcePurgeFacts operation.");
+            (err as any).code = "INVALID_REQUEST";
+            throw err;
+        }
+        return this._requireFactStore().deleteFact(safe);
+    }
+
+    async searchFacts(query: string, opts?: SearchOpts, roleOpts?: { admin?: boolean }): Promise<SearchResult> {
+        const admin = roleOpts?.admin === true;
+        const scopedOpts = admin ? opts : { ...(opts ?? {}), scope: "shared" as const };
+        return this._requireEnhancedFactStore("searchFacts").searchFacts(query, scopedOpts, this._apiAccessContext(admin));
+    }
+
+    async similarFacts(scopeKey: string, opts?: SimilarOpts, roleOpts?: { admin?: boolean }): Promise<SearchResult> {
+        const admin = roleOpts?.admin === true;
+        return this._requireEnhancedFactStore("similarFacts").similarFacts(scopeKey, opts, this._apiAccessContext(admin));
+    }
+
+    // ─── Graph data-plane (Web API surface) ──────────────────────────
+    // Graph evidence arrays are ACL-filtered by the store; admitted callers
+    // read graph structure with an unrestricted context (graph nodes/edges are
+    // not per-session private data the way facts are).
+
+    async searchGraphNodes(q: GraphNodeQuery): Promise<GraphNodeHit[]> {
+        return this._requireGraphStore().searchGraphNodes(q, this._apiAccessContext(true));
+    }
+
+    async searchGraphEdges(q: GraphEdgeQuery): Promise<GraphEdgeHit[]> {
+        return this._requireGraphStore().searchGraphEdges(q, this._apiAccessContext(true));
+    }
+
+    async graphNeighbourhood(nodeKey: string, depth: number, opts?: GraphNamespaceQuery): Promise<SubGraph> {
+        return this._requireGraphStore().graphNeighbourhood(nodeKey, depth, this._apiAccessContext(true), opts);
+    }
+
+    async upsertGraphNode(n: GraphNodeInput): Promise<GraphNodeRef> {
+        return this._requireGraphStore().upsertGraphNode(n);
+    }
+
+    async upsertGraphEdge(e: GraphEdgeInput): Promise<GraphEdgeRef> {
+        return this._requireGraphStore().upsertGraphEdge(e);
+    }
+
+    async deleteGraphNode(nodeKey: string, opts?: GraphNamespaceQuery): Promise<boolean> {
+        return this._requireGraphStore().deleteGraphNode(nodeKey, opts);
+    }
+
+    async deleteGraphEdge(fromKey: string, toKey: string, predicateKey: string, opts?: GraphNamespaceQuery): Promise<boolean> {
+        return this._requireGraphStore().deleteGraphEdge(fromKey, toKey, predicateKey, opts);
+    }
+
+    async graphStats(opts?: GraphNamespaceQuery): Promise<{ nodeCount: number; edgeCount: number; uncrawledFacts?: number }> {
+        const store = this._requireGraphStore();
+        if (!store.graphStats) return { nodeCount: 0, edgeCount: 0 };
+        return store.graphStats(opts);
+    }
+
+    async listGraphNamespaces(q?: GraphNamespaceListQuery): Promise<GraphNamespaceInfo[]> {
+        const store = this._requireGraphStore();
+        return store.listGraphNamespaces ? store.listGraphNamespaces(q) : [];
+    }
+
+    async getGraphNamespace(namespace: string): Promise<GraphNamespaceInfo | null> {
+        const store = this._requireGraphStore();
+        return store.getGraphNamespace ? store.getGraphNamespace(namespace) : null;
+    }
+
+    async upsertGraphNamespace(input: GraphNamespaceInput): Promise<GraphNamespaceInfo> {
+        const store = this._requireGraphStore();
+        if (!store.upsertGraphNamespace) {
+            const err = new Error("Graph namespace registry is not supported by this deployment.");
+            (err as any).code = "GRAPH_UNSUPPORTED";
+            throw err;
+        }
+        return store.upsertGraphNamespace(input);
+    }
+
+    async deleteGraphNamespace(namespace: string): Promise<{ deleted: boolean; nodesDeleted: number; edgesDeleted: number }> {
+        const store = this._requireGraphStore();
+        if (!store.deleteGraphNamespace) {
+            const err = new Error("Graph namespace registry is not supported by this deployment.");
+            (err as any).code = "GRAPH_UNSUPPORTED";
+            throw err;
+        }
+        return store.deleteGraphNamespace(namespace);
+    }
+
+    // ─── Enhanced-facts operational controls (admin surface) ──────────
+
+    async startEmbedder(opts?: { intervalSeconds?: number; batch?: number }) {
+        return this._requireEnhancedFactStore("startEmbedder").startEmbedder(opts);
+    }
+
+    async stopEmbedder(reason?: string) {
+        return this._requireEnhancedFactStore("stopEmbedder").stopEmbedder(reason);
+    }
+
+    async forcePurgeFacts(input: ForcePurgeFactsInput): Promise<number> {
+        return this._requireFactStore().forcePurgeFacts(input);
     }
 
     /**

@@ -291,7 +291,7 @@ Phase 3 — **Shared UI + host affordances** (separate PR):
 
 Phase 4 — **Docs + samples**:
 
-- New "Binary artifacts" section in [`docs/sdk/`](../../docs/sdk/) covering the write/read shape, compatibility naming, size limits, and encoding contract.
+- New "Binary artifacts" section in [`docs/sdk/`](../developer/building) covering the write/read shape, compatibility naming, size limits, and encoding contract.
 - Update [`templates/builder-agents/`](../../templates/builder-agents/) read-me and any agent skill that mentions artifacts.
 - Add a working sample to [`examples/devops-command-center/`](../../examples/devops-command-center/) that writes a binary artifact (small `.zip` of a generated payload) and serves it through the portal download.
 

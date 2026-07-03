@@ -40,7 +40,7 @@ spec:
             - name: PORTAL_TUI_MODE
               value: "remote"
             - name: PLUGIN_DIRS
-              value: "/app/packages/cli/plugins"
+              value: "/app/packages/app/tui/plugins"
             # The CSI driver synthesizes a `kubernetes.io/tls` Secret
             # (`pilotswarm-portal-tls`) from the AKV-managed cert; we
             # mount that Secret separately below to get split

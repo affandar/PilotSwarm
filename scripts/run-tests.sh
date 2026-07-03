@@ -378,9 +378,9 @@ echo "🔨 Building TypeScript..."
 (cd "$SDK_DIR" && npm run build) || { echo "❌ Build failed"; exit 1; }
 record_run_phase "TypeScript build" "PASS"
 
-# Build mcp-server (its tests import from packages/mcp-server/dist/...).
+# Build the app MCP server (its tests import from packages/app/mcp/dist/...).
 # Cheap incremental tsc — only rebuilds when sources changed.
-(cd "$REPO_ROOT/packages/mcp-server" && npm run build) \
+(cd "$REPO_ROOT/packages/app" && npm run build:mcp) \
     || { echo "❌ mcp-server build failed"; exit 1; }
 record_run_phase "mcp-server build" "PASS"
 

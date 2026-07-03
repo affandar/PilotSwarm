@@ -10,4 +10,4 @@ export USER=pilotswarm
 export LOGNAME=pilotswarm
 
 cd /app
-exec node packages/cli/bin/tui.js local
+exec node packages/app/tui/bin/tui.js local

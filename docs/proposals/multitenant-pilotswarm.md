@@ -39,7 +39,7 @@ This builds directly on three existing proposals and tries not to re-litigate th
 
 - **Self-service.** Users want to iterate on their own agents without a deploy. "Point at my git
   repo / hand me a tarball" is the lowest-friction on-ramp and matches how people already author
-  plugins (the layout in [plugin-architecture-guide.md](../plugin-architecture-guide.md)).
+  plugins (the layout in [plugin-architecture-guide.md](../developer/building/plugins.md)).
 - **Heterogeneous work needs heterogeneous nodes.** A build agent needs a toolchain image
   (compilers, SDKs, large disk); a PR-analysis agent needs git + review tooling; a default chat
   agent needs neither. Baking everything into one fat image is wasteful and fragile. We want
@@ -343,7 +343,7 @@ with a different default agent). Out of scope for v1 but the config-loading path
 
 ### 3e. Tenant-scoped facts / memory
 
-The facts store ([facts-table.md](../facts-table.md)) and `horizon-facts` incubator
+The facts store ([facts-table.md](../architecture/facts.md)) and `horizon-facts` incubator
 ([incubator/horizon-facts/](../../incubator/horizon-facts/)) are shared knowledge surfaces. In a
 multitenant world, runtime-authored facts likely need a tenant/owner partition so one user's memory
 doesn't bleed into another's retrieval. Flag for the facts owners; not designed here.
@@ -413,5 +413,5 @@ ownership proposal's migration guidance and `cms-migrations.ts` conventions.
   quota enforcement (§3b).
 - [portal-auth-provider-and-authz.md](./portal-auth-provider-and-authz.md) /
   [entra-auth-gateway.md](./entra-auth-gateway.md) — host the new admin scopes (§3c).
-- [aks-topology.md](../aks-topology.md) / [deploying-to-aks.md](../deploying-to-aks.md) — gain
+- [aks-topology.md](../developer/deploy/aks-topology.md) / [deploying-to-aks.md](../developer/deploy/aks.md) — gain
   one worker Deployment per node type, each with its `workerTags` and image.

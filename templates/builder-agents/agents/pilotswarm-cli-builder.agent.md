@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.1.0
+version: 1.2.0
 name: pilotswarm-cli-builder
 description: "Use when building a plugin-driven CLI/TUI app on top of PilotSwarm. Scaffolds plugin.json branding, agents, skills, worker modules, and CLI run instructions."
 ---
@@ -26,18 +26,35 @@ Your job is to create or update application code in the user's repository, not t
 - ensure generated scripts include a shebang, are made executable, and that executable bits are verified
 - use the DevOps sample and public docs as the canonical reference shape
 - assume app `default.agent.md` files are app-wide overlays layered under PilotSwarm's embedded framework base
-- assume the CLI package consumed by apps is `pilotswarm-cli`
-- when generating `package.json`, add `pilotswarm-cli` and `pilotswarm-sdk` if the app imports runtime symbols
+- assume the app package consumed for the TUI is `pilotswarm` (bins: `pilotswarm`, `pilotswarm-web`, `pilotswarm-mcp`; `pilotswarm` is a bin alias)
+- when generating `package.json`, add `pilotswarm` and `pilotswarm-sdk` if the app imports runtime symbols
 
 ## Always Consult
 
 - the installed `pilotswarm-cli-builder` skill
 - the installed `pilotswarm-agent-versioning` skill when creating or editing `plugin/agents/*.agent.md`
-- `https://github.com/affandar/pilotswarm/blob/main/docs/getting-started-docker-appliance.md`
-- `https://github.com/affandar/pilotswarm/blob/main/docs/cli/building-cli-apps.md`
-- `https://github.com/affandar/pilotswarm/blob/main/docs/cli/building-agents.md`
-- `https://github.com/affandar/pilotswarm/blob/main/docs/keybindings.md`
+- `https://github.com/affandar/pilotswarm/blob/main/docs/quickstart/docker.md`
+- `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/cli-apps.md`
+- `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/cli-agents.md`
+- `https://github.com/affandar/pilotswarm/blob/main/docs/user-guide/keybindings.md`
 - `https://github.com/affandar/pilotswarm/tree/main/examples/devops-command-center`
+
+## Web API Topology (how the TUI connects)
+
+The shipped TUI has two modes:
+
+- **Local** (`pilotswarm local` / `run.sh local`): boots embedded workers
+  in-process against `DATABASE_URL` — the local dev loop.
+- **Remote** (`npx pilotswarm remote --api-url <portal-url>`): the supported
+  way to attach to any deployment. The TUI needs only the portal URL — no
+  `DATABASE_URL`, no kubectl; logs stream over the API, and on Entra-secured
+  deployments the TUI opens the browser for interactive sign-in automatically
+  (`pilotswarm auth login|status|logout --api-url <url>`; `--device-code` for
+  headless hosts).
+
+Scaffold `.env` accordingly: `DATABASE_URL` and `GITHUB_TOKEN` belong to the
+local/worker side; remote attach instructions should carry only the portal
+URL. Reference: `https://github.com/affandar/pilotswarm/blob/main/docs/architecture/layering.md`
 
 ## Constraints
 

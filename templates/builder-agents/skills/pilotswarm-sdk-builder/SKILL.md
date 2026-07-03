@@ -9,10 +9,10 @@ Build layered SDK-first applications on top of PilotSwarm.
 
 ## Canonical References
 
-- Starter Docker quickstart: `https://github.com/affandar/pilotswarm/blob/main/docs/getting-started-docker-appliance.md`
-- SDK guide: `https://github.com/affandar/pilotswarm/blob/main/docs/sdk/building-apps.md`
-- SDK agent guide: `https://github.com/affandar/pilotswarm/blob/main/docs/sdk/building-agents.md`
-- Plugin architecture: `https://github.com/affandar/pilotswarm/blob/main/docs/plugin-architecture-guide.md`
+- Starter Docker quickstart: `https://github.com/affandar/pilotswarm/blob/main/docs/quickstart/docker.md`
+- SDK guide: `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/sdk-apps.md`
+- SDK agent guide: `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/sdk-agents.md`
+- Plugin architecture: `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/plugins.md`
 - DevOps sample: `https://github.com/affandar/pilotswarm/tree/main/examples/devops-command-center`
 
 ## Preferred Structure
@@ -71,6 +71,19 @@ Before generating files, ask:
 	 - custom topology supplied by the user
 
 Do not guess these answers when the user has not provided them. Offer the standard topology choices explicitly so the guided experience stays fast.
+
+## Web API Topology Guidance
+
+- Deployments expose one integration surface: the portal's Web API
+  (`/api/v1` + `/api/v1/ws`). Generated app/client code targeting a shared
+  deployment must use `new PilotSwarmClient({ apiUrl })` /
+  `new PilotSwarmManagementClient({ apiUrl })` — never a database URL.
+- Workers always connect direct (`{ store: DATABASE_URL }`); keep that secret
+  on the worker side of the scaffold.
+- Direct `{ store }` client construction is reserved for single-process
+  demos, tests, and cleanup scripts.
+- Facts/graph access for clients goes through the Web API data-plane
+  (`createWebFactStore` / `createWebGraphStore`).
 
 ## Env File Guidance
 

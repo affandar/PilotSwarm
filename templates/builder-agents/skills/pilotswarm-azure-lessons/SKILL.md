@@ -71,12 +71,12 @@ If `package.docker.json` references `"^0.1.6"` (npm), the deployed image gets th
 ```bash
 # Before docker build
 cp -r ../pilotswarm/packages/sdk pilotswarm-sdk-local
-cp -r ../pilotswarm/packages/cli pilotswarm-cli-local
+cp -r ../pilotswarm/packages/app pilotswarm-app-local
 ```
 
 ```json
 "pilotswarm-sdk": "file:pilotswarm-sdk-local",
-"pilotswarm-cli": "file:pilotswarm-cli-local"
+"pilotswarm": "file:pilotswarm-app-local"
 ```
 
 Add the local copies to `.gitignore`.

@@ -1,10 +1,10 @@
 import { describe, it } from "vitest";
-import { FOCUS_REGIONS, UI_COMMANDS } from "../../../ui-core/src/commands.js";
-import { PilotSwarmUiController } from "../../../ui-core/src/controller.js";
-import { appReducer } from "../../../ui-core/src/reducer.js";
-import { selectStatusBar } from "../../../ui-core/src/selectors.js";
-import { createInitialState } from "../../../ui-core/src/state.js";
-import { createStore } from "../../../ui-core/src/store.js";
+import { FOCUS_REGIONS, UI_COMMANDS } from "../../../app/ui/core/src/commands.js";
+import { PilotSwarmUiController } from "../../../app/ui/core/src/controller.js";
+import { appReducer } from "../../../app/ui/core/src/reducer.js";
+import { selectStatusBar } from "../../../app/ui/core/src/selectors.js";
+import { createInitialState } from "../../../app/ui/core/src/state.js";
+import { createStore } from "../../../app/ui/core/src/store.js";
 import { assertEqual, assertIncludes } from "../helpers/assertions.js";
 
 function createController() {

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { NodeSdkTransport } from "../../../cli/src/node-sdk-transport.js";
+import { NodeSdkTransport } from "../../../app/tui/src/node-sdk-transport.js";
 
 const ORIGINAL_LOG_DIR = process.env.PILOTSWARM_LOG_DIR;
 const ORIGINAL_POLL_INTERVAL = process.env.PILOTSWARM_LOG_POLL_INTERVAL_MS;

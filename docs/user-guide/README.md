@@ -17,7 +17,7 @@ runtime — pick the one you're using:
 → **Browser portal** (mouse + keyboard, mobile-friendly): [user-guide/portal.md](./portal.md)
 
 If you haven't installed PilotSwarm yet, the
-[Docker Quickstart](../getting-started-docker-appliance.md) gets both
+[Docker Quickstart](../quickstart/docker.md) gets both
 surfaces running with a single command.
 
 ## What both surfaces share
@@ -83,6 +83,6 @@ The advanced scenarios deliberately include real durability moments —
 
 ## Reference
 
-- [Keybindings cheat sheet](../keybindings.md) — every TUI key in one table
-- [Configuration](../configuration.md) — environment variables, blob storage, worker/client options
-- [Architecture](../architecture.md) — what's underneath the UI
+- [Keybindings cheat sheet](./keybindings.md) — every TUI key in one table
+- [Configuration](../developer/reference/configuration.md) — environment variables, blob storage, worker/client options
+- [Architecture](../architecture/system.md) — what's underneath the UI

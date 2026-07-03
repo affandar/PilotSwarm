@@ -1,12 +1,12 @@
 import { describe, it } from "vitest";
-import { UI_COMMANDS } from "../../../ui-core/src/commands.js";
-import { PilotSwarmUiController } from "../../../ui-core/src/controller.js";
-import { appReducer } from "../../../ui-core/src/reducer.js";
-import { selectStatusBar, selectThemePickerModal } from "../../../ui-core/src/selectors.js";
-import { computeLegacyLayout } from "../../../ui-core/src/layout.js";
-import { createInitialState } from "../../../ui-core/src/state.js";
-import { createStore } from "../../../ui-core/src/store.js";
-import { DEFAULT_THEME_ID, listThemes } from "../../../ui-core/src/themes/index.js";
+import { UI_COMMANDS } from "../../../app/ui/core/src/commands.js";
+import { PilotSwarmUiController } from "../../../app/ui/core/src/controller.js";
+import { appReducer } from "../../../app/ui/core/src/reducer.js";
+import { selectStatusBar, selectThemePickerModal } from "../../../app/ui/core/src/selectors.js";
+import { computeLegacyLayout } from "../../../app/ui/core/src/layout.js";
+import { createInitialState } from "../../../app/ui/core/src/state.js";
+import { createStore } from "../../../app/ui/core/src/store.js";
+import { DEFAULT_THEME_ID, listThemes } from "../../../app/ui/core/src/themes/index.js";
 import { assert, assertEqual, assertIncludes, assertNotNull } from "../helpers/assertions.js";
 
 function createController() {
@@ -32,8 +32,12 @@ describe("theme picker UI behavior", () => {
     });
 
     it("honors a persisted theme id during initial state creation", () => {
-        const state = createInitialState({ mode: "local", themeId: "noctis-viola" });
-        assertEqual(state.ui.themeId, "noctis-viola", "initial state should honor a persisted theme id");
+        const state = createInitialState({ mode: "local", themeId: "noctis" });
+        assertEqual(state.ui.themeId, "noctis", "initial state should honor a persisted theme id");
+
+        // A persisted id for a theme that no longer ships falls back to the default.
+        const stale = createInitialState({ mode: "local", themeId: "noctis-viola" });
+        assertEqual(stale.ui.themeId, "noctis-obscuro", "removed theme ids fall back to the default theme");
     });
 
     it("honors persisted pane split adjustments during initial state creation", () => {

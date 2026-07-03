@@ -452,8 +452,18 @@ export class FilesystemArtifactStore implements ArtifactStore {
     }
 
     private safePath(sessionId: string, filename: string): string {
-        const safe = filename.replace(/[/\\]/g, "_");
-        return path.join(this.artifactDir, sessionId, safe);
+        // Both segments are attacker-influenced when reached over the Web API
+        // (the sessionId path param decodes %2F to "/"). Collapse any path
+        // separators in each, then verify the resolved path stays inside the
+        // artifact dir so "../" traversal cannot escape the sandbox.
+        const safeSession = String(sessionId).replace(/[/\\]/g, "_");
+        const safeFile = String(filename).replace(/[/\\]/g, "_");
+        const resolved = path.resolve(this.artifactDir, safeSession, safeFile);
+        const root = path.resolve(this.artifactDir) + path.sep;
+        if (!resolved.startsWith(root)) {
+            throw new Error(`Invalid artifact path for session ${sessionId}`);
+        }
+        return resolved;
     }
 
     private metadataPath(sessionId: string, filename: string): string {
@@ -548,7 +558,7 @@ export class FilesystemArtifactStore implements ArtifactStore {
     }
 
     async listArtifacts(sessionId: string): Promise<ArtifactMetadata[]> {
-        const dir = path.join(this.artifactDir, sessionId);
+        const dir = path.join(this.artifactDir, String(sessionId).replace(/[/\\]/g, "_"));
         if (!fs.existsSync(dir)) return [];
         const filenames = fs.readdirSync(dir)
             .filter((file) => !file.startsWith(".") && !file.endsWith(".meta.json"));

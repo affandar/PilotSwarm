@@ -6,7 +6,7 @@ import {
     getContextListBadge,
     getContextCompactionBadge,
     formatCompactionActivityRuns,
-} from "../../../ui-core/src/context-usage.js";
+} from "../../../app/ui/core/src/context-usage.js";
 import { assert, assertEqual, assertIncludes } from "../helpers/assertions.js";
 
 describe("context usage UI helpers", () => {

@@ -264,8 +264,8 @@ do not paraphrase.
 
 **Posture-dependent portal-auth rule (must enforce in the table):**
 the portal authz engine treats Entra role claims as authoritative when
-present (`packages/portal/auth/authz/engine.js`,
-`docs/portal-entra-app-roles.md`). The role-authoritative branch
+present (`packages/app/web/auth/authz/engine.js`,
+`docs/developer/deploy/entra-app-roles.md`). The role-authoritative branch
 ignores `PORTAL_AUTHZ_ADMIN_GROUPS` / `PORTAL_AUTHZ_USER_GROUPS`
 entirely when `roles[]` is non-empty in the JWT. Pick one mechanism
 per stamp:

@@ -16,10 +16,7 @@ WORKDIR /app
 # Copy workspace root manifests
 COPY package.json package-lock.json ./
 COPY packages/sdk/package.json ./packages/sdk/
-COPY packages/cli/package.json ./packages/cli/
-COPY packages/portal/package.json ./packages/portal/
-COPY packages/ui-core/package.json ./packages/ui-core/
-COPY packages/ui-react/package.json ./packages/ui-react/
+COPY packages/app/package.json ./packages/app/
 # horizon-store package.json must be present BEFORE `npm ci` so npm creates the
 # node_modules/@pilotswarm/horizon-store workspace symlink the management client's
 # dynamic import("@pilotswarm/horizon-store") resolves at runtime (optional EnhancedFactStore).
@@ -44,23 +41,29 @@ COPY packages/horizon-store/dist/ ./packages/horizon-store/dist/
 COPY packages/horizon-store/migrations/ ./packages/horizon-store/migrations/
 
 # Copy CLI (plain JS)
-COPY packages/cli/bin/ ./packages/cli/bin/
-COPY packages/cli/src/ ./packages/cli/src/
-COPY packages/cli/tui-splash.txt ./packages/cli/
-COPY packages/cli/plugins/ ./packages/cli/plugins/
+COPY packages/app/tui/bin/ ./packages/app/tui/bin/
+COPY packages/app/tui/src/ ./packages/app/tui/src/
+COPY packages/app/tui/tui-splash.txt ./packages/app/tui/
+COPY packages/app/tui/plugins/ ./packages/app/tui/plugins/
 
 # Copy UI packages (plain JS)
-COPY packages/ui-core/src/ ./packages/ui-core/src/
-COPY packages/ui-react/src/ ./packages/ui-react/src/
+COPY packages/app/ui/core/src/ ./packages/app/ui/core/src/
+COPY packages/app/ui/react/src/ ./packages/app/ui/react/src/
+
+# Copy api-client (plain ESM, no build step) — imported by both the portal
+# server (api/router.js) and the browser bundle (browser-transport.js).
+COPY packages/sdk/api/index.js packages/sdk/api/index.d.ts ./packages/sdk/api/
+COPY packages/sdk/api/src/ ./packages/sdk/api/src/
 
 # Copy portal sources
-COPY packages/portal/server.js packages/portal/auth.js packages/portal/config.js packages/portal/runtime.js packages/portal/index.html ./packages/portal/
-COPY packages/portal/auth/ ./packages/portal/auth/
-COPY packages/portal/src/ ./packages/portal/src/
-COPY packages/portal/vite.config.ts packages/portal/tsconfig.json ./packages/portal/
+COPY packages/app/web/server.js packages/app/web/auth.js packages/app/web/config.js packages/app/web/runtime.js packages/app/web/index.html ./packages/app/web/
+COPY packages/app/web/auth/ ./packages/app/web/auth/
+COPY packages/app/web/api/ ./packages/app/web/api/
+COPY packages/app/web/src/ ./packages/app/web/src/
+COPY packages/app/web/vite.config.ts packages/app/web/tsconfig.json ./packages/app/web/
 
 # Build the browser app
-RUN npm run build --workspace=packages/portal
+RUN npm run build:web --workspace=packages/app
 
 # Copy model providers config (if present)
 COPY .model_providers.json* ./
@@ -70,4 +73,4 @@ EXPOSE 3001
 # Run as non-root
 USER node
 
-ENTRYPOINT ["node", "packages/portal/server.js"]
+ENTRYPOINT ["node", "packages/app/web/server.js"]

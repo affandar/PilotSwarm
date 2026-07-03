@@ -1,26 +1,44 @@
 /**
  * pilotswarm — A durable execution runtime for GitHub Copilot SDK agents.
  *
+ * Client access goes through a deployment's Web API (web mode — the
+ * supported mode; no database or storage credentials in the caller):
+ *
  * @example
  * ```typescript
- * import { PilotSwarmClient, PilotSwarmWorker, defineTool } from "pilotswarm-sdk";
+ * import { PilotSwarmClient } from "pilotswarm-sdk";
+ *
+ * const client = new PilotSwarmClient({ apiUrl: "https://portal.example.com" });
+ * await client.start();
+ *
+ * const session = await client.createSession();
+ * const response = await session.sendAndWait("Hello!");
+ * ```
+ *
+ * Workers always run backend-side against the datastore directly:
+ *
+ * @example
+ * ```typescript
+ * import { PilotSwarmWorker, defineTool } from "pilotswarm-sdk";
  *
  * const worker = new PilotSwarmWorker({ store, githubToken });
  * worker.registerTools([myTool]);
  * await worker.start();
- *
- * const client = new PilotSwarmClient({ store });
- * await client.start();
- *
- * const session = await client.createSession({ toolNames: ["myTool"] });
- * const response = await session.sendAndWait("Hello!");
  * ```
+ *
+ * Direct client construction (`new PilotSwarmClient({ store })`) remains for
+ * trusted server-side embedding and internal testing.
  */
 
 export { PilotSwarmClient, PilotSwarmSession } from "./client.js";
 export type { SessionEventHandler } from "./client.js";
 export { PilotSwarmWorker } from "./worker.js";
 export { PilotSwarmManagementClient } from "./management-client.js";
+export type { PilotSwarmWebOptions } from "./web/api-connection.js";
+export { WebPilotSwarmClient, WebPilotSwarmSession } from "./web/web-client.js";
+export { WebPilotSwarmManagementClient } from "./web/web-management-client.js";
+export { WebFactStore, WebEnhancedFactStore, createWebFactStore } from "./web/web-fact-store.js";
+export { WebGraphStore, createWebGraphStore } from "./web/web-graph-store.js";
 export type {
     PilotSwarmSessionView,
     SessionPageCursor,

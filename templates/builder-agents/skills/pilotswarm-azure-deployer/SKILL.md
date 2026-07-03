@@ -9,10 +9,10 @@ Prepare PilotSwarm-based apps for Azure deployment, especially AKS worker and br
 
 ## Canonical References
 
-- Starter Docker quickstart: `https://github.com/affandar/pilotswarm/blob/main/docs/getting-started-docker-appliance.md`
-- AKS deployment guide: `https://github.com/affandar/pilotswarm/blob/main/docs/deploying-to-aks.md`
-- Configuration guide: `https://github.com/affandar/pilotswarm/blob/main/docs/configuration.md`
-- Plugin architecture: `https://github.com/affandar/pilotswarm/blob/main/docs/plugin-architecture-guide.md`
+- Starter Docker quickstart: `https://github.com/affandar/pilotswarm/blob/main/docs/quickstart/docker.md`
+- AKS deployment guide: `https://github.com/affandar/pilotswarm/blob/main/docs/developer/deploy/aks.md`
+- Configuration guide: `https://github.com/affandar/pilotswarm/blob/main/docs/developer/reference/configuration.md`
+- Plugin architecture: `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/plugins.md`
 - DevOps sample: `https://github.com/affandar/pilotswarm/tree/main/examples/devops-command-center`
 
 ## Preferred Outputs
@@ -80,6 +80,20 @@ Also call out the Azure resources the user must provision:
 - Azure Container Registry
 - public ingress / DNS path for the browser portal when it is exposed
 - worker AKS cluster + namespace (three-tier only — see `pilotswarm-three-tier` skill)
+
+## Web API Seam Guidance
+
+- The deployed portal is the only client-facing surface: it hosts
+  `/api/v1` + `/api/v1/ws` and performs datastore operations on behalf of all
+  callers. `DATABASE_URL` / blob / `HORIZON_*` secrets go ONLY to worker and
+  portal pods.
+- Client connect story to document in rollout notes: TUI
+  `npx pilotswarm remote --api-url <url>`; SDK `new PilotSwarmClient({ apiUrl })`;
+  MCP `pilotswarm-mcp --api-url <url>`; Entra deployments sign in
+  interactively or via `PILOTSWARM_API_TOKEN`.
+- Post-rollout validation: `GET /api/v1/health` returns
+  `{ ok, started, mode, apiVersion }`; `GET /api/v1/bootstrap` lists models
+  and creatable agents.
 
 ## Portal Deployment Guidance
 

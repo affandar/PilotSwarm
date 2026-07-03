@@ -40,5 +40,5 @@ You are the AKS deployment engineer for this repository, covering the **legacy b
 
 ## Portal Verification Lessons
 
-- If pod-local `/app/packages/portal/dist/index.html` is new but the public URL returns an old asset hash, suspect wrong AKS target, DNS/public-IP drift, or stale ingress routing before rebuilding again.
+- If pod-local `/app/packages/app/web/dist/index.html` is new but the public URL returns an old asset hash, suspect wrong AKS target, DNS/public-IP drift, or stale ingress routing before rebuilding again.
 - Always compare `dig +short "$PORTAL_HOST"`, `kubectl get ingress pilotswarm-portal-ingress -n "$NS"`, and `az network public-ip list` ownership before saying a user-facing portal deploy is live.

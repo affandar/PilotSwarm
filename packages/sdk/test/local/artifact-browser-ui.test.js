@@ -1,11 +1,11 @@
 import { describe, it } from "vitest";
-import { BrowserPortalTransport } from "../../../portal/src/browser-transport.js";
-import { NodeSdkTransport } from "../../../cli/src/node-sdk-transport.js";
-import { PilotSwarmUiController } from "../../../ui-core/src/controller.js";
-import { appReducer } from "../../../ui-core/src/reducer.js";
-import { selectFileBrowserItems } from "../../../ui-core/src/selectors.js";
-import { createInitialState } from "../../../ui-core/src/state.js";
-import { createStore } from "../../../ui-core/src/store.js";
+import { BrowserPortalTransport } from "../../../app/web/src/browser-transport.js";
+import { NodeSdkTransport } from "../../../app/tui/src/node-sdk-transport.js";
+import { PilotSwarmUiController } from "../../../app/ui/core/src/controller.js";
+import { appReducer } from "../../../app/ui/core/src/reducer.js";
+import { selectFileBrowserItems } from "../../../app/ui/core/src/selectors.js";
+import { createInitialState } from "../../../app/ui/core/src/state.js";
+import { createStore } from "../../../app/ui/core/src/store.js";
 import { assertEqual, assertIncludes } from "../helpers/assertions.js";
 
 function createController(transportOverrides = {}) {
@@ -41,24 +41,33 @@ function seedSession(store, sessionId = "session-12345678") {
 
 describe("artifact browser UI", () => {
     it("encodes browser file uploads as base64 for binary-safe RPC transport", async () => {
-        const transport = new BrowserPortalTransport({
-            getAccessToken: async () => null,
-        });
-        let rpcCall = null;
-        transport.rpc = async (method, params) => {
-            rpcCall = { method, params };
-            return { ok: true };
-        };
+        // BrowserPortalTransport is a browser-only class: its constructor reads
+        // window.location.origin as the API base. Provide the minimal browser
+        // global so the transport can be unit-tested in Node.
+        const hadWindow = "window" in globalThis;
+        if (!hadWindow) globalThis.window = { location: { origin: "http://localhost" } };
+        try {
+            const transport = new BrowserPortalTransport({
+                getAccessToken: async () => null,
+            });
+            let apiCall = null;
+            transport.api.call = async (method, params) => {
+                apiCall = { method, params };
+                return { ok: true };
+            };
 
-        await transport.uploadArtifactFromFile("session-upload", {
-            name: "tiny.jpg",
-            type: "image/jpeg",
-            arrayBuffer: async () => Uint8Array.from([0xff, 0xd8, 0xff, 0xdb, 0x00, 0x43]).buffer,
-        });
+            await transport.uploadArtifactFromFile("session-upload", {
+                name: "tiny.jpg",
+                type: "image/jpeg",
+                arrayBuffer: async () => Uint8Array.from([0xff, 0xd8, 0xff, 0xdb, 0x00, 0x43]).buffer,
+            });
 
-        assertEqual(rpcCall?.method, "uploadArtifact", "browser uploads should still use the uploadArtifact RPC");
-        assertEqual(rpcCall?.params?.contentEncoding, "base64", "browser uploads should mark binary payloads as base64");
-        assertEqual(rpcCall?.params?.content, "/9j/2wBD", "browser uploads should preserve the raw JPEG bytes in base64 form");
+            assertEqual(apiCall?.method, "uploadArtifact", "browser uploads should still use the uploadArtifact operation");
+            assertEqual(apiCall?.params?.contentEncoding, "base64", "browser uploads should mark binary payloads as base64");
+            assertEqual(apiCall?.params?.content, "/9j/2wBD", "browser uploads should preserve the raw JPEG bytes in base64 form");
+        } finally {
+            if (!hadWindow) delete globalThis.window;
+        }
     });
 
     it("decodes base64 upload payloads back to raw bytes before storing artifacts", async () => {

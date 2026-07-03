@@ -6,7 +6,7 @@ import { loadMcpConfig } from "../../src/mcp-loader.ts";
 import { assert, assertEqual, assertIncludes } from "../helpers/assertions.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const CLI_PLUGIN_DIR = path.resolve(__dirname, "../../../cli/plugins");
+const CLI_PLUGIN_DIR = path.resolve(__dirname, "../../../app/tui/plugins");
 const WORKER_DEPLOYMENT = path.resolve(__dirname, "../../../../deploy/k8s/worker-deployment.yaml");
 const CONTEXT7_ENDPOINT = "https://mcp.context7.com/mcp";
 
@@ -59,7 +59,7 @@ describe("Context7 MCP default", () => {
     it("enables the bundled CLI plugin directory for AKS workers by default", () => {
         const manifest = fs.readFileSync(WORKER_DEPLOYMENT, "utf8");
         assertIncludes(manifest, "name: PLUGIN_DIRS", "worker manifest should set PLUGIN_DIRS");
-        assertIncludes(manifest, "value: \"/app/packages/cli/plugins\"", "worker manifest should load bundled CLI plugins");
+        assertIncludes(manifest, "value: \"/app/packages/app/tui/plugins\"", "worker manifest should load bundled CLI plugins");
     });
 
     it("initializes the public Context7 MCP endpoint and calls resolve-library-id", { timeout: 45_000 }, async () => {

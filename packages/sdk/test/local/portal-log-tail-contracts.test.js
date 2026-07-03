@@ -13,7 +13,7 @@ function readRepoFile(relPath) {
 
 describe("portal log tail contracts", () => {
     it("supports in-cluster Kubernetes log streaming without kubectl", () => {
-        const transport = readRepoFile("packages/cli/src/node-sdk-transport.js");
+        const transport = readRepoFile("packages/app/tui/src/node-sdk-transport.js");
 
         assertIncludes(transport, 'const K8S_SERVICE_ACCOUNT_DIR = "/var/run/secrets/kubernetes.io/serviceaccount";', "transport should know the in-cluster service-account path");
         assertIncludes(transport, "process.env.KUBERNETES_SERVICE_HOST", "transport should detect in-cluster Kubernetes access");
@@ -39,13 +39,13 @@ describe("portal log tail contracts", () => {
     });
 
     it("defaults the portal to remote mode when running in-cluster", () => {
-        const server = readRepoFile("packages/portal/server.js");
+        const server = readRepoFile("packages/app/web/server.js");
 
         assertIncludes(server, "process.env.KUBERNETES_SERVICE_HOST ? \"remote\" : \"local\"", "portal should default to remote mode when running inside Kubernetes");
     });
 
     it("renders a short session id badge in the inspector log pane", () => {
-        const selectors = readRepoFile("packages/ui-core/src/selectors.js");
+        const selectors = readRepoFile("packages/app/ui/core/src/selectors.js");
 
         assertIncludes(selectors, "entry?.sessionId", "log pane should read parsed session ids from log entries");
         assertIncludes(selectors, "shortSessionId(sessionId)", "log pane should show a short session id badge for matching logs");

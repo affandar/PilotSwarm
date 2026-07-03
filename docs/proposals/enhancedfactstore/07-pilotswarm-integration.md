@@ -746,9 +746,9 @@ runnable via [`scripts/run-tests.sh`](../../../scripts/run-tests.sh).
 
 ### P7 — Docs, sample, templates (the significant-rollout rule)
 
-- Update [`docs/configuration.md`](../../../docs/configuration.md) (new
+- Update [`docs/configuration.md`](../../developer/reference/configuration.md) (new
   `enhancedFactsDatabaseUrl` / `factsProvider` / `HORIZON_EMBED_*`),
-  [`docs/facts-table.md`](../../../docs/facts-table.md), and the architecture
+  [`docs/facts-table.md`](../../architecture/facts.md), and the architecture
   docs; keep `.env.example` / `.model_providers.example.json` shape in sync.
 - Refresh the DevOps sample and builder templates **only if** facts behavior is
   builder-visible (enhanced tools change what app authors can wire).

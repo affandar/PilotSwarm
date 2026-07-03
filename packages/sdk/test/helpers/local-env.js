@@ -4,7 +4,7 @@
  * Provides schema isolation, temp directories, and database connectivity
  * for the local integration test suite.
  *
- * Requires PostgreSQL running locally (see docs/contributors/local-integration-test-plan.md).
+ * Requires PostgreSQL running locally (see docs/developer/contributing/local-integration-test-plan.md).
  */
 
 import { mkdirSync, rmSync, existsSync } from "node:fs";

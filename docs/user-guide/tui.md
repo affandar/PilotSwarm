@@ -7,7 +7,7 @@ If you'd rather use a browser, see the [portal guide](./portal.md). The two
 surfaces share the same sessions, so you can switch between them at any
 point.
 
-For the full keybinding reference, see [keybindings.md](../keybindings.md).
+For the full keybinding reference, see [keybindings.md](./keybindings.md).
 This guide introduces keys as you need them.
 
 ## Prerequisites
@@ -15,9 +15,9 @@ This guide introduces keys as you need them.
 Either:
 
 - **Docker quickstart** (easiest): `docker run -d -p 127.0.0.1:3001:3001 -p 127.0.0.1:2222:2222 -e GITHUB_TOKEN -v pilotswarm-data:/data --name pilotswarm-starter affandar/pilotswarm-starter:latest`, then `ssh -p 2222 pilotswarm@localhost` (password: `pilotswarm`).
-- **From source**: clone the repo, run `npm install && npm run build`, set up `.env` (see [getting-started.md](../getting-started.md)), then `./run.sh local --db`.
+- **From source**: clone the repo, run `npm install && npm run build`, set up `.env` (see [getting-started.md](../quickstart/local.md)), then `./run.sh local --db`.
 
-For a pinned Docker quickstart, replace `latest` with `0.1.35`.
+For a pinned Docker quickstart, replace `latest` with `0.4.0`.
 
 In either case you'll land on the **Sessions** pane focused on the left.
 That's the entry point for everything below.
@@ -131,7 +131,7 @@ between them.
    history can be expanded with `e` while focused on chat.
 5. Press `[` and `]` to resize the split between sessions and the
    workspace.
-6. Press `Tab` to cycle pane focus (Sessions → Chat → Activity → Inspector).
+6. Press `Tab` to cycle pane focus (Sessions → Chat → Inspector → Activity).
 7. Press `P` (capital) on a session to pin it. Pinned rows stay near the top
    across refreshes: pinned groups come first, then pinned single sessions,
    then unpinned groups. Useful for keeping your "main" session always visible.
@@ -511,8 +511,8 @@ domain. (This crosses into developer territory, but it's the natural
 next step for power users.)
 
 This scenario is summarized here; for the full walkthrough see
-[Building SDK Apps](../sdk/building-apps.md) and
-[Building CLI Apps](../cli/building-cli-apps.md).
+[Building SDK Apps](../developer/building/sdk-apps.md) and
+[Building CLI Apps](../developer/building/cli-apps.md).
 
 **The plugin model:**
 
@@ -547,7 +547,7 @@ your app.
 
 ## Quick keybinding cheat sheet
 
-The full list lives in [keybindings.md](../keybindings.md). The
+The full list lives in [keybindings.md](./keybindings.md). The
 high-frequency ones:
 
 | Key | Action |
@@ -596,5 +596,5 @@ restart` in production). Sessions in `waiting` resume automatically when
 their timer fires; sessions mid-turn replay from the last yield.
 
 For deeper issues see [Architecture →
-Recovery](../architecture.md#34-session-catalog-cms) and the
-[orchestration design](../orchestration-design.md).
+Recovery](../architecture/system.md#34-session-catalog-cms) and the
+[orchestration design](../architecture/orchestration/design.md).

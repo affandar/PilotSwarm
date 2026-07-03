@@ -48,7 +48,7 @@
           "type": "array",
           "items": { "type": "string" },
           "minItems": 1,
-          "description": "npm workspaces (relative to repo root) to compile before docker buildx build. Each runs `npm run build -w <ws>`. Defaults to ['packages/sdk']. Worker uses just the SDK; portal uses ['packages/sdk','packages/portal']."
+          "description": "npm workspaces (relative to repo root) to compile before docker buildx build. Each runs `npm run build -w <ws>`. Defaults to ['packages/sdk']. Worker uses just the SDK; portal uses ['packages/sdk','packages/app/web']."
         }
       }
     },

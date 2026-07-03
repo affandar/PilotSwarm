@@ -7,7 +7,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-exec node "$REPO_ROOT/packages/cli/bin/tui.js" local \
+exec node "$REPO_ROOT/packages/app/tui/bin/tui.js" local \
   --env "$REPO_ROOT/.env" \
   --plugin "$REPO_ROOT/examples/devops-command-center/plugin" \
   --worker "$REPO_ROOT/examples/devops-command-center/worker-module.js" \

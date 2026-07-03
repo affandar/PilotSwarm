@@ -7,10 +7,10 @@ rather than a stable platform.
 
 ## Before You Start
 
-- Read the [README](README.md) and [Architecture](docs/architecture.md) to
+- Read the [README](README.md) and [Architecture](./docs/architecture/system.md) to
   understand the layering: client → orchestration → worker → managed session.
 - For changes inside the durable session orchestration, read
-  [Orchestration Design](docs/orchestration-design.md). The orchestration is a
+  [Orchestration Design](./docs/architecture/orchestration/design.md). The orchestration is a
   duroxide replay generator — changing the order of yields is a versioning
   event, not a free refactor.
 - Open an issue first for non-trivial work so we can discuss design before
@@ -66,15 +66,16 @@ rather than a stable platform.
 
 ```
 packages/
-  sdk/         — runtime, orchestration, worker, session manager, CMS catalog
-  cli/         — terminal UI host
-  portal/      — browser portal (React)
-  ui-core/     — framework-free shared UI controller / state / selectors
-  ui-react/    — shared React composition for cli + portal
-  mcp-server/  — MCP server for exposing PilotSwarm tools
-  sessionfs-pg — PostgreSQL session-state store
-docs/          — architecture, orchestration design, proposals
-deploy/        — Dockerfiles, Kubernetes manifests, runtime supervisor
+  sdk/           — runtime, orchestration, worker, session manager, CMS catalog
+    api/         —   zero-dep isomorphic Web API client (pilotswarm-sdk/api)
+  app/           — the "pilotswarm" application package
+    tui/         —   terminal UI host (+ pilotswarm/host node layer)
+    web/         —   portal server (Web API host) + browser portal UI
+    mcp/         —   MCP server (Web API mode)
+    ui/          —   shared UI layers (pilotswarm/ui-core, pilotswarm/ui-react)
+  horizon-store/ — optional enhanced facts/graph provider (dynamically imported)
+docs/            — see docs/README.md (quickstart, user guide, architecture, API, developer)
+deploy/          — Dockerfiles, Kubernetes manifests, runtime supervisor
 ```
 
 Most contributions live under `packages/sdk/src/`.
@@ -97,9 +98,9 @@ Most contributions live under `packages/sdk/src/`.
   1. Freeze the current latest as a `_X_Y_Z.ts` sibling
   2. Edit `packages/sdk/src/orchestration-version.ts` to bump the latest
   3. Update `packages/sdk/src/orchestration-registry.ts`
-  4. Trim the registry to the most recent five frozen versions
+  4. Trim the registry to versions at or above the compatibility floor
 
-  See [docs/orchestration-design.md §12](docs/orchestration-design.md) for the
+  See [docs/architecture/orchestration/design.md §12](./docs/architecture/orchestration/design.md) for the
   full replay-safety rules.
 
 ## Continuous Integration

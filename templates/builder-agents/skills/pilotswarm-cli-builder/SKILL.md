@@ -9,10 +9,10 @@ Build layered CLI/TUI apps on top of the shipped PilotSwarm interface.
 
 ## Canonical References
 
-- Starter Docker quickstart: `https://github.com/affandar/pilotswarm/blob/main/docs/getting-started-docker-appliance.md`
-- CLI guide: `https://github.com/affandar/pilotswarm/blob/main/docs/cli/building-cli-apps.md`
-- CLI agent guide: `https://github.com/affandar/pilotswarm/blob/main/docs/cli/building-agents.md`
-- Keybindings: `https://github.com/affandar/pilotswarm/blob/main/docs/keybindings.md`
+- Starter Docker quickstart: `https://github.com/affandar/pilotswarm/blob/main/docs/quickstart/docker.md`
+- CLI guide: `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/cli-apps.md`
+- CLI agent guide: `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/cli-agents.md`
+- Keybindings: `https://github.com/affandar/pilotswarm/blob/main/docs/user-guide/keybindings.md`
 - DevOps sample: `https://github.com/affandar/pilotswarm/tree/main/examples/devops-command-center`
 
 ## Preferred Structure
@@ -76,7 +76,10 @@ Do not guess these answers when the user has not provided them. Offer the standa
 
 ## Env File Guidance
 
-- Treat `DATABASE_URL` as the canonical PostgreSQL connection input.
+- Treat `DATABASE_URL` as the canonical PostgreSQL connection input for LOCAL
+  mode (embedded workers). Remote attach needs only the portal URL:
+  `npx pilotswarm remote --api-url <url>` (auto Entra sign-in;
+  `--device-code` for headless hosts).
 - If the app needs a non-default model catalog, check in `.model_providers.example.json`, create the real `.model_providers.json` locally from it, and keep provider keys in `.env` / `.env.remote`.
 - For local-first scaffolds, assume GitHub Copilot is the only model provider unless the user explicitly asks for another provider.
 - For local-first scaffolds, do not include `LLM_PROVIDER_TYPE`, `LLM_ENDPOINT`, `LLM_API_KEY`, or `LLM_API_VERSION` by default.
@@ -169,7 +172,7 @@ Example:
 - Keep prompts, skills, tool handlers, and branding in separate layers.
 - If you add or change TUI keybindings, update help/keybinding surfaces together.
 - Treat system-agent `initialPrompt` as bootstrap startup content, not a user-authored chat line.
-- Assume apps consume `pilotswarm-cli` and `pilotswarm-sdk`; built-in PilotSwarm plugins are embedded in those packages, not copied into the app repo.
+- Assume apps consume `pilotswarm` and `pilotswarm-sdk`; built-in PilotSwarm plugins are embedded in those packages, not copied into the app repo.
 - Assume PostgreSQL-backed apps can opt into the built-in facts tools with agent `tools` lists instead of re-implementing fact storage from scratch.
-- Prefer generated app instructions that install `pilotswarm-cli` and `pilotswarm-sdk` from npm before suggesting local clone or link workflows.
+- Prefer generated app instructions that install `pilotswarm` and `pilotswarm-sdk` from npm before suggesting local clone or link workflows.
 - If the scaffold teaches artifact workflows, do not describe them as markdown-only; explain the shared binary-download contract too.

@@ -1,6 +1,6 @@
 import { describe, it } from "vitest";
-import { shouldDimGrayTextForTheme } from "../../../cli/src/platform.js";
-import { getTheme } from "../../../ui-core/src/themes/index.js";
+import { shouldDimGrayTextForTheme } from "../../../app/tui/src/platform.js";
+import { getTheme } from "../../../app/ui/core/src/themes/index.js";
 import { assertGreaterOrEqual, assertNotNull, assertEqual } from "../helpers/assertions.js";
 
 function toRgb(hex) {
@@ -40,7 +40,7 @@ function getContrastRatio(foreground, background) {
 
 describe("theme muted text contrast", () => {
     it("keeps dark-theme gray text readable across TUI and portal surfaces", () => {
-        for (const themeId of ["noctis", "noctis-viola"]) {
+        for (const themeId of ["noctis", "noctis-obscuro"]) {
             const theme = getTheme(themeId);
             assertNotNull(theme, `${themeId} should exist`);
 
@@ -110,9 +110,9 @@ describe("theme muted text contrast", () => {
             "noctis (dark) should keep dim gray treatment",
         );
         assertEqual(
-            shouldDimGrayTextForTheme(getTheme("noctis-viola")),
+            shouldDimGrayTextForTheme(getTheme("noctis-obscuro")),
             true,
-            "noctis viola (dark) should keep dim gray treatment",
+            "noctis obscuro (dark) should keep dim gray treatment",
         );
     });
 });

@@ -385,6 +385,6 @@ Published as `pilotswarm-mcp-server` with a `bin` entry so `npx pilotswarm-mcp-s
 ## Related
 
 - [Management Client Boundary Cleanup](management-client-boundary-cleanup.md) — the refactor that created the management API surface this MCP server wraps
-- [Plugin Architecture Guide](../plugin-architecture-guide.md) — MCP server config format (`.mcp.json`)
-- [Building Apps](../building-apps.md) — SDK usage patterns
+- [Plugin Architecture Guide](../developer/building/plugins.md) — MCP server config format (`.mcp.json`)
+- [Building Apps](../_archive/building-apps.md) — SDK usage patterns
 - [TUI Design Spec](../proposals/tui-design-spec.md) — TUI operations reference

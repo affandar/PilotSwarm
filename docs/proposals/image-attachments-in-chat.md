@@ -434,11 +434,11 @@ Phase D — **TUI attach** (separate PR):
 - Extend `Ctrl+A` dialog to push to structured prompt.
 - Attachment chip rendering in the prompt and transcript.
 - `o` keybinding on chip → external open.
-- Update [`docs/keybindings.md`](../../docs/keybindings.md) and [`packages/cli/src/app.js`](../../packages/cli/src/app.js); per the TUI keybinding rule, also update status hints, prompt placeholders, and help dialog.
+- Update [`docs/keybindings.md`](../user-guide/keybindings.md) and [`packages/cli/src/app.js`](../../packages/cli/src/app.js); per the TUI keybinding rule, also update status hints, prompt placeholders, and help dialog.
 
 Phase E — **Docs + sample**:
 
-- New "Image attachments" section in [`docs/sdk/`](../../docs/sdk/).
+- New "Image attachments" section in [`docs/sdk/`](../developer/building).
 - Add a turn to the DevOps sample that pastes a screenshot and asks the agent to interpret it.
 - Update [`templates/builder-agents/`](../../templates/builder-agents/) docs if they mention prompt shape.
 - Update [`.github/skills/pilotswarm-tui/SKILL.md`](../../.github/skills/pilotswarm-tui/SKILL.md) with the new attach UX.

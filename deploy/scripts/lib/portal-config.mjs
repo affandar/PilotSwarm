@@ -11,12 +11,12 @@
 //
 // Empty user input is rendered as the SEED_SECRETS_UNSET_SENTINEL so the
 // substitute-env fail-closed gate (which rejects empty/unresolved keys)
-// is satisfied. The portal runtime (packages/portal/server.js) strips
+// is satisfied. The portal runtime (packages/app/web/server.js) strips
 // sentinel values from process.env at startup, so the auth provider sees
 // a missing key as truly unset.
 //
 // Keep this list aligned with the env vars consumed by
-// pilotswarm/packages/portal/auth/config.js. Adding a key here without a
+// pilotswarm/packages/app/web/auth/config.js. Adding a key here without a
 // reader in auth/config.js is dead config; reverse direction silently
 // breaks deploys.
 

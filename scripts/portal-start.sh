@@ -58,11 +58,11 @@ fi
 
 echo "[portal] Starting server (port $PORT, mode $TUI_MODE)..."
 echo "[portal] Building browser app..."
-npm run build --workspace=packages/portal >/tmp/portal-build.log 2>&1
+npm run build --workspace=packages/app/web >/tmp/portal-build.log 2>&1
 if [[ -n "$PLUGIN_DIR" ]]; then
   export PLUGIN_DIRS="$(cd "$PLUGIN_DIR" && pwd)"
 fi
-PORTAL_ENV_FILE="$ENV_FILE" PORTAL_TUI_MODE="$TUI_MODE" node --env-file="$ENV_FILE" packages/portal/server.js > /tmp/portal-server.log 2>&1 &
+PORTAL_ENV_FILE="$ENV_FILE" PORTAL_TUI_MODE="$TUI_MODE" node --env-file="$ENV_FILE" packages/app/web/server.js > /tmp/portal-server.log 2>&1 &
 SERVER_PID=$!
 echo "$SERVER_PID" > "$PIDFILE"
 
@@ -95,7 +95,7 @@ if [[ -n "${PLUGIN_DIRS:-}" ]]; then
   echo "  Plugin: $PLUGIN_DIRS"
 fi
 echo ""
-echo "  Browser-native workspace is served from packages/portal/dist."
+echo "  Browser-native workspace is served from packages/app/web/dist."
 echo ""
 echo "  Stop: ./scripts/portal-stop.sh"
 echo "  Logs: tail -f /tmp/portal-server.log"

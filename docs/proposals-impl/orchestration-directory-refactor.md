@@ -13,7 +13,7 @@
 > `processTimer` into `turn.ts`, and `drain` / `decide` into `queue.ts`.
 > `runtime.ts` collapsed to 222 lines (createRuntime + runLoop only).
 >
-> See [Orchestration Design](../orchestration-design.md) for the current
+> See [Orchestration Design](../architecture/orchestration/design.md) for the current
 > state.
 
 ## Summary

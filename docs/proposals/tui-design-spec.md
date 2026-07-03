@@ -8,8 +8,8 @@ This proposal described the cleanup target for the old terminal UI while the sha
 
 That work has shipped. The current sources of truth are:
 
-- [TUI Architecture](../tui-architecture.md)
-- [Keybindings](../keybindings.md)
-- [System Reference](../system-reference.md)
+- [TUI Architecture](../architecture/tui.md)
+- [Keybindings](../user-guide/keybindings.md)
+- [System Reference](../architecture/system-reference.md)
 
 Keep this file only as a pointer to the current docs, not as an active implementation guide.

@@ -13,7 +13,7 @@ function readRepoFile(relPath) {
 
 describe("tui reference autocomplete contracts", () => {
     it("accepts @ / @@ autocomplete from the native prompt on Tab", () => {
-        const cliApp = readRepoFile("packages/cli/src/app.js");
+        const cliApp = readRepoFile("packages/app/tui/src/app.js");
 
         assertIncludes(
             cliApp,

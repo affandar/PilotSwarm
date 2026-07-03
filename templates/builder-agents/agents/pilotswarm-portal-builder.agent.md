@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.1.0
+version: 1.2.0
 name: pilotswarm-portal-builder
 description: "Use when building or customizing a PilotSwarm browser portal app. Scaffolds portal branding, plugin metadata, auth add-on configuration, and deployment wiring."
 ---
@@ -29,12 +29,31 @@ Your job is to create or update application code in the user's repository, not t
 
 - the installed `pilotswarm-portal-builder` skill
 - the installed `pilotswarm-agent-versioning` skill when creating or editing portal-exposed `plugin/agents/*.agent.md`
-- `https://github.com/affandar/pilotswarm/blob/main/docs/getting-started-docker-appliance.md`
-- `https://github.com/affandar/pilotswarm/blob/main/packages/portal/README.md`
-- `https://github.com/affandar/pilotswarm/blob/main/docs/sdk/building-apps.md`
-- `https://github.com/affandar/pilotswarm/blob/main/docs/plugin-architecture-guide.md`
-- `https://github.com/affandar/pilotswarm/blob/main/docs/deploying-to-aks.md`
+- `https://github.com/affandar/pilotswarm/blob/main/docs/quickstart/docker.md`
+- `https://github.com/affandar/pilotswarm/blob/main/packages/app/web/README.md`
+- `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/sdk-apps.md`
+- `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/plugins.md`
+- `https://github.com/affandar/pilotswarm/blob/main/docs/developer/deploy/aks.md`
 - `https://github.com/affandar/pilotswarm/tree/main/examples/devops-command-center`
+
+## Web API Topology (what the portal is)
+
+The portal server is not just the browser UI host — it **hosts the deployment's
+Web API** (HTTP `/api/v1` + WebSocket `/api/v1/ws`), which is the single
+integration surface for every client: the browser portal itself, the TUI in
+remote mode (`npx pilotswarm remote --api-url`), SDK apps
+(`new PilotSwarmClient({ apiUrl })`), the MCP server (`pilotswarm-mcp
+--api-url`), and any custom UX built on the zero-dependency
+`pilotswarm-sdk/api` package. Consequences for portal work:
+
+- clients need only the portal URL; database and blob credentials stay in the
+  portal/worker pods
+- auth (none | entra) gates the whole API at the seam, not just the browser UI
+- named-agent availability reaches ALL clients through
+  `GET /api/v1/bootstrap` (`creatableAgents`), which is why `PLUGIN_DIRS`
+  packaging matters
+- custom web UXes are supported first-class: see
+  `https://github.com/affandar/pilotswarm/blob/main/docs/api/building-a-custom-ux.md`
 
 ## Constraints
 
@@ -44,7 +63,7 @@ Your job is to create or update application code in the user's repository, not t
 - do not assume Entra ID is mandatory; auth must stay pluggable
 - use only canonical `PORTAL_AUTH_*` / `PORTAL_AUTHZ_*` env vars when documenting portal auth; do not rely on legacy `ENTRA_*` aliases
 - do not assume the portal can infer named agents from remote workers alone; explicitly wire plugin packaging and `PLUGIN_DIRS`
-- when `session-policy.json.creation.bundledAgents` opts into SDK-bundled agents such as `generic-crawler`, ensure the portal image includes the app plugin policy and a current `pilotswarm-cli` transport so `/api/bootstrap.creatableAgents` includes the bundled agent
+- when `session-policy.json.creation.bundledAgents` opts into SDK-bundled agents such as `generic-crawler`, ensure the portal image includes the app plugin policy and a current `pilotswarm-cli` transport so `/api/v1/bootstrap` `creatableAgents` includes the bundled agent
 - do not silently reuse credentials or identity-provider settings from another project without user approval
 - do not invent app-specific auth protocols when the user really wants auth disabled; `none` is a valid first-class choice
 - when the user asks for a custom provider, separate browser login UX, token acquisition, and server-side request validation clearly

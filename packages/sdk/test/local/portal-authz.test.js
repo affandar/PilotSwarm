@@ -1,8 +1,8 @@
 import { describe, it } from "vitest";
 import { assertEqual } from "../helpers/assertions.js";
-import { authenticateToken, createNoAuthUnknownPrincipal } from "../../../portal/auth/index.js";
-import { authorizePrincipal, getPublicAuthContext } from "../../../portal/auth/authz/engine.js";
-import { loadAuthorizationPolicy, resolveAuthProviderId } from "../../../portal/auth/config.js";
+import { authenticateToken, createNoAuthUnknownPrincipal } from "../../../app/web/auth/index.js";
+import { authorizePrincipal, getPublicAuthContext } from "../../../app/web/auth/authz/engine.js";
+import { loadAuthorizationPolicy, resolveAuthProviderId } from "../../../app/web/auth/config.js";
 
 describe("portal authz", () => {
     it("prefers explicit env provider over plugin and inference", () => {

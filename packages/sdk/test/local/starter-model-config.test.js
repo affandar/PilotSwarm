@@ -39,7 +39,7 @@ describe("starter docker model config", () => {
 
     it("persists starter SSH host keys in the data volume", () => {
         const starter = readRepoFile("deploy/bin/start-starter.sh");
-        const quickstart = readRepoFile("docs/getting-started-docker-appliance.md");
+        const quickstart = readRepoFile("docs/quickstart/docker.md");
 
         expect(starter).toContain("SSH_HOST_KEY_DIR=${PILOTSWARM_SSH_HOST_KEY_DIR:-${DATA_DIR}/ssh}");
         expect(starter).toContain("configure_ssh_host_keys");

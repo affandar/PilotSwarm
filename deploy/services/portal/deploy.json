@@ -16,7 +16,7 @@
   "image": {
     "repo":       "pilotswarm-portal",
     "dockerfile": "deploy/Dockerfile.portal",
-    "buildWorkspaces": ["packages/sdk", "packages/portal"]
+    "buildWorkspaces": ["packages/sdk", "packages/app/web"]
   },
   "rollout": {
     "deployment": "pilotswarm-portal",

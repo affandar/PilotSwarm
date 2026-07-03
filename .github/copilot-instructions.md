@@ -132,13 +132,13 @@ Checked-in instructions must never hard-code a cluster/context name, namespace, 
 
 ## TUI Boundary Rule
 
-The TUI (`packages/cli/`) must interact with PilotSwarm **exclusively through the public `PilotSwarmClient`, `PilotSwarmWorker`, and management APIs**. It must never import or call internal runtime modules (`session-manager.ts`, `managed-session.ts`, `cms.ts`, `session-proxy.ts`, `orchestration.ts`, etc.) directly. The only exception is logging/diagnostics (for example reading duroxide trace logs for display). If the TUI needs new data or capabilities, expose them through the client/worker API surface first.
+The TUI (`packages/app/tui/`) must interact with PilotSwarm **exclusively through the public `PilotSwarmClient`, `PilotSwarmWorker`, and management APIs**. It must never import or call internal runtime modules (`session-manager.ts`, `managed-session.ts`, `cms.ts`, `session-proxy.ts`, `orchestration.ts`, etc.) directly. The only exception is logging/diagnostics (for example reading duroxide trace logs for display). If the TUI needs new data or capabilities, expose them through the client/worker API surface first.
 
 ## Portal Boundary Rule
 
-The portal (`packages/portal/`) must interact with PilotSwarm **exclusively through the public `PilotSwarmClient`, `PilotSwarmWorker`, `PilotSwarmManagementClient`, and the CLI's `PortalRuntime` API**. It must never import or call internal SDK modules (`session-manager.ts`, `managed-session.ts`, `cms.ts`, `session-proxy.ts`, `orchestration.ts`, etc.) directly.
+The portal (`packages/app/web/`) must interact with PilotSwarm **exclusively through the public `PilotSwarmClient`, `PilotSwarmWorker`, `PilotSwarmManagementClient`, and the CLI's `PortalRuntime` API**. It must never import or call internal SDK modules (`session-manager.ts`, `managed-session.ts`, `cms.ts`, `session-proxy.ts`, `orchestration.ts`, etc.) directly.
 
-Portal auth is provider-based (`packages/portal/auth/`). Auth providers live in `auth/providers/`, token normalization in `auth/normalize/`, and authorization policy in `auth/authz/engine.js`. Configuration uses **canonical env vars only**: `PORTAL_AUTH_*` and `PORTAL_AUTHZ_*` — never legacy `ENTRA_*` aliases.
+Portal auth is provider-based (`packages/app/web/auth/`). Auth providers live in `auth/providers/`, token normalization in `auth/normalize/`, and authorization policy in `auth/authz/engine.js`. Configuration uses **canonical env vars only**: `PORTAL_AUTH_*` and `PORTAL_AUTHZ_*` — never legacy `ENTRA_*` aliases.
 
 ### TUI Keybindings
 
@@ -180,10 +180,10 @@ If a change leaves the TUI and portal out of sync, say so explicitly in your res
 
 When you change the terminal/shared UI stack in:
 
-- `packages/ui-core/`
-- `packages/ui-react/`
-- `packages/cli/`
-- `packages/portal/`
+- `packages/app/ui/core/`
+- `packages/app/ui/react/`
+- `packages/app/tui/`
+- `packages/app/web/`
 - `run.sh`
 
 you must also keep [`.github/skills/pilotswarm-tui/SKILL.md`](./skills/pilotswarm-tui/SKILL.md) current if the change affects architecture, layout, visual conventions, status semantics, prompt/question behavior, message-card behavior, or keybinding expectations.
@@ -219,7 +219,7 @@ If you add or change PilotSwarm features that affect app builders, keep the foll
 - `templates/builder-agents/agents/*.agent.md`
 - `templates/builder-agents/skills/**/SKILL.md`
 - `templates/builder-agents/README.md`
-- [docs/builder-agents.md](../docs/builder-agents.md)
+- [docs/developer/building/builder-agents.md](../docs/developer/building/builder-agents.md)
 - the builder-facing CLI/SDK docs those templates reference
 
 Treat these templates as a maintained product surface. Do not leave them stale when builder-relevant behavior changes.
@@ -273,7 +273,7 @@ When you change harvester-relevant behavior, keep these in sync in the same chan
 
 - the sample agents `plugin/agents/source-harvester.agent.md` (`crawler: true`) and `plugin/agents/librarian.agent.md` (reader), bumping each agent's `version` per the `agent-versioning` skill
 - the three scripts above and the sample `README.md` (Run / Visualize / Cleanup sections)
-- the builder skill `templates/builder-agents/skills/pilotswarm-knowledge-harvester/SKILL.md` and `docs/harvester-deployment.md`, which teach the same patterns
+- the builder skill `templates/builder-agents/skills/pilotswarm-knowledge-harvester/SKILL.md` and `docs/developer/deploy/harvester.md`, which teach the same patterns
 
 Load-bearing conventions to preserve:
 
@@ -316,7 +316,7 @@ When you add or change an observability surface, follow this checklist:
    `read_session_*` for per-session, `read_session_tree_*` for spawn
    trees, `read_fleet_*` for fleet-wide.
 4. **Surface it in the TUI/portal stats pane** if it is operator-grade.
-   Selectors live in [`packages/ui-core/src/selectors.js`](../packages/ui-core/src/selectors.js)
+   Selectors live in [`packages/app/ui/core/src/selectors.js`](../packages/app/ui/core/src/selectors.js)
    and render in both the native TUI and the portal automatically.
 5. **Test it.** A `*-stats.test.js` (or similar) under `test/local/` that
    seeds data and verifies the management API + the inspect-tool

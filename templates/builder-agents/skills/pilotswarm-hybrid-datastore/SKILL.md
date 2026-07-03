@@ -21,9 +21,9 @@ environment.
 
 ## Canonical References
 
-- Configuration guide: `https://github.com/affandar/pilotswarm/blob/main/docs/configuration.md#enhanced-facts--knowledge-graph-optional`
+- Configuration guide: `https://github.com/affandar/pilotswarm/blob/main/docs/developer/reference/configuration.md#enhanced-facts--knowledge-graph-optional`
 - Horizon Harvester sample: `https://github.com/affandar/pilotswarm/tree/main/examples/horizon-harvester`
-- Harvester deployment guide: `https://github.com/affandar/pilotswarm/blob/main/docs/harvester-deployment.md`
+- Harvester deployment guide: `https://github.com/affandar/pilotswarm/blob/main/docs/developer/deploy/harvester.md`
 - Horizon provider package: `https://github.com/affandar/pilotswarm/tree/main/packages/horizon-store`
 - Environment examples: `.env.example` and `.env.horizondb.example`
 
@@ -64,13 +64,21 @@ const worker = new PilotSwarmWorker({
   ...horizon,
 });
 
+// Direct { store } construction is for co-located/dev/test processes only
+// (like this single-process example). App code that talks to a shared
+// deployment uses Web API mode instead — it needs no database URLs at all:
+//   new PilotSwarmClient({ apiUrl })
+//   new PilotSwarmManagementClient({ apiUrl })
+// Enhanced facts/search/graph reach remote clients through the deployment's
+// Web API data-plane (createWebFactStore / createWebGraphStore).
 const client = new PilotSwarmClient({ store, ...horizon });
 const management = new PilotSwarmManagementClient({ store, ...horizon });
 ```
 
-The client/management paths ignore worker-only graph/embed settings safely, but
-they must agree on the facts target so cleanup, lineage reads, and management
-diagnostics do not hit the wrong database.
+The direct client/management paths ignore worker-only graph/embed settings
+safely, but they must agree on the facts target so cleanup, lineage reads, and
+management diagnostics do not hit the wrong database. Remote clients never see
+these settings — the portal's Web API brokers facts/search/graph for them.
 
 ## Env Template Guidance
 

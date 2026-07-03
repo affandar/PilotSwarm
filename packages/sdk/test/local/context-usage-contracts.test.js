@@ -37,8 +37,8 @@ describe("context usage contracts", () => {
     });
 
     it("renders context usage in the TUI header and warning badge in the session list", () => {
-        const selectors = readRepoFile("packages/ui-core/src/selectors.js");
-        const tuiHelpers = readRepoFile("packages/ui-core/src/context-usage.js");
+        const selectors = readRepoFile("packages/app/ui/core/src/selectors.js");
+        const tuiHelpers = readRepoFile("packages/app/ui/core/src/context-usage.js");
         const client = readRepoFile("packages/sdk/src/client.ts");
         const management = readRepoFile("packages/sdk/src/management-client.ts");
 

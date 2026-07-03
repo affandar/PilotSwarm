@@ -77,7 +77,7 @@ proposal). All entries below are read-only.
 ### Wrappers over `PilotSwarmManagementClient`
 
 These already exist in
-[packages/sdk/src/management-client.ts](../packages/sdk/src/management-client.ts);
+[packages/sdk/src/management-client.ts](../../packages/sdk/src/management-client.ts);
 the tuner just gets thin tool wrappers. Lineage gate is bypassed for
 `agentIdentity === "agent-tuner"`.
 

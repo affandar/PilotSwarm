@@ -37,7 +37,7 @@ Do not hard-code `ACR_NAME` on the deploy command line — `scripts/deploy-aks.s
 - Worker Dockerfile: `deploy/Dockerfile.worker`
 - Portal Dockerfile: `deploy/Dockerfile.portal`
 - Namespace manifest: `deploy/k8s/namespace.yaml`
-- AKS guide: `docs/deploying-to-aks.md`
+- AKS guide: `docs/developer/deploy/aks.md`
 - Model catalog template: `.model_providers.example.json`
 - Real runtime catalog: `.model_providers.json`
 
@@ -66,7 +66,7 @@ Do not hard-code `ACR_NAME` on the deploy command line — `scripts/deploy-aks.s
 - When starting all workers simultaneously against a fresh DB, duroxide migrations can race. Duroxide 0.1.19+ uses advisory locks to handle this safely — workers that lose the race will retry and succeed. Earlier versions crash on duplicate migration keys.
 - Portal listens on port 3001 (HTTP) internally; TLS termination happens at the app-routing nginx ingress.
 - Portal is publicly accessible with Entra ID as the sole access gate.
-- VPN Gateway P2S is a feature of the **GitOps IaC path** (`deploy/scripts/deploy.mjs` + base-infra bicep), not this legacy `scripts/deploy-aks.sh` flow. If a user mentions VPN-enabled stamps, route them to the `pilotswarm-new-env-deploy` skill ("Optional: VPN Gateway P2S" section) and `docs/deploying-to-aks.md`. Two operator-visible costs to surface up-front when discussing VPN: **45+ minutes** added to the first deploy (gateway provisioning is the long pole) and **~$450/month** runtime cost for `VpnGw2AZ` + Azure Private DNS Resolver (~$280 gateway + ~$170 resolver inbound endpoint). The Resolver is co-provisioned with the VPN gateway because P2S clients cannot reach 168.63.129.16 through the tunnel — without it, clients cannot resolve the portal Private DNS Zone hostname. Generation1 SKUs including `VpnGw1AZ` are excluded — they silently drop OpenVPN+AAD HardResetClientV2 packets. Subsequent param-change deploys are minutes, not 45+.
+- VPN Gateway P2S is a feature of the **GitOps IaC path** (`deploy/scripts/deploy.mjs` + base-infra bicep), not this legacy `scripts/deploy-aks.sh` flow. If a user mentions VPN-enabled stamps, route them to the `pilotswarm-new-env-deploy` skill ("Optional: VPN Gateway P2S" section) and `docs/developer/deploy/aks.md`. Two operator-visible costs to surface up-front when discussing VPN: **45+ minutes** added to the first deploy (gateway provisioning is the long pole) and **~$450/month** runtime cost for `VpnGw2AZ` + Azure Private DNS Resolver (~$280 gateway + ~$170 resolver inbound endpoint). The Resolver is co-provisioned with the VPN gateway because P2S clients cannot reach 168.63.129.16 through the tunnel — without it, clients cannot resolve the portal Private DNS Zone hostname. Generation1 SKUs including `VpnGw1AZ` are excluded — they silently drop OpenVPN+AAD HardResetClientV2 packets. Subsequent param-change deploys are minutes, not 45+.
 
 ## Default Deploy Workflow
 

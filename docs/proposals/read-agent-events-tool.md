@@ -118,7 +118,7 @@ to coordinate around a read.
    - `cms_get_session_events(session_id, after_seq, limit)`
    - `cms_get_session_events_before(session_id, before_seq, limit)`
 4. **Base prompt update.** Add one paragraph to
-   [packages/sdk/plugins/system/agents/default.agent.md](../packages/sdk/plugins/system/agents/default.agent.md)
+   [packages/sdk/plugins/system/agents/default.agent.md](../../packages/sdk/plugins/system/agents/default.agent.md)
    and the equivalent system-prompt block built in `runTurn`:
 
    > **Inspecting sub-agents.** Prefer `check_agents` for status and

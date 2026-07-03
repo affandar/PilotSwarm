@@ -40,14 +40,14 @@ const mockState = vi.hoisted(() => ({
     },
 }));
 
-vi.mock("../../../portal/auth.js", () => ({
+vi.mock("../../../app/web/auth.js", () => ({
     authenticateRequest: async () => ({ ok: true, status: 200, principal: { rawClaims: {} } }),
     extractToken: () => null,
     getAuthConfig: async () => ({ enabled: false, provider: "none", client: null }),
     authenticateToken: async () => ({ ok: false, status: 401, error: "Unauthorized" }),
 }));
 
-vi.mock("../../../portal/auth/authz/engine.js", () => ({
+vi.mock("../../../app/web/auth/authz/engine.js", () => ({
     getPublicAuthContext: () => ({
         principal: null,
         authorization: {
@@ -59,7 +59,7 @@ vi.mock("../../../portal/auth/authz/engine.js", () => ({
     }),
 }));
 
-vi.mock("../../../portal/runtime.js", () => ({
+vi.mock("../../../app/web/runtime.js", () => ({
     PortalRuntime: class PortalRuntime {
         constructor() {
             this.started = false;
@@ -121,7 +121,7 @@ describe("portal binary artifact routes", () => {
             uploadedAt: "2026-04-21T00:00:00.000Z",
             source: "agent",
         };
-        ({ startServer } = await import("../../../portal/server.js"));
+        ({ startServer } = await import("../../../app/web/server.js"));
     });
 
     afterEach(async () => {

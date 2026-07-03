@@ -7,7 +7,7 @@
 > Kept for archaeology — the line numbers, file references, and "current
 > architecture" diagrams are pre-2026-05.
 >
-> For the current orchestration, see [Orchestration Design](../orchestration-design.md).
+> For the current orchestration, see [Orchestration Design](../architecture/orchestration/design.md).
 
 ## Original Architecture
 

@@ -2,11 +2,11 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.3.3** — Adds mid-flight turn Stop (portal `■` button + `stopSessionTurn` management API, durable stop-turn race in orchestration v1.0.56), six new UI themes, and refined portal session chrome.
+> **Latest release: v0.4.0** — Consolidates the toolchain into three packages (new `pilotswarm` app package with TUI, portal, and MCP bins; `pilotswarm-sdk` with the wire client built in at `pilotswarm-sdk/api`; `pilotswarm-horizon-store`), defaults every surface to the Web API, and ships three new high-contrast light themes.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 
-For the fastest first run, start with the [Docker Quickstart Guide](docs/getting-started-docker-appliance.md).
+For the fastest first run, start with the [Docker Quickstart Guide](./docs/quickstart/docker.md).
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
@@ -14,7 +14,7 @@ See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 If you are building layered apps on top of PilotSwarm, this repo now ships distributable builder-agent templates you can copy into your own repository:
 
-- [Builder Agent Templates](docs/builder-agents.md)
+- [Builder Agent Templates](./docs/developer/building/builder-agents.md)
 - [DevOps Command Center Sample](examples/devops-command-center/README.md)
 - [Horizon Harvester Sample](examples/horizon-harvester/README.md) — optional enhanced facts + knowledge graph
 
@@ -25,14 +25,14 @@ These are not active agents in this repo. They are templates intended to be copi
 
 ## Quick Start
 
-Two paths:
+Three paths:
 
 ### Try it from this repo (3 minutes)
 
 The Docker quickstart is the fastest first run. One image, browser portal,
 local PostgreSQL, two embedded workers — set `GITHUB_TOKEN` and go:
 
-→ [Docker Quickstart Guide](docs/getting-started-docker-appliance.md)
+→ [Docker Quickstart Guide](./docs/quickstart/docker.md)
 
 If you'd rather run from source instead of Docker:
 
@@ -48,7 +48,7 @@ cp .model_providers.example.json .model_providers.json
 ./run.sh local --db   # launches Postgres + workers + TUI
 ```
 
-→ [Full source-based getting started](docs/getting-started.md)
+→ [Full source-based getting started](./docs/quickstart/local.md)
 
 ### Use as a library in your own app
 
@@ -78,6 +78,9 @@ const worker = new PilotSwarmWorker({ store: process.env.DATABASE_URL });
 worker.registerTools([getWeather]);
 await worker.start();
 
+// Direct { store } client only because this single-process demo co-locates
+// worker and client. Apps talking to a real deployment use web mode
+// ({ apiUrl }) — see "Connect to a shared deployment" below.
 const client = new PilotSwarmClient({ store: process.env.DATABASE_URL });
 await client.start();
 
@@ -94,6 +97,28 @@ await worker.stop();
 
 PilotSwarm's own framework prompt and management plugins ship embedded inside `pilotswarm-sdk`. Apps layer their own `plugin/` directories on top; they do not need to copy the framework's built-in plugin text into their own repos.
 
+### Connect to a shared deployment
+
+Already have a PilotSwarm deployment (see [Deploying to AKS](./docs/developer/deploy/aks.md))? The portal hosts a versioned Web API (HTTP `/api/v1` + WebSocket `/api/v1/ws`), so clients need exactly one value — the portal URL.
+
+Attach the TUI:
+
+```bash
+npx pilotswarm remote --api-url https://portal.example.com
+```
+
+No `DATABASE_URL`, no `kubectl` — logs stream over the API, and if the deployment uses Entra auth the TUI opens your browser for an interactive sign-in (`pilotswarm auth login|status|logout --api-url <url>` to manage it; `--device-code` for headless hosts).
+
+Or connect from your own app with the SDK's web mode:
+
+```typescript
+const client = new PilotSwarmClient({ apiUrl: "https://portal.example.com" });
+await client.start();
+// Session handles work exactly as in the demo above: send, sendAndWait, on, ...
+```
+
+`PilotSwarmManagementClient({ apiUrl })` works the same way. Prefer the raw API or a browser? The zero-dependency [`pilotswarm-sdk/api`](packages/sdk/api/README.md) package speaks the same contract — see the [Web API Reference](docs/api/reference.md). Direct `{ store }` client construction remains available for worker/portal embedding and internal testing only; workers always use `{ store }`.
+
 ### Durability — recurring and long-waiting agents
 
 The single-process demo above doesn't show the durability story because the
@@ -102,12 +127,12 @@ hours or runs a recurring schedule, the worker has to be a long-running
 process — typically:
 
 - one or more `PilotSwarmWorker`s in their own service (locally with `npm run worker`, in production on Kubernetes), and
-- clients (CLI, TUI, browser portal, or your app) connecting to the same PostgreSQL
+- clients (CLI, TUI, browser portal, or your app) connecting through the portal's [Web API](docs/api/reference.md)
 
 The agent then calls `wait(...)` for one-shot delays, or `cron(...)` for
 recurring schedules. Long waits dehydrate the session to blob storage; any
-worker rehydrates it when the timer fires. See [Architecture](docs/architecture.md)
-and [Building SDK Apps](docs/sdk/building-apps.md) for the full pattern.
+worker rehydrates it when the timer fires. See [Architecture](./docs/architecture/system.md)
+and [Building SDK Apps](./docs/developer/building/sdk-apps.md) for the full pattern.
 
 ## What You Get
 
@@ -148,7 +173,7 @@ Client                        PostgreSQL                     Worker Pods
 | Example | Description | Command |
 |---------|-------------|---------|
 | [Chat](packages/sdk/examples/chat.js) | Interactive console chat | `npm run chat` |
-| [TUI](packages/cli/bin/tui.js) | Multi-session terminal UI with logs | `npm run tui` |
+| [TUI](packages/app/tui/bin/tui.js) | Multi-session terminal UI with logs | `npm run tui` |
 | [Worker](packages/sdk/examples/worker.js) | Headless worker for K8s | `npm run worker` |
 | [Tests](packages/sdk/test/sdk.test.js) | Automated test suite | `npm test` |
 
@@ -161,17 +186,18 @@ Start with the documentation hub:
 Common entry points:
 
 - [User Guide](docs/user-guide/README.md) — scenario-based walkthroughs of the TUI and browser portal, simple to advanced
-- [Working On PilotSwarm](docs/contributors/working-on-pilotswarm.md) — contributors working on the SDK, TUI, providers, prompts, or orchestration
-- [Builder Agent Templates](docs/builder-agents.md) — copyable Copilot custom agents for users building apps on top of PilotSwarm
-- [Building SDK Apps](docs/sdk/building-apps.md) — app developers using `PilotSwarmClient` and `PilotSwarmWorker`
-- [Building Agents For SDK Apps](docs/sdk/building-agents.md) — the clearest path for authoring `default.agent.md`, named agents, skills, and tools
-- [Building CLI Apps](docs/cli/building-cli-apps.md) — plugin- and worker-module-driven apps on the shipped TUI
-- [Building Agents For CLI Apps](docs/cli/building-agents.md) — the CLI-focused agent-authoring guide
-- [Example Applications](docs/examples.md) — includes the DevOps Command Center sample for layered apps
-- [Getting Started](docs/getting-started.md) — install, PostgreSQL, `.env`, and first run
-- [Configuration](docs/configuration.md) — environment variables, blob storage, worker/client options
-- [Deploying to AKS](docs/deploying-to-aks.md) — Kubernetes deployment, scaling, and rolling updates
-- [Architecture](docs/architecture.md) — internal design and runtime flow
+- [Working On PilotSwarm](./docs/developer/contributing/working-on-pilotswarm.md) — contributors working on the SDK, TUI, providers, prompts, or orchestration
+- [Builder Agent Templates](./docs/developer/building/builder-agents.md) — copyable Copilot custom agents for users building apps on top of PilotSwarm
+- [Building SDK Apps](./docs/developer/building/sdk-apps.md) — app developers using `PilotSwarmClient` and `PilotSwarmWorker`
+- [Building Agents For SDK Apps](./docs/developer/building/sdk-agents.md) — the clearest path for authoring `default.agent.md`, named agents, skills, and tools
+- [Building CLI Apps](./docs/developer/building/cli-apps.md) — plugin- and worker-module-driven apps on the shipped TUI
+- [Building Agents For CLI Apps](./docs/developer/building/cli-agents.md) — the CLI-focused agent-authoring guide
+- [Example Applications](./docs/developer/building/examples.md) — includes the DevOps Command Center sample for layered apps
+- [Getting Started](./docs/quickstart/local.md) — install, PostgreSQL, `.env`, and first run
+- [Web API Reference](docs/api/reference.md) — the versioned HTTP + WebSocket API (`/api/v1`) behind SDK web mode, `pilotswarm remote --api-url`, and the browser portal
+- [Configuration](./docs/developer/reference/configuration.md) — environment variables, blob storage, worker/client options
+- [Deploying to AKS](./docs/developer/deploy/aks.md) — Kubernetes deployment, scaling, and rolling updates
+- [Architecture](./docs/architecture/system.md) — internal design and runtime flow
 
 ## Requirements
 

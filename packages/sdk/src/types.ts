@@ -768,6 +768,13 @@ export interface PilotSwarmWorkerOptions {
 
 // ─── Client Options ──────────────────────────────────────────────
 
+/**
+ * Direct-mode client options (`{ store }`): the client connects straight to
+ * the datastore. This mode is for trusted server-side embedding (the portal
+ * host, workers) and internal testing. Applications and remote callers use
+ * web mode instead — `new PilotSwarmClient({ apiUrl })` — which requires no
+ * database or storage credentials (see `PilotSwarmWebOptions`).
+ */
 export interface PilotSwarmClientOptions {
     /** PostgreSQL connection string. PilotSwarm requires PostgreSQL for CMS and facts. */
     store: string;

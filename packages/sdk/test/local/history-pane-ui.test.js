@@ -1,12 +1,12 @@
 import { describe, it } from "vitest";
-import { NodeSdkTransport } from "../../../cli/src/node-sdk-transport.js";
-import { PilotSwarmUiController } from "../../../ui-core/src/controller.js";
-import { buildHistoryModel } from "../../../ui-core/src/history.js";
-import { appReducer } from "../../../ui-core/src/reducer.js";
-import { createInitialState } from "../../../ui-core/src/state.js";
-import { createStore } from "../../../ui-core/src/store.js";
-import { selectActivityPane, selectChatLines, selectChatPaneChrome, selectFileBrowserItems, selectInspector } from "../../../ui-core/src/selectors.js";
-import { DEFAULT_THEME_ID, getTheme } from "../../../ui-core/src/themes/index.js";
+import { NodeSdkTransport } from "../../../app/tui/src/node-sdk-transport.js";
+import { PilotSwarmUiController } from "../../../app/ui/core/src/controller.js";
+import { buildHistoryModel } from "../../../app/ui/core/src/history.js";
+import { appReducer } from "../../../app/ui/core/src/reducer.js";
+import { createInitialState } from "../../../app/ui/core/src/state.js";
+import { createStore } from "../../../app/ui/core/src/store.js";
+import { selectActivityPane, selectChatLines, selectChatPaneChrome, selectFileBrowserItems, selectInspector } from "../../../app/ui/core/src/selectors.js";
+import { DEFAULT_THEME_ID, getTheme } from "../../../app/ui/core/src/themes/index.js";
 import { assert, assertEqual, assertIncludes } from "../helpers/assertions.js";
 
 function resolveTuiColor(color) {

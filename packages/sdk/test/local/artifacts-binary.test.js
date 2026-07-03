@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "vitest";
-import { NodeSdkTransport } from "../../../cli/src/node-sdk-transport.js";
+import { NodeSdkTransport } from "../../../app/tui/src/node-sdk-transport.js";
 import { FilesystemArtifactStore } from "../../src/session-store.ts";
 import { assert, assertEqual, assertIncludes } from "../helpers/assertions.js";
 

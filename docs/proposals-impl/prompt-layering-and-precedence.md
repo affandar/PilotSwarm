@@ -14,7 +14,7 @@ Define a prompt composition model where:
 - PilotSwarm's own management/system agents do not inherit app instructions
 - the resulting system prompt makes precedence explicit to the LLM
 
-This proposal is intentionally stricter than the current plugin behavior described in [Plugin Architecture & Layering Guide](../plugin-architecture-guide.md). Today, `default.agent.md` is effectively "last one wins" and is prepended as plain text. This document proposes a clearer, safer model.
+This proposal is intentionally stricter than the current plugin behavior described in [Plugin Architecture & Layering Guide](../developer/building/plugins.md). Today, `default.agent.md` is effectively "last one wins" and is prepended as plain text. This document proposes a clearer, safer model.
 
 ---
 
@@ -332,8 +332,8 @@ That is the contract we control.
 
 When this proposal is implemented, several existing docs should be updated:
 
-- [Plugin Architecture & Layering Guide](../plugin-architecture-guide.md)
-- [Building Agents For SDK Apps](../sdk/building-agents.md)
-- [Writing Agents, Skills, Tools & MCP Servers](../writing-agents.md)
+- [Plugin Architecture & Layering Guide](../developer/building/plugins.md)
+- [Building Agents For SDK Apps](../developer/building/sdk-agents.md)
+- [Writing Agents, Skills, Tools & MCP Servers](../_archive/writing-agents.md)
 
 In particular, the current "last tier wins" language for `default.agent.md` should be replaced with "framework base + app overlay".

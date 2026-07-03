@@ -369,7 +369,7 @@ test("VPN combo-error hints never reference the nonexistent deploy/docs/ tree", 
   // describeVpnComboError is a private function — scan the source as the
   // regression guard. Any reintroduction (in a hint or even a comment) of
   // a `deploy/docs/` path would be a regression: that directory doesn't
-  // exist; the canonical operator doc is `docs/deploying-to-aks.md`.
+  // exist; the canonical operator doc is `docs/developer/deploy/aks.md`.
   // Final-review C-1 follow-up.
   const src = readFileSync(
     join(REPO_ROOT, "deploy", "scripts", "lib", "overlay-contracts.mjs"),

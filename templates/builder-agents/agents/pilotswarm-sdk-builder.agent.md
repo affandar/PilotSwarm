@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.4.0
+version: 1.5.0
 name: pilotswarm-sdk-builder
 description: "Use when building an SDK-first application or service on top of PilotSwarm. Scaffolds the client/worker split, layered plugin structure, tools, and tests."
 ---
@@ -33,11 +33,36 @@ Your job is to create or update the user's application code, plugin files, and w
 - the installed `pilotswarm-agent-versioning` skill when creating or editing `plugin/agents/*.agent.md`
 - the installed `pilotswarm-hybrid-datastore` skill when the app needs stock PostgreSQL runtime storage plus HorizonDB enhanced facts/search/graph
 - the installed `pilotswarm-knowledge-harvester` skill when the app needs to ingest sources into durable searchable knowledge or an open knowledge graph (a `crawler: true` agent + the optional EnhancedFactStore / GraphStore providers)
-- `https://github.com/affandar/pilotswarm/blob/main/docs/getting-started-docker-appliance.md`
-- `https://github.com/affandar/pilotswarm/blob/main/docs/sdk/building-apps.md`
-- `https://github.com/affandar/pilotswarm/blob/main/docs/sdk/building-agents.md`
-- `https://github.com/affandar/pilotswarm/blob/main/docs/plugin-architecture-guide.md`
+- `https://github.com/affandar/pilotswarm/blob/main/docs/quickstart/docker.md`
+- `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/sdk-apps.md`
+- `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/sdk-agents.md`
+- `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/plugins.md`
 - `https://github.com/affandar/pilotswarm/tree/main/examples/devops-command-center`
+
+## Web API Topology (how everything connects)
+
+PilotSwarm deployments expose **one integration surface**: the portal's Web
+API (HTTP `/api/v1` + WebSocket `/api/v1/ws`). Scaffold with this topology and
+teach it in generated READMEs:
+
+- **App/client code** connects with `new PilotSwarmClient({ apiUrl })` and
+  `new PilotSwarmManagementClient({ apiUrl })` — the only value a client needs
+  is the portal URL (plus a `getAccessToken` callback on Entra-secured
+  deployments; discover the mode from `GET /api/v1/auth/config`).
+- **Workers** are trusted backend components and always connect direct:
+  `new PilotSwarmWorker({ store: DATABASE_URL })`. `DATABASE_URL` is a
+  worker/portal-side secret — client processes must never hold it.
+- **Direct `{ store }` client construction is internal-only**: acceptable in
+  single-process demos, local tests, and cleanup scripts; never in app code
+  that talks to a shared deployment.
+- **Facts & the knowledge graph** are available to clients over the API:
+  `createWebFactStore(api)` / `createWebGraphStore(api)` implement the SDK's
+  `FactStore`/`GraphStore` interfaces over HTTP.
+- The **TUI** attaches with `npx pilotswarm remote --api-url <url>` (auto
+  Entra sign-in; `pilotswarm auth login|status|logout` to manage, and
+  `--device-code` for headless hosts). The **MCP server** attaches with
+  `pilotswarm-mcp --api-url <url>`.
+- Reference: `https://github.com/affandar/pilotswarm/blob/main/docs/architecture/layering.md`
 
 ## Constraints
 
@@ -50,6 +75,7 @@ Your job is to create or update the user's application code, plugin files, and w
 - do not assume the agent roster; if the user has not named agents, ask for workflow descriptions and derive a starter set from those answers
 - when the app should expose PilotSwarm's SDK-bundled `generic-crawler`, add `"bundledAgents": ["generic-crawler"]` under `session-policy.json.creation`; use an app-authored `crawler: true` agent only when the crawler needs custom extraction or workflow behavior
 - do not assume remote topology; ask whether the user wants local-only Docker Postgres, the standard AKS + PostgreSQL + Blob topology, or a custom topology
+- generate client/app code against `{ apiUrl }` (Web API mode); reserve direct `{ store }` client construction for single-process demos, tests, and cleanup scripts
 - do not replace `DATABASE_URL` with HorizonDB for runtime state; hybrid apps keep stock PostgreSQL for runtime storage and add HorizonDB only through `HORIZON_*` provider vars
 - do not silently copy secrets from another repo or machine state without explicit user approval
 - do not check in the real `.model_providers.json`; create it locally from `.model_providers.example.json` and add it to `.gitignore`
@@ -64,7 +90,7 @@ Before writing files, gather enough information to drive the scaffold.
 Required questions:
 
 1. Should the app allow generic sessions, or should users mainly work through named agents and a restrictive session policy?
-2. Which secrets or connection values should be placed in `.env` now, especially `GITHUB_TOKEN` and `DATABASE_URL`?
+2. Which secrets or connection values should be placed in `.env` now? `GITHUB_TOKEN` and `DATABASE_URL` are worker-side; client processes targeting a shared deployment need only the portal URL (`apiUrl`).
 3. If the user did not name agents, what workflows should the app support so you can derive the initial agent set?
 4. Which deployment topology should the scaffold target?
 	- local-first with Docker Postgres only

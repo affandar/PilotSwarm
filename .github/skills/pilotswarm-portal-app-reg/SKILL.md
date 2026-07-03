@@ -71,7 +71,7 @@ The wrapper bakes in:
 Optional (off by default, opt-in with switches):
 - `-CreateAppRoles` defines two app roles (`admin`, `user`) that the
   portal's role-driven authorization engine reads from the access token
-  (see `packages/portal/auth/authz/engine.js`)
+  (see `packages/app/web/auth/authz/engine.js`)
 - `-AssignmentRequired` sets `appRoleAssignmentRequired=true` on the
   service principal so only users/groups explicitly assigned to the app
   can obtain a token.
@@ -169,7 +169,7 @@ off. Set `PORTAL_AUTHZ_DEFAULT_ROLE=user` to restore the legacy "any
 tenant user gets `user`" open posture (only do this for sandbox stamps).
 
 **Pick one mechanism per stamp.** The engine's role-authoritative
-branch (see `packages/portal/auth/authz/engine.js`) ignores
+branch (see `packages/app/web/auth/authz/engine.js`) ignores
 `PORTAL_AUTHZ_ADMIN_GROUPS` / `PORTAL_AUTHZ_USER_GROUPS` whenever the
 JWT carries any `roles[]` claim. So if you chose **Roles**, do NOT
 also populate the email allowlists — they are bypassed and become a

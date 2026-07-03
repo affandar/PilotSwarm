@@ -1,6 +1,6 @@
 import { describe, it } from "vitest";
-import { parseMarkdownLines } from "../../../ui-core/src/formatting.js";
-import { selectChatLines } from "../../../ui-core/src/selectors.js";
+import { parseMarkdownLines } from "../../../app/ui/core/src/formatting.js";
+import { selectChatLines } from "../../../app/ui/core/src/selectors.js";
 import { assert, assertEqual } from "../helpers/assertions.js";
 
 function chatStateForAssistantText(text) {

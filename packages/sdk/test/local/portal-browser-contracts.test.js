@@ -2,8 +2,8 @@ import { describe, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { PortalRuntime } from "../../../portal/runtime.js";
-import { isScrollViewportAtBottom, mergeBoxTableCellFragments } from "../../../ui-react/src/web-app.js";
+import { PortalRuntime } from "../../../app/web/runtime.js";
+import { isScrollViewportAtBottom, mergeBoxTableCellFragments } from "../../../app/ui/react/src/web-app.js";
 import { assert, assertEqual, assertIncludes } from "../helpers/assertions.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -57,30 +57,34 @@ describe("portal browser contracts", () => {
     });
 
     it("supports browser-native artifact uploads through the portal transport", () => {
-        const browserTransport = readRepoFile("packages/portal/src/browser-transport.js");
-        const runtime = readRepoFile("packages/portal/runtime.js");
-        const nodeTransport = readRepoFile("packages/cli/src/node-sdk-transport.js");
-        const server = readRepoFile("packages/portal/server.js");
-        const controller = readRepoFile("packages/ui-core/src/controller.js");
-        const state = readRepoFile("packages/ui-core/src/state.js");
-        const webApp = readRepoFile("packages/ui-react/src/web-app.js");
-        const css = readRepoFile("packages/portal/src/index.css");
+        const browserTransport = readRepoFile("packages/app/web/src/browser-transport.js");
+        const httpTransport = readRepoFile("packages/sdk/api/src/http-api-transport.js");
+        const runtime = readRepoFile("packages/app/web/runtime.js");
+        const nodeTransport = readRepoFile("packages/app/tui/src/node-sdk-transport.js");
+        const server = readRepoFile("packages/app/web/server.js");
+        const controller = readRepoFile("packages/app/ui/core/src/controller.js");
+        const state = readRepoFile("packages/app/ui/core/src/state.js");
+        const webApp = readRepoFile("packages/app/ui/react/src/web-app.js");
+        const css = readRepoFile("packages/app/web/src/index.css");
 
+        // The browser transport is HttpApiTransport (pilotswarm-sdk/api)
+        // plus browser conveniences; the shared method surface lives there.
+        assertIncludes(browserTransport, "extends HttpApiTransport", "browser transport should ride the shared Web API transport");
         assertIncludes(browserTransport, "async uploadArtifactFromFile(sessionId, file)", "browser transport should upload dropped/selected files");
-        assertIncludes(browserTransport, "async deleteArtifact(sessionId, filename)", "browser transport should expose single-artifact deletion for the viewer");
+        assertIncludes(httpTransport, "async deleteArtifact(sessionId, filename)", "web transport should expose single-artifact deletion for the viewer");
         assertIncludes(browserTransport, "await file.arrayBuffer()", "browser transport should read uploaded files as raw bytes instead of text");
-        assertIncludes(browserTransport, 'contentEncoding: "base64"', "browser transport should tag upload RPC payloads with a binary-safe encoding");
-        assertIncludes(browserTransport, 'return this.rpc("uploadArtifact"', "browser transport should send uploads through portal RPC");
+        assertIncludes(browserTransport, '"base64"', "browser transport should tag upload payloads with a binary-safe encoding");
+        assertIncludes(httpTransport, 'this.api.call("uploadArtifact"', "web transport should send uploads through the uploadArtifact operation");
         assertIncludes(runtime, 'case "uploadArtifact":', "portal runtime should expose artifact upload RPC");
         assertIncludes(runtime, 'case "deleteArtifact":', "portal runtime should expose single-artifact deletion RPC");
         assertIncludes(runtime, "safeParams.contentEncoding", "portal runtime should forward upload contentEncoding to the node transport");
         assertIncludes(runtime, "async downloadArtifactBinary(sessionId, filename)", "portal runtime should expose a raw-byte artifact download path for HTTP downloads");
-        assertIncludes(browserTransport, "async getUserStats(opts)", "browser transport should expose user stats RPC");
+        assertIncludes(httpTransport, "async getUserStats(opts)", "web transport should expose user stats");
         assertIncludes(runtime, 'case "getUserStats":', "portal runtime should expose user stats RPC");
-        assertIncludes(browserTransport, "async listSessionsPage(opts = {})", "browser transport should expose bounded session paging");
-        assertIncludes(browserTransport, 'return this.rpc("listSessionsPage"', "browser transport should call the bounded session paging RPC");
-        assertIncludes(browserTransport, "async getTopEventEmitters(opts = {})", "browser transport should expose top event emitter diagnostics");
-        assertIncludes(browserTransport, 'return this.rpc("getTopEventEmitters"', "browser transport should call the top event emitter diagnostics RPC");
+        assertIncludes(httpTransport, "async listSessionsPage(opts = {})", "web transport should expose bounded session paging");
+        assertIncludes(httpTransport, 'this.api.call("listSessionsPage"', "web transport should call the bounded session paging operation");
+        assertIncludes(httpTransport, "async getTopEventEmitters(opts = {})", "web transport should expose top event emitter diagnostics");
+        assertIncludes(httpTransport, 'this.api.call("getTopEventEmitters"', "web transport should call the top event emitter diagnostics operation");
         assertIncludes(runtime, 'case "listSessionsPage":', "portal runtime should expose bounded session paging RPC");
         assertIncludes(runtime, "normalizeSessionPageOptions(safeParams)", "portal runtime should guard bounded session paging params");
         assertIncludes(runtime, 'params.cursor != null && typeof params.cursor !== "object"', "portal runtime should reject malformed session page cursors");
@@ -108,17 +112,17 @@ describe("portal browser contracts", () => {
     });
 
     it("keeps portal-only UI features aligned with browser constraints", () => {
-        const portalApp = readRepoFile("packages/portal/src/App.jsx");
-        const webApp = readRepoFile("packages/ui-react/src/web-app.js");
-        const sharedTui = readRepoFile("packages/ui-react/src/components.js");
-        const cliPlatform = readRepoFile("packages/cli/src/platform.js");
-        const cliApp = readRepoFile("packages/cli/src/app.js");
-        const cliIndex = readRepoFile("packages/cli/src/index.js");
-        const nodeTransport = readRepoFile("packages/cli/src/node-sdk-transport.js");
-        const layout = readRepoFile("packages/ui-core/src/layout.js");
-        const state = readRepoFile("packages/ui-core/src/state.js");
-        const selectors = readRepoFile("packages/ui-core/src/selectors.js");
-        const css = readRepoFile("packages/portal/src/index.css");
+        const portalApp = readRepoFile("packages/app/web/src/App.jsx");
+        const webApp = readRepoFile("packages/app/ui/react/src/web-app.js");
+        const sharedTui = readRepoFile("packages/app/ui/react/src/components.js");
+        const cliPlatform = readRepoFile("packages/app/tui/src/platform.js");
+        const cliApp = readRepoFile("packages/app/tui/src/app.js");
+        const cliIndex = readRepoFile("packages/app/tui/src/index.js");
+        const nodeTransport = readRepoFile("packages/app/tui/src/node-sdk-transport.js");
+        const layout = readRepoFile("packages/app/ui/core/src/layout.js");
+        const state = readRepoFile("packages/app/ui/core/src/state.js");
+        const selectors = readRepoFile("packages/app/ui/core/src/selectors.js");
+        const css = readRepoFile("packages/app/web/src/index.css");
 
         assertIncludes(portalApp, "portal-header-version", "portal header should render a version indicator near sign-out");
         assertIncludes(webApp, 'controller.handleCommand(UI_COMMANDS.OPEN_MODEL_PICKER)', "web app should expose new-session model selection");
@@ -179,7 +183,7 @@ describe("portal browser contracts", () => {
         assertIncludes(webApp, "controller.adjustActivityPaneSplit", "web app should support resizing the inspector/activity split vertically");
         assertIncludes(layout, "sessionPaneAdjust", "layout computation should persist vertical session-pane adjustments");
         assertIncludes(state, "normalizeStoredLayoutAdjustments", "shared state should normalize persisted pane-size adjustments");
-        assertIncludes(state, "themeId: themeId || DEFAULT_THEME_ID", "shared initial state should honor persisted theme ids");
+        assertIncludes(state, "themeId: getTheme(themeId)?.id || DEFAULT_THEME_ID", "shared initial state should honor persisted theme ids and fall back when a saved theme no longer ships");
         assertIncludes(state, "...initialLayoutAdjustments", "shared initial state should hydrate persisted pane-size adjustments into ui.layout");
         assertIncludes(state, "followBottom:", "shared UI state should track follow-bottom scroll mode for live panes");
         assertIncludes(sharedTui, "buildSessionTitleRightRuns", "shared TUI shell should compose RSS and version chrome");

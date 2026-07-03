@@ -1,8 +1,8 @@
 import { describe, it } from "vitest";
-import { PilotSwarmUiController } from "../../../ui-core/src/controller.js";
-import { appReducer } from "../../../ui-core/src/reducer.js";
-import { createInitialState } from "../../../ui-core/src/state.js";
-import { createStore } from "../../../ui-core/src/store.js";
+import { PilotSwarmUiController } from "../../../app/ui/core/src/controller.js";
+import { appReducer } from "../../../app/ui/core/src/reducer.js";
+import { createInitialState } from "../../../app/ui/core/src/state.js";
+import { createStore } from "../../../app/ui/core/src/store.js";
 import { assert, assertEqual } from "../helpers/assertions.js";
 
 function createController(transportOverrides = {}) {

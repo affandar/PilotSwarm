@@ -11,9 +11,9 @@ between the TUI and the portal at any time; they don't conflict.
 Either:
 
 - **Docker quickstart** (easiest): `docker run -d -p 127.0.0.1:3001:3001 -p 127.0.0.1:2222:2222 -e GITHUB_TOKEN -v pilotswarm-data:/data --name pilotswarm-starter affandar/pilotswarm-starter:latest`. Then open `http://localhost:3001`.
-- **From source**: `npm install && npm run build`, set up `.env` (see [getting-started.md](../getting-started.md)), then `npm run portal:start` (or `./scripts/portal-start.sh`). Open `http://localhost:3001`.
+- **From source**: `npm install && npm run build`, set up `.env` (see [getting-started.md](../quickstart/local.md)), then `npm run portal:start` (or `./scripts/portal-start.sh`). Open `http://localhost:3001`.
 
-For a pinned Docker quickstart, replace `latest` with `0.1.35`.
+For a pinned Docker quickstart, replace `latest` with `0.4.0`.
 
 For deployments with Entra ID auth enabled (production), you'll see a
 sign-in flow first. For local development, sign-in is bypassed.
@@ -43,7 +43,7 @@ single short conversation.
 
 **Steps:**
 
-1. Click **New Session** (top-left of the Sessions pane).
+1. Click **New** (top-left of the Sessions pane).
 2. The agent picker dialog opens. Pick the default agent (or just hit
    Enter).
 3. The session appears in the list and is automatically selected.
@@ -135,7 +135,7 @@ between them quickly.
 
 **Steps:**
 
-1. **New Session** twice, send a different prompt to each.
+1. **New** twice, send a different prompt to each.
 2. Click between sessions in the list to switch focus. The chat,
    activity, and inspector all re-render for the active session.
 3. Drag the divider between Sessions and Chat to resize the split.
@@ -314,7 +314,7 @@ sample](../../examples/devops-command-center/README.md) plugin loaded.
 
 **Steps:**
 
-1. Click **New Session** and pick the `investigator` agent (or any
+1. Click **New** and pick the `investigator` agent (or any
    agent allowed to spawn children).
 2. Send a prompt that invites parallel work, e.g.:
 
@@ -459,8 +459,8 @@ faster for keyboard-heavy work and runs over SSH.
 different tools, different branding.
 
 This crosses into developer territory; for the full walkthrough see
-[Building SDK Apps](../sdk/building-apps.md) and
-[Building CLI Apps](../cli/building-cli-apps.md).
+[Building SDK Apps](../developer/building/sdk-apps.md) and
+[Building CLI Apps](../developer/building/cli-apps.md).
 
 **The plugin model:**
 
@@ -472,7 +472,7 @@ This crosses into developer territory; for the full walkthrough see
 3. Register custom tools in `worker-module.js` via `defineTool(...)`.
 4. Set `PLUGIN_DIRS=./plugin` in your `.env` and restart workers
    (today; hot reload is on the roadmap).
-5. Open the portal — your agent appears in the **New Session** picker.
+5. Open the portal — your agent appears in the **New** session picker.
 
 **What you can customize:**
 
@@ -498,7 +498,7 @@ as your app's portal.
 
 | Action | How |
 |---|---|
-| New session | **New Session** button (top-left) |
+| New session | **New** button (top-left) |
 | Switch session | Click in list |
 | Send prompt | Type, press `Enter` (Shift+Enter for newline) |
 | Stop the current turn | Red `■` button next to Send while the session is running; session stays alive and returns to idle |
@@ -552,5 +552,5 @@ timer fires; sessions mid-turn replay from the last yield.
 Hit your browser's reload. The portal state is recoverable from the
 catalog and the runtime — there's no client-side state worth losing.
 
-For deeper issues see [Architecture](../architecture.md) and
-[Orchestration Design](../orchestration-design.md).
+For deeper issues see [Architecture](../architecture/system.md) and
+[Orchestration Design](../architecture/orchestration/design.md).

@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.1.0
+version: 1.2.0
 name: pilotswarm-azure-deployer
 description: "Use when packaging and deploying a PilotSwarm-based app to Azure or AKS. Prepares remote worker and portal packaging, configuration, manifests, rollout guidance, and optional Entra auth setup."
 ---
@@ -23,6 +23,23 @@ Your job is to create or update deployment assets, environment documentation, an
 - treat portal authentication as an optional add-on; support the shipped Entra provider when requested without implying it is mandatory for every deployment
 - explain rollout and reset constraints clearly when orchestration changes are involved
 - use the public deployment docs and DevOps sample as the canonical reference shape
+
+## Deployed Topology (the Web API seam)
+
+In every deployed environment the portal is the **only client-facing
+surface**: it hosts the Web API (HTTP `/api/v1` + WebSocket `/api/v1/ws`) and
+performs all datastore operations on callers' behalf. Wire deployments so:
+
+- `DATABASE_URL`, blob and `HORIZON_*` secrets are delivered ONLY to worker
+  and portal pods — never to client machines or client-side config
+- users attach with just the portal URL: TUI via `npx pilotswarm remote
+  --api-url <url>`, SDK apps via `new PilotSwarmClient({ apiUrl })`, MCP via
+  `pilotswarm-mcp --api-url <url>`
+- portal auth (none | entra) gates the entire API; on Entra deployments the
+  TUI/MCP sign in interactively or via `PILOTSWARM_API_TOKEN`
+- validate rollouts with `GET /api/v1/health` (`{ ok, started, mode,
+  apiVersion }`) and `GET /api/v1/bootstrap` (models + creatable agents)
+- Reference: `https://github.com/affandar/pilotswarm/blob/main/docs/architecture/layering.md`
 
 ## Deployment Topology
 
@@ -63,11 +80,11 @@ Only proceed after the user confirms.
 - the installed `pilotswarm-aks-identity` skill (for cross-cluster AKS access)
 - the installed `pilotswarm-azure-lessons` skill (for Azure workarounds)
 - the installed `pilotswarm-three-tier` skill (when the user chooses three-tier topology)
-- `https://github.com/affandar/pilotswarm/blob/main/docs/getting-started-docker-appliance.md`
-- `https://github.com/affandar/pilotswarm/blob/main/docs/deploying-to-aks.md`
-- `https://github.com/affandar/pilotswarm/blob/main/docs/configuration.md`
-- `https://github.com/affandar/pilotswarm/blob/main/docs/plugin-architecture-guide.md`
-- `https://github.com/affandar/pilotswarm/blob/main/packages/portal/README.md`
+- `https://github.com/affandar/pilotswarm/blob/main/docs/quickstart/docker.md`
+- `https://github.com/affandar/pilotswarm/blob/main/docs/developer/deploy/aks.md`
+- `https://github.com/affandar/pilotswarm/blob/main/docs/developer/reference/configuration.md`
+- `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/plugins.md`
+- `https://github.com/affandar/pilotswarm/blob/main/packages/app/web/README.md`
 - `https://github.com/affandar/pilotswarm/tree/main/examples/devops-command-center`
 
 ## Constraints

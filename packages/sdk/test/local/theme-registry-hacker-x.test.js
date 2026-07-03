@@ -1,5 +1,5 @@
 import { describe, it } from "vitest";
-import { getTheme, listThemes } from "../../../ui-core/src/themes/index.js";
+import { getTheme, listThemes } from "../../../app/ui/core/src/themes/index.js";
 import { assertEqual, assertIncludes, assertNotNull } from "../helpers/assertions.js";
 
 describe("theme registry additions", () => {

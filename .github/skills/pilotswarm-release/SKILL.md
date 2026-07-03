@@ -17,7 +17,7 @@ Treat this as a `pilotswarm`-repo maintainer workflow only. Do not update downst
    - Run `git status --short`.
    - Check changed runtime, docs, templates, examples, and workflow files.
    - Check the latest existing git tag with `git tag --sort=-version:refname | head`.
-   - Check current package names and versions in `packages/sdk/package.json` and `packages/cli/package.json`.
+   - Check current package names and versions in `packages/sdk/package.json`, `packages/horizon-store/package.json`, and `packages/app/package.json`.
    - Report the current latest tag and the proposed next tag to the user before any tag is created.
    - Check whether each published workspace package has its own `README.md`.
 
@@ -47,7 +47,7 @@ Treat this as a `pilotswarm`-repo maintainer workflow only. Do not update downst
      ```bash
      npm pack --dry-run
      ```
-       from `packages/sdk`, `packages/horizon-store`, `packages/cli`, and `packages/portal`.
+       from `packages/sdk`, `packages/horizon-store`, and `packages/app`.
 
 4. Validate npm-release wiring.
    - Check `.github/workflows/publish-npm.yml`.
@@ -111,14 +111,25 @@ Treat this as a `pilotswarm`-repo maintainer workflow only. Do not update downst
 
 ## Current Package Surface
 
-PilotSwarm publishes the following packages (in dependency/publish order):
+PilotSwarm publishes exactly three packages (in dependency/publish order):
 
-1. `pilotswarm-sdk` — SDK runtime
-2. `pilotswarm-horizon-store` — optional HorizonDB enhanced facts + graph providers (peer depends on sdk)
-3. `pilotswarm-cli` — terminal UI (depends on sdk; bundles ui-core and ui-react)
-4. `pilotswarm-web` — browser portal (depends on cli; bundles ui-core and ui-react)
+1. `pilotswarm-sdk` — SDK runtime. Self-contained: the isomorphic Web API
+   wire client ships inside it as the browser-safe subpath export
+   `pilotswarm-sdk/api` (no separate api-client package exists).
+2. `pilotswarm-horizon-store` — optional HorizonDB enhanced facts + graph
+   providers (peer-depends on sdk).
+3. `pilotswarm` — the application package (`packages/app`): terminal UI,
+   portal server + Web API, and MCP server in one install. Bins:
+   `pilotswarm`, `pilotswarm-cli` (alias), `pilotswarm-web`, `pilotswarm-mcp`.
+   The former ui-core/ui-react/host layers ship inside it as subpath exports
+   (`pilotswarm/ui-core`, `pilotswarm/ui-react`, `pilotswarm/host`,
+   `pilotswarm/web`); there are no bundledDependencies and no prepack sync
+   hacks.
 
-`pilotswarm-ui-core` and `pilotswarm-ui-react` are workspace-only packages (`"private": true`). They ship inside `pilotswarm-cli` and `pilotswarm-web` via `bundledDependencies` — they are never published to npm independently.
+Retired npm names (do NOT publish new versions): `pilotswarm-cli`,
+`pilotswarm-web`, `pilotswarm-api-client`, `pilotswarm-mcp-server`. The first
+two have old versions on the registry — deprecation notices pointing at
+`pilotswarm` are the correct follow-up, not new releases.
 
 If package names change later, update this skill in the same change.
 

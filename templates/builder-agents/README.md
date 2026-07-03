@@ -28,13 +28,13 @@ They are not active in this repository. Copy them into the target repository you
 These templates assume apps consume:
 
 - `pilotswarm-sdk`
-- `pilotswarm-cli`
+- `pilotswarm` (the app package: TUI + portal + MCP bins)
 
 from npm:
 
 ```bash
 npm install pilotswarm-sdk
-npm install pilotswarm-cli
+npm install pilotswarm
 ```
 
 and that PilotSwarm's built-in framework and management plugins are embedded in those packages while app `default.agent.md` files act as app-wide overlays.
@@ -101,24 +101,36 @@ cp templates/builder-agents/agents/*.agent.md .github/agents/
 cp -R templates/builder-agents/skills/* .github/skills/
 ```
 
+## Topology Baseline (all templates assume this)
+
+Every deployment exposes one integration surface: the portal's Web API
+(`/api/v1` + `/api/v1/ws`). Clients — TUI (`npx pilotswarm remote --api-url`),
+SDK apps (`new PilotSwarmClient({ apiUrl })`), the MCP server
+(`pilotswarm-mcp --api-url`), and custom UXes on `pilotswarm-sdk/api` —
+hold only the portal URL (plus an Entra token where auth is enabled). Only
+workers and the portal server itself hold `DATABASE_URL`/blob/`HORIZON_*`
+secrets. Direct `{ store }` client construction is for single-process demos,
+tests, and cleanup scripts. See
+`https://github.com/affandar/pilotswarm/blob/main/docs/architecture/layering.md`.
+
 ## Canonical References
 
 - Starter Docker quickstart:
-  `https://github.com/affandar/pilotswarm/blob/main/docs/getting-started-docker-appliance.md`
+  `https://github.com/affandar/pilotswarm/blob/main/docs/quickstart/docker.md`
 - CLI guide:
-  `https://github.com/affandar/pilotswarm/blob/main/docs/cli/building-cli-apps.md`
+  `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/cli-apps.md`
 - Portal guide:
-  `https://github.com/affandar/pilotswarm/blob/main/packages/portal/README.md`
+  `https://github.com/affandar/pilotswarm/blob/main/packages/app/web/README.md`
 - CLI agent guide:
-  `https://github.com/affandar/pilotswarm/blob/main/docs/cli/building-agents.md`
+  `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/cli-agents.md`
 - SDK guide:
-  `https://github.com/affandar/pilotswarm/blob/main/docs/sdk/building-apps.md`
+  `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/sdk-apps.md`
 - SDK agent guide:
-  `https://github.com/affandar/pilotswarm/blob/main/docs/sdk/building-agents.md`
+  `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/sdk-agents.md`
 - Plugin architecture:
-  `https://github.com/affandar/pilotswarm/blob/main/docs/plugin-architecture-guide.md`
+  `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/plugins.md`
 - AKS deployment:
-  `https://github.com/affandar/pilotswarm/blob/main/docs/deploying-to-aks.md`
+  `https://github.com/affandar/pilotswarm/blob/main/docs/developer/deploy/aks.md`
 - DevOps sample:
   `https://github.com/affandar/pilotswarm/tree/main/examples/devops-command-center`
 

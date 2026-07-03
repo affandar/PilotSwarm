@@ -591,8 +591,8 @@ test("scaffolder emits the post-scaffold VPN reminder block on success", () => {
     assert.match(out, /\$450\/month/);
     assert.match(out, /Private DNS Resolver/);
     assert.match(out, /45\+ minutes/);
-    // Docs pointer (referenced by section name in deploying-to-aks.md).
-    assert.match(out, /docs\/deploying-to-aks\.md/);
+    // Docs pointer (referenced by section name in the AKS deploy guide).
+    assert.match(out, /docs\/developer\/deploy\/aks\.md/);
     assert.match(out, /Optional: VPN Gateway P2S/);
   } finally {
     cleanup();

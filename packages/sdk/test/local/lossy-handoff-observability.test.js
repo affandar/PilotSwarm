@@ -2,9 +2,9 @@ import { describe, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildHistoryModel } from "../../../ui-core/src/history.js";
-import { selectInspector } from "../../../ui-core/src/selectors.js";
-import { createInitialState } from "../../../ui-core/src/state.js";
+import { buildHistoryModel } from "../../../app/ui/core/src/history.js";
+import { selectInspector } from "../../../app/ui/core/src/selectors.js";
+import { createInitialState } from "../../../app/ui/core/src/state.js";
 import { assert, assertEqual, assertIncludes } from "../helpers/assertions.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

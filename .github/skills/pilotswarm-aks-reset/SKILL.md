@@ -30,7 +30,7 @@ That means:
 - Reset script: `scripts/db-reset.js`
 - Deploy script: `scripts/deploy-aks.sh`
 - Orchestration debugging skill/context: `.github/skills/debug-orchestration/SKILL.md`
-- AKS guide: `docs/deploying-to-aks.md`
+- AKS guide: `docs/developer/deploy/aks.md`
 
 ## When Reset Is The Right Call
 

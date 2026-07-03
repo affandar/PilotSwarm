@@ -77,7 +77,7 @@ spec:
             - name: PORTAL_TUI_MODE
               value: "remote"
             - name: PLUGIN_DIRS
-              value: "/app/packages/cli/plugins"
+              value: "/app/packages/app/tui/plugins"
           envFrom:
             - secretRef:
                 name: copilot-runtime-secrets

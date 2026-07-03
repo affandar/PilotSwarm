@@ -1,9 +1,9 @@
 import { describe, it } from "vitest";
-import { NodeSdkTransport } from "../../../cli/src/node-sdk-transport.js";
-import { FOCUS_REGIONS, UI_COMMANDS } from "../../../ui-core/src/commands.js";
-import { PilotSwarmUiController } from "../../../ui-core/src/controller.js";
-import { buildHistoryModel } from "../../../ui-core/src/history.js";
-import { appReducer } from "../../../ui-core/src/reducer.js";
+import { NodeSdkTransport } from "../../../app/tui/src/node-sdk-transport.js";
+import { FOCUS_REGIONS, UI_COMMANDS } from "../../../app/ui/core/src/commands.js";
+import { PilotSwarmUiController } from "../../../app/ui/core/src/controller.js";
+import { buildHistoryModel } from "../../../app/ui/core/src/history.js";
+import { appReducer } from "../../../app/ui/core/src/reducer.js";
 import {
     selectActiveChat,
     selectActivityPane,
@@ -17,9 +17,9 @@ import {
     selectSessionRows,
     selectStatusBar,
     selectVisibleSessionRows,
-} from "../../../ui-core/src/selectors.js";
-import { createInitialState } from "../../../ui-core/src/state.js";
-import { createStore } from "../../../ui-core/src/store.js";
+} from "../../../app/ui/core/src/selectors.js";
+import { createInitialState } from "../../../app/ui/core/src/state.js";
+import { createStore } from "../../../app/ui/core/src/store.js";
 import { assert, assertEqual, assertIncludes, assertThrows } from "../helpers/assertions.js";
 
 function createController(transportOverrides = {}, { branding = null, sessionOwnerFilter = null } = {}) {

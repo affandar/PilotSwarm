@@ -233,7 +233,7 @@ Gateway P2S" for both) *before* invoking the scaffolder, not after.
 
 **Pick one mechanism per stamp; don't mix roles + email allowlist.**
 The portal authz engine treats the JWT `roles` claim as authoritative
-when present (see `packages/portal/auth/authz/engine.js`): the
+when present (see `packages/app/web/auth/authz/engine.js`): the
 role-authoritative branch ignores `PORTAL_AUTHZ_ADMIN_GROUPS` /
 `PORTAL_AUTHZ_USER_GROUPS` entirely when `roles[]` is non-empty. So
 for Roles posture, the env allowlists serve no purpose — the role

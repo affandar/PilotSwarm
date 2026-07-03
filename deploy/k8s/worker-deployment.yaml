@@ -51,7 +51,7 @@ spec:
             - name: RUST_LOG
               value: "info"
             - name: PLUGIN_DIRS
-              value: "/app/packages/cli/plugins"
+              value: "/app/packages/app/tui/plugins"
             - name: PILOTSWARM_ORCHESTRATION_CONCURRENCY
               value: "4"
             - name: PILOTSWARM_WORKER_CONCURRENCY

@@ -1,0 +1,340 @@
+import React from "react";
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
+import { createRequire } from "node:module";
+import { render } from "ink";
+import {
+    PilotSwarmUiController,
+    appReducer,
+    createInitialState,
+    createStore,
+} from "pilotswarm/ui-core";
+import { PilotSwarmTuiApp } from "./app.js";
+import { createTuiPlatform } from "./platform.js";
+import { NodeSdkTransport } from "./node-sdk-transport.js";
+
+const require = createRequire(import.meta.url);
+
+const CONFIG_DIR = path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "pilotswarm");
+const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
+
+function readConfig() {
+    try {
+        return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8"));
+    } catch {
+        return {};
+    }
+}
+
+function writeConfig(patch) {
+    try {
+        const existing = readConfig();
+        const merged = { ...existing, ...patch };
+        fs.mkdirSync(CONFIG_DIR, { recursive: true });
+        fs.writeFileSync(CONFIG_FILE, JSON.stringify(merged, null, 2) + "\n", "utf8");
+    } catch {}
+}
+
+function collapsedSessionIdsToArray(collapsedIds) {
+    if (!(collapsedIds instanceof Set)) return [];
+    return Array.from(collapsedIds)
+        .map((id) => String(id || "").trim())
+        .filter(Boolean)
+        .sort();
+}
+
+function setupTuiHostRuntime() {
+    const logFile = "/tmp/duroxide-tui.log";
+    const originalConsole = {
+        log: console.log.bind(console),
+        warn: console.warn.bind(console),
+        error: console.error.bind(console),
+    };
+    const originalStderrWrite = process.stderr.write.bind(process.stderr);
+    const originalEmitWarning = process.emitWarning.bind(process);
+
+    try {
+        fs.writeFileSync(logFile, "");
+    } catch {}
+
+    try {
+        const { initTracing } = require("duroxide");
+        initTracing({
+            logFile,
+            logLevel: process.env.LOG_LEVEL || "info",
+            logFormat: "compact",
+        });
+    } catch {}
+
+    const appendLog = (...parts) => {
+        try {
+            const text = parts
+                .map((part) => {
+                    if (typeof part === "string") return part;
+                    if (part instanceof Error) return part.stack || part.message;
+                    try { return JSON.stringify(part); } catch { return String(part); }
+                })
+                .join(" ");
+            fs.appendFileSync(logFile, `${text}\n`);
+        } catch {}
+    };
+
+    console.log = (...args) => appendLog(...args);
+    console.warn = (...args) => appendLog(...args);
+    console.error = (...args) => appendLog(...args);
+
+    process.stderr.write = (chunk, encoding, cb) => {
+        try {
+            const text = typeof chunk === "string" ? chunk : chunk?.toString?.(encoding || "utf8");
+            if (text) appendLog(text.trimEnd());
+        } catch {}
+        if (typeof cb === "function") cb();
+        return true;
+    };
+
+    process.emitWarning = (warning, ...args) => {
+        appendLog("[warning]", warning, ...args);
+    };
+
+    return () => {
+        console.log = originalConsole.log;
+        console.warn = originalConsole.warn;
+        console.error = originalConsole.error;
+        process.stderr.write = originalStderrWrite;
+        process.emitWarning = originalEmitWarning;
+    };
+}
+
+function clearTerminalScreen() {
+    if (!process.stdout?.isTTY) return;
+    try {
+        process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
+    } catch {}
+}
+
+async function createTransport(config, authNotify) {
+    if (config.apiUrl) {
+        // Web API mode: discover the auth mode, sign in if the deployment
+        // requires it (device code, before the Ink app renders), then run
+        // the whole TUI over /api/v1 — no backend credentials in-process.
+        const { bootstrapApiAuth } = await import("./auth/cli.js");
+        const { createHttpTransportHost } = await import("./http-transport-host.js");
+        const { getAccessToken } = await bootstrapApiAuth(config.apiUrl, { useDeviceCode: config.deviceCode });
+        // Auth failures fire mid-session, once the Ink app owns the screen and
+        // setupTuiHostRuntime has redirected console/stderr to the log file.
+        // Route guidance through the status line (bound after the controller
+        // exists) rather than writing to a terminal Ink is drawing on.
+        return createHttpTransportHost({
+            apiUrl: config.apiUrl,
+            getAccessToken,
+            onUnauthorized: () => {
+                authNotify.emit(`Session expired. Run: pilotswarm auth login --api-url ${config.apiUrl}`);
+            },
+            onForbidden: (message) => {
+                authNotify.emit(`Access denied: ${message}`);
+            },
+        });
+    }
+    return new NodeSdkTransport({
+        store: config.store,
+        mode: config.mode,
+    });
+}
+
+export async function startTuiApp(config) {
+    // Auth-failure guidance is buffered until the controller exists, then
+    // shown on the status line (see createTransport).
+    const authNotify = {
+        emit(message) {
+            if (this.dispatch) this.dispatch(message);
+        },
+    };
+    const transport = await createTransport(config, authNotify);
+    const restoreHostRuntime = setupTuiHostRuntime();
+    const platform = createTuiPlatform();
+    const userConfig = readConfig();
+    const store = createStore(appReducer, createInitialState({
+        mode: config.mode,
+        branding: config.branding,
+        themeId: userConfig.themeId,
+        chatViewMode: userConfig.chatViewMode,
+        sessionOwnerFilter: userConfig.sessionOwnerFilter,
+        layoutAdjustments: userConfig.layoutAdjustments,
+        pinnedSessionIds: userConfig.pinnedSessionIds,
+        collapsedSessionIds: userConfig.collapsedSessionIds,
+        activeSessionId: userConfig.activeSessionId,
+    }));
+    const controller = new PilotSwarmUiController({ store, transport });
+    authNotify.dispatch = (message) => {
+        try {
+            store.dispatch({ type: "ui/status", text: message });
+        } catch {}
+    };
+    let tuiApp;
+    let finalized = false;
+    let resolveExit;
+    const exitPromise = new Promise((resolve) => {
+        resolveExit = resolve;
+    });
+
+    const finalizeHost = () => {
+        if (finalized) return;
+        finalized = true;
+        try {
+            tuiApp?.cleanup?.();
+        } catch {}
+        restoreHostRuntime();
+        clearTerminalScreen();
+        resolveExit?.();
+    };
+
+    const requestExit = async () => {
+        const forceExitTimer = setTimeout(() => {
+            finalizeHost();
+            process.exit(0);
+        }, 5000);
+        forceExitTimer.unref?.();
+
+        try {
+            await controller.stop();
+        } catch {}
+        finally {
+            clearTimeout(forceExitTimer);
+            try {
+                tuiApp?.clear?.();
+            } catch {}
+            try {
+                tuiApp?.unmount();
+            } catch {}
+            finalizeHost();
+            process.exit(0);
+        }
+    };
+
+    tuiApp = render(React.createElement(PilotSwarmTuiApp, {
+        controller,
+        platform,
+        onRequestExit: requestExit,
+    }), {
+        exitOnCtrlC: false,
+    });
+
+    // Listen for portal theme-change OSC sequences on stdin:
+    //   \x1b]777;theme;<themeId>\x07
+    let oscBuffer = "";
+    const OSC_PREFIX = "\x1b]777;theme;";
+    const OSC_SUFFIX = "\x07";
+    const stdinThemeHandler = (data) => {
+        const str = typeof data === "string" ? data : data.toString("utf8");
+        oscBuffer += str;
+        while (oscBuffer.includes(OSC_PREFIX) && oscBuffer.includes(OSC_SUFFIX)) {
+            const start = oscBuffer.indexOf(OSC_PREFIX);
+            const end = oscBuffer.indexOf(OSC_SUFFIX, start);
+            if (end < 0) break;
+            const themeId = oscBuffer.slice(start + OSC_PREFIX.length, end);
+            oscBuffer = oscBuffer.slice(end + OSC_SUFFIX.length);
+            if (themeId) {
+                store.dispatch({ type: "ui/theme", themeId });
+            }
+        }
+        // Prevent buffer from growing unbounded
+        if (oscBuffer.length > 1024) oscBuffer = oscBuffer.slice(-256);
+    };
+    process.stdin.on("data", stdinThemeHandler);
+
+    // Sync viewport on terminal resize (SIGWINCH)
+    const syncViewport = () => {
+        controller.setViewport({
+            width: process.stdout.columns || 120,
+            height: process.stdout.rows || 40,
+        });
+    };
+    syncViewport();
+    process.stdout.on("resize", syncViewport);
+
+    // Persist theme changes to config file
+    let lastPersistedThemeId = store.getState().ui.themeId;
+    let lastPersistedChatViewMode = store.getState().ui.chatViewMode;
+    let lastPersistedSessionOwnerFilter = JSON.stringify(store.getState().sessions.ownerFilter || null);
+    let lastPersistedLayoutAdjustments = JSON.stringify({
+        paneAdjust: store.getState().ui.layout?.paneAdjust || 0,
+        sessionPaneAdjust: store.getState().ui.layout?.sessionPaneAdjust || 0,
+        activityPaneAdjust: store.getState().ui.layout?.activityPaneAdjust || 0,
+    });
+    let lastPersistedPinnedSessionIds = JSON.stringify(store.getState().sessions.pinnedIds || []);
+    let lastPersistedCollapsedSessionIds = JSON.stringify(collapsedSessionIdsToArray(store.getState().sessions.collapsedIds));
+    let lastPersistedActiveSessionId = store.getState().sessions.activeSessionId || null;
+    store.subscribe(() => {
+        const state = store.getState();
+        const currentThemeId = state.ui.themeId;
+        const currentChatViewMode = state.ui.chatViewMode;
+        const currentSessionOwnerFilter = state.sessions.ownerFilter || null;
+        const currentSessionOwnerFilterJson = JSON.stringify(currentSessionOwnerFilter);
+        const currentLayoutAdjustments = {
+            paneAdjust: state.ui.layout?.paneAdjust || 0,
+            sessionPaneAdjust: state.ui.layout?.sessionPaneAdjust || 0,
+            activityPaneAdjust: state.ui.layout?.activityPaneAdjust || 0,
+        };
+        const currentLayoutAdjustmentsJson = JSON.stringify(currentLayoutAdjustments);
+        const currentPinnedSessionIds = Array.isArray(state.sessions.pinnedIds) ? state.sessions.pinnedIds : [];
+        const currentPinnedSessionIdsJson = JSON.stringify(currentPinnedSessionIds);
+        const currentCollapsedSessionIds = collapsedSessionIdsToArray(state.sessions.collapsedIds);
+        const currentCollapsedSessionIdsJson = JSON.stringify(currentCollapsedSessionIds);
+        const currentActiveSessionId = state.sessions.activeSessionId || null;
+        const patch = {};
+        let changed = false;
+
+        if (currentThemeId && currentThemeId !== lastPersistedThemeId) {
+            lastPersistedThemeId = currentThemeId;
+            patch.themeId = currentThemeId;
+            changed = true;
+        }
+
+        if ((currentChatViewMode === "summary" || currentChatViewMode === "transcript") && currentChatViewMode !== lastPersistedChatViewMode) {
+            lastPersistedChatViewMode = currentChatViewMode;
+            patch.chatViewMode = currentChatViewMode;
+            changed = true;
+        }
+
+        if (currentSessionOwnerFilterJson !== lastPersistedSessionOwnerFilter) {
+            lastPersistedSessionOwnerFilter = currentSessionOwnerFilterJson;
+            patch.sessionOwnerFilter = currentSessionOwnerFilter;
+            changed = true;
+        }
+
+        if (currentLayoutAdjustmentsJson !== lastPersistedLayoutAdjustments) {
+            lastPersistedLayoutAdjustments = currentLayoutAdjustmentsJson;
+            patch.layoutAdjustments = currentLayoutAdjustments;
+            changed = true;
+        }
+
+        if (currentPinnedSessionIdsJson !== lastPersistedPinnedSessionIds) {
+            lastPersistedPinnedSessionIds = currentPinnedSessionIdsJson;
+            patch.pinnedSessionIds = currentPinnedSessionIds;
+            changed = true;
+        }
+
+        if (currentCollapsedSessionIdsJson !== lastPersistedCollapsedSessionIds) {
+            lastPersistedCollapsedSessionIds = currentCollapsedSessionIdsJson;
+            patch.collapsedSessionIds = currentCollapsedSessionIds;
+            changed = true;
+        }
+
+        if (currentActiveSessionId !== lastPersistedActiveSessionId) {
+            lastPersistedActiveSessionId = currentActiveSessionId;
+            patch.activeSessionId = currentActiveSessionId;
+            changed = true;
+        }
+
+        if (changed) {
+            writeConfig(patch);
+        }
+    });
+
+    try {
+        await exitPromise;
+    } finally {
+        finalizeHost();
+    }
+}

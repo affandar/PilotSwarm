@@ -24,6 +24,10 @@ env:
   NPM_DIST_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || 'latest' }}
   NPM_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
 
+# Publish order: pilotswarm-sdk (self-contained; the wire client ships inside
+# it at pilotswarm-sdk/api) -> pilotswarm-horizon-store (peer-depends on sdk)
+# -> pilotswarm (the application package: TUI + portal/Web API + MCP bins;
+# depends on sdk from the registry).
 jobs:
   publish-sdk:
     name: Publish pilotswarm-sdk
@@ -94,8 +98,8 @@ jobs:
             }
           fi
 
-  publish-cli:
-    name: Publish pilotswarm-cli
+  publish-app:
+    name: Publish pilotswarm
     runs-on: ubuntu-latest
     needs: [publish-sdk, publish-horizon-store]
     steps:
@@ -114,49 +118,14 @@ jobs:
       - name: Build workspaces
         run: npm run build
 
-      - name: Publish CLI
-        working-directory: packages/cli
+      - name: Publish App
+        working-directory: packages/app
         run: |
           if [ "${NPM_DRY_RUN}" = "true" ]; then
             npm publish --access public --provenance --tag "${NPM_DIST_TAG}" --dry-run
           else
             npm publish --access public --provenance --tag "${NPM_DIST_TAG}" || {
-              if npm view pilotswarm-cli version 2>/dev/null | grep -q "$(node -p 'require("./package.json").version')"; then
-                echo "Version already published — skipping"
-              else
-                exit 1
-              fi
-            }
-          fi
-
-  publish-web:
-    name: Publish pilotswarm-web
-    runs-on: ubuntu-latest
-    needs: publish-cli
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          registry-url: https://registry.npmjs.org
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build workspaces
-        run: npm run build
-
-      - name: Publish Web
-        working-directory: packages/portal
-        run: |
-          if [ "${NPM_DRY_RUN}" = "true" ]; then
-            npm publish --access public --provenance --tag "${NPM_DIST_TAG}" --dry-run
-          else
-            npm publish --access public --provenance --tag "${NPM_DIST_TAG}" || {
-              if npm view pilotswarm-web version 2>/dev/null | grep -q "$(node -p 'require("./package.json").version')"; then
+              if npm view pilotswarm version 2>/dev/null | grep -q "$(node -p 'require("./package.json").version')"; then
                 echo "Version already published — skipping"
               else
                 exit 1

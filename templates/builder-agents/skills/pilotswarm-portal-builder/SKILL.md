@@ -9,11 +9,11 @@ Build browser portal experiences on top of the shipped PilotSwarm web portal.
 
 ## Canonical References
 
-- Starter Docker quickstart: `https://github.com/affandar/pilotswarm/blob/main/docs/getting-started-docker-appliance.md`
-- Portal guide: `https://github.com/affandar/pilotswarm/blob/main/packages/portal/README.md`
-- SDK guide: `https://github.com/affandar/pilotswarm/blob/main/docs/sdk/building-apps.md`
-- Plugin architecture: `https://github.com/affandar/pilotswarm/blob/main/docs/plugin-architecture-guide.md`
-- AKS deployment: `https://github.com/affandar/pilotswarm/blob/main/docs/deploying-to-aks.md`
+- Starter Docker quickstart: `https://github.com/affandar/pilotswarm/blob/main/docs/quickstart/docker.md`
+- Portal guide: `https://github.com/affandar/pilotswarm/blob/main/packages/app/web/README.md`
+- SDK guide: `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/sdk-apps.md`
+- Plugin architecture: `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/plugins.md`
+- AKS deployment: `https://github.com/affandar/pilotswarm/blob/main/docs/developer/deploy/aks.md`
 - DevOps sample: `https://github.com/affandar/pilotswarm/tree/main/examples/devops-command-center`
 
 ## Preferred Structure
@@ -69,6 +69,17 @@ Do not guess these answers when they materially affect the scaffold. If the user
 - generic sign-in copy
 - `none` or `entra` for auth
 - plugin-driven packaging with `PLUGIN_DIRS`
+
+## Web API Guidance
+
+- The portal server hosts the deployment's Web API (`/api/v1` + WS) — the
+  single surface every client rides (browser UI, TUI remote, SDK apps, MCP,
+  custom UXes on `pilotswarm-sdk/api`).
+- Named agents reach all clients via `GET /api/v1/bootstrap`
+  (`creatableAgents`); that is why portal images must package the app plugin
+  and set `PLUGIN_DIRS`.
+- Validate a portal rollout with `GET /api/v1/health` and
+  `GET /api/v1/auth/config`.
 
 ## Portal Config Guidance
 

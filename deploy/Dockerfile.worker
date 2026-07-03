@@ -11,7 +11,7 @@ WORKDIR /app
 # Copy workspace root and package manifests
 COPY package.json package-lock.json ./
 COPY packages/sdk/package.json ./packages/sdk/
-COPY packages/cli/package.json ./packages/cli/
+COPY packages/app/package.json ./packages/app/
 # horizon-store package.json must be present BEFORE `npm ci` so npm creates the
 # node_modules/@pilotswarm/horizon-store workspace symlink the SDK's dynamic
 # import("@pilotswarm/horizon-store") resolves at runtime (optional EnhancedFactStore).
@@ -25,7 +25,12 @@ RUN npm ci --omit=dev --force
 COPY packages/sdk/dist/ ./packages/sdk/dist/
 COPY packages/sdk/plugins/ ./packages/sdk/plugins/
 COPY packages/sdk/examples/worker.js ./packages/sdk/examples/
-COPY packages/cli/plugins/ ./packages/cli/plugins/
+COPY packages/app/tui/plugins/ ./packages/app/tui/plugins/
+
+# api-client (plain ESM) — the SDK's dist/web/api-connection.js imports it at
+# load time, so it must be present even though workers use direct { store } mode.
+COPY packages/sdk/api/index.js packages/sdk/api/index.d.ts ./packages/sdk/api/
+COPY packages/sdk/api/src/ ./packages/sdk/api/src/
 
 # horizon-store built output + runtime-read migrations (the migrator reads the
 # numbered migrations/*.sql from disk relative to dist/). Sibling layout matters:

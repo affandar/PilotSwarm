@@ -4,7 +4,7 @@ import {
     parseTerminalMarkupRuns,
     shortSessionId,
     stripTerminalMarkupTags,
-} from "../../../ui-core/src/formatting.js";
+} from "../../../app/ui/core/src/formatting.js";
 import { assertEqual } from "../helpers/assertions.js";
 
 describe("terminal UI null guards", () => {

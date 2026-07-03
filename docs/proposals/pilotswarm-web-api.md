@@ -1,10 +1,10 @@
 # PilotSwarm Web API Control Plane
 
-> **Status:** Proposal (active)  
+> **Status:** Implemented (2026-07-02) — see [`docs/proposals-impl/web-api-implementation.md`](../proposals-impl/web-api-implementation.md) for what shipped and the deviations: routes are generated from a shared operations table; there is no send-and-wait route; SDK web mode is the only supported public client mode (direct `{ store }` construction became internal, which goes beyond this plan); and the TUI device-code prompt renders before the Ink app rather than as an Ink modal.  
 > **Date:** 2026-06-11 · **Refreshed:** 2026-06-27 (re-validated against v0.3.0)  
 > **Goal:** Give PilotSwarm a versioned Web API hosted by the portal server, keep direct SDK access as the backward-compatible default, and move the TUI and the browser portal onto that API so neither needs direct PostgreSQL or Azure access. The API supports the portal's existing `none` and `entra` auth modes, and the TUI gets a first-class sign-in design for both.
 
-> **Refresh note (2026-06-27):** Nothing in this proposal has been implemented yet — `packages/api-client/` does not exist, the portal still serves only `/api/rpc` + `/portal-ws` (no `/api/v1`), and the SDK clients have no `provider: "direct" | "web"` mode. The "Current Architecture" section below still holds verbatim. The only drift since the original draft is the RPC dispatch list growing by two observability methods (`getFleetRetrievalUsage`, `getFactsTombstoneStats`), now folded into the Management Surface for parity. The v0.3.0 crawler/harvester work (crawler role, bundled default-agent tier, KB advertisement) is orthogonal — it adds agents and facts surfaces but does not change the transport seam this proposal rides.
+> **Refresh note (2026-06-27):** This note predates the implementation, which has since landed on branch `feature/web-api-control-plane` — `packages/api-client/` now exists and the portal serves `/api/v1` + `/api/v1/ws` alongside the legacy surface. The "Current Architecture" section below describes the pre-implementation state and is kept for context. The only drift since the original draft is the RPC dispatch list growing by two observability methods (`getFleetRetrievalUsage`, `getFactsTombstoneStats`), now folded into the Management Surface for parity. The v0.3.0 crawler/harvester work (crawler role, bundled default-agent tier, KB advertisement) is orthogonal — it adds agents and facts surfaces but does not change the transport seam this proposal rides.
 
 ---
 
@@ -639,7 +639,7 @@ All `/api/v1` JSON responses use a predictable envelope:
 
 ### Phase 4 — Programmatic consumers and extraction (later)
 
-- MCP web mode (`--api-url`), backed by the same api-client, plus the facts/skills routes above.
+- MCP web mode (`--api-url`), backed by the same api-client, plus the facts/skills routes above. The facts/graph data-plane this needs is specified in [facts-graph-web-api](./facts-graph-web-api.md).
 - Extract direct providers into the SDK, fix the portal→cli dependency inversion, and package a standalone `pilotswarm-api` host if a deployment needs API-without-portal. Introduce `PILOTSWARM_API_AUTH_*` env names (with `PORTAL_AUTH_*` aliases) only at this point.
 
 ---

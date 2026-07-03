@@ -1180,7 +1180,7 @@ async function main() {
     console.log("                               --authentication-method EAPTLS");
     console.log("                             Then import the .zip into the Azure VPN Client app.");
     console.log("");
-    console.log("📖  Full guidance:           docs/deploying-to-aks.md → 'Optional: VPN Gateway P2S' section");
+    console.log("📖  Full guidance:           docs/developer/deploy/aks.md → 'Optional: VPN Gateway P2S' section");
     console.log("                             (also: pilotswarm-new-env-deploy skill VPN matrix entry).");
     console.log("──────────────────────────────────────────────────────────────────────");
   }

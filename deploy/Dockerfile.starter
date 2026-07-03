@@ -22,29 +22,23 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY scripts/postinstall.js ./scripts/
 COPY packages/sdk/package.json ./packages/sdk/
-COPY packages/cli/package.json ./packages/cli/
-COPY packages/portal/package.json ./packages/portal/
-COPY packages/ui-core/package.json ./packages/ui-core/
-COPY packages/ui-react/package.json ./packages/ui-react/
+COPY packages/app/package.json ./packages/app/
 
 RUN npm ci --force
 
 # Copy the runtime sources and starter appliance assets.
 COPY packages/sdk ./packages/sdk
-COPY packages/cli ./packages/cli
-COPY packages/portal ./packages/portal
-COPY packages/ui-core ./packages/ui-core
-COPY packages/ui-react ./packages/ui-react
+COPY packages/app ./packages/app
 COPY deploy ./deploy
 
 RUN npm run build --workspace=packages/sdk \
-    && npm run build --workspace=packages/portal \
+    && npm run build:web --workspace=packages/app \
     && useradd --create-home --shell /bin/bash pilotswarm \
     && passwd -d pilotswarm \
     && mkdir -p /data /run/pilotswarm /run/sshd /app/config \
     && cp /app/deploy/config/model_providers.local-docker.json /app/config/model_providers.local-docker.json \
     && chmod +x /app/deploy/bin/*.sh \
-    && chown -R pilotswarm:pilotswarm /home/pilotswarm /data /run/pilotswarm /app/packages/cli
+    && chown -R pilotswarm:pilotswarm /home/pilotswarm /data /run/pilotswarm /app/packages/app/tui
 
 EXPOSE 3001 2222
 VOLUME ["/data"]
