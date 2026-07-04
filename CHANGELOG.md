@@ -1,5 +1,67 @@
 # Changelog
 
+## 0.4.1 — 2026-07-04
+
+### SDK
+
+- **CMS migration 0025 — typed session-event reads.** 4-arg overloads of
+  `cms_get_session_events` / `cms_get_session_events_before` accept
+  `p_event_types TEXT[]` (NULL = unfiltered) plus a composite
+  `(session_id, event_type, seq)` index. The 3-arg procs remain for
+  mixed-version rollouts; `PgSessionCatalog` falls back to them on
+  Postgres 42883 against pre-0025 databases. `eventTypes` threads through
+  the management clients, the operations table (`eventTypes` JSON query
+  param on both event ops), the HTTP transport, the portal runtime, and
+  the node transport.
+- **CMS migration 0026 — `sessions.splash_mobile`.** Narrow-viewport splash
+  variant: agent frontmatter `splashMobile`, a capability-probed 9-arg
+  `cms_create_session` overload, a jsonb update rule for the spawn paths,
+  and the fixed-column read procs recreated in lockstep
+  (`cms_get_session`, `cms_list_sessions`, `cms_list_group_sessions`).
+- **Worker fail-fast CMS boot.** CMS initialization failure at boot no
+  longer degrades silently into a catalog-less worker (which never
+  registered sweeper/resource-manager tools and made system agents run
+  tool-less). Boot retries five times with backoff, then fails the pod.
+- Agent frontmatter `splashMobile` (inline and block scalar), threaded
+  through spawn paths, session views, and `createSessionForAgent`.
+- Mgmt system agents (pilotswarm, sweeper, resourcemgr, facts-manager,
+  agent-tuner) ship house-style mobile splashes.
+
+### Portal / UI
+
+- **Chat history pull is transcript-dense.** The pull-to-load-older path
+  passes the renderable message types server-side, so noise-dominated
+  sessions load pages of chat instead of raw event noise; a short filtered
+  page marks the transcript complete. Old servers ignore the param and
+  degrade to raw paging.
+- **Touch scrolling keeps native momentum.** Programmatic scroll restores
+  are suppressed while a gesture or its glide is in flight, so flicks
+  accelerate naturally.
+- **Explicit touch pulls always load.** A pull-down at the top of the pane
+  forces the history load, bypassing the arm handshake and the
+  DOM-vs-render-metrics offset gate that could silently swallow pulls on
+  narrow viewports (including splash-only sessions).
+- **Per-session memory.** Chat scroll offsets are saved and restored per
+  session, and re-entering a session catches up the in-memory expanded
+  history with a delta fetch instead of replacing it — pulled-in older
+  history survives session switches. New chat still snaps to latest.
+- Splash-to-chat transitions land on the latest messages.
+- Splash art wider than the pane no longer produces horizontal scrollbars
+  on narrow screens: it wraps, or the renderer swaps in the `splashMobile`
+  variant when one exists (agents, plugin.json `splashMobileFile`, and the
+  default PilotSwarm brand all ship compact colorful mobile art).
+- Focus-mode overlay is fully opaque on themes with translucent surfaces,
+  and session-list rows no longer flex-compress and overlap when the list
+  overflows.
+
+### Tests
+
+- New suites: typed event-filter integration, chat-pull gating, splashMobile
+  end-to-end, per-session memory. `validateSessionAfterTurn` polls for the
+  post-turn CMS state instead of single-sampling (flaky under overlay load),
+  and the pg-migrator routine check counts DISTINCT names (one row per
+  overload since 0025).
+
 ## 0.4.0 — 2026-07-03
 
 ### Packaging — the big consolidation (9 directories → 3 packages)

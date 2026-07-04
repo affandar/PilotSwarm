@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.4.0** — Consolidates the toolchain into three packages (new `pilotswarm` app package with TUI, portal, and MCP bins; `pilotswarm-sdk` with the wire client built in at `pilotswarm-sdk/api`; `pilotswarm-horizon-store`), defaults every surface to the Web API, and ships three new high-contrast light themes.
+> **Latest release: v0.4.1** — Mobile-first portal polish: server-side event-type filtering for chat history paging, splashMobile art variants for narrow viewports, native touch momentum scrolling, per-session scroll and history memory, plus a worker fail-fast CMS boot fix.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 
