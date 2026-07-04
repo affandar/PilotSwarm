@@ -3679,7 +3679,7 @@ SELECT
         0,
         COALESCE(m.created_at, now()),
         GREATEST(COALESCE(m.updated_at, m.created_at, now()), COALESCE(m.created_at, now())),
-        GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (GREATEST(COALESCE(m.updated_at, m.created_at, now()), COALESCE(m.created_at, now())) - COALESCE(m.created_at, now()))) * 1000)::INT),
+        LEAST(2147483647, GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (GREATEST(COALESCE(m.updated_at, m.created_at, now()), COALESCE(m.created_at, now())) - COALESCE(m.created_at, now()))) * 1000)))::INT,
         m.tokens_input,
         m.tokens_output,
         m.tokens_cache_read,
