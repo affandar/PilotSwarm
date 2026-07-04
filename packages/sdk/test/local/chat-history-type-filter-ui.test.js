@@ -148,6 +148,36 @@ describe("chat history pull type filter", () => {
         assertEqual(pageRequests.length, 0, "Mid-scroll pull with real chat should stay gated");
     });
 
+    it("forced touch pull bypasses the gate even with chat present", async () => {
+        const pageRequests = [];
+        const { controller, store } = createController({
+            getSessionEventsBefore: async (...args) => {
+                pageRequests.push(args);
+                return [chatEvent(500, "assistant.message", "older message")];
+            },
+        });
+        store.dispatch({ type: "sessions/selected", sessionId: SESSION_ID });
+        store.dispatch({
+            type: "history/set",
+            sessionId: SESSION_ID,
+            history: {
+                ...buildHistoryModel(
+                    [chatEvent(1001, "user.message", "hi"), chatEvent(1002, "assistant.message", "hello")],
+                    { requestedLimit: 300 },
+                ),
+                hasOlderEvents: true,
+            },
+        });
+        // Metrics that would swallow an unforced pull (narrow-viewport
+        // DOM/metrics disagreement).
+        controller.getActiveChatRenderMetrics = () => ({ contentWidth: 40, contentHeight: 10, totalLines: 500 });
+
+        // Not armed: force must bypass the arm handshake too.
+        await controller.handleChatTopHistoryScrollIntent(1, { force: true });
+
+        assertEqual(pageRequests.length, 1, "Forced pull should fetch despite gate and arm state");
+    });
+
     it("explicit expansion stays unfiltered", async () => {
         const pageRequests = [];
         const { controller, store } = createController({

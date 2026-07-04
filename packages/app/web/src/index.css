@@ -1376,6 +1376,10 @@ body.is-resizing-pane-y * {
   overflow: hidden;
   text-align: left;
   padding: 7px 9px;
+  /* Never let the flex-column list compress rows to fit: a squashed row's
+     extra lines (badges, selected meta) spill over its neighbors. Scroll
+     instead. */
+  flex: 0 0 auto;
 }
 
 .ps-action-list .ps-line {
@@ -1423,6 +1427,7 @@ body.is-resizing-pane-y * {
   padding: 3px 8px;
   min-height: 1.55rem;
   white-space: normal;
+  flex: 0 0 auto;
 }
 
 .ps-session-pane .ps-session-list-button:hover {

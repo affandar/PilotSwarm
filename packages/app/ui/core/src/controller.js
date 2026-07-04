@@ -4910,17 +4910,18 @@ export class PilotSwarmUiController {
         this.chatTopHistoryLoadSessionId = null;
     }
 
-    async handleChatTopHistoryScrollIntent(requestedScrollOffset) {
+    async handleChatTopHistoryScrollIntent(requestedScrollOffset, options = {}) {
         const state = this.getState();
         const sessionId = state.sessions.activeSessionId;
         if (!sessionId) return;
-        if (!this.chatTopHistoryLoadArmed || this.chatTopHistoryLoadSessionId !== sessionId) {
+        if (!options.force && (!this.chatTopHistoryLoadArmed || this.chatTopHistoryLoadSessionId !== sessionId)) {
             this.armChatTopHistoryLoad();
             return;
         }
 
         await this.maybeAutoExpandActiveHistory(requestedScrollOffset, {
             pages: AUTO_HISTORY_SCROLL_PAGE_COUNT,
+            force: Boolean(options.force),
         });
     }
 
@@ -5208,12 +5209,14 @@ export class PilotSwarmUiController {
             return;
         }
 
-        // Splash-only transcript: tall splash art inflates totalLines past the
-        // viewport, so the one-gesture pull intent (DOM scroll + 1 row) can
-        // never reach maxOffset. With no real chat messages, any top-pull is
-        // unambiguous intent — skip the scroll-position gate.
+        // The scroll-position gate compares a DOM-derived target offset with
+        // ui-core render metrics, and the two disagree on narrow viewports.
+        // Skip it when the caller vouches for the gesture (options.force: an
+        // explicit touch pull at the top of the pane) or when the transcript
+        // has no real chat messages (splash-only: tall art inflates
+        // totalLines past the viewport, so the gate can never pass).
         const hasChatMessages = Array.isArray(currentHistory?.chat) && currentHistory.chat.length > 0;
-        if (hasChatMessages) {
+        if (!options.force && hasChatMessages) {
             const { contentHeight, totalLines } = this.getActiveChatRenderMetrics(state);
             const maxOffset = Math.max(0, totalLines - contentHeight);
             if (targetOffset < maxOffset) return;
