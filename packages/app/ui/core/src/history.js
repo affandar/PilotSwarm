@@ -10,6 +10,16 @@ export const HISTORY_EVENT_LIMIT_STEPS = [
     10_000,
 ];
 
+// The event types buildHistoryModel can render as chat transcript items.
+// Passed as the server-side filter when paging backward for chat history, so
+// noisy sessions (thousands of tool/orchestration events between messages)
+// load transcript pages instead of raw-stream pages.
+export const CHAT_HISTORY_EVENT_TYPES = [
+    "user.message",
+    "assistant.message",
+    "system.message",
+];
+
 function clampHistoryItems(items, maxItems) {
     const list = Array.isArray(items) ? items.filter(Boolean) : [];
     const safeMax = Math.max(DEFAULT_HISTORY_EVENT_LIMIT, Number(maxItems) || DEFAULT_HISTORY_EVENT_LIMIT);

@@ -402,9 +402,9 @@ export class PortalRuntime {
             case "getDefaultModel":
                 return this.transport.getDefaultModel();
             case "getSessionEvents":
-                return this.transport.getSessionEvents(safeParams.sessionId, safeParams.afterSeq, safeParams.limit);
+                return this.transport.getSessionEvents(safeParams.sessionId, safeParams.afterSeq, safeParams.limit, safeParams.eventTypes);
             case "getSessionEventsBefore":
-                return this.transport.getSessionEventsBefore(safeParams.sessionId, safeParams.beforeSeq, safeParams.limit);
+                return this.transport.getSessionEventsBefore(safeParams.sessionId, safeParams.beforeSeq, safeParams.limit, safeParams.eventTypes);
             case "getTopEventEmitters":
                 return this.transport.getTopEventEmitters(normalizeTopEventEmitterOptions(safeParams));
             case "getLogConfig":

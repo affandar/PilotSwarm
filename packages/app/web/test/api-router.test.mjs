@@ -77,6 +77,15 @@ test("path, query, and body params are collected with declared types", async () 
         const send = calls.find((call) => call.name === "sendMessage");
         assert.deepEqual(send.params, { sessionId: "s1", prompt: "hi", options: { clientMessageIds: ["m1"] } });
         assert.equal(send.authContext.principal.subject, "unknown", "auth context reaches the dispatcher");
+
+        const eventTypes = ["user.message", "assistant.message", "system.message"];
+        await fetch(`${baseUrl}/api/v1/management/sessions/s2/events-before?beforeSeq=100&limit=50&eventTypes=${encodeURIComponent(JSON.stringify(eventTypes))}`);
+        const before = calls.find((call) => call.name === "getSessionEventsBefore");
+        assert.deepEqual(before.params, { sessionId: "s2", beforeSeq: 100, limit: 50, eventTypes });
+
+        await fetch(`${baseUrl}/api/v1/management/sessions/s2/events?afterSeq=5`);
+        const after = calls.find((call) => call.name === "getSessionEvents");
+        assert.deepEqual(after.params, { sessionId: "s2", afterSeq: 5 }, "omitted eventTypes stays absent");
     } finally {
         await close();
     }

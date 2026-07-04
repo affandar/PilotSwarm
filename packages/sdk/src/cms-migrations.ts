@@ -135,6 +135,11 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "stop_turn_active_turn_index",
             sql: migration_0024_stop_turn_active_turn_index(schema),
         },
+        {
+            version: "0025",
+            name: "session_events_type_filter",
+            sql: migration_0025_session_events_type_filter(schema),
+        },
     ];
 }
 
@@ -4517,6 +4522,76 @@ BEGIN
         ),
         p_worker_node_id
     );
+END;
+$$ LANGUAGE plpgsql;
+`;
+}
+
+// ─── Migration 0025: Session events type filter ──────────────────
+
+function migration_0025_session_events_type_filter(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- 0025_session_events_type_filter: server-side event-type filtering for
+-- history paging. Chat history is sparse in the raw event stream (a busy
+-- session can have thousands of tool/orchestration events between chat
+-- messages), so clients paging backward for chat had to drain raw pages.
+-- These 4-arg OVERLOADS of cms_get_session_events / _before accept
+-- p_event_types TEXT[] (NULL = unfiltered); the 3-arg versions stay in
+-- place so older workers/portals keep working mid-rollout.
+--
+-- Index note: a partial index cannot serve a parameterized
+-- "event_type = ANY($4)" (the planner can't prove the predicate implies
+-- the index predicate), so this uses a composite btree instead.
+
+CREATE INDEX IF NOT EXISTS idx_${schema}_events_session_type_seq
+    ON ${s}.session_events (session_id, event_type, seq);
+
+-- ── cms_get_session_events (type-filtered overload) ──────────────
+CREATE OR REPLACE FUNCTION ${s}.cms_get_session_events(
+    p_session_id  TEXT,
+    p_after_seq   BIGINT,
+    p_limit       INT,
+    p_event_types TEXT[]
+) RETURNS SETOF ${s}.session_events AS $$
+DECLARE
+    v_limit INT := GREATEST(1, LEAST(COALESCE(p_limit, 1000), 1000));
+BEGIN
+    IF p_after_seq IS NOT NULL AND p_after_seq > 0 THEN
+        RETURN QUERY
+        SELECT * FROM ${s}.session_events
+        WHERE session_id = p_session_id AND seq > p_after_seq
+          AND (p_event_types IS NULL OR event_type = ANY(p_event_types))
+        ORDER BY seq ASC LIMIT v_limit;
+    ELSE
+        RETURN QUERY
+        SELECT * FROM (
+            SELECT * FROM ${s}.session_events
+            WHERE session_id = p_session_id
+              AND (p_event_types IS NULL OR event_type = ANY(p_event_types))
+            ORDER BY seq DESC LIMIT v_limit
+        ) t ORDER BY seq ASC;
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── cms_get_session_events_before (type-filtered overload) ───────
+CREATE OR REPLACE FUNCTION ${s}.cms_get_session_events_before(
+    p_session_id  TEXT,
+    p_before_seq  BIGINT,
+    p_limit       INT,
+    p_event_types TEXT[]
+) RETURNS SETOF ${s}.session_events AS $$
+DECLARE
+    v_limit INT := GREATEST(1, LEAST(COALESCE(p_limit, 1000), 1000));
+BEGIN
+    RETURN QUERY
+    SELECT * FROM (
+        SELECT * FROM ${s}.session_events
+        WHERE session_id = p_session_id AND seq < p_before_seq
+          AND (p_event_types IS NULL OR event_type = ANY(p_event_types))
+        ORDER BY seq DESC LIMIT v_limit
+    ) t ORDER BY seq ASC;
 END;
 $$ LANGUAGE plpgsql;
 `;

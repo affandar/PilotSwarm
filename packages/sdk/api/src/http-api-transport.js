@@ -288,12 +288,12 @@ export class HttpApiTransport {
 
     // ── Events / history ────────────────────────────────────────────────
 
-    async getSessionEvents(sessionId, afterSeq, limit) {
-        return this.api.call("getSessionEvents", { sessionId, afterSeq, limit });
+    async getSessionEvents(sessionId, afterSeq, limit, eventTypes) {
+        return this.api.call("getSessionEvents", { sessionId, afterSeq, limit, eventTypes });
     }
 
-    async getSessionEventsBefore(sessionId, beforeSeq, limit) {
-        return this.api.call("getSessionEventsBefore", { sessionId, beforeSeq, limit });
+    async getSessionEventsBefore(sessionId, beforeSeq, limit, eventTypes) {
+        return this.api.call("getSessionEventsBefore", { sessionId, beforeSeq, limit, eventTypes });
     }
 
     async getExecutionHistory(sessionId, executionId) {

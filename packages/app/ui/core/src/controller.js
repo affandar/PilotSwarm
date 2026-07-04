@@ -2,6 +2,7 @@ import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./comman
 import {
     appendEventToHistory,
     buildHistoryModel,
+    CHAT_HISTORY_EVENT_TYPES,
     DEFAULT_HISTORY_EVENT_LIMIT,
     dedupeChatMessages,
     getNextHistoryEventLimit,
@@ -5212,6 +5213,9 @@ export class PilotSwarmUiController {
             requestedScrollOffset: targetOffset,
             autoTriggered: true,
             pages: options.pages,
+            // Chat-driven pull: page backward over renderable message types
+            // only, so each page is transcript instead of raw event noise.
+            eventTypes: CHAT_HISTORY_EVENT_TYPES,
         });
     }
 
@@ -5249,6 +5253,14 @@ export class PilotSwarmUiController {
         const loadPromise = (async () => {
             let history;
             const pagesToLoad = Math.max(1, Math.floor(Number(options.pages) || 1));
+            // Optional server-side type filter (chat pull passes the renderable
+            // message types). A short/empty filtered page means the transcript
+            // is complete, so exhausting it clears hasOlderEvents like a raw
+            // page would. Servers without filter support return unfiltered
+            // pages, which this loop already handles (today's raw paging).
+            const eventTypes = Array.isArray(options.eventTypes) && options.eventTypes.length > 0
+                ? options.eventTypes
+                : undefined;
             if (typeof this.transport.getSessionEventsBefore === "function" && oldestSeq > 0) {
                 history = currentHistory || buildHistoryModel([], { requestedLimit: currentLimit });
                 for (let pageIndex = 0; pageIndex < pagesToLoad; pageIndex += 1) {
@@ -5265,7 +5277,7 @@ export class PilotSwarmUiController {
                     if (Number(history.loadedEventCount || 0) >= AUTO_HISTORY_EVENT_SOFT_CAP) {
                         break;
                     }
-                    const olderEvents = await this.transport.getSessionEventsBefore(sessionId, pageOldestSeq, pageLimit);
+                    const olderEvents = await this.transport.getSessionEventsBefore(sessionId, pageOldestSeq, pageLimit, eventTypes);
                     if (!Array.isArray(olderEvents) || olderEvents.length === 0) {
                         history = {
                             ...history,

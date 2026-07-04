@@ -1311,13 +1311,13 @@ export class NodeSdkTransport {
         return this.mgmt.getDefaultModel();
     }
 
-    async getSessionEvents(sessionId, afterSeq, limit) {
-        return this.mgmt.getSessionEvents(sessionId, afterSeq, limit);
+    async getSessionEvents(sessionId, afterSeq, limit, eventTypes) {
+        return this.mgmt.getSessionEvents(sessionId, afterSeq, limit, eventTypes);
     }
 
-    async getSessionEventsBefore(sessionId, beforeSeq, limit) {
+    async getSessionEventsBefore(sessionId, beforeSeq, limit, eventTypes) {
         if (typeof this.mgmt.getSessionEventsBefore !== "function") return [];
-        return this.mgmt.getSessionEventsBefore(sessionId, beforeSeq, limit);
+        return this.mgmt.getSessionEventsBefore(sessionId, beforeSeq, limit, eventTypes);
     }
 
     emitLogEntry(entry) {

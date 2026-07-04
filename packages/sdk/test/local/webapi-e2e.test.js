@@ -152,6 +152,17 @@ describe("web api e2e", () => {
         assert(Array.isArray(facts.rows), "shared facts stats rows");
         const events = await mgmt.getSessionEvents(a.sessionId, undefined, 50);
         assert(Array.isArray(events), "session events readable");
+
+        // eventTypes rides the wire as a JSON query param and filters server-side.
+        const chatTypes = ["user.message", "assistant.message", "system.message"];
+        const filtered = await mgmt.getSessionEvents(a.sessionId, undefined, 50, chatTypes);
+        assert(Array.isArray(filtered), "filtered session events readable");
+        assert(filtered.every((event) => chatTypes.includes(event.eventType)), "eventTypes filter honored over the wire");
+        if (events.length > 0) {
+            const lastSeq = Number(events[events.length - 1].seq);
+            const olderFiltered = await mgmt.getSessionEventsBefore(a.sessionId, lastSeq + 1, 50, chatTypes);
+            assert(olderFiltered.every((event) => chatTypes.includes(event.eventType)), "filtered backward paging honored over the wire");
+        }
         const status = await mgmt.getSessionStatus(a.sessionId);
         assert(typeof status.customStatusVersion === "number", "session status readable");
 

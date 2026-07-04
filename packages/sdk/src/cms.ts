@@ -616,13 +616,13 @@ export interface SessionCatalog {
      * Without afterSeq this returns the latest page; with afterSeq it returns the next forward page.
      * Use getSessionEventsBefore() paging to drain complete history.
      */
-    getSessionEvents(sessionId: string, afterSeq?: number, limit?: number): Promise<SessionEvent[]>;
+    getSessionEvents(sessionId: string, afterSeq?: number, limit?: number, eventTypes?: string[]): Promise<SessionEvent[]>;
 
     /**
      * Get a provider-capped older page before a sequence number, ordered ascending by seq.
      * Call repeatedly with the oldest returned seq to drain complete history.
      */
-    getSessionEventsBefore(sessionId: string, beforeSeq: number, limit?: number): Promise<SessionEvent[]>;
+    getSessionEventsBefore(sessionId: string, beforeSeq: number, limit?: number, eventTypes?: string[]): Promise<SessionEvent[]>;
 
     /** Get the highest-volume event emitters since a point in time. */
     getTopEventEmitters(since: Date, limit?: number): Promise<TopEventEmitterRow[]>;
@@ -1123,8 +1123,21 @@ export class PgSessionCatalog implements SessionCatalog {
         );
     }
 
-    async getSessionEvents(sessionId: string, afterSeq?: number, limit?: number): Promise<SessionEvent[]> {
+    async getSessionEvents(sessionId: string, afterSeq?: number, limit?: number, eventTypes?: string[]): Promise<SessionEvent[]> {
         const effectiveLimit = limit ?? 1000;
+        const types = normalizeEventTypes(eventTypes);
+        if (types) {
+            try {
+                const { rows } = await this.pool.query(
+                    `SELECT * FROM ${this.sql.fn.getSessionEvents}($1, $2, $3, $4)`,
+                    [sessionId, afterSeq ?? null, effectiveLimit, types],
+                );
+                return rows.map(rowToSessionEvent);
+            } catch (err) {
+                if (!isUndefinedFunctionError(err)) throw err;
+                // DB predates migration 0025 — fall through to the unfiltered proc.
+            }
+        }
         const { rows } = await this.pool.query(
             `SELECT * FROM ${this.sql.fn.getSessionEvents}($1, $2, $3)`,
             [sessionId, afterSeq ?? null, effectiveLimit],
@@ -1132,8 +1145,21 @@ export class PgSessionCatalog implements SessionCatalog {
         return rows.map(rowToSessionEvent);
     }
 
-    async getSessionEventsBefore(sessionId: string, beforeSeq: number, limit?: number): Promise<SessionEvent[]> {
+    async getSessionEventsBefore(sessionId: string, beforeSeq: number, limit?: number, eventTypes?: string[]): Promise<SessionEvent[]> {
         const effectiveLimit = limit ?? 1000;
+        const types = normalizeEventTypes(eventTypes);
+        if (types) {
+            try {
+                const { rows } = await this.pool.query(
+                    `SELECT * FROM ${this.sql.fn.getSessionEventsBefore}($1, $2, $3, $4)`,
+                    [sessionId, beforeSeq, effectiveLimit, types],
+                );
+                return rows.map(rowToSessionEvent);
+            } catch (err) {
+                if (!isUndefinedFunctionError(err)) throw err;
+                // DB predates migration 0025 — fall through to the unfiltered proc.
+            }
+        }
         const { rows } = await this.pool.query(
             `SELECT * FROM ${this.sql.fn.getSessionEventsBefore}($1, $2, $3)`,
             [sessionId, beforeSeq, effectiveLimit],
@@ -1837,6 +1863,18 @@ function rowToChildOutcomeRow(row: any): ChildOutcomeRow {
 }
 
 /** Map a PG row to SessionEvent. */
+/** Non-empty array of non-empty type strings, or null (no filter). */
+function normalizeEventTypes(eventTypes: string[] | undefined): string[] | null {
+    if (!Array.isArray(eventTypes)) return null;
+    const types = eventTypes.filter((t) => typeof t === "string" && t.length > 0);
+    return types.length > 0 ? types : null;
+}
+
+/** Postgres 42883: called a proc overload the DB doesn't have (pre-0025). */
+function isUndefinedFunctionError(err: unknown): boolean {
+    return (err as { code?: string } | null)?.code === "42883";
+}
+
 function rowToSessionEvent(row: any): SessionEvent {
     return {
         seq: Number(row.seq),

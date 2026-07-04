@@ -118,8 +118,8 @@ Operations tagged **[admin]** require the `admin` role (Tier 2 operational surfa
 | getLatestResponse | `GET /api/v1/management/sessions/:sessionId/latest-response` | sessionId (path) | Latest turn response payload, if any. |
 | getOrchestrationStats | `GET /api/v1/management/sessions/:sessionId/orchestration-stats` | sessionId (path) | Orchestration runtime stats. |
 | getExecutionHistory | `GET /api/v1/management/sessions/:sessionId/execution-history` | sessionId (path), executionId (query: number) | Raw execution history events. |
-| getSessionEvents | `GET /api/v1/management/sessions/:sessionId/events` | sessionId (path), afterSeq (query: number), limit (query: number) | Session events after a sequence number (reconnect catch-up). |
-| getSessionEventsBefore | `GET /api/v1/management/sessions/:sessionId/events-before` | sessionId (path), beforeSeq (query: number), limit (query: number) | Older session events for history paging. |
+| getSessionEvents | `GET /api/v1/management/sessions/:sessionId/events` | sessionId (path), afterSeq (query: number), limit (query: number), eventTypes (query: json) | Session events after a sequence number (reconnect catch-up). Optional eventTypes (JSON string array) narrows to those event types server-side. |
+| getSessionEventsBefore | `GET /api/v1/management/sessions/:sessionId/events-before` | sessionId (path), beforeSeq (query: number), limit (query: number), eventTypes (query: json) | Older session events for history paging. Optional eventTypes (JSON string array) narrows to those event types server-side (chat transcript paging). |
 | getSessionMetricSummary | `GET /api/v1/management/sessions/:sessionId/metric-summary` | sessionId (path) | Per-session metric summary. |
 | getSessionTokensByModel | `GET /api/v1/management/sessions/:sessionId/tokens-by-model` | sessionId (path) | Token totals grouped by model. |
 | getSessionTreeStats | `GET /api/v1/management/sessions/:sessionId/tree-stats` | sessionId (path) | Stats rolled up across the spawn tree. |

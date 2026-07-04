@@ -1339,10 +1339,12 @@ export class PilotSwarmManagementClient {
      * Get a provider-capped page of CMS events for a session, ordered by seq.
      * Without afterSeq this returns the latest page; with afterSeq it returns the next forward page.
      * Use getSessionEventsBefore() paging to drain complete history.
+     * eventTypes narrows the page to those event types server-side (e.g. chat
+     * message types for transcript paging); omit for the full stream.
      */
-    async getSessionEvents(sessionId: string, afterSeq?: number, limit?: number): Promise<import("./cms.js").SessionEvent[]> {
+    async getSessionEvents(sessionId: string, afterSeq?: number, limit?: number, eventTypes?: string[]): Promise<import("./cms.js").SessionEvent[]> {
         this._ensureStarted();
-        return this._catalog!.getSessionEvents(sessionId, afterSeq, limit);
+        return this._catalog!.getSessionEvents(sessionId, afterSeq, limit, eventTypes);
     }
 
     /**
@@ -1367,9 +1369,9 @@ export class PilotSwarmManagementClient {
      * Get a provider-capped older page before a sequence number, ordered by seq.
      * Call repeatedly with the oldest returned seq to drain complete history.
      */
-    async getSessionEventsBefore(sessionId: string, beforeSeq: number, limit?: number): Promise<import("./cms.js").SessionEvent[]> {
+    async getSessionEventsBefore(sessionId: string, beforeSeq: number, limit?: number, eventTypes?: string[]): Promise<import("./cms.js").SessionEvent[]> {
         this._ensureStarted();
-        return this._catalog!.getSessionEventsBefore(sessionId, beforeSeq, limit);
+        return this._catalog!.getSessionEventsBefore(sessionId, beforeSeq, limit, eventTypes);
     }
 
     /**

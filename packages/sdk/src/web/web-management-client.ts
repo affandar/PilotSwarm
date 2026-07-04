@@ -142,12 +142,12 @@ export class WebPilotSwarmManagementClient {
 
     // ── Events & history ────────────────────────────────────────────────
 
-    async getSessionEvents(sessionId: string, afterSeq?: number, limit?: number): Promise<any[]> {
-        return this._api.call("getSessionEvents", { sessionId, afterSeq, limit });
+    async getSessionEvents(sessionId: string, afterSeq?: number, limit?: number, eventTypes?: string[]): Promise<any[]> {
+        return this._api.call("getSessionEvents", { sessionId, afterSeq, limit, eventTypes });
     }
 
-    async getSessionEventsBefore(sessionId: string, beforeSeq: number, limit?: number): Promise<any[]> {
-        return this._api.call("getSessionEventsBefore", { sessionId, beforeSeq, limit });
+    async getSessionEventsBefore(sessionId: string, beforeSeq: number, limit?: number, eventTypes?: string[]): Promise<any[]> {
+        return this._api.call("getSessionEventsBefore", { sessionId, beforeSeq, limit, eventTypes });
     }
 
     async getTopEventEmitters(opts: { since: Date; limit?: number }): Promise<any[]> {
