@@ -29,7 +29,18 @@ Do not hard-code `ACR_NAME` on the deploy command line — `scripts/deploy-aks.s
 
 ## Canonical Files
 
-- Deploy script: `scripts/deploy-aks.sh`
+- Worker deploy script: `scripts/deploy-aks.sh` — **worker only**; it does
+  not build or roll the portal.
+- Portal deploy script: `scripts/deploy-portal.sh` — builds/pushes the
+  portal image and rolls `pilotswarm-portal`.
+- **"Update the cluster" means running BOTH scripts.** The 2026-07-04
+  v0.4.1 rollout ran only `deploy-aks.sh` and left the portal serving the
+  previous bundle until `deploy-portal.sh` was run separately. Do not
+  report a cluster deploy complete until the portal-served asset hash has
+  changed:
+  ```bash
+  curl -sk https://pilotswarm-portal.westus3.cloudapp.azure.com/ | grep -oE "assets/index-[A-Za-z0-9_-]+\.js"
+  ```
 - Remote reset script: `scripts/db-reset.js`
 - Worker manifest: `deploy/k8s/worker-deployment.yaml`
 - Portal manifest: `deploy/k8s/portal-deployment.yaml`
