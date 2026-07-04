@@ -1001,7 +1001,11 @@ body.is-resizing-pane-y * {
   .ps-chat-preserve-block .ps-line-preserve,
   .ps-scroll-panel.is-wrapped .ps-line.ps-line-preserve {
     white-space: pre-wrap;
-    word-break: break-all;
+    /* Prefer wrapping at spaces; break inside a word only when a single
+       token exceeds the line (art runs). break-all split ordinary words
+       mid-word. */
+    overflow-wrap: anywhere;
+    word-break: normal;
     min-width: 0;
   }
 }

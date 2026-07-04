@@ -4154,12 +4154,15 @@ export function PilotSwarmWebApp({ controller }) {
     React.useEffect(() => {
         const publish = () => {
             const probe = document.createElement("span");
-            probe.className = "ps-line";
             probe.style.cssText = "position:absolute;visibility:hidden;white-space:pre;";
+            // Measure with the font real lines render in — an off-context
+            // probe can inherit a different size and skew the column count.
+            const sample = document.querySelector(".ps-scroll-panel .ps-line") || document.querySelector(".ps-line");
+            if (sample) probe.style.font = window.getComputedStyle(sample).font;
             probe.textContent = "0".repeat(100);
-            document.body.appendChild(probe);
+            (sample?.parentElement || document.body).appendChild(probe);
             const charWidth = (probe.getBoundingClientRect().width / 100) || 8;
-            document.body.removeChild(probe);
+            probe.remove();
             controller.dispatch({
                 type: "ui/viewport",
                 width: Math.floor(window.innerWidth / charWidth),
