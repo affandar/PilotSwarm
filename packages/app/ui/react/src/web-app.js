@@ -619,8 +619,15 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
         const y = event.touches?.[0]?.clientY;
         if (y == null || y - pull.startY < TOUCH_TOP_PULL_THRESHOLD_PX) return;
         pull.fired = true;
+        // A deliberate pull is an unambiguous request, so arm + fire in one
+        // gesture. (The wheel path relies on the arm/load two-stage handshake
+        // across the MANY wheel events one physical scroll emits; touch gets a
+        // single gesture, and requiring a second swipe reads as broken.)
+        // +1 row of headroom absorbs DOM-vs-render-metric rounding in the
+        // loader's targetOffset gate; the restore path clamps it back down.
+        controller.armChatTopHistoryLoad?.();
         const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
-        controller.handleChatTopHistoryScrollIntent?.(maxScroll / SCROLL_ROW_HEIGHT);
+        controller.handleChatTopHistoryScrollIntent?.(maxScroll / SCROLL_ROW_HEIGHT + 1);
     }, [controller, paneKey, ref, scrollMode]);
 
     return { normalizedLines, onScroll, onWheel, onTouchStart, onTouchMove };
