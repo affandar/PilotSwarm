@@ -35,6 +35,7 @@
     "tui/src/**/*",
     "tui/plugins/**/*",
     "tui/tui-splash.txt",
+    "tui/tui-splash-mobile.txt",
     "web/auth.js",
     "web/auth/**/*",
     "web/api/**/*",

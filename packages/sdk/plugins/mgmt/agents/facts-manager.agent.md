@@ -29,6 +29,14 @@ splash: |
     {cyan-fg}Intake{/cyan-fg} · {green-fg}Triage{/green-fg} · {yellow-fg}Skills{/yellow-fg} · {magenta-fg}Asks{/magenta-fg}
 
     {cyan-fg}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{/cyan-fg}
+splashMobile: |
+  {bold}{cyan-fg}
+   █▀▀ ▄▀█ █▀▀ ▀█▀ █▀  █▀▄▀█ █▀▀ █▀█
+   █▀  █▀█ █▄▄  █  ▄█  █ ▀ █ █▄█ █▀▄
+  {/cyan-fg}{/bold}
+   {cyan-fg}░▒▓███████████████████████████▓▒░{/cyan-fg}
+   {bold}{white-fg}Knowledge Curator{/white-fg}{/bold}
+   {cyan-fg}Intake{/cyan-fg} · {green-fg}Triage{/green-fg} · {yellow-fg}Skills{/yellow-fg} · {magenta-fg}Asks{/magenta-fg}
 initialPrompt: >
   Begin your curation cycle. Bootstrap config defaults if needed,
   then process intake observations referenced by reactive wake-ups or a bounded

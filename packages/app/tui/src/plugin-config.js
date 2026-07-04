@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkgRoot = path.resolve(__dirname, "..");
 const defaultTuiSplashPath = path.join(pkgRoot, "tui-splash.txt");
+const defaultTuiSplashMobilePath = path.join(pkgRoot, "tui-splash-mobile.txt");
 
 function fileExists(filePath) {
     try {
@@ -110,6 +111,10 @@ function getDefaultSplash() {
     return readOptionalTextFile(defaultTuiSplashPath) || "{bold}{cyan-fg}PilotSwarm{/cyan-fg}{/bold}";
 }
 
+function getDefaultSplashMobile() {
+    return readOptionalTextFile(defaultTuiSplashMobilePath) || null;
+}
+
 export function readPluginMetadata(pluginDir) {
     if (!pluginDir) return null;
     const pluginJsonPath = path.join(pluginDir, "plugin.json");
@@ -143,12 +148,16 @@ export function resolveTuiBranding(pluginDir) {
     const tui = pluginMeta?.tui;
     const defaultSplash = getDefaultSplash();
     if (!tui || typeof tui !== "object") {
-        return { title: "PilotSwarm", splash: defaultSplash };
+        const defaultMobile = getDefaultSplashMobile();
+        return { title: "PilotSwarm", splash: defaultSplash, ...(defaultMobile ? { splashMobile: defaultMobile } : {}) };
     }
 
     const title = firstNonEmptyString(tui.title, "PilotSwarm") || "PilotSwarm";
     const splash = readSplashValue(pluginDir, tui, defaultSplash);
-    const splashMobile = readSplashMobileValue(pluginDir, tui);
+    // The default mobile art only pairs with the default splash — an app that
+    // ships its own splash without a mobile variant wraps instead of showing
+    // PilotSwarm-branded art.
+    const splashMobile = readSplashMobileValue(pluginDir, tui, splash === defaultSplash ? getDefaultSplashMobile() : null);
     return { title, splash, ...(splashMobile ? { splashMobile } : {}) };
 }
 
@@ -159,7 +168,7 @@ export function resolvePortalConfigBundleFromPluginDirs(pluginDirs = []) {
             title: "PilotSwarm",
             pageTitle: "PilotSwarm",
             splash: defaultSplash,
-            splashMobile: null,
+            splashMobile: getDefaultSplashMobile(),
             logoUrl: null,
             faviconUrl: null,
         },
@@ -197,7 +206,11 @@ export function resolvePortalConfigBundleFromPluginDirs(pluginDirs = []) {
         const splashMobile = readSplashMobileValue(
             absDir,
             portalBranding,
-            readSplashMobileValue(absDir, portal, readSplashMobileValue(absDir, tui)),
+            readSplashMobileValue(
+                absDir,
+                portal,
+                readSplashMobileValue(absDir, tui, splash === defaultSplash ? getDefaultSplashMobile() : null),
+            ),
         );
         const logoAsset = resolvePortalAsset(absDir, {
             file: firstNonEmptyString(portalBranding.logoFile, portal.logoFile),

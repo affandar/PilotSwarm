@@ -27,6 +27,15 @@ splash: |
     {yellow-fg}Cleanup{/yellow-fg} · {green-fg}Monitoring{/green-fg} · {cyan-fg}Session lifecycle{/cyan-fg}
 
     {yellow-fg}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{/yellow-fg}
+splashMobile: |
+  {bold}{yellow-fg}
+   █▀ █ █ █ █▀▀ █▀▀ █▀█ █▀▀ █▀█
+   ▄█ ▀▄▀▄▀ ██▄ ██▄ █▀▀ ██▄ █▀▄
+  {/yellow-fg}{/bold}
+   {yellow-fg}░▒▓██████████████████████▓▒░{/yellow-fg}
+   {bold}{white-fg}System Maintenance Agent{/white-fg}{/bold}
+   {yellow-fg}Cleanup{/yellow-fg} · {green-fg}Monitoring{/green-fg}
+   {cyan-fg}Session lifecycle{/cyan-fg}
 initialPrompt: >
   You are a PERMANENT maintenance agent. You must run FOREVER.
   Step 1: Scan for stale sessions using scan_completed_sessions.

@@ -43,6 +43,14 @@ splash: |
     {magenta-fg}Inspect{/magenta-fg} · {cyan-fg}Diagnose{/cyan-fg} · {green-fg}Recommend{/green-fg}
 
     {magenta-fg}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{/magenta-fg}
+splashMobile: |
+  {bold}{magenta-fg}
+   ▀█▀ █ █ █▄ █ █▀▀ █▀█
+    █  █▄█ █ ▀█ ██▄ █▀▄
+  {/magenta-fg}{/bold}
+   {magenta-fg}░▒▓██████████████▓▒░{/magenta-fg}
+   {bold}{white-fg}Read-only Diagnostic Agent{/white-fg}{/bold}
+   {magenta-fg}Inspect{/magenta-fg} · {cyan-fg}Diagnose{/cyan-fg} · {green-fg}Recommend{/green-fg}
 ---
 
 # Agent Tuner

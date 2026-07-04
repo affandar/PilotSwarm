@@ -23,6 +23,17 @@ splash: |
     {green-fg}Agents{/green-fg} · {yellow-fg}Infrastructure{/yellow-fg} · {cyan-fg}Maintenance{/cyan-fg} · {magenta-fg}Monitoring{/magenta-fg}
 
     {green-fg}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{/green-fg}
+splashMobile: |
+  {bold}{green-fg}
+   █▀█ █ █   █▀█ ▀█▀
+   █▀▀ █ █▄▄ █▄█  █ 
+   █▀ █ █ █ ▄▀█ █▀█ █▀▄▀█
+   ▄█ ▀▄▀▄▀ █▀█ █▀▄ █ ▀ █
+  {/green-fg}{/bold}
+   {green-fg}░▒▓████████████████▓▒░{/green-fg}
+   {bold}{white-fg}Cluster Orchestrator{/white-fg}{/bold}
+   {green-fg}Agents{/green-fg} · {yellow-fg}Infrastructure{/yellow-fg}
+   {cyan-fg}Maintenance{/cyan-fg} · {magenta-fg}Monitoring{/magenta-fg}
 initialPrompt: >
   You are now online. The worker bootstrap should already have started the permanent system sessions
   sweeper, resourcemgr, facts-manager, and agent-tuner for you as worker-provisioned child sessions under PilotSwarm.

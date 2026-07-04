@@ -5343,7 +5343,17 @@ export class PilotSwarmUiController {
                 this.reconcileOutboxAgainstEvent(sessionId, event);
             }
 
-            if (preserveChatView && previousScrollOffset > 0) {
+            const hadChatBefore = Array.isArray(currentHistory?.chat) && currentHistory.chat.length > 0;
+            if (preserveChatView && !hadChatBefore) {
+                // The splash (or an empty transcript) was showing — there is no
+                // reading position to preserve, so land on the latest messages
+                // instead of wherever the offset math would leave the view.
+                this.dispatch({
+                    type: "ui/scroll",
+                    pane: "chat",
+                    offset: 0,
+                });
+            } else if (preserveChatView && previousScrollOffset > 0) {
                 const nextState = this.getState();
                 const nextRenderedLines = this.getActiveChatRenderMetrics(nextState).totalLines;
                 const addedLines = Math.max(0, nextRenderedLines - previousRenderedLines);

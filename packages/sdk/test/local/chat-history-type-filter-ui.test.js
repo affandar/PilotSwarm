@@ -118,6 +118,7 @@ describe("chat history pull type filter", () => {
         assertEqual(pageRequests.length, 1, "Splash-only pull should fetch despite the tall splash metrics");
         const history = store.getState().history.bySessionId.get(SESSION_ID);
         assertEqual(history.chat.length, 1, "Fetched chat message should replace the empty transcript");
+        assertEqual(store.getState().ui.scroll.chat, 0, "Splash replacement should land on the latest chat");
     });
 
     it("keeps the scroll-position gate when real chat messages exist", async () => {
