@@ -4145,6 +4145,38 @@ export function PilotSwarmWebApp({ controller }) {
     const viewport = useMeasuredViewport(viewportRef);
     const mainGridViewport = useMeasuredViewport(mainGridRef);
     const gridViewport = computeGridViewport(viewport);
+
+    // Publish the real viewport in character cells. Without this the ui-core
+    // layout model runs on its 120×40 fallback everywhere in the browser, so
+    // width-derived behavior (markdown wrap width, render metrics, the
+    // splashMobile width swap) assumed a ~120-column terminal regardless of
+    // device — phones kept getting desktop splash art narrower than ~76 cols.
+    React.useEffect(() => {
+        const publish = () => {
+            const probe = document.createElement("span");
+            probe.className = "ps-line";
+            probe.style.cssText = "position:absolute;visibility:hidden;white-space:pre;";
+            probe.textContent = "0".repeat(100);
+            document.body.appendChild(probe);
+            const charWidth = (probe.getBoundingClientRect().width / 100) || 8;
+            document.body.removeChild(probe);
+            controller.dispatch({
+                type: "ui/viewport",
+                width: Math.floor(window.innerWidth / charWidth),
+                height: Math.floor(window.innerHeight / SCROLL_ROW_HEIGHT),
+            });
+        };
+        publish();
+        let timer;
+        const onResize = () => { clearTimeout(timer); timer = setTimeout(publish, 150); };
+        window.addEventListener("resize", onResize);
+        window.addEventListener("orientationchange", onResize);
+        return () => {
+            clearTimeout(timer);
+            window.removeEventListener("resize", onResize);
+            window.removeEventListener("orientationchange", onResize);
+        };
+    }, [controller]);
     const [chatFocusMode, setChatFocusMode] = React.useState(false);
     const [chatFocusPane, setChatFocusPane] = React.useState(null);
     const state = useControllerSelector(controller, (rootState) => ({
