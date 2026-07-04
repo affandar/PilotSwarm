@@ -1706,9 +1706,17 @@ function splashArtWidth(text) {
 function buildChatMessageLines(message, maxWidth, options = {}) {
     if (message?.splash) {
         // Swap in the narrow-viewport variant when the main art would
-        // overflow the pane (mobile portal, narrow terminals).
+        // overflow the pane (mobile portal, narrow terminals). When the
+        // width metrics keep the desktop art, still hand renderers the
+        // mobile variant (splashAlt) so environments with real media
+        // queries (the browser) can make the final call by CSS viewport —
+        // character metrics and device width can disagree.
         const useMobile = message.mobileText && splashArtWidth(message.text) > maxWidth;
-        return [{ kind: "markup", value: useMobile ? message.mobileText : message.text }];
+        return [{
+            kind: "markup",
+            value: useMobile ? message.mobileText : message.text,
+            splashAlt: !useMobile && message.mobileText ? message.mobileText : null,
+        }];
     }
 
     if (message?.thinking) {

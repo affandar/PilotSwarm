@@ -990,6 +990,22 @@ body.is-resizing-pane-y * {
   min-width: max-content;
 }
 
+/* Splash variant selection by REAL device viewport: when a splashMobile
+   variant exists, the renderer emits both blocks and CSS shows exactly one.
+   This is authoritative over character-metric estimates, which can disagree
+   with the device. */
+.ps-chat-preserve-block.is-splash-mobile {
+  display: none;
+}
+@media (max-width: 920px) {
+  .ps-chat-preserve-block.is-splash-desktop {
+    display: none;
+  }
+  .ps-chat-preserve-block.is-splash-mobile {
+    display: block;
+  }
+}
+
 /* Narrow (mobile) screens: no horizontal scrollbars in the chat pane. Art
    that does not fit wraps (garbles) like it used to — agents that care ship
    a splashMobile variant, which the renderer swaps in before this fallback

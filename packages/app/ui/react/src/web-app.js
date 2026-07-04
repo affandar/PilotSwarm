@@ -342,9 +342,17 @@ function normalizeLines(lines) {
             // Markup lines carry preformatted art (splash screens). Tag them
             // so the chat renderer keeps each line intact: the pane's
             // pre-wrap/overflow-wrap rules would rewrap wide art lines at
-            // arbitrary points and scramble the image.
-            for (const parsedLine of parseTerminalMarkupRuns(line.value || "")) {
-                normalized.push({ kind: "runs", runs: parsedLine, preserve: true });
+            // arbitrary points and scramble the image. When a splashAlt is
+            // present, emit BOTH variants tagged by name — CSS shows exactly
+            // one based on the real device viewport, which beats character
+            // metrics at deciding what actually fits.
+            const variants = line.splashAlt
+                ? [{ text: line.value, variant: "desktop" }, { text: line.splashAlt, variant: "mobile" }]
+                : [{ text: line.value, variant: null }];
+            for (const v of variants) {
+                for (const parsedLine of parseTerminalMarkupRuns(v.text || "")) {
+                    normalized.push({ kind: "runs", runs: parsedLine, preserve: true, splashVariant: v.variant });
+                }
             }
             continue;
         }
@@ -1322,12 +1330,13 @@ function parseStructuredChatBlocks(lines = []) {
         // detection entirely and render as one preserve block, so no line
         // ever rewraps or gets reinterpreted as a structured element.
         if (currentLine?.preserve) {
+            const variant = currentLine.splashVariant || null;
             const preserveLines = [];
-            while (index < lines.length && lines[index]?.preserve) {
+            while (index < lines.length && lines[index]?.preserve && (lines[index].splashVariant || null) === variant) {
                 preserveLines.push(lines[index]);
                 index += 1;
             }
-            blocks.push({ type: "preserve", lines: preserveLines });
+            blocks.push({ type: "preserve", lines: preserveLines, splashVariant: variant });
             continue;
         }
 
@@ -1483,7 +1492,8 @@ function StructuredChatBlocks({ lines, theme }) {
     return React.createElement(React.Fragment, null,
         blocks.map((block, index) => {
             if (block.type === "preserve") {
-                return React.createElement("div", { key: `preserve:${index}`, className: "ps-chat-preserve-block" },
+                const variantClass = block.splashVariant ? ` is-splash-${block.splashVariant}` : "";
+                return React.createElement("div", { key: `preserve:${index}`, className: `ps-chat-preserve-block${variantClass}` },
                     block.lines.map((line, lineIndex) => React.createElement(Line, {
                         key: `preserve:${index}:${lineIndex}`,
                         line,
