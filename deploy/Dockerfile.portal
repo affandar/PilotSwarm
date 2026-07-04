@@ -43,7 +43,7 @@ COPY packages/horizon-store/migrations/ ./packages/horizon-store/migrations/
 # Copy CLI (plain JS)
 COPY packages/app/tui/bin/ ./packages/app/tui/bin/
 COPY packages/app/tui/src/ ./packages/app/tui/src/
-COPY packages/app/tui/tui-splash.txt ./packages/app/tui/
+COPY packages/app/tui/tui-splash.txt packages/app/tui/tui-splash-mobile.txt ./packages/app/tui/
 COPY packages/app/tui/plugins/ ./packages/app/tui/plugins/
 
 # Copy UI packages (plain JS)
