@@ -951,7 +951,16 @@ export function appReducer(state, action) {
             };
         }
 
-        case "sessions/selected":
+        case "sessions/selected": {
+            // Per-session chat scroll memory: stash the outgoing session's
+            // offset and restore the incoming one's. If new chat arrives on
+            // re-entry, history/set's activeChatUpdated reset still snaps to
+            // latest — "latest chat, or where you left it".
+            const previousActiveId = state.sessions.activeSessionId;
+            const savedChatScroll = { ...(state.ui.chatScrollBySession || {}) };
+            if (previousActiveId && previousActiveId !== action.sessionId) {
+                savedChatScroll[previousActiveId] = Number(state.ui.scroll?.chat) || 0;
+            }
             return {
                 ...state,
                 sessions: {
@@ -960,9 +969,10 @@ export function appReducer(state, action) {
                 },
                 ui: {
                     ...state.ui,
+                    chatScrollBySession: savedChatScroll,
                     scroll: {
                         ...state.ui.scroll,
-                        chat: 0,
+                        chat: Number(savedChatScroll[action.sessionId]) || 0,
                         inspector: 0,
                         activity: 0,
                     },
@@ -973,6 +983,7 @@ export function appReducer(state, action) {
                     },
                 },
             };
+        }
 
         case "ui/fullscreenPane": {
             const fullscreenPane = normalizeFullscreenPane(action.fullscreenPane);
@@ -1152,6 +1163,8 @@ export function appReducer(state, action) {
             for (const id of ids) nextHistory.delete(id);
             const nextOutbox = cloneOutboxBySessionId(state.outbox?.bySessionId);
             for (const id of ids) delete nextOutbox[id];
+            const nextChatScroll = { ...(state.ui.chatScrollBySession || {}) };
+            for (const id of ids) delete nextChatScroll[id];
             return {
                 ...state,
                 history: {
@@ -1161,6 +1174,10 @@ export function appReducer(state, action) {
                 outbox: {
                     ...state.outbox,
                     bySessionId: nextOutbox,
+                },
+                ui: {
+                    ...state.ui,
+                    chatScrollBySession: nextChatScroll,
                 },
             };
         }

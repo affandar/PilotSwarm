@@ -150,6 +150,9 @@ export function createInitialState({ mode = "local", branding = null, themeId = 
                 activity: 0,
                 filePreview: 0,
             },
+            // Per-session chat scroll memory (rows from bottom), restored on
+            // sessions/selected and evicted with the session's history.
+            chatScrollBySession: {},
             followBottom: {
                 inspector: true,
                 activity: true,

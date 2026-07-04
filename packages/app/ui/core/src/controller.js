@@ -1834,6 +1834,57 @@ export class PilotSwarmUiController {
         await Promise.all(sessionIds.map((sessionId) => this.syncSessionDetail(sessionId).catch(() => {})));
     }
 
+    /**
+     * Append the events recorded after `afterSeq` to an in-memory history.
+     * Returns the merged history, the unchanged history when there is
+     * nothing new, or null when the delta is clamped (caller reloads).
+     */
+    async catchUpSessionHistory(sessionId, existingHistory, afterSeq) {
+        const CATCH_UP_PAGE_LIMIT = 1000;
+        let newEvents;
+        try {
+            newEvents = await this.transport.getSessionEvents(sessionId, afterSeq, CATCH_UP_PAGE_LIMIT);
+        } catch {
+            return null;
+        }
+        if (!Array.isArray(newEvents) || newEvents.length >= CATCH_UP_PAGE_LIMIT) {
+            return null;
+        }
+        if (newEvents.length === 0) {
+            return existingHistory;
+        }
+        let history = existingHistory;
+        for (const event of newEvents) {
+            history = appendEventToHistory(history, event);
+        }
+        history = {
+            ...history,
+            // Appends must never shrink the expanded window's clamp budget.
+            loadedEventLimit: Math.max(
+                Number(existingHistory.loadedEventLimit) || 0,
+                Array.isArray(history.events) ? history.events.length : 0,
+            ),
+        };
+        this.dispatch({ type: "history/set", sessionId, history });
+        for (const event of newEvents) {
+            this.reconcileOutboxAgainstEvent(sessionId, event);
+        }
+        const derivedModel = extractSessionModelFromEvents(newEvents);
+        const currentSession = this.getState().sessions.byId[sessionId] || { sessionId };
+        const derivedContextUsage = extractSessionContextUsageFromEvents(currentSession.contextUsage, newEvents);
+        if (derivedModel || derivedContextUsage) {
+            this.dispatch({
+                type: "sessions/merged",
+                session: {
+                    sessionId,
+                    ...(derivedModel || {}),
+                    ...(derivedContextUsage ? { contextUsage: derivedContextUsage } : {}),
+                },
+            });
+        }
+        return history;
+    }
+
     async ensureSessionHistory(sessionId, { force = false } = {}) {
         if (!sessionId) return null;
         const existingHistory = this.getState().history.bySessionId.get(sessionId);
@@ -1846,6 +1897,17 @@ export class PilotSwarmUiController {
         }
         if (!force && this.sessionHistoryLoads.has(sessionId)) {
             return this.sessionHistoryLoads.get(sessionId);
+        }
+
+        // Re-entry catch-up: when the expanded window is already in memory,
+        // fetch only the delta after lastSeq and append — the user's pulled-in
+        // older history (and its cursor) survives switching sessions. Fall
+        // back to a full window reload when the delta hits the server's
+        // 1000-row page clamp (too far behind to append reliably).
+        const catchUpFrom = Number(existingHistory?.lastSeq) || 0;
+        if (force && catchUpFrom > 0 && Array.isArray(existingHistory?.events) && existingHistory.events.length > 0) {
+            const caughtUp = await this.catchUpSessionHistory(sessionId, existingHistory, catchUpFrom);
+            if (caughtUp) return caughtUp;
         }
 
         const loadPromise = (async () => {
