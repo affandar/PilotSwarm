@@ -130,8 +130,18 @@ export async function validateSessionAfterTurn(env, sessionId, opts = {}) {
 
     try {
         // ── 1. CMS session row ─────────────────────────────────
-        const cmsRow = await catalog.getSession(sessionId);
+        // sendAndWait resolves on the response payload, but the post-turn
+        // writeback that flips state running → idle commits separately and
+        // can land moments later (more likely under provider-overlay load).
+        // Poll briefly for the expected state instead of sampling once.
+        const stateDeadline = Date.now() + 20_000;
+        let cmsRow = await catalog.getSession(sessionId);
         if (!cmsRow) throw new Error(`[CMS] Session ${sessionId.slice(0, 8)} not found`);
+        while (!expectedCmsStates.includes(cmsRow.state) && Date.now() < stateDeadline) {
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+            cmsRow = await catalog.getSession(sessionId);
+            if (!cmsRow) throw new Error(`[CMS] Session ${sessionId.slice(0, 8)} not found`);
+        }
 
         if (!expectedCmsStates.includes(cmsRow.state)) {
             throw new Error(
