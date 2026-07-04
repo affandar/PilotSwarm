@@ -337,12 +337,33 @@ export class PilotSwarmWorker {
         // (created above in `_createProvider`) honours the same MI
         // switch via duroxide-node's native Entra path; CMS/facts go
         // through the pg-pool factory using `DefaultAzureCredential`.
-        try {
-            this._catalog = await runtimeStorageProvider.createSessionCatalog(storage.runtime);
-            await this._catalog.initialize();
-        } catch (err) {
-            console.error("[PilotSwarmWorker] CMS initialization failed:", err);
-            this._catalog = null;
+        // Retry, then fail the boot. A worker that silently continues without
+        // CMS never registers the catalog-gated tools (sweeper maintenance,
+        // resource manager) for its entire lifetime — system agents hydrating
+        // on such a pod run tool-less and report blocked cycles. Transient PG
+        // unavailability during rollouts is exactly when workers boot, so
+        // retry briefly; if CMS still isn't reachable, crash and let the
+        // orchestrator restart the pod into a healthy state.
+        {
+            const attempts = 5;
+            let lastErr: unknown;
+            for (let attempt = 1; attempt <= attempts; attempt += 1) {
+                try {
+                    this._catalog = await runtimeStorageProvider.createSessionCatalog(storage.runtime);
+                    await this._catalog.initialize();
+                    lastErr = null;
+                    break;
+                } catch (err) {
+                    lastErr = err;
+                    this._catalog = null;
+                    const delayMs = Math.min(15_000, 1_000 * 2 ** (attempt - 1));
+                    console.error(`[PilotSwarmWorker] CMS initialization failed (attempt ${attempt}/${attempts}), retrying in ${delayMs}ms:`, err);
+                    if (attempt < attempts) await new Promise((resolve) => setTimeout(resolve, delayMs));
+                }
+            }
+            if (lastErr) {
+                throw new Error(`CMS initialization failed after ${attempts} attempts — refusing to run a degraded worker without catalog-gated tools: ${String((lastErr as Error)?.message ?? lastErr)}`);
+            }
         }
         // ── Facts store: base PgFactStore (default) or an EnhancedFactStore
         //    provider (enhancedfactstore 07 P3). Shared resolver keeps the

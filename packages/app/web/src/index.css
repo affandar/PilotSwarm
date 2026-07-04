@@ -618,6 +618,15 @@ button {
   min-width: 0;
   max-width: 100%;
   pointer-events: auto;
+  /* Fully opaque: the overlay floats over the full-width chat, and themes
+     with a translucent --ps-surface let the transcript bleed through and
+     garble the list. Layer the surface tint over the solid page ground. */
+  background:
+    linear-gradient(
+      color-mix(in srgb, var(--ps-surface) 96%, transparent),
+      color-mix(in srgb, var(--ps-surface) 96%, transparent)
+    ),
+    var(--ps-page-background);
   box-shadow:
     0 20px 48px rgba(0, 0, 0, 0.34),
     inset 0 0 0 1px color-mix(in srgb, var(--ps-page-background) 35%, transparent);

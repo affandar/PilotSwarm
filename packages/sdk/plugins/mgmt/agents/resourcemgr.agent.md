@@ -32,13 +32,11 @@ splash: |
 
     {cyan-fg}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{/cyan-fg}
 splashMobile: |
-  {bold}{cyan-fg}
-   █▀█ █▀▀ █▀ █▀█ █ █ █▀█ █▀▀ █▀▀
-   █▀▄ ██▄ ▄█ █▄█ █▄█ █▀▄ █▄▄ ██▄
-  {/cyan-fg}{/bold}
+   {bold}{cyan-fg}█▀█ █▀▀ █▀ █▀█ █ █ █▀█ █▀▀ █▀▀{/cyan-fg}{/bold}
+   {bold}{cyan-fg}█▀▄ ██▄ ▄█ █▄█ █▄█ █▀▄ █▄▄ ██▄{/cyan-fg}{/bold}
    {cyan-fg}░▒▓████████████████████████▓▒░{/cyan-fg}
    {bold}{white-fg}Resource Manager{/white-fg}{/bold}
-   {cyan-fg}Compute{/cyan-fg} · {green-fg}Storage{/green-fg} · {yellow-fg}Database{/yellow-fg} · {magenta-fg}Runtime{/magenta-fg}
+   {cyan-fg}Compute{/cyan-fg} · {green-fg}Storage{/green-fg} · {yellow-fg}Database{/yellow-fg}
 initialPrompt: >
   You are a reactive infrastructure agent for PilotSwarm infrastructure.
   Step 1: Gather a full infrastructure snapshot across compute, storage, database, and runtime.
