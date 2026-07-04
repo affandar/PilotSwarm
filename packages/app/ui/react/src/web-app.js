@@ -55,6 +55,9 @@ const PORTAL_SESSION_HIDDEN_COLUMN_PX = 48;
 const SCROLL_ROW_HEIGHT = 16;
 const SCROLL_BOTTOM_EPSILON_PX = 0.5;
 const PROGRAMMATIC_SCROLL_TOLERANCE_PX = SCROLL_BOTTOM_EPSILON_PX;
+// Minimum downward finger travel (px) while at the top of the chat pane before
+// a touch pull counts as a load-older-history request.
+const TOUCH_TOP_PULL_THRESHOLD_PX = 24;
 const PROFILE_SETTINGS_POLL_MS = 5000;
 const REASONING_EFFORT_LABELS = new Set(["low", "medium", "high", "xhigh"]);
 const LEGACY_BROWSER_PREFERENCE_STORAGE_KEYS = [
@@ -597,7 +600,30 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
         controller.handleChatTopHistoryScrollIntent?.(maxScroll / SCROLL_ROW_HEIGHT);
     }, [controller, paneKey, ref, scrollMode]);
 
-    return { normalizedLines, onScroll, onWheel };
+    // Touch equivalent of the wheel-at-top gesture: touch devices never fire
+    // wheel events, and once scrollTop sits at 0 a further swipe-down emits no
+    // scroll events either — so mobile had no way to request older history.
+    // A downward pull that starts while the pane is at (or near) the top fires
+    // the same top-history intent, once per gesture.
+    const touchPullRef = React.useRef({ startY: null, fired: false });
+    const onTouchStart = React.useCallback((event) => {
+        if (paneKey !== "chat" || scrollMode !== "bottom") return;
+        touchPullRef.current = { startY: event.touches?.[0]?.clientY ?? null, fired: false };
+    }, [paneKey, scrollMode]);
+    const onTouchMove = React.useCallback((event) => {
+        const node = ref.current;
+        const pull = touchPullRef.current;
+        if (!node || paneKey !== "chat" || scrollMode !== "bottom") return;
+        if (pull.fired || pull.startY == null) return;
+        if (node.scrollTop > PROGRAMMATIC_SCROLL_TOLERANCE_PX) return;
+        const y = event.touches?.[0]?.clientY;
+        if (y == null || y - pull.startY < TOUCH_TOP_PULL_THRESHOLD_PX) return;
+        pull.fired = true;
+        const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
+        controller.handleChatTopHistoryScrollIntent?.(maxScroll / SCROLL_ROW_HEIGHT);
+    }, [controller, paneKey, ref, scrollMode]);
+
+    return { normalizedLines, onScroll, onWheel, onTouchStart, onTouchMove };
 }
 
 function Runs({ runs, theme }) {
@@ -1643,7 +1669,7 @@ function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, l
     const ref = React.useRef(null);
     const stickyRef = React.useRef(null);
     const syncingHorizontalRef = React.useRef(false);
-    const { normalizedLines, onScroll, onWheel } = useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller, { stickyBottom });
+    const { normalizedLines, onScroll, onWheel, onTouchStart, onTouchMove } = useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller, { stickyBottom });
     const normalizedSticky = React.useMemo(() => normalizeLines(stickyLines), [stickyLines]);
     const normalizedBottomSticky = React.useMemo(() => normalizeLines(bottomStickyLines), [bottomStickyLines]);
     const preserveHorizontalScroll = className.includes("is-preserve") && panelClassName.includes("has-preserved-sticky");
@@ -1680,7 +1706,7 @@ function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, l
                 normalizedSticky.map((line, index) => React.createElement(Line, { key: `sticky:${index}`, line, theme })),
             )
             : null,
-        React.createElement("div", { ref, className: `ps-scroll-panel ${className}`.trim(), onScroll: handleBodyScroll, onWheel },
+        React.createElement("div", { ref, className: `ps-scroll-panel ${className}`.trim(), onScroll: handleBodyScroll, onWheel, onTouchStart, onTouchMove },
             typeof renderBody === "function"
                 ? renderBody(normalizedLines, theme)
                 : structuredBlocks
