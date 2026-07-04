@@ -100,6 +100,53 @@ describe("chat history pull type filter", () => {
         assertEqual(history.hasOlderEvents, false, "A short filtered page means the transcript is complete");
     });
 
+    it("splash-only sessions bypass the scroll-position gate", async () => {
+        const pageRequests = [];
+        const { controller, store } = createController({
+            getSessionEventsBefore: async (sessionId, beforeSeq, limit, eventTypes) => {
+                pageRequests.push({ sessionId, beforeSeq, limit, eventTypes });
+                return [chatEvent(500, "assistant.message", "found you")];
+            },
+        });
+        seedNoiseOnlyWindow(store);
+        // Tall splash art: rendered lines far exceed the viewport, which used
+        // to swallow the one-gesture pull intent (targetOffset < maxOffset).
+        controller.getActiveChatRenderMetrics = () => ({ contentWidth: 40, contentHeight: 10, totalLines: 500 });
+
+        await controller.maybeAutoExpandActiveHistory(1);
+
+        assertEqual(pageRequests.length, 1, "Splash-only pull should fetch despite the tall splash metrics");
+        const history = store.getState().history.bySessionId.get(SESSION_ID);
+        assertEqual(history.chat.length, 1, "Fetched chat message should replace the empty transcript");
+    });
+
+    it("keeps the scroll-position gate when real chat messages exist", async () => {
+        const pageRequests = [];
+        const { controller, store } = createController({
+            getSessionEventsBefore: async (...args) => {
+                pageRequests.push(args);
+                return [];
+            },
+        });
+        store.dispatch({ type: "sessions/selected", sessionId: SESSION_ID });
+        store.dispatch({
+            type: "history/set",
+            sessionId: SESSION_ID,
+            history: {
+                ...buildHistoryModel(
+                    [chatEvent(1001, "user.message", "hi"), chatEvent(1002, "assistant.message", "hello")],
+                    { requestedLimit: 300 },
+                ),
+                hasOlderEvents: true,
+            },
+        });
+        controller.getActiveChatRenderMetrics = () => ({ contentWidth: 40, contentHeight: 10, totalLines: 500 });
+
+        await controller.maybeAutoExpandActiveHistory(1);
+
+        assertEqual(pageRequests.length, 0, "Mid-scroll pull with real chat should stay gated");
+    });
+
     it("explicit expansion stays unfiltered", async () => {
         const pageRequests = [];
         const { controller, store } = createController({

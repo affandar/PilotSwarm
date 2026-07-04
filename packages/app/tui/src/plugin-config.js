@@ -93,6 +93,19 @@ function readSplashValue(baseDir, config, fallback) {
     return fallback;
 }
 
+// Narrow-viewport splash variant (splashMobile / splashMobileFile). No
+// default art: null means "wrap the main splash when it does not fit".
+function readSplashMobileValue(baseDir, config, fallback = null) {
+    if (typeof config?.splashMobile === "string" && config.splashMobile.trim()) {
+        return config.splashMobile;
+    }
+    if (typeof config?.splashMobileFile === "string" && config.splashMobileFile.trim()) {
+        const fileText = readRelativeTextFile(baseDir, config.splashMobileFile);
+        if (fileText != null) return fileText;
+    }
+    return fallback;
+}
+
 function getDefaultSplash() {
     return readOptionalTextFile(defaultTuiSplashPath) || "{bold}{cyan-fg}PilotSwarm{/cyan-fg}{/bold}";
 }
@@ -135,7 +148,8 @@ export function resolveTuiBranding(pluginDir) {
 
     const title = firstNonEmptyString(tui.title, "PilotSwarm") || "PilotSwarm";
     const splash = readSplashValue(pluginDir, tui, defaultSplash);
-    return { title, splash };
+    const splashMobile = readSplashMobileValue(pluginDir, tui);
+    return { title, splash, ...(splashMobile ? { splashMobile } : {}) };
 }
 
 export function resolvePortalConfigBundleFromPluginDirs(pluginDirs = []) {
@@ -145,6 +159,7 @@ export function resolvePortalConfigBundleFromPluginDirs(pluginDirs = []) {
             title: "PilotSwarm",
             pageTitle: "PilotSwarm",
             splash: defaultSplash,
+            splashMobile: null,
             logoUrl: null,
             faviconUrl: null,
         },
@@ -179,6 +194,11 @@ export function resolvePortalConfigBundleFromPluginDirs(pluginDirs = []) {
             portalBranding,
             readSplashValue(absDir, portal, readSplashValue(absDir, tui, defaults.branding.splash)),
         );
+        const splashMobile = readSplashMobileValue(
+            absDir,
+            portalBranding,
+            readSplashMobileValue(absDir, portal, readSplashMobileValue(absDir, tui)),
+        );
         const logoAsset = resolvePortalAsset(absDir, {
             file: firstNonEmptyString(portalBranding.logoFile, portal.logoFile),
             url: firstNonEmptyString(portalBranding.logoUrl, portal.logoUrl),
@@ -193,6 +213,7 @@ export function resolvePortalConfigBundleFromPluginDirs(pluginDirs = []) {
             title,
             pageTitle,
             splash,
+            splashMobile: splashMobile || null,
             logoUrl: logoAsset.publicUrl || null,
             faviconUrl: faviconAsset.publicUrl || null,
         };

@@ -36,9 +36,11 @@ describe("CMS migrator — bounded session reads", () => {
             const appliedVersions = versions.map((r) => r.version);
             assert(appliedVersions.includes("0013"), "Expected migration 0013 to be applied");
 
+            // DISTINCT: information_schema.routines lists one row per overload,
+            // and the event procs grew 4-arg type-filter overloads in 0025.
             const { rows: routines } = await directQuery(
                 env,
-                `SELECT routine_name
+                `SELECT DISTINCT routine_name
                  FROM information_schema.routines
                  WHERE routine_schema = $1
                    AND routine_name IN (

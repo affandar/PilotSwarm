@@ -58,6 +58,10 @@ const PROGRAMMATIC_SCROLL_TOLERANCE_PX = SCROLL_BOTTOM_EPSILON_PX;
 // Minimum downward finger travel (px) while at the top of the chat pane before
 // a touch pull counts as a load-older-history request.
 const TOUCH_TOP_PULL_THRESHOLD_PX = 24;
+// How long after the last user-driven scroll event the pane still counts as
+// momentum-scrolling (native flick glide), during which programmatic scrollTop
+// restores are suppressed so they don't kill the glide.
+const TOUCH_MOMENTUM_GRACE_MS = 700;
 const PROFILE_SETTINGS_POLL_MS = 5000;
 const REASONING_EFFORT_LABELS = new Set(["low", "medium", "high", "xhigh"]);
 const LEGACY_BROWSER_PREFERENCE_STORAGE_KEYS = [
@@ -518,11 +522,32 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
         scrollMode,
         scrollOffset,
     });
+    // Touch scrolling relies on native momentum for speed: a hard flick keeps
+    // scrolling long after the finger lifts. Re-asserting scrollTop from state
+    // on every render (live events, status updates) kills that momentum at the
+    // first re-render, so flicks degrade to slow drags. While a touch gesture
+    // or its momentum is in flight, the DOM is the source of truth and state
+    // echoes of our own scroll dispatches must not snap the pane back.
+    const userScrollRef = React.useRef({ touching: false, lastUserScrollAt: 0, lastDispatchedOffset: null });
 
     React.useLayoutEffect(() => {
         const node = ref.current;
         if (!node) return;
         const previousViewportState = previousViewportStateRef.current;
+        const interaction = userScrollRef.current;
+        const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+        const interacting = interaction.touching
+            || (now - (interaction.lastUserScrollAt || 0)) < TOUCH_MOMENTUM_GRACE_MS;
+        const isEchoOffset = interaction.lastDispatchedOffset != null
+            && Math.abs((Number(scrollOffset) || 0) - interaction.lastDispatchedOffset) < 2;
+        if (
+            interacting
+            && scrollMode === previousViewportState?.scrollMode
+            && (scrollOffset === previousViewportState?.scrollOffset || isEchoOffset)
+        ) {
+            previousViewportStateRef.current = { scrollMode, scrollOffset };
+            return;
+        }
         const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
         const preservePausedStickyScroll = stickyBottom
             && scrollMode === "top"
@@ -562,6 +587,7 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
             }
             programmaticScrollRef.current = null;
         }
+        userScrollRef.current.lastUserScrollAt = typeof performance !== "undefined" ? performance.now() : Date.now();
         const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
         // When the pane has no scrollable content (transient loading state
         // that briefly collapses the body to one line), the browser auto-
@@ -571,9 +597,11 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
         // the desired scroll position from preserved state.
         if (maxScroll <= 0) return;
         if (stickyBottom && typeof controller.updatePaneScrollFromViewport === "function") {
+            const rowOffset = Math.max(0, node.scrollTop) / SCROLL_ROW_HEIGHT;
+            userScrollRef.current.lastDispatchedOffset = rowOffset;
             controller.updatePaneScrollFromViewport(
                 paneKey,
-                Math.max(0, node.scrollTop) / SCROLL_ROW_HEIGHT,
+                rowOffset,
                 { atBottom: isScrollViewportAtBottom(node) },
             );
             return;
@@ -582,6 +610,7 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
         const pixels = scrollMode === "bottom"
             ? Math.max(0, maxScroll - node.scrollTop)
             : Math.max(0, node.scrollTop);
+        userScrollRef.current.lastDispatchedOffset = pixels / SCROLL_ROW_HEIGHT;
         controller.dispatch({
             type: "ui/scroll",
             pane: paneKey,
@@ -607,9 +636,16 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
     // the same top-history intent, once per gesture.
     const touchPullRef = React.useRef({ startY: null, fired: false });
     const onTouchStart = React.useCallback((event) => {
+        userScrollRef.current.touching = true;
         if (paneKey !== "chat" || scrollMode !== "bottom") return;
         touchPullRef.current = { startY: event.touches?.[0]?.clientY ?? null, fired: false };
     }, [paneKey, scrollMode]);
+    const onTouchEnd = React.useCallback(() => {
+        userScrollRef.current.touching = false;
+        // Momentum continues past the finger lift; onScroll keeps refreshing
+        // lastUserScrollAt for as long as the glide emits scroll events.
+        userScrollRef.current.lastUserScrollAt = typeof performance !== "undefined" ? performance.now() : Date.now();
+    }, []);
     const onTouchMove = React.useCallback((event) => {
         const node = ref.current;
         const pull = touchPullRef.current;
@@ -630,7 +666,7 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
         controller.handleChatTopHistoryScrollIntent?.(maxScroll / SCROLL_ROW_HEIGHT + 1);
     }, [controller, paneKey, ref, scrollMode]);
 
-    return { normalizedLines, onScroll, onWheel, onTouchStart, onTouchMove };
+    return { normalizedLines, onScroll, onWheel, onTouchStart, onTouchMove, onTouchEnd };
 }
 
 function Runs({ runs, theme }) {
@@ -1676,7 +1712,7 @@ function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, l
     const ref = React.useRef(null);
     const stickyRef = React.useRef(null);
     const syncingHorizontalRef = React.useRef(false);
-    const { normalizedLines, onScroll, onWheel, onTouchStart, onTouchMove } = useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller, { stickyBottom });
+    const { normalizedLines, onScroll, onWheel, onTouchStart, onTouchMove, onTouchEnd } = useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller, { stickyBottom });
     const normalizedSticky = React.useMemo(() => normalizeLines(stickyLines), [stickyLines]);
     const normalizedBottomSticky = React.useMemo(() => normalizeLines(bottomStickyLines), [bottomStickyLines]);
     const preserveHorizontalScroll = className.includes("is-preserve") && panelClassName.includes("has-preserved-sticky");
@@ -1713,7 +1749,7 @@ function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, l
                 normalizedSticky.map((line, index) => React.createElement(Line, { key: `sticky:${index}`, line, theme })),
             )
             : null,
-        React.createElement("div", { ref, className: `ps-scroll-panel ${className}`.trim(), onScroll: handleBodyScroll, onWheel, onTouchStart, onTouchMove },
+        React.createElement("div", { ref, className: `ps-scroll-panel ${className}`.trim(), onScroll: handleBodyScroll, onWheel, onTouchStart, onTouchMove, onTouchEnd, onTouchCancel: onTouchEnd },
             typeof renderBody === "function"
                 ? renderBody(normalizedLines, theme)
                 : structuredBlocks

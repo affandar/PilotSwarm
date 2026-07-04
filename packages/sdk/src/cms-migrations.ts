@@ -140,6 +140,11 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "session_events_type_filter",
             sql: migration_0025_session_events_type_filter(schema),
         },
+        {
+            version: "0026",
+            name: "session_splash_mobile",
+            sql: migration_0026_session_splash_mobile(schema),
+        },
     ];
 }
 
@@ -4592,6 +4597,309 @@ BEGIN
           AND (p_event_types IS NULL OR event_type = ANY(p_event_types))
         ORDER BY seq DESC LIMIT v_limit
     ) t ORDER BY seq ASC;
+END;
+$$ LANGUAGE plpgsql;
+`;
+}
+
+// ─── Migration 0026: Session splash mobile ────────────────────────
+
+function migration_0026_session_splash_mobile(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- 0026_session_splash_mobile: narrow-viewport splash variant. Agents can ship
+-- a splashMobile banner that the UI swaps in when the main splash art is wider
+-- than the pane (mobile portal, narrow terminals). Nullable column + a 9-arg
+-- overload of cms_create_session (the 8-arg version stays for old workers),
+-- a splashMobile rule in cms_update_session (spawn paths set splash via the
+-- jsonb meta update), and the fixed-column read procs recreated with the new
+-- column. cms_list_group_sessions does SELECT * FROM cms_list_sessions() into
+-- its own fixed column list, so both must move together or it breaks at
+-- runtime. cms_list_sessions_page returns SETOF sessions and needs no change.
+
+ALTER TABLE ${s}.sessions ADD COLUMN IF NOT EXISTS splash_mobile TEXT;
+
+-- ── cms_create_session (splash_mobile overload) ──────────────────
+CREATE OR REPLACE FUNCTION ${s}.cms_create_session(
+    p_session_id        TEXT,
+    p_model             TEXT,
+    p_reasoning_effort  TEXT,
+    p_parent_session_id TEXT,
+    p_is_system         BOOLEAN,
+    p_agent_id          TEXT,
+    p_splash            TEXT,
+    p_group_id          TEXT,
+    p_splash_mobile     TEXT
+) RETURNS VOID AS $$
+DECLARE
+    v_reasoning_effort TEXT := NULLIF(BTRIM(p_reasoning_effort), '');
+    v_group_id TEXT := NULLIF(BTRIM(p_group_id), '');
+BEGIN
+    IF v_group_id IS NULL AND p_parent_session_id IS NOT NULL THEN
+        SELECT group_id INTO v_group_id
+        FROM ${s}.sessions
+        WHERE session_id = p_parent_session_id;
+    END IF;
+
+    INSERT INTO ${s}.sessions
+        (session_id, model, reasoning_effort, parent_session_id, is_system, agent_id, splash, splash_mobile, group_id)
+    VALUES
+        (p_session_id, p_model, v_reasoning_effort, p_parent_session_id, p_is_system, p_agent_id, p_splash, p_splash_mobile, v_group_id)
+    ON CONFLICT (session_id) DO UPDATE
+    SET model             = EXCLUDED.model,
+        reasoning_effort  = EXCLUDED.reasoning_effort,
+        parent_session_id = EXCLUDED.parent_session_id,
+        is_system         = EXCLUDED.is_system,
+        agent_id          = EXCLUDED.agent_id,
+        splash            = EXCLUDED.splash,
+        splash_mobile     = EXCLUDED.splash_mobile,
+        group_id          = EXCLUDED.group_id,
+        deleted_at        = NULL,
+        updated_at        = now(),
+        state             = 'pending',
+        orchestration_id  = NULL,
+        last_error        = NULL,
+        last_active_at    = NULL,
+        current_iteration = 0,
+        wait_reason       = NULL,
+        title_locked      = FALSE
+    WHERE ${s}.sessions.deleted_at IS NOT NULL;
+
+    INSERT INTO ${s}.session_metric_summaries
+        (session_id, agent_id, model, reasoning_effort, parent_session_id)
+    VALUES
+        (p_session_id, p_agent_id, p_model, v_reasoning_effort, p_parent_session_id)
+    ON CONFLICT (session_id) DO UPDATE
+    SET agent_id          = COALESCE(${s}.session_metric_summaries.agent_id, EXCLUDED.agent_id),
+        model             = COALESCE(${s}.session_metric_summaries.model, EXCLUDED.model),
+        reasoning_effort  = COALESCE(${s}.session_metric_summaries.reasoning_effort, EXCLUDED.reasoning_effort),
+        parent_session_id = COALESCE(${s}.session_metric_summaries.parent_session_id, EXCLUDED.parent_session_id),
+        updated_at        = now();
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── cms_update_session ───────────────────────────────────────────
+-- Same as 0024, plus the splashMobile column rule.
+CREATE OR REPLACE FUNCTION ${s}.cms_update_session(
+    p_session_id TEXT,
+    p_updates    JSONB
+) RETURNS VOID AS $$
+BEGIN
+    UPDATE ${s}.sessions SET
+        orchestration_id  = CASE WHEN p_updates ? 'orchestrationId'  THEN (p_updates->>'orchestrationId')                         ELSE orchestration_id  END,
+        title             = CASE WHEN p_updates ? 'title'            THEN (p_updates->>'title')                                    ELSE title             END,
+        title_locked      = CASE WHEN p_updates ? 'titleLocked'     THEN (p_updates->>'titleLocked')::BOOLEAN                     ELSE title_locked      END,
+        state             = CASE WHEN p_updates ? 'state'           THEN (p_updates->>'state')                                     ELSE state             END,
+        model             = CASE WHEN p_updates ? 'model'           THEN (p_updates->>'model')                                     ELSE model             END,
+        reasoning_effort  = CASE WHEN p_updates ? 'reasoningEffort' THEN NULLIF(BTRIM(p_updates->>'reasoningEffort'), '')          ELSE reasoning_effort  END,
+        last_active_at    = CASE WHEN p_updates ? 'lastActiveAt'    THEN (p_updates->>'lastActiveAt')::TIMESTAMPTZ                 ELSE last_active_at    END,
+        current_iteration = CASE WHEN p_updates ? 'currentIteration' THEN (p_updates->>'currentIteration')::INT                   ELSE current_iteration END,
+        last_error        = CASE WHEN p_updates ? 'lastError'       THEN (p_updates->>'lastError')                                 ELSE last_error        END,
+        wait_reason       = CASE WHEN p_updates ? 'waitReason'      THEN (p_updates->>'waitReason')                                ELSE wait_reason       END,
+        is_system         = CASE WHEN p_updates ? 'isSystem'        THEN (p_updates->>'isSystem')::BOOLEAN                         ELSE is_system         END,
+        agent_id          = CASE WHEN p_updates ? 'agentId'         THEN (p_updates->>'agentId')                                   ELSE agent_id          END,
+        splash            = CASE WHEN p_updates ? 'splash'          THEN (p_updates->>'splash')                                    ELSE splash            END,
+        splash_mobile     = CASE WHEN p_updates ? 'splashMobile'    THEN (p_updates->>'splashMobile')                              ELSE splash_mobile     END,
+        active_turn_index = CASE WHEN (p_updates ? 'state') AND (p_updates->>'state') <> 'running' THEN NULL                       ELSE active_turn_index END,
+        group_id          = group_id,
+        updated_at        = now()
+    WHERE session_id = p_session_id;
+
+    IF p_updates ? 'groupId' THEN
+        PERFORM ${s}.cms_assign_session_group(p_session_id, p_updates->>'groupId');
+    END IF;
+
+    UPDATE ${s}.session_metrics
+    SET model = CASE WHEN p_updates ? 'model' THEN (p_updates->>'model') ELSE model END,
+        reasoning_effort = CASE WHEN p_updates ? 'reasoningEffort' THEN NULLIF(BTRIM(p_updates->>'reasoningEffort'), '') ELSE reasoning_effort END,
+        updated_at = CASE WHEN p_updates ? 'model' OR p_updates ? 'reasoningEffort' THEN now() ELSE updated_at END
+    WHERE session_id = p_session_id
+      AND (p_updates ? 'model' OR p_updates ? 'reasoningEffort');
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── cms_get_session ──────────────────────────────────────────────
+-- Same as 0024, plus splash_mobile in the fixed column list.
+DROP FUNCTION IF EXISTS ${s}.cms_get_session(TEXT);
+CREATE FUNCTION ${s}.cms_get_session(
+    p_session_id TEXT
+) RETURNS TABLE (
+    session_id         TEXT,
+    orchestration_id   TEXT,
+    title              TEXT,
+    title_locked       BOOLEAN,
+    state              TEXT,
+    model              TEXT,
+    reasoning_effort   TEXT,
+    group_id           TEXT,
+    short_summary      TEXT,
+    summary_state      JSONB,
+    summary_updated_at TIMESTAMPTZ,
+    created_at         TIMESTAMPTZ,
+    updated_at         TIMESTAMPTZ,
+    last_active_at     TIMESTAMPTZ,
+    deleted_at         TIMESTAMPTZ,
+    current_iteration  INTEGER,
+    last_error         TEXT,
+    parent_session_id  TEXT,
+    wait_reason        TEXT,
+    is_system          BOOLEAN,
+    agent_id           TEXT,
+    splash             TEXT,
+    owner_provider     TEXT,
+    owner_subject      TEXT,
+    owner_email        TEXT,
+    owner_display_name TEXT,
+    active_turn_index  INTEGER,
+    splash_mobile      TEXT
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        sess.session_id,
+        sess.orchestration_id,
+        sess.title,
+        sess.title_locked,
+        sess.state,
+        sess.model,
+        sess.reasoning_effort,
+        sess.group_id,
+        sess.short_summary,
+        sess.summary_state,
+        sess.summary_updated_at,
+        sess.created_at,
+        sess.updated_at,
+        sess.last_active_at,
+        sess.deleted_at,
+        sess.current_iteration,
+        sess.last_error,
+        sess.parent_session_id,
+        sess.wait_reason,
+        sess.is_system,
+        sess.agent_id,
+        sess.splash,
+        u.provider AS owner_provider,
+        u.subject AS owner_subject,
+        u.email AS owner_email,
+        u.display_name AS owner_display_name,
+        sess.active_turn_index,
+        sess.splash_mobile
+    FROM ${s}.sessions sess
+    LEFT JOIN ${s}.session_owners so ON so.session_id = sess.session_id
+    LEFT JOIN ${s}.users u ON u.user_id = so.user_id
+    WHERE sess.session_id = p_session_id AND sess.deleted_at IS NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── cms_list_sessions / cms_list_group_sessions ──────────────────
+-- Recreated together: the group variant is SELECT * over cms_list_sessions()
+-- into its own fixed column list, so their shapes must stay identical.
+DROP FUNCTION IF EXISTS ${s}.cms_list_group_sessions(TEXT);
+DROP FUNCTION IF EXISTS ${s}.cms_list_sessions();
+CREATE FUNCTION ${s}.cms_list_sessions()
+RETURNS TABLE (
+    session_id         TEXT,
+    orchestration_id   TEXT,
+    title              TEXT,
+    title_locked       BOOLEAN,
+    state              TEXT,
+    model              TEXT,
+    reasoning_effort   TEXT,
+    group_id           TEXT,
+    short_summary      TEXT,
+    summary_state      JSONB,
+    summary_updated_at TIMESTAMPTZ,
+    created_at         TIMESTAMPTZ,
+    updated_at         TIMESTAMPTZ,
+    last_active_at     TIMESTAMPTZ,
+    deleted_at         TIMESTAMPTZ,
+    current_iteration  INTEGER,
+    last_error         TEXT,
+    parent_session_id  TEXT,
+    wait_reason        TEXT,
+    is_system          BOOLEAN,
+    agent_id           TEXT,
+    splash             TEXT,
+    owner_provider     TEXT,
+    owner_subject      TEXT,
+    owner_email        TEXT,
+    owner_display_name TEXT,
+    splash_mobile      TEXT
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        sess.session_id,
+        sess.orchestration_id,
+        sess.title,
+        sess.title_locked,
+        sess.state,
+        sess.model,
+        sess.reasoning_effort,
+        sess.group_id,
+        sess.short_summary,
+        sess.summary_state,
+        sess.summary_updated_at,
+        sess.created_at,
+        sess.updated_at,
+        sess.last_active_at,
+        sess.deleted_at,
+        sess.current_iteration,
+        sess.last_error,
+        sess.parent_session_id,
+        sess.wait_reason,
+        sess.is_system,
+        sess.agent_id,
+        sess.splash,
+        u.provider AS owner_provider,
+        u.subject AS owner_subject,
+        u.email AS owner_email,
+        u.display_name AS owner_display_name,
+        sess.splash_mobile
+    FROM ${s}.sessions sess
+    LEFT JOIN ${s}.session_owners so ON so.session_id = sess.session_id
+    LEFT JOIN ${s}.users u ON u.user_id = so.user_id
+    WHERE sess.deleted_at IS NULL
+    ORDER BY sess.updated_at DESC, sess.session_id DESC;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE FUNCTION ${s}.cms_list_group_sessions(
+    p_group_id TEXT
+) RETURNS TABLE (
+    session_id         TEXT,
+    orchestration_id   TEXT,
+    title              TEXT,
+    title_locked       BOOLEAN,
+    state              TEXT,
+    model              TEXT,
+    reasoning_effort   TEXT,
+    group_id           TEXT,
+    short_summary      TEXT,
+    summary_state      JSONB,
+    summary_updated_at TIMESTAMPTZ,
+    created_at         TIMESTAMPTZ,
+    updated_at         TIMESTAMPTZ,
+    last_active_at     TIMESTAMPTZ,
+    deleted_at         TIMESTAMPTZ,
+    current_iteration  INTEGER,
+    last_error         TEXT,
+    parent_session_id  TEXT,
+    wait_reason        TEXT,
+    is_system          BOOLEAN,
+    agent_id           TEXT,
+    splash             TEXT,
+    owner_provider     TEXT,
+    owner_subject      TEXT,
+    owner_email        TEXT,
+    owner_display_name TEXT,
+    splash_mobile      TEXT
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT * FROM ${s}.cms_list_sessions() s
+    WHERE s.group_id = p_group_id
+    ORDER BY s.updated_at DESC, s.session_id DESC;
 END;
 $$ LANGUAGE plpgsql;
 `;

@@ -3286,6 +3286,7 @@ export class PilotSwarmUiController {
                 description: "Open-ended session with no specialized agent boundary.",
                 tools: [],
                 splash: null,
+                splashMobile: null,
                 initialPrompt: null,
             });
         }
@@ -3301,6 +3302,7 @@ export class PilotSwarmUiController {
                 description: String(agent?.description || "").trim(),
                 tools: Array.isArray(agent?.tools) ? agent.tools.filter(Boolean) : [],
                 splash: typeof agent?.splash === "string" && agent.splash.trim() ? agent.splash : null,
+                splashMobile: typeof agent?.splashMobile === "string" && agent.splashMobile.trim() ? agent.splashMobile : null,
                 initialPrompt: typeof agent?.initialPrompt === "string" && agent.initialPrompt.trim() ? agent.initialPrompt : null,
             });
         }
@@ -4276,6 +4278,7 @@ export class PilotSwarmUiController {
                 ...sessionOptions,
                 ...(item.title ? { title: item.title } : {}),
                 ...(item.splash ? { splash: item.splash } : {}),
+                ...(item.splashMobile ? { splashMobile: item.splashMobile } : {}),
                 ...(item.initialPrompt ? { initialPrompt: item.initialPrompt } : {}),
             });
             return;
@@ -5205,9 +5208,16 @@ export class PilotSwarmUiController {
             return;
         }
 
-        const { contentHeight, totalLines } = this.getActiveChatRenderMetrics(state);
-        const maxOffset = Math.max(0, totalLines - contentHeight);
-        if (targetOffset < maxOffset) return;
+        // Splash-only transcript: tall splash art inflates totalLines past the
+        // viewport, so the one-gesture pull intent (DOM scroll + 1 row) can
+        // never reach maxOffset. With no real chat messages, any top-pull is
+        // unambiguous intent — skip the scroll-position gate.
+        const hasChatMessages = Array.isArray(currentHistory?.chat) && currentHistory.chat.length > 0;
+        if (hasChatMessages) {
+            const { contentHeight, totalLines } = this.getActiveChatRenderMetrics(state);
+            const maxOffset = Math.max(0, totalLines - contentHeight);
+            if (targetOffset < maxOffset) return;
+        }
 
         await this.expandSessionHistory(sessionId, {
             requestedScrollOffset: targetOffset,

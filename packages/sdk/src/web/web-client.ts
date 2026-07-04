@@ -79,6 +79,7 @@ export class WebPilotSwarmClient {
         reasoningEffort?: string;
         title?: string;
         splash?: string;
+        splashMobile?: string;
         initialPrompt?: string;
         groupId?: string | null;
         onUserInputRequest?: UserInputHandler;
@@ -89,6 +90,7 @@ export class WebPilotSwarmClient {
             reasoningEffort: opts?.reasoningEffort,
             title: opts?.title,
             splash: opts?.splash,
+            splashMobile: opts?.splashMobile,
             initialPrompt: opts?.initialPrompt,
             groupId: opts?.groupId,
         });

@@ -319,6 +319,7 @@ export class PortalRuntime {
                     reasoningEffort: safeParams.reasoningEffort,
                     title: safeParams.title,
                     splash: safeParams.splash,
+                    splashMobile: safeParams.splashMobile,
                     initialPrompt: safeParams.initialPrompt,
                     groupId: safeParams.groupId,
                     owner,

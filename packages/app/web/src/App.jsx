@@ -327,8 +327,9 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
         branding: {
             title: portal?.branding?.title || "PilotSwarm",
             splash: portal?.branding?.splash || "{bold}{cyan-fg}PilotSwarm{/cyan-fg}{/bold}",
+            splashMobile: portal?.branding?.splashMobile || null,
         },
-    }), [portal?.branding?.splash, portal?.branding?.title, transport]);
+    }), [portal?.branding?.splash, portal?.branding?.splashMobile, portal?.branding?.title, transport]);
     const statusText = usePortalControllerStatusText(controller);
 
     React.useEffect(() => {

@@ -226,6 +226,7 @@ function sessionViewFromCmsRow(row: SessionRow): PilotSwarmSessionView {
         title: row.title ?? undefined,
         agentId: row.agentId ?? undefined,
         splash: row.splash ?? undefined,
+        splashMobile: row.splashMobile ?? undefined,
         owner: row.owner ?? undefined,
         status: liveStatus,
         orchestrationStatus: undefined,
@@ -255,6 +256,8 @@ export interface PilotSwarmSessionView {
     title?: string;
     agentId?: string;
     splash?: string;
+    /** Narrow-viewport splash variant, used when the main splash art is wider than the pane. */
+    splashMobile?: string;
     owner?: SessionOwnerInfo;
     /** Live status from orchestration customStatus (idle, running, waiting, etc.) */
     status: PilotSwarmSessionStatus;
@@ -842,6 +845,7 @@ export class PilotSwarmManagementClient {
             title: row.title ?? undefined,
             agentId: row.agentId ?? undefined,
             splash: row.splash ?? undefined,
+            splashMobile: row.splashMobile ?? undefined,
             owner: row.owner ?? undefined,
             status: liveStatus,
             orchestrationStatus: orchStatus,

@@ -168,9 +168,13 @@ Your worker can also contribute defaults to every session through:
 
 If the same plugin also powers the shipped UI packages, `plugin.json` may additionally define:
 
-- `tui.title`, `tui.splash`, `tui.splashFile` for the CLI/TUI
+- `tui.title`, `tui.splash`, `tui.splashFile` for the CLI/TUI, plus optional
+  `tui.splashMobile` / `tui.splashMobileFile` — a narrow-viewport splash
+  variant swapped in when the main art is wider than the pane
 - `portal.branding.title`, `portal.branding.pageTitle`, `portal.branding.splash`,
-  `portal.branding.splashFile`, `portal.branding.logoFile`, and optional
+  `portal.branding.splashFile`, optional `portal.branding.splashMobile` /
+  `portal.branding.splashMobileFile` (narrow-viewport variant, e.g. phones),
+  `portal.branding.logoFile`, and optional
   `portal.branding.faviconFile` for browser portal branding
 - `portal.ui.loadingMessage` and `portal.ui.loadingCopy` for browser portal
   startup copy

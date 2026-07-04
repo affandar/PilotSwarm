@@ -981,6 +981,22 @@ body.is-resizing-pane-y * {
   min-width: max-content;
 }
 
+/* Narrow (mobile) screens: no horizontal scrollbars in the chat pane. Art
+   that does not fit wraps (garbles) like it used to — agents that care ship
+   a splashMobile variant, which the renderer swaps in before this fallback
+   matters. */
+@media (max-width: 920px) {
+  .ps-chat-preserve-block {
+    overflow-x: hidden;
+  }
+  .ps-chat-preserve-block .ps-line-preserve,
+  .ps-scroll-panel.is-wrapped .ps-line.ps-line-preserve {
+    white-space: pre-wrap;
+    word-break: break-all;
+    min-width: 0;
+  }
+}
+
 .ps-sequence-turn-divider {
   width: 100%;
   margin: 4px 0;

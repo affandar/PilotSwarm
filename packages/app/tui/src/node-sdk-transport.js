@@ -927,13 +927,14 @@ export class NodeSdkTransport {
         return { sessionId: session.sessionId, model: effectiveModel, reasoningEffort: reasoningEffort || undefined };
     }
 
-    async createSessionForAgent(agentName, { model, reasoningEffort, title, splash, initialPrompt, owner, groupId } = {}) {
+    async createSessionForAgent(agentName, { model, reasoningEffort, title, splash, splashMobile, initialPrompt, owner, groupId } = {}) {
         const effectiveModel = await this.assertSessionModelCreatable({ model, owner });
         const session = await this.client.createSessionForAgent(agentName, {
             ...(effectiveModel ? { model: effectiveModel } : {}),
             ...(reasoningEffort ? { reasoningEffort } : {}),
             ...(title ? { title } : {}),
             ...(splash ? { splash } : {}),
+            ...(splashMobile ? { splashMobile } : {}),
             ...(initialPrompt ? { initialPrompt } : {}),
             ...(owner ? { owner } : {}),
             ...(groupId ? { groupId } : {}),

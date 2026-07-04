@@ -46,7 +46,7 @@ export const OPERATIONS = [
     // ── Sessions (client surface) ───────────────────────────────────────
     { name: "listSessions", method: "GET", path: "/sessions", summary: "List session summaries." },
     { name: "createSession", method: "POST", path: "/sessions", params: { model: body(), reasoningEffort: body(), groupId: body() }, summary: "Create a session. Owner is the authenticated principal." },
-    { name: "createSessionForAgent", method: "POST", path: "/sessions/for-agent", params: { agentName: body(), model: body(), reasoningEffort: body(), title: body(), splash: body(), initialPrompt: body(), groupId: body() }, summary: "Create a session bound to a named agent." },
+    { name: "createSessionForAgent", method: "POST", path: "/sessions/for-agent", params: { agentName: body(), model: body(), reasoningEffort: body(), title: body(), splash: body(), splashMobile: body(), initialPrompt: body(), groupId: body() }, summary: "Create a session bound to a named agent." },
     { name: "getSession", method: "GET", path: "/sessions/:sessionId", params: { sessionId: path("sessionId") }, summary: "Get one session view (live orchestration status)." },
     { name: "deleteSession", method: "DELETE", path: "/sessions/:sessionId", params: { sessionId: path("sessionId") }, summary: "Cancel and soft-delete a session." },
     { name: "sendMessage", method: "POST", path: "/sessions/:sessionId/messages", params: { sessionId: path("sessionId"), prompt: body(), options: body() }, summary: "Send a prompt (options: { enqueueOnly?, clientMessageIds? })." },

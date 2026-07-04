@@ -918,10 +918,17 @@ export function appendEventToHistory(history, event) {
 }
 
 export function createSplashCard(branding, session = null) {
-    const splash = typeof session?.splash === "string" && session.splash.trim()
+    const sessionSplash = typeof session?.splash === "string" && session.splash.trim()
         ? session.splash
-        : branding?.splash;
+        : null;
+    const splash = sessionSplash || branding?.splash;
     if (!splash) return [];
+    // The narrow-viewport variant must come from the same source as the
+    // splash it replaces (a session splash never falls back to the branding
+    // mobile art). The renderer swaps it in when the main art is wider than
+    // the pane.
+    const mobileSource = sessionSplash ? session?.splashMobile : branding?.splashMobile;
+    const mobileSplash = typeof mobileSource === "string" && mobileSource.trim() ? mobileSource : null;
     const title = session?.isSystem
         ? canonicalSystemTitle(session, branding?.title || "PilotSwarm")
         : (session?.title || branding?.title || "PilotSwarm");
@@ -930,6 +937,7 @@ export function createSplashCard(branding, session = null) {
         id: `splash:${title}`,
         role: "system",
         text: `${splash}\n\n${hint}`,
+        ...(mobileSplash ? { mobileText: `${mobileSplash}\n\n${hint}` } : {}),
         time: "",
         splash: true,
     }];

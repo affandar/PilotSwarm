@@ -326,6 +326,8 @@ export interface PilotSwarmSessionInfo {
     agentId?: string;
     /** Splash banner (terminal markup) from the agent definition. */
     splash?: string;
+    /** Narrow-viewport splash variant, used when the main splash art is wider than the pane. */
+    splashMobile?: string;
     /** Optional visual session group assignment. */
     groupId?: string;
     /** Short live summary for discovery/session lists. */

@@ -81,6 +81,8 @@ export interface AgentConfig {
     parent?: string;
     /** Splash banner (terminal markup) shown in the TUI when the session is selected. */
     splash?: string;
+    /** Narrow-viewport splash variant, swapped in when the main splash art is wider than the pane (mobile portal, narrow terminals). */
+    splashMobile?: string;
     /** Initial prompt to send when the system agent is first created. */
     initialPrompt?: string;
     /** Source plugin namespace (e.g. "pilotswarm", "smelter"). Set by the worker during plugin loading. */
@@ -119,10 +121,10 @@ export interface AgentConfig {
  * Handles simple `key: value` pairs and YAML list syntax for `tools`.
  */
 function parseAgentFrontmatter(content: string): {
-    meta: { name?: string; description?: string; tools?: string[]; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; initialPrompt?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string };
+    meta: { name?: string; description?: string; tools?: string[]; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; splashMobile?: string; initialPrompt?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string };
     body: string;
 } {
-    const meta: { name?: string; description?: string; tools?: string[]; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; initialPrompt?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string } = {};
+    const meta: { name?: string; description?: string; tools?: string[]; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; splashMobile?: string; initialPrompt?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string } = {};
 
     if (!content.startsWith("---")) {
         return { meta, body: content };
@@ -143,6 +145,7 @@ function parseAgentFrontmatter(content: string): {
         if (multilineValue !== null && currentKey) {
             const val = multilineValue.join("\n").trimEnd();
             if (currentKey === "splash") meta.splash = val;
+            else if (currentKey === "splashMobile") meta.splashMobile = val;
             else if (currentKey === "initialPrompt") {
                 // For > (folded) scalars, collapse newlines to spaces
                 meta.initialPrompt = currentBlockStyle === ">" ? val.replace(/\n/g, " ").trim() : val;
@@ -209,12 +212,14 @@ function parseAgentFrontmatter(content: string): {
         } else if (key === "tools" && !value) {
             // Will be followed by list items
             meta.tools = [];
-        } else if ((key === "splash" || key === "initialPrompt") && (value === "|" || value === ">")) {
+        } else if ((key === "splash" || key === "splashMobile" || key === "initialPrompt") && (value === "|" || value === ">")) {
             // YAML block scalar (| literal, > folded)
             currentBlockStyle = value;
             multilineValue = [];
         } else if (key === "splash") {
             meta.splash = value;
+        } else if (key === "splashMobile") {
+            meta.splashMobile = value;
         } else if (key === "initialPrompt") {
             meta.initialPrompt = value;
         }
@@ -279,6 +284,7 @@ export function loadAgentFiles(agentsDir: string): AgentConfig[] {
                 title: meta.title,
                 parent: meta.parent,
                 splash: meta.splash,
+                splashMobile: meta.splashMobile,
                 initialPrompt: meta.initialPrompt,
                 crawler,
                 harvester: crawler,

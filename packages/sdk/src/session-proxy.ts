@@ -760,7 +760,7 @@ export function registerActivities(
     /** Names of loaded non-system agents — used by getWorkerSessionPolicy activity. */
     workerAllowedAgentNames?: string[],
     /** Loaded user-creatable agents — used by resolveAgentConfig activity. */
-    userAgents?: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; namespace?: string; id?: string; title?: string; initialPrompt?: string; splash?: string; parent?: string; crawler?: boolean; harvester?: boolean; promptLayerKind?: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" }>,
+    userAgents?: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; namespace?: string; id?: string; title?: string; initialPrompt?: string; splash?: string; splashMobile?: string; parent?: string; crawler?: boolean; harvester?: boolean; promptLayerKind?: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" }>,
     /** Fact store instance for the loadKnowledgeIndex activity. */
     factStore?: import("./facts-store.js").FactStore | null,
     /** Worker node identifier — written on every CMS event for worker tracking. */
@@ -1086,6 +1086,7 @@ export function registerActivities(
                     let agentTitleIsExplicit = Boolean(explicitAgentTitle);
                     let agentId: string | undefined;
                     let agentSplash: string | undefined;
+                    let agentSplashMobile: string | undefined;
                     let boundAgentName: string | undefined;
                     let promptLayeringKind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" | undefined;
                     let resolvedAgentName = args.agent_name;
@@ -1102,6 +1103,7 @@ export function registerActivities(
                         if (!agentTitleIsExplicit) agentTitle = agentDef.title;
                         agentId = agentDef.id ?? resolvedAgentName;
                         agentSplash = agentDef.splash;
+                        agentSplashMobile = agentDef.splashMobile;
                         boundAgentName = agentDef.name;
                         promptLayeringKind = agentDef.promptLayerKind
                             ?? (agentDef.system
@@ -1213,6 +1215,7 @@ export function registerActivities(
                         }
                         if (agentId) meta.agentId = agentId;
                         if (agentSplash) meta.splash = agentSplash;
+                        if (agentSplashMobile) meta.splashMobile = agentSplashMobile;
                         if (Object.keys(meta).length > 0) {
                             // Best-effort: child has been created and is about to be
                             // sent its bootstrap. A failed meta update means the row
@@ -2494,7 +2497,7 @@ export function registerActivities(
     runtime.registerActivity("resolveAgentConfig", async (
         _activityCtx: any,
         input: { agentName: string },
-    ): Promise<{ name: string; prompt: string; tools?: string[]; initialPrompt?: string; title?: string; system?: boolean; id?: string; parent?: string; splash?: string; namespace?: string; promptLayerKind?: "app-agent" | "app-system-agent" | "pilotswarm-system-agent"; creatable?: boolean } | null> => {
+    ): Promise<{ name: string; prompt: string; tools?: string[]; initialPrompt?: string; title?: string; system?: boolean; id?: string; parent?: string; splash?: string; splashMobile?: string; namespace?: string; promptLayerKind?: "app-agent" | "app-system-agent" | "pilotswarm-system-agent"; creatable?: boolean } | null> => {
         const agents: Array<any> = [
             ...(userAgents ?? []).map(a => ({ ...a, system: false, creatable: true })),
             ...(systemAgents ?? []).map(a => ({ ...a, creatable: false })),
@@ -2529,6 +2532,7 @@ export function registerActivities(
             id: agent.id ?? undefined,
             parent: agent.parent ?? undefined,
             splash: agent.splash ?? undefined,
+            splashMobile: agent.splashMobile ?? undefined,
             namespace: agent.namespace ?? undefined,
             promptLayerKind: agent.promptLayerKind ?? undefined,
             creatable: agent.creatable ?? !agent.system,
@@ -2654,6 +2658,16 @@ export function registerActivities(
             }
             if (input.agentId) meta.agentId = input.agentId;
             if (input.splash) meta.splash = input.splash;
+            // Frozen orchestration versions don't thread splashMobile through
+            // the spawn input, so resolve it from the loaded agent definition.
+            if (input.agentId) {
+                const normalizeId = (value?: string) => (value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+                const lookup = normalizeId(input.agentId);
+                const agentDef = [...(userAgents ?? []), ...(systemAgents ?? [])].find(
+                    (a: any) => [a.id, a.name].map(normalizeId).filter(Boolean).includes(lookup),
+                ) as any;
+                if (agentDef?.splashMobile) meta.splashMobile = agentDef.splashMobile;
+            }
             if (Object.keys(meta).length > 0 && catalog) {
                 const metaAt = Date.now();
                 // Critical: title/agentId/splash drive UI rendering of the

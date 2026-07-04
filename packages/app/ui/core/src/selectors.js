@@ -17,6 +17,7 @@ import {
     parseMarkdownLines,
     shortModelName,
     shortSessionId,
+    stripTerminalMarkupTags,
     wrapRunsToDisplayWidth,
 } from "./formatting.js";
 import {
@@ -1696,9 +1697,18 @@ function buildThinkingCardLines(message, maxWidth) {
     return lines;
 }
 
+function splashArtWidth(text) {
+    return String(text || "")
+        .split("\n")
+        .reduce((widest, line) => Math.max(widest, stripTerminalMarkupTags(line).length), 0);
+}
+
 function buildChatMessageLines(message, maxWidth, options = {}) {
     if (message?.splash) {
-        return [{ kind: "markup", value: message.text }];
+        // Swap in the narrow-viewport variant when the main art would
+        // overflow the pane (mobile portal, narrow terminals).
+        const useMobile = message.mobileText && splashArtWidth(message.text) > maxWidth;
+        return [{ kind: "markup", value: useMobile ? message.mobileText : message.text }];
     }
 
     if (message?.thinking) {

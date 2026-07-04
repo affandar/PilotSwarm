@@ -135,6 +135,8 @@ export interface SessionRow {
     agentId: string | null;
     /** Splash banner (terminal markup) from the agent definition. */
     splash: string | null;
+    /** Narrow-viewport splash variant, used when the main splash art is wider than the pane. */
+    splashMobile: string | null;
     /** Optional visual session group assignment. */
     groupId: string | null;
     /** Short live summary for discovery/session lists. */
@@ -162,6 +164,7 @@ export interface SessionRowUpdates {
     isSystem?: boolean;
     agentId?: string | null;
     splash?: string | null;
+    splashMobile?: string | null;
     groupId?: string | null;
 }
 
@@ -534,6 +537,7 @@ export interface SessionCatalog {
         isSystem?: boolean;
         agentId?: string;
         splash?: string;
+        splashMobile?: string;
         groupId?: string | null;
         owner?: SessionOwnerInfo | null;
     }): Promise<void>;
@@ -865,6 +869,7 @@ export class PgSessionCatalog implements SessionCatalog {
         isSystem?: boolean;
         agentId?: string;
         splash?: string;
+        splashMobile?: string;
         groupId?: string | null;
         owner?: SessionOwnerInfo | null;
     }): Promise<void> {
@@ -872,13 +877,24 @@ export class PgSessionCatalog implements SessionCatalog {
             ? opts.groupId.trim()
             : null;
         const createGroupId = explicitGroupId ? null : opts?.groupId ?? null;
+        // A 42883 mid-transaction aborts it, so probe the 9-arg overload's
+        // existence up front (once) instead of catch-and-retry inside BEGIN.
+        const useSplashMobileCreate = Boolean(opts?.splashMobile) && await this.supportsSplashMobileCreate();
         const client = await this.pool.connect();
         try {
             await client.query("BEGIN");
-            await client.query(
-                `SELECT ${this.sql.fn.createSession}($1, $2, $3, $4, $5, $6, $7, $8)`,
-                [sessionId, opts?.model ?? null, opts?.reasoningEffort ?? null, opts?.parentSessionId ?? null, opts?.isSystem ?? false, opts?.agentId ?? null, opts?.splash ?? null, createGroupId],
-            );
+            const baseArgs = [sessionId, opts?.model ?? null, opts?.reasoningEffort ?? null, opts?.parentSessionId ?? null, opts?.isSystem ?? false, opts?.agentId ?? null, opts?.splash ?? null, createGroupId];
+            if (useSplashMobileCreate) {
+                await client.query(
+                    `SELECT ${this.sql.fn.createSession}($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+                    [...baseArgs, opts?.splashMobile ?? null],
+                );
+            } else {
+                await client.query(
+                    `SELECT ${this.sql.fn.createSession}($1, $2, $3, $4, $5, $6, $7, $8)`,
+                    baseArgs,
+                );
+            }
 
             if (!opts?.isSystem) {
                 if (opts?.owner?.provider && opts?.owner?.subject) {
@@ -916,6 +932,19 @@ export class PgSessionCatalog implements SessionCatalog {
         }
     }
 
+    private _splashMobileCreateSupported: boolean | null = null;
+
+    /** Whether the DB has migration 0026's 9-arg cms_create_session overload. Cached per catalog instance. */
+    private async supportsSplashMobileCreate(): Promise<boolean> {
+        if (this._splashMobileCreateSupported !== null) return this._splashMobileCreateSupported;
+        const { rows } = await this.pool.query(
+            `SELECT to_regprocedure($1) IS NOT NULL AS supported`,
+            [`${this.sql.fn.createSession}(text,text,text,text,boolean,text,text,text,text)`],
+        );
+        this._splashMobileCreateSupported = Boolean(rows[0]?.supported);
+        return this._splashMobileCreateSupported;
+    }
+
     async updateSession(sessionId: string, updates: SessionRowUpdates): Promise<void> {
         const jsonUpdates: Record<string, unknown> = {};
         if (updates.orchestrationId !== undefined) jsonUpdates.orchestrationId = updates.orchestrationId;
@@ -931,6 +960,7 @@ export class PgSessionCatalog implements SessionCatalog {
         if (updates.isSystem !== undefined) jsonUpdates.isSystem = updates.isSystem;
         if (updates.agentId !== undefined) jsonUpdates.agentId = updates.agentId;
         if (updates.splash !== undefined) jsonUpdates.splash = updates.splash;
+        if (updates.splashMobile !== undefined) jsonUpdates.splashMobile = updates.splashMobile;
         if (updates.groupId !== undefined) jsonUpdates.groupId = updates.groupId;
 
         if (Object.keys(jsonUpdates).length === 0) return;
@@ -1812,6 +1842,7 @@ function rowToSessionRow(row: any): SessionRow {
         isSystem: row.is_system ?? false,
         agentId: row.agent_id ?? null,
         splash: row.splash ?? null,
+        splashMobile: row.splash_mobile ?? null,
         groupId: row.group_id ?? null,
         shortSummary: row.short_summary ?? null,
         summaryState: row.summary_state ?? null,

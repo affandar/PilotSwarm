@@ -203,6 +203,7 @@ export class PilotSwarmClient {
         toolNames?: string[];
         title?: string;
         splash?: string;
+        splashMobile?: string;
         initialPrompt?: string;
         owner?: SessionOwnerInfo | null;
         groupId?: string | null;
@@ -234,6 +235,7 @@ export class PilotSwarmClient {
             agentId: agentName,
             title: `${agentTitle}: ${shortId}`,
             ...(opts?.splash ? { splash: opts.splash } : {}),
+            ...(opts?.splashMobile ? { splashMobile: opts.splashMobile } : {}),
         });
 
         if (opts?.initialPrompt) {
@@ -356,6 +358,7 @@ export class PilotSwarmClient {
             isSystem: row.isSystem || undefined,
             agentId: row.agentId ?? undefined,
             splash: row.splash ?? undefined,
+            splashMobile: row.splashMobile ?? undefined,
             groupId: row.groupId ?? undefined,
             shortSummary: row.shortSummary ?? undefined,
             summaryState: row.summaryState ?? undefined,
