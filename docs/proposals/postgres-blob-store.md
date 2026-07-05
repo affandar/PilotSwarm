@@ -49,12 +49,37 @@ fully downloaded file. There is no streaming requirement to preserve.
 
 ## Schema sketch
 
-Own schema (`pilotswarm_blobs`), own migrator (lock seed pattern from
-`pg-migrator.ts`), all access via stored procs per the schema-migration
-skill. One row per object; no chunking (nothing needs range reads).
+**Two independent schemas, two independently addressable databases.** The
+snapshot store and the artifact store have different lifecycles, different
+churn profiles (per-turn CAS rewrites vs rare uploads), different backup
+priorities, and different growth curves — they must not share a schema.
+Each gets its own schema, its own migrator (lock seed pattern from
+`pg-migrator.ts`), and its own stored-proc surface per the
+schema-migration skill. One row per object; no chunking (nothing needs
+range reads).
+
+- `pilotswarm_snapshots` — session snapshot tars + version chain.
+- `pilotswarm_artifacts` — artifact files.
+
+Connection targeting follows the precedent the CMS/facts split already
+established: each store resolves its own URL, defaulting to the shared
+`DATABASE_URL` so the zero-config path stays "one connection string", but
+overridable so a deployment can move either store to a separate database
+or server (snapshot churn isolated from transactional data; artifacts on
+a cheaper tier; distinct WAL/backup policies):
+
+```
+PILOTSWARM_SNAPSHOT_DB_URL   (default: DATABASE_URL)
+PILOTSWARM_ARTIFACT_DB_URL   (default: DATABASE_URL)
+```
+
+Each store owns a small dedicated pool (2–4 connections) regardless of
+whether the URLs coincide, so a burst of snapshot traffic can never starve
+artifact reads or vice versa.
 
 ```sql
-CREATE TABLE ${s}.session_snapshots (
+-- pilotswarm_snapshots
+CREATE TABLE ${snap}.session_snapshots (
     session_id   TEXT PRIMARY KEY,
     tar          BYTEA NOT NULL,          -- ALTER ... SET STORAGE EXTERNAL
     version      BIGINT NOT NULL,         -- monotonic; CAS'd on every write
@@ -65,7 +90,8 @@ CREATE TABLE ${s}.session_snapshots (
     meta         JSONB                    -- reason/worker/etc — informational only
 );
 
-CREATE TABLE ${s}.artifacts (
+-- pilotswarm_artifacts
+CREATE TABLE ${art}.artifacts (
     session_id   TEXT NOT NULL,
     filename     TEXT NOT NULL,
     body         BYTEA NOT NULL,          -- STORAGE EXTERNAL
@@ -170,6 +196,50 @@ interfaces (`SessionStateStore` + `VersionedSnapshotStore`, and
 `ArtifactStore`); `storage-providers.ts` selects them via explicit config
 (`PILOTSWARM_BLOB_BACKEND=postgres`) with the current Azure/filesystem
 behavior unchanged by default until a major release flips the default.
+
+## Stats & debugging surface (all backends, LLM-consumable)
+
+Both provider interfaces grow a small generic diagnostics API — implemented
+by every backend (filesystem, blob, PG), not just PG — whose results are
+plain JSON blobs designed to be handed directly to the PilotSwarm system
+agents:
+
+```ts
+interface StoreDiagnostics {
+    /** Fleet-level stats: counts, byte totals, distributions, health. */
+    getStats(): Promise<Record<string, unknown>>;
+    /** Per-object debugging: version chain coordinates, sizes, staleness. */
+    inspect(sessionId: string): Promise<Record<string, unknown>>;
+}
+```
+
+The JSON is deliberately generic — no fixed cross-backend schema beyond a
+couple of conventions — because the consumer is an LLM, not a dashboard:
+
+- `description`: a one-paragraph, LLM-parseable self-description of the
+  backend and how to interpret the rest of the blob, e.g. *"This is a
+  Postgres-backed session snapshot store (schema pilotswarm_snapshots on
+  db pilotswarm-pg). Each session is one row holding a compressed tar;
+  `version` is a monotonic CAS counter advanced once per committed turn.
+  Large `deadTupleRatio` suggests autovacuum lag on the snapshot table."*
+- Backend-specific keys carry whatever is cheap and diagnostic: PG —
+  row counts, total/TOAST bytes, top-N largest sessions, dead-tuple ratio,
+  pool saturation, last-vacuum times; blob — object counts/bytes by
+  prefix, oldest/newest; filesystem — dir counts, disk usage, orphaned
+  staging/temp files.
+- `inspect(sessionId)`: the stored `{version, turnKey, sizeBytes,
+  contentHash, updatedAt, legacy}` coordinates plus backend detail —
+  exactly what a human (or the agent-tuner) needs to debug a stuck
+  version chain or a stale-worker report without psql access.
+
+**Exposure:** wired through the existing system-agent tool layer
+(`inspect-tools.ts` pattern) as two tools available to ALL PilotSwarm
+system agents — `store_stats(target: "snapshots" | "artifacts")` and
+`store_inspect_session(session_id)` — read-only, best-effort, and included
+in the sweeper's `get_system_stats` roll-up so capacity trends land in its
+periodic digests. This is also what closes the protocol-era stats gap: the
+Stats pane and the sweeper read live store truth instead of inferring it
+from legacy dehydrate events.
 
 ## The two real costs, and their mitigations
 
@@ -434,11 +504,13 @@ before any deploy that flips a stamp to `PILOTSWARM_BLOB_BACKEND=postgres`.
 
 ## Open questions
 
-- Real snapshot-size distribution in live envs (instrument
-  `getSnapshotSizeBytes` into `get_system_stats` first; validates the cap and
-  the churn math).
+- Real snapshot-size distribution in live envs — the `getStats()` /
+  `store_stats` surface above is the instrument; validates the cap and the
+  churn math.
 - Checkpoint cadence and write volume are now defined by the companion
   lifecycle protocol (one CAS write per turn commit); its whale-session and
   hold-window questions live there.
-- Whether `pilotswarm_blobs` should default to the CMS database or require an
-  explicit URL (leaning: default same DB, allow split).
+
+(Resolved: connection targeting — two schemas, per-store URLs defaulting
+to `DATABASE_URL` with `PILOTSWARM_SNAPSHOT_DB_URL` /
+`PILOTSWARM_ARTIFACT_DB_URL` overrides; see the schema section.)
