@@ -82,7 +82,9 @@ export interface TurnLifecycleContext {
 }
 
 const COMMIT_TRANSIENT_RETRIES = 3;
-const COMMIT_RETRY_BASE_DELAY_MS = 1_000;
+// Tunable so fault-injection tests don't pay real backoff delays.
+const COMMIT_RETRY_BASE_DELAY_MS =
+    Number.parseInt(process.env.PILOTSWARM_COMMIT_RETRY_DELAY_MS ?? "", 10) || 1_000;
 
 function sessionDirOf(ctx: TurnLifecycleContext): string {
     return path.join(ctx.sessionStateDir, ctx.sessionId);

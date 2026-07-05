@@ -52,7 +52,8 @@
     "clean": "rm -rf dist",
     "test:api": "node --test api/test/*.test.mjs",
     "test:local:snapshot-protocol": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/snapshot-protocol-fs.test.js test/local/turn-lifecycle.test.js",
-    "test:local:snapshot-blob": "node ../../node_modules/vitest/vitest.mjs run test/local/snapshot-protocol-blob.test.js"
+    "test:local:snapshot-blob": "node ../../node_modules/vitest/vitest.mjs run test/local/snapshot-protocol-blob.test.js",
+    "test:local:fault-injection-live": "npm run build && node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/fault-injection-live.test.js"
   },
   "keywords": [
     "copilot",

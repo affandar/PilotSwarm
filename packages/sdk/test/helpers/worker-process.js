@@ -6,7 +6,7 @@
  * and stays alive until told to stop.
  */
 
-import { PilotSwarmWorker } from "../../dist/index.js";
+import { PilotSwarmWorker, FilesystemSessionStore } from "../../dist/index.js";
 
 process.on("message", async (msg) => {
     if (msg.type === "start") {
@@ -21,6 +21,13 @@ process.on("message", async (msg) => {
                 workerNodeId: msg.workerNodeId,
                 disableManagementAgents: true,
                 logLevel: msg.logLevel || "warn",
+                // Kill-harness support: an explicit SHARED snapshot store dir
+                // (separate worker "disks" + one store, like pods sharing
+                // blob storage). Without it, the store derives from
+                // sessionStateDir's parent as before.
+                ...(msg.sessionStoreDir
+                    ? { sessionStore: new FilesystemSessionStore(msg.sessionStoreDir, msg.sessionStateDir) }
+                    : {}),
             });
             await worker.start();
 

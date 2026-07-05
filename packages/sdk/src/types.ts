@@ -555,6 +555,14 @@ export interface PilotSwarmWorkerOptions {
     waitThreshold?: number;
     maxSessionsPerRuntime?: number;
     sessionIdleTimeoutMs?: number;
+    /**
+     * Duroxide work-item lock timeout (ms). Governs how fast a crashed
+     * worker's in-flight activities are re-dispatched elsewhere. Default
+     * 10 000; fault-injection tests shrink it so kill/recovery cycles run
+     * in seconds. (The duroxide SESSION lock timeout — ~30s — is not
+     * exposed and remains the reclaim floor for session-pinned work.)
+     */
+    workerLockTimeoutMs?: number;
     workerNodeId?: string;
     /** Azure Blob Storage connection string for the built-in blob-backed session store. */
     blobConnectionString?: string;

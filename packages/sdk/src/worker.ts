@@ -450,7 +450,9 @@ export class PilotSwarmWorker {
             orchestrationConcurrency,
             workerConcurrency,
             dispatcherPollIntervalMs: 10,
-            workerLockTimeoutMs: 10_000,
+            workerLockTimeoutMs: this.config.workerLockTimeoutMs
+                ?? parsePositiveInt(process.env.PILOTSWARM_WORKER_LOCK_TIMEOUT_MS)
+                ?? 10_000,
             logLevel: this.config.logLevel ?? "error",
             maxSessionsPerRuntime: this.config.maxSessionsPerRuntime ?? 50,
             sessionIdleTimeoutMs: this.config.sessionIdleTimeoutMs ?? 3_600_000,
