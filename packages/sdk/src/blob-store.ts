@@ -585,7 +585,7 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
                         tarSizeBytes: body.length,
                         attempt,
                     });
-                    return { version, contentHash, alreadyCommitted: false };
+                    return { version, contentHash, sizeBytes: body.length, alreadyCommitted: false };
                 } catch (error: any) {
                     // 412 Precondition Failed (If-Match lost the race) or
                     // 409 BlobAlreadyExists (If-None-Match create race):
@@ -616,9 +616,11 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
 
         // One download response carries body + metadata consistently.
         let metadata: Record<string, string> | undefined;
+        let tarSizeBytes: number | undefined;
         try {
             const response = await blob.downloadToFile(tarPath, 0);
             metadata = response.metadata as Record<string, string> | undefined;
+            try { tarSizeBytes = fs.statSync(tarPath).size; } catch {}
 
             fs.mkdirSync(this.sessionStateDir, { recursive: true });
             const tempRoot = fs.mkdtempSync(path.join(this.sessionStateDir, `.ps-hydrate-${sessionId}-`));
@@ -647,6 +649,7 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
             version: probe.version,
             ...(probe.turnKey ? { turnKey: probe.turnKey } : {}),
             ...(probe.contentHash ? { contentHash: probe.contentHash } : {}),
+            ...(tarSizeBytes != null ? { sizeBytes: tarSizeBytes } : {}),
             ...(probe.legacy ? { legacy: true } : {}),
         };
     }

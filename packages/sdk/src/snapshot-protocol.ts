@@ -61,6 +61,8 @@ export interface SnapshotCommitInput {
 export interface SnapshotCommitResult {
     version: number;
     contentHash: string;
+    /** Committed tar size — feeds session persistence stats. */
+    sizeBytes?: number;
     /**
      * True when the store already held baseVersion+1 under the same turnKey —
      * a prior attempt of this same turn committed. The caller must treat this
@@ -73,6 +75,7 @@ export interface SnapshotHydrateResult {
     version: number;
     turnKey?: string;
     contentHash?: string;
+    sizeBytes?: number;
     legacy?: boolean;
 }
 

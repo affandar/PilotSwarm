@@ -247,13 +247,13 @@ export function* processPrompt(
     let prompt = promptText;
     let promptIsBootstrap = isBootstrap;
 
-    if (state.blobEnabled && !state.needsHydration) {
-        try {
-            state.needsHydration = yield runtime.session.needsHydration();
-        } catch (err: any) {
-            ctx.traceInfo(`[orch] needsHydration probe failed: ${err.message ?? err}`);
-        }
-    }
+    // Lifecycle protocol (P5): no needsHydration probe. The old protocol
+    // asked a worker "do you have my files?" before every turn — an extra
+    // session activity whose answer could desync from reality, and whose
+    // "no" triggered a legacy hydrate that the runTurn preamble would then
+    // repeat (double download per cold wake). The preamble self-validates
+    // against the versioned store; state.needsHydration survives only as
+    // one-shot normalization of legacy (≤1.0.56) continue-as-new inputs.
 
     if (state.needsHydration && state.blobEnabled && prompt) {
         prompt = wrapWithResumeContext(runtime, prompt);

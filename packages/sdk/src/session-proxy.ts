@@ -908,6 +908,26 @@ export function registerActivities(
                 : null;
         let lifecycleBaseVersion = 0;
         let lifecycleRehydrated = false;
+        // Protocol-native persistence stats: the legacy dehydrate/hydrate
+        // activities no longer run, so the preamble/commit paths feed the
+        // same CMS summary + events the Stats pane reads. Best-effort only.
+        const recordLifecycleHydration = async (version: number) => {
+            if (!catalog) return;
+            await cmsRetryBestEffort(
+                `runTurn.lifecycleHydrated session=${input.sessionId}`,
+                async () => {
+                    await catalog!.upsertSessionMetricSummary(input.sessionId, {
+                        hydrationCountIncrement: 1,
+                        lastHydratedAt: true,
+                    });
+                    await catalog!.recordEvents(input.sessionId, [{
+                        eventType: "session.hydrated",
+                        data: { version, protocol: "lifecycle" },
+                    }], workerNodeId);
+                },
+                (msg) => activityCtx.traceInfo(msg),
+            );
+        };
         if (lifecycle) {
             const pre = await runTurnPreamble(lifecycle);
             if (pre.kind === "already-committed") {
@@ -915,10 +935,14 @@ export function registerActivities(
                     `[runTurn] session=${input.sessionId} already-committed recovery at v${pre.version}; ` +
                     `returning stored result without re-running the turn`,
                 );
+                await recordLifecycleHydration(pre.version);
                 return { ...(pre.result as TurnResult), snapshotVersion: pre.version };
             }
             lifecycleBaseVersion = pre.baseVersion;
             lifecycleRehydrated = pre.kind === "hydrated";
+            if (lifecycleRehydrated) {
+                await recordLifecycleHydration(pre.baseVersion);
+            }
             if (pre.kind === "fresh" && pre.lossy && catalog) {
                 await cmsRetryBestEffort(
                     `runTurn.recordEvent snapshot-store-empty session=${input.sessionId}`,
@@ -2157,6 +2181,15 @@ export function registerActivities(
             : null;
         if (lifecycle && lifecycleSessionDir && fs.existsSync(path.join(lifecycleSessionDir, "workspace.yaml"))) {
             const committed = await runTurnCommit(lifecycle, lifecycleBaseVersion, bodyResult);
+            if (catalog && committed.sizeBytes != null) {
+                await cmsRetryBestEffort(
+                    `runTurn.commitSummary session=${input.sessionId}`,
+                    () => catalog!.upsertSessionMetricSummary(input.sessionId, {
+                        snapshotSizeBytes: committed.sizeBytes,
+                    }),
+                    (msg) => activityCtx.traceInfo(msg),
+                );
+            }
             if (committed.alreadyCommitted && committed.storedResult !== undefined) {
                 // A racing attempt of this same turn won the CAS. Its
                 // snapshot was restored (restore-not-replay, §3.2 r1–r3) —

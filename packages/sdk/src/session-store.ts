@@ -528,7 +528,7 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
                 if (previousTar && previousTar !== versionedTarPath) {
                     try { fs.unlinkSync(previousTar); } catch {}
                 }
-                return { version, contentHash, alreadyCommitted: false };
+                return { version, contentHash, sizeBytes: metadata.sizeBytes, alreadyCommitted: false };
             });
         } finally {
             try { fs.unlinkSync(stagedTar); } catch {}
@@ -589,6 +589,7 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
             version: hasVersion ? version : 0,
             ...(meta?.turnKey ? { turnKey: String(meta.turnKey) } : {}),
             ...(meta?.contentHash ? { contentHash: String(meta.contentHash) } : {}),
+            ...(Number.isFinite(Number(meta?.sizeBytes)) ? { sizeBytes: Number(meta?.sizeBytes) } : {}),
             ...(hasVersion ? {} : { legacy: true }),
         };
     }

@@ -57,6 +57,8 @@ export type TurnPreambleOutcome =
 export interface TurnCommitOutcome {
     version: number;
     contentHash: string;
+    /** Committed tar size — feeds session persistence stats. */
+    sizeBytes?: number;
     /** A racing/prior attempt of this same turn committed first. */
     alreadyCommitted: boolean;
     /**
@@ -300,6 +302,7 @@ export async function runTurnCommit(
                 return {
                     version: committed.version,
                     contentHash: hydrated.contentHash ?? committed.contentHash,
+                    ...(hydrated.sizeBytes != null ? { sizeBytes: hydrated.sizeBytes } : {}),
                     alreadyCommitted: true,
                     ...(commitFile && commitFile.turnKey === ctx.turnKey
                         ? { storedResult: commitFile.result }
@@ -315,7 +318,12 @@ export async function runTurnCommit(
             faultPoint("turn.commit.after-marker");
             clearTurnSentinel(sessionDir);
             faultPoint("turn.commit.after-sentinel-clear");
-            return { version: committed.version, contentHash: committed.contentHash, alreadyCommitted: false };
+            return {
+                version: committed.version,
+                contentHash: committed.contentHash,
+                ...(committed.sizeBytes != null ? { sizeBytes: committed.sizeBytes } : {}),
+                alreadyCommitted: false,
+            };
         } catch (error: unknown) {
             if (error instanceof SnapshotConflictError) throw error;
             lastError = error;
