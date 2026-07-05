@@ -256,7 +256,7 @@ runTurn activity:
     p2. marker == expected?     → warm start, zero store I/O
         else hydrate(sessionId, {localVersion})
         └ store already at expected+1 under this turnKey → prior attempt
-          committed: return its resultMeta, skip the body entirely
+          committed: already-committed recovery (below), body never runs
     p3. write the turn sentinel
   body
     b1. execute the LLM turn    (side effects: at-least-once)
@@ -274,8 +274,35 @@ same completion that carries the turn result. No observable state exists in
 which the turn "happened" but its snapshot doesn't. The ordering is
 crash-safe at every boundary: a crash after c2 but before c3/c4 leaves the
 sentinel in place, so the retry distrusts the dirty dir (p1), discovers its
-own committed turnKey at expected + 1 (p2), and returns the stored result —
-duplication resolved to idempotent success, never re-execution.
+own committed turnKey at expected + 1 (p2), and takes the recovery path
+below — duplication resolved to idempotent success, never re-execution.
+
+**Already-committed recovery.** When the preamble finds the store at
+expected + 1 under its *own* turnKey, this turn already ran to completion
+somewhere: the previous attempt crashed after its CAS landed but before
+duroxide recorded the activity completion — or a lock-expiry retry raced a
+still-running attempt, in which case both bodies execute and the CAS
+arbitrates (first commit wins; the loser's CAS mismatch carries the same
+turnKey). Either way the retry must **restore, not replay**:
+
+```
+  r1. hydrate the committed v+1 over whatever is local
+      (nothing, on a different worker; a dirty sentinel'd dir on the same)
+  r2. write the marker (v+1), clear the sentinel
+  r3. return the stored {resultMeta, version} as this attempt's result
+      — the LLM is never invoked
+```
+
+Post-conditions are identical to the turn having completed normally on this
+worker: files warm at v+1, no sentinel, and the orchestration records the
+same `{result, version}` it would have received from the first attempt. The
+session gets loaded; the turn does not get replayed. (The turn's
+user-visible output needs no re-delivery either — the body's CMS events
+were recorded by the first attempt, deduped by `(turnKey, seq)` per §3.7
+W1.) Skipping r1 and returning bare-handed would also be *correct* under
+P3 — the next turn's preamble would hydrate — but it leaves a known-dirty
+dir behind and a cold session; since the dirty state must be cleaned anyway,
+restoring the committed state (~77 ms measured) is the better exit.
 
 **What this retires.** Of today's session-scoped activities (`runTurn`,
 `hydrateSession`, `checkpointSession`, `dehydrateSession`,
@@ -317,7 +344,8 @@ start:
    files) → `hydrate(sessionId, {localVersion})`: fetch exactly the expected
    state, overwrite local. Lossless. If the store reports
    expectedVersion + 1 under this turn's own turnKey, the previous attempt
-   already committed — return its stored result (§3.2), don't re-run.
+   already committed — take the already-committed recovery (§3.2): hydrate
+   the committed state, return its stored result, never invoke the LLM.
 4. **Store empty** → today's fresh-session replay, now confined to sessions
    that have never committed a turn.
 
@@ -473,9 +501,9 @@ output was delivered: user-visible amnesia, the worst loss mode. Folding the
 CAS into the `runTurn` activity removes the window structurally — no durable
 "turn completed" record can exist without its snapshot. The residual case, a
 crash between the CAS landing and duroxide recording the activity
-completion, is duplication-shaped, not loss-shaped, and the turnKey check
-(§3.3 rule 3) resolves it by returning the already-committed result instead
-of re-running.
+completion, is duplication-shaped, not loss-shaped, and the
+already-committed recovery (§3.2) resolves it — restore the committed
+state, return the stored result — instead of re-running.
 
 **W3 — Sessions that never committed.** A crash during the very first turn
 finds the store empty and falls back to fresh-session replay — W1 with
@@ -512,10 +540,14 @@ the platform (AKS pod termination, scale-down, node maintenance):
 Wiring: the container entrypoint's SIGTERM handler switches from `stop()` to
 `gracefulShutdown()`, whose dehydrate-everything body becomes
 release-everything under P4; `PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS` becomes
-the drain budget, sized to the longest turn worth waiting for (suggest
-600 s); `terminationGracePeriodSeconds` on the worker Deployment must exceed
-it (k8s default is 30 s — today the platform kills the pod long before a
-long turn could finish even if the app waited).
+the drain budget, **default 60 s** — long enough to let the majority of
+turns complete, short enough to keep rollouts brisk (and, until the
+upstream early-exit fix lands, 60 s is also the unconditional wall-clock
+cost per pod). Turns that outlive the budget are aborted into W1: safe,
+retried post-deploy, at worst duplicating their external side effects.
+`terminationGracePeriodSeconds` on the worker Deployment must exceed the
+budget — 90 s (k8s default is 30 s — today the platform would kill the pod
+before a long turn finished even if the app waited).
 
 If the budget expires, duroxide aborts the stragglers — crash semantics,
 which under this protocol are lossless for every committed turn; the aborted
@@ -580,8 +612,8 @@ store's phase-1 numbers assume exactly this write pattern.
 | `maxSessionsPerRuntime` | duroxide runtime | 10 | Sized to memory (~50, telemetry-tuned) |
 | session lock timeout | duroxide (fixed) | 30 s | Unchanged — the crash-reclaim bound |
 | worker session eviction clock | worker-local (new) | n/a (dehydrate deletes) | `holdWindow` + margin, autonomous (§3.4) |
-| `PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS` | worker env | 5 000 | Drain budget (e.g. 600 000) |
-| `terminationGracePeriodSeconds` | k8s worker Deployment | unset (30 s) | Drain budget + margin |
+| `PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS` | worker env | 5 000 | Drain budget: 60 000 |
+| `terminationGracePeriodSeconds` | k8s worker Deployment | unset (30 s) | 90 (drain budget + margin) |
 | SIGTERM handler | container entrypoint | `stop()` — aborts in-flight | `gracefulShutdown()` — drain (§3.8) |
 
 ### 3.11 Rollout
@@ -609,11 +641,11 @@ store's phase-1 numbers assume exactly this write pattern.
   synthetic "turn was committed by a prior attempt" result when truncated —
   or results stay out of the store entirely and the retry path re-delivers
   only status, not content. Needs a decision at implementation time.
-- **Drain budget vs. very long turns.** Turns can exceed any reasonable
-  grace period. Draining doesn't need to wait for all of them (an aborted
-  turn is W1 — safe, just duplicated side effects on retry); the budget
-  choice is purely how much side-effect duplication vs. deploy speed to
-  trade.
+- **Drain budget calibration.** 60 s is chosen to catch the majority of
+  turns; stragglers abort into W1 (safe — duplicated side effects at
+  worst). A turn-duration histogram from production would confirm the
+  coverage and whether watcher-heavy fleets want a different number; the
+  knob is per-worker either way.
 - **Hold-window sizing.** 30 min is a guess balancing worker memory against
   hydrate frequency; `session.hydrated` event rates before/after will show
   whether it should be per-agent (watchers vs interactive) rather than
