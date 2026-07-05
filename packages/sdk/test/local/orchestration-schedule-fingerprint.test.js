@@ -1,21 +1,27 @@
 /**
- * Schedule-drift guard for the LATEST durable-session orchestration.
+ * Schedule-drift guard for the durable-session orchestration.
  *
- * Durable orchestrations replay their recorded history against the handler
- * registered for the version in that history. If the *schedule* (the ordered
- * sequence of durable yields — activities, timers, guids, continue-as-new) of
+ * Durable orchestrations replay recorded history against the handler
+ * registered for the version in that history. If the SCHEDULE — the set and
+ * ordering of durable yields (activities, timers, guids, continue-as-new) — of
  * an ALREADY-DEPLOYED version changes without a version bump, in-flight
- * orchestrations fail replay with a Nondeterminism / schedule-mismatch error.
+ * orchestrations fail replay with a Nondeterminism / schedule-mismatch error
+ * and terminally fail on their next wake. This is exactly what happened when
+ * the needsHydration probe was removed in place under a still-deployed 1.0.57.
  *
- * This test pins a fingerprint of the latest orchestration's yield sequence
- * for a canonical, LLM-free drive. If you change the schedule you MUST:
- *   1. Freeze the current latest as `orchestration_<v>/` and register it, then
- *   2. bump `DURABLE_SESSION_LATEST_VERSION`, and finally
- *   3. regenerate GOLDEN below (the test prints the new value on mismatch).
- * A bare edit that trips this test without a version bump is the exact bug
- * that broke in-flight 1.0.57 sessions when the needsHydration probe was
- * removed in place.
+ * Two layers guard against a recurrence reaching a prod cluster:
+ *   1. SURFACE — the set of durable operations the latest orchestration can
+ *      schedule. Adding/removing any activity kind (e.g. dropping the probe)
+ *      trips this on ANY code path, not just the one a drive happens to hit.
+ *   2. DRIVE — the ordered yield sequence for a canonical LLM-free command,
+ *      which additionally catches reordering on that path.
+ *
+ * If either fails on an INTENTIONAL change you MUST, in order:
+ *   1. freeze the current latest as `orchestration_<v>/` and register it,
+ *   2. bump `DURABLE_SESSION_LATEST_VERSION`, then
+ *   3. regenerate the golden below (the failure prints the new value).
  */
+import { readFileSync, readdirSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 let mockSession;
@@ -26,14 +32,53 @@ vi.mock("../../src/session-proxy.js", () => ({
     createSessionManagerProxy: () => mockManager,
 }));
 
-// The canonical golden schedule for the latest orchestration driven through a
-// single get_info command with blob enabled (the path that carries the
-// hydration probe on legacy versions). Regenerate ONLY alongside a version bump.
-const GOLDEN = [
-    "recordSessionEvent",
-    "recordSessionEvent",
-    "continueAsNew",
+// ── Layer 1 golden: the durable-operation surface of the latest orchestration.
+// Distinct schedule-bearing proxy/ctx calls across orchestration/*.ts. Sorted.
+const GOLDEN_SURFACE = [
+    "ctx.continueAsNewVersioned",
+    "ctx.newGuid",
+    "ctx.scheduleTimer",
+    "ctx.utcNow",
+    "runtime.manager.computeCronAtNextFire",
+    "runtime.manager.deleteSession",
+    "runtime.manager.getDescendantSessionIds",
+    "runtime.manager.getOrchestrationStats",
+    "runtime.manager.getSessionStatus",
+    "runtime.manager.getWorkerSessionPolicy",
+    "runtime.manager.listChildSessions",
+    "runtime.manager.listModels",
+    "runtime.manager.listSessions",
+    "runtime.manager.loadKnowledgeIndex",
+    "runtime.manager.recordSessionEvent",
+    "runtime.manager.resolveAgentConfig",
+    "runtime.manager.sendCommandToSession",
+    "runtime.manager.sendToSession",
+    "runtime.manager.spawnChildSession",
+    "runtime.manager.summarizeSession",
+    "runtime.manager.updateCmsState",
+    "runtime.manager.updateSessionModel",
+    "runtime.session.abortTurn",
+    "runtime.session.destroy",
+    "runtime.session.hydrate",
+    "runtime.session.runTurn",
 ];
+
+// ── Layer 2 golden: ordered durable yields for a get_info command, blob on.
+const GOLDEN_DRIVE = ["recordSessionEvent", "recordSessionEvent", "continueAsNew"];
+
+const SURFACE_RE = /(?:runtime\.session|runtime\.manager)\.[a-zA-Z0-9_]+\(|ctx\.(?:newGuid|utcNow|scheduleTimer|continueAsNewVersioned|callActivity|waitForExternalEvent)\(/g;
+
+function scheduleSurface(dir) {
+    const found = new Set();
+    for (const name of readdirSync(new URL(dir, import.meta.url))) {
+        if (!name.endsWith(".ts")) continue;
+        const src = readFileSync(new URL(`${dir}/${name}`, import.meta.url), "utf8");
+        for (const m of src.matchAll(SURFACE_RE)) {
+            found.add(m[0].replace(/\($/, ""));
+        }
+    }
+    return [...found].sort();
+}
 
 function createCtx(values, queue = []) {
     const queuedEvents = [...queue];
@@ -58,9 +103,7 @@ function createCtx(values, queue = []) {
                 case "newGuid":
                     return "00000000-0000-0000-0000-000000000000";
                 case "dequeueEvent":
-                    if (queuedEvents.length === 0) {
-                        throw new Error("Queue underflow while resolving dequeueEvent");
-                    }
+                    if (queuedEvents.length === 0) throw new Error("Queue underflow");
                     return queuedEvents.shift();
                 case "recordSessionEvent":
                 case "checkpoint":
@@ -76,37 +119,22 @@ function createCtx(values, queue = []) {
     };
 }
 
-// Drive the generator, recording the ordered list of durable-yield effect
-// names, until it continues-as-new or blocks on an empty queue.
-function fingerprint(gen, ctx) {
+function driveFingerprint(gen, ctx) {
     const schedule = [];
     let input;
     for (let step = 0; step < 200; step += 1) {
         const next = gen.next(input);
-        if (next.done) {
-            schedule.push("return");
-            return schedule;
-        }
+        if (next.done) return [...schedule, "return"];
         const effect = next.value?.effect;
-        if (effect === "continueAsNew") {
-            schedule.push("continueAsNew");
-            return schedule;
-        }
-        if (effect === "dequeueEvent" && !ctx.hasQueuedEvents()) {
-            schedule.push("dequeueEvent(block)");
-            return schedule;
-        }
-        // Record only the durable-yield effects that define the schedule;
-        // reads (getValue/utcNow/dequeueEvent) are deterministic glue.
-        if (!["utcNow", "dequeueEvent"].includes(effect)) {
-            schedule.push(effect);
-        }
+        if (effect === "continueAsNew") return [...schedule, "continueAsNew"];
+        if (effect === "dequeueEvent" && !ctx.hasQueuedEvents()) return [...schedule, "dequeueEvent(block)"];
+        if (!["utcNow", "dequeueEvent"].includes(effect)) schedule.push(effect);
         input = ctx.resolveEffect(next.value);
     }
-    throw new Error("Exceeded step limit before stop condition");
+    throw new Error("Exceeded step limit");
 }
 
-describe("latest orchestration schedule fingerprint", () => {
+describe("orchestration schedule-drift guard", () => {
     beforeEach(() => {
         mockSession = {
             checkpoint: vi.fn(() => ({ effect: "checkpoint" })),
@@ -115,58 +143,48 @@ describe("latest orchestration schedule fingerprint", () => {
             needsHydration: vi.fn(() => ({ effect: "needsHydration" })),
             destroy: vi.fn(() => ({ effect: "destroy" })),
         };
-        mockManager = {
-            recordSessionEvent: vi.fn(() => ({ effect: "recordSessionEvent" })),
-        };
+        mockManager = { recordSessionEvent: vi.fn(() => ({ effect: "recordSessionEvent" })) };
     });
 
-    it("matches the pinned golden (bump the version + regenerate on intentional change)", async () => {
+    it("latest durable-operation surface matches golden (bump version + regenerate on change)", () => {
+        const surface = scheduleSurface("../../src/orchestration");
+        if (JSON.stringify(surface) !== JSON.stringify(GOLDEN_SURFACE)) {
+            const added = surface.filter((x) => !GOLDEN_SURFACE.includes(x));
+            const removed = GOLDEN_SURFACE.filter((x) => !surface.includes(x));
+            throw new Error(
+                `Latest orchestration schedule surface changed — this can break replay of in-flight ` +
+                    `orchestrations. If intentional: freeze the current latest as a versioned module, register ` +
+                    `it, bump DURABLE_SESSION_LATEST_VERSION, then set GOLDEN_SURFACE to:\n` +
+                    `${JSON.stringify(surface, null, 4)}\n` +
+                    `  added:   ${JSON.stringify(added)}\n  removed: ${JSON.stringify(removed)}`,
+            );
+        }
+        expect(surface).toEqual(GOLDEN_SURFACE);
+    });
+
+    it("latest command-path drive matches golden", async () => {
         const { DURABLE_SESSION_LATEST_VERSION } = await import("../../src/orchestration-version.ts");
         const mod = await import("../../src/orchestration.ts");
         const latest = mod[`durableSessionOrchestration_${DURABLE_SESSION_LATEST_VERSION.replace(/\./g, "_")}`];
         expect(latest, `latest handler export for ${DURABLE_SESSION_LATEST_VERSION} must exist`).toBeTypeOf("function");
 
-        const values = new Map();
-        const ctx = createCtx(values, [
-            JSON.stringify({ type: "cmd", cmd: "get_info", id: "fp-get-info" }),
-        ]);
+        const ctx = createCtx(new Map(), [JSON.stringify({ type: "cmd", cmd: "get_info", id: "fp" })]);
         const gen = latest(ctx, {
-            sessionId: "fp-session",
+            sessionId: "fp",
             config: { model: "github-copilot:gpt-5.4" },
             sourceOrchestrationVersion: DURABLE_SESSION_LATEST_VERSION,
             iteration: 0,
             isSystem: true,
             blobEnabled: true,
         });
-
-        const schedule = fingerprint(gen, ctx);
-        if (JSON.stringify(schedule) !== JSON.stringify(GOLDEN)) {
-            // Surface the new fingerprint so an intentional change is a one-line update.
-            throw new Error(
-                `Latest orchestration schedule changed.\n` +
-                    `If this was intentional, FREEZE the current latest as a versioned module, ` +
-                    `register it, bump DURABLE_SESSION_LATEST_VERSION, then set GOLDEN to:\n` +
-                    `${JSON.stringify(schedule, null, 4)}\n` +
-                    `Got:      ${JSON.stringify(schedule)}\n` +
-                    `Expected: ${JSON.stringify(GOLDEN)}`,
-            );
-        }
-        expect(schedule).toEqual(GOLDEN);
+        expect(driveFingerprint(gen, ctx)).toEqual(GOLDEN_DRIVE);
     });
 
     it("frozen 1.0.57 still yields the needsHydration probe it was deployed with", async () => {
-        // In-flight 1.0.57 histories recorded the probe activity (emitted on the
-        // turn path). The frozen module MUST keep that yield or those histories
-        // fail replay — the regression the version bump exists to prevent. The
-        // probe only fires while processing a prompt (not a bare command), which
-        // this LLM-free harness can't drive, so assert it at the source: the
-        // frozen turn schedule must still contain the probe yield.
-        const url = new URL("../../src/orchestration_1_0_57/turn.ts", import.meta.url);
-        const { readFileSync } = await import("node:fs");
-        const turnSource = readFileSync(url, "utf8");
-        expect(turnSource).toMatch(/yield\s+runtime\.session\.needsHydration\(\)/);
-
-        // And the module must still be registered so replay can resolve it.
+        // In-flight 1.0.57 histories recorded the probe on the turn path. The
+        // frozen module MUST keep that yield or those histories fail replay.
+        const src = readFileSync(new URL("../../src/orchestration_1_0_57/turn.ts", import.meta.url), "utf8");
+        expect(src).toMatch(/yield\s+runtime\.session\.needsHydration\(\)/);
         const mod = await import("../../src/orchestration_1_0_57/index.ts");
         expect(mod.durableSessionOrchestration_1_0_57).toBeTypeOf("function");
         expect(mod.CURRENT_ORCHESTRATION_VERSION).toBe("1.0.57");
