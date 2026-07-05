@@ -66,8 +66,17 @@ fresh-session replay**. The last arm (`session-proxy.ts:860`) records a
 `session.lossy_handoff` CMS event
 (`recoveryMode: "fresh_session_replay"`), injects a system message telling
 the LLM a worker restart lost its state, and starts from `turnIndex: 0`.
-Crucially, **it never consults the snapshot store** — even when a perfectly
-good snapshot exists, the missing-local-state path rebuilds from nothing.
+
+Note what is *absent* from that chain: the snapshot store. The worker never
+loads from storage on its own — the only load in the whole protocol is the
+orchestration-scheduled `hydrate` activity (§2.3), which runs *before*
+`runTurn`, gated purely by the orchestration's `needsHydration` flag. So
+"resume from local files" covers two cases indistinguishably: the session
+never left this worker, or a hydrate activity just unpacked the tar here.
+And when the flag and reality disagree — the orchestration believes
+`needsHydration = false` but the worker holding the key has no files — the
+one load path has already been skipped, and `runTurn` falls through to
+fresh replay even when a perfectly good snapshot exists.
 
 ### 2.2 After the turn: the wait plan
 
