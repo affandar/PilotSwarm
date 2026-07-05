@@ -58,10 +58,11 @@ CREATE TABLE ${s}.session_snapshots (
     session_id   TEXT PRIMARY KEY,
     tar          BYTEA NOT NULL,          -- ALTER ... SET STORAGE EXTERNAL
     version      BIGINT NOT NULL,         -- monotonic; CAS'd on every write
+    turn_key     TEXT,                    -- committing turn's key (NULL = legacy write)
     size_bytes   BIGINT NOT NULL,
     content_hash TEXT NOT NULL,           -- sha256 of tar (integrity + no-op elision)
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    meta         JSONB
+    meta         JSONB                    -- reason/worker/etc — informational only
 );
 
 CREATE TABLE ${s}.artifacts (
@@ -80,23 +81,46 @@ CREATE TABLE ${s}.artifacts (
 `STORAGE EXTERNAL` skips TOAST's pglz pass — tars should be gzipped at
 creation (cheap, better ratio) and double-compression wastes CPU.
 
-The `version` column implements the lifecycle protocol's store contract
-(protocol doc §3.1) as one CAS statement:
+### The store contract, as built
 
-- `checkpoint(sessionId, {expectedVersion, turnKey, resultMeta})` —
-  `UPDATE ... SET tar = $2, version = version + 1, meta = $4
-  WHERE session_id = $1 AND version = $3`; zero rows updated = CAS failure,
-  and the store returns the current `{version, turnKey}` so the caller can
-  distinguish its own already-committed attempt (idempotent turn-commit
-  retry, protocol §3.2) from a foreign writer (split-brain, loud error).
-  `meta` carries the protocol's `turnKey` and a bounded turn-result payload.
-  Version-less legacy writes (1.0.56 dehydrates) are accepted as
-  unconditional writes that still bump `version`, so old and new
-  orchestration executions coexist during rollout.
-- `hydrate(sessionId, {localVersion})` — probe `version` first (64-bit read);
-  equal → return `warm` without touching `tar`; else return the row. The
-  warm probe is what makes the protocol's hold-tier resume cost one indexed
-  SELECT of a BIGINT instead of a multi-MB transfer.
+The lifecycle protocol shipped (orchestration 1.0.57) with the versioned
+CAS contract implemented over the filesystem and Azure Blob backends. A
+`PgSessionStateStore` implements the SAME TypeScript interface
+(`VersionedSnapshotStore`, `packages/sdk/src/snapshot-protocol.ts`) and
+must pass the SAME shared conformance suite
+(`packages/sdk/test/helpers/snapshot-conformance.js`) the other two
+backends pass. The contract, mapped to SQL:
+
+- `probeSnapshot(sessionId)` — one indexed SELECT of
+  `{version, turn_key, content_hash, size_bytes}`; no `tar` bytes touched.
+  A row whose `version` is NULL/0 (or predates the column) reports
+  `{version: 0, legacy: true}`. This probe is what makes a warm resume
+  cost a 64-bit read instead of a multi-MB transfer.
+- `commitSnapshot(sessionId, {baseVersion, turnKey})` — one CAS statement:
+  `UPDATE ... SET tar=$2, version=version+1, turn_key=$3, ...
+  WHERE session_id=$1 AND version=$4`. Zero rows updated → re-read the row:
+  stored `version == baseVersion+1 AND turn_key == turnKey` → return
+  `{alreadyCommitted: true}` (the caller's racing/prior attempt won —
+  idempotent success); anything else → `SnapshotConflictError` carrying the
+  stored `{version, turn_key}` (split-brain fence, loud). Missing row with
+  `baseVersion > 0` → INSERT at `baseVersion + 1` (store lost data; the
+  chain stays monotonic). Legacy row (`turn_key` NULL, version 0) with
+  `baseVersion 0` → upgrade to version 1.
+- `hydrateSnapshot(sessionId)` — SELECT the row, unpack the tar into a
+  temp dir, atomic-rename into place, verify `content_hash` against the
+  bytes. Returns `{version, turnKey, contentHash, sizeBytes}`.
+- **Legacy fences** (both other backends already enforce this): the legacy
+  `dehydrate()`/`checkpoint()` writes must refuse to overwrite a row
+  carrying a version — dehydrate degrades to local release, checkpoint to
+  a no-op — so a stray ≤1.0.56 writer can never destroy the CAS chain.
+
+One structural simplification the implementation bought: **the committed
+turn's result rides INSIDE the tar** (`.ps-turn-commit.json`), so no
+result payload lives in store metadata at all — no column, no size cap,
+no truncation fallback. Already-committed recovery downloads the tar it
+needs anyway and reads the result from it. Version-less legacy writes
+(≤1.0.56 dehydrates) are accepted as unconditional writes so old and new
+orchestration executions coexist during rollout.
 
 **Object-store construction (Azure Blob).** Blob storage has no server-side
 counter, but it has the two primitives the contract needs: every blob
@@ -109,21 +133,18 @@ operation). The ETag is never the version — it is opaque and changes on
 *any* write including metadata-only ones; it serves purely as the
 atomicity token that binds a read to the write that follows it.
 
-- Layout: `sessions/<id>.tar.br` with metadata
-  `{version, turnkey, contenthash, resultmeta}`. Blob metadata is capped at
-  ~8 KB total, so `resultmeta` must stay small — the truncation fallback in
-  the protocol doc's open questions binds sooner here than on PG.
-- `hydrate({localVersion})`: HEAD → read `version` + ETag; equal → `warm`
-  with zero body transfer (the probe costs one metadata read); else GET
-  (body + metadata arrive in one round trip).
-- `checkpoint({expectedVersion, turnKey, resultMeta})` — an optimistic CAS
-  loop:
+- Layout (as built): `<id>.tar.gz` with metadata
+  `{psver, psturnkey, pssha}` — the turn result rides inside the tar, so
+  blob metadata stays tiny and the ~8 KB metadata cap never binds.
+- `probeSnapshot`: HEAD → read `psver` + ETag; matching local marker →
+  warm start with zero body transfer.
+- `commitSnapshot({baseVersion, turnKey})` — an optimistic CAS loop:
   1. HEAD → `{etag E, version v, turnkey k}`.
-  2. `v == expectedVersion` → single-shot **Put Blob** (new tar + metadata
-     `{version: v+1, turnkey, …}`) with `If-Match: E`. Success = committed
-     exactly once. A 412 Precondition Failed means a racing write landed
-     between the HEAD and the PUT → re-HEAD, re-evaluate.
-  3. `v == expectedVersion + 1 && k == turnKey` → the caller's own prior or
+  2. `v == baseVersion` → single-shot **Put Blob** (new tar + metadata
+     `{psver: v+1, psturnkey, pssha}`) with `If-Match: E`. Success =
+     committed exactly once. A 412 Precondition Failed means a racing
+     write landed between the HEAD and the PUT → re-HEAD, re-evaluate.
+  3. `v == baseVersion + 1 && k == turnKey` → the caller's own prior or
      racing attempt already committed → idempotent success, return the
      stored values.
   4. Anything else → split-brain, loud failure.
@@ -145,7 +166,8 @@ conditioned UPDATE with the row returned on mismatch. Both backends
 satisfy the protocol; PG is simply where the contract is one statement.
 
 New providers `PgSessionStateStore` / `PgArtifactStore` implement the existing
-interfaces; `storage-providers.ts` selects them via explicit config
+interfaces (`SessionStateStore` + `VersionedSnapshotStore`, and
+`ArtifactStore`); `storage-providers.ts` selects them via explicit config
 (`PILOTSWARM_BLOB_BACKEND=postgres`) with the current Azure/filesystem
 behavior unchanged by default until a major release flips the default.
 
@@ -336,6 +358,79 @@ instance; production measurements on the waldemort fleet.
 Follow-up experiment (planned): hand-compaction of `events.jsonl` —
 truncate/rotate the log in the local lab and verify the SDK still resumes
 the session, since the log is confirmed append-only and unbounded.
+
+## Test plan
+
+The guiding principle: **the backend is only novel at the store boundary.**
+Everything above it — the runTurn preamble/postamble, orchestration 1.0.57,
+eviction, drain — is backend-agnostic by construction, proven by the same
+suites passing over the filesystem and Azure Blob stores. So the PG suite
+buys maximum coverage by being exhaustive AT the boundary and surgical
+above it, instead of re-running the ~1 h full suite per backend for near-
+zero marginal coverage.
+
+Three tiers, one npm script (`test:local:pg-store`), total budget
+**~15 minutes** against the same local Postgres the suite already requires
+(isolated `pilotswarm_blobs_test_<ts>` schema per run, dropped in
+afterAll — the pattern the blob suite uses with throwaway containers).
+
+### Tier 1 — contract conformance (seconds, exhaustive at the boundary)
+
+- **Snapshot conformance:** register the EXISTING shared suite
+  (`registerSnapshotConformanceSuite`) against `PgSessionStateStore` —
+  zero new test logic. Covers: create/chain/monotonicity, idempotent
+  same-turnKey retry, foreign-writer conflict with stored coordinates,
+  byte-exact atomic hydrate, legacy version-0 detection + upgrade,
+  chain-restart at base+1, the N-writer CAS race (exactly one winner),
+  tar exclusion rules, and the legacy dehydrate/checkpoint fences.
+- **PG-specific extras** (the risks unique to this backend, cheap to test
+  directly):
+  - large-snapshot round-trip (~32 MB bytea) — exercises STORAGE EXTERNAL
+    TOAST paths and node-postgres buffering;
+  - commit with a poisoned/dropped connection mid-statement → loud
+    failure, then a clean retry commits (no torn row — single-statement
+    atomicity is the whole point of this backend);
+  - 8-way concurrent commits from SEPARATE pool connections (the fs suite
+    races promises; PG must race real transactions);
+  - snapshot-size cap enforcement (explicit error, not silent truncation);
+  - `get_system_stats` / sweeper deletion hooks once wired.
+- **Artifact conformance:** factor the existing filesystem/blob artifact
+  assertions (upload/download/list/delete/exists, text vs binary, size
+  caps, content-type sniff mismatches) into a shared suite the same way
+  snapshot conformance is shared, and register `PgArtifactStore` against
+  it. This is the one place new shared-suite work is needed.
+
+### Tier 2 — e2e protocol slice (~12 min, the backend under real fire)
+
+Run these EXISTING suites with the worker's session store switched to PG
+(a `PILOTSWARM_SESSION_STORE_BACKEND=pg` test-env knob honored by the
+worker-process fork helper, mirroring today's `sessionStoreDir`):
+
+- `fault-injection-live.test.js` — all six literal kill scenarios. This is
+  the highest-value e2e for a new backend: real process deaths at every
+  commit/hydrate boundary, real duroxide re-dispatch, the exactly-v2
+  version-chain oracle, and the persistence-counter assertions — all now
+  arbitrated by PG transactions instead of fs renames / blob ETags.
+- `lifecycle-stats.test.js` — warm commits, cold takeover, counter
+  semantics over PG.
+- `artifacts-binary.test.js` — artifact e2e through the worker/tool path.
+- The two store-sensitive multi-worker cases (`Session Survives Graceful
+  Restart`, `Turn 0 Resets Stale Stored Session`) — migration + reset
+  semantics against PG.
+
+### Tier 3 — deliberately NOT run per-backend (the optimization)
+
+Commands, sub-agents, CMS paging, knowledge pipeline, session policy, UI
+contracts, chaos, cross-session messaging — these exercise orchestration,
+CMS, and LLM behavior; their store interactions pass through the exact
+activity code paths tier 2 already runs on PG. Re-running them per backend
+triples wall-clock for no new store coverage. The full suite keeps running
+on the filesystem default; the blob backend keeps its existing dedicated
+conformance file.
+
+CI shape: tier 1 on every PR touching `session-store`/`blob-store`/
+`snapshot-protocol`/`session-lifecycle`/`pg-*` files; tiers 1+2 nightly and
+before any deploy that flips a stamp to `PILOTSWARM_BLOB_BACKEND=postgres`.
 
 ## Open questions
 
