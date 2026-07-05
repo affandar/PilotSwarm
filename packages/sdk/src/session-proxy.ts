@@ -2294,6 +2294,22 @@ export function registerActivities(
         return result;
     });
 
+    // ── LEGACY LIFECYCLE ACTIVITIES (compat surface, not dead code) ──
+    //
+    // dehydrateSession / hydrateSession / needsHydrationSession /
+    // checkpointSession are scheduled ONLY by frozen orchestration versions
+    // (≤ 1.0.56: their processPrompt probes needsHydrationSession before
+    // every turn, their wait policy dehydrates, their warm continue-as-new
+    // checkpoints) and by 1.0.57's one-shot normalization of a legacy CAN
+    // input (hydrateSession when input.needsHydration=true). The lifecycle
+    // protocol itself never schedules any of them — hydrate/commit live
+    // inside the runTurn activity (P5).
+    //
+    // Retirement condition: when the ≤1.0.56 handlers are dropped from
+    // DURABLE_SESSION_ORCHESTRATION_REGISTRY, delete these registrations
+    // (and the session-proxy methods that schedule them) in the same
+    // change. Until then they must stay byte-compatible.
+
     // ── dehydrateSession ────────────────────────────────────
     runtime.registerActivity("dehydrateSession", async (
         activityCtx: any,

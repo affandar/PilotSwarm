@@ -28,6 +28,7 @@ import { join } from "node:path";
 import { preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { PilotSwarmClient } from "../helpers/local-workers.js";
 import { forkKillWorker, expectFaultDeath, killStoreDir } from "../helpers/kill-harness.js";
+import { createCatalog } from "../helpers/cms-helpers.js";
 import { FilesystemSessionStore } from "../../src/session-store.ts";
 import { readSnapshotMarker, readTurnSentinel } from "../../src/snapshot-protocol.ts";
 import { ONEWORD_CONFIG } from "../helpers/fixtures.js";
@@ -119,6 +120,22 @@ async function runKillScenario(env, { name, fault, turn2Mode }) {
             !workerB.logs.some((l) => l.includes("lossy") || l.includes("SnapshotConflict")),
             `${name}: worker B must not take a lossy or conflicted path:\n${workerB.logs.filter((l) => l.includes("lossy") || l.includes("SnapshotConflict")).join("\n")}`,
         );
+
+        // Persistence counters survive the crash correctly: B's recovery is
+        // exactly ONE hydration (whether it re-ran the turn or adopted the
+        // committed one), the commit size is tracked, and nothing ever
+        // dehydrated — a kill must not double-count or fake stats.
+        const catalog = await createCatalog(env);
+        try {
+            const summary = await catalog.getSessionMetricSummary(sessionId);
+            assert(summary, `${name}: metric summary exists after recovery`);
+            assertEqual(summary.hydrationCount, 1, `${name}: recovery counts exactly one hydration`);
+            assertEqual(summary.dehydrationCount, 0, `${name}: kills never produce dehydrations`);
+            assert(summary.snapshotSizeBytes > 0, `${name}: snapshot size tracked through the crash`);
+            assert(summary.lastHydratedAt != null, `${name}: lastHydratedAt set by the recovery hydration`);
+        } finally {
+            try { await catalog.close?.(); } catch {}
+        }
 
         // Convergence: turn 3 runs normally on B and extends the chain.
         const r3 = await session.sendAndWait("What is 5+5? Answer with just the number.", REPLY_TIMEOUT);
@@ -217,6 +234,18 @@ describe("Literal fault injection: real kills at protocol boundaries", () => {
                 !workerC.logs.some((l) => l.includes("lossy")),
                 "f6: recovery must be store-driven, not lossy",
             );
+
+            // Counters: B died INSIDE its hydrate (before the record), so
+            // only C's completed hydration counts — exactly one.
+            const catalog = await createCatalog(env);
+            try {
+                const summary = await catalog.getSessionMetricSummary(sessionId);
+                assertEqual(summary.hydrationCount, 1, "f6: only the COMPLETED hydration counts (B died mid-hydrate)");
+                assertEqual(summary.dehydrationCount, 0, "f6: no dehydrations");
+                assert(summary.snapshotSizeBytes > 0, "f6: snapshot size tracked");
+            } finally {
+                try { await catalog.close?.(); } catch {}
+            }
         } finally {
             await client.stop();
         }

@@ -288,7 +288,6 @@ export function* processPrompt(
                 yield runtime.session.hydrate();
                 state.needsHydration = false;
                 state.preserveAffinityOnHydrate = false;
-                state.lastLiveSessionAction = "session-activity";
                 break;
             } catch (hydrateErr: any) {
                 const hMsg = hydrateErr.message || String(hydrateErr);
@@ -333,7 +332,6 @@ export function* processPrompt(
     publishStatus(runtime, "running", { iteration: state.iteration + 1 });
     let turnResult: any;
     try {
-        state.lastLiveSessionAction = "session-activity";
         // Stop-turn race: the in-flight runTurn activity vs a dequeue on the
         // TURN-SCOPED stop queue (stopTurn.<iteration>). Scoping the queue to
         // the turn index makes stale stop events structurally unable to kill a

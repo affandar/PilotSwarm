@@ -62,7 +62,6 @@ export interface DurableSessionState {
     snapshotVersion: number;
     preserveAffinityOnHydrate: boolean;
     blobEnabled: boolean;
-    lastLiveSessionAction: "session-activity" | "dehydrate";
     pendingRehydrationMessage?: string;
 
     pendingPrompt?: string;
@@ -104,10 +103,8 @@ export interface DurableSessionState {
 
 /** Immutable per-execution configuration derived from the orchestration input. */
 export interface DurableSessionOptions {
-    dehydrateThreshold: number;
     idleTimeout: number;
     inputGracePeriod: number;
-    checkpointInterval: number;
     isSystem: boolean;
     parentSessionId?: string;
     nestingLevel: number;
@@ -197,7 +194,6 @@ export function createInitialState(input: OrchestrationInput, options: DurableSe
         snapshotVersion: input.snapshotVersion ?? 0,
         preserveAffinityOnHydrate: input.preserveAffinityOnHydrate ?? false,
         blobEnabled: input.blobEnabled ?? false,
-        lastLiveSessionAction: "session-activity",
         pendingRehydrationMessage: input.rehydrationMessage,
 
         pendingPrompt: input.prompt,
@@ -240,18 +236,19 @@ export function createInitialState(input: OrchestrationInput, options: DurableSe
 
 export function deriveOptions(input: OrchestrationInput): DurableSessionOptions {
     return {
-        dehydrateThreshold: input.dehydrateThreshold ?? 29,
         // Lifecycle protocol: the idle timer is the affinity HOLD WINDOW —
         // its fire releases the worker (GUID rotation), it no longer
         // dehydrates. 30 minutes, not 60 seconds. Legacy executions CAN in
         // with an explicit 60 (the old system default, threaded through
         // every historical CAN input) — treat that sentinel as unset so
         // migrated sessions actually get the hold window.
+        // (dehydrateThreshold / checkpointInterval inputs are accepted but
+        // meaningless here: turns commit inside the runTurn activity and
+        // waits never dehydrate — the fields live on only for ≤1.0.56.)
         idleTimeout: input.idleTimeout == null || input.idleTimeout === 60
             ? 1_800
             : input.idleTimeout,
         inputGracePeriod: input.inputGracePeriod ?? 30,
-        checkpointInterval: input.checkpointInterval ?? -1,
         isSystem: input.isSystem ?? false,
         parentSessionId: input.parentSessionId
             ?? (input.parentOrchId ? input.parentOrchId.replace(/^session-/, "") : undefined),

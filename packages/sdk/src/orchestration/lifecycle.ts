@@ -144,49 +144,6 @@ export function wrapWithResumeContext(
     return parts.join("\n");
 }
 
-export function* dehydrateForNextTurn(
-    runtime: DurableSessionRuntime,
-    reason: string,
-    resetAffinity = true,
-    eventData?: Record<string, unknown>,
-): Generator<any, void, any> {
-    const { ctx, state } = runtime;
-    if (state.needsHydration) {
-        ctx.traceInfo(`[orch] skipping dehydrate (reason=${reason}) because the session is already marked dehydrated`);
-        state.activeTimer = null;
-        return;
-    }
-
-    if (state.lastLiveSessionAction === "dehydrate") {
-        ctx.traceInfo(`[orch] skipping redundant dehydrate (reason=${reason}) because the last live-session action was already dehydrate`);
-        state.activeTimer = null;
-        return;
-    }
-
-    ctx.traceInfo(`[orch] dehydrating session (reason=${reason}, resetAffinity=${resetAffinity})`);
-    state.activeTimer = null;
-    state.lastLiveSessionAction = "dehydrate";
-    const dehydrateResult = yield runtime.session.dehydrate(reason, eventData);
-    const lossyHandoff = dehydrateResult?.lossyHandoff;
-    if (lossyHandoff && typeof lossyHandoff === "object") {
-        const lossyMessage = String((lossyHandoff as any).message || "dehydrate lost the live Copilot session state");
-        ctx.traceInfo(`[orch] ${lossyMessage}`);
-        state.needsHydration = false;
-        state.preserveAffinityOnHydrate = false;
-        if (resetAffinity) {
-            state.affinityKey = yield ctx.newGuid();
-            runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config);
-        }
-        return;
-    }
-    state.needsHydration = true;
-    state.preserveAffinityOnHydrate = !resetAffinity;
-    if (resetAffinity) {
-        state.affinityKey = yield ctx.newGuid();
-        runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config);
-    }
-}
-
 /**
  * Session lifecycle protocol (§3.4 tier 3): release the worker affinity by
  * rotating the GUID — a pure orchestration-state change, no activity at all.
@@ -458,10 +415,8 @@ export function buildContinueInput(
         needsHydration: state.needsHydration,
         snapshotVersion: state.snapshotVersion,
         blobEnabled: state.blobEnabled,
-        dehydrateThreshold: options.dehydrateThreshold,
         idleTimeout: options.idleTimeout,
         inputGracePeriod: options.inputGracePeriod,
-        checkpointInterval: options.checkpointInterval,
         ...(carriedRehydrationMessage ? { rehydrationMessage: carriedRehydrationMessage } : {}),
         nextSummarizeAt: state.nextSummarizeAt,
         taskContext: state.taskContext,
