@@ -196,6 +196,12 @@ Four principles, each fixing a class of gaps:
   (G2, G4, G6)
 - **P4 — Dehydrate = release.** It stops being the durability mechanism
   (checkpoint is) and becomes "free the worker."
+- **P5 — One session activity.** Every interaction with worker-local session
+  state lives inside `runTurn`'s preamble and postamble. The orchestration
+  never schedules a second session activity whose correctness depends on
+  landing where a previous one did — that dependency is the root of the
+  whole `needsHydration`-desync bug class (G2, §2.5's lossyHandoff). (G2,
+  G4)
 
 ### 3.1 Store contract (the protocol's half of the interface)
 
@@ -220,8 +226,8 @@ hydrate(sessionId, {localVersion?}) → {status:"warm"}
     If localVersion equals the stored version, transfer nothing ("warm").
     Otherwise fetch + unpack and report the version now on disk.
 
-release-time verify (optional): if the local content sha equals the stored
-    contentHash, a drain-time write is elided entirely.
+contentHash: integrity check on hydrate, and an optional divergence
+    assertion at eviction time (§3.4). Release/eviction never writes.
 ```
 
 The worker records the version in a marker file inside the session dir
@@ -237,29 +243,55 @@ A tempting design is a separate `checkpoint` activity scheduled after
 duroxide history (and its output already delivered to the user) while the
 post-turn state exists only on one worker's disk. A crash there strands v_N
 forever — the checkpoint retry lands on a worker with no files and cannot
-manufacture it (§3.7, W2). So the commit is folded into the tail of the
-`runTurn` activity itself:
+manufacture it (§3.7, W2). And any pair of session activities separated by a
+possible lease migration re-creates the coordination flaw of §2.5: the
+orchestration carrying beliefs about worker-local disk (`needsHydration`,
+`lastLiveSessionAction`) that reality can silently invalidate. So, per P5,
+the *entire* lifecycle folds into one activity:
 
 ```
 runTurn activity:
-  1. execute the LLM turn            (side effects happen here)
-  2. tar + compress the session dir
-  3. store.checkpoint(sessionId, {expectedVersion, turnKey, resultMeta})
-  4. update local version marker, clear the turn sentinel (§3.3)
-  5. return {result, version}        ← ONE durable activity completion
+  preamble  (idempotent; read-only against the store — §3.3)
+    p1. turn sentinel present?  → local dir untrusted → hydrate clean
+    p2. marker == expected?     → warm start, zero store I/O
+        else hydrate(sessionId, {localVersion})
+        └ store already at expected+1 under this turnKey → prior attempt
+          committed: return its resultMeta, skip the body entirely
+    p3. write the turn sentinel
+  body
+    b1. execute the LLM turn    (side effects: at-least-once)
+  postamble  (the commit — exactly-once)
+    c1. tar + compress the session dir
+    c2. store.checkpoint(sessionId, {expectedVersion, turnKey, resultMeta})
+    c3. update the local version marker
+    c4. clear the turn sentinel
+    c5. return {result, version}   ← ONE durable activity completion
 ```
 
 From the orchestration's perspective, turn completion and state durability
 are the same event: `state.snapshotVersion = version` is recorded from the
 same completion that carries the turn result. No observable state exists in
-which the turn "happened" but its snapshot doesn't.
+which the turn "happened" but its snapshot doesn't. The ordering is
+crash-safe at every boundary: a crash after c2 but before c3/c4 leaves the
+sentinel in place, so the retry distrusts the dirty dir (p1), discovers its
+own committed turnKey at expected + 1 (p2), and returns the stored result —
+duplication resolved to idempotent success, never re-execution.
 
-The `turnKey` (execution id + turn index, deterministic) makes the commit
-idempotent across activity retries: if the worker dies *after* the CAS lands
-but *before* duroxide records the activity completion, the retry finds the
-store at expectedVersion + 1 bearing its own turnKey and returns the stored
-`resultMeta` without re-executing the turn. A mismatch with a foreign
-turnKey remains the split-brain fence.
+**What this retires.** Of today's session-scoped activities (`runTurn`,
+`hydrateSession`, `checkpointSession`, `dehydrateSession`,
+`needsHydrationSession`, `destroySession`, `abortTurn`), the new protocol
+schedules exactly one for session state: `runTurn`. `hydrateSession` and
+`checkpointSession` become the preamble and postamble; `dehydrateSession`
+has nothing left to persist (every turn is committed) and its cleanup role
+moves to worker-autonomous eviction (§3.4); `needsHydrationSession` — an
+activity that exists to ask a worker what it has on disk — is the purest
+form of the coordination smell and disappears outright. Two survivors, by
+design: `abortTurn` is not state coordination — it is a concurrent
+interrupt signal to a running body, carries no disk dependence, and gets
+*more* reliable under warm holds (the session stays pinned longer); and
+`destroySession` remains as best-effort terminal cleanup whose loss costs
+nothing (an undelivered destroy just means the cache evicts the files
+later).
 
 Cost: measured 140 ms on a 23.6 MB session dir with the PG store (whole-file
 brotli-4), added to the tail of each turn — versus a 763 ms dehydrate +
@@ -289,6 +321,13 @@ start:
 4. **Store empty** → today's fresh-session replay, now confined to sessions
    that have never committed a turn.
 
+Hydrate itself must be crash-atomic: unpack into a temp directory and
+`rename()` it into place, writing the version marker last, so a crash
+mid-hydrate can never leave a plausible-looking session dir — the next
+attempt sees either the old dir (marker mismatch → re-hydrate) or the
+complete new one. Every preamble step is a read against the store, so the
+whole preamble is trivially re-runnable.
+
 This one check closes G2 and G4 simultaneously: a stale worker can only
 hydrate *forward*, never resume backward, and its stray late checkpoint (from
 an obsolete execution) fails CAS at the store. Duroxide's own sessions spec
@@ -304,12 +343,22 @@ lossy path; this makes it the real thing.
 |---|---|---|
 | 1 — live | ≤ `dehydrateThreshold` (29 s) | Unchanged: orchestration timer, everything stays hot. |
 | 2 — **checkpoint-hold** | 29 s → `holdWindow` (default 30 min) | **No dehydrate.** State is already durable from turn commit. Local files, SDK session, and GUID all kept; `needsHydration = false`. On wake, `runTurn` fires directly on the same GUID → same worker, warm start. Self-validation (§3.3) covers the case where the lease was lost anyway. |
-| 3 — release | > `holdWindow`, drain, eviction | Destroy in-memory session, delete local dir, rotate GUID. **No upload** — the store already holds the committed state (optionally verify sha, then delete). Next event hydrates wherever duroxide places it. |
+| 3 — release | > `holdWindow`, drain | **Rotate the GUID — a pure orchestration-state change, no activity at all.** Nothing needs uploading (every completed turn is committed) and nothing needs telling the old worker: its copy is a cache (P3) that its own eviction reclaims. The next event hydrates wherever duroxide places the new key. |
 
 The **idle timer becomes the hold window**: its duration changes from 60 s to
-`holdWindow`, and it fires a *release*, not a dehydrate-upload. The existing
+`holdWindow`, and it fires a *rotation*, not a dehydrate-upload. The existing
 cancel-on-activity machinery (queue.ts:365) already implements the "any
 session activity resets the idle clock" rule — each turn re-arms the timer.
+
+**Worker-side eviction** is the physical half of release, and it is
+autonomous: the worker runs its own per-session idle clock (default
+`holdWindow` + margin, aligned with the duroxide lease decay) and evicts —
+destroy in-memory session, delete local dir — without telling anyone. P5
+means there is no release activity to coordinate with; P3 means evicting
+early is always safe (the next `runTurn` self-validates and hydrates). An
+evicting worker MAY compare its local sha against the stored `contentHash`
+first, purely as a divergence assertion for telemetry — release never
+writes.
 
 `wait_on_worker` becomes redundant below `holdWindow` (holding is the
 default) and remains ineffective above it by design (tier 3 rotates). It is
@@ -368,9 +417,10 @@ lapsed; worker B served turns to v9; the GUID later routes back to A.
 checkpoint queued from the old execution, its CAS on `expectedVersion 5`
 fails against the stored 9. Both directions of G4 are closed.
 
-**Long idle.** The hold-window timer fires → release (verify sha, delete
-local, rotate GUID) → session costs nothing anywhere until the next event,
-which hydrates on any worker.
+**Long idle.** The hold-window timer fires → the orchestration rotates the
+GUID and does nothing else — no activity, no store I/O. The old worker's
+copy ages out under its own eviction clock. The session costs nothing
+anywhere until the next event, which hydrates on any worker.
 
 **Worker under pressure (eviction).** Because local state is a cache (P3), a
 worker may destroy + delete any held session *without telling the
@@ -403,9 +453,16 @@ where the retry lands:
   sentinel (§3.3 rule 1) makes this case detect as untrusted and hydrate
   clean v_N−1, converging with the different-worker path.
 
-Duplicated external side effects are inherent to at-least-once activity
-retry — unchanged from today. Tools with hard external effects need their
-own idempotency; that is out of scope for this protocol.
+How idempotent can the body realistically get? In-system side effects can
+be deduplicated: CMS session events emitted during the turn can carry a
+`(turnKey, seq)` idempotency key (`ON CONFLICT DO NOTHING`), so a
+re-executed turn never double-records user-visible events. External tool
+effects (emails, pushes, API calls) remain at-least-once — inherent to
+durable-execution retry and unchanged from today; tools with hard external
+effects need their own idempotency, out of scope here. The commit itself is
+exactly-once (turnKey CAS), which bounds the blast radius of a retry to
+"the world may see a tool action twice," never "the session forgets or
+double-applies a turn."
 
 **W2 — Between turn end and state commit.** The reason §3.2 is atomic. In a
 two-activity design (runTurn, then checkpoint) there is a window where the
@@ -445,11 +502,10 @@ the platform (AKS pod termination, scale-down, node maintenance):
                      shutdown flag; dispatch slots finish their current
                      item and claim nothing new.
 2. Finish in-flight  Running turns run to completion; their atomic
-                     commits land as part of the activity (§3.2).
-3. Release           For each warm session: verify sha (elide the no-op
-                     write — every completed turn is already committed, so
-                     this is deletes only), destroy in-memory, delete
-                     local dir.
+                     commits land inside the activity (§3.2).
+3. Evict all         Purely local: destroy in-memory sessions, delete
+                     session dirs. No store I/O — every completed turn is
+                     already committed (optional sha assertions, §3.4).
 4. Exit              Anything still leased lapses within ≤30 s.
 ```
 
@@ -467,10 +523,28 @@ turn itself is W1. **Graceful drain is therefore a latency and
 side-effect-duplication optimization, not a correctness requirement** — the
 safety story never depends on the platform honoring its grace period.
 
-Upstream nicety (duroxide): `runtime.shutdown()` sleeps the full timeout
-before aborting leftovers instead of returning as soon as in-flight work
-completes; early-exit would shave minutes off rollouts but changes nothing
-semantically.
+**What duroxide exposes today** is one fused primitive, not a two-phase
+API. `shutdown(timeoutMs)` does: set the shutdown flag (dispatchers finish
+their in-flight item, claim nothing new) → **sleep the full timeout,
+unconditionally** → abort whatever still runs. `shutdown(0)` is an
+immediate abort-all. So "graceful stop, then abort" exists, but only with a
+fixed sleep: there is no early return on quiescence, no way to *observe*
+quiescence (`metricsSnapshot()` exposes cumulative fetched/completed
+counters from which in-flight could be inferred, but the flag can't be set
+without committing to the fused call, which must not be invoked
+concurrently), and no standalone "begin drain" that returns immediately.
+Consequence: every rollout pays the full drain budget in wall-clock even if
+all turns finish in seconds.
+
+Upstream proposal (duroxide + node binding), either of:
+- **Early-exit `shutdown`** — return as soon as in-flight reaches zero
+  (backward compatible, one-line semantic change); or
+- **Two-phase drain** — `beginDrain()` (set the flag, return immediately) +
+  `awaitQuiescence(timeoutMs)` (resolve when in-flight = 0 or on timeout),
+  with the existing `shutdown(0)` as the abort.
+
+Until one lands, the drain works correctly but slowly — a rollout-speed
+tax, not a correctness issue.
 
 ### 3.9 Delta summary
 
@@ -479,7 +553,7 @@ semantically.
 | Turn completes | Nothing durable (`checkpointInterval = -1`) | Atomic in-activity commit — one CAS write |
 | Wait ≤ 29 s | Live | Live (unchanged) |
 | Wait 29 s – 30 min | Dehydrate + rotate; hydrate on fire | Hold: zero store I/O |
-| Interactive lull | Dehydrate 60 s after last turn | Hold up to 30 min, then release (no upload) |
+| Interactive lull | Dehydrate 60 s after last turn | Hold up to 30 min, then GUID rotation (no activity, no I/O) |
 | Worker crash | Lossy fresh replay | Hydrate last turn commit — lossless (W1: side effects at-least-once) |
 | In-flight turn at deploy | Aborted after 5 s → lossy | Runs to completion within drain budget |
 | Deploy | Mass dehydrate/hydrate churn + lossy handoffs | Drain: commit + release; stragglers ≤30 s reclaim |
@@ -502,6 +576,7 @@ store's phase-1 numbers assume exactly this write pattern.
 | `sessionIdleTimeoutMs` | duroxide runtime | 300 000 | `holdWindow` + margin (e.g. 2 100 000) |
 | `maxSessionsPerRuntime` | duroxide runtime | 10 | Sized to memory (~50, telemetry-tuned) |
 | session lock timeout | duroxide (fixed) | 30 s | Unchanged — the crash-reclaim bound |
+| worker session eviction clock | worker-local (new) | n/a (dehydrate deletes) | `holdWindow` + margin, autonomous (§3.4) |
 | `PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS` | worker env | 5 000 | Drain budget (e.g. 600 000) |
 | `terminationGracePeriodSeconds` | k8s worker Deployment | unset (30 s) | Drain budget + margin |
 | SIGTERM handler | container entrypoint | `stop()` — aborts in-flight | `gracefulShutdown()` — drain (§3.8) |
