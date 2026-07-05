@@ -83,10 +83,14 @@ creation (cheap, better ratio) and double-compression wastes CPU.
 The `version` column implements the lifecycle protocol's store contract
 (protocol doc §3.1) as one CAS statement:
 
-- `checkpoint(sessionId, {expectedVersion})` — `UPDATE ... SET tar = $2,
-  version = version + 1 WHERE session_id = $1 AND version = $3`; zero rows
-  updated = CAS failure (another writer advanced the session), surfaced as a
-  loud error. Version-less legacy writes (1.0.56 dehydrates) are accepted as
+- `checkpoint(sessionId, {expectedVersion, turnKey, resultMeta})` —
+  `UPDATE ... SET tar = $2, version = version + 1, meta = $4
+  WHERE session_id = $1 AND version = $3`; zero rows updated = CAS failure,
+  and the store returns the current `{version, turnKey}` so the caller can
+  distinguish its own already-committed attempt (idempotent turn-commit
+  retry, protocol §3.2) from a foreign writer (split-brain, loud error).
+  `meta` carries the protocol's `turnKey` and a bounded turn-result payload.
+  Version-less legacy writes (1.0.56 dehydrates) are accepted as
   unconditional writes that still bump `version`, so old and new
   orchestration executions coexist during rollout.
 - `hydrate(sessionId, {localVersion})` — probe `version` first (64-bit read);

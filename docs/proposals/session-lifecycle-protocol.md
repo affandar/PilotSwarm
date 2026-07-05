@@ -170,6 +170,14 @@ dehydrate/hydrate pairs and 2.3–6.2 GB/day of blob ingress on a steady day;
 - **G6 — No ordering primitive.** Snapshot metadata carries a content sha but
   no version: nothing can tell "local files are behind the store" from
   "ahead of the store," and blob writes are last-writer-wins.
+- **G7 — Shutdown is a crash with extra steps.** The container entrypoint's
+  SIGTERM handler calls `worker.stop()`, not the existing
+  `gracefulShutdown()`: the duroxide runtime gets
+  `PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS` (default **5 s**) to finish, then
+  every in-flight task is aborted, and held sessions are not dehydrated on
+  the way down. The worker Deployment sets no `terminationGracePeriodSeconds`
+  (k8s default 30 s) and no preStop hook. Any turn longer than 5 s dies
+  mid-flight on every deploy — each one an instance of G1.
 
 ---
 
@@ -196,10 +204,15 @@ writes. (Implementation — PG schema, blob ETag fallback — belongs to the
 store doc; the protocol only needs these semantics.)
 
 ```
-checkpoint(sessionId, {expectedVersion}) → {version, contentHash}
+checkpoint(sessionId, {expectedVersion, turnKey?, resultMeta?})
+        → {version, contentHash}
     Persist the tar iff stored version == expectedVersion; new version =
-    expectedVersion + 1. CAS mismatch is a loud failure — it means another
-    writer advanced the session (split-brain fence).
+    expectedVersion + 1. turnKey (execution id + turn index) and a bounded
+    resultMeta are stored alongside the tar. On CAS mismatch the store
+    returns the stored {version, turnKey} so a retrying writer can tell
+    "my prior attempt already committed" (same turnKey — idempotent success)
+    from "another execution advanced the session" (split-brain fence — loud
+    failure).
 
 hydrate(sessionId, {localVersion?}) → {status:"warm"}
                                     | {status:"hydrated", version}
@@ -217,39 +230,63 @@ hydrate. That marker is the local half of every comparison below. The sha
 survives only for integrity checks and drain-time no-op elision — **ordering
 is the version's job** (G6).
 
-### 3.2 Turn commit (replaces the interval checkpoint)
+### 3.2 Atomic turn commit (replaces the interval checkpoint)
+
+A tempting design is a separate `checkpoint` activity scheduled after
+`runTurn`. It has a fatal window: the turn's completion is durable in
+duroxide history (and its output already delivered to the user) while the
+post-turn state exists only on one worker's disk. A crash there strands v_N
+forever — the checkpoint retry lands on a worker with no files and cannot
+manufacture it (§3.7, W2). So the commit is folded into the tail of the
+`runTurn` activity itself:
 
 ```
-runTurn completes
-  → orchestration yields session.checkpoint({expectedVersion: state.snapshotVersion})
-      (scheduled on the current GUID — the owner tars its own files)
-  → activity: tar, compress, CAS write, update local marker
-  → returns {version}
-  → orchestration records state.snapshotVersion = version   (deterministic, replayed)
+runTurn activity:
+  1. execute the LLM turn            (side effects happen here)
+  2. tar + compress the session dir
+  3. store.checkpoint(sessionId, {expectedVersion, turnKey, resultMeta})
+  4. update local version marker, clear the turn sentinel (§3.3)
+  5. return {result, version}        ← ONE durable activity completion
 ```
 
-Not best-effort: a checkpoint failure surfaces with the same retry policy as
-a `runTurn` failure, because after this change it *is* the durability of the
-turn. A CAS failure specifically means some other execution wrote the session
-— the orchestration re-validates through the hydrate path rather than
-overwriting.
+From the orchestration's perspective, turn completion and state durability
+are the same event: `state.snapshotVersion = version` is recorded from the
+same completion that carries the turn result. No observable state exists in
+which the turn "happened" but its snapshot doesn't.
+
+The `turnKey` (execution id + turn index, deterministic) makes the commit
+idempotent across activity retries: if the worker dies *after* the CAS lands
+but *before* duroxide records the activity completion, the retry finds the
+store at expectedVersion + 1 bearing its own turnKey and returns the stored
+`resultMeta` without re-executing the turn. A mismatch with a foreign
+turnKey remains the split-brain fence.
 
 Cost: measured 140 ms on a 23.6 MB session dir with the PG store (whole-file
-brotli-4), and the tar is built without destroying the live session. That is
-the per-turn tax, paid once per turn instead of a 763 ms dehydrate + 112 ms
-hydrate per wake.
+brotli-4), added to the tail of each turn — versus a 763 ms dehydrate +
+112 ms hydrate per wake today. Coupling: a store outage now fails turns
+loudly (with the turn's own retry policy) instead of accumulating silently
+undurable state; today's dehydrate path already had this coupling.
 
 ### 3.3 runTurn self-validation (lossy → lossless)
 
 `runTurn`'s input gains `expectedSnapshotVersion`, sourced deterministically
-from orchestration state. On activity start:
+from orchestration state. The activity also maintains a **turn sentinel** — a
+file (e.g. `.turn-in-progress`) written at turn start and removed only by
+step 4 of the commit — marking the local dir as mid-mutation. On activity
+start:
 
-1. **Marker == expected** → warm start. Zero store I/O — the common case
-   costs nothing new.
-2. **Marker missing or ≠ expected** (lease migrated, pod restarted, stale
+1. **Sentinel present** → a prior attempt died mid-turn *on this worker*.
+   The local dir is dirty (half a turn applied) even though its marker still
+   reads the pre-turn version — a naive marker check would warm-start on
+   corrupt state. Treat local as untrusted → hydrate clean.
+2. **Marker == expected, no sentinel** → warm start. Zero store I/O — the
+   common case costs nothing new.
+3. **Marker missing or ≠ expected** (lease migrated, pod restarted, stale
    files) → `hydrate(sessionId, {localVersion})`: fetch exactly the expected
-   state, overwrite local. Lossless.
-3. **Store empty** → today's fresh-session replay, now confined to sessions
+   state, overwrite local. Lossless. If the store reports
+   expectedVersion + 1 under this turn's own turnKey, the previous attempt
+   already committed — return its stored result (§3.2), don't re-run.
+4. **Store empty** → today's fresh-session replay, now confined to sessions
    that have never committed a turn.
 
 This one check closes G2 and G4 simultaneously: a stale worker can only
@@ -302,10 +339,11 @@ it or the hold is fiction (G3):
 ### 3.6 The protocol in action
 
 **Warm interactive turn (common case).** User message → `runTurn(expected v9)`
-on GUID *g* → marker reads 9 → warm start → turn runs → checkpoint CAS 9→10 →
-idle-hold re-armed. Store I/O: one compressed write (~0.5 MB measured).
+on GUID *g* → no sentinel, marker reads 9 → warm start → turn runs and
+commits CAS 9→10 in its tail → idle-hold re-armed. Store I/O: one compressed
+write (~0.5 MB measured).
 
-**Watcher cron cycle (10 min wait, tier 2).** Turn → checkpoint v→v+1 → hold
+**Watcher cron cycle (10 min wait, tier 2).** Turn commits v→v+1 → hold
 with a 600 s timer → fire → `runTurn(v+1)` on the same GUID, same worker,
 warm. Per cycle: one write, zero reads, zero tar/untar, zero prompt tax.
 Today the same cycle is: dehydrate (upload + local delete) → GUID rotation →
@@ -313,17 +351,16 @@ hydrate (download + unpack) → resume-context prompt wrapper.
 
 **Worker crash mid-hold.** Heartbeats stop → duroxide reclaims the key in
 ≤30 s → next event routes `runTurn(v10)` to worker B → marker missing →
-hydrate v10 → lossless resume. Nothing is lost: the last committed turn was
-checkpointed. A crash *mid-turn* retries `runTurn` under duroxide's activity
-retry; the new worker hydrates v10 (post-turn-9 state) and re-executes the
-turn from its durable input.
+hydrate v10 → lossless resume. Nothing is lost: every completed turn was
+committed. Crashes *mid-turn* and *post-CAS* are walked through in §3.7
+(W1/W2).
 
-**Deploy.** Terminating pods stop heartbeating; every held session is
-claimable in ≤30 s; new pods hydrate on demand at the exact committed
-version. No dehydrate storm on the way down (state was already durable —
-today's rollout days move ~14 GB), and no lossy replays (G1 closed).
-A graceful preStop can optionally issue tier-3 releases to smooth the
-transition, but correctness does not depend on it.
+**Deploy.** SIGTERM triggers the drain sequence (§3.8): in-flight turns
+finish and commit, warm sessions are released without uploads, leases lapse.
+New pods hydrate on demand at the exact committed version. No dehydrate
+storm on the way down (state was already durable — today's rollout days move
+~14 GB), and no lossy replays (G1, G7 closed). Correctness never depends on
+the drain: a pod killed outright is just the crash case above.
 
 **Stale worker (the regression case).** Worker A held files at v5; its lease
 lapsed; worker B served turns to v9; the GUID later routes back to A.
@@ -341,60 +378,164 @@ orchestration*: the next `runTurn` self-validates and hydrates. LRU eviction
 becomes a purely local decision — no protocol message exists for it because
 none is needed.
 
-### 3.7 Delta summary
+### 3.7 Data-loss and duplication windows, honestly
+
+The new protocol does not make loss impossible; it makes the windows
+enumerable. Calling each one out:
+
+**W1 — Mid-turn crash: side effects are at-least-once.** A turn is not a
+transaction. By the time a worker dies mid-turn, the LLM may already have
+acted — tool calls executed, CMS events recorded, messages sent, commits
+pushed — but nothing advanced the version: the commit (§3.2) never ran, so
+neither the local marker nor the store moved past v_N−1. The retry
+re-executes the turn from its durable input on top of clean v_N−1 state.
+*Session state* rewinds precisely; *the world* does not. Recovery differs by
+where the retry lands:
+
+- **Different worker:** no local files → hydrate v_N−1 → clean re-execution.
+  The only artifact of the first attempt is its external side effects,
+  possibly now duplicated.
+- **Same worker** (process survived and duroxide retries locally, or the pod
+  restarted with disk intact under the same `workerNodeId`): the local dir
+  is **dirty** — mutated by the half-executed turn — while the marker still
+  reads v_N−1. Without protection this warm-starts on half-applied state,
+  which is worse than either losing or duplicating the turn. The turn
+  sentinel (§3.3 rule 1) makes this case detect as untrusted and hydrate
+  clean v_N−1, converging with the different-worker path.
+
+Duplicated external side effects are inherent to at-least-once activity
+retry — unchanged from today. Tools with hard external effects need their
+own idempotency; that is out of scope for this protocol.
+
+**W2 — Between turn end and state commit.** The reason §3.2 is atomic. In a
+two-activity design (runTurn, then checkpoint) there is a window where the
+turn's completion is durable — the user has seen its output — but v_N lives
+only on the dead worker's disk; a checkpoint retry elsewhere finds no files
+and cannot manufacture it. The session would permanently forget a turn whose
+output was delivered: user-visible amnesia, the worst loss mode. Folding the
+CAS into the `runTurn` activity removes the window structurally — no durable
+"turn completed" record can exist without its snapshot. The residual case, a
+crash between the CAS landing and duroxide recording the activity
+completion, is duplication-shaped, not loss-shaped, and the turnKey check
+(§3.3 rule 3) resolves it by returning the already-committed result instead
+of re-running.
+
+**W3 — Sessions that never committed.** A crash during the very first turn
+finds the store empty and falls back to fresh-session replay — W1 with
+nothing to hydrate. Today's lossy path survives only here, confined to
+turn #1.
+
+**W4 — Store unavailable at commit time.** The commit retries with the turn;
+a prolonged store outage fails turns loudly rather than accumulating
+silently undurable state. Deliberate trade: the store joins the CMS on the
+critical path.
+
+Gone entirely, relative to §2.7: loss of committed turns on crash (G1),
+fresh replays despite existing snapshots (G2), and silent stale resumes
+(G4).
+
+### 3.8 Graceful drain
+
+Today's shutdown is gap G7: `stop()` gives in-flight turns 5 s, then aborts
+them, and never releases sessions. The replacement sequence, on SIGTERM from
+the platform (AKS pod termination, scale-down, node maintenance):
+
+```
+1. Stop fetching     runtime.shutdown(drainBudgetMs) sets duroxide's
+                     shutdown flag; dispatch slots finish their current
+                     item and claim nothing new.
+2. Finish in-flight  Running turns run to completion; their atomic
+                     commits land as part of the activity (§3.2).
+3. Release           For each warm session: verify sha (elide the no-op
+                     write — every completed turn is already committed, so
+                     this is deletes only), destroy in-memory, delete
+                     local dir.
+4. Exit              Anything still leased lapses within ≤30 s.
+```
+
+Wiring: the container entrypoint's SIGTERM handler switches from `stop()` to
+`gracefulShutdown()`, whose dehydrate-everything body becomes
+release-everything under P4; `PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS` becomes
+the drain budget, sized to the longest turn worth waiting for (suggest
+600 s); `terminationGracePeriodSeconds` on the worker Deployment must exceed
+it (k8s default is 30 s — today the platform kills the pod long before a
+long turn could finish even if the app waited).
+
+If the budget expires, duroxide aborts the stragglers — crash semantics,
+which under this protocol are lossless for every committed turn; the aborted
+turn itself is W1. **Graceful drain is therefore a latency and
+side-effect-duplication optimization, not a correctness requirement** — the
+safety story never depends on the platform honoring its grace period.
+
+Upstream nicety (duroxide): `runtime.shutdown()` sleeps the full timeout
+before aborting leftovers instead of returning as soon as in-flight work
+completes; early-exit would shave minutes off rollouts but changes nothing
+semantically.
+
+### 3.9 Delta summary
 
 | Event | Today (1.0.56) | New |
 |---|---|---|
-| Turn completes | Nothing durable (`checkpointInterval = -1`) | CAS checkpoint — one write |
+| Turn completes | Nothing durable (`checkpointInterval = -1`) | Atomic in-activity commit — one CAS write |
 | Wait ≤ 29 s | Live | Live (unchanged) |
 | Wait 29 s – 30 min | Dehydrate + rotate; hydrate on fire | Hold: zero store I/O |
 | Interactive lull | Dehydrate 60 s after last turn | Hold up to 30 min, then release (no upload) |
-| Worker crash | Lossy fresh replay | Hydrate last turn commit — lossless |
-| Deploy | Mass dehydrate/hydrate churn + some lossy handoffs | ≤30 s reclaim + hydrate on demand |
+| Worker crash | Lossy fresh replay | Hydrate last turn commit — lossless (W1: side effects at-least-once) |
+| In-flight turn at deploy | Aborted after 5 s → lossy | Runs to completion within drain budget |
+| Deploy | Mass dehydrate/hydrate churn + lossy handoffs | Drain: commit + release; stragglers ≤30 s reclaim |
 | `wait_on_worker` > 5 min | Silent affinity loss (G3) | Real hold ≤ 30 min via raised idle timeout |
 | Stale local files | Silently resumed (G4) | Version mismatch → hydrate forward |
+| Dirty files after mid-turn crash | Silently resumed | Turn sentinel → hydrate clean |
 
 I/O envelope for the waldemort watcher fleet: today ~3.7 GB/day of ingress
 from three active watchers; under the new protocol, one compressed write per
 turn (~0.5 MB × ~300 turns/day ≈ **150 MB/day**) and near-zero reads. The PG
 store's phase-1 numbers assume exactly this write pattern.
 
-### 3.8 Configuration
+### 3.10 Configuration
 
 | Knob | Layer | Today | New |
 |---|---|---|---|
 | `dehydrateThreshold` | orchestration input | 29 s | Kept as the tier-1/tier-2 boundary (wait mechanics only; no storage meaning) |
 | `idleTimeout` | orchestration input | 60 s | Becomes `holdWindow`; default 1800 s; reset on any session activity |
-| `checkpointInterval` | orchestration input | -1 (off) | Retired — checkpoint is the turn commit |
+| `checkpointInterval` | orchestration input | -1 (off) | Retired — the commit lives inside `runTurn` |
 | `sessionIdleTimeoutMs` | duroxide runtime | 300 000 | `holdWindow` + margin (e.g. 2 100 000) |
 | `maxSessionsPerRuntime` | duroxide runtime | 10 | Sized to memory (~50, telemetry-tuned) |
 | session lock timeout | duroxide (fixed) | 30 s | Unchanged — the crash-reclaim bound |
+| `PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS` | worker env | 5 000 | Drain budget (e.g. 600 000) |
+| `terminationGracePeriodSeconds` | k8s worker Deployment | unset (30 s) | Drain budget + margin |
+| SIGTERM handler | container entrypoint | `stop()` — aborts in-flight | `gracefulShutdown()` — drain (§3.8) |
 
-### 3.9 Rollout
+### 3.11 Rollout
 
 1. **Store first.** Version/CAS contract ships in the store layer
    (blob: metadata + ETag CAS; PG: native). Legacy version-less writes
    (from 1.0.56 executions' dehydrates) are accepted as unconditional
    writes that bump the version — old and new writers coexist.
-2. **Workers next.** Activity-side self-validation and marker handling are
+2. **Workers next.** Activity-side self-validation, sentinel/marker
+   handling, and the drain entrypoint switch (§3.8) are
    orchestration-version-agnostic; a worker that receives no
    `expectedSnapshotVersion` behaves exactly as today.
 3. **Orchestration last**, as **1.0.57** in the versioned registry. Running
    executions keep 1.0.56 semantics until they complete; new sessions get
    the new protocol. No migration step, no coordination window.
 
-### 3.10 Open questions
+### 3.12 Open questions
 
-- **Whale checkpoints.** A 150 MB session dir makes the per-turn checkpoint
+- **Whale commits.** A 150 MB session dir makes the per-turn commit
   expensive; answers are tar excludes (audit what bloats those workspaces)
-  and the store's phase-2 CDC chunking, which turns each checkpoint into a
+  and the store's phase-2 CDC chunking, which turns each commit into a
   delta. The protocol is unchanged either way.
-- **Checkpoint/next-turn overlap.** The session manager already serializes
-  per-session operations (`_withSessionLock`); a queued user message arriving
-  during checkpoint waits ≤ the checkpoint duration (~140 ms measured).
-  If that ever matters, the checkpoint tar can be snapshotted synchronously
-  and uploaded async — at the cost of a small durability window; not
-  proposed initially.
+- **`resultMeta` size.** Turn results can be large (long assistant replies);
+  the store's meta column needs a cap, with the retry path falling back to a
+  synthetic "turn was committed by a prior attempt" result when truncated —
+  or results stay out of the store entirely and the retry path re-delivers
+  only status, not content. Needs a decision at implementation time.
+- **Drain budget vs. very long turns.** Turns can exceed any reasonable
+  grace period. Draining doesn't need to wait for all of them (an aborted
+  turn is W1 — safe, just duplicated side effects on retry); the budget
+  choice is purely how much side-effect duplication vs. deploy speed to
+  trade.
 - **Hold-window sizing.** 30 min is a guess balancing worker memory against
   hydrate frequency; `session.hydrated` event rates before/after will show
   whether it should be per-agent (watchers vs interactive) rather than
