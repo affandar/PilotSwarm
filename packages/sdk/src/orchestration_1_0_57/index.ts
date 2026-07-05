@@ -9,7 +9,7 @@
  * Module layout:
  *   - state.ts     types, constants, createInitialState
  *   - utils.ts     pure helpers (prompt parsing, context usage, error checks)
- *   - lifecycle.ts status, releaseAffinity, commands, child digest, CAN
+ *   - lifecycle.ts status, persistence, commands, dehydrate, child digest, CAN
  *   - queue.ts     KV FIFO, drain, decide
  *   - turn.ts      processPrompt, handleTurnResult, processTimer
  *   - agents.ts    sub-agent tracking, tool actions, shutdown cascade
@@ -23,7 +23,7 @@ import { DURABLE_SESSION_LATEST_VERSION } from "../orchestration-version.js";
 
 export { CURRENT_ORCHESTRATION_VERSION };
 
-export function* durableSessionOrchestration_1_0_58(
+export function* durableSessionOrchestration_1_0_57(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {
