@@ -650,3 +650,119 @@ store's phase-1 numbers assume exactly this write pattern.
   hydrate frequency; `session.hydrated` event rates before/after will show
   whether it should be per-agent (watchers vs interactive) rather than
   global.
+
+---
+
+## 4. Test plan
+
+The protocol's correctness claims are mostly claims about *crash timing*,
+which wall-clock tests cannot hit reliably. The plan therefore centers on
+**named fault points**: a tiny helper (`await faultPoint("c2.after-cas")`)
+compiled into the activity code at every protocol boundary, a no-op unless
+`PILOTSWARM_FAULT_INJECT` names it — in which case it kills the process
+(`process.exit(137)`) or stalls (`SIGSTOP`-equivalent delay) at exactly that
+point. Faults are deterministic code locations, never sleeps.
+
+### 4.1 Store contract conformance (unit, per backend)
+
+One reusable suite run against `PgSessionStateStore`, the Azure provider,
+and `FilesystemSessionStore` — the contract is the protocol's foundation
+and all three must agree:
+
+- Create → version 1; commit at `expectedVersion` → exactly +1; version
+  sequence gap-free and monotonic.
+- CAS mismatch with a foreign turnKey → loud failure carrying the stored
+  `{version, turnKey}`.
+- Commit retry with own turnKey at expected + 1 → idempotent success
+  returning the stored `resultMeta`.
+- `hydrate({localVersion})` equal → `warm` with zero body transfer
+  (instrumented); behind → `hydrated` with byte-exact content (sha).
+- Empty store → `empty`; legacy version-less write → unconditional +
+  version bump.
+- **Race:** N concurrent commits at the same `expectedVersion` → exactly
+  one winner; every loser sees the winner's `{version, turnKey}`. (PG:
+  parallel transactions; blob: interleaved HEAD/PUT with forced 412
+  retries.)
+- `resultMeta` over the size cap → truncation fallback, blob's ~8 KB
+  metadata bound included.
+
+### 4.2 Activity preamble/postamble (in-process, stubbed body)
+
+`runTurn` wrapper against a real session dir + real store, with the LLM
+body replaced by a scripted mutation — asserting each §3.2/§3.3 rule:
+
+- Warm start: marker match, no sentinel → zero store calls, body runs.
+- Marker mismatch/missing → hydrate exact version, then body.
+- Sentinel present, store at expected → local discarded, clean hydrate,
+  body re-runs (W1).
+- Sentinel present, store at expected + 1 with own turnKey →
+  already-committed recovery: **body provably not invoked**, result equals
+  stored, dir ends at v+1 with sentinel cleared.
+- Hydrate atomicity: fault mid-unpack → real dir untouched or absent,
+  never half-written; retry succeeds.
+- Sentinel ordering: created after preamble, removed only after c3.
+
+### 4.3 Orchestration 1.0.57 (deterministic replay)
+
+- Wait tiers: ≤29 s live; 29 s–holdWindow → GUID unchanged, no activity
+  scheduled, `needsHydration` never set; >holdWindow → rotation and
+  nothing else.
+- Idle timer resets on prompt within the window (existing cancel machinery).
+- `snapshotVersion` threading: recorded from each turn's result, present in
+  the next turn's input, stable under history replay.
+- Mixed registry: a 1.0.56 execution replays to completion unchanged
+  alongside 1.0.57 sessions.
+
+### 4.4 Failure injection (crash matrix)
+
+Harness: local starter compose with **two workers** (distinct
+`workerNodeId`), scripted prompts, faults armed per turn. After every
+scenario the same oracle runs:
+
+- **I1** — store version sequence gap-free; final content sha matches a
+  reference replay.
+- **I2** — zero `session.lossy_handoff` events while the store is
+  non-empty.
+- **I3** — every user prompt answered exactly once in CMS (turnKey/seq
+  dedup holds).
+- **I4** — no session dir ever both sentinel-free and behind the store's
+  committed sha at rest.
+- **I5** — the session converges: next prompt after recovery produces a
+  normal turn.
+
+| Fault | Point | Expected recovery |
+|---|---|---|
+| F1 | mid-body (crashing stub tool) | retry re-executes on clean v_N−1; same worker must take sentinel path |
+| F2 | after tar, before CAS (c1→c2) | identical to F1 — nothing committed |
+| F3 | after CAS, before marker (c2→c3) | already-committed recovery; LLM not invoked |
+| F4 | after marker, before sentinel clear (c3→c4) | same as F3 (sentinel forces distrust, store says committed) |
+| F5 | after c5, before duroxide records completion (kill on ack) | duroxide retries; already-committed recovery |
+| F6 | mid-hydrate unpack | atomic rename holds; retry hydrates |
+| F7 | SIGTERM with drain budget < turn length | turn aborted → F1 semantics post-deploy |
+| F8 | SIGSTOP > lock timeout mid-turn, then resume | second worker claims retry, both bodies race, CAS arbitrates; loser adopts winner's result |
+
+Plus a **chaos soak**: N-turn conversation, one random fault point armed
+per turn, both workers eligible — oracle after every turn. This is the test
+that earns the "lossless" claim.
+
+### 4.5 Multi-worker lifecycle scenarios
+
+- Warm affinity: turn on A → tier-2 wait → wake lands on A with zero
+  hydrates (trace-asserted).
+- Migration: kill A mid-hold → next turn on B at the committed version, no
+  lossy event.
+- Stale worker (G4): freeze A holding v5 files, advance to v9 via B, route
+  the key back to A → A hydrates forward, never resumes v5.
+- Hold-window expiry → rotation → next turn hydrates wherever placed.
+- Eviction under pressure (tiny eviction clock) → invisible to the
+  orchestration, next turn hydrates.
+- Rolling deploy of a mixed 1.0.56/1.0.57 fleet: legacy dehydrates
+  interleave with commits, version stays monotonic, zero lossy events.
+
+### 4.6 Regression gates
+
+- Commit overhead p50/p95 vs the 140 ms baseline (23.6 MB dir, PG).
+- Watcher steady state: exactly one store write per cycle, zero reads.
+- `session.hydrated` event rate drops to migration-only.
+- A full rollout produces zero `session.lossy_handoff` events (today's
+  rollout days produce them routinely — this is the headline gate).
