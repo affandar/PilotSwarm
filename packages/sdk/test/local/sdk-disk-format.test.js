@@ -13,7 +13,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { withClient } from "../helpers/local-workers.js";
-import { ONEWORD_CONFIG } from "../helpers/fixtures.js";
+import { ONEWORD_CONFIG, resolveSnapshotTarPath } from "../helpers/fixtures.js";
 import { assert, assertEqual } from "../helpers/assertions.js";
 
 const TIMEOUT = 180_000;
@@ -80,7 +80,9 @@ async function testNoStaleLockAfterArchive(env) {
         await worker.gracefulShutdown();
     }
 
-    const archivePath = join(env.baseDir, "session-store", `${sessionId}.tar.gz`);
+    // Lifecycle protocol: turns commit version-named tars referenced by
+    // meta.json; resolve the current snapshot instead of the legacy name.
+    const archivePath = resolveSnapshotTarPath(join(env.baseDir, "session-store"), sessionId);
     assert(existsSync(archivePath), `Expected dehydrate archive at ${archivePath}`);
 
     const { execSync } = await import("node:child_process");

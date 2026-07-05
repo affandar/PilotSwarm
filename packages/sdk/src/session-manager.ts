@@ -14,6 +14,7 @@ import { buildKnowledgePromptBlocks, loadKnowledgeIndexFromFactStore, buildEnhan
 import { composeStructuredSystemMessage, extractPromptContent, mergePromptSections } from "./prompt-layering.js";
 import { buildPromptLayersEventPayload, type PromptLayerDescriptor } from "./prompt-layers.js";
 import { approvePermissionForSession } from "./permissions.js";
+import { readSnapshotMarker, supportsVersionedSnapshots } from "./snapshot-protocol.js";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -197,6 +198,8 @@ export class SessionManager {
     private _getLineageSessionIds: ((sessionId: string) => Promise<string[]>) | null = null;
     /** Per-session critical sections; protects the SDK session handle and local session.db. */
     private sessionLocks = new Map<string, Promise<void>>();
+    /** Last local activity per session — feeds the autonomous eviction clock. */
+    private sessionLastTouchedAt = new Map<string, number>();
 
     constructor(
         private githubToken?: string,
@@ -535,7 +538,108 @@ export class SessionManager {
         fn: () => Promise<T>,
         options?: { trace?: SessionTraceWriter },
     ): Promise<T> {
-        return this._withSessionLock(sessionId, operation, fn, options);
+        this.sessionLastTouchedAt.set(sessionId, Date.now());
+        try {
+            return await this._withSessionLock(sessionId, operation, fn, options);
+        } finally {
+            this.sessionLastTouchedAt.set(sessionId, Date.now());
+        }
+    }
+
+    /**
+     * Autonomous eviction sweep (lifecycle protocol §3.4): local session
+     * state is a cache. A session idle past `evictAfterMs` is reclaimed
+     * without telling anyone — sessions with a committed snapshot marker
+     * are simply destroyed + deleted (the store already holds their state;
+     * the next runTurn self-validates and hydrates); unmarked (legacy)
+     * sessions are dehydrated the old way so their only copy is preserved.
+     * Returns the number of sessions reclaimed.
+     */
+    async sweepIdleSessions(evictAfterMs: number): Promise<number> {
+        if (!(evictAfterMs > 0)) return 0;
+        const now = Date.now();
+        // Only sessions THIS manager has actually served since boot are
+        // eviction candidates. Stranger dirs on disk (leftovers from a
+        // previous container life, or another embedded worker sharing the
+        // sessionStateDir) must never be pushed to the store — a stale dir
+        // dehydrated over a newer snapshot silently rolls the session back.
+        const candidates = new Set<string>([
+            ...this.sessions.keys(),
+            ...this.sessionLastTouchedAt.keys(),
+        ]);
+
+        let reclaimed = 0;
+        for (const sessionId of candidates) {
+            if (this.sessionLocks.has(sessionId)) continue; // busy — never race a turn
+            const sessionDir = path.join(this.sessionStateDir, sessionId);
+            const lastTouched = this.sessionLastTouchedAt.get(sessionId);
+            if (lastTouched == null || now - lastTouched < evictAfterMs) continue;
+
+            try {
+                await this._withSessionLock(sessionId, "eviction", async () => {
+                    // Re-check under the lock — a turn may have landed.
+                    const touched = this.sessionLastTouchedAt.get(sessionId);
+                    if (touched != null && Date.now() - touched < evictAfterMs) return;
+                    const dirExists = fs.existsSync(sessionDir);
+                    const committedMarker = dirExists ? readSnapshotMarker(sessionDir) : null;
+                    const existing = this.sessions.get(sessionId);
+                    if (existing) {
+                        try { await existing.destroy(); } catch {}
+                        this.sessions.delete(sessionId);
+                    }
+                    if (!dirExists) {
+                        this.sessionLastTouchedAt.delete(sessionId);
+                        reclaimed++;
+                        return;
+                    }
+                    if (committedMarker) {
+                        // Committed snapshot in the store — pure local delete.
+                        fs.rmSync(sessionDir, { recursive: true, force: true });
+                        emitSessionManagerTrace(sessionId, `evicted (committed at v${committedMarker.version}); local cache reclaimed`);
+                    } else if (this.sessionStore) {
+                        // Unmarked dir. If the store already holds a VERSIONED
+                        // chain for this session, the local files are a stale
+                        // cache at best — reclaim without writing (a legacy
+                        // dehydrate would destroy the CAS metadata and could
+                        // roll the session back).
+                        const versioned = supportsVersionedSnapshots(this.sessionStore)
+                            ? await this.sessionStore.probeSnapshot(sessionId).catch(() => null)
+                            : null;
+                        if (versioned?.exists && !versioned.legacy) {
+                            fs.rmSync(sessionDir, { recursive: true, force: true });
+                            emitSessionManagerTrace(sessionId, `evicted (store versioned at v${versioned.version}); stale unmarked cache reclaimed`);
+                        } else {
+                            // Legacy session: its local files may be the only copy.
+                            await this._dehydrateUnlocked(sessionId, "eviction");
+                            emitSessionManagerTrace(sessionId, "evicted via legacy dehydrate (no committed marker)");
+                        }
+                    } else {
+                        return; // no store — leave local state alone
+                    }
+                    this.sessionLastTouchedAt.delete(sessionId);
+                    this.sessionClientKeys.delete(sessionId);
+                    reclaimed++;
+                });
+            } catch (error: unknown) {
+                const message = error instanceof Error ? error.message : String(error);
+                console.warn(`[SessionManager] eviction sweep skipped ${sessionId}: ${message}`);
+            }
+        }
+
+        // Reap crash-orphaned hydrate temp roots (finally blocks don't run
+        // on SIGKILL). They are dot-prefixed and never legitimate sessions.
+        try {
+            for (const entry of fs.readdirSync(this.sessionStateDir, { withFileTypes: true })) {
+                if (!entry.isDirectory() || !entry.name.startsWith(".ps-hydrate-")) continue;
+                const orphan = path.join(this.sessionStateDir, entry.name);
+                try {
+                    if (now - fs.statSync(orphan).mtimeMs > 3_600_000) {
+                        fs.rmSync(orphan, { recursive: true, force: true });
+                    }
+                } catch {}
+            }
+        } catch {}
+        return reclaimed;
     }
 
     /**
@@ -633,6 +737,7 @@ export class SessionManager {
         serializableConfig: SerializableSessionConfig,
         options?: { turnIndex?: number; trace?: SessionTraceWriter; lockHeld?: boolean },
     ): Promise<ManagedSession> {
+        this.sessionLastTouchedAt.set(sessionId, Date.now());
         const turnIndex = options?.turnIndex;
         const trace = options?.trace;
         const inheritedToolNames = Array.from(new Set([
@@ -992,6 +1097,24 @@ export class SessionManager {
     /** Get a session by ID (null if not in memory on this node). */
     get(sessionId: string): ManagedSession | null {
         return this.sessions.get(sessionId) ?? null;
+    }
+
+    /** Root directory holding per-session state dirs. */
+    getSessionStateDir(): string {
+        return this.sessionStateDir;
+    }
+
+    /**
+     * Destroy the in-memory ManagedSession only — disk state untouched.
+     * Used by the lifecycle preamble before overwriting local files with a
+     * hydrated snapshot (a warm session bound to the old files must not
+     * survive the swap). Caller holds the per-session run-turn lock.
+     */
+    async dropWarmSession(sessionId: string): Promise<void> {
+        const existing = this.sessions.get(sessionId);
+        if (!existing) return;
+        try { await existing.destroy(); } catch {}
+        this.sessions.delete(sessionId);
     }
 
     /**

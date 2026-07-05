@@ -53,13 +53,6 @@ export interface DurableSessionState {
     retryCount: number;
 
     needsHydration: boolean;
-    /**
-     * Session lifecycle protocol: last committed snapshot-store version,
-     * recorded from each runTurn result. 0 = no commit recorded yet.
-     * Threaded through continue-as-new; the next turn's activity input
-     * carries it as `snapshot.expectedVersion` for worker self-validation.
-     */
-    snapshotVersion: number;
     preserveAffinityOnHydrate: boolean;
     blobEnabled: boolean;
     lastLiveSessionAction: "session-activity" | "dehydrate";
@@ -194,7 +187,6 @@ export function createInitialState(input: OrchestrationInput, options: DurableSe
         retryCount: input.retryCount ?? 0,
 
         needsHydration: input.needsHydration ?? false,
-        snapshotVersion: input.snapshotVersion ?? 0,
         preserveAffinityOnHydrate: input.preserveAffinityOnHydrate ?? false,
         blobEnabled: input.blobEnabled ?? false,
         lastLiveSessionAction: "session-activity",
@@ -241,15 +233,7 @@ export function createInitialState(input: OrchestrationInput, options: DurableSe
 export function deriveOptions(input: OrchestrationInput): DurableSessionOptions {
     return {
         dehydrateThreshold: input.dehydrateThreshold ?? 29,
-        // Lifecycle protocol: the idle timer is the affinity HOLD WINDOW —
-        // its fire releases the worker (GUID rotation), it no longer
-        // dehydrates. 30 minutes, not 60 seconds. Legacy executions CAN in
-        // with an explicit 60 (the old system default, threaded through
-        // every historical CAN input) — treat that sentinel as unset so
-        // migrated sessions actually get the hold window.
-        idleTimeout: input.idleTimeout == null || input.idleTimeout === 60
-            ? 1_800
-            : input.idleTimeout,
+        idleTimeout: input.idleTimeout ?? 60,
         inputGracePeriod: input.inputGracePeriod ?? 30,
         checkpointInterval: input.checkpointInterval ?? -1,
         isSystem: input.isSystem ?? false,

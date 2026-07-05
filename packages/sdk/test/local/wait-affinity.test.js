@@ -53,6 +53,10 @@ async function testLongWaitRotatesAffinity(env) {
             client: {
                 waitThreshold: 0,
                 dehydrateThreshold: 0,
+                // Lifecycle protocol: rotation happens only for waits PAST
+                // the hold window. Shrink the window to 2s so the 5s wait
+                // releases affinity, preserving this test's intent.
+                dehydrateOnIdle: 2,
             },
         }, async (client) => {
             const session = await client.createSession({
@@ -77,7 +81,7 @@ async function testLongWaitRotatesAffinity(env) {
             const waiting = await waitForSessionStatus(mgmt, session.sessionId, "waiting");
             assert(
                 waiting.customStatus?.preserveWorkerAffinity !== true,
-                "default long wait should not request preserveWorkerAffinity",
+                "lifecycle protocol: waits past the hold window release worker affinity",
             );
 
             const response = await session.wait(TIMEOUT);

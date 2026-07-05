@@ -38,7 +38,18 @@ type QueuedTurnActionCarrier = {
     queuedActions?: TurnAction[];
 };
 
-export type TurnResult =
+/**
+ * Session lifecycle protocol (1.0.57+): the runTurn activity commits the
+ * post-turn snapshot inside the activity and reports the new store version
+ * on its result. Older orchestration versions ignore the field.
+ */
+type SnapshotCommitCarrier = {
+    snapshotVersion?: number;
+};
+
+export type TurnResult = TurnResultVariant & SnapshotCommitCarrier;
+
+type TurnResultVariant =
     | ({ type: "completed"; content: string; forceContinuePrompt?: string; events?: CapturedEvent[]; cycleReport?: CycleReport } & QueuedTurnActionCarrier)
     | ({ type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; content?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron"; action: "set"; intervalSeconds: number; reason: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
@@ -383,6 +394,12 @@ export interface OrchestrationInput {
     dehydrateThreshold?: number;
     idleTimeout?: number;
     inputGracePeriod?: number;
+    /**
+     * Session lifecycle protocol (1.0.57+): last committed snapshot-store
+     * version, recorded from each runTurn result and threaded through
+     * continue-as-new. 0 = no commit recorded yet.
+     */
+    snapshotVersion?: number;
     /** Timestamp (ms) when the next title summarization should fire. 0 = not yet scheduled. */
     nextSummarizeAt?: number;
     /** How many consecutive retries have been attempted for the current prompt. */

@@ -19,7 +19,7 @@ import {
     createCatalog,
     validateSessionAfterTurn,
 } from "../helpers/cms-helpers.js";
-import { ONEWORD_CONFIG } from "../helpers/fixtures.js";
+import { ONEWORD_CONFIG, resolveSnapshotTarPath } from "../helpers/fixtures.js";
 import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
@@ -114,7 +114,9 @@ async function testDeletedLocalStateRecoveredFromStore(env) {
     }
 
     const archiveDir = join(env.sessionStateDir, "..", "session-store");
-    const archivePath = join(archiveDir, `${sessionId}.tar.gz`);
+    // Lifecycle protocol: turns commit version-named tars referenced by
+    // meta.json; resolve the current snapshot instead of the legacy name.
+    const archivePath = resolveSnapshotTarPath(archiveDir, sessionId);
     assert(existsSync(archivePath), "Session archive should exist before deleting local files");
 
     const sessionDir = join(env.sessionStateDir, sessionId);

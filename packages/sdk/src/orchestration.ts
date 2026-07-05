@@ -26,10 +26,10 @@ export const CURRENT_ORCHESTRATION_VERSION = DURABLE_SESSION_LATEST_VERSION;
  * retryCount <= COPILOT_CONNECTION_CLOSED_MAX_RETRIES
  * yield ctx.scheduleTimer(COPILOT_CONNECTION_CLOSED_RETRY_DELAY_SECONDS * 1000);
  * eventType: "session.lossy_handoff"
- * yield* dehydrateForNextTurn("lossy_handoff", true, {
+ * yield* releaseAffinity(runtime, "lossy_handoff", {
  *
- * const cronPlan = planWaitHandling({
- * yield* dehydrateForNextTurn("cron", cronPlan.resetAffinityOnDehydrate);
+ * const cronPlan = planHoldRelease({
+ * yield* releaseAffinity(runtime, "cron");
  * [orch] cron timer:
  *
  * [SUB-AGENT CONTEXT]
@@ -42,5 +42,5 @@ export const CURRENT_ORCHESTRATION_VERSION = DURABLE_SESSION_LATEST_VERSION;
  */
 
 export {
-    durableSessionOrchestration_1_0_56,
+    durableSessionOrchestration_1_0_57,
 } from "./orchestration/index.js";

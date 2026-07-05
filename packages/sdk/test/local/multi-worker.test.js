@@ -108,10 +108,14 @@ async function testSessionSurvivesGracefulRestart(env) {
 
     console.log("  Worker A gracefully shut down. Starting Worker B...");
 
+    // Lifecycle protocol: turns commit version-named tars (<id>.v<N>.tar.gz)
+    // referenced by meta.json, and graceful shutdown releases committed
+    // sessions without touching the store — resolve through the store's own
+    // exists() instead of hard-coding the legacy tar filename.
     const archiveDir = join(dirname(env.sessionStateDir), "session-store");
-    const archivePath = join(archiveDir, `${savedId}.tar.gz`);
-    console.log(`  Checking session archive: ${archivePath}`);
-    assert(existsSync(archivePath), "Expected filesystem session archive after Worker A stop");
+    const probeStore = new FilesystemSessionStore(archiveDir, env.sessionStateDir);
+    console.log(`  Checking session snapshot exists in: ${archiveDir}`);
+    assert(await probeStore.exists(savedId), "Expected a durable session snapshot after Worker A stop");
 
     // Phase 2: Start worker B, resume session, run another turn
     // Filesystem-backed session rehydration should preserve the Copilot session's

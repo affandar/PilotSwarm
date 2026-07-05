@@ -311,8 +311,11 @@ describe("orchestration warm resume durability", () => {
         }
 
         expect(blockedOnAnswerDequeue).toBe(true);
-        expect(mockSession.dehydrate).toHaveBeenCalledTimes(1);
-        expect(mockSession.dehydrate).toHaveBeenCalledWith("input_required", undefined);
+        // Lifecycle protocol (1.0.57): input_required is a HOLD, not a
+        // dehydrate — the session stays warm inside the hold window and the
+        // orchestration simply waits for the answer. No dehydrate activity
+        // may be scheduled on this path.
+        expect(mockSession.dehydrate).not.toHaveBeenCalled();
     });
 
 });

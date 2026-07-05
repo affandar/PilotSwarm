@@ -1,7 +1,7 @@
 import type { OrchestrationInput, TurnResult } from "../types.js";
 import { SESSION_STATE_MISSING_PREFIX, stopTurnQueueName } from "../types.js";
 import { createSessionProxy } from "../session-proxy.js";
-import { planHoldRelease } from "../wait-affinity.js";
+import { planWaitHandling } from "../wait-affinity.js";
 import {
     buildShutdownWaitReason,
     failPendingShutdown,
@@ -16,11 +16,12 @@ import {
     applyCronAction,
     continueInput,
     continueInputWithPrompt,
+    dehydrateForNextTurn,
     drainLeadingQueuedScheduleActions,
     ensureTaskContext,
+    maybeCheckpoint,
     maybeSummarize,
     publishStatus,
-    releaseAffinity,
     versionedContinueAsNew,
     wrapWithResumeContext,
     writeCommandResponse,
@@ -114,12 +115,8 @@ function* handleConnectionClosedRetry(
             `[orch] live Copilot connection lost; retrying in ${COPILOT_CONNECTION_CLOSED_RETRY_DELAY_SECONDS}s`,
         );
 
-        // Lifecycle protocol: nothing to dehydrate — the last commit is the
-        // durable truth. Release affinity so the retry can land anywhere;
-        // the retry's preamble hydrates clean from the committed snapshot
-        // (the broken warm session is detected via the turn sentinel).
         if (state.blobEnabled) {
-            yield* releaseAffinity(runtime, "error", {
+            yield* dehydrateForNextTurn(runtime, "error", true, {
                 detail: retryDetail,
                 error: errorMessage,
                 phase: rc.phase,
@@ -149,22 +146,23 @@ function* handleConnectionClosedRetry(
             phase: rc.phase,
             retries: COPILOT_CONNECTION_CLOSED_MAX_RETRIES,
             retryDelaySeconds: COPILOT_CONNECTION_CLOSED_RETRY_DELAY_SECONDS,
-            nextStep: "release_affinity_and_resume_on_any_worker",
+            nextStep: "dehydrate_and_resume_on_new_worker",
         },
     }]);
 
     if (state.blobEnabled) {
-        yield* releaseAffinity(runtime, "lossy_handoff", {
+        yield* dehydrateForNextTurn(runtime, "lossy_handoff", true, {
             detail: handoffMessage,
             error: errorMessage,
             phase: rc.phase,
             retries: COPILOT_CONNECTION_CLOSED_MAX_RETRIES,
             retryDelaySeconds: COPILOT_CONNECTION_CLOSED_RETRY_DELAY_SECONDS,
-            nextStep: "release_affinity_and_resume_on_any_worker",
+            nextStep: "dehydrate_and_resume_on_new_worker",
         });
         yield* versionedContinueAsNew(runtime, continueInput(runtime, {
             ...retryContinueOverrides(state, rc),
             retryCount: 0,
+            needsHydration: true,
             rehydrationMessage: buildLossyHandoffRehydrationMessage(errorMessage),
         }));
         return;
@@ -184,7 +182,7 @@ function retryContinueOverrides(state: DurableSessionRuntime["state"], rc: Retry
             prompt: rc.sourcePrompt,
             ...(rc.cycleOrigin ? { cycleOrigin: rc.cycleOrigin } : {}),
             retryCount: state.retryCount,
-            needsHydration: state.needsHydration,
+            needsHydration: state.blobEnabled ? true : state.needsHydration,
         };
     }
     return {
@@ -193,7 +191,7 @@ function retryContinueOverrides(state: DurableSessionRuntime["state"], rc: Retry
         ...(rc.turnSystemPrompt ? { systemPrompt: rc.turnSystemPrompt } : {}),
         ...(rc.cycleOrigin ? { cycleOrigin: rc.cycleOrigin } : {}),
         retryCount: state.retryCount,
-        needsHydration: state.needsHydration,
+        needsHydration: state.blobEnabled ? true : state.needsHydration,
     };
 }
 
@@ -220,7 +218,7 @@ function* handleGenericRetry(
     runtime.ctx.traceInfo(`[orch] retrying in ${retryDelay}s${rc.phase === "turn.result.error" ? " after turn error" : ""}`);
 
     if (state.blobEnabled) {
-        yield* releaseAffinity(runtime, "error", {
+        yield* dehydrateForNextTurn(runtime, "error", true, {
             detail: errorMessage,
             error: errorMessage,
             phase: rc.phase,
@@ -342,11 +340,6 @@ export function* processPrompt(
         // work item (lock-steal → isCancelled poll → SDK abort) as the
         // guaranteed backstop; handleTurnStopped layers the fast-path
         // same-affinity abortTurn on top.
-        // Lifecycle protocol: a deterministic per-turn key (recorded GUID)
-        // rides in the activity input with the last committed version. The
-        // worker self-validates against them (preamble) and commits the
-        // post-turn snapshot inside the activity, returning the new version.
-        const snapshotTurnKey: string = state.blobEnabled ? yield ctx.newGuid() : "";
         const turnTask = runtime.session.runTurn(prompt, promptIsBootstrap, state.iteration, {
             ...(runtime.options.parentSessionId ? { parentSessionId: runtime.options.parentSessionId } : {}),
             nestingLevel: runtime.options.nestingLevel,
@@ -354,9 +347,6 @@ export function* processPrompt(
             ...(cycleOrigin ? { cycleOrigin } : {}),
             retryCount: state.retryCount,
             ...(clientMessageIds && clientMessageIds.length > 0 ? { clientMessageIds } : {}),
-            ...(snapshotTurnKey
-                ? { snapshot: { expectedVersion: state.snapshotVersion, turnKey: snapshotTurnKey } }
-                : {}),
         });
         const stopTask = ctx.dequeueEvent(stopTurnQueueName(state.iteration));
         const race: any = yield ctx.race(turnTask, stopTask);
@@ -423,12 +413,6 @@ export function* processPrompt(
     state.retryCount = 0;
 
     let result: TurnResult = typeof turnResult === "string" ? JSON.parse(turnResult) : turnResult;
-    // Lifecycle protocol: adopt the version the activity committed. The
-    // returned value is authoritative even when it disagrees with the
-    // expectation (self-healing after a store restore).
-    if (typeof (result as any)?.snapshotVersion === "number") {
-        state.snapshotVersion = (result as any).snapshotVersion;
-    }
     const observedAt: number = yield ctx.utcNow();
     state.contextUsage = updateContextUsageFromEvents(state.contextUsage, (result as any)?.events, observedAt);
     const failedModelSwitchContinuePrompt = captureFailedModelSwitchNotice(runtime, result);
@@ -573,16 +557,8 @@ function* schedulePostTurnContinuation(runtime: DurableSessionRuntime): Generato
         state.interruptedWaitTimer = null;
         ctx.traceInfo(`[orch] auto-resuming interrupted wait: ${saved.remainingSec}s (${saved.reason})`);
 
-        // Lifecycle protocol: state is durable from the turn commit — the
-        // wait only decides hold (keep GUID, worker stays warm) vs release
-        // (rotate GUID, wake-up hydrates anywhere).
-        const resumeWaitPlan = planHoldRelease({
-            blobEnabled: state.blobEnabled,
-            seconds: saved.remainingSec,
-            holdWindowSeconds: options.idleTimeout,
-        });
-        if (resumeWaitPlan.shouldRelease) {
-            yield* releaseAffinity(runtime, "timer");
+        if (saved.shouldRehydrate) {
+            yield* dehydrateForNextTurn(runtime, "timer", saved.waitPlan?.resetAffinityOnDehydrate ?? true);
         }
 
         const resumeNow: number = yield ctx.utcNow();
@@ -592,11 +568,15 @@ function* schedulePostTurnContinuation(runtime: DurableSessionRuntime): Generato
             waitStartedAt: resumeNow,
         });
 
+        if (!saved.shouldRehydrate) yield* maybeCheckpoint(runtime);
+
         state.activeTimer = {
             deadlineMs: resumeNow + saved.remainingSec * 1000,
             originalDurationMs: saved.remainingSec * 1000,
             reason: saved.reason,
             type: "wait",
+            shouldRehydrate: saved.shouldRehydrate,
+            waitPlan: saved.waitPlan,
         };
         return;
     }
@@ -608,13 +588,13 @@ function* schedulePostTurnContinuation(runtime: DurableSessionRuntime): Generato
         const remainingSec = Math.max(1, Math.round(remainingMs / 1000));
         ctx.traceInfo(`[orch] auto-resuming interrupted cron: ${remainingSec}s remain (${saved.reason})`);
 
-        const cronResumePlan = planHoldRelease({
+        const cronResumePlan = planWaitHandling({
             blobEnabled: state.blobEnabled,
             seconds: remainingSec,
-            holdWindowSeconds: options.idleTimeout,
+            dehydrateThreshold: options.dehydrateThreshold,
         });
-        if (cronResumePlan.shouldRelease) {
-            yield* releaseAffinity(runtime, "cron");
+        if (cronResumePlan.shouldDehydrate) {
+            yield* dehydrateForNextTurn(runtime, "cron", cronResumePlan.resetAffinityOnDehydrate);
         }
 
         const resumeNow: number = yield ctx.utcNow();
@@ -624,24 +604,27 @@ function* schedulePostTurnContinuation(runtime: DurableSessionRuntime): Generato
             waitStartedAt: resumeNow,
         });
 
+        if (!cronResumePlan.shouldDehydrate) yield* maybeCheckpoint(runtime);
+
         state.activeTimer = {
             deadlineMs: resumeNow + remainingMs,
             originalDurationMs: remainingMs,
             reason: saved.reason,
             type: "cron",
+            shouldRehydrate: cronResumePlan.shouldDehydrate,
         };
         return;
     }
 
     if (state.cronSchedule) {
         const activeCron = { ...state.cronSchedule };
-        const cronPlan = planHoldRelease({
+        const cronPlan = planWaitHandling({
             blobEnabled: state.blobEnabled,
             seconds: activeCron.intervalSeconds,
-            holdWindowSeconds: options.idleTimeout,
+            dehydrateThreshold: options.dehydrateThreshold,
         });
-        if (cronPlan.shouldRelease) {
-            yield* releaseAffinity(runtime, "cron");
+        if (cronPlan.shouldDehydrate) {
+            yield* dehydrateForNextTurn(runtime, "cron", cronPlan.resetAffinityOnDehydrate);
         }
         yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
             eventType: "session.cron_started",
@@ -654,12 +637,14 @@ function* schedulePostTurnContinuation(runtime: DurableSessionRuntime): Generato
             waitReason: activeCron.reason,
             waitStartedAt: cronStartedAt,
         });
+        if (!cronPlan.shouldDehydrate) yield* maybeCheckpoint(runtime);
 
         state.activeTimer = {
             deadlineMs: cronStartedAt + activeCron.intervalSeconds * 1000,
             originalDurationMs: activeCron.intervalSeconds * 1000,
             reason: activeCron.reason,
             type: "cron",
+            shouldRehydrate: cronPlan.shouldDehydrate,
         };
         return;
     }
@@ -694,13 +679,13 @@ function* schedulePostTurnContinuation(runtime: DurableSessionRuntime): Generato
 
         const waitMs = Math.max(0, nextFireAtMs - nowMs);
         const waitSeconds = Math.max(0, Math.ceil(waitMs / 1000));
-        const cronAtPlan = planHoldRelease({
+        const cronAtPlan = planWaitHandling({
             blobEnabled: state.blobEnabled,
             seconds: waitSeconds,
-            holdWindowSeconds: options.idleTimeout,
+            dehydrateThreshold: options.dehydrateThreshold,
         });
-        if (cronAtPlan.shouldRelease) {
-            yield* releaseAffinity(runtime, "cron_at");
+        if (cronAtPlan.shouldDehydrate) {
+            yield* dehydrateForNextTurn(runtime, "cron_at", cronAtPlan.resetAffinityOnDehydrate);
         }
         yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
             eventType: "session.cron_at_started",
@@ -714,24 +699,25 @@ function* schedulePostTurnContinuation(runtime: DurableSessionRuntime): Generato
             waitReason: activeCronAt.reason,
             waitStartedAt: nowMs,
         });
+        if (!cronAtPlan.shouldDehydrate) yield* maybeCheckpoint(runtime);
 
         state.activeTimer = {
             deadlineMs: nowMs + waitMs,
             originalDurationMs: waitMs,
             reason: activeCronAt.reason,
             type: "cron_at",
+            shouldRehydrate: cronAtPlan.shouldDehydrate,
         };
         return;
     }
 
     if (!state.blobEnabled || options.idleTimeout < 0) {
+        yield* maybeCheckpoint(runtime);
         return;
     }
 
-    // The idle timer IS the affinity hold window (lifecycle protocol §3.4):
-    // any session activity re-arms it via the drain machinery, and its fire
-    // releases the worker — it no longer dehydrates.
     publishStatus(runtime, "idle");
+    yield* maybeCheckpoint(runtime);
     const idleNow: number = yield ctx.utcNow();
     state.activeTimer = {
         deadlineMs: idleNow + options.idleTimeout * 1000,
@@ -859,6 +845,7 @@ export function* handleTurnResult(
 
                 if (runtime.input.isSystem && !state.cronSchedule && !state.cronAtSchedule) {
                     ctx.traceInfo(`[orch] system sub-agent completed turn, continuing loop`);
+                    yield* maybeCheckpoint(runtime);
                     return;
                 }
             }
@@ -920,18 +907,14 @@ export function* handleTurnResult(
 
             ctx.traceInfo(`[orch] durable timer: ${result.seconds}s (${result.reason})`);
 
-            // Lifecycle protocol: waits within the hold window keep the
-            // affinity GUID (worker stays warm — this is now the default,
-            // no wait_on_worker opt-in needed); longer waits release. The
-            // legacy `preserveWorkerAffinity` flag is accepted and simply
-            // subsumed: holds within the window always preserve affinity.
-            const waitPlan = planHoldRelease({
+            const waitPlan = planWaitHandling({
                 blobEnabled: state.blobEnabled,
                 seconds: result.seconds,
-                holdWindowSeconds: options.idleTimeout,
+                dehydrateThreshold: options.dehydrateThreshold,
+                preserveWorkerAffinity: result.preserveWorkerAffinity,
             });
-            if (waitPlan.shouldRelease) {
-                yield* releaseAffinity(runtime, "timer");
+            if (waitPlan.shouldDehydrate) {
+                yield* dehydrateForNextTurn(runtime, "timer", waitPlan.resetAffinityOnDehydrate);
             }
 
             const waitStartedAt: number = yield ctx.utcNow();
@@ -952,12 +935,14 @@ export function* handleTurnResult(
                 waitSeconds: result.seconds,
                 waitReason: result.reason,
                 waitStartedAt,
-                preserveWorkerAffinity: !waitPlan.shouldRelease,
+                preserveWorkerAffinity: waitPlan.preserveAffinityOnHydrate,
             });
+
+            if (!waitPlan.shouldDehydrate) yield* maybeCheckpoint(runtime);
 
             yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
                 eventType: "session.wait_started",
-                data: { seconds: result.seconds, reason: result.reason, preserveAffinity: !waitPlan.shouldRelease },
+                data: { seconds: result.seconds, reason: result.reason, preserveAffinity: waitPlan.preserveAffinityOnHydrate },
             }]);
 
             state.activeTimer = {
@@ -965,6 +950,8 @@ export function* handleTurnResult(
                 originalDurationMs: result.seconds * 1000,
                 reason: result.reason,
                 type: "wait",
+                shouldRehydrate: waitPlan.shouldDehydrate,
+                waitPlan,
                 content: result.content,
             };
             return;
@@ -989,21 +976,12 @@ export function* handleTurnResult(
             publishStatus(runtime, "input_required");
 
             if (!state.blobEnabled || options.inputGracePeriod < 0) {
+                yield* maybeCheckpoint(runtime);
                 return;
             }
 
-            // Lifecycle protocol: waiting on a human is a HOLD, not a
-            // dehydrate — arm the hold-window timer directly (its fire
-            // releases affinity; an answer within the window lands warm).
             if (options.inputGracePeriod === 0) {
-                const inputHoldNow: number = yield ctx.utcNow();
-                const inputHoldSeconds = options.idleTimeout > 0 ? options.idleTimeout : 1_800;
-                state.activeTimer = {
-                    deadlineMs: inputHoldNow + inputHoldSeconds * 1000,
-                    originalDurationMs: inputHoldSeconds * 1000,
-                    reason: "idle timeout (input required)",
-                    type: "idle",
-                };
+                yield* dehydrateForNextTurn(runtime, "input_required");
                 return;
             }
 
@@ -1204,12 +1182,8 @@ export function* processTimer(
             return;
         }
         case "idle": {
-            // Lifecycle protocol: hold window expired → release the worker.
-            // No dehydrate — every completed turn already committed its
-            // snapshot; the old worker's copy is a cache its own eviction
-            // clock reclaims.
-            ctx.traceInfo("[session] hold window expired, releasing worker affinity");
-            yield* releaseAffinity(runtime, "idle");
+            ctx.traceInfo("[session] idle timeout, dehydrating");
+            yield* dehydrateForNextTurn(runtime, "idle");
             return;
         }
         case "agent-poll": {
@@ -1284,17 +1258,7 @@ export function* processTimer(
             return;
         }
         case "input-grace": {
-            // Lifecycle protocol: grace elapsed without an answer → enter
-            // the hold window (idle timer). The eventual idle fire releases
-            // affinity; an answer any time before that lands warm.
-            const graceElapsedNow: number = yield runtime.ctx.utcNow();
-            const holdSeconds = runtime.options.idleTimeout > 0 ? runtime.options.idleTimeout : 1_800;
-            state.activeTimer = {
-                deadlineMs: graceElapsedNow + holdSeconds * 1000,
-                originalDurationMs: holdSeconds * 1000,
-                reason: "idle timeout (input required)",
-                type: "idle",
-            };
+            yield* dehydrateForNextTurn(runtime, "input_required");
             return;
         }
     }

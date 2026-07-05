@@ -546,7 +546,9 @@ export class PilotSwarmClient {
                 // backed (blob storage or local filesystem state).
                 blobEnabled: true,
                 dehydrateThreshold: this.config.dehydrateThreshold ?? 29,
-                idleTimeout: parentSessionId ? -1 : (this.config.dehydrateOnIdle ?? 60),
+                // Lifecycle protocol: the idle timer is the affinity hold
+                // window (fire = GUID rotation, not dehydrate) — 30 min.
+                idleTimeout: parentSessionId ? -1 : (this.config.dehydrateOnIdle ?? 1_800),
                 inputGracePeriod: parentSessionId ? -1 : (this.config.dehydrateOnInputRequired ?? 30),
                 checkpointInterval: this.config.checkpointInterval ?? -1,
                 rehydrationMessage: this.config.rehydrationMessage,

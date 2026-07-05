@@ -3,6 +3,8 @@
  */
 
 import { defineTool, loadModelProviders } from "../../src/index.ts";
+import * as fsForSnapshots from "node:fs";
+import * as pathForSnapshots from "node:path";
 
 const FORCED_TEST_MODEL = process.env.PS_TEST_FORCE_MODEL || process.env.TEST_FORCE_MODEL || "";
 
@@ -130,3 +132,22 @@ export const TEST_CLAUDE_MODEL = firstKnownModel([
     "claude-sonnet-4.6",
     "claude-opus-4.6",
 ]);
+
+/**
+ * Resolve a session's snapshot tar in a filesystem store dir. The lifecycle
+ * protocol commits version-named tars (`<id>.v<N>.tar.gz`) referenced by
+ * meta.json `tarFile`; legacy dehydrates still write `<id>.tar.gz`.
+ * Returns the referenced tar path, or the legacy path as fallback.
+ */
+export function resolveSnapshotTarPath(archiveDir, sessionId) {
+    const { existsSync, readFileSync } = fsForSnapshots;
+    const { join } = pathForSnapshots;
+    const metaPath = join(archiveDir, `${sessionId}.meta.json`);
+    if (existsSync(metaPath)) {
+        try {
+            const meta = JSON.parse(readFileSync(metaPath, "utf8"));
+            if (meta?.tarFile) return join(archiveDir, meta.tarFile);
+        } catch {}
+    }
+    return join(archiveDir, `${sessionId}.tar.gz`);
+}

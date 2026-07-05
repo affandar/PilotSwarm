@@ -35,9 +35,19 @@ import {
     SASProtocol,
 } from "@azure/storage-blob";
 import { DefaultAzureCredential, type TokenCredential } from "@azure/identity";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { faultPoint } from "./fault-injection.js";
+import {
+    SnapshotConflictError,
+    type SnapshotCommitInput,
+    type SnapshotCommitResult,
+    type SnapshotHydrateResult,
+    type SnapshotProbe,
+    type VersionedSnapshotStore,
+} from "./snapshot-protocol.js";
 import {
     DEFAULT_SESSION_STATE_DIR,
     type ArtifactDownloadResult,
@@ -138,7 +148,7 @@ export interface SessionBlobStoreClientConfig {
  *
  * @internal
  */
-export class SessionBlobStore implements SessionStateStore, ArtifactStore {
+export class SessionBlobStore implements SessionStateStore, ArtifactStore, VersionedSnapshotStore {
     private containerClient: ContainerClient;
     private containerName: string;
     private credential: StorageSharedKeyCredential | null = null;
@@ -188,6 +198,26 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore {
             dir: sessionDir,
             reason: meta?.reason,
         });
+        // Versioned-snapshot fence: the committed chain (lifecycle protocol)
+        // already holds this session's durable state, and an unconditional
+        // legacy Put would replace both content and the CAS metadata
+        // (psver/psturnkey/pssha). Degrade to release: free local files.
+        try {
+            const head = await this.headSnapshot(sessionId);
+            if (head.exists && !head.legacy) {
+                logBlobStore("warn", sessionId, "dehydrate skipped upload: versioned snapshot exists; releasing local files only", {
+                    container: this.containerName,
+                    version: head.version,
+                });
+                fs.rmSync(sessionDir, { recursive: true, force: true });
+                return;
+            }
+        } catch (probeErr: unknown) {
+            logBlobStore("warn", sessionId, "dehydrate version probe failed; proceeding with legacy upload", {
+                container: this.containerName,
+                error: errorMessage(probeErr),
+            });
+        }
         const snapshot = await waitForSessionSnapshot(this.sessionStateDir, sessionId);
         if (!snapshot.ready) {
             logBlobStore("warn", sessionId, "dehydrate snapshot not ready", {
@@ -299,6 +329,23 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore {
             });
             return;
         }
+        // Versioned-snapshot fence (see dehydrate): never clobber the
+        // CAS-protected chain with an unversioned legacy write.
+        try {
+            const head = await this.headSnapshot(sessionId);
+            if (head.exists && !head.legacy) {
+                logBlobStore("warn", sessionId, "checkpoint skipped: versioned snapshot exists", {
+                    container: this.containerName,
+                    version: head.version,
+                });
+                return;
+            }
+        } catch (probeErr: unknown) {
+            logBlobStore("warn", sessionId, "checkpoint version probe failed; proceeding with legacy upload", {
+                container: this.containerName,
+                error: errorMessage(probeErr),
+            });
+        }
 
         const tarPath = path.join(os.tmpdir(), `${sessionId}.tar.gz`);
         try {
@@ -404,6 +451,204 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore {
             });
             throw error;
         }
+    }
+
+    // ─── Versioned CAS contract (session-lifecycle-protocol §3.1) ───
+    //
+    // The version is an explicit counter in the tar blob's metadata
+    // (`psver`, plus `psturnkey` + `pssha`), written atomically with the
+    // content by single-shot Put Blob. The ETag is never the version — it is
+    // the atomicity token binding each HEAD to the conditional PUT that
+    // follows it (`If-Match`). A blob without `psver` is a legacy snapshot
+    // (probe reports version 0 / legacy). Two footguns, per the store
+    // proposal: never staged Put Block uploads (the condition only applies
+    // at commit and concurrent stagers interleave), and never Set Blob
+    // Metadata for version bumps (it would decouple counter from content).
+
+    private static readonly COMMIT_MAX_ATTEMPTS = 5;
+    private static readonly SINGLE_SHOT_MAX_BYTES = 256 * 1024 * 1024;
+
+    private snapshotBlobName(sessionId: string): string {
+        return `${sessionId}.tar.gz`;
+    }
+
+    private probeFromMetadata(
+        metadata: Record<string, string> | undefined,
+        etag: string | undefined,
+    ): SnapshotProbe & { etag?: string } {
+        const version = Number(metadata?.psver);
+        if (!Number.isFinite(version) || version < 1) {
+            return { exists: true, version: 0, legacy: true, ...(etag ? { etag } : {}) };
+        }
+        return {
+            exists: true,
+            version,
+            ...(metadata?.psturnkey ? { turnKey: metadata.psturnkey } : {}),
+            ...(metadata?.pssha ? { contentHash: metadata.pssha } : {}),
+            ...(etag ? { etag } : {}),
+        };
+    }
+
+    private async headSnapshot(sessionId: string): Promise<SnapshotProbe & { etag?: string }> {
+        const blob = this.containerClient.getBlockBlobClient(this.snapshotBlobName(sessionId));
+        try {
+            const props = await blob.getProperties();
+            return this.probeFromMetadata(props.metadata as Record<string, string> | undefined, props.etag);
+        } catch (error: any) {
+            if (error?.statusCode === 404) return { exists: false, version: 0 };
+            throw error;
+        }
+    }
+
+    async probeSnapshot(sessionId: string): Promise<SnapshotProbe> {
+        const { etag: _etag, ...probe } = await this.headSnapshot(sessionId);
+        return probe;
+    }
+
+    async commitSnapshot(sessionId: string, input: SnapshotCommitInput): Promise<SnapshotCommitResult> {
+        const sessionDir = path.join(this.sessionStateDir, sessionId);
+        const snapshot = await waitForSessionSnapshot(this.sessionStateDir, sessionId);
+        if (!snapshot.ready) {
+            throw new Error(
+                `Session state directory not ready during commit: ${sessionId} (${sessionDir}). ` +
+                `Missing: ${snapshot.missing.join(", ") || "unknown"}`,
+            );
+        }
+
+        const tarPath = path.join(os.tmpdir(), `ps-commit-${sessionId}-${process.pid}-${Date.now()}.tar.gz`);
+        try {
+            archiveSessionDir(this.sessionStateDir, sessionId, tarPath);
+            const body = fs.readFileSync(tarPath);
+            if (body.length > SessionBlobStore.SINGLE_SHOT_MAX_BYTES) {
+                throw new Error(
+                    `Session snapshot for ${sessionId} is ${body.length} bytes — over the ` +
+                    `${SessionBlobStore.SINGLE_SHOT_MAX_BYTES} single-shot commit cap. ` +
+                    `Audit the session workspace for files that belong in tar excludes.`,
+                );
+            }
+            const contentHash = crypto.createHash("sha256").update(body).digest("hex");
+            const blob = this.containerClient.getBlockBlobClient(this.snapshotBlobName(sessionId));
+
+            for (let attempt = 1; attempt <= SessionBlobStore.COMMIT_MAX_ATTEMPTS; attempt++) {
+                const head = await this.headSnapshot(sessionId);
+
+                if (head.exists && head.version === input.baseVersion + 1 && head.turnKey === input.turnKey) {
+                    logBlobStore("info", sessionId, "commit already landed (idempotent retry)", {
+                        version: head.version,
+                        turnKey: input.turnKey,
+                    });
+                    return { version: head.version, contentHash: head.contentHash ?? "", alreadyCommitted: true };
+                }
+                if (head.exists && head.version !== input.baseVersion) {
+                    throw new SnapshotConflictError(sessionId, input.baseVersion, head.version, head.turnKey);
+                }
+                // head.exists && version === baseVersion (legacy counts as 0),
+                // or !exists (any baseVersion commits as a fresh chain — the
+                // store lost data and the worker's copy is the only truth).
+                const version = head.exists ? head.version + 1 : input.baseVersion + 1;
+                const conditions = head.exists && head.etag
+                    ? { ifMatch: head.etag }
+                    : { ifNoneMatch: "*" };
+                faultPoint("store.commit.before-write");
+                try {
+                    await blob.upload(body, body.length, {
+                        conditions,
+                        metadata: {
+                            psver: String(version),
+                            psturnkey: input.turnKey,
+                            pssha: contentHash,
+                        },
+                    });
+                    faultPoint("store.commit.after-write");
+                    // Legacy compat: keep <sessionId>.meta.json fresh so
+                    // getSnapshotSizeBytes and older tooling keep working.
+                    // Unconditional + best-effort — it is informational only.
+                    try {
+                        const metadata: SessionMetadata = {
+                            ...buildMetadata(tarPath, sessionId, { reason: "turn-commit" }),
+                            version,
+                            turnKey: input.turnKey,
+                            contentHash,
+                        };
+                        this.snapshotSizeBySession.set(sessionId, metadata.sizeBytes);
+                        const metaBlob = this.containerClient.getBlockBlobClient(`${sessionId}.meta.json`);
+                        const metaJson = JSON.stringify(metadata);
+                        await metaBlob.upload(metaJson, metaJson.length);
+                    } catch (metaErr: unknown) {
+                        logBlobStore("warn", sessionId, "commit meta.json refresh failed (non-fatal)", {
+                            error: errorMessage(metaErr),
+                        });
+                    }
+                    logBlobStore("info", sessionId, "commit complete", {
+                        version,
+                        turnKey: input.turnKey,
+                        tarSizeBytes: body.length,
+                        attempt,
+                    });
+                    return { version, contentHash, alreadyCommitted: false };
+                } catch (error: any) {
+                    // 412 Precondition Failed (If-Match lost the race) or
+                    // 409 BlobAlreadyExists (If-None-Match create race):
+                    // re-HEAD and re-evaluate — the winner may have been our
+                    // own prior attempt (idempotent success) or a foreign
+                    // writer (conflict), both handled at the top of the loop.
+                    const status = error?.statusCode;
+                    if (status === 412 || status === 409) {
+                        logBlobStore("warn", sessionId, "commit CAS race, re-evaluating", {
+                            attempt,
+                            status,
+                        });
+                        continue;
+                    }
+                    throw error;
+                }
+            }
+            throw new Error(`Snapshot commit for ${sessionId} exhausted CAS retries`);
+        } finally {
+            try { fs.unlinkSync(tarPath); } catch {}
+        }
+    }
+
+    async hydrateSnapshot(sessionId: string): Promise<SnapshotHydrateResult> {
+        const sessionDir = path.join(this.sessionStateDir, sessionId);
+        const blob = this.containerClient.getBlockBlobClient(this.snapshotBlobName(sessionId));
+        const tarPath = path.join(os.tmpdir(), `ps-hydrate-${sessionId}-${process.pid}-${Date.now()}.tar.gz`);
+
+        // One download response carries body + metadata consistently.
+        let metadata: Record<string, string> | undefined;
+        try {
+            const response = await blob.downloadToFile(tarPath, 0);
+            metadata = response.metadata as Record<string, string> | undefined;
+
+            fs.mkdirSync(this.sessionStateDir, { recursive: true });
+            const tempRoot = fs.mkdtempSync(path.join(this.sessionStateDir, `.ps-hydrate-${sessionId}-`));
+            try {
+                extractSessionArchive(tempRoot, tarPath);
+                const extracted = path.join(tempRoot, sessionId);
+                if (!fs.existsSync(extracted)) {
+                    throw new Error(`Snapshot archive for ${sessionId} did not contain the session directory`);
+                }
+                faultPoint("store.hydrate.before-swap");
+                fs.rmSync(sessionDir, { recursive: true, force: true });
+                fs.renameSync(extracted, sessionDir);
+            } finally {
+                fs.rmSync(tempRoot, { recursive: true, force: true });
+            }
+        } finally {
+            try { fs.unlinkSync(tarPath); } catch {}
+        }
+
+        const probe = this.probeFromMetadata(metadata, undefined);
+        logBlobStore("info", sessionId, "versioned hydrate complete", {
+            version: probe.version,
+            legacy: probe.legacy,
+        });
+        return {
+            version: probe.version,
+            ...(probe.turnKey ? { turnKey: probe.turnKey } : {}),
+            ...(probe.contentHash ? { contentHash: probe.contentHash } : {}),
+            ...(probe.legacy ? { legacy: true } : {}),
+        };
     }
 
     // ─── Artifact Storage ────────────────────────────────────

@@ -17,7 +17,10 @@ import { computeCronAtNextFire, type CronAtSchedule } from "./cron-at.js";
 import { SpanStatusCode, trace as otelTrace } from "@opentelemetry/api";
 import os from "node:os";
 import fs from "node:fs";
+import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { attemptStoreRecovery, runTurnCommit, runTurnPreamble, type TurnLifecycleContext } from "./session-lifecycle.js";
+import { supportsVersionedSnapshots, writeTurnSentinel } from "./snapshot-protocol.js";
 
 const SYSTEM_AGENT_IDS = new Set(["pilotswarm", "sweeper", "resourcemgr", "facts-manager", "agent-tuner"]);
 
@@ -32,6 +35,9 @@ const CORRUPTED_TRANSCRIPT_REPLAY_NOTICE =
     "[SYSTEM: The runtime recreated this session after the live Copilot transcript became inconsistent. " +
     "Some recent in-memory work may be missing, and the previous turn may have partially executed. " +
     "Re-read the visible conversation and continue carefully from the latest durable state.]";
+const REHYDRATED_SESSION_NOTICE =
+    "[SYSTEM: This session was rehydrated on a different worker from its durable snapshot. " +
+    "The conversation history is fully preserved. Continue seamlessly.]";
 
 function normalizeJsonObject(value: unknown): Record<string, unknown> | null {
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -481,7 +487,7 @@ export function createSessionProxy(
             prompt: string,
             bootstrap?: boolean,
             turnIndex?: number,
-            turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; cycleOrigin?: "cron" | "cron_at"; retryCount?: number; clientMessageIds?: string[] },
+            turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; cycleOrigin?: "cron" | "cron_at"; retryCount?: number; clientMessageIds?: string[]; snapshot?: { expectedVersion: number; turnKey: string } },
         ) {
             return ctx.scheduleActivityOnSession(
                 "runTurn",
@@ -499,6 +505,7 @@ export function createSessionProxy(
                     ...(turnMeta?.clientMessageIds && turnMeta.clientMessageIds.length > 0
                         ? { clientMessageIds: turnMeta.clientMessageIds }
                         : {}),
+                    ...(turnMeta?.snapshot ? { snapshot: turnMeta.snapshot } : {}),
                 },
                 affinityKey,
             );
@@ -733,7 +740,7 @@ export function createSessionManagerProxy(ctx: any) {
 export function registerActivities(
     runtime: any,
     sessionManager: SessionManager,
-    _sessionStore: SessionStateStore | null,
+    sessionStore: SessionStateStore | null,
     githubToken?: string,
     catalog?: SessionCatalog | null,
     provider?: any,
@@ -799,6 +806,8 @@ export function registerActivities(
             requiredTool?: string;
             cycleOrigin?: "cron" | "cron_at";
             retryCount?: number;
+            /** Session lifecycle protocol (orchestration 1.0.57+). Absent → legacy behavior. */
+            snapshot?: { expectedVersion: number; turnKey: string };
         },
     ): Promise<TurnResult> => {
         activityCtx.traceInfo(`[runTurn] session=${input.sessionId}`);
@@ -881,6 +890,51 @@ export function registerActivities(
 
         try {
             finalTurnResult = await sessionManager.withRunTurnLock(input.sessionId, "runTurn", async () => {
+        // ── Session lifecycle protocol preamble (proposal §3.3) ─────────
+        // Only active when the orchestration (1.0.57+) supplied snapshot
+        // coordinates AND the store implements the versioned CAS contract.
+        // Absent either, this activity behaves exactly as before.
+        const lifecycle: TurnLifecycleContext | null =
+            input.snapshot && sessionStore && supportsVersionedSnapshots(sessionStore)
+                ? {
+                    store: sessionStore,
+                    sessionStateDir: sessionManager.getSessionStateDir(),
+                    sessionId: input.sessionId,
+                    expectedVersion: input.snapshot.expectedVersion,
+                    turnKey: input.snapshot.turnKey,
+                    dropWarmSession: () => sessionManager.dropWarmSession(input.sessionId),
+                    trace,
+                }
+                : null;
+        let lifecycleBaseVersion = 0;
+        let lifecycleRehydrated = false;
+        if (lifecycle) {
+            const pre = await runTurnPreamble(lifecycle);
+            if (pre.kind === "already-committed") {
+                activityCtx.traceInfo(
+                    `[runTurn] session=${input.sessionId} already-committed recovery at v${pre.version}; ` +
+                    `returning stored result without re-running the turn`,
+                );
+                return { ...(pre.result as TurnResult), snapshotVersion: pre.version };
+            }
+            lifecycleBaseVersion = pre.baseVersion;
+            lifecycleRehydrated = pre.kind === "hydrated";
+            if (pre.kind === "fresh" && pre.lossy && catalog) {
+                await cmsRetryBestEffort(
+                    `runTurn.recordEvent snapshot-store-empty session=${input.sessionId}`,
+                    () => catalog!.recordEvents(input.sessionId, [{
+                        eventType: "session.snapshot_store_empty",
+                        data: {
+                            expectedVersion: input.snapshot!.expectedVersion,
+                            message: "Snapshot store held no data for a session with committed turns; falling back to fresh-session recovery.",
+                        },
+                    }], workerNodeId),
+                    (msg) => activityCtx.traceInfo(msg),
+                );
+            }
+        }
+
+        const executeTurnBody = async (): Promise<TurnResult> => {
         let session: any = null;
         let effectivePrompt = input.prompt;
         try {
@@ -895,6 +949,40 @@ export function registerActivities(
                 const detail = isMissingSessionStateErrorMessage(message)
                     ? stripMissingSessionStatePrefix(message)
                     : message;
+
+                // ── Lifecycle store recovery BEFORE lossy replay ─────────
+                // The store may hold a perfect committed snapshot (e.g. the
+                // SDK refused to resume from locally damaged files). Restore
+                // it and retry — lossy replay (whose turn-0 reset DELETES
+                // the store snapshot) is only reachable when the store is
+                // empty, making that delete a no-op.
+                if (lifecycle) {
+                    try {
+                        const recoveredVersion = await attemptStoreRecovery(lifecycle);
+                        if (recoveredVersion != null) {
+                            trace(
+                                `session=${input.sessionId} restored committed snapshot v${recoveredVersion} ` +
+                                `after getOrCreate failure (${detail.slice(0, 120)}); retrying resume`,
+                            );
+                            session = await sessionManager.getOrCreate(input.sessionId, runConfig, {
+                                turnIndex: input.turnIndex,
+                                trace,
+                                lockHeld: true,
+                            });
+                            lifecycleBaseVersion = recoveredVersion;
+                            lifecycleRehydrated = true;
+                        }
+                    } catch (storeRecoveryErr: any) {
+                        trace(
+                            `session=${input.sessionId} snapshot-store recovery failed: ` +
+                            `${storeRecoveryErr?.message ?? storeRecoveryErr}; falling back to lossy replay`,
+                        );
+                        session = null;
+                    }
+                }
+                if (session) {
+                    // Recovered losslessly — skip the lossy replay machinery.
+                } else {
                 trace(
                     `session=${input.sessionId} missing resumable state before turn ${input.turnIndex ?? "unknown"}; ` +
                     "starting lossy fresh-session replay",
@@ -946,8 +1034,22 @@ export function registerActivities(
                     return await failForMissingState(fatalMessage);
                 }
                 effectivePrompt = mergePromptSections([LOSSY_SESSION_REPLAY_NOTICE, input.prompt]) || input.prompt;
+                }
             } else {
                 throw err;
+            }
+        }
+
+        // ── Lifecycle p3: sentinel marks the dir as mid-mutation from here
+        // until the post-turn commit clears it. Written after getOrCreate so
+        // the turn-0 reset path cannot wipe it, before any body mutation.
+        if (lifecycle) {
+            writeTurnSentinel(
+                path.join(sessionManager.getSessionStateDir(), input.sessionId),
+                input.snapshot!.turnKey,
+            );
+            if (lifecycleRehydrated) {
+                effectivePrompt = mergePromptSections([REHYDRATED_SESSION_NOTICE, effectivePrompt]) || effectivePrompt;
             }
         }
 
@@ -2035,6 +2137,40 @@ export function registerActivities(
             }
 
             return result;
+            };
+
+        const bodyResult = await executeTurnBody();
+
+        // ── Session lifecycle protocol commit (proposal §3.2) ───────────
+        // The turn and its snapshot durability are one activity completion:
+        // no observable state exists where the turn "happened" but its
+        // snapshot doesn't. Commit on every result the body produced —
+        // matching today's semantics where the warm session keeps whatever
+        // state the turn (even a cancelled/errored one) left behind. The
+        // layout guard skips paths where no snapshottable session exists:
+        // the SDK writes workspace.yaml on session create, so a dir without
+        // it (fake test clients, failed creates — possibly containing only
+        // our own sentinel) has nothing the store could meaningfully hold,
+        // and committing it would fail the whole turn.
+        const lifecycleSessionDir = lifecycle
+            ? path.join(sessionManager.getSessionStateDir(), input.sessionId)
+            : null;
+        if (lifecycle && lifecycleSessionDir && fs.existsSync(path.join(lifecycleSessionDir, "workspace.yaml"))) {
+            const committed = await runTurnCommit(lifecycle, lifecycleBaseVersion, bodyResult);
+            if (committed.alreadyCommitted && committed.storedResult !== undefined) {
+                // A racing attempt of this same turn won the CAS. Its
+                // snapshot was restored (restore-not-replay, §3.2 r1–r3) —
+                // return ITS result so the recorded outcome matches the
+                // durable lineage instead of this attempt's divergent body.
+                activityCtx.traceInfo(
+                    `[runTurn] session=${input.sessionId} racing attempt committed v${committed.version} first; ` +
+                    `adopting its stored result`,
+                );
+                return { ...(committed.storedResult as TurnResult), snapshotVersion: committed.version };
+            }
+            return { ...bodyResult, snapshotVersion: committed.version };
+        }
+        return bodyResult;
             }, { trace });
             if (!finalTurnResult) {
                 throw new Error("runTurn completed without a turn result");
@@ -2210,7 +2346,7 @@ export function registerActivities(
 
             dehydrationSpan.setAttribute("pilotswarm.dehydration_result", "completed");
             if (catalog) {
-                const snapshotSizeBytes = await tryReadSnapshotSizeBytes(_sessionStore, input.sessionId);
+                const snapshotSizeBytes = await tryReadSnapshotSizeBytes(sessionStore, input.sessionId);
                 if (snapshotSizeBytes != null) {
                     dehydrationSpan.setAttribute("pilotswarm.snapshot_size_bytes", snapshotSizeBytes);
                 }
@@ -2317,7 +2453,7 @@ export function registerActivities(
     ): Promise<void> => {
         await sessionManager.checkpoint(input.sessionId);
         if (catalog) {
-            const snapshotSizeBytes = await tryReadSnapshotSizeBytes(_sessionStore, input.sessionId);
+            const snapshotSizeBytes = await tryReadSnapshotSizeBytes(sessionStore, input.sessionId);
             // Best-effort: metric summary is observability only. The blob has
             // already been written by sessionManager.checkpoint above.
             await cmsRetryBestEffort(

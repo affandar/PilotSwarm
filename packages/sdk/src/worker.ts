@@ -122,6 +122,7 @@ export class PilotSwarmWorker {
     private factStore: FactStore | null = null;
     private graphStore: GraphStore | null = null;
     private runtime: any = null;
+    private _evictionTimer: ReturnType<typeof setInterval> | null = null;
     private _provider: any = null;
     private _catalog: SessionCatalog | null = null;
     private _started = false;
@@ -614,6 +615,27 @@ export class PilotSwarmWorker {
         });
         this._started = true;
 
+        // Autonomous eviction clock (lifecycle protocol §3.4): local session
+        // state is a cache. Sessions idle past the hold window + margin are
+        // reclaimed locally (committed → delete; legacy → dehydrate) with no
+        // orchestration coordination — the next runTurn self-validates.
+        const rawEvictMs = Number.parseInt(process.env.PILOTSWARM_SESSION_EVICT_MS || "", 10);
+        const evictAfterMs = Number.isFinite(rawEvictMs) ? rawEvictMs : 2_100_000; // 35 min
+        if (evictAfterMs > 0 && this.sessionStore) {
+            this._evictionTimer = setInterval(() => {
+                void this.sessionManager.sweepIdleSessions(evictAfterMs)
+                    .then((count) => {
+                        if (count > 0) {
+                            console.error(`[PilotSwarmWorker] eviction sweep reclaimed ${count} idle session(s)`);
+                        }
+                    })
+                    .catch((err: any) => {
+                        console.warn(`[PilotSwarmWorker] eviction sweep failed: ${err?.message ?? err}`);
+                    });
+            }, Math.min(evictAfterMs, 300_000));
+            this._evictionTimer.unref?.();
+        }
+
         await new Promise(r => setTimeout(r, 200));
 
         // Auto-start system agents defined in plugins (idempotent), but do not
@@ -625,6 +647,10 @@ export class PilotSwarmWorker {
     }
 
     async stop(): Promise<void> {
+        if (this._evictionTimer) {
+            clearInterval(this._evictionTimer);
+            this._evictionTimer = null;
+        }
         if (this.runtime) {
             const rawShutdownTimeoutMs = Number.parseInt(
                 process.env.PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS || "",
@@ -659,15 +685,44 @@ export class PilotSwarmWorker {
         this._started = false;
     }
 
-    /** Dehydrate all active sessions, then stop. */
+    /**
+     * Graceful drain (lifecycle protocol §3.8):
+     *   1. Stop fetching — duroxide's shutdown flag makes dispatch slots
+     *      finish their in-flight item and claim nothing new.
+     *   2. Finish in-flight — running turns complete within the drain
+     *      budget; their snapshot commits land inside the runTurn activity.
+     *      (duroxide sleeps the FULL budget before returning; turns longer
+     *      than the budget are aborted — crash semantics, lossless for
+     *      every committed turn.)
+     *   3. Evict all — purely local for sessions with a committed marker
+     *      (the store already holds their state); legacy dehydrate for
+     *      unmarked sessions whose local files may be the only copy.
+     *   4. Exit — anything still leased lapses within the duroxide session
+     *      lock timeout.
+     */
     async gracefulShutdown(): Promise<void> {
+        const rawDrainMs = Number.parseInt(process.env.PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS || "", 10);
+        const drainBudgetMs = Number.isFinite(rawDrainMs) && rawDrainMs >= 0 ? rawDrainMs : 60_000;
+
+        if (this.runtime) {
+            console.error(`[PilotSwarmWorker] draining: waiting up to ${drainBudgetMs}ms for in-flight turns...`);
+            await this.runtime.shutdown(drainBudgetMs);
+            this.runtime = null;
+        }
+
+        // Release everything this worker served, via the same lock-aware
+        // sweep the eviction clock uses: committed sessions are deleted
+        // locally (the store holds their state), unmarked legacy sessions
+        // dehydrate (with the versioned-snapshot fence), and sessions whose
+        // aborted turns still hold their run-turn lock are SKIPPED — their
+        // dirs must not be deleted or archived out from under a still-
+        // running body; the post-deploy retry self-validates instead.
         if (this.sessionStore) {
-            const ids = this.sessionManager.activeSessionIds();
-            if (ids.length > 0) {
-                console.error(`[PilotSwarmWorker] Dehydrating ${ids.length} sessions...`);
-                await Promise.allSettled(
-                    ids.map(id => this.sessionManager.dehydrate(id, "shutdown").catch(() => {})),
-                );
+            try {
+                const released = await this.sessionManager.sweepIdleSessions(1);
+                console.error(`[PilotSwarmWorker] drain released ${released} warm session(s)`);
+            } catch (err: any) {
+                console.warn(`[PilotSwarmWorker] drain release sweep failed: ${err?.message ?? err}`);
             }
         }
         await this.stop();

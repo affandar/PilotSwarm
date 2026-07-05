@@ -1,0 +1,415 @@
+/**
+ * runTurn preamble/postamble rules + crash matrix
+ * (session-lifecycle-protocol §4.2 and §4.4 F1–F6, in-process form).
+ *
+ * Crashes are simulated at the protocol's named fault points by aborting a
+ * step (throw-action fault injection) and re-running the preamble exactly
+ * as a duroxide activity retry would — same inputs, fresh execution. The
+ * oracle after every scenario: version chain gap-free, no dirty dir ever
+ * trusted, already-committed turns never re-run.
+ */
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
+import { afterEach, describe, expect, it } from "vitest";
+import { FilesystemSessionStore } from "../../src/session-store.ts";
+import { runTurnCommit, runTurnPreamble } from "../../src/session-lifecycle.ts";
+import {
+    clearTurnSentinel,
+    readSnapshotMarker,
+    readTurnSentinel,
+    writeSnapshotMarker,
+    writeTurnSentinel,
+} from "../../src/snapshot-protocol.ts";
+import { makeSessionLayout } from "../helpers/snapshot-conformance.js";
+
+const roots = [];
+afterEach(() => {
+    delete process.env.PILOTSWARM_FAULT_INJECT;
+    for (const root of roots.splice(0)) {
+        try { fs.rmSync(root, { recursive: true, force: true }); } catch {}
+    }
+});
+
+function makeHarness() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ps-lifecycle-"));
+    roots.push(root);
+    const sessionStateDir = path.join(root, "session-state");
+    fs.mkdirSync(sessionStateDir, { recursive: true });
+    const store = new FilesystemSessionStore(path.join(root, "session-store"), sessionStateDir);
+    const sessionId = `lc-${randomUUID()}`;
+    const calls = [];
+    const countingStore = {
+        probeSnapshot: (...args) => { calls.push("probe"); return store.probeSnapshot(...args); },
+        commitSnapshot: (...args) => { calls.push("commit"); return store.commitSnapshot(...args); },
+        hydrateSnapshot: (...args) => { calls.push("hydrate"); return store.hydrateSnapshot(...args); },
+    };
+    let warmDropped = 0;
+    const ctxFor = (expectedVersion, turnKey) => ({
+        store: countingStore,
+        sessionStateDir,
+        sessionId,
+        expectedVersion,
+        turnKey,
+        dropWarmSession: async () => { warmDropped++; },
+        trace: () => {},
+    });
+    return {
+        root, sessionStateDir, store, sessionId, calls,
+        ctxFor,
+        sessionDir: path.join(sessionStateDir, sessionId),
+        droppedWarm: () => warmDropped,
+    };
+}
+
+/** Run a full healthy turn: preamble → sentinel → (mutate) → commit. */
+async function runHealthyTurn(h, expectedVersion, turnKey, mutation = `turn-${turnKey}`) {
+    const ctx = h.ctxFor(expectedVersion, turnKey);
+    const pre = await runTurnPreamble(ctx);
+    if (pre.kind === "already-committed") return { pre };
+    writeTurnSentinel(h.sessionDir, turnKey);
+    fs.appendFileSync(path.join(h.sessionDir, "events.jsonl"), `{"m":"${mutation}"}\n`);
+    const result = { type: "completed", content: `did ${mutation}` };
+    const committed = await runTurnCommit(ctx, pre.baseVersion, result);
+    return { pre, committed, result };
+}
+
+describe("turn lifecycle preamble", () => {
+    it("warm-starts with zero store I/O when marker matches and no sentinel", async () => {
+        const h = makeHarness();
+        makeSessionLayout(h.sessionStateDir, h.sessionId);
+        const { committed } = await runHealthyTurn(h, 0, "t1");
+        expect(committed.version).toBe(1);
+        h.calls.length = 0;
+
+        const pre = await runTurnPreamble(h.ctxFor(1, "t2"));
+        expect(pre.kind).toBe("warm");
+        expect(pre.baseVersion).toBe(1);
+        expect(h.calls).toEqual([]); // the whole point: no store round-trip
+    });
+
+    it("keeps a clean unmarked dir when the orchestration has no committed version (legacy continuity)", async () => {
+        const h = makeHarness();
+        makeSessionLayout(h.sessionStateDir, h.sessionId, "warm-legacy");
+        const pre = await runTurnPreamble(h.ctxFor(0, "t1"));
+        expect(pre.kind).toBe("warm");
+        expect(pre.baseVersion).toBe(0);
+        // Continuity is probe-gated: an unmarked dir is only trusted after
+        // confirming the store holds no versioned chain (a crash inside
+        // already-committed recovery of turn 1 leaves exactly this shape).
+        expect(h.calls).toEqual(["probe"]);
+    });
+
+    it("resolves from the store when an unmarked dir hides a versioned chain (double-crash on turn 1)", async () => {
+        const h = makeHarness();
+        makeSessionLayout(h.sessionStateDir, h.sessionId);
+        // Turn 1 committed (v1 under t1), then crash erased marker+sentinel
+        // (hydrate-swap completed, marker write lost). Local dir looks like
+        // pristine legacy continuity — but the store knows better.
+        await runHealthyTurn(h, 0, "t1");
+        fs.rmSync(path.join(h.sessionDir, ".ps-snapshot-version"), { force: true });
+
+        // Retry of turn 1 (same turnKey): must take already-committed
+        // recovery, NOT warm-trust the unmarked dir and re-run the body.
+        const pre = await runTurnPreamble(h.ctxFor(0, "t1"));
+        expect(pre.kind).toBe("already-committed");
+        expect(pre.version).toBe(1);
+
+        // A DIFFERENT turn against the same shape hydrates the chain.
+        fs.rmSync(path.join(h.sessionDir, ".ps-snapshot-version"), { force: true });
+        const pre2 = await runTurnPreamble(h.ctxFor(0, "t9"));
+        expect(pre2.kind).toBe("hydrated");
+        expect(pre2.baseVersion).toBe(1);
+    });
+
+    it("distrusts a marker orphaned by a torn delete (no session layout)", async () => {
+        const h = makeHarness();
+        makeSessionLayout(h.sessionStateDir, h.sessionId, "orig");
+        await runHealthyTurn(h, 0, "t1");
+
+        // Torn recursive delete: session files gone, marker survived.
+        for (const f of ["workspace.yaml", "session.db", "events.jsonl"]) {
+            fs.rmSync(path.join(h.sessionDir, f), { force: true });
+        }
+        const pre = await runTurnPreamble(h.ctxFor(1, "t2"));
+        expect(pre.kind).toBe("hydrated"); // store copy restored, marker not trusted
+        expect(pre.baseVersion).toBe(1);
+        expect(fs.existsSync(path.join(h.sessionDir, "workspace.yaml"))).toBe(true);
+    });
+
+    it("fences a zombie duplicate: store ahead of expected under a foreign turnKey throws", async () => {
+        const h = makeHarness();
+        makeSessionLayout(h.sessionStateDir, h.sessionId);
+        await runHealthyTurn(h, 0, "t1");
+        await runHealthyTurn(h, 1, "t2");
+
+        // A stale attempt of turn 2 (scheduled against v1) wakes up after
+        // turn 2 already committed under a different key and turn 3 advanced
+        // the chain — re-running it would double-apply the turn.
+        fs.rmSync(h.sessionDir, { recursive: true, force: true });
+        await expect(runTurnPreamble(h.ctxFor(1, "t-zombie")))
+            .rejects.toMatchObject({ name: "SnapshotConflictError", storedVersion: 2 });
+    });
+
+    it("hydrates exactly the stored version when the marker is missing or stale", async () => {
+        const h = makeHarness();
+        makeSessionLayout(h.sessionStateDir, h.sessionId, "original");
+        await runHealthyTurn(h, 0, "t1");
+        await runHealthyTurn(h, 1, "t2");
+
+        // Simulate a different worker: no local dir at all.
+        fs.rmSync(h.sessionDir, { recursive: true, force: true });
+        const pre = await runTurnPreamble(h.ctxFor(2, "t3"));
+        expect(pre.kind).toBe("hydrated");
+        expect(pre.baseVersion).toBe(2);
+        expect(readSnapshotMarker(h.sessionDir)?.version).toBe(2);
+        expect(h.droppedWarm()).toBeGreaterThan(0);
+
+        // Simulate the stale-worker case (G4): marker rolled back to v1
+        // with old file content — must hydrate FORWARD, never resume stale.
+        writeSnapshotMarker(h.sessionDir, { version: 1 });
+        fs.writeFileSync(path.join(h.sessionDir, "events.jsonl"), "stale\n");
+        const pre2 = await runTurnPreamble(h.ctxFor(2, "t3b"));
+        expect(pre2.kind).toBe("hydrated");
+        expect(pre2.baseVersion).toBe(2);
+        expect(fs.readFileSync(path.join(h.sessionDir, "events.jsonl"), "utf8")).toContain('"m":"turn-t2"');
+    });
+
+    it("distrusts a sentinel'd dir even when the marker matches (F1: mid-turn crash, same worker)", async () => {
+        const h = makeHarness();
+        makeSessionLayout(h.sessionStateDir, h.sessionId);
+        await runHealthyTurn(h, 0, "t1");
+
+        // Crash mid-turn-2: sentinel written, body half-applied, no commit.
+        writeTurnSentinel(h.sessionDir, "t2");
+        fs.appendFileSync(path.join(h.sessionDir, "events.jsonl"), '{"half":"applied"}\n');
+
+        const pre = await runTurnPreamble(h.ctxFor(1, "t2"));
+        expect(pre.kind).toBe("hydrated"); // clean v1 restored, dirt discarded
+        expect(pre.baseVersion).toBe(1);
+        expect(readTurnSentinel(h.sessionDir)).toBeNull();
+        expect(fs.readFileSync(path.join(h.sessionDir, "events.jsonl"), "utf8")).not.toContain("half");
+    });
+
+    it("recovers an already-committed turn without re-running the body (F3/F4: crash after CAS)", async () => {
+        const h = makeHarness();
+        makeSessionLayout(h.sessionStateDir, h.sessionId);
+        await runHealthyTurn(h, 0, "t1");
+
+        // Attempt of turn 2 that crashed between CAS and marker update:
+        // run the real commit, then restore pre-commit local state.
+        const ctx = h.ctxFor(1, "t2");
+        writeTurnSentinel(h.sessionDir, "t2");
+        fs.appendFileSync(path.join(h.sessionDir, "events.jsonl"), '{"m":"turn-2"}\n');
+        const storedResult = { type: "completed", content: "turn 2 output" };
+        await runTurnCommit(ctx, 1, storedResult);
+        // Crash simulation: undo c3/c4 — marker back to v1, sentinel back.
+        writeSnapshotMarker(h.sessionDir, { version: 1, turnKey: "t1" });
+        writeTurnSentinel(h.sessionDir, "t2");
+
+        // duroxide retry of the SAME turn (same turnKey):
+        const pre = await runTurnPreamble(h.ctxFor(1, "t2"));
+        expect(pre.kind).toBe("already-committed");
+        expect(pre.version).toBe(2);
+        expect(pre.result).toEqual(storedResult);
+        expect(readSnapshotMarker(h.sessionDir)?.version).toBe(2);
+        expect(readTurnSentinel(h.sessionDir)).toBeNull();
+    });
+
+    it("falls back to fresh when the store is empty (W3), wiping dirty state", async () => {
+        const h = makeHarness();
+        makeSessionLayout(h.sessionStateDir, h.sessionId);
+        writeTurnSentinel(h.sessionDir, "t1");
+
+        const pre = await runTurnPreamble(h.ctxFor(3, "t1"));
+        expect(pre.kind).toBe("fresh");
+        expect(pre.lossy).toBe(true); // expected v3 but store had nothing
+        expect(fs.existsSync(h.sessionDir)).toBe(false);
+    });
+
+    it("trusts a clean local dir over an empty store (best available data)", async () => {
+        const h = makeHarness();
+        makeSessionLayout(h.sessionStateDir, h.sessionId, "only-copy");
+        writeSnapshotMarker(h.sessionDir, { version: 4 });
+        // Store empty (never committed / store lost) but dir is clean.
+        const pre = await runTurnPreamble(h.ctxFor(7, "t1"));
+        expect(pre.kind).toBe("warm");
+        expect(pre.baseVersion).toBe(4);
+        expect(fs.existsSync(h.sessionDir)).toBe(true);
+    });
+});
+
+describe("turn lifecycle commit", () => {
+    it("chains commits and round-trips the result via .ps-turn-commit.json", async () => {
+        const h = makeHarness();
+        makeSessionLayout(h.sessionStateDir, h.sessionId);
+        const r1 = await runHealthyTurn(h, 0, "t1");
+        const r2 = await runHealthyTurn(h, 1, "t2");
+        expect(r1.committed.version).toBe(1);
+        expect(r2.committed.version).toBe(2);
+        const marker = readSnapshotMarker(h.sessionDir);
+        expect(marker.version).toBe(2);
+        expect(marker.turnKey).toBe("t2");
+        expect(readTurnSentinel(h.sessionDir)).toBeNull();
+
+        // The committed result must ride inside the snapshot.
+        fs.rmSync(h.sessionDir, { recursive: true, force: true });
+        await h.store.hydrateSnapshot(h.sessionId);
+        const commitFile = JSON.parse(fs.readFileSync(path.join(h.sessionDir, ".ps-turn-commit.json"), "utf8"));
+        expect(commitFile.turnKey).toBe("t2");
+        expect(commitFile.result).toEqual(r2.result);
+    });
+
+    it("restores the winner's state and result when a racing duplicate committed first", async () => {
+        const h = makeHarness();
+        makeSessionLayout(h.sessionStateDir, h.sessionId);
+        await runHealthyTurn(h, 0, "t1");
+
+        // Racing attempt B (the winner) of turn 2: divergent content + its
+        // own recorded result, committed under the SAME turnKey.
+        const winnerResult = { type: "completed", content: "winner output" };
+        fs.appendFileSync(path.join(h.sessionDir, "events.jsonl"), '{"who":"winner"}\n');
+        const winnerCommitFile = path.join(h.sessionDir, ".ps-turn-commit.json");
+        fs.writeFileSync(winnerCommitFile, JSON.stringify({ turnKey: "t2", result: winnerResult }));
+        await h.store.commitSnapshot(h.sessionId, { baseVersion: 1, turnKey: "t2" });
+
+        // Loser attempt A: different local mutation, same turn, commits last.
+        fs.writeFileSync(path.join(h.sessionDir, "events.jsonl"), '{"who":"loser"}\n');
+        const ctx = h.ctxFor(1, "t2");
+        writeTurnSentinel(h.sessionDir, "t2");
+        const outcome = await runTurnCommit(ctx, 1, { type: "completed", content: "loser output" });
+
+        expect(outcome.alreadyCommitted).toBe(true);
+        expect(outcome.version).toBe(2);
+        expect(outcome.storedResult).toEqual(winnerResult); // §3.2 restore-not-replay
+        // Local state is the winner's lineage, marker matches, sentinel gone.
+        expect(fs.readFileSync(path.join(h.sessionDir, "events.jsonl"), "utf8")).toContain("winner");
+        expect(readSnapshotMarker(h.sessionDir)?.version).toBe(2);
+        expect(readTurnSentinel(h.sessionDir)).toBeNull();
+    });
+
+    it("F6b: crash between tar rename and meta rename leaves the store consistent at the old version", async () => {
+        const h = makeHarness();
+        makeSessionLayout(h.sessionStateDir, h.sessionId, "golden");
+        await runHealthyTurn(h, 0, "t1");
+        const v1Events = fs.readFileSync(path.join(h.sessionDir, "events.jsonl"), "utf8");
+
+        // Attempt of turn 2 that dies between the two renames.
+        process.env.PILOTSWARM_FAULT_INJECT = "store.commit.tar-renamed:throw";
+        const ctx = h.ctxFor(1, "t2");
+        writeTurnSentinel(h.sessionDir, "t2");
+        fs.appendFileSync(path.join(h.sessionDir, "events.jsonl"), '{"m":"turn2-partial"}\n');
+        await expect(runTurnCommit(ctx, 1, { type: "completed", content: "x" })).rejects.toThrow(/fault-injection/);
+        delete process.env.PILOTSWARM_FAULT_INJECT;
+
+        // The meta rename is the commit point: the store still reports v1
+        // and hydrates v1 bytes — never post-turn bytes under the old label.
+        const probe = await h.store.probeSnapshot(h.sessionId);
+        expect(probe.version).toBe(1);
+        expect(probe.turnKey).toBe("t1");
+        fs.rmSync(h.sessionDir, { recursive: true, force: true });
+        const hydrated = await h.store.hydrateSnapshot(h.sessionId);
+        expect(hydrated.version).toBe(1);
+        expect(fs.readFileSync(path.join(h.sessionDir, "events.jsonl"), "utf8")).toBe(v1Events);
+    });
+
+    it("throws on a foreign CAS advance (split-brain fence)", async () => {
+        const h = makeHarness();
+        makeSessionLayout(h.sessionStateDir, h.sessionId);
+        await runHealthyTurn(h, 0, "t1");
+
+        // A foreign worker advances the store to v2 out-of-band.
+        await h.store.commitSnapshot(h.sessionId, { baseVersion: 1, turnKey: "t-foreign" });
+
+        const ctx = h.ctxFor(1, "t-mine");
+        writeTurnSentinel(h.sessionDir, "t-mine");
+        await expect(runTurnCommit(ctx, 1, { type: "completed", content: "x" }))
+            .rejects.toMatchObject({ name: "SnapshotConflictError" });
+        // Sentinel must survive a failed commit — the retry distrusts the dir.
+        expect(readTurnSentinel(h.sessionDir)).not.toBeNull();
+    });
+
+    it("F2: crash before the CAS write → retry re-runs the turn from clean state", async () => {
+        const h = makeHarness();
+        makeSessionLayout(h.sessionStateDir, h.sessionId);
+        await runHealthyTurn(h, 0, "t1");
+
+        // Attempt: sentinel + mutation, then the CAS write itself aborts.
+        process.env.PILOTSWARM_FAULT_INJECT = "store.commit.before-write:throw";
+        const ctx = h.ctxFor(1, "t2");
+        writeTurnSentinel(h.sessionDir, "t2");
+        fs.appendFileSync(path.join(h.sessionDir, "events.jsonl"), '{"half":"turn2"}\n');
+        await expect(runTurnCommit(ctx, 1, { type: "completed", content: "x" })).rejects.toThrow(/fault-injection/);
+        delete process.env.PILOTSWARM_FAULT_INJECT;
+
+        // Retry (fresh activity): nothing committed, dirty dir discarded,
+        // body re-runs on clean v1 and commits v2.
+        const retry = await runHealthyTurn(h, 1, "t2", "turn2-retry");
+        expect(retry.pre.kind).toBe("hydrated");
+        expect(retry.committed.version).toBe(2);
+        const probe = await h.store.probeSnapshot(h.sessionId);
+        expect(probe.version).toBe(2);
+        expect(probe.turnKey).toBe("t2");
+    });
+
+    it("F6: crash mid-hydrate never leaves a plausible-looking dir", async () => {
+        const h = makeHarness();
+        makeSessionLayout(h.sessionStateDir, h.sessionId, "golden");
+        await runHealthyTurn(h, 0, "t1");
+        const goldenEvents = fs.readFileSync(path.join(h.sessionDir, "events.jsonl"), "utf8");
+
+        // Make local dirty + crash the hydrate right before the atomic swap.
+        writeTurnSentinel(h.sessionDir, "t2");
+        fs.writeFileSync(path.join(h.sessionDir, "events.jsonl"), "dirty\n");
+        process.env.PILOTSWARM_FAULT_INJECT = "store.hydrate.before-swap:throw";
+        await expect(runTurnPreamble(h.ctxFor(1, "t2"))).rejects.toThrow(/fault-injection/);
+        delete process.env.PILOTSWARM_FAULT_INJECT;
+
+        // The old dir survived intact (swap never happened), sentinel still
+        // marks it dirty; no half-extracted dir was left in its place.
+        expect(fs.readFileSync(path.join(h.sessionDir, "events.jsonl"), "utf8")).toBe("dirty\n");
+        expect(readTurnSentinel(h.sessionDir)).not.toBeNull();
+
+        // Retry completes the hydrate and restores golden state.
+        const pre = await runTurnPreamble(h.ctxFor(1, "t2"));
+        expect(pre.kind).toBe("hydrated");
+        expect(fs.readFileSync(path.join(h.sessionDir, "events.jsonl"), "utf8")).toBe(goldenEvents);
+        clearTurnSentinel(h.sessionDir);
+    });
+
+    it("chaos: random crash points over a 12-turn conversation stay gap-free and lossless", { timeout: 60_000 }, async () => {
+        const h = makeHarness();
+        makeSessionLayout(h.sessionStateDir, h.sessionId);
+        const faultPoints = [
+            null,
+            "store.commit.before-write:throw",
+            "store.hydrate.before-swap:throw",
+            null,
+            "turn.commit.after-cas:throw",
+        ];
+        let expected = 0;
+        for (let turn = 1; turn <= 12; turn++) {
+            const turnKey = `chaos-t${turn}`;
+            const fault = faultPoints[(turn * 7) % faultPoints.length];
+            if (fault) {
+                process.env.PILOTSWARM_FAULT_INJECT = fault;
+                try {
+                    await runHealthyTurn(h, expected, turnKey, `chaos-${turn}`);
+                } catch {
+                    // crashed attempt — a retry follows below
+                }
+                delete process.env.PILOTSWARM_FAULT_INJECT;
+            }
+            // The (re)try that duroxide would issue:
+            const attempt = await runHealthyTurn(h, expected, turnKey, `chaos-${turn}`);
+            const version = attempt.committed?.version ?? attempt.pre.version;
+            expect(version).toBe(expected + 1); // I1: gap-free chain
+            expected = version;
+        }
+        const probe = await h.store.probeSnapshot(h.sessionId);
+        expect(probe.version).toBe(12);
+        expect(readTurnSentinel(h.sessionDir)).toBeNull();
+        expect(readSnapshotMarker(h.sessionDir)?.version).toBe(12);
+    });
+});

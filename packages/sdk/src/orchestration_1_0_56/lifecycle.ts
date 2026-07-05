@@ -187,31 +187,13 @@ export function* dehydrateForNextTurn(
     }
 }
 
-/**
- * Session lifecycle protocol (§3.4 tier 3): release the worker affinity by
- * rotating the GUID — a pure orchestration-state change, no activity at all.
- * Nothing needs uploading (every completed turn committed its snapshot
- * inside the runTurn activity) and nothing needs telling the old worker:
- * its local copy is a cache reclaimed by its own eviction clock. The next
- * event hydrates wherever duroxide places the new key.
- */
-export function* releaseAffinity(
-    runtime: DurableSessionRuntime,
-    reason: string,
-    eventData?: Record<string, unknown>,
-): Generator<any, void, any> {
-    const { ctx, state } = runtime;
-    ctx.traceInfo(`[orch] releasing worker affinity (reason=${reason})`);
-    state.activeTimer = null;
-    state.affinityKey = yield ctx.newGuid();
-    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config);
+export function* maybeCheckpoint(runtime: DurableSessionRuntime): Generator<any, void, any> {
+    if (!runtime.state.blobEnabled || runtime.options.checkpointInterval < 0) return;
     try {
-        yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
-            eventType: "session.affinity_released",
-            data: { reason, snapshotVersion: state.snapshotVersion, ...(eventData ?? {}) },
-        }]);
+        runtime.ctx.traceInfo(`[orch] checkpoint (iteration=${runtime.state.iteration})`);
+        yield runtime.session.checkpoint();
     } catch (err: any) {
-        ctx.traceInfo(`[orch] affinity_released event failed (non-fatal): ${err.message ?? err}`);
+        runtime.ctx.traceInfo(`[orch] checkpoint failed: ${err.message ?? err}`);
     }
 }
 
@@ -456,7 +438,6 @@ export function buildContinueInput(
         affinityKey: state.affinityKey,
         preserveAffinityOnHydrate: state.preserveAffinityOnHydrate,
         needsHydration: state.needsHydration,
-        snapshotVersion: state.snapshotVersion,
         blobEnabled: state.blobEnabled,
         dehydrateThreshold: options.dehydrateThreshold,
         idleTimeout: options.idleTimeout,
@@ -507,6 +488,16 @@ export function buildContinueInputWithPrompt(
     });
 }
 
+function* checkpointBeforeWarmContinueAsNew(runtime: DurableSessionRuntime): Generator<any, void, any> {
+    if (!runtime.state.blobEnabled) return;
+    try {
+        runtime.ctx.traceInfo(`[orch] checkpoint before warm continueAsNew (iteration=${runtime.state.iteration})`);
+        yield runtime.session.checkpoint();
+    } catch (err: any) {
+        runtime.ctx.traceInfo(`[orch] warm continueAsNew checkpoint failed: ${err.message ?? err}`);
+    }
+}
+
 /** Capture the active timer state into a continueAsNew input and yield the version-bumped CAN. */
 export function* versionedContinueAsNew(
     runtime: DurableSessionRuntime,
@@ -530,9 +521,9 @@ export function* versionedContinueAsNew(
             ...(state.activeTimer.agentIds ? { agentIds: state.activeTimer.agentIds } : {}),
         };
     }
-    // Lifecycle protocol: no checkpoint before a warm CAN — every turn
-    // already committed its snapshot inside the runTurn activity, so a CAN
-    // carries no undurable state.
+    if (!canInput.needsHydration) {
+        yield* checkpointBeforeWarmContinueAsNew(runtime);
+    }
     canInput.sourceOrchestrationVersion = runtime.versions.currentVersion;
     yield runtime.ctx.continueAsNewVersioned(canInput, runtime.versions.latestVersion);
 }

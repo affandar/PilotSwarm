@@ -1,8 +1,18 @@
 import { execSync } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileTypeFromBuffer } from "file-type";
+import { faultPoint } from "./fault-injection.js";
+import {
+    SnapshotConflictError,
+    type SnapshotCommitInput,
+    type SnapshotCommitResult,
+    type SnapshotHydrateResult,
+    type SnapshotProbe,
+    type VersionedSnapshotStore,
+} from "./snapshot-protocol.js";
 
 const DEFAULT_SESSION_STATE_DIR = path.join(os.homedir(), ".copilot", "session-state");
 const DEFAULT_FILESYSTEM_STORE_DIR = path.join(os.homedir(), ".copilot", "session-store");
@@ -199,8 +209,13 @@ function buildMetadata(tarPath: string, sessionId: string, meta?: Record<string,
 function archiveSessionDir(sessionStateDir: string, sessionId: string, tarPath: string): void {
     // Exclude live `inuse.<pid>.lock` files: they are scoped to the live SDK
     // process and would resurrect a stale lock when extracted on another node.
+    // Exclude the lifecycle-protocol marker + sentinel: the marker describes
+    // the local dir *relative to the store* (a tarred copy is stale by
+    // construction) and the sentinel is a local dirty flag that must never
+    // ride into a snapshot. `.ps-turn-commit.json` is intentionally included.
     execSync(
-        `tar --exclude='inuse.*.lock' -czf "${tarPath}" -C "${sessionStateDir}" "${sessionId}"`,
+        `tar --exclude='inuse.*.lock' --exclude='.ps-snapshot-version*' --exclude='.ps-turn-inprogress*' ` +
+        `-czf "${tarPath}" -C "${sessionStateDir}" "${sessionId}"`,
     );
 }
 
@@ -327,7 +342,7 @@ async function waitForSessionSnapshot(
     return checkSessionSnapshot(sessionStateDir, sessionId);
 }
 
-export class FilesystemSessionStore implements SessionStateStore {
+export class FilesystemSessionStore implements SessionStateStore, VersionedSnapshotStore {
     private storeDir: string;
     private sessionStateDir: string;
 
@@ -345,8 +360,264 @@ export class FilesystemSessionStore implements SessionStateStore {
         return path.join(this.storeDir, metaFileName(sessionId));
     }
 
+    // ─── Versioned CAS contract (session-lifecycle-protocol §3.1) ───
+    //
+    // The meta.json rename is the SINGLE commit point: each commit writes a
+    // version-named tar (`<id>.v<N>.tar.gz`) first, then renames the meta
+    // that references it (`tarFile`). A crash between the two leaves an
+    // orphan tar and an untouched, fully consistent store — there is no
+    // torn tar-newer-than-meta window. A meta without `version` is a legacy
+    // snapshot (probe reports version 0 / legacy). Cross-process atomicity
+    // uses an mkdir lock with an owner token; the tar is built OUTSIDE the
+    // lock so the critical section is milliseconds, far below the reap age.
+
+    private casLockDir(sessionId: string): string {
+        return path.join(this.storeDir, `${sessionId}.cas.lock`);
+    }
+
+    private async withCasLock<T>(sessionId: string, fn: () => Promise<T> | T): Promise<T> {
+        const lockDir = this.casLockDir(sessionId);
+        const ownerToken = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        const ownerPath = path.join(lockDir, "owner");
+        const deadline = Date.now() + 10_000;
+        for (;;) {
+            try {
+                fs.mkdirSync(lockDir);
+                fs.writeFileSync(ownerPath, ownerToken);
+                break;
+            } catch (err: any) {
+                if (err?.code !== "EEXIST") throw err;
+                // Reap abandoned locks (holder crashed mid-commit). Rename
+                // first — atomic, so exactly one reaper wins and a freshly
+                // created lock can never be reaped by a stale-age racer.
+                try {
+                    const age = Date.now() - fs.statSync(lockDir).mtimeMs;
+                    if (age > 60_000) {
+                        const tomb = `${lockDir}.reaped-${ownerToken}`;
+                        fs.renameSync(lockDir, tomb);
+                        fs.rmSync(tomb, { recursive: true, force: true });
+                        continue;
+                    }
+                } catch {}
+                if (Date.now() > deadline) {
+                    throw new Error(`Timed out acquiring snapshot CAS lock for ${sessionId}`);
+                }
+                await new Promise((resolve) => setTimeout(resolve, 25));
+            }
+        }
+        try {
+            return await fn();
+        } finally {
+            // Release only if we still own the lock (it may have been
+            // reaped and re-acquired by another process while we ran).
+            try {
+                if (fs.readFileSync(ownerPath, "utf8") === ownerToken) {
+                    fs.rmSync(lockDir, { recursive: true, force: true });
+                }
+            } catch {}
+        }
+    }
+
+    private readStoredMeta(sessionId: string): (SessionMetadata & { version?: number; turnKey?: string; contentHash?: string; tarFile?: string }) | null {
+        try {
+            return JSON.parse(fs.readFileSync(this.metaPath(sessionId), "utf8"));
+        } catch {
+            return null;
+        }
+    }
+
+    /** The tar the current meta points at: version-named or the legacy path. */
+    private currentTarPath(sessionId: string, meta: { tarFile?: string } | null): string {
+        if (meta?.tarFile) return path.join(this.storeDir, path.basename(String(meta.tarFile)));
+        return this.tarPath(sessionId);
+    }
+
+    private probeUnlocked(sessionId: string): SnapshotProbe & { meta: ReturnType<FilesystemSessionStore["readStoredMeta"]> } {
+        const meta = this.readStoredMeta(sessionId);
+        const tarExists = fs.existsSync(this.currentTarPath(sessionId, meta));
+        if (!tarExists) return { exists: false, version: 0, meta: null };
+        const version = Number(meta?.version);
+        if (!Number.isFinite(version) || version < 1) {
+            return { exists: true, version: 0, legacy: true, meta };
+        }
+        return {
+            exists: true,
+            version,
+            ...(meta?.turnKey ? { turnKey: String(meta.turnKey) } : {}),
+            ...(meta?.contentHash ? { contentHash: String(meta.contentHash) } : {}),
+            meta,
+        };
+    }
+
+    async probeSnapshot(sessionId: string): Promise<SnapshotProbe> {
+        const { meta: _meta, ...probe } = this.probeUnlocked(sessionId);
+        return probe;
+    }
+
+    async commitSnapshot(sessionId: string, input: SnapshotCommitInput): Promise<SnapshotCommitResult> {
+        const sessionDir = path.join(this.sessionStateDir, sessionId);
+        const snapshot = await waitForSessionSnapshot(this.sessionStateDir, sessionId);
+        if (!snapshot.ready) {
+            throw new Error(
+                `Session state directory not ready during commit: ${sessionId} (${sessionDir}). ` +
+                `Missing: ${snapshot.missing.join(", ") || "unknown"}`,
+            );
+        }
+
+        // Stage the tar OUTSIDE the lock, under a per-writer unique name:
+        // concurrent writers can never interleave bytes into each other's
+        // staging files, and the lock hold time stays in milliseconds.
+        const stagedTar = path.join(
+            this.storeDir,
+            `${sessionId}.staging-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.tar.gz`,
+        );
+        try {
+            faultPoint("store.commit.before-write");
+            archiveSessionDir(this.sessionStateDir, sessionId, stagedTar);
+            const contentHash = (() => {
+                const hash = crypto.createHash("sha256");
+                hash.update(fs.readFileSync(stagedTar));
+                return hash.digest("hex");
+            })();
+
+            return await this.withCasLock(sessionId, () => {
+                const probe = this.probeUnlocked(sessionId);
+                const storedTurnKey = probe.turnKey;
+
+                if (probe.exists && !probe.legacy) {
+                    if (probe.version === input.baseVersion + 1 && storedTurnKey === input.turnKey) {
+                        return {
+                            version: probe.version,
+                            contentHash: probe.contentHash ?? "",
+                            alreadyCommitted: true,
+                        };
+                    }
+                    if (probe.version !== input.baseVersion) {
+                        throw new SnapshotConflictError(sessionId, input.baseVersion, probe.version, storedTurnKey);
+                    }
+                } else if (probe.exists && probe.legacy) {
+                    // Legacy (unversioned) snapshot counts as version 0.
+                    if (input.baseVersion !== 0) {
+                        throw new SnapshotConflictError(sessionId, input.baseVersion, 0);
+                    }
+                }
+                // Version: stored+1 normally; legacy restarts at 1; a missing
+                // snapshot with baseVersion > 0 means the store lost data —
+                // continue at baseVersion+1 to keep the chain monotonic.
+                const version = probe.exists
+                    ? probe.version + 1
+                    : input.baseVersion + 1;
+
+                const versionedTarName = `${sessionId}.v${version}.tar.gz`;
+                const versionedTarPath = path.join(this.storeDir, versionedTarName);
+                const previousTar = probe.exists ? this.currentTarPath(sessionId, probe.meta) : null;
+                const metadata = {
+                    ...buildMetadata(stagedTar, sessionId, { reason: "turn-commit" }),
+                    version,
+                    turnKey: input.turnKey,
+                    contentHash,
+                    tarFile: versionedTarName,
+                };
+                fs.renameSync(stagedTar, versionedTarPath);
+                faultPoint("store.commit.tar-renamed");
+                const tmpMeta = `${this.metaPath(sessionId)}.tmp-${process.pid}-${Date.now()}`;
+                fs.writeFileSync(tmpMeta, JSON.stringify(metadata));
+                fs.renameSync(tmpMeta, this.metaPath(sessionId)); // ← the commit point
+                faultPoint("store.commit.after-write");
+                // GC the superseded tar (best-effort; never the one we wrote).
+                if (previousTar && previousTar !== versionedTarPath) {
+                    try { fs.unlinkSync(previousTar); } catch {}
+                }
+                return { version, contentHash, alreadyCommitted: false };
+            });
+        } finally {
+            try { fs.unlinkSync(stagedTar); } catch {}
+        }
+    }
+
+    async hydrateSnapshot(sessionId: string): Promise<SnapshotHydrateResult> {
+        // Read tar + meta as one consistent unit vs. concurrent commits.
+        const { stagedTar, meta } = await this.withCasLock(sessionId, () => {
+            const probe = this.probeUnlocked(sessionId);
+            if (!probe.exists) {
+                throw new Error(`Session archive not found: ${sessionId}`);
+            }
+            const staged = path.join(os.tmpdir(), `ps-hydrate-${sessionId}-${process.pid}-${Date.now()}.tar.gz`);
+            fs.copyFileSync(this.currentTarPath(sessionId, probe.meta), staged);
+            return { stagedTar: staged, meta: probe.meta };
+        });
+        const sessionDir = path.join(this.sessionStateDir, sessionId);
+
+        try {
+            // Integrity: the bytes we copied must be the bytes the meta
+            // describes (detects torn legacy writes and disk corruption).
+            const expectedHash = meta?.contentHash ? String(meta.contentHash) : null;
+            if (expectedHash) {
+                const actual = crypto.createHash("sha256").update(fs.readFileSync(stagedTar)).digest("hex");
+                if (actual !== expectedHash) {
+                    throw new Error(
+                        `Snapshot integrity check failed for ${sessionId}: tar sha256 ${actual} != stored ${expectedHash}`,
+                    );
+                }
+            }
+
+            // Atomic replace: extract into a temp root, then swap dirs. A
+            // crash mid-extract leaves only the temp root; a crash between
+            // rm and rename leaves the dir ABSENT (self-healing: the next
+            // preamble re-hydrates) — never a plausible-looking partial.
+            fs.mkdirSync(this.sessionStateDir, { recursive: true });
+            const tempRoot = fs.mkdtempSync(path.join(this.sessionStateDir, `.ps-hydrate-${sessionId}-`));
+            try {
+                extractSessionArchive(tempRoot, stagedTar);
+                const extracted = path.join(tempRoot, sessionId);
+                if (!fs.existsSync(extracted)) {
+                    throw new Error(`Snapshot archive for ${sessionId} did not contain the session directory`);
+                }
+                faultPoint("store.hydrate.before-swap");
+                fs.rmSync(sessionDir, { recursive: true, force: true });
+                fs.renameSync(extracted, sessionDir);
+            } finally {
+                fs.rmSync(tempRoot, { recursive: true, force: true });
+            }
+        } finally {
+            try { fs.unlinkSync(stagedTar); } catch {}
+        }
+
+        const version = Number(meta?.version);
+        const hasVersion = Number.isFinite(version) && version >= 1;
+        return {
+            version: hasVersion ? version : 0,
+            ...(meta?.turnKey ? { turnKey: String(meta.turnKey) } : {}),
+            ...(meta?.contentHash ? { contentHash: String(meta.contentHash) } : {}),
+            ...(hasVersion ? {} : { legacy: true }),
+        };
+    }
+
+    /**
+     * True when the store holds a VERSIONED snapshot for this session. The
+     * legacy write paths below must never clobber one: the versioned chain
+     * is CAS-protected truth that another worker may have advanced, and an
+     * unconditional legacy overwrite would both destroy the version
+     * metadata and potentially roll the content back (review findings:
+     * unfenced-legacy-write class).
+     */
+    private hasVersionedSnapshot(sessionId: string): boolean {
+        const probe = this.probeUnlocked(sessionId);
+        return probe.exists && !probe.legacy;
+    }
+
     async dehydrate(sessionId: string, meta?: Record<string, unknown>): Promise<void> {
         const sessionDir = path.join(this.sessionStateDir, sessionId);
+        if (this.hasVersionedSnapshot(sessionId)) {
+            // Versioned-snapshot fence: the committed chain already holds
+            // this session's durable state. Dehydrate degrades to release —
+            // free the local files, write nothing.
+            console.warn(
+                `[FilesystemSessionStore] dehydrate(${sessionId}) skipped upload: a versioned snapshot exists; releasing local files only`,
+            );
+            fs.rmSync(sessionDir, { recursive: true, force: true });
+            return;
+        }
         const snapshot = await waitForSessionSnapshot(this.sessionStateDir, sessionId);
         if (!snapshot.ready) {
             throw new Error(
@@ -355,19 +626,25 @@ export class FilesystemSessionStore implements SessionStateStore {
             );
         }
 
+        // Staged write + rename: a concurrent reader never sees a torn tar.
         const tarPath = this.tarPath(sessionId);
-        archiveSessionDir(this.sessionStateDir, sessionId, tarPath);
-        if (!fs.existsSync(tarPath)) {
-            throw new Error(`Session archive was not created during dehydrate: ${sessionId} (${tarPath})`);
+        const staged = `${tarPath}.staging-${process.pid}-${Date.now()}`;
+        archiveSessionDir(this.sessionStateDir, sessionId, staged);
+        if (!fs.existsSync(staged)) {
+            throw new Error(`Session archive was not created during dehydrate: ${sessionId} (${staged})`);
         }
-        const metadata = buildMetadata(tarPath, sessionId, meta);
-        fs.writeFileSync(this.metaPath(sessionId), JSON.stringify(metadata));
+        const metadata = buildMetadata(staged, sessionId, meta);
+        fs.renameSync(staged, tarPath);
+        const tmpMeta = `${this.metaPath(sessionId)}.tmp-${process.pid}-${Date.now()}`;
+        fs.writeFileSync(tmpMeta, JSON.stringify(metadata));
+        fs.renameSync(tmpMeta, this.metaPath(sessionId));
         fs.rmSync(sessionDir, { recursive: true, force: true });
     }
 
     async hydrate(sessionId: string): Promise<void> {
         const sessionDir = path.join(this.sessionStateDir, sessionId);
-        const tarPath = this.tarPath(sessionId);
+        const meta = this.readStoredMeta(sessionId);
+        const tarPath = this.currentTarPath(sessionId, meta);
         if (!fs.existsSync(tarPath)) {
             throw new Error(`Session archive not found: ${sessionId}`);
         }
@@ -380,11 +657,23 @@ export class FilesystemSessionStore implements SessionStateStore {
     async checkpoint(sessionId: string): Promise<void> {
         const sessionDir = path.join(this.sessionStateDir, sessionId);
         if (!fs.existsSync(sessionDir)) return;
+        if (this.hasVersionedSnapshot(sessionId)) {
+            // Versioned-snapshot fence: per-turn commits supersede legacy
+            // checkpoints; overwriting would destroy the CAS metadata.
+            console.warn(
+                `[FilesystemSessionStore] checkpoint(${sessionId}) skipped: a versioned snapshot exists`,
+            );
+            return;
+        }
 
         const tarPath = this.tarPath(sessionId);
-        archiveSessionDir(this.sessionStateDir, sessionId, tarPath);
-        const metadata = buildMetadata(tarPath, sessionId, { reason: "checkpoint" });
-        fs.writeFileSync(this.metaPath(sessionId), JSON.stringify(metadata));
+        const staged = `${tarPath}.staging-${process.pid}-${Date.now()}`;
+        archiveSessionDir(this.sessionStateDir, sessionId, staged);
+        const metadata = buildMetadata(staged, sessionId, { reason: "checkpoint" });
+        fs.renameSync(staged, tarPath);
+        const tmpMeta = `${this.metaPath(sessionId)}.tmp-${process.pid}-${Date.now()}`;
+        fs.writeFileSync(tmpMeta, JSON.stringify(metadata));
+        fs.renameSync(tmpMeta, this.metaPath(sessionId));
     }
     async getSnapshotSizeBytes(sessionId: string): Promise<number | undefined> {
         try {
@@ -397,7 +686,7 @@ export class FilesystemSessionStore implements SessionStateStore {
         } catch {}
 
         try {
-            const tarPath = this.tarPath(sessionId);
+            const tarPath = this.currentTarPath(sessionId, this.readStoredMeta(sessionId));
             if (fs.existsSync(tarPath)) {
                 const sizeBytes = fs.statSync(tarPath).size;
                 if (Number.isFinite(sizeBytes)) return sizeBytes;
@@ -408,10 +697,12 @@ export class FilesystemSessionStore implements SessionStateStore {
     }
 
     async exists(sessionId: string): Promise<boolean> {
-        return fs.existsSync(this.tarPath(sessionId));
+        return fs.existsSync(this.currentTarPath(sessionId, this.readStoredMeta(sessionId)));
     }
 
     async delete(sessionId: string): Promise<void> {
+        const meta = this.readStoredMeta(sessionId);
+        try { fs.unlinkSync(this.currentTarPath(sessionId, meta)); } catch {}
         try { fs.unlinkSync(this.tarPath(sessionId)); } catch {}
         try { fs.unlinkSync(this.metaPath(sessionId)); } catch {}
     }

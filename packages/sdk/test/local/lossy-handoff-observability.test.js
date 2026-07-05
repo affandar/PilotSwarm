@@ -29,7 +29,7 @@ describe("lossy handoff observability", () => {
         assertIncludes(orchestration, "retryCount <= COPILOT_CONNECTION_CLOSED_MAX_RETRIES", "the latest orchestration should allow the full three retries");
         assertIncludes(orchestration, "yield ctx.scheduleTimer(COPILOT_CONNECTION_CLOSED_RETRY_DELAY_SECONDS * 1000);", "closed-connection retries should use the fixed 15 second delay");
         assertIncludes(orchestration, 'eventType: "session.lossy_handoff"', "closed-connection exhaustion should record a dedicated lossy handoff event");
-        assertIncludes(orchestration, 'yield* dehydrateForNextTurn("lossy_handoff", true, {', "closed-connection exhaustion should dehydrate for worker handoff");
+        assertIncludes(orchestration, 'yield* releaseAffinity(runtime, "lossy_handoff", {', "closed-connection exhaustion should release affinity for worker handoff (state is already committed per turn)");
     });
 
     it("surfaces lossy handoffs and detailed dehydration reasons in the TUI", () => {

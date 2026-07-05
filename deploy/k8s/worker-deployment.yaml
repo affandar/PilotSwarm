@@ -18,6 +18,10 @@ spec:
         app.kubernetes.io/name: pilotswarm
         app.kubernetes.io/component: worker
     spec:
+      # Lifecycle protocol drain (60s budget) + margin: SIGTERM triggers
+      # gracefulShutdown, which waits for in-flight turns to finish and
+      # commit before releasing sessions. Default 30s would kill mid-turn.
+      terminationGracePeriodSeconds: 90
       securityContext:
         runAsUser: 1000
         runAsGroup: 1000

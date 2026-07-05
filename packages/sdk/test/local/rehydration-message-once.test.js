@@ -192,7 +192,11 @@ describe("rehydration message reuse", () => {
 
         expect(firstTurnText).toContain("The previous worker lost the live Copilot connection");
         expect(secondTurnText).not.toContain("The previous worker lost the live Copilot connection");
-        expect(secondTurnText).toContain("The session was dehydrated and has been rehydrated on a new worker");
+        // Lifecycle protocol (1.0.57): the orchestration no longer injects the
+        // generic rehydration wrapper on subsequent turns — the worker-side
+        // preamble adds a notice only when it actually hydrates. The second
+        // turn is a plain cron wake-up.
+        expect(secondTurnText).not.toContain("The session was dehydrated and has been rehydrated on a new worker");
         expect(secondTurnText).toContain("polling custom opus46 lead handoff");
     });
 
