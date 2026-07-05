@@ -98,8 +98,51 @@ The `version` column implements the lifecycle protocol's store contract
   warm probe is what makes the protocol's hold-tier resume cost one indexed
   SELECT of a BIGINT instead of a multi-MB transfer.
 
-(The Azure provider can approximate the same contract with blob metadata +
-ETag-conditional writes; PG is simply the backend where it is native.)
+**Object-store construction (Azure Blob).** Blob storage has no server-side
+counter, but it has the two primitives the contract needs: every blob
+carries an opaque **ETag** that changes on every write, and write
+operations accept conditional headers (`If-Match: <etag>` — succeed only if
+the blob is unchanged since it was read; `If-None-Match: *` — succeed only
+on create). The version is an explicit counter stored in blob **metadata**,
+written atomically with the content (Put Blob sets body + metadata in one
+operation). The ETag is never the version — it is opaque and changes on
+*any* write including metadata-only ones; it serves purely as the
+atomicity token that binds a read to the write that follows it.
+
+- Layout: `sessions/<id>.tar.br` with metadata
+  `{version, turnkey, contenthash, resultmeta}`. Blob metadata is capped at
+  ~8 KB total, so `resultmeta` must stay small — the truncation fallback in
+  the protocol doc's open questions binds sooner here than on PG.
+- `hydrate({localVersion})`: HEAD → read `version` + ETag; equal → `warm`
+  with zero body transfer (the probe costs one metadata read); else GET
+  (body + metadata arrive in one round trip).
+- `checkpoint({expectedVersion, turnKey, resultMeta})` — an optimistic CAS
+  loop:
+  1. HEAD → `{etag E, version v, turnkey k}`.
+  2. `v == expectedVersion` → single-shot **Put Blob** (new tar + metadata
+     `{version: v+1, turnkey, …}`) with `If-Match: E`. Success = committed
+     exactly once. A 412 Precondition Failed means a racing write landed
+     between the HEAD and the PUT → re-HEAD, re-evaluate.
+  3. `v == expectedVersion + 1 && k == turnKey` → the caller's own prior or
+     racing attempt already committed → idempotent success, return the
+     stored values.
+  4. Anything else → split-brain, loud failure.
+  The first-ever write uses `If-None-Match: *` (atomic create, version 1).
+- Two footguns the implementation must respect: use **single-shot Put
+  Blob**, never staged Put Block / Put Block List — the condition is only
+  evaluated at the commit step, and concurrent writers staging blocks under
+  the same blob name can interleave (the ≤64 MB snapshot cap fits
+  single-shot comfortably); and never bump the version via Set Blob
+  Metadata — that would decouple the counter from the content it
+  describes.
+- Legacy version-less writes (1.0.56 dehydrates) run the same loop with
+  `expectedVersion := whatever the HEAD returned`, keeping the counter
+  monotonic under mixed old/new writers.
+
+Net: the identical contract at two round trips per commit (HEAD +
+conditional PUT) plus retries under contention, versus PG's single
+conditioned UPDATE with the row returned on mismatch. Both backends
+satisfy the protocol; PG is simply where the contract is one statement.
 
 New providers `PgSessionStateStore` / `PgArtifactStore` implement the existing
 interfaces; `storage-providers.ts` selects them via explicit config
