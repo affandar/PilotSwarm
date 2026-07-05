@@ -523,28 +523,31 @@ turn itself is W1. **Graceful drain is therefore a latency and
 side-effect-duplication optimization, not a correctness requirement** — the
 safety story never depends on the platform honoring its grace period.
 
-**What duroxide exposes today** is one fused primitive, not a two-phase
-API. `shutdown(timeoutMs)` does: set the shutdown flag (dispatchers finish
-their in-flight item, claim nothing new) → **sleep the full timeout,
-unconditionally** → abort whatever still runs. `shutdown(0)` is an
-immediate abort-all. So "graceful stop, then abort" exists, but only with a
-fixed sleep: there is no early return on quiescence, no way to *observe*
-quiescence (`metricsSnapshot()` exposes cumulative fetched/completed
-counters from which in-flight could be inferred, but the flag can't be set
-without committing to the fused call, which must not be invoked
-concurrently), and no standalone "begin drain" that returns immediately.
-Consequence: every rollout pays the full drain budget in wall-clock even if
-all turns finish in seconds.
+**What duroxide exposes today** is one fused primitive,
+`shutdown(timeoutMs)`, whose graceful path is genuinely early-quiescing on
+the work side but not on the caller side:
 
-Upstream proposal (duroxide + node binding), either of:
-- **Early-exit `shutdown`** — return as soon as in-flight reaches zero
-  (backward compatible, one-line semantic change); or
-- **Two-phase drain** — `beginDrain()` (set the flag, return immediately) +
-  `awaitQuiescence(timeoutMs)` (resolve when in-flight = 0 or on timeout),
-  with the existing `shutdown(0)` as the abort.
+- *The machinery drains early.* Each dispatcher slot checks the shutdown
+  flag at the top of its loop and exits immediately
+  (`dispatchers/worker.rs:210`); the min-poll-interval sleep is skipped
+  once the flag is set (`worker.rs:256`). In-flight items are awaited, not
+  aborted: a slot finishes its current activity, then exits. Work stops as
+  fast as it can, with no lingering polls.
+- *The call does not return early.* `Runtime::shutdown` sets the flag and
+  then does an unconditional `tokio::time::sleep(timeout_ms)`
+  (`runtime/mod.rs:1029`) before sweeping up — it never awaits the join
+  handles, so the caller blocks for the full budget even when every
+  dispatcher exited in the first 50 ms. The post-sleep abort sweep only
+  bites tasks still running past the budget. `shutdown(0)` is an
+  immediate abort-all.
 
-Until one lands, the drain works correctly but slowly — a rollout-speed
-tax, not a correctness issue.
+So the drain sequence above is already safe and prompt *for the work*; the
+only defect is deploy wall-clock — the pod waits the full drain budget
+before exiting regardless. The upstream fix is correspondingly tiny:
+replace the fixed sleep with awaiting the join handles under a timeout
+(`tokio::time::timeout(budget, join_all(joins))`, then abort leftovers) —
+backward compatible, a few lines in `Runtime::shutdown`, nothing needed in
+the node binding.
 
 ### 3.9 Delta summary
 
