@@ -56,13 +56,16 @@ import {
     type SessionStateStore,
     type ArtifactStore,
     type ArtifactUploadOptions,
+    DEFAULT_SNAPSHOT_CODEC,
     archiveSessionDir,
     buildMetadata,
     extractSessionArchive,
     isBinaryArtifactContentType,
     normalizeArtifactContentType,
     resolveArtifactUpload,
+    resolveSnapshotCodec,
     waitForSessionSnapshot,
+    type SnapshotCodec,
 } from "./session-store.js";
 
 function formatBlobLogValue(value: unknown): string {
@@ -230,22 +233,26 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
             );
         }
 
-        const tarPath = path.join(os.tmpdir(), `${sessionId}.tar.gz`);
+        const codec = DEFAULT_SNAPSHOT_CODEC;
+        const tarPath = path.join(os.tmpdir(), `${sessionId}.tar`);
         try {
-            archiveSessionDir(this.sessionStateDir, sessionId, tarPath);
+            const { rawSizeBytes } = await archiveSessionDir(this.sessionStateDir, sessionId, tarPath, codec);
             const tarSizeBytes = fs.existsSync(tarPath) ? fs.statSync(tarPath).size : undefined;
 
-            // Upload tar
+            // Upload tar. The `pscodec` metadata on the tar blob is what the
+            // read path decodes by — brotli has no magic bytes, so an
+            // unversioned legacy blob without it is assumed gzip.
             const tarBlob = this.containerClient.getBlockBlobClient(`${sessionId}.tar.gz`);
             logBlobStore("info", sessionId, "dehydrate upload tar", {
                 container: this.containerName,
                 blob: `${sessionId}.tar.gz`,
                 tarSizeBytes,
+                codec,
             });
-            await tarBlob.uploadFile(tarPath);
+            await tarBlob.uploadFile(tarPath, { metadata: { pscodec: codec, psraw: String(rawSizeBytes) } });
 
             // Upload metadata
-            const metadata: SessionMetadata = buildMetadata(tarPath, sessionId, meta);
+            const metadata: SessionMetadata = buildMetadata(tarPath, sessionId, { ...meta, codec, rawSizeBytes });
             this.snapshotSizeBySession.set(sessionId, metadata.sizeBytes);
             const metaBlob = this.containerClient.getBlockBlobClient(`${sessionId}.meta.json`);
             const metaJson = JSON.stringify(metadata);
@@ -291,15 +298,16 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
         }
 
         const tarBlob = this.containerClient.getBlockBlobClient(`${sessionId}.tar.gz`);
-        const tarPath = path.join(os.tmpdir(), `${sessionId}.tar.gz`);
+        const tarPath = path.join(os.tmpdir(), `${sessionId}.tar`);
 
         try {
             logBlobStore("info", sessionId, "hydrate download tar", {
                 container: this.containerName,
                 blob: `${sessionId}.tar.gz`,
             });
-            await tarBlob.downloadToFile(tarPath);
-            extractSessionArchive(this.sessionStateDir, tarPath);
+            const response = await tarBlob.downloadToFile(tarPath);
+            const codec = resolveSnapshotCodec((response.metadata as Record<string, string> | undefined)?.pscodec);
+            await extractSessionArchive(this.sessionStateDir, tarPath, codec);
             logBlobStore("info", sessionId, "hydrate complete", {
                 container: this.containerName,
                 restoredDir: sessionDir,
@@ -347,20 +355,21 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
             });
         }
 
-        const tarPath = path.join(os.tmpdir(), `${sessionId}.tar.gz`);
+        const codec = DEFAULT_SNAPSHOT_CODEC;
+        const tarPath = path.join(os.tmpdir(), `${sessionId}.tar`);
         try {
             logBlobStore("info", sessionId, "checkpoint start", {
                 container: this.containerName,
                 dir: sessionDir,
             });
-            archiveSessionDir(this.sessionStateDir, sessionId, tarPath);
+            const { rawSizeBytes } = await archiveSessionDir(this.sessionStateDir, sessionId, tarPath, codec);
             const tarSizeBytes = fs.existsSync(tarPath) ? fs.statSync(tarPath).size : undefined;
 
             const tarBlob = this.containerClient.getBlockBlobClient(`${sessionId}.tar.gz`);
-            await tarBlob.uploadFile(tarPath);
+            await tarBlob.uploadFile(tarPath, { metadata: { pscodec: codec, psraw: String(rawSizeBytes) } });
 
             // Update metadata to reflect checkpoint (not full dehydration)
-            const metadata: SessionMetadata = buildMetadata(tarPath, sessionId, { reason: "checkpoint" });
+            const metadata: SessionMetadata = buildMetadata(tarPath, sessionId, { reason: "checkpoint", codec, rawSizeBytes });
             this.snapshotSizeBySession.set(sessionId, metadata.sizeBytes);
             const metaBlob = this.containerClient.getBlockBlobClient(`${sessionId}.meta.json`);
             const metaJson = JSON.stringify(metadata);
@@ -475,16 +484,20 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
     private probeFromMetadata(
         metadata: Record<string, string> | undefined,
         etag: string | undefined,
-    ): SnapshotProbe & { etag?: string } {
+    ): SnapshotProbe & { etag?: string; codec?: SnapshotCodec } {
+        const codec = resolveSnapshotCodec(metadata?.pscodec);
+        const raw = Number(metadata?.psraw);
         const version = Number(metadata?.psver);
         if (!Number.isFinite(version) || version < 1) {
-            return { exists: true, version: 0, legacy: true, ...(etag ? { etag } : {}) };
+            return { exists: true, version: 0, legacy: true, codec, ...(etag ? { etag } : {}) };
         }
         return {
             exists: true,
             version,
             ...(metadata?.psturnkey ? { turnKey: metadata.psturnkey } : {}),
             ...(metadata?.pssha ? { contentHash: metadata.pssha } : {}),
+            ...(Number.isFinite(raw) ? { rawSizeBytes: raw } : {}),
+            codec,
             ...(etag ? { etag } : {}),
         };
     }
@@ -515,9 +528,10 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
             );
         }
 
-        const tarPath = path.join(os.tmpdir(), `ps-commit-${sessionId}-${process.pid}-${Date.now()}.tar.gz`);
+        const codec = DEFAULT_SNAPSHOT_CODEC;
+        const tarPath = path.join(os.tmpdir(), `ps-commit-${sessionId}-${process.pid}-${Date.now()}.tar`);
         try {
-            archiveSessionDir(this.sessionStateDir, sessionId, tarPath);
+            const { rawSizeBytes } = await archiveSessionDir(this.sessionStateDir, sessionId, tarPath, codec);
             const body = fs.readFileSync(tarPath);
             if (body.length > SessionBlobStore.SINGLE_SHOT_MAX_BYTES) {
                 throw new Error(
@@ -537,7 +551,12 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
                         version: head.version,
                         turnKey: input.turnKey,
                     });
-                    return { version: head.version, contentHash: head.contentHash ?? "", alreadyCommitted: true };
+                    return {
+                        version: head.version,
+                        contentHash: head.contentHash ?? "",
+                        ...(head.rawSizeBytes != null ? { rawSizeBytes: head.rawSizeBytes } : {}),
+                        alreadyCommitted: true,
+                    };
                 }
                 if (head.exists && head.version !== input.baseVersion) {
                     throw new SnapshotConflictError(sessionId, input.baseVersion, head.version, head.turnKey);
@@ -557,6 +576,8 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
                             psver: String(version),
                             psturnkey: input.turnKey,
                             pssha: contentHash,
+                            pscodec: codec,
+                            psraw: String(rawSizeBytes),
                         },
                     });
                     faultPoint("store.commit.after-write");
@@ -569,6 +590,8 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
                             version,
                             turnKey: input.turnKey,
                             contentHash,
+                            codec,
+                            rawSizeBytes,
                         };
                         this.snapshotSizeBySession.set(sessionId, metadata.sizeBytes);
                         const metaBlob = this.containerClient.getBlockBlobClient(`${sessionId}.meta.json`);
@@ -583,9 +606,11 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
                         version,
                         turnKey: input.turnKey,
                         tarSizeBytes: body.length,
+                        rawSizeBytes,
+                        codec,
                         attempt,
                     });
-                    return { version, contentHash, sizeBytes: body.length, alreadyCommitted: false };
+                    return { version, contentHash, sizeBytes: body.length, rawSizeBytes, alreadyCommitted: false };
                 } catch (error: any) {
                     // 412 Precondition Failed (If-Match lost the race) or
                     // 409 BlobAlreadyExists (If-None-Match create race):
@@ -612,7 +637,7 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
     async hydrateSnapshot(sessionId: string): Promise<SnapshotHydrateResult> {
         const sessionDir = path.join(this.sessionStateDir, sessionId);
         const blob = this.containerClient.getBlockBlobClient(this.snapshotBlobName(sessionId));
-        const tarPath = path.join(os.tmpdir(), `ps-hydrate-${sessionId}-${process.pid}-${Date.now()}.tar.gz`);
+        const tarPath = path.join(os.tmpdir(), `ps-hydrate-${sessionId}-${process.pid}-${Date.now()}.tar`);
 
         // One download response carries body + metadata consistently.
         let metadata: Record<string, string> | undefined;
@@ -621,11 +646,12 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
             const response = await blob.downloadToFile(tarPath, 0);
             metadata = response.metadata as Record<string, string> | undefined;
             try { tarSizeBytes = fs.statSync(tarPath).size; } catch {}
+            const codec = resolveSnapshotCodec(metadata?.pscodec);
 
             fs.mkdirSync(this.sessionStateDir, { recursive: true });
             const tempRoot = fs.mkdtempSync(path.join(this.sessionStateDir, `.ps-hydrate-${sessionId}-`));
             try {
-                extractSessionArchive(tempRoot, tarPath);
+                await extractSessionArchive(tempRoot, tarPath, codec);
                 const extracted = path.join(tempRoot, sessionId);
                 if (!fs.existsSync(extracted)) {
                     throw new Error(`Snapshot archive for ${sessionId} did not contain the session directory`);
@@ -650,6 +676,7 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
             ...(probe.turnKey ? { turnKey: probe.turnKey } : {}),
             ...(probe.contentHash ? { contentHash: probe.contentHash } : {}),
             ...(tarSizeBytes != null ? { sizeBytes: tarSizeBytes } : {}),
+            ...(probe.rawSizeBytes != null ? { rawSizeBytes: probe.rawSizeBytes } : {}),
             ...(probe.legacy ? { legacy: true } : {}),
         };
     }

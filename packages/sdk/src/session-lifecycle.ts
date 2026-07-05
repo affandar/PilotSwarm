@@ -57,8 +57,10 @@ export type TurnPreambleOutcome =
 export interface TurnCommitOutcome {
     version: number;
     contentHash: string;
-    /** Committed tar size — feeds session persistence stats. */
+    /** Committed (compressed) tar size — feeds session persistence stats. */
     sizeBytes?: number;
+    /** Uncompressed tar-stream size — feeds the compression-ratio stat. */
+    rawSizeBytes?: number;
     /** A racing/prior attempt of this same turn committed first. */
     alreadyCommitted: boolean;
     /**
@@ -303,6 +305,7 @@ export async function runTurnCommit(
                     version: committed.version,
                     contentHash: hydrated.contentHash ?? committed.contentHash,
                     ...(hydrated.sizeBytes != null ? { sizeBytes: hydrated.sizeBytes } : {}),
+                    ...(hydrated.rawSizeBytes != null ? { rawSizeBytes: hydrated.rawSizeBytes } : {}),
                     alreadyCommitted: true,
                     ...(commitFile && commitFile.turnKey === ctx.turnKey
                         ? { storedResult: commitFile.result }
@@ -322,6 +325,7 @@ export async function runTurnCommit(
                 version: committed.version,
                 contentHash: committed.contentHash,
                 ...(committed.sizeBytes != null ? { sizeBytes: committed.sizeBytes } : {}),
+                ...(committed.rawSizeBytes != null ? { rawSizeBytes: committed.rawSizeBytes } : {}),
                 alreadyCommitted: false,
             };
         } catch (error: unknown) {

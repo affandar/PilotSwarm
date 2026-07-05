@@ -145,6 +145,11 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "session_splash_mobile",
             sql: migration_0026_session_splash_mobile(schema),
         },
+        {
+            version: "0027",
+            name: "session_raw_size_bytes",
+            sql: migration_0027_session_raw_size_bytes(schema),
+        },
     ];
 }
 
@@ -4900,6 +4905,166 @@ BEGIN
     SELECT * FROM ${s}.cms_list_sessions() s
     WHERE s.group_id = p_group_id
     ORDER BY s.updated_at DESC, s.session_id DESC;
+END;
+$$ LANGUAGE plpgsql;
+`;
+}
+
+// ─── Migration 0027: Session Raw (Uncompressed) Snapshot Size ────
+//
+// Under the brotli-4 switch the stored snapshot size drops ~10-15x for
+// JSONL-heavy sessions. `raw_size_bytes` records the uncompressed
+// tar-stream size alongside the compressed `snapshot_size_bytes`, so
+// capacity trends stay continuous across the codec change and the Stats
+// pane can show stored/raw/ratio. Fed by the runTurn commit summary write
+// (and the legacy dehydrate path); read per-session (SELECT *) and rolled
+// up in the session-tree + fleet totals.
+function migration_0027_session_raw_size_bytes(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- 0027_session_raw_size_bytes: uncompressed snapshot size for the
+-- compression-ratio stat. All statements idempotent.
+
+ALTER TABLE ${s}.session_metrics
+    ADD COLUMN IF NOT EXISTS raw_size_bytes BIGINT NOT NULL DEFAULT 0;
+
+-- Recreate the backward-compat view so its frozen SELECT * column list
+-- picks up the new column (Postgres views do not auto-track base columns).
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.views
+        WHERE table_schema = '${schema}' AND table_name = 'session_metric_summaries'
+    ) THEN
+        EXECUTE 'DROP VIEW ${s}.session_metric_summaries';
+        EXECUTE 'CREATE VIEW ${s}.session_metric_summaries AS SELECT * FROM ${s}.session_metrics';
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Upsert: set raw_size_bytes when provided (absolute, like snapshotSizeBytes).
+CREATE OR REPLACE FUNCTION ${s}.cms_upsert_session_metric_summary(
+    p_session_id TEXT,
+    p_updates    JSONB
+) RETURNS VOID AS $$
+DECLARE
+    v_snapshot       BIGINT  := COALESCE((p_updates->>'snapshotSizeBytes')::BIGINT, 0);
+    v_raw            BIGINT  := COALESCE((p_updates->>'rawSizeBytes')::BIGINT, 0);
+    v_dehydration    INT     := COALESCE((p_updates->>'dehydrationCountIncrement')::INT, 0);
+    v_hydration      INT     := COALESCE((p_updates->>'hydrationCountIncrement')::INT, 0);
+    v_lossy          INT     := COALESCE((p_updates->>'lossyHandoffCountIncrement')::INT, 0);
+    v_tokens_in      BIGINT  := COALESCE((p_updates->>'tokensInputIncrement')::BIGINT, 0);
+    v_tokens_out     BIGINT  := COALESCE((p_updates->>'tokensOutputIncrement')::BIGINT, 0);
+    v_tokens_cread   BIGINT  := COALESCE((p_updates->>'tokensCacheReadIncrement')::BIGINT, 0);
+    v_tokens_cwrite  BIGINT  := COALESCE((p_updates->>'tokensCacheWriteIncrement')::BIGINT, 0);
+    v_set_dehydrated BOOLEAN := COALESCE((p_updates->>'lastDehydratedAt')::BOOLEAN, FALSE);
+    v_set_hydrated   BOOLEAN := COALESCE((p_updates->>'lastHydratedAt')::BOOLEAN, FALSE);
+    v_set_checkpoint BOOLEAN := COALESCE((p_updates->>'lastCheckpointAt')::BOOLEAN, FALSE);
+BEGIN
+    INSERT INTO ${s}.session_metrics (
+        session_id, snapshot_size_bytes, raw_size_bytes,
+        dehydration_count, hydration_count, lossy_handoff_count,
+        tokens_input, tokens_output, tokens_cache_read, tokens_cache_write
+    ) VALUES (
+        p_session_id, v_snapshot, v_raw,
+        v_dehydration, v_hydration, v_lossy,
+        v_tokens_in, v_tokens_out, v_tokens_cread, v_tokens_cwrite
+    )
+    ON CONFLICT (session_id) DO UPDATE SET
+        snapshot_size_bytes = CASE
+            WHEN p_updates ? 'snapshotSizeBytes'
+            THEN v_snapshot
+            ELSE ${s}.session_metrics.snapshot_size_bytes
+        END,
+        raw_size_bytes = CASE
+            WHEN p_updates ? 'rawSizeBytes'
+            THEN v_raw
+            ELSE ${s}.session_metrics.raw_size_bytes
+        END,
+        dehydration_count   = ${s}.session_metrics.dehydration_count   + v_dehydration,
+        hydration_count     = ${s}.session_metrics.hydration_count     + v_hydration,
+        lossy_handoff_count = ${s}.session_metrics.lossy_handoff_count + v_lossy,
+        tokens_input        = ${s}.session_metrics.tokens_input        + v_tokens_in,
+        tokens_output       = ${s}.session_metrics.tokens_output       + v_tokens_out,
+        tokens_cache_read   = ${s}.session_metrics.tokens_cache_read   + v_tokens_cread,
+        tokens_cache_write  = ${s}.session_metrics.tokens_cache_write  + v_tokens_cwrite,
+        last_dehydrated_at  = CASE WHEN v_set_dehydrated THEN now() ELSE ${s}.session_metrics.last_dehydrated_at END,
+        last_hydrated_at    = CASE WHEN v_set_hydrated   THEN now() ELSE ${s}.session_metrics.last_hydrated_at   END,
+        last_checkpoint_at  = CASE WHEN v_set_checkpoint  THEN now() ELSE ${s}.session_metrics.last_checkpoint_at  END,
+        updated_at          = now();
+END;
+$$ LANGUAGE plpgsql;
+
+-- Session-tree rollup (+ total_raw_size_bytes). Feeds the Stats pane TREE block.
+DROP FUNCTION IF EXISTS ${s}.cms_get_session_tree_stats(TEXT);
+CREATE FUNCTION ${s}.cms_get_session_tree_stats(
+    p_session_id TEXT
+) RETURNS TABLE (
+    session_count              INT,
+    total_tokens_input         BIGINT,
+    total_tokens_output        BIGINT,
+    total_tokens_cache_read    BIGINT,
+    total_tokens_cache_write   BIGINT,
+    total_dehydration_count    INT,
+    total_hydration_count      INT,
+    total_lossy_handoff_count  INT,
+    total_snapshot_size_bytes   BIGINT,
+    total_raw_size_bytes        BIGINT
+) AS $$
+BEGIN
+    RETURN QUERY
+    WITH RECURSIVE tree AS (
+        SELECT m.session_id FROM ${s}.session_metrics m
+        WHERE m.session_id = p_session_id
+        UNION ALL
+        SELECT m.session_id FROM ${s}.session_metrics m
+        INNER JOIN tree t ON m.parent_session_id = t.session_id
+    )
+    SELECT
+        COUNT(*)::int                                    AS session_count,
+        COALESCE(SUM(m.tokens_input), 0)::bigint        AS total_tokens_input,
+        COALESCE(SUM(m.tokens_output), 0)::bigint       AS total_tokens_output,
+        COALESCE(SUM(m.tokens_cache_read), 0)::bigint   AS total_tokens_cache_read,
+        COALESCE(SUM(m.tokens_cache_write), 0)::bigint  AS total_tokens_cache_write,
+        COALESCE(SUM(m.dehydration_count), 0)::int      AS total_dehydration_count,
+        COALESCE(SUM(m.hydration_count), 0)::int        AS total_hydration_count,
+        COALESCE(SUM(m.lossy_handoff_count), 0)::int    AS total_lossy_handoff_count,
+        COALESCE(SUM(m.snapshot_size_bytes), 0)::bigint AS total_snapshot_size_bytes,
+        COALESCE(SUM(m.raw_size_bytes), 0)::bigint       AS total_raw_size_bytes
+    FROM ${s}.session_metrics m
+    WHERE m.session_id IN (SELECT tree.session_id FROM tree);
+END;
+$$ LANGUAGE plpgsql;
+
+-- Fleet totals rollup (+ total_raw_size_bytes). Feeds the Stats pane Fleet tab.
+DROP FUNCTION IF EXISTS ${s}.cms_get_fleet_stats_totals(BOOLEAN, TIMESTAMPTZ);
+CREATE FUNCTION ${s}.cms_get_fleet_stats_totals(
+    p_include_deleted BOOLEAN,
+    p_since           TIMESTAMPTZ
+) RETURNS TABLE (
+    session_count                INT,
+    total_snapshot_size_bytes     BIGINT,
+    total_raw_size_bytes          BIGINT,
+    total_tokens_input           BIGINT,
+    total_tokens_output          BIGINT,
+    total_tokens_cache_read      BIGINT,
+    total_tokens_cache_write     BIGINT,
+    earliest_session_created_at  TIMESTAMPTZ
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        COUNT(*)::int                                          AS session_count,
+        COALESCE(SUM(m.snapshot_size_bytes), 0)::bigint        AS total_snapshot_size_bytes,
+        COALESCE(SUM(m.raw_size_bytes), 0)::bigint             AS total_raw_size_bytes,
+        COALESCE(SUM(m.tokens_input), 0)::bigint               AS total_tokens_input,
+        COALESCE(SUM(m.tokens_output), 0)::bigint              AS total_tokens_output,
+        COALESCE(SUM(m.tokens_cache_read), 0)::bigint          AS total_tokens_cache_read,
+        COALESCE(SUM(m.tokens_cache_write), 0)::bigint         AS total_tokens_cache_write,
+        MIN(m.created_at)                                      AS earliest_session_created_at
+    FROM ${s}.session_metrics m
+    WHERE (p_include_deleted OR m.deleted_at IS NULL)
+      AND (p_since IS NULL OR m.created_at >= p_since);
 END;
 $$ LANGUAGE plpgsql;
 `;

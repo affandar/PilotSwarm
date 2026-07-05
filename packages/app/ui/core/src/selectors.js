@@ -2856,6 +2856,15 @@ function formatCompactBytes(value) {
     return `${mb >= 10 ? Math.round(mb) : mb.toFixed(1)} MB`;
 }
 
+/** "12.4×" compression ratio (raw / stored); null when either is missing. */
+function formatCompressionRatio(rawBytes, storedBytes) {
+    const raw = Number(rawBytes);
+    const stored = Number(storedBytes);
+    if (!Number.isFinite(raw) || !Number.isFinite(stored) || raw <= 0 || stored <= 0) return null;
+    const ratio = raw / stored;
+    return `${ratio >= 10 ? ratio.toFixed(0) : ratio.toFixed(1)}×`;
+}
+
 function summarizeEventPreview(text, maxLength = 18) {
     const normalized = String(text || "")
         .replace(/\s+/g, " ")
@@ -4471,6 +4480,8 @@ function buildSessionStatsLines(state, session, maxWidth) {
         title: "Persistence",
         body: formatKeyValueTable([
             ["Snapshot",        formatCompactBytes(summary.snapshotSizeBytes)],
+            ["Uncompressed",    summary.rawSizeBytes ? formatCompactBytes(summary.rawSizeBytes) : null],
+            ["Compression",     formatCompressionRatio(summary.rawSizeBytes, summary.snapshotSizeBytes)],
             ["Dehydrations",    String(summary.dehydrationCount)],
             ["Hydrations",      String(summary.hydrationCount)],
             ["Lossy Handoffs",  String(summary.lossyHandoffCount)],
@@ -4500,6 +4511,8 @@ function buildSessionStatsLines(state, session, maxWidth) {
                 ["Cache Write",  formatCompactNumber(tree.totalTokensCacheWrite)],
                 ["Hit Ratio",    treeHitLabel],
                 ["Snapshot",     formatCompactBytes(tree.totalSnapshotSizeBytes)],
+                ["Uncompressed", tree.totalRawSizeBytes ? formatCompactBytes(tree.totalRawSizeBytes) : null],
+                ["Compression",  formatCompressionRatio(tree.totalRawSizeBytes, tree.totalSnapshotSizeBytes)],
                 ["Dehydrations", String(tree.totalDehydrationCount)],
                 ["Hydrations",   String(tree.totalHydrationCount)],
             ]),

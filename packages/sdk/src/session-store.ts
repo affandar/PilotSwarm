@@ -1,8 +1,11 @@
-import { execSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import zlib from "node:zlib";
+import { Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { fileTypeFromBuffer } from "file-type";
 import { faultPoint } from "./fault-injection.js";
 import {
@@ -21,7 +24,12 @@ export interface SessionMetadata {
     sessionId: string;
     dehydratedAt: string;
     worker: string;
+    /** Compressed (stored) tar size in bytes. */
     sizeBytes: number;
+    /** Uncompressed tar-stream size in bytes (feeds the compression-ratio stat). */
+    rawSizeBytes?: number;
+    /** Compression codec of the stored tar; absent = legacy gzip. */
+    codec?: SnapshotCodec;
     reason?: string;
     iteration?: number;
     [key: string]: unknown;
@@ -188,8 +196,59 @@ function metadataFromStat(
     };
 }
 
+// ─── Snapshot compression codec ─────────────────────────────────────────────
+//
+// New writes use brotli quality 4: the lab measured it beating gzip-6 on BOTH
+// speed (295 vs 62 MB/s) and ratio (11.6:1 vs 3.1:1) on real session tars, and
+// under commit-per-turn the codec sits on every turn's critical path. Brotli
+// has no magic bytes, so the codec is DECLARED (fs meta `codec`, blob metadata
+// `pscodec`, `.tar.br` extension) and never sniffed. Legacy gzip snapshots stay
+// readable forever; every chain self-migrates to brotli on its next commit.
+export type SnapshotCodec = "gzip" | "brotli";
+export const DEFAULT_SNAPSHOT_CODEC: SnapshotCodec = "brotli";
+const BROTLI_QUALITY = 4;
+
+/** Resolve the codec from a stored marker/metadata value; default gzip (legacy). */
+export function resolveSnapshotCodec(value: unknown): SnapshotCodec {
+    return value === "brotli" ? "brotli" : "gzip";
+}
+
+function makeCompressor(codec: SnapshotCodec): zlib.BrotliCompress | zlib.Gzip {
+    return codec === "brotli"
+        ? zlib.createBrotliCompress({ params: { [zlib.constants.BROTLI_PARAM_QUALITY]: BROTLI_QUALITY } })
+        : zlib.createGzip();
+}
+
+function makeDecompressor(codec: SnapshotCodec): zlib.BrotliDecompress | zlib.Gunzip {
+    return codec === "brotli" ? zlib.createBrotliDecompress() : zlib.createGunzip();
+}
+
+/** Await a spawned process's exit, rejecting on non-zero / signal with its stderr. */
+function awaitProcess(child: ReturnType<typeof spawn>, label: string): Promise<void> {
+    let stderr = "";
+    child.stderr?.on("data", (d) => { stderr += d.toString(); });
+    return new Promise((resolve, reject) => {
+        child.on("error", reject);
+        child.on("close", (code, signal) => {
+            if (code === 0) resolve();
+            else reject(new Error(`${label} failed (code=${code} signal=${signal}): ${stderr.trim()}`));
+        });
+    });
+}
+
+const TAR_EXCLUDES = [
+    "--exclude=inuse.*.lock",
+    "--exclude=.ps-snapshot-version*",
+    "--exclude=.ps-turn-inprogress*",
+];
+
 function tarFileName(sessionId: string): string {
     return `${sessionId}.tar.gz`;
+}
+
+/** Version-named snapshot tar for the given codec (`.tar.br` for brotli). */
+function versionedTarFileName(sessionId: string, version: number, codec: SnapshotCodec): string {
+    return codec === "brotli" ? `${sessionId}.v${version}.tar.br` : `${sessionId}.v${version}.tar.gz`;
 }
 
 function metaFileName(sessionId: string): string {
@@ -206,31 +265,55 @@ function buildMetadata(tarPath: string, sessionId: string, meta?: Record<string,
     };
 }
 
-function archiveSessionDir(sessionStateDir: string, sessionId: string, tarPath: string): void {
-    // Exclude live `inuse.<pid>.lock` files: they are scoped to the live SDK
-    // process and would resurrect a stale lock when extracted on another node.
-    // Exclude the lifecycle-protocol marker + sentinel: the marker describes
-    // the local dir *relative to the store* (a tarred copy is stale by
-    // construction) and the sentinel is a local dirty flag that must never
-    // ride into a snapshot. `.ps-turn-commit.json` is intentionally included.
-    execSync(
-        `tar --exclude='inuse.*.lock' --exclude='.ps-snapshot-version*' --exclude='.ps-turn-inprogress*' ` +
-        `-czf "${tarPath}" -C "${sessionStateDir}" "${sessionId}"`,
-    );
+/**
+ * Tar the session dir, compress with `codec`, and write to `tarPath`.
+ * Returns `rawSizeBytes` (the uncompressed tar-stream length — a free
+ * by-product of the pipeline, and the right "uncompressed snapshot size"
+ * for compression-ratio stats) and the codec used.
+ *
+ * Excludes: live `inuse.<pid>.lock` (scoped to a dead SDK process), and the
+ * lifecycle-protocol marker + sentinel (the marker describes the dir
+ * relative to the store; the sentinel is a local dirty flag). The
+ * `.ps-turn-commit.json` file IS included so already-committed recovery can
+ * read the turn result out of the tar.
+ */
+async function archiveSessionDir(
+    sessionStateDir: string,
+    sessionId: string,
+    tarPath: string,
+    codec: SnapshotCodec = DEFAULT_SNAPSHOT_CODEC,
+): Promise<{ rawSizeBytes: number; codec: SnapshotCodec }> {
+    const tar = spawn("tar", [...TAR_EXCLUDES, "-cf", "-", "-C", sessionStateDir, sessionId]);
+    let rawSizeBytes = 0;
+    const counter = new Transform({
+        transform(chunk, _enc, cb) { rawSizeBytes += chunk.length; cb(null, chunk); },
+    });
+    const out = fs.createWriteStream(tarPath);
+    // Surface a tar failure or a pipeline failure loudly (either leaves a
+    // partial file; callers stage to a temp path and rename on success).
+    const [pipeResult, procResult] = await Promise.allSettled([
+        pipeline(tar.stdout!, counter, makeCompressor(codec), out),
+        awaitProcess(tar, "tar create"),
+    ]);
+    if (procResult.status === "rejected") throw procResult.reason;
+    if (pipeResult.status === "rejected") throw pipeResult.reason;
+    return { rawSizeBytes, codec };
 }
 
-function extractSessionArchive(sessionStateDir: string, tarPath: string): void {
+async function extractSessionArchive(
+    sessionStateDir: string,
+    tarPath: string,
+    codec: SnapshotCodec = "gzip",
+): Promise<void> {
     fs.mkdirSync(sessionStateDir, { recursive: true });
-    execSync(`tar xzf "${tarPath}" -C "${sessionStateDir}"`);
-}
-
-async function waitForPath(pathToCheck: string, timeoutMs = 5_000, pollMs = 100): Promise<boolean> {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-        if (fs.existsSync(pathToCheck)) return true;
-        await new Promise((resolve) => setTimeout(resolve, pollMs));
-    }
-    return fs.existsSync(pathToCheck);
+    const input = fs.createReadStream(tarPath);
+    const tar = spawn("tar", ["-xf", "-", "-C", sessionStateDir]);
+    const [pipeResult, procResult] = await Promise.allSettled([
+        pipeline(input, makeDecompressor(codec), tar.stdin!),
+        awaitProcess(tar, "tar extract"),
+    ]);
+    if (procResult.status === "rejected") throw procResult.reason;
+    if (pipeResult.status === "rejected") throw pipeResult.reason;
 }
 
 const LEGACY_SESSION_FILES = ["events.jsonl", "workspace.yaml"];
@@ -426,6 +509,13 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
         }
     }
 
+    /** Codec of the currently stored snapshot (default gzip for legacy). */
+    private storedCodec(meta: { codec?: unknown; tarFile?: unknown } | null): SnapshotCodec {
+        if (meta?.codec) return resolveSnapshotCodec(meta.codec);
+        // Fall back to the tar extension for meta that predates the field.
+        return String(meta?.tarFile ?? "").endsWith(".tar.br") ? "brotli" : "gzip";
+    }
+
     /** The tar the current meta points at: version-named or the legacy path. */
     private currentTarPath(sessionId: string, meta: { tarFile?: string } | null): string {
         if (meta?.tarFile) return path.join(this.storeDir, path.basename(String(meta.tarFile)));
@@ -445,6 +535,8 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
             version,
             ...(meta?.turnKey ? { turnKey: String(meta.turnKey) } : {}),
             ...(meta?.contentHash ? { contentHash: String(meta.contentHash) } : {}),
+            ...(Number.isFinite(Number(meta?.sizeBytes)) ? { sizeBytes: Number(meta?.sizeBytes) } : {}),
+            ...(Number.isFinite(Number(meta?.rawSizeBytes)) ? { rawSizeBytes: Number(meta?.rawSizeBytes) } : {}),
             meta,
         };
     }
@@ -467,13 +559,14 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
         // Stage the tar OUTSIDE the lock, under a per-writer unique name:
         // concurrent writers can never interleave bytes into each other's
         // staging files, and the lock hold time stays in milliseconds.
+        const codec = DEFAULT_SNAPSHOT_CODEC;
         const stagedTar = path.join(
             this.storeDir,
-            `${sessionId}.staging-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.tar.gz`,
+            `${sessionId}.staging-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.tar`,
         );
         try {
             faultPoint("store.commit.before-write");
-            archiveSessionDir(this.sessionStateDir, sessionId, stagedTar);
+            const { rawSizeBytes } = await archiveSessionDir(this.sessionStateDir, sessionId, stagedTar, codec);
             const contentHash = (() => {
                 const hash = crypto.createHash("sha256");
                 hash.update(fs.readFileSync(stagedTar));
@@ -508,7 +601,7 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
                     ? probe.version + 1
                     : input.baseVersion + 1;
 
-                const versionedTarName = `${sessionId}.v${version}.tar.gz`;
+                const versionedTarName = versionedTarFileName(sessionId, version, codec);
                 const versionedTarPath = path.join(this.storeDir, versionedTarName);
                 const previousTar = probe.exists ? this.currentTarPath(sessionId, probe.meta) : null;
                 const metadata = {
@@ -516,6 +609,8 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
                     version,
                     turnKey: input.turnKey,
                     contentHash,
+                    codec,
+                    rawSizeBytes,
                     tarFile: versionedTarName,
                 };
                 fs.renameSync(stagedTar, versionedTarPath);
@@ -528,7 +623,13 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
                 if (previousTar && previousTar !== versionedTarPath) {
                     try { fs.unlinkSync(previousTar); } catch {}
                 }
-                return { version, contentHash, sizeBytes: metadata.sizeBytes, alreadyCommitted: false };
+                return {
+                    version,
+                    contentHash,
+                    sizeBytes: metadata.sizeBytes,
+                    rawSizeBytes,
+                    alreadyCommitted: false,
+                };
             });
         } finally {
             try { fs.unlinkSync(stagedTar); } catch {}
@@ -542,11 +643,12 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
             if (!probe.exists) {
                 throw new Error(`Session archive not found: ${sessionId}`);
             }
-            const staged = path.join(os.tmpdir(), `ps-hydrate-${sessionId}-${process.pid}-${Date.now()}.tar.gz`);
+            const staged = path.join(os.tmpdir(), `ps-hydrate-${sessionId}-${process.pid}-${Date.now()}.tar`);
             fs.copyFileSync(this.currentTarPath(sessionId, probe.meta), staged);
             return { stagedTar: staged, meta: probe.meta };
         });
         const sessionDir = path.join(this.sessionStateDir, sessionId);
+        const codec = this.storedCodec(meta);
 
         try {
             // Integrity: the bytes we copied must be the bytes the meta
@@ -568,7 +670,7 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
             fs.mkdirSync(this.sessionStateDir, { recursive: true });
             const tempRoot = fs.mkdtempSync(path.join(this.sessionStateDir, `.ps-hydrate-${sessionId}-`));
             try {
-                extractSessionArchive(tempRoot, stagedTar);
+                await extractSessionArchive(tempRoot, stagedTar, codec);
                 const extracted = path.join(tempRoot, sessionId);
                 if (!fs.existsSync(extracted)) {
                     throw new Error(`Snapshot archive for ${sessionId} did not contain the session directory`);
@@ -590,6 +692,7 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
             ...(meta?.turnKey ? { turnKey: String(meta.turnKey) } : {}),
             ...(meta?.contentHash ? { contentHash: String(meta.contentHash) } : {}),
             ...(Number.isFinite(Number(meta?.sizeBytes)) ? { sizeBytes: Number(meta?.sizeBytes) } : {}),
+            ...(Number.isFinite(Number(meta?.rawSizeBytes)) ? { rawSizeBytes: Number(meta?.rawSizeBytes) } : {}),
             ...(hasVersion ? {} : { legacy: true }),
         };
     }
@@ -628,13 +731,16 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
         }
 
         // Staged write + rename: a concurrent reader never sees a torn tar.
+        // Fixed `.tar.gz` filename is retained for legacy compatibility; the
+        // codec recorded in meta is authoritative (this write is brotli).
+        const codec = DEFAULT_SNAPSHOT_CODEC;
         const tarPath = this.tarPath(sessionId);
         const staged = `${tarPath}.staging-${process.pid}-${Date.now()}`;
-        archiveSessionDir(this.sessionStateDir, sessionId, staged);
+        const { rawSizeBytes } = await archiveSessionDir(this.sessionStateDir, sessionId, staged, codec);
         if (!fs.existsSync(staged)) {
             throw new Error(`Session archive was not created during dehydrate: ${sessionId} (${staged})`);
         }
-        const metadata = buildMetadata(staged, sessionId, meta);
+        const metadata = buildMetadata(staged, sessionId, { ...meta, codec, rawSizeBytes });
         fs.renameSync(staged, tarPath);
         const tmpMeta = `${this.metaPath(sessionId)}.tmp-${process.pid}-${Date.now()}`;
         fs.writeFileSync(tmpMeta, JSON.stringify(metadata));
@@ -652,7 +758,7 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
         if (fs.existsSync(sessionDir)) {
             fs.rmSync(sessionDir, { recursive: true, force: true });
         }
-        extractSessionArchive(this.sessionStateDir, tarPath);
+        await extractSessionArchive(this.sessionStateDir, tarPath, this.storedCodec(meta));
     }
 
     async checkpoint(sessionId: string): Promise<void> {
@@ -667,10 +773,11 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
             return;
         }
 
+        const codec = DEFAULT_SNAPSHOT_CODEC;
         const tarPath = this.tarPath(sessionId);
         const staged = `${tarPath}.staging-${process.pid}-${Date.now()}`;
-        archiveSessionDir(this.sessionStateDir, sessionId, staged);
-        const metadata = buildMetadata(staged, sessionId, { reason: "checkpoint" });
+        const { rawSizeBytes } = await archiveSessionDir(this.sessionStateDir, sessionId, staged, codec);
+        const metadata = buildMetadata(staged, sessionId, { reason: "checkpoint", codec, rawSizeBytes });
         fs.renameSync(staged, tarPath);
         const tmpMeta = `${this.metaPath(sessionId)}.tmp-${process.pid}-${Date.now()}`;
         fs.writeFileSync(tmpMeta, JSON.stringify(metadata));

@@ -2186,6 +2186,7 @@ export function registerActivities(
                     `runTurn.commitSummary session=${input.sessionId}`,
                     () => catalog!.upsertSessionMetricSummary(input.sessionId, {
                         snapshotSizeBytes: committed.sizeBytes,
+                        ...(committed.rawSizeBytes != null ? { rawSizeBytes: committed.rawSizeBytes } : {}),
                     }),
                     (msg) => activityCtx.traceInfo(msg),
                 );

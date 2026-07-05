@@ -47,6 +47,10 @@ export interface SnapshotProbe {
     version: number;
     turnKey?: string;
     contentHash?: string;
+    /** Compressed (stored) tar size in bytes. */
+    sizeBytes?: number;
+    /** Uncompressed tar-stream size in bytes (feeds the compression-ratio stat). */
+    rawSizeBytes?: number;
     /** True when a snapshot exists but carries no version metadata. */
     legacy?: boolean;
 }
@@ -61,8 +65,10 @@ export interface SnapshotCommitInput {
 export interface SnapshotCommitResult {
     version: number;
     contentHash: string;
-    /** Committed tar size — feeds session persistence stats. */
+    /** Committed (compressed) tar size — feeds session persistence stats. */
     sizeBytes?: number;
+    /** Uncompressed tar-stream size — feeds the compression-ratio stat. */
+    rawSizeBytes?: number;
     /**
      * True when the store already held baseVersion+1 under the same turnKey —
      * a prior attempt of this same turn committed. The caller must treat this
@@ -76,6 +82,7 @@ export interface SnapshotHydrateResult {
     turnKey?: string;
     contentHash?: string;
     sizeBytes?: number;
+    rawSizeBytes?: number;
     legacy?: boolean;
 }
 

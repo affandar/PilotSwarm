@@ -207,7 +207,10 @@ export interface SessionMetricSummary {
     model: string | null;
     reasoningEffort: string | null;
     parentSessionId: string | null;
+    /** Compressed (stored) snapshot size in bytes. */
     snapshotSizeBytes: number;
+    /** Uncompressed snapshot size in bytes; ratio = raw / snapshot. */
+    rawSizeBytes: number;
     dehydrationCount: number;
     hydrationCount: number;
     lossyHandoffCount: number;
@@ -228,6 +231,7 @@ export interface SessionMetricSummary {
 /** Fields for atomic upsert — increments are additive, absolutes are set. */
 export interface SessionMetricSummaryUpsert {
     snapshotSizeBytes?: number;
+    rawSizeBytes?: number;
     dehydrationCountIncrement?: number;
     hydrationCountIncrement?: number;
     lossyHandoffCountIncrement?: number;
@@ -263,6 +267,7 @@ export interface FleetStats {
     totals: {
         sessionCount: number;
         totalSnapshotSizeBytes: number;
+        totalRawSizeBytes: number;
         totalTokensInput: number;
         totalTokensOutput: number;
         totalTokensCacheRead: number;
@@ -367,6 +372,7 @@ export interface SessionTreeStats {
         totalHydrationCount: number;
         totalLossyHandoffCount: number;
         totalSnapshotSizeBytes: number;
+        totalRawSizeBytes: number;
     };
     /** Per-model breakdown across the tree, sorted by total input tokens. */
     byModel: Array<{
@@ -1357,6 +1363,7 @@ export class PgSessionCatalog implements SessionCatalog {
                 totalHydrationCount: Number(r.total_hydration_count) || 0,
                 totalLossyHandoffCount: Number(r.total_lossy_handoff_count) || 0,
                 totalSnapshotSizeBytes: Number(r.total_snapshot_size_bytes) || 0,
+                totalRawSizeBytes: Number(r.total_raw_size_bytes) || 0,
             },
             byModel,
         };
@@ -1408,6 +1415,7 @@ export class PgSessionCatalog implements SessionCatalog {
             totals: {
                 sessionCount: Number(t.session_count) || 0,
                 totalSnapshotSizeBytes: Number(t.total_snapshot_size_bytes) || 0,
+                totalRawSizeBytes: Number(t.total_raw_size_bytes) || 0,
                 totalTokensInput: totalsTokensInput,
                 totalTokensOutput: Number(t.total_tokens_output) || 0,
                 totalTokensCacheRead: totalsTokensCacheRead,
@@ -1990,6 +1998,7 @@ function rowToSessionMetricSummary(row: any): SessionMetricSummary {
         reasoningEffort: row.reasoning_effort ?? null,
         parentSessionId: row.parent_session_id ?? null,
         snapshotSizeBytes: Number(row.snapshot_size_bytes) || 0,
+        rawSizeBytes: Number(row.raw_size_bytes) || 0,
         dehydrationCount: Number(row.dehydration_count) || 0,
         hydrationCount: Number(row.hydration_count) || 0,
         lossyHandoffCount: Number(row.lossy_handoff_count) || 0,

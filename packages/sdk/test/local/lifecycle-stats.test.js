@@ -59,6 +59,9 @@ describe("lifecycle persistence counters", () => {
             const warm = await catalog.getSessionMetricSummary(sessionId);
             assert(warm, "metric summary exists after warm turns");
             assert(warm.snapshotSizeBytes > 0, `commit must report snapshot size (got ${warm.snapshotSizeBytes})`);
+            // Brotli codec: the uncompressed size must be recorded and larger
+            // than the stored size (a real session tar always compresses).
+            assert(warm.rawSizeBytes > warm.snapshotSizeBytes, `raw size ${warm.rawSizeBytes} must exceed stored ${warm.snapshotSizeBytes}`);
             assertEqual(warm.hydrationCount, 0, "warm turns must not count hydrations");
             assertEqual(warm.dehydrationCount, 0, "the protocol never dehydrates");
             const warmSize = warm.snapshotSizeBytes;
