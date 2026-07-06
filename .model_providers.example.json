@@ -124,6 +124,6 @@
     "_defaultModel_opus46": "anthropic:claude-opus-4-6",
     "defaultModel_sonnet46": "anthropic:claude-sonnet-4-6",
     "_defaultModel_gpt54": "azure-openai:gpt-5.4",
-    "defaultModel": "azure-openai:gpt-5.4-nano",
+    "defaultModel": "github-copilot:claude-sonnet-5",
     "_defaultModel_gpt54mini": "azure-openai:gpt-5.4-mini"
 }

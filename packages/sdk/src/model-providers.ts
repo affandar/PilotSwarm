@@ -366,7 +366,7 @@ function buildFromEnv(): ModelProviderRegistry | null {
             id: "github-copilot",
             type: "github",
             githubToken: "env:GITHUB_TOKEN",
-            models: ["claude-opus-4.6", "claude-sonnet-4.6", "gpt-4o"],
+            models: ["claude-sonnet-5", "claude-opus-4.6", "claude-sonnet-4.6", "gpt-4o"],
         });
     }
 
