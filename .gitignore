@@ -35,3 +35,8 @@ examples/horizon-harvester/graph.md
 
 # Claude Code local tooling (scheduled-task lock, machine-local settings)
 .claude/
+
+# Local editor + MCP client config (machine-specific; not shared)
+.vscode/
+.mcp.json
+.copilot/mcp-config.json
