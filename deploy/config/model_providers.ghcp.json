@@ -6,6 +6,11 @@
             "githubToken": "env:GITHUB_TOKEN",
             "models": [
                 {
+                    "name": "claude-sonnet-5",
+                    "description": "Claude Sonnet 5. Latest Sonnet — strong all-rounder with improved reasoning and coding over 4.6.",
+                    "cost": "medium"
+                },
+                {
                     "name": "claude-sonnet-4.6",
                     "description": "Claude Sonnet 4.6. Balanced default for everyday coding, chat, and multi-step work.",
                     "cost": "medium"

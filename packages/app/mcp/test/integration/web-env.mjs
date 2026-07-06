@@ -48,6 +48,20 @@ export async function startWebEnv(root) {
     const apiUrl = `http://localhost:${server.address().port}`;
     console.log(`✅ portal server (Web API, no-auth) at ${apiUrl}\n`);
 
+    // Warm the facts/graph provider before any suite spawns the MCP bin.
+    // The FIRST facts/capabilities read lazily initializes the store; on a
+    // remote HorizonDB that cold init can take 90s+, which would blow the
+    // MCP client's 60s initialize timeout. A deployed portal is warm after
+    // its first touch — pre-warming here mirrors that reality.
+    const warmStart = Date.now();
+    try {
+        await fetch(`${apiUrl}/api/v1/facts/capabilities`);
+        const warmMs = Date.now() - warmStart;
+        if (warmMs > 2_000) console.log(`   (facts provider cold init: ${warmMs}ms)\n`);
+    } catch {
+        // Capability probing failures surface properly in the suites.
+    }
+
     return {
         apiUrl,
         async stop() {

@@ -9,8 +9,8 @@
  */
 
 import { describe, it, beforeAll } from "vitest";
-import { existsSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
 import { preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { withClient } from "../helpers/local-workers.js";
 import { ONEWORD_CONFIG, resolveSnapshotTarPath } from "../helpers/fixtures.js";
@@ -85,8 +85,24 @@ async function testNoStaleLockAfterArchive(env) {
     const archivePath = resolveSnapshotTarPath(join(env.baseDir, "session-store"), sessionId);
     assert(existsSync(archivePath), `Expected dehydrate archive at ${archivePath}`);
 
+    // Snapshots default to brotli now; the codec recorded in meta.json is
+    // authoritative because the legacy dehydrate path writes brotli bytes under
+    // a `.tar.gz` name. Brotli has no magic bytes, so `tar tzf` (gzip-only) and
+    // tar's auto-detect both fail with "Unrecognized archive format" — decode
+    // with the declared codec, then list the plain tar from stdin.
     const { execSync } = await import("node:child_process");
-    const listing = execSync(`tar tzf "${archivePath}"`, { encoding: "utf8" });
+    const zlib = await import("node:zlib");
+    const metaPath = join(dirname(archivePath), `${sessionId}.meta.json`);
+    let codec = archivePath.endsWith(".br") ? "brotli" : "gzip";
+    try {
+        const declared = JSON.parse(readFileSync(metaPath, "utf8"))?.codec;
+        if (declared === "brotli" || declared === "gzip") codec = declared;
+    } catch {}
+    const compressed = readFileSync(archivePath);
+    const tarball = codec === "brotli"
+        ? zlib.brotliDecompressSync(compressed)
+        : zlib.gunzipSync(compressed);
+    const listing = execSync("tar tf -", { input: tarball, encoding: "utf8" });
     const stale = listing.split("\n").filter((line) => /\/inuse\.[^/]+\.lock$/.test(line));
     assertEqual(
         stale.length,

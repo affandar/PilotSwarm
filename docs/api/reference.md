@@ -127,6 +127,11 @@ Operations tagged **[admin]** require the `admin` role (Tier 2 operational surfa
 | getSessionTreeSkillUsage | `GET /api/v1/management/sessions/:sessionId/tree-skill-usage` | sessionId (path), since (query) | Skill usage across the spawn tree. |
 | getSessionFactsStats | `GET /api/v1/management/sessions/:sessionId/facts-stats` | sessionId (path) | Facts stats for one session. |
 | getSessionTreeFactsStats | `GET /api/v1/management/sessions/:sessionId/tree-facts-stats` | sessionId (path) | Facts stats across the spawn tree. |
+| getSessionRetrievalUsage | `GET /api/v1/management/sessions/:sessionId/retrieval-usage` | sessionId (path), since (query) | Retrieval (facts/graph search) usage for one session. |
+| getSessionTreeRetrievalUsage | `GET /api/v1/management/sessions/:sessionId/tree-retrieval-usage` | sessionId (path), since (query) | Retrieval usage across the spawn tree. |
+| getSessionGraphNodeUsage | `GET /api/v1/management/sessions/:sessionId/graph-node-usage` | sessionId (path), since (query), limit (query: number), nodeKeyLike (query), kind (query) | Graph node usage for one session. |
+| getSessionGraphEdgeSearchUsage | `GET /api/v1/management/sessions/:sessionId/graph-edge-search-usage` | sessionId (path), since (query), limit (query: number) | Graph edge-search usage for one session. |
+| getSessionGraphSearches | `GET /api/v1/management/sessions/:sessionId/graph-searches` | sessionId (path), limit (query: number) | Recent graph search events for one session. |
 | listChildOutcomes | `GET /api/v1/management/sessions/:parentSessionId/child-outcomes` | parentSessionId (path) | Child outcomes recorded under a parent session. |
 | getChildOutcome | `GET /api/v1/management/child-outcomes/:childSessionId` | childSessionId (path) | One child outcome. |
 
@@ -150,6 +155,7 @@ Operations tagged **[admin]** require the `admin` role (Tier 2 operational surfa
 | getFleetStats | `GET /api/v1/management/fleet/stats` | since (query), includeDeleted (query: boolean) | Fleet-wide stats. |
 | getFleetSkillUsage | `GET /api/v1/management/fleet/skill-usage` | since (query), includeDeleted (query: boolean) | Fleet-wide skill usage. |
 | getFleetRetrievalUsage | `GET /api/v1/management/fleet/retrieval-usage` | since (query), includeDeleted (query: boolean) | Fleet-wide retrieval usage. |
+| getFleetGraphNodeUsage | `GET /api/v1/management/fleet/graph-node-usage` | since (query), includeDeleted (query: boolean), limit (query: number), nodeKeyLike (query), kind (query) | Fleet-wide graph node usage. |
 | getUserStats | `GET /api/v1/management/users/stats` | since (query), includeDeleted (query: boolean) | Per-user stats. |
 | getSharedFactsStats | `GET /api/v1/management/facts/shared-stats` | — | Shared facts stats. |
 | getFactsTombstoneStats | `GET /api/v1/management/facts/tombstone-stats` | ttlSeconds (query: number) | Soft-deleted facts awaiting reconciliation. |

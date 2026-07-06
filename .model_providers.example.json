@@ -24,6 +24,16 @@
                     "defaultReasoningEffort": "medium"
                 },
                 {
+                    "name": "claude-sonnet-5",
+                    "description": "Claude Sonnet 5. Latest Sonnet — strong all-rounder with improved reasoning and coding over 4.6.",
+                    "cost": "medium",
+                    "supportedReasoningEfforts": [
+                        "medium",
+                        "high"
+                    ],
+                    "defaultReasoningEffort": "medium"
+                },
+                {
                     "name": "claude-sonnet-4.6",
                     "description": "Claude Sonnet 4.6. Strong all-rounder. Good balance of capability and speed. Use for general coding, analysis, and multi-step tasks.",
                     "cost": "medium",

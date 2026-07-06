@@ -62,6 +62,10 @@ COPY packages/app/web/api/ ./packages/app/web/api/
 COPY packages/app/web/src/ ./packages/app/web/src/
 COPY packages/app/web/vite.config.ts packages/app/web/tsconfig.json ./packages/app/web/
 
+# MCP server (prebuilt dist — same layout the npm package ships). Runs from
+# this image with a command override; see deploy/k8s/mcp-deployment.yaml.
+COPY packages/app/mcp/dist/ ./packages/app/mcp/dist/
+
 # Build the browser app
 RUN npm run build:web --workspace=packages/app
 

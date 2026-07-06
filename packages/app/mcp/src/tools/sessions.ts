@@ -18,26 +18,31 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
             inputSchema: {
                 model: z.string().optional().describe("Model to use for the session"),
                 agent: z.string().optional().describe("Agent name to bind the session to"),
-                system_message: z.string().optional().describe("Custom system message for the session"),
+                system_message: z.string().optional().describe("Custom system message (direct mode only — the Web API has no carrier for worker-side options)"),
                 title: z.string().min(1).max(512).optional().describe("Optional title — if omitted, PilotSwarm auto-generates one from the conversation after the first turn"),
                 prompt: z.string().optional().describe("Initial message to send immediately after session creation (fire-and-forget)"),
+                reasoning_effort: z.string().optional().describe("Reasoning effort for the session's model (e.g. low, medium, high)"),
+                group_id: z.string().optional().describe("Session group to create the session in"),
+                splash: z.string().optional().describe("Splash text shown in the portal UI (agent-bound sessions only)"),
             },
         },
-        async ({ model, agent, system_message, title, prompt }) => {
+        async ({ model, agent, system_message, title, prompt, reasoning_effort, group_id, splash }) => {
             try {
-                const config: Record<string, unknown> = {};
-                if (model !== undefined) config.model = model;
-                if (system_message !== undefined) config.systemMessage = system_message;
-                if (title !== undefined) config.title = title;
+                // system_message is a worker-side option with no Web API
+                // carrier: the web client silently DROPS it (it is not sent
+                // on the wire). Don't fail the creation — but never lie by
+                // omission either: surface system_message_applied so the
+                // caller knows the session runs WITHOUT their prompt.
+                const systemMessageDropped = system_message !== undefined && ctx.webMode;
 
                 let session;
                 if (agent) {
-                    if (system_message !== undefined) {
+                    if (system_message !== undefined && !ctx.webMode) {
                         // createSessionForAgent does not forward systemMessage,
                         // so route through createSession directly when the
-                        // caller supplied a custom system message. The
-                        // allowedAgentNames guard inside createSession still
-                        // enforces the agent allowlist.
+                        // caller supplied a custom system message (direct mode
+                        // only). The allowedAgentNames guard inside
+                        // createSession still enforces the agent allowlist.
                         session = await ctx.client.createSession({
                             agentId: agent,
                             boundAgentName: agent,
@@ -48,13 +53,18 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                         session = await ctx.client.createSessionForAgent(agent, {
                             model,
                             title,
-                        });
+                            reasoningEffort: reasoning_effort,
+                            groupId: group_id,
+                            splash,
+                        } as any);
                     }
                 } else {
                     session = await ctx.client.createSession({
                         model,
-                        systemMessage: system_message,
-                    });
+                        ...(ctx.webMode ? {} : { systemMessage: system_message }),
+                        reasoningEffort: reasoning_effort,
+                        groupId: group_id,
+                    } as any);
                 }
 
                 // Cache the session object for later use by send_and_wait
@@ -80,75 +90,12 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                     }
                 }
 
-                // Worker-claim guard: when a prompt was dispatched, a worker
-                // must register the orchestration within the configured
-                // timeout. Otherwise the row becomes a dead "running" record
-                // (orchestrationStatus stays NotFound) that no later
-                // sendCommand can clean up. Roll back the row and surface a
-                // clear "session could not be created" error so callers know
-                // to start a worker process.
-                const claimTimeoutMs = (() => {
-                    const raw = process.env.PILOTSWARM_MCP_WORKER_CLAIM_TIMEOUT_MS;
-                    const parsed = raw ? parseInt(raw, 10) : NaN;
-                    return Number.isFinite(parsed) && parsed > 0 ? parsed : 10_000;
-                })();
-
-                if (promptSent && claimTimeoutMs > 0) {
-                    const deadline = Date.now() + claimTimeoutMs;
-                    const pollMs = 250;
-                    // A session is "claimed" only once duroxide reports an
-                    // active orchestration. mgmt.getSession reflects CMS row
-                    // state (e.g. "Unknown") even before any worker runs, so
-                    // probe the orchestration directly via getSessionStatus.
-                    // Any non-NotFound duroxide status (Running, Completed,
-                    // Failed, Terminated, Suspended) means a worker registered
-                    // the orchestration at least once.
-                    let claimed = false;
-                    while (Date.now() < deadline) {
-                        try {
-                            const orch = await ctx.mgmt.getSessionStatus(session.sessionId);
-                            const orchStatus = orch?.orchestrationStatus;
-                            if (orchStatus && orchStatus !== "NotFound") {
-                                claimed = true;
-                                break;
-                            }
-                        } catch {
-                            // ignore transient mgmt errors and retry
-                        }
-                        await new Promise((resolve) => setTimeout(resolve, pollMs));
-                    }
-                    if (!claimed) {
-                        sessionCache.delete(session.sessionId);
-                        // Use client.deleteSession (unconditional CMS soft-delete +
-                        // best-effort orchestration cancel). mgmt.deleteSession routes
-                        // through sendCommand and rejects when orchestrationStatus is
-                        // NotFound, which is exactly the case we are cleaning up.
-                        try {
-                            await ctx.client.deleteSession(session.sessionId);
-                        } catch {
-                            // best-effort; row may linger if soft-delete also fails
-                        }
-                        return {
-                            content: [
-                                {
-                                    type: "text" as const,
-                                    text: JSON.stringify({
-                                        error: "no_worker_claimed",
-                                        created: false,
-                                        purged_session_id: session.sessionId,
-                                        message:
-                                            "Session could not be created: no PilotSwarm worker claimed the orchestration "
-                                            + `within ${claimTimeoutMs}ms. The CMS row was rolled back. `
-                                            + "Start a worker process (e.g. CLI in local mode or Web Portal) "
-                                            + "against the same DATABASE_URL, then retry.",
-                                    }),
-                                },
-                            ],
-                            isError: true,
-                        };
-                    }
-                }
-
+                // Queue-and-monitor semantics: PilotSwarm is a durable async
+                // system. Creation (and any initial prompt) is queued; the
+                // session runs when a worker picks it up. No liveness
+                // probing here — callers monitor the session directly via
+                // get_session_detail (include: ['status']) or
+                // get_session_events (wait: true).
                 return {
                     content: [
                         {
@@ -156,9 +103,16 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                             text: JSON.stringify({
                                 session_id: session.sessionId,
                                 status: "created",
+                                ...(systemMessageDropped && {
+                                    system_message_applied: false,
+                                    warning: "system_message has no Web API carrier and was NOT applied — bind the session to an agent whose definition carries the prompt, or run the MCP server in direct mode.",
+                                }),
                                 model: model ?? "default",
                                 title: title ?? null,
-                                ...(prompt !== undefined && { prompt_sent: promptSent }),
+                                ...(prompt !== undefined && {
+                                    prompt_sent: promptSent,
+                                    note: "Queued durably; monitor with get_session_detail (include: ['status']) or get_session_events (wait: true).",
+                                }),
                             }),
                         },
                     ],
@@ -178,19 +132,41 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
         "send_message",
         {
             title: "Send Message",
-            description: "Send a fire-and-forget message to a PilotSwarm session",
+            description:
+                "Send a fire-and-forget message to a PilotSwarm session. Pass client_message_ids to make the "
+                + "message(s) cancellable later via cancel_pending_messages; enqueue_only queues without waking the session.",
             inputSchema: {
                 session_id: z.string().uuid({ message: "session_id must be a valid UUID" }).describe("The session to send the message to"),
                 message: z.string().describe("The message to send"),
+                client_message_ids: z.array(z.string().min(1)).optional().describe("Caller-chosen ids for this message — required later by cancel_pending_messages"),
+                enqueue_only: z.boolean().optional().describe("Queue the message without triggering processing (web mode only)"),
             },
         },
-        async ({ session_id, message }) => {
+        async ({ session_id, message, client_message_ids, enqueue_only }) => {
             try {
                 const existing = await ctx.mgmt.getSession(session_id);
                 if (!existing) {
                     return {
                         content: [{ type: "text" as const, text: JSON.stringify({ error: "session not found", session_id }) }],
                         isError: true,
+                    };
+                }
+                if (enqueue_only) {
+                    if (!ctx.api) {
+                        return {
+                            content: [{ type: "text" as const, text: JSON.stringify({ error: "enqueue_only is only supported in Web API mode" }) }],
+                            isError: true,
+                        };
+                    }
+                    await ctx.api.call("sendMessage", {
+                        sessionId: session_id,
+                        prompt: message,
+                        options: { enqueueOnly: true, ...(client_message_ids ? { clientMessageIds: client_message_ids } : {}) },
+                    });
+                    return {
+                        content: [
+                            { type: "text" as const, text: JSON.stringify({ sent: true, enqueued: true, ...(client_message_ids ? { client_message_ids } : {}) }) },
+                        ],
                     };
                 }
                 // Use cached PilotSwarmSession when available; fall back to
@@ -203,10 +179,10 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                 const session = sessionCache.get(session_id)
                     ?? await ctx.client.resumeSession(session_id);
                 if (!sessionCache.has(session_id)) sessionCache.set(session_id, session);
-                await session.send(message);
+                await session.send(message, client_message_ids ? { clientMessageIds: client_message_ids } : undefined);
                 return {
                     content: [
-                        { type: "text" as const, text: JSON.stringify({ sent: true }) },
+                        { type: "text" as const, text: JSON.stringify({ sent: true, ...(client_message_ids ? { client_message_ids } : {}) }) },
                     ],
                 };
             } catch (err: unknown) {
@@ -405,11 +381,37 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                     .string()
                     .optional()
                     .describe("Filter by agent ID (e.g. 'sweeper', 'resourcemgr', or a custom agent name)"),
+                limit: z
+                    .number()
+                    .int()
+                    .positive()
+                    .optional()
+                    .describe("Page size — switches to keyset pagination (fleet-scale listing). Response carries next_cursor."),
+                cursor: z
+                    .object({ updatedAt: z.number(), sessionId: z.string() })
+                    .optional()
+                    .describe("Keyset cursor from a previous page's next_cursor"),
+                include_deleted: z
+                    .boolean()
+                    .optional()
+                    .describe("Include soft-deleted sessions (paginated mode only)"),
             },
         },
-        async ({ status_filter, include_system, agent_id }) => {
+        async ({ status_filter, include_system, agent_id, limit, cursor, include_deleted }) => {
             try {
-                let sessions = await ctx.mgmt.listSessions();
+                let page: { hasMore: boolean; nextCursor?: unknown } | null = null;
+                let sessions: any[];
+                if (limit !== undefined || cursor !== undefined || include_deleted !== undefined) {
+                    const p = await ctx.mgmt.listSessionsPage({
+                        limit,
+                        cursor: cursor ?? null,
+                        includeDeleted: include_deleted,
+                    });
+                    sessions = p.sessions;
+                    page = { hasMore: p.hasMore, nextCursor: p.nextCursor };
+                } else {
+                    sessions = await ctx.mgmt.listSessions();
+                }
 
                 if (!include_system) {
                     sessions = sessions.filter((s: any) => !s.isSystem);
@@ -444,7 +446,11 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                         {
                             type: "text" as const,
                             text: JSON.stringify(
-                                { count: data.length, sessions: data },
+                                {
+                                    count: data.length,
+                                    sessions: data,
+                                    ...(page ? { has_more: page.hasMore, next_cursor: page.nextCursor ?? null } : {}),
+                                },
                                 null,
                                 2,
                             ),
@@ -584,18 +590,21 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
         {
             title: "Get Session Events",
             description:
-                "Read the CMS event stream for a session. Supports pagination with after_seq and long-polling " +
+                "Read the CMS event stream for a session. Supports forward pagination with after_seq, backward " +
+                "history paging with before_seq, server-side event_types filtering, and long-polling " +
                 "with wait=true to block until new events or a status change arrives.",
             inputSchema: {
                 session_id: z.string().uuid({ message: "session_id must be a valid UUID" }).describe("The session to read events for"),
-                after_seq: z.number().optional().describe("Return events after this CMS sequence number (for paging)"),
+                after_seq: z.number().optional().describe("Return events after this CMS sequence number (forward paging)"),
+                before_seq: z.number().optional().describe("Return events BEFORE this sequence number (backward history paging; mutually exclusive with after_seq/wait)"),
+                event_types: z.array(z.string()).optional().describe("Server-side filter to these event types (e.g. chat transcript paging)"),
                 limit: z.number().optional().describe("Max events to return (default 50)"),
                 wait: z.boolean().optional().describe("If true, long-poll until new events or status change arrives"),
                 wait_timeout_ms: z.number().optional().describe("Long-poll timeout in ms (default 30000)"),
                 after_version: z.number().optional().describe("For wait mode: block until customStatusVersion exceeds this value"),
             },
         },
-        async ({ session_id, after_seq, limit, wait, wait_timeout_ms, after_version }) => {
+        async ({ session_id, after_seq, before_seq, event_types, limit, wait, wait_timeout_ms, after_version }) => {
             try {
                 const existing = await ctx.mgmt.getSession(session_id);
                 if (!existing) {
@@ -605,6 +614,28 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                     };
                 }
                 const eventLimit = limit ?? 50;
+
+                if (before_seq !== undefined && (after_seq !== undefined || wait)) {
+                    return {
+                        content: [{ type: "text" as const, text: JSON.stringify({ error: "before_seq is mutually exclusive with after_seq and wait" }) }],
+                        isError: true,
+                    };
+                }
+
+                // Backward history paging — a plain read, no long-poll.
+                if (before_seq !== undefined) {
+                    const events = await ctx.mgmt.getSessionEventsBefore(session_id, before_seq, eventLimit, event_types);
+                    const oldestSeq = events.length > 0
+                        ? Math.min(...events.map((e: any) => e.seq ?? 0))
+                        : before_seq;
+                    return {
+                        content: [{
+                            type: "text" as const,
+                            text: JSON.stringify({ events, oldest_seq: oldestSeq, count: events.length }, null, 2),
+                        }],
+                    };
+                }
+
                 let statusChange: unknown = undefined;
 
                 if (wait) {
@@ -631,7 +662,7 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                     }
                 }
 
-                const events = await ctx.mgmt.getSessionEvents(session_id, after_seq, eventLimit);
+                const events = await ctx.mgmt.getSessionEvents(session_id, after_seq, eventLimit, event_types);
                 const latestSeq = events.length > 0
                     ? Math.max(...events.map((e: any) => e.seq ?? 0))
                     : (after_seq ?? 0);

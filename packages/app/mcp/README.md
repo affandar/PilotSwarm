@@ -348,7 +348,23 @@ resource (`dump_session`), which reads session state files off disk.
 
 ---
 
-## Available Tools (20)
+## Available Tools
+
+**Tool registration is capability-gated.** The base surface is always
+registered; enhanced-facts tools appear only when the deployment reports
+`search: true`, graph tools only when it reports `graph: true`, web-only tools
+(artifacts, system status, session events, execution-history export) only in
+`--api-url` mode, and **[admin]**-tagged tools only when the server's
+credential carries the deployment's admin role (or `anonymous` on a no-auth
+deployment). Absent capability ⇒ the tool is absent from `tools/list` — start
+with `get_capabilities` to see the shape of this server.
+
+### Discovery
+
+| Tool | Description |
+|------|-------------|
+| `get_capabilities` | Mode (web/direct), admin role, facts search/embedder flags, graph availability, embedded-worker count, default model |
+| `get_system_status` | Embedded-worker count (0 is normal with dedicated worker pods), session-creation policy, creatable agents, log config *(web)* |
 
 ### Session Management
 
@@ -361,9 +377,73 @@ resource (`dump_session`), which reads session state files off disk.
 | `abort_session` | Cancel a running session with an optional reason |
 | `rename_session` | Rename a session title |
 | `delete_session` | Soft-delete a session |
-| `list_sessions` | Discovery — list all sessions with status, model, agent info, and parent/child relationships |
+| `list_sessions` | Discovery — list all sessions with status, model, agent info, and parent/child relationships; keyset pagination via `limit`/`cursor`/`include_deleted` |
 | `get_session_detail` | Discovery — get detailed info for a session including status, context usage, cron state, and pending questions |
-| `get_session_events` | Discovery — read the CMS event stream for a session, with `after_seq` pagination and long-poll support |
+| `get_session_events` | Discovery — CMS event stream with `after_seq` forward paging, `before_seq` history paging, `event_types` server-side filter, and long-poll support |
+
+### Turn & Queue Control
+
+| Tool | Description |
+|------|-------------|
+| `stop_turn` | Abort the in-flight turn; the session stays alive |
+| `complete_session` | Mark a session completed (successful terminal state, distinct from cancel) |
+| `cancel_pending_messages` | Cancel queued messages by the `client_message_ids` they were sent with |
+| `send_session_event` | Inject a custom named event into a session *(web)* |
+
+### Session Groups
+
+| Tool | Description |
+|------|-------------|
+| `list_session_groups` | List groups; `include_sessions` adds member sessions |
+| `manage_session_group` | `action: create \| update \| assign \| move \| cancel \| complete \| delete` — fleet batching |
+
+### Artifacts *(web)*
+
+| Tool | Description |
+|------|-------------|
+| `list_artifacts` | List a session's artifacts |
+| `get_artifact` | Metadata + text content + authenticated binary `download_url` |
+| `upload_artifact` | Upload text or base64 binary into a session (2 MB envelope limit) |
+| `delete_artifact` | Delete an artifact |
+
+### Observability
+
+| Tool | Description |
+|------|-------------|
+| `debug_session` | The agent-tuner's diagnostic surface as one tool — `include: [info, status, latest_response, events, summary, tokens_by_model, tree_stats, skill_usage, retrieval_usage, facts_stats, orchestration_stats, execution_history, child_outcomes, graph_node_usage, graph_edge_search_usage, graph_searches]`, per-axis error isolation |
+| `get_session_metrics` | Per-session/tree metrics — `include: [summary, tokens_by_model, skill_usage, retrieval_usage, facts_stats, orchestration_stats]` |
+| `get_fleet_overview` | Fleet aggregates — `include: [stats, skill_usage, retrieval_usage, graph_node_usage, user_stats, top_emitters, shared_facts, tombstones]` |
+| `list_child_outcomes` | What each sub-agent concluded, without transcript dumps |
+| `get_execution_history` | Raw duroxide execution events (orchestration forensics) |
+| `export_execution_history` | Export execution history to a session artifact *(web)* |
+
+### Enhanced Facts *(iff deployment reports `search: true`)*
+
+| Tool | Description |
+|------|-------------|
+| `search_facts` | Lexical (BM25) / semantic / hybrid retrieval with scores |
+| `similar_facts` | Semantic nearest-neighbours of a known fact |
+| `embedder_status` | Durable embedder lifecycle state |
+| `start_embedder` / `stop_embedder` | Embedder loop control **[admin]** |
+
+### Knowledge Graph *(iff deployment reports `graph: true`)*
+
+| Tool | Description |
+|------|-------------|
+| `graph_search_nodes` / `graph_search_edges` | Lexical/anchored graph search |
+| `graph_neighbourhood` | Bounded subgraph expansion around a node |
+| `graph_stats` | Node/edge counts per namespace |
+| `graph_upsert_node` / `graph_upsert_edge` | Evidence-unioning writes |
+| `graph_delete_node` / `graph_delete_edge` | Deletes (no cross-store cascade) |
+| `list_graph_namespaces` / `get_graph_namespace` | Corpus registry reads |
+| `upsert_graph_namespace` / `delete_graph_namespace` | Corpus registry writes **[admin]** |
+
+### System **[admin]**
+
+| Tool | Description |
+|------|-------------|
+| `restart_system_session` | Bounce a system agent (sweeper, resourcemgr, …) with `disposition: complete \| terminate \| hard_delete` |
+| `facts_admin` | `action: purge` (tombstoned facts) or `prune_summaries` — destructive housekeeping |
 
 ### External MCP boundary
 
@@ -411,10 +491,14 @@ Top-level session control (`create_session`, `send_message`, `delete_session`, e
 
 ---
 
-## Available Resources (15)
+## Available Resources
 
 | URI | Description |
 |-----|-------------|
+| `pilotswarm://capabilities` | Capability descriptor: mode, admin, facts/graph flags |
+| `pilotswarm://sessions/{id}/artifacts` | Artifacts for a session *(web)* |
+| `pilotswarm://graph/stats` | Graph node/edge counts *(iff graph)* |
+| `pilotswarm://graph/namespaces` | Registered graph namespaces *(iff graph)* |
 | `pilotswarm://sessions` | List all sessions with status |
 | `pilotswarm://sessions/{id}` | Detailed info for a specific session |
 | `pilotswarm://sessions/{id}/messages` | Chat history for a session |

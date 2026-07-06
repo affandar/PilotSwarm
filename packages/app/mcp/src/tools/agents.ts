@@ -96,8 +96,9 @@ export function registerAgentTools(server: McpServer, ctx: ServerContext) {
             description:
                 "Read PilotSwarm's catalog of registered agent definitions visible to this MCP server. " +
                 "Returns name, description, system flag, and parent constraint per definition. " +
-                "Pure inspection — does not create or spawn anything. Workers in different processes " +
-                "may have a different catalog (configured per-process via --plugin).",
+                "Pure inspection — does not create or spawn anything. In Web API mode this is the deployment's " +
+                "creatable-agent catalog (what createSessionForAgent accepts); in direct mode it is loaded from " +
+                "local --plugin dirs and may diverge from any particular worker's catalog.",
             inputSchema: {
                 include_system: z
                     .boolean()

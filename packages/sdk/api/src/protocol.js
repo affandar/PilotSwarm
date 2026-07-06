@@ -84,6 +84,12 @@ export const OPERATIONS = [
     { name: "getSessionTreeSkillUsage", method: "GET", path: "/management/sessions/:sessionId/tree-skill-usage", params: { sessionId: path("sessionId"), since: query("string") }, summary: "Skill usage across the spawn tree." },
     { name: "getSessionFactsStats", method: "GET", path: "/management/sessions/:sessionId/facts-stats", params: { sessionId: path("sessionId") }, summary: "Facts stats for one session." },
     { name: "getSessionTreeFactsStats", method: "GET", path: "/management/sessions/:sessionId/tree-facts-stats", params: { sessionId: path("sessionId") }, summary: "Facts stats across the spawn tree." },
+    // Retrieval / graph observability (tuner-grade diagnostics; read-only)
+    { name: "getSessionRetrievalUsage", method: "GET", path: "/management/sessions/:sessionId/retrieval-usage", params: { sessionId: path("sessionId"), since: query("string") }, summary: "Retrieval (facts/graph search) usage for one session." },
+    { name: "getSessionTreeRetrievalUsage", method: "GET", path: "/management/sessions/:sessionId/tree-retrieval-usage", params: { sessionId: path("sessionId"), since: query("string") }, summary: "Retrieval usage across the spawn tree." },
+    { name: "getSessionGraphNodeUsage", method: "GET", path: "/management/sessions/:sessionId/graph-node-usage", params: { sessionId: path("sessionId"), since: query("string"), limit: query("number"), nodeKeyLike: query("string"), kind: query("string") }, summary: "Graph node usage for one session." },
+    { name: "getSessionGraphEdgeSearchUsage", method: "GET", path: "/management/sessions/:sessionId/graph-edge-search-usage", params: { sessionId: path("sessionId"), since: query("string"), limit: query("number") }, summary: "Graph edge-search usage for one session." },
+    { name: "getSessionGraphSearches", method: "GET", path: "/management/sessions/:sessionId/graph-searches", params: { sessionId: path("sessionId"), limit: query("number") }, summary: "Recent graph search events for one session." },
     { name: "listChildOutcomes", method: "GET", path: "/management/sessions/:parentSessionId/child-outcomes", params: { parentSessionId: path("parentSessionId") }, summary: "Child outcomes recorded under a parent session." },
     { name: "getChildOutcome", method: "GET", path: "/management/child-outcomes/:childSessionId", params: { childSessionId: path("childSessionId") }, summary: "One child outcome." },
 
@@ -101,6 +107,7 @@ export const OPERATIONS = [
     { name: "getFleetStats", method: "GET", path: "/management/fleet/stats", params: { since: query("string"), includeDeleted: query("boolean") }, summary: "Fleet-wide stats." },
     { name: "getFleetSkillUsage", method: "GET", path: "/management/fleet/skill-usage", params: { since: query("string"), includeDeleted: query("boolean") }, summary: "Fleet-wide skill usage." },
     { name: "getFleetRetrievalUsage", method: "GET", path: "/management/fleet/retrieval-usage", params: { since: query("string"), includeDeleted: query("boolean") }, summary: "Fleet-wide retrieval usage." },
+    { name: "getFleetGraphNodeUsage", method: "GET", path: "/management/fleet/graph-node-usage", params: { since: query("string"), includeDeleted: query("boolean"), limit: query("number"), nodeKeyLike: query("string"), kind: query("string") }, summary: "Fleet-wide graph node usage." },
     { name: "getUserStats", method: "GET", path: "/management/users/stats", params: { since: query("string"), includeDeleted: query("boolean") }, summary: "Per-user stats." },
     { name: "getSharedFactsStats", method: "GET", path: "/management/facts/shared-stats", summary: "Shared facts stats." },
     { name: "getFactsTombstoneStats", method: "GET", path: "/management/facts/tombstone-stats", params: { ttlSeconds: query("number") }, summary: "Soft-deleted facts awaiting reconciliation." },

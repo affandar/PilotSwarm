@@ -15,9 +15,10 @@ function toIso(value: unknown): unknown {
  * PilotSwarmManagementClient in web mode: the management surface over the
  * Web API. Constructed via `new PilotSwarmManagementClient({ apiUrl, … })`.
  *
- * Methods without an API equivalent (low-level command plumbing, graph/
- * retrieval observability, session dumps) throw `WEB_MODE_UNSUPPORTED`
- * errors — they remain direct-mode-only until a remote consumer needs them.
+ * Methods without an API equivalent (low-level command plumbing, session
+ * dumps) throw `WEB_MODE_UNSUPPORTED` errors — they remain direct-mode-only
+ * until a remote consumer needs them. Graph/retrieval observability gained
+ * API routes for the MCP server's tuner-grade debug surface.
  *
  * User-profile methods operate on the **authenticated** principal; the
  * explicit `principal` argument accepted by the direct client is ignored
@@ -308,28 +309,42 @@ export class WebPilotSwarmManagementClient {
         throw webModeUnsupported("dumpSession");
     }
 
-    getSessionGraphSearches(): never {
-        throw webModeUnsupported("getSessionGraphSearches");
+    // Retrieval / graph observability — tuner-grade diagnostics, added to the
+    // operations table for remote consumers (the MCP server's debug surface).
+    async getSessionGraphSearches(sessionId: string, limit?: number): Promise<any[]> {
+        return this._api.call("getSessionGraphSearches", { sessionId, limit });
     }
 
-    getSessionRetrievalUsage(): never {
-        throw webModeUnsupported("getSessionRetrievalUsage");
+    async getSessionRetrievalUsage(sessionId: string, opts: { since?: Date } = {}): Promise<any[]> {
+        return this._api.call("getSessionRetrievalUsage", { sessionId, since: toIso(opts.since) });
     }
 
-    getSessionTreeRetrievalUsage(): never {
-        throw webModeUnsupported("getSessionTreeRetrievalUsage");
+    async getSessionTreeRetrievalUsage(sessionId: string, opts: { since?: Date } = {}): Promise<any> {
+        return this._api.call("getSessionTreeRetrievalUsage", { sessionId, since: toIso(opts.since) });
     }
 
-    getSessionGraphNodeUsage(): never {
-        throw webModeUnsupported("getSessionGraphNodeUsage");
+    async getSessionGraphNodeUsage(sessionId: string, opts: { since?: Date; limit?: number; nodeKeyLike?: string; kind?: string } = {}): Promise<any[]> {
+        return this._api.call("getSessionGraphNodeUsage", {
+            sessionId,
+            since: toIso(opts.since),
+            limit: opts.limit,
+            nodeKeyLike: opts.nodeKeyLike,
+            kind: opts.kind,
+        });
     }
 
-    getFleetGraphNodeUsage(): never {
-        throw webModeUnsupported("getFleetGraphNodeUsage");
+    async getFleetGraphNodeUsage(opts: { since?: Date; includeDeleted?: boolean; limit?: number; nodeKeyLike?: string; kind?: string } = {}): Promise<any> {
+        return this._api.call("getFleetGraphNodeUsage", {
+            since: toIso(opts.since),
+            includeDeleted: opts.includeDeleted,
+            limit: opts.limit,
+            nodeKeyLike: opts.nodeKeyLike,
+            kind: opts.kind,
+        });
     }
 
-    getSessionGraphEdgeSearchUsage(): never {
-        throw webModeUnsupported("getSessionGraphEdgeSearchUsage");
+    async getSessionGraphEdgeSearchUsage(sessionId: string, opts: { since?: Date; limit?: number } = {}): Promise<any[]> {
+        return this._api.call("getSessionGraphEdgeSearchUsage", { sessionId, since: toIso(opts.since), limit: opts.limit });
     }
 
     getEmbedderStatus(): never {

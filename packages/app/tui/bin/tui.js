@@ -4,9 +4,6 @@
 // explicitly opts into another environment for debugging.
 process.env.NODE_ENV ??= "production";
 
-const { syncBundledWorkspaceUiPackages } = await import("../src/sync-workspace-ui.js");
-syncBundledWorkspaceUiPackages({ linkWorkspacePackages: true });
-
 const argv = process.argv.slice(2);
 if (argv[0] === "auth") {
     const { runAuthCommand } = await import("../src/auth/cli.js");

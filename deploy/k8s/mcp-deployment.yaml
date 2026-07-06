@@ -1,0 +1,139 @@
+# PilotSwarm MCP server — Web API mode, HTTP transport.
+#
+# Runs the pilotswarm-mcp bin from the portal image with a command override.
+# Talks to the deployment through the public portal URL (same authz seam as
+# the portal UX); holds NO database credentials.
+#
+# Secrets (created by scripts/deploy-mcp.sh, not stored here):
+#   pilotswarm-mcp-secrets  PILOTSWARM_MCP_KEY — inbound bearer for MCP clients
+#   pilotswarm-mcp-auth     MSAL token cache seeded from `pilotswarm auth login`
+#                           (outbound Entra credential; refresh persisted to the
+#                           pod's writable copy, re-seeded from the secret on
+#                           restart)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pilotswarm-mcp
+  namespace: copilot-runtime
+  labels:
+    app.kubernetes.io/name: pilotswarm
+    app.kubernetes.io/component: mcp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pilotswarm
+      app.kubernetes.io/component: mcp
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pilotswarm
+        app.kubernetes.io/component: mcp
+    spec:
+      containers:
+        - name: mcp
+          image: pilotswarmacr.azurecr.io/pilotswarm-portal:latest
+          imagePullPolicy: Always
+          command:
+            - /bin/sh
+            - -c
+            - >
+              mkdir -p "$XDG_CONFIG_HOME/pilotswarm/auth" &&
+              cp /auth-seed/* "$XDG_CONFIG_HOME/pilotswarm/auth/" 2>/dev/null || true;
+              exec node packages/app/mcp/dist/bin/pilotswarm-mcp.js
+              --transport http --port 3100 --host 0.0.0.0
+              --api-url https://pilotswarm-portal.westus3.cloudapp.azure.com
+              --allowed-hosts pilotswarm-portal.westus3.cloudapp.azure.com
+              --log-level info
+          ports:
+            - containerPort: 3100
+          env:
+            - name: XDG_CONFIG_HOME
+              value: /tmp/config
+            - name: PILOTSWARM_MCP_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: pilotswarm-mcp-secrets
+                  key: PILOTSWARM_MCP_KEY
+          volumeMounts:
+            - name: auth-seed
+              mountPath: /auth-seed
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          livenessProbe:
+            tcpSocket:
+              port: 3100
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          readinessProbe:
+            tcpSocket:
+              port: 3100
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: auth-seed
+          secret:
+            secretName: pilotswarm-mcp-auth
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pilotswarm-mcp
+  namespace: copilot-runtime
+  labels:
+    app.kubernetes.io/name: pilotswarm
+    app.kubernetes.io/component: mcp
+spec:
+  selector:
+    app.kubernetes.io/name: pilotswarm
+    app.kubernetes.io/component: mcp
+  ports:
+    - port: 3100
+      targetPort: 3100
+---
+# Same host as the portal; /mcp routes to the MCP server (longest-prefix wins
+# over the portal's catch-all /). TLS terminates with the existing portal
+# certificate — no cert-manager annotation here so the secret stays managed by
+# the portal ingress alone.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: pilotswarm-mcp-ingress
+  namespace: copilot-runtime
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+  labels:
+    app.kubernetes.io/name: pilotswarm
+    app.kubernetes.io/component: mcp
+spec:
+  ingressClassName: webapprouting.kubernetes.azure.com
+  tls:
+    - hosts:
+        - pilotswarm-portal.westus3.cloudapp.azure.com
+      secretName: keyvault-pilotswarm-portal-tls
+  rules:
+    - host: pilotswarm-portal.westus3.cloudapp.azure.com
+      http:
+        paths:
+          - path: /mcp
+            pathType: Prefix
+            backend:
+              service:
+                name: pilotswarm-mcp
+                port:
+                  number: 3100

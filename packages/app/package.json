@@ -1,6 +1,6 @@
 {
   "name": "pilotswarm",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "PilotSwarm application package: terminal UI, browser portal + Web API server, and MCP server — one install, three bins.",
   "type": "module",
   "license": "MIT",
@@ -62,9 +62,10 @@
     "test:tui": "node --test tui/test/*.test.mjs",
     "test:web": "node --test web/test/*.test.mjs",
     "test:ui": "node --test ui/core/test/*.test.mjs",
-    "test:mcp": "node mcp/test/unit/sendCommandAndWait.unit.mjs",
+    "test:mcp": "node mcp/test/unit/sendCommandAndWait.unit.mjs && node mcp/test/unit/registration.unit.mjs && node mcp/test/unit/dispatch.unit.mjs",
     "test:mcp:integration": "node mcp/test/integration/smoke.live.mjs",
-    "test:mcp:integration:all": "node mcp/test/integration/smoke.live.mjs && node mcp/test/integration/tools.live.mjs && node mcp/test/integration/edge-cases.live.mjs && node mcp/test/integration/verify.live.mjs",
+    "test:mcp:integration:horizondb": "MCP_PARITY_REQUIRE=search,graph node --env-file=../../.env.horizondb mcp/test/integration/parity.live.mjs",
+    "test:mcp:integration:all": "node mcp/test/integration/smoke.live.mjs && node mcp/test/integration/tools.live.mjs && node mcp/test/integration/edge-cases.live.mjs && node mcp/test/integration/verify.live.mjs && node mcp/test/integration/parity.live.mjs",
     "clean": "rm -rf web/dist mcp/dist"
   },
   "dependencies": {
@@ -76,7 +77,7 @@
     "hono": "^4.12.10",
     "ink": "^6.8.0",
     "jose": "^6.2.2",
-    "pilotswarm-sdk": "^0.4.1",
+    "pilotswarm-sdk": "^0.5.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "ws": "^8.18.2"

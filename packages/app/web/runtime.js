@@ -246,6 +246,36 @@ export class PortalRuntime {
                     includeDeleted: safeParams.includeDeleted,
                     since: safeParams.since ? new Date(safeParams.since) : undefined,
                 });
+            case "getSessionRetrievalUsage":
+                return this.transport.getSessionRetrievalUsage(safeParams.sessionId, {
+                    since: safeParams.since ? new Date(safeParams.since) : undefined,
+                });
+            case "getSessionTreeRetrievalUsage":
+                return this.transport.getSessionTreeRetrievalUsage(safeParams.sessionId, {
+                    since: safeParams.since ? new Date(safeParams.since) : undefined,
+                });
+            case "getSessionGraphNodeUsage":
+                return this.transport.getSessionGraphNodeUsage(safeParams.sessionId, {
+                    since: safeParams.since ? new Date(safeParams.since) : undefined,
+                    limit: safeParams.limit,
+                    nodeKeyLike: safeParams.nodeKeyLike,
+                    kind: safeParams.kind,
+                });
+            case "getSessionGraphEdgeSearchUsage":
+                return this.transport.getSessionGraphEdgeSearchUsage(safeParams.sessionId, {
+                    since: safeParams.since ? new Date(safeParams.since) : undefined,
+                    limit: safeParams.limit,
+                });
+            case "getSessionGraphSearches":
+                return this.transport.getSessionGraphSearches(safeParams.sessionId, safeParams.limit);
+            case "getFleetGraphNodeUsage":
+                return this.transport.getFleetGraphNodeUsage({
+                    includeDeleted: safeParams.includeDeleted,
+                    since: safeParams.since ? new Date(safeParams.since) : undefined,
+                    limit: safeParams.limit,
+                    nodeKeyLike: safeParams.nodeKeyLike,
+                    kind: safeParams.kind,
+                });
             case "getSessionFactsStats":
                 return this.transport.getSessionFactsStats(safeParams.sessionId);
             case "getSessionTreeFactsStats":
