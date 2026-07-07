@@ -58,7 +58,7 @@ fi
 
 echo "[portal] Starting server (port $PORT, mode $TUI_MODE)..."
 echo "[portal] Building browser app..."
-npm run build --workspace=packages/app/web >/tmp/portal-build.log 2>&1
+npm run build:web --workspace=pilotswarm >/tmp/portal-build.log 2>&1
 if [[ -n "$PLUGIN_DIR" ]]; then
   export PLUGIN_DIRS="$(cd "$PLUGIN_DIR" && pwd)"
 fi

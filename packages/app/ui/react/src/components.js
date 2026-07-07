@@ -1,5 +1,5 @@
 import React from "react";
-import { appendAnimatedDotsToRuns, useAnimatedDots } from "./chat-status.js";
+import { appendAnimatedDotsToRuns, useAnimatedDots, useSpinnerFrame } from "./chat-status.js";
 import {
     applyActiveHighlightRuns,
     computeLegacyLayout,
@@ -8,6 +8,7 @@ import {
     selectAdminConsole,
     selectAdminGhcpKeyEditorModal,
     selectChatPaneChrome,
+    selectLiveActivityLines,
     selectChatLines,
     selectActivityPane,
     selectArtifactUploadModal,
@@ -376,6 +377,20 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
             { text: "Check env credentials and model provider config, then relaunch.", color: "yellow" },
         ]
         : selectChatLines(selectorState, contentWidth)), [chatView.branding.splash, chatView.connectionError, contentWidth, selectorState, startupError]);
+    const running = String(chatView.activeSession?.status || "").toLowerCase() === "running";
+    const spinnerFrame = useSpinnerFrame(running);
+    const liveActivityLines = React.useMemo(
+        () => (startupError ? [] : selectLiveActivityLines(selectorState, { spinnerFrame, maxWidth: contentWidth })),
+        [selectorState, startupError, spinnerFrame, contentWidth],
+    );
+    // Concat the isolated live-activity block so the spinner tick only recomputes
+    // the small block, not the whole transcript.
+    const chatLines = React.useMemo(
+        () => (liveActivityLines.length > 0
+            ? [...elements, [{ text: "", color: null }], ...liveActivityLines]
+            : elements),
+        [elements, liveActivityLines],
+    );
 
     return React.createElement(platform.Panel, {
         title: chrome.title,
@@ -384,7 +399,7 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
         focused: chatView.focused,
         width,
         height,
-        lines: elements,
+        lines: chatLines,
         scrollOffset: chatView.chatScroll,
         scrollMode: "bottom",
         paneId: "chat",

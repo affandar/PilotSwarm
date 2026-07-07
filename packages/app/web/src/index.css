@@ -1539,6 +1539,40 @@ body.is-resizing-pane-y * {
   max-width: none;
 }
 
+/* Wide session column (is-session-wrap): rows fill the pane width and wrap
+   their text instead of scrolling horizontally. Once the column is dragged
+   below the compact threshold (PORTAL_SESSION_COMPACT_COLUMN_PX) the grid
+   switches to is-session-compact and the no-wrap + horizontal-scroll rules
+   above take over, so a horizontal scrollbar appears. */
+.ps-workspace-main-grid.is-session-wrap .ps-session-pane .ps-session-list {
+  overflow-x: hidden;
+  padding-bottom: 6px;
+}
+
+.ps-workspace-main-grid.is-session-wrap .ps-session-pane .ps-session-list-button {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.ps-workspace-main-grid.is-session-wrap .ps-session-pane .ps-session-row-content,
+.ps-workspace-main-grid.is-session-wrap .ps-session-pane .ps-session-row-title,
+.ps-workspace-main-grid.is-session-wrap .ps-session-pane .ps-session-row-badges,
+.ps-workspace-main-grid.is-session-wrap .ps-session-pane .ps-session-row-selected-meta {
+  width: auto;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.ps-workspace-main-grid.is-session-wrap .ps-session-pane .ps-action-list .ps-line {
+  white-space: normal;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  max-width: 100%;
+}
+
 .ps-session-pane.ps-mobile-session-pane .ps-action-list .ps-line {
   white-space: nowrap;
   overflow: hidden;

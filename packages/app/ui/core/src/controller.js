@@ -29,6 +29,7 @@ import {
     selectActiveArtifactLinks,
     selectActiveHttpLinks,
     selectActivityPane,
+    selectLiveActivityLines,
     selectChatLines,
     selectFileBrowserItems,
     selectFileSessionIdsForScope,
@@ -5171,7 +5172,10 @@ export class PilotSwarmUiController {
 
         const contentWidth = Math.max(20, layout.leftWidth - 4);
         const contentHeight = Math.max(1, layout.chatPaneHeight - 2);
-        const lines = selectChatLines(state, contentWidth);
+        const lines = [
+            ...selectChatLines(state, contentWidth),
+            ...selectLiveActivityLines(state),
+        ];
         const bottomStickyLines = selectOutboxOverlayLines(state, contentWidth);
         const bottomStickyHeight = Math.min(
             Math.max(0, Math.floor(contentHeight * 0.34)),

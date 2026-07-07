@@ -1,5 +1,5 @@
 import React from "react";
-import { appendAnimatedDotsToRuns, useAnimatedDots } from "./chat-status.js";
+import { appendAnimatedDotsToRuns, useAnimatedDots, useSpinnerFrame } from "./chat-status.js";
 import {
     UI_COMMANDS,
     INSPECTOR_TABS,
@@ -17,6 +17,7 @@ import {
     selectAdminConsole,
     selectArtifactPickerModal,
     selectArtifactUploadModal,
+    selectLiveActivityLines,
     selectChatLines,
     selectChatPaneChrome,
     selectOutboxOverlayLines,
@@ -2059,6 +2060,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
             inspectorTab: state.ui.inspectorTab,
             chatViewMode: state.ui.chatViewMode || "transcript",
             activeSessionIsGroup: Boolean(activeSessionId && state.sessions.byId[activeSessionId]?.isGroup),
+            activeSessionStatus: activeSessionId ? String(state.sessions.byId[activeSessionId]?.status || "").toLowerCase() : "",
             focused: state.ui.focusRegion === "chat",
             scroll: state.ui.scroll.chat,
             contentWidth,
@@ -2110,6 +2112,20 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         () => selectChatLines(selectorState, viewState.contentWidth, { tableMode: "sentinel" }),
         [selectorState, viewState.contentWidth],
     );
+    const spinnerFrame = useSpinnerFrame(viewState.activeSessionStatus === "running");
+    const liveActivityLines = React.useMemo(
+        () => selectLiveActivityLines(selectorState, { spinnerFrame, maxWidth: viewState.contentWidth }),
+        [selectorState, spinnerFrame, viewState.contentWidth],
+    );
+    // Concatenate the isolated live-activity block onto the (expensive) message
+    // lines so the spinner tick only recomputes the small block, not the whole
+    // transcript. The block clears itself once the reply lands.
+    const chatLines = React.useMemo(
+        () => (liveActivityLines.length > 0
+            ? [...lines, [{ text: "", color: null }], ...liveActivityLines]
+            : lines),
+        [lines, liveActivityLines],
+    );
     const outboxLines = React.useMemo(
         () => selectOutboxOverlayLines(selectorState, viewState.contentWidth, { tableMode: "sentinel" }),
         [selectorState, viewState.contentWidth],
@@ -2128,7 +2144,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         actions: null,
         color: chrome.color,
         focused: viewState.focused,
-        lines,
+        lines: chatLines,
         bottomStickyLines: outboxLines,
         scrollOffset: viewState.scroll,
         scrollMode: "bottom",
