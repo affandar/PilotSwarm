@@ -126,6 +126,8 @@ export function createInitialState({ mode = "local", branding = null, themeId = 
         ui: {
             focusRegion: FOCUS_REGIONS.SESSIONS,
             inspectorTab: INSPECTOR_TABS[0],
+            sequenceExpandedTurns: [],
+            sequenceSelectedTurn: null,
             chatViewMode: chatViewMode === "summary" ? "summary" : "transcript",
             statsViewMode: "session",
             prompt: "",

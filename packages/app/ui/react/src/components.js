@@ -27,6 +27,7 @@ import {
     selectSessionOwnerFilterModal,
     selectStatusBar,
     selectThemePickerModal,
+    selectHelpModal,
     selectConfirmModal,
     selectVisibleSessionRows,
 } from "pilotswarm/ui-core";
@@ -568,6 +569,8 @@ const InspectorSequencePane = React.memo(function InspectorSequencePane({ contro
             ? state.orchestration.bySessionId?.[state.sessions.activeSessionId] || null
             : null,
         histories: state.history.bySessionId,
+        expandedTurns: state.ui.sequenceExpandedTurns,
+        selectedTurn: state.ui.sequenceSelectedTurn,
     }), shallowEqualObject);
     const selectorState = React.useMemo(() => ({
         sessions: {
@@ -592,8 +595,14 @@ const InspectorSequencePane = React.memo(function InspectorSequencePane({ contro
         sequenceState.histories,
     ]);
     const inspector = React.useMemo(
-        () => selectInspector(selectorState, { width: contentWidth }),
-        [contentWidth, selectorState],
+        () => selectInspector(selectorState, {
+            width: contentWidth,
+            sequenceExpansion: {
+                expandedTurns: sequenceState.expandedTurns || [],
+                selectedTurn: sequenceState.selectedTurn ?? null,
+            },
+        }),
+        [contentWidth, selectorState, sequenceState.expandedTurns, sequenceState.selectedTurn],
     );
 
     return renderInspectorPanel(platform, inspector, meta, width, height, frame);
@@ -1497,6 +1506,41 @@ function ArtifactPickerModalContainer({ controller }) {
     return React.createElement(ArtifactPickerModal, { state });
 }
 
+function HelpModal({ state }) {
+    const platform = useUiPlatform();
+    const modal = selectHelpModal(state);
+    if (!modal) return null;
+    const viewport = typeof platform.getViewport === "function"
+        ? platform.getViewport()
+        : { width: 120, height: 40 };
+    const width = Math.max(56, Math.min(modal.idealWidth || 80, (viewport.width || 120) - 8));
+    const height = Math.max(10, Math.min(modal.rows.length + 2, (viewport.height || 40) - 6));
+    const contentRows = Math.max(1, height - 2);
+    const maxOffset = Math.max(0, modal.rows.length - contentRows);
+    const scrollOffset = Math.max(0, Math.min(modal.selectedRowIndex - Math.floor(contentRows / 2), maxOffset));
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Column, { width },
+            React.createElement(platform.Panel, {
+                title: modal.title,
+                color: "cyan",
+                focused: false,
+                width,
+                height,
+                lines: modal.rows,
+                scrollOffset,
+                scrollMode: "top",
+                fillColor: "surface",
+            }),
+        ));
+}
+
+function HelpModalContainer({ controller }) {
+    const state = useControllerSelector(controller, (rootState) => ({
+        ui: { modal: rootState.ui.modal },
+    }), shallowEqualObject);
+    return React.createElement(HelpModal, { state });
+}
+
 function renderFilterModal(platform, modal) {
     if (!modal) return null;
     const viewport = typeof platform.getViewport === "function"
@@ -1849,6 +1893,8 @@ export function SharedPilotSwarmApp({ controller, versionLabel = null }) {
     const platform = useUiPlatform();
     const layoutState = useControllerSelector(controller, (state) => ({
         paneAdjust: state.ui.layout?.paneAdjust ?? 0,
+        sessionPaneAdjust: state.ui.layout?.sessionPaneAdjust ?? 0,
+        activityPaneAdjust: state.ui.layout?.activityPaneAdjust ?? 0,
         promptRows: getPromptInputRows(state.ui.prompt),
         inspectorTab: state.ui.inspectorTab,
         filesFullscreen: Boolean(state.files?.fullscreen),
@@ -1862,8 +1908,8 @@ export function SharedPilotSwarmApp({ controller, versionLabel = null }) {
     const viewportWidth = layoutState.viewportWidth;
     const viewportHeight = layoutState.viewportHeight;
     const layout = React.useMemo(
-        () => computeLegacyLayout({ width: viewportWidth, height: viewportHeight }, layoutState.paneAdjust, layoutState.promptRows, 0, 0, layoutState.fullscreenPane),
-        [layoutState.fullscreenPane, layoutState.paneAdjust, layoutState.promptRows, viewportHeight, viewportWidth],
+        () => computeLegacyLayout({ width: viewportWidth, height: viewportHeight }, layoutState.paneAdjust, layoutState.promptRows, layoutState.sessionPaneAdjust, layoutState.activityPaneAdjust, layoutState.fullscreenPane),
+        [layoutState.fullscreenPane, layoutState.paneAdjust, layoutState.sessionPaneAdjust, layoutState.activityPaneAdjust, layoutState.promptRows, viewportHeight, viewportWidth],
     );
     const frames = buildWorkspacePaneFrames(layout);
     const sessionRows = Math.max(3, (layout.fullscreenPane === "sessions" ? layout.bodyHeight : layout.sessionPaneHeight) - 2);
@@ -1973,6 +2019,7 @@ export function SharedPilotSwarmApp({ controller, versionLabel = null }) {
         React.createElement(RenameSessionModalContainer, { controller }),
         React.createElement(ArtifactUploadModalContainer, { controller }),
         React.createElement(ArtifactPickerModalContainer, { controller }),
+        React.createElement(HelpModalContainer, { controller }),
         React.createElement(ModelPickerModalContainer, { controller }),
         React.createElement(ReasoningEffortPickerModalContainer, { controller }),
         React.createElement(ThemePickerModalContainer, { controller }),

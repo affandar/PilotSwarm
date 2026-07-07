@@ -264,6 +264,14 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             requestExit();
             return;
         }
+        // Stop the current turn — the TUI equivalent of the portal Stop button.
+        // ctrl-x is reliable across terminals; ctrl-esc also fires where the
+        // terminal sends it distinctly from a bare Esc. The controller no-ops
+        // (status message) when no turn is running.
+        if (key.ctrl && (input === "x" || key.escape)) {
+            controller.handleCommand(UI_COMMANDS.STOP_TURN).catch(() => {});
+            return;
+        }
         if (focus !== "prompt" && input === "q" && quitStateRef.current.armedUntil > Date.now()) {
             clearQuitArm(false);
             requestExit();
@@ -398,7 +406,7 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                 }
                 return;
             }
-            if (key.escape || input === "q" || (modal.type === "artifactPicker" && input === "a")) {
+            if (key.escape || input === "q" || (modal.type === "artifactPicker" && input === "a") || (modal.type === "help" && input === "?")) {
                 controller.handleCommand(UI_COMMANDS.CLOSE_MODAL).catch(() => {});
                 return;
             }
@@ -602,21 +610,40 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                 return;
             }
         }
+        // Sequence tab: j/k move the turn cursor across completed turns, enter
+        // expands/collapses the selected turn (paging/g-G still scroll).
+        if (focus === "inspector" && inspectorTab === "sequence") {
+            if (key.return) {
+                controller.handleCommand(UI_COMMANDS.TOGGLE_SEQUENCE_TURN).catch(() => {});
+                return;
+            }
+            if (key.upArrow || input === "k") {
+                controller.handleCommand(UI_COMMANDS.SEQUENCE_SELECT_PREV).catch(() => {});
+                return;
+            }
+            if (key.downArrow || input === "j") {
+                controller.handleCommand(UI_COMMANDS.SEQUENCE_SELECT_NEXT).catch(() => {});
+                return;
+            }
+        }
 
+        // [ / ] resize the vertical pane of whatever is focused (sessions/chat
+        // share the left split; inspector/activity share the right split).
+        // { / } resize the horizontal left/right column split.
         if (focus !== "prompt" && input === "[") {
-            controller.handleCommand(UI_COMMANDS.GROW_LEFT_PANE).catch(() => {});
+            controller.handleCommand(UI_COMMANDS.SHRINK_FOCUSED_PANE).catch(() => {});
             return;
         }
         if (focus !== "prompt" && input === "]") {
-            controller.handleCommand(UI_COMMANDS.GROW_RIGHT_PANE).catch(() => {});
+            controller.handleCommand(UI_COMMANDS.GROW_FOCUSED_PANE).catch(() => {});
             return;
         }
         if (focus !== "prompt" && input === "{") {
-            controller.handleCommand(UI_COMMANDS.SHRINK_SESSION_PANE).catch(() => {});
+            controller.handleCommand(UI_COMMANDS.GROW_LEFT_PANE).catch(() => {});
             return;
         }
         if (focus !== "prompt" && input === "}") {
-            controller.handleCommand(UI_COMMANDS.GROW_SESSION_PANE).catch(() => {});
+            controller.handleCommand(UI_COMMANDS.GROW_RIGHT_PANE).catch(() => {});
             return;
         }
 
@@ -716,6 +743,10 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
         }
         if (plainShortcut && input === "a") {
             controller.handleCommand(UI_COMMANDS.OPEN_ARTIFACT_PICKER).catch(() => {});
+            return;
+        }
+        if (focus !== "prompt" && input === "?") {
+            controller.handleCommand(UI_COMMANDS.OPEN_HELP).catch(() => {});
             return;
         }
         if (plainShortcut && input === "m") {

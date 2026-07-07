@@ -2020,10 +2020,19 @@ export function selectChatPaneChrome(state, options = {}) {
         ? null
         : buildLiveProgressState(session, history, history?.chat || [], outboxItems);
 
+    // Border top-right: status · model · context (mirrors the session-row meta),
+    // with the live turn-progress label appended while a turn is running.
+    const mode = state.connection?.mode || "local";
+    const metaRuns = buildSelectedSessionMetaRuns(session, mode);
+    const progressRuns = buildChatProgressTitleRuns(progress);
+    const titleRight = progressRuns
+        ? [...metaRuns, ...(metaRuns.length ? [{ text: " · ", color: "gray" }] : []), ...progressRuns]
+        : metaRuns;
+
     return {
         color: session.isSystem ? "yellow" : "cyan",
         title,
-        titleRight: buildChatProgressTitleRuns(progress),
+        titleRight: titleRight.length ? titleRight : null,
         animateTitleRight: Boolean(progress),
     };
 }
@@ -2759,22 +2768,24 @@ export function selectStatusBar(state) {
     const chatViewMode = state.ui?.chatViewMode === "summary" ? "summary" : "transcript";
     const chatViewHint = chatViewMode === "summary" ? "s transcript" : "s summary";
     const hints = {
-        [FOCUS_REGIONS.SESSIONS]: `up/down switch · ctrl-u/ctrl-d page · ctrl-g move group · f filter · P pin · V select · d done · D delete · r refresh · t title · ${fullscreenHint} · {/} session pane · [/] side pane · T themes · a linked items · drag copy · tab next pane · p prompt`,
-        [FOCUS_REGIONS.CHAT]: `${chatViewHint} · j/k scroll · ctrl-u/ctrl-d page · e older history · g/G top/bottom · d done · ${fullscreenHint} · {/} session pane · [/] side pane · T themes · a linked items · drag copy · tab next pane · p prompt`,
+        [FOCUS_REGIONS.SESSIONS]: `up/down switch · ctrl-u/ctrl-d page · ctrl-g move group · f filter · P pin · V select · d done · D delete · r refresh · t title · ${fullscreenHint} · [/] resize pane · {/} columns · T themes · ? help · a linked items · drag copy · tab next pane · p prompt`,
+        [FOCUS_REGIONS.CHAT]: `${chatViewHint} · j/k scroll · ctrl-u/ctrl-d page · e older history · g/G top/bottom · d done · ${fullscreenHint} · [/] resize pane · {/} columns · T themes · ? help · a linked items · drag copy · tab next pane · p prompt`,
         [FOCUS_REGIONS.INSPECTOR]: state.ui.inspectorTab === "logs"
-            ? `j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · t tail · f filter · ${fullscreenHint} · left/right tab · [/] side pane · T themes · a linked items · drag copy · tab next pane`
+            ? `j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · t tail · f filter · ${fullscreenHint} · left/right tab · [/] resize pane · {/} columns · T themes · ? help · a linked items · drag copy · tab next pane`
             : state.ui.inspectorTab === "stats"
-                ? `j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · f cycle session/fleet/users · d done · ${fullscreenHint} · left/right tab · [/] side pane · T themes · m next tab · tab next pane`
+                ? `j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · f cycle session/fleet/users · d done · ${fullscreenHint} · left/right tab · [/] resize pane · {/} columns · T themes · ? help · m next tab · tab next pane`
             : state.ui.inspectorTab === "files"
                 ? state.files?.fullscreen
-                    ? "a download · x delete · u/ctrl-a upload · o open · f filter · j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · v/esc close fullscreen · left/right tab · {/} session pane · [/] side pane · T themes · tab next pane"
-                    : "j/k files · a download · x delete · u/ctrl-a upload · o open · f filter · ctrl-u/ctrl-d page preview · g/G preview top/bottom · d done · v fullscreen · left/right tab · {/} session pane · [/] side pane · T themes · tab next pane"
+                    ? "a download · x delete · u/ctrl-a upload · o open · f filter · j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · v/esc close fullscreen · left/right tab · [/] resize pane · {/} columns · T themes · ? help · tab next pane"
+                    : "j/k files · a download · x delete · u/ctrl-a upload · o open · f filter · ctrl-u/ctrl-d page preview · g/G preview top/bottom · d done · v fullscreen · left/right tab · [/] resize pane · {/} columns · T themes · ? help · tab next pane"
                 : state.ui.inspectorTab === "history"
-                    ? `j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · f format · r refresh · a save artifact · d done · ${fullscreenHint} · left/right tab · [/] side pane · T themes · m next tab · tab next pane`
-                    : `j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · ${fullscreenHint} · left/right tab · [/] side pane · T themes · h/l focus · a linked items · drag copy · m next tab · tab next pane`,
-        [FOCUS_REGIONS.ACTIVITY]: `j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · ${fullscreenHint} · {/} session pane · [/] side pane · T themes · a linked items · drag copy · h left · tab next pane`,
+                    ? `j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · f format · r refresh · a save artifact · d done · ${fullscreenHint} · left/right tab · [/] resize pane · {/} columns · T themes · ? help · m next tab · tab next pane`
+                    : state.ui.inspectorTab === "sequence"
+                        ? `j/k turn · enter expand · ctrl-u/ctrl-d page · g/G top/bottom · d done · ${fullscreenHint} · left/right tab · [/] resize pane · {/} columns · T themes · ? help · m next tab · tab next pane`
+                        : `j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · ${fullscreenHint} · left/right tab · [/] resize pane · {/} columns · T themes · ? help · h/l focus · a linked items · drag copy · m next tab · tab next pane`,
+        [FOCUS_REGIONS.ACTIVITY]: `j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · ${fullscreenHint} · [/] resize pane · {/} columns · T themes · ? help · a linked items · drag copy · h left · tab next pane`,
         [FOCUS_REGIONS.PROMPT]: hasPendingQuestion
-            ? `type answer · enter reply · alt-enter newline · T themes · arrows move · alt-left/right word · alt-delete word · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`
+            ? `type answer · enter reply · alt-enter newline · T themes · ? help · arrows move · alt-left/right word · alt-delete word · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`
             : editingPendingOutbox
                 ? selectedQueuedOutbox
                     ? `queued prompt selected · d delete · up/down cycle queued · enter/esc new prompt · ${paneFullscreen ? "esc pane" : "esc sessions"}`
@@ -2785,12 +2796,18 @@ export function selectStatusBar(state) {
                     ? `type message · enter queues · enter on empty sends batch · up/down recall pending · alt-enter newline · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`
                     : hasOutbox
                         ? `type message · enter queues behind durable items · up/down recall pending · alt-enter newline · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`
-                        : `type message · enter send · alt-enter newline · T themes · arrows move · alt-left/right word · alt-delete word · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`,
+                        : `type message · enter send · alt-enter newline · T themes · ? help · arrows move · alt-left/right word · alt-delete word · @ artifacts · @@ sessions · ${paneFullscreen ? "esc pane" : "esc sessions"}`,
     };
 
+    let right = hints[focus] || hints[FOCUS_REGIONS.SESSIONS];
+    // Surface the Stop-turn hint at the front (so truncation never eats it)
+    // exactly while a turn is running; it stays listed, grayed, in `?` help.
+    if (canStopSessionTurn(selectActiveSession(state))) {
+        right = `ctrl-x stop · ${right}`;
+    }
     return {
         left: state.ui.statusText,
-        right: hints[focus] || hints[FOCUS_REGIONS.SESSIONS],
+        right,
     };
 }
 
@@ -3355,6 +3372,77 @@ function buildNodeMapHeaderLine(nodeLabels, colWidth) {
     return runs;
 }
 
+const SEQ_REASONING_EFFORTS = new Set(["low", "medium", "high", "xhigh", "minimal", "none"]);
+
+function shortModelForSequence(value) {
+    const model = String(value || "").trim();
+    if (!model) return "unknown";
+    const parts = model.split(":").filter(Boolean);
+    if (parts.length === 0) return "unknown";
+    const last = String(parts[parts.length - 1]).toLowerCase();
+    const index = parts.length > 1 && SEQ_REASONING_EFFORTS.has(last) ? parts.length - 2 : parts.length - 1;
+    return parts[Math.max(0, index)] || parts[0] || "unknown";
+}
+
+function formatTokenCountK(value) {
+    const tokens = Number(value || 0);
+    if (!Number.isFinite(tokens)) return "?K";
+    const scaled = tokens / 1000;
+    return `${scaled.toFixed(Math.abs(scaled) >= 10 ? 1 : 2)}K`;
+}
+
+function formatSeqCount(value) {
+    return Number(value || 0).toLocaleString("en-US");
+}
+
+// Turn index -> turn_completed event data, mirroring the portal's per-turn
+// completion model so the TUI sequence tab can show the same detail.
+export function buildSequenceCompletionByTurn(events) {
+    const map = new Map();
+    for (const event of events || []) {
+        if (event?.eventType !== "session.turn_completed") continue;
+        const turn = Number(event?.data?.turnIndex ?? event?.data?.iteration);
+        if (!Number.isFinite(turn)) continue;
+        map.set(turn, event.data || {});
+    }
+    return map;
+}
+
+// The magenta "Mod: ..." divider (+ optional detail lines) inserted under a
+// completed-turn row when the TUI sequence tab is showing turn expansion.
+function buildSequenceTurnLines(data, { expanded, selected, maxWidth }) {
+    const caret = expanded ? "v" : ">";
+    const model = shortModelForSequence(data?.model);
+    const dur = data?.durationMs != null ? `${(Number(data.durationMs) / 1000).toFixed(1)}s` : "n/a";
+    const dividerText = `${caret} Mod: ${model}  tok ${formatTokenCountK(data?.tokensInput)}/${formatTokenCountK(data?.tokensOutput)}  dur ${dur}`;
+    const lines = [];
+    if (selected) {
+        lines.push(buildActiveHighlightLine(padDisplayText(dividerText, Math.max(18, maxWidth))));
+    } else {
+        lines.push([{ text: dividerText, color: "magenta" }]);
+    }
+    if (expanded) {
+        const details = [
+            ["model", data?.reasoningEffort ? `${data?.model || "(unknown)"}:${data.reasoningEffort}` : (data?.model || "(unknown)")],
+            ["duration", data?.durationMs != null ? `${formatSeqCount(data.durationMs)} ms` : null],
+            ["tokens", `${formatSeqCount(data?.tokensInput)} in / ${formatSeqCount(data?.tokensOutput)} out`],
+            ["cache", `${formatSeqCount(data?.tokensCacheRead)} read / ${formatSeqCount(data?.tokensCacheWrite)} write`],
+            ["tools", `${formatSeqCount(data?.toolCalls)} calls / ${formatSeqCount(data?.toolErrors)} errors`],
+            ["names", Array.isArray(data?.toolNames) && data.toolNames.length ? data.toolNames.join(", ") : null],
+            ["worker", data?.workerNodeId || null],
+            ["result", data?.resultType || null],
+            ["error", data?.errorMessage || null],
+        ].filter(([, value]) => value != null && value !== "");
+        for (const [label, value] of details) {
+            lines.push([
+                { text: `      ${label}: `, color: "gray" },
+                { text: String(value), color: "white" },
+            ]);
+        }
+    }
+    return lines;
+}
+
 function buildSequenceViewForSession(state, session, maxWidth, options = {}) {
     const allowWideColumns = Boolean(options?.allowWideColumns);
     const statsLines = buildSequenceStatsLines(state, session, maxWidth);
@@ -3396,6 +3484,29 @@ function buildSequenceViewForSession(state, session, maxWidth, options = {}) {
         Math.floor((availableWidth - timeWidth - 1 - gapWidth) / Math.max(1, nodeLabels.length)),
     );
 
+    const expansion = options?.sequenceExpansion || null;
+    const completionByTurn = expansion ? buildSequenceCompletionByTurn(history?.events || []) : null;
+    const expandedTurns = expansion ? new Set((expansion.expandedTurns || []).map(Number)) : null;
+    const selectedTurn = expansion && expansion.selectedTurn != null ? Number(expansion.selectedTurn) : null;
+
+    const lines = [];
+    for (const entry of visibleEntries) {
+        lines.push(buildSequenceEventLine(entry, nodeLabels, timeWidth, colWidth));
+        if (expansion && entry.completedTurn != null) {
+            const turn = Number(entry.completedTurn);
+            const data = completionByTurn.get(turn);
+            if (data) {
+                for (const detailLine of buildSequenceTurnLines(data, {
+                    expanded: expandedTurns.has(turn),
+                    selected: selectedTurn === turn,
+                    maxWidth: availableWidth,
+                })) {
+                    lines.push(detailLine);
+                }
+            }
+        }
+    }
+
     return {
         stickyLines: [
             ...statsLines,
@@ -3403,7 +3514,7 @@ function buildSequenceViewForSession(state, session, maxWidth, options = {}) {
             buildSequenceHeaderLine(nodeLabels, timeWidth, colWidth),
             buildSequenceDividerLine(nodeLabels, timeWidth, colWidth),
         ],
-        lines: visibleEntries.map((entry) => buildSequenceEventLine(entry, nodeLabels, timeWidth, colWidth)),
+        lines,
     };
 }
 
@@ -5184,7 +5295,7 @@ export function selectInspector(state, options = {}) {
     switch (activeTab) {
         case "sequence": {
             const sequenceView = session
-                ? buildSequenceViewForSession(state, session, maxWidth, { allowWideColumns })
+                ? buildSequenceViewForSession(state, session, maxWidth, { allowWideColumns, sequenceExpansion: options?.sequenceExpansion || null })
                 : { stickyLines: [], lines: ["No session selected."] };
             stickyLines = sequenceView.stickyLines || [];
             lines = sequenceView.lines;
@@ -5367,6 +5478,100 @@ function buildThemeSwatchRuns(entries = []) {
         });
     }
     return runs;
+}
+
+const KEYBINDING_HELP = [
+    { section: "Global", bindings: [
+        ["Tab / Shift-Tab", "focus next / previous pane"],
+        ["h l   ← →", "focus left / right pane"],
+        ["p", "focus the prompt"],
+        ["[  ]", "shrink / grow the focused pane"],
+        ["{  }", "grow left / right column"],
+        ["v", "fullscreen the focused pane"],
+        ["n / r", "new session / refresh"],
+        ["a", "linked items — artifacts to download, links to open"],
+        ["m", "cycle inspector tab"],
+        ["c / d / D", "cancel / done / delete session"],
+        ["ctrl-x  (ctrl-esc)", "stop the current turn", { dim: true }],
+        ["T / N / A", "theme / model / admin"],
+        ["?", "toggle this help"],
+        ["q", "quit (double-tap)"],
+        ["Esc", "back / focus sessions"],
+    ] },
+    { section: "Sessions pane", bindings: [
+        ["j k   ↑ ↓", "move selection"],
+        ["ctrl-u / ctrl-d", "page up / down"],
+        ["ctrl-g", "move to group"],
+        ["+ / -", "expand / collapse subtree"],
+        ["t", "rename"],
+        ["P", "pin / unpin"],
+        ["V / space", "select mode / toggle selection"],
+        ["f", "filter"],
+    ] },
+    { section: "Chat / transcript", bindings: [
+        ["s", "toggle transcript / summary"],
+        ["j k   ↑ ↓", "scroll"],
+        ["ctrl-u / ctrl-d", "page"],
+        ["e", "expand older history"],
+        ["g / G", "top / bottom"],
+    ] },
+    { section: "Inspector pane", bindings: [
+        ["← →   m", "previous / next / cycle tab"],
+        ["j k", "scroll"],
+        ["enter", "expand / collapse a turn (Sequence tab)"],
+        ["logs", "t tail · f filter"],
+        ["stats", "f cycle session/fleet/users"],
+        ["files", "a download · x delete · u upload · o open · f filter · v full"],
+        ["history", "r refresh · a export · f format"],
+    ] },
+    { section: "Activity pane", bindings: [
+        ["j k   ↑ ↓", "scroll"],
+        ["g / G", "top / bottom"],
+    ] },
+    { section: "Prompt", bindings: [
+        ["enter", "send"],
+        ["alt/ctrl-j", "newline"],
+        ["ctrl-a", "attach artifact"],
+        ["@ / @@", "artifact / session reference"],
+    ] },
+    { section: "Overlays", bindings: [
+        ["Esc / q", "close"],
+        ["enter", "confirm / apply"],
+        ["j k   ↑ ↓", "navigate"],
+        ["Tab", "switch modal pane"],
+    ] },
+];
+
+export function buildHelpModalRows() {
+    const rows = [];
+    const keysWidth = 18;
+    for (const group of KEYBINDING_HELP) {
+        if (rows.length > 0) rows.push([{ text: "", color: "gray" }]);
+        rows.push([{ text: group.section, color: "cyan", bold: true }]);
+        for (const [keys, desc, opts] of group.bindings) {
+            const dim = Boolean(opts?.dim);
+            rows.push([
+                { text: "  " + String(keys).padEnd(keysWidth), color: dim ? "gray" : "yellow" },
+                { text: String(desc), color: dim ? "gray" : "white" },
+            ]);
+        }
+    }
+    return rows;
+}
+
+// TUI-only help overlay (the portal relies on tooltips). Reuses the single
+// modal slot; opened with `?` and dismissed with `?`/Esc.
+export function selectHelpModal(state, maxWidth = 88) {
+    const modal = state.ui?.modal;
+    if (!modal || modal.type !== "help") return null;
+    const rows = buildHelpModalRows();
+    const selectedRowIndex = Math.max(0, Math.min(Number(modal.selectedIndex) || 0, rows.length - 1));
+    return {
+        title: "Keybindings — ? or Esc to close",
+        idealWidth: Math.max(64, Math.min(maxWidth, 88)),
+        rows,
+        selectedRowIndex,
+    };
 }
 
 export function selectThemePickerModal(state, maxWidth = 80) {

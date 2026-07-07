@@ -18,6 +18,10 @@ import {
     getFocusRightTarget,
     getPromptInputRows,
     MIN_SESSION_PANE_HEIGHT,
+    MIN_CHAT_PANE_HEIGHT,
+    MIN_ACTIVITY_PANE_HEIGHT,
+    MIN_INSPECTOR_PANE_HEIGHT,
+    DEFAULT_ACTIVITY_PANE_RATIO,
     normalizeFocusRegion,
 } from "./layout.js";
 import { parseTerminalMarkupRuns } from "./formatting.js";
@@ -2883,6 +2887,10 @@ export class PilotSwarmUiController {
                 this.exitPendingPromptEdit({ restoreDraft: true });
             }
             this.dispatch({ type: "sessions/selected", sessionId });
+            // Sequence-tab turn selection/expansion is per-session; clear it on
+            // switch so a stale turn index doesn't carry into another session.
+            this.dispatch({ type: "ui/sequenceExpandedTurns", turns: [] });
+            this.dispatch({ type: "ui/sequenceSelectedTurn", turn: null });
         }
         if (this.getState().sessions.byId[sessionId]?.isGroup) {
             this.detachActiveSession();
@@ -3534,6 +3542,19 @@ export class PilotSwarmUiController {
         await this.refreshSessions();
     }
 
+    openHelpModal() {
+        this.dispatch({
+            type: "ui/modal",
+            modal: {
+                type: "help",
+                title: "Keybindings",
+                selectedIndex: 0,
+                previousFocus: this.getState().ui.focusRegion,
+            },
+        });
+        this.dispatch({ type: "ui/status", text: "Keybindings — ? or Esc to close" });
+    }
+
     openThemePicker() {
         const themes = listThemes().map((theme) => ({
             id: theme.id,
@@ -4160,7 +4181,13 @@ export class PilotSwarmUiController {
 
     moveModalSelection(delta) {
         const modal = this.getState().ui.modal;
-        if (!modal || !Array.isArray(modal.items) || modal.items.length === 0) return;
+        if (!modal) return;
+        if (modal.type === "help") {
+            const current = Math.max(0, Number(modal.selectedIndex) || 0);
+            this.dispatch({ type: "ui/modalSelection", index: Math.max(0, current + delta) });
+            return;
+        }
+        if (!Array.isArray(modal.items) || modal.items.length === 0) return;
         if (modal.type === "logFilter" || modal.type === "filesFilter" || modal.type === "historyFormat") {
             const currentPaneIndex = Math.max(0, Math.min(Number(modal.selectedIndex) || 0, modal.items.length - 1));
             const selected = modal.items[currentPaneIndex];
@@ -4216,6 +4243,10 @@ export class PilotSwarmUiController {
     async confirmModal() {
         const modal = this.getState().ui.modal;
         if (!modal) return;
+        if (modal.type === "help") {
+            this.closeModal();
+            return;
+        }
         if (modal.type === "confirm") {
             const previousFocus = modal.previousFocus;
             this.dispatch({ type: "ui/modal", modal: null });
@@ -4780,6 +4811,88 @@ export class PilotSwarmUiController {
         if (safeFocus !== currentFocus) {
             this.setFocus(safeFocus);
         }
+    }
+
+    // Focus-aware vertical resize: [ / ] grow or shrink whichever pane is
+    // focused. Sessions and chat share the left-column vertical split;
+    // inspector and activity share the right-column vertical split. A positive
+    // delta always grows the focused pane at the expense of its sibling.
+    resizeFocusedPane(delta) {
+        const focus = this.getState().ui.focusRegion;
+        const layoutState = this.getState().ui.layout || {};
+        const bodyHeight = this.getCurrentLayout().bodyHeight ?? (layoutState.viewportHeight ?? 40);
+        const totalHeight = layoutState.viewportHeight ?? 40;
+        // Bound the adjust so BOTH panes stay strictly ABOVE their collapse
+        // thresholds (the collapse check is `<=`, hence the +1). A keyboard
+        // resize then never hides a pane — which would drop it from the Tab
+        // cycle — and never lands on a dead plateau. A positive delta grows the
+        // focused pane.
+        const clamp = (current, signed, min, max) => {
+            const hi = Math.max(min, max);
+            return Math.max(min, Math.min(hi, (current || 0) + signed));
+        };
+        if (focus === FOCUS_REGIONS.SESSIONS || focus === FOCUS_REGIONS.CHAT) {
+            const base = getBaseSessionPaneHeight(bodyHeight);
+            const minH = MIN_SESSION_PANE_HEIGHT + 1;
+            const maxH = Math.min(getMaxSessionPaneHeight(totalHeight, bodyHeight), bodyHeight - MIN_CHAT_PANE_HEIGHT - 1);
+            const signed = focus === FOCUS_REGIONS.CHAT ? -delta : delta;
+            const next = clamp(layoutState.sessionPaneAdjust, signed, minH - base, maxH - base);
+            this.dispatch({ type: "ui/sessionPaneAdjust", sessionPaneAdjust: next });
+        } else if (focus === FOCUS_REGIONS.INSPECTOR || focus === FOCUS_REGIONS.ACTIVITY) {
+            const base = Math.max(MIN_ACTIVITY_PANE_HEIGHT, Math.floor(bodyHeight * DEFAULT_ACTIVITY_PANE_RATIO));
+            const minH = MIN_ACTIVITY_PANE_HEIGHT + 1;
+            const maxH = bodyHeight - MIN_INSPECTOR_PANE_HEIGHT - 1;
+            const signed = focus === FOCUS_REGIONS.INSPECTOR ? -delta : delta;
+            const next = clamp(layoutState.activityPaneAdjust, signed, minH - base, maxH - base);
+            this.dispatch({ type: "ui/activityPaneAdjust", activityPaneAdjust: next });
+        }
+    }
+
+    getActiveSequenceCompletedTurns() {
+        const state = this.getState();
+        const sid = state.sessions.activeSessionId;
+        if (!sid) return [];
+        const history = state.history.bySessionId?.get?.(sid);
+        const turns = [];
+        const seen = new Set();
+        for (const event of history?.events || []) {
+            if (event?.eventType !== "session.turn_completed") continue;
+            const turn = Number(event?.data?.turnIndex ?? event?.data?.iteration);
+            if (!Number.isFinite(turn) || seen.has(turn)) continue;
+            seen.add(turn);
+            turns.push(turn);
+        }
+        turns.sort((a, b) => a - b);
+        return turns;
+    }
+
+    // Move the sequence-tab turn cursor among completed turns. First press with
+    // no selection lands on the latest turn; subsequent presses step.
+    moveSequenceSelection(delta) {
+        const turns = this.getActiveSequenceCompletedTurns();
+        if (turns.length === 0) return;
+        const at = turns.indexOf(Number(this.getState().ui.sequenceSelectedTurn));
+        const index = at === -1
+            ? turns.length - 1
+            : Math.max(0, Math.min(turns.length - 1, at + delta));
+        this.dispatch({ type: "ui/sequenceSelectedTurn", turn: turns[index] });
+    }
+
+    toggleSequenceTurnExpanded() {
+        const turns = this.getActiveSequenceCompletedTurns();
+        if (turns.length === 0) return;
+        let selected = Number(this.getState().ui.sequenceSelectedTurn);
+        if (!turns.includes(selected)) {
+            selected = turns[turns.length - 1];
+            this.dispatch({ type: "ui/sequenceSelectedTurn", turn: selected });
+        }
+        const expanded = Array.isArray(this.getState().ui.sequenceExpandedTurns)
+            ? this.getState().ui.sequenceExpandedTurns.map(Number)
+            : [];
+        const next = expanded.includes(selected)
+            ? expanded.filter((turn) => turn !== selected)
+            : [...expanded, selected];
+        this.dispatch({ type: "ui/sequenceExpandedTurns", turns: next });
     }
 
     nextInspectorTab() {
@@ -6030,8 +6143,26 @@ export class PilotSwarmUiController {
             case UI_COMMANDS.SHRINK_SESSION_PANE:
                 this.adjustSessionPaneSplit(-2);
                 return;
+            case UI_COMMANDS.GROW_FOCUSED_PANE:
+                this.resizeFocusedPane(2);
+                return;
+            case UI_COMMANDS.SHRINK_FOCUSED_PANE:
+                this.resizeFocusedPane(-2);
+                return;
             case UI_COMMANDS.OPEN_ARTIFACT_PICKER:
                 await this.openArtifactPicker();
+                return;
+            case UI_COMMANDS.OPEN_HELP:
+                this.openHelpModal();
+                return;
+            case UI_COMMANDS.SEQUENCE_SELECT_PREV:
+                this.moveSequenceSelection(-1);
+                return;
+            case UI_COMMANDS.SEQUENCE_SELECT_NEXT:
+                this.moveSequenceSelection(1);
+                return;
+            case UI_COMMANDS.TOGGLE_SEQUENCE_TURN:
+                this.toggleSequenceTurnExpanded();
                 return;
             case UI_COMMANDS.TOGGLE_LOG_TAIL:
                 this.toggleLogTail();

@@ -670,6 +670,24 @@ export function appReducer(state, action) {
                 },
             };
 
+        case "ui/sequenceExpandedTurns":
+            return {
+                ...state,
+                ui: {
+                    ...state.ui,
+                    sequenceExpandedTurns: Array.isArray(action.turns) ? action.turns : [],
+                },
+            };
+
+        case "ui/sequenceSelectedTurn":
+            return {
+                ...state,
+                ui: {
+                    ...state.ui,
+                    sequenceSelectedTurn: action.turn == null ? null : Number(action.turn),
+                },
+            };
+
         case "sessions/filterQuery":
             {
                 const nextSessions = {
@@ -701,7 +719,19 @@ export function appReducer(state, action) {
 
         case "ui/modalSelection": {
             const modal = state.ui.modal;
-            if (!modal || !Array.isArray(modal.items) || modal.items.length === 0) {
+            if (!modal) return state;
+            if (modal.type === "help") {
+                // The help overlay has no `items`; the row-count upper bound is
+                // clamped by selectHelpModal, so just track the scroll anchor.
+                return {
+                    ...state,
+                    ui: {
+                        ...state.ui,
+                        modal: { ...modal, selectedIndex: Math.max(0, Number(action.index) || 0) },
+                    },
+                };
+            }
+            if (!Array.isArray(modal.items) || modal.items.length === 0) {
                 return state;
             }
             const nextIndex = Math.max(0, Math.min(action.index ?? 0, modal.items.length - 1));
