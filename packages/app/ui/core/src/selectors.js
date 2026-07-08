@@ -1954,11 +1954,12 @@ function formatElapsed(ms) {
     return `${hours}h ${String(mins).padStart(2, "0")}m`;
 }
 
-// Claude-style live activity: while a turn is running AND the assistant has not
-// yet produced its reply (the newest visible message is still the user's),
-// surface the last few actions as a short text scrollback. It disappears the
-// moment the actual response lands. `options.spinnerFrame` animates the active
-// (latest) line's marker; `options.maxActions` caps the line count.
+// Claude-style live activity: while a turn is running, surface the last few
+// actions as a short text scrollback. Assistant messages can land before the
+// turn is actually done (streamed/tool-interleaved replies), so the card is
+// governed by session status rather than by the newest transcript role.
+// `options.spinnerFrame` animates the active (latest) line's marker;
+// `options.maxActions` caps the line count.
 export function selectLiveActivityLines(state, options = {}) {
     if (state?.ui?.chatViewMode === "summary") return [];
     const session = selectActiveSession(state);
@@ -1966,13 +1967,13 @@ export function selectLiveActivityLines(state, options = {}) {
     const status = String(session?.status || "").toLowerCase();
     if (status !== "running") return [];
     const history = state.history?.bySessionId?.get(session.sessionId) || null;
-    // Disappear once the actual response is present: if the newest visible chat
-    // message is from the assistant, the reply has landed.
+    // Use the latest user message as the elapsed-time anchor when available,
+    // but do not hide the card just because assistant text has already landed;
+    // the session may still be running tools or follow-up model work.
     const chat = Array.isArray(history?.chat) ? history.chat : [];
     let turnStartAt = 0;
     for (let i = chat.length - 1; i >= 0; i -= 1) {
         const role = chat[i]?.role;
-        if (role === "assistant") return [];
         if (role === "user") {
             turnStartAt = Number(chat[i]?.createdAt || 0);
             break;
