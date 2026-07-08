@@ -371,6 +371,10 @@ describe("turn lifecycle commit", () => {
         const committed = await runTurnCommit(ctx, 1, { type: "completed", content: "x" });
         expect(committed.published).toBe(false);
         expect(committed.unpublishedReason).toBe("superseded");
+        // The winner's store coordinates ride out on the outcome so the emitted
+        // snapshot_unpublished event can name what superseded this turn (F3).
+        expect(committed.observedStoreVersion).toBe(2);
+        expect(committed.observedStoreTurnKey).toBe("t-foreign");
         // Sentinel must survive so the next preamble distrusts the dir and
         // rehydrates the foreign winner (v2).
         expect(readTurnSentinel(h.sessionDir)).not.toBeNull();

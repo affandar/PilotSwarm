@@ -433,16 +433,24 @@ export function* processPrompt(
     if (typeof (result as any)?.snapshotVersion === "number") {
         const adoptedVersion = (result as any).snapshotVersion as number;
         const priorVersion = state.snapshotVersion;
-        // Store-wins observability: the adopted store version jumped past
-        // prior+1 — a discarded/foreign turn published in the gap and this turn
-        // hydrated + committed on top (the incident's self-heal). Record it.
+        // Store-wins observability: the adopted store version diverged from
+        // prior+1 — someone else moved the store the control plane didn't author.
+        //   forward  (adopted > prior+1): a discarded/foreign turn published in
+        //            the gap and this turn hydrated + committed on top (the
+        //            incident's self-heal).
+        //   backward (adopted < prior): the store regressed below the mirror — a
+        //            restore from an older backup / data loss — which is silent
+        //            on a fresh markerless worker (no local marker → no
+        //            snapshot_regressed), so the mirror is the only witness.
         // Deterministic on replay: both operands come from recorded state and
         // the recorded activity result. (New yield in 1.0.59 — the reason this
         // change required freezing 1.0.58; see orchestration_1_0_58/.)
-        if (priorVersion > 0 && adoptedVersion > priorVersion + 1) {
+        const forwardJump = adoptedVersion > priorVersion + 1;
+        const backwardJump = adoptedVersion < priorVersion;
+        if (priorVersion > 0 && (forwardJump || backwardJump)) {
             yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
                 eventType: "session.snapshot_lineage_jump",
-                data: { from: priorVersion, to: adoptedVersion },
+                data: { from: priorVersion, to: adoptedVersion, direction: backwardJump ? "backward" : "forward" },
             }]);
         }
         state.snapshotVersion = adoptedVersion;

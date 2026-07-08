@@ -1079,7 +1079,19 @@ describe("snapshot_lineage_jump behaviour (store-wins Layer 2)", () => {
         const res = await harness.runThroughTurn({ type: "completed", content: "x", snapshotVersion: 171 });
         const jumps = lineageJumpEvents(res.state);
         expect(jumps).toHaveLength(1);
-        expect(jumps[0].data).toEqual({ from: 169, to: 171 });
+        expect(jumps[0].data).toEqual({ from: 169, to: 171, direction: "forward" });
+    });
+
+    it("records a BACKWARD lineage jump when the adopted version regresses below prior", async () => {
+        // Store restored from an older backup: mirror 169, the activity hydrates
+        // and commits a version below the mirror. A fresh markerless worker emits
+        // no snapshot_regressed, so the orchestration mirror is the only witness
+        // to the regression — the latest must flag it (F4).
+        const harness = createHarness({ inputOverrides: { snapshotVersion: 169 } });
+        const res = await harness.runThroughTurn({ type: "completed", content: "x", snapshotVersion: 120 });
+        const jumps = lineageJumpEvents(res.state);
+        expect(jumps).toHaveLength(1);
+        expect(jumps[0].data).toEqual({ from: 169, to: 120, direction: "backward" });
     });
 
     it("records NO lineage jump on a normal +1 advance", async () => {

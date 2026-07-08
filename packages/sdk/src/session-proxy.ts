@@ -2217,9 +2217,18 @@ export function registerActivities(
                         eventType: "session.snapshot_unpublished",
                         data: {
                             reason,
+                            // The accepted-loss contract must be diagnosable: this
+                            // turn's model memory did NOT reach the store, and (for
+                            // a supersede) here is what won the base — so operators
+                            // can tell a foreign writer / restore race / discarded
+                            // turn apart, not just "loss happened".
+                            modelMemoryCommitted: false,
                             baseVersion: lifecycleBaseVersion,
                             turnKey: input.snapshot?.turnKey,
                             ...(input.turnIndex != null ? { turnIndex: input.turnIndex } : {}),
+                            ...(committed.observedStoreVersion != null ? { observedStoreVersion: committed.observedStoreVersion } : {}),
+                            ...(committed.observedStoreTurnKey ? { observedStoreTurnKey: committed.observedStoreTurnKey } : {}),
+                            ...(bodyResult?.type ? { resultType: bodyResult.type } : {}),
                             message: reason === "stopped"
                                 ? "User-stopped turn: snapshot not committed (intentional discard)."
                                 : "Turn snapshot superseded: the store advanced off this turn's base before it committed; the next turn rehydrates the winner.",

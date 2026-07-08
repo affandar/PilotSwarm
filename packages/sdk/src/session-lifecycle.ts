@@ -4,26 +4,32 @@
  *
  * The whole lifecycle lives inside the single runTurn activity (principle
  * P5 — no other session activity depends on landing where a previous one
- * did):
+ * did). Reconcile is STORE-WINS (docs/proposals/snapshot-store-wins.md): one
+ * probe per turn is the only oracle — never the orchestration's expectation,
+ * which goes stale the moment a stopped/zombie turn advances the store the
+ * control plane discarded.
  *
- *   preamble  p1. turn sentinel present → local dir untrusted → resolve from store
- *             p2. marker == expected AND the dir has a usable layout → warm
- *                 start (zero store I/O); else hydrate; store bearing this
- *                 turn's own turnKey → already-committed recovery (restore,
- *                 never replay); store AHEAD of expected under a foreign
- *                 turnKey → loud failure (zombie-duplicate fence)
- *             p3. (caller) write the turn sentinel just before the body
+ *   preamble  p1. one probe. Store bears this turn's own turnKey →
+ *                 already-committed recovery (restore, never replay).
+ *             p2. store empty → trust a clean local dir (only truth), else fresh;
+ *                 legacy snapshot → trust clean local, else hydrate.
+ *             p3. warm ONLY when a clean local dir's marker matches the store's
+ *                 (version AND content hash); every other state — store ahead
+ *                 (a discarded/foreign turn advanced it — NO fence, we adopt it),
+ *                 a same-version content swap, a torn/dirty dir, or no marker —
+ *                 hydrates the store. Store below the marker is hydrated too and
+ *                 flagged `regressed`.
+ *             p4. (caller) write the turn sentinel just before the body
  *   postamble c1. write .ps-turn-commit.json {turnKey, result} into the dir
- *             c2. CAS-commit the tar (store.commitSnapshot); alreadyCommitted
- *                 → restore the winner's snapshot + result (§3.2 r1–r3)
- *             c3. write the local version marker
- *             c4. clear the turn sentinel
- *
- * The CAS base is the PREAMBLE-RESOLVED version. Rebasing is allowed only
- * when the store is BEHIND the orchestration's expectation (store restored
- * from an older backup — self-healing); a store AHEAD of the expectation
- * under a foreign turnKey means this attempt is a stale zombie duplicate
- * and must fail loudly instead of re-applying its turn.
+ *             c2. commit the tar (store.commitSnapshot) at base+1. alreadyCommitted
+ *                 (same turnKey) → restore the winner's snapshot + result. A
+ *                 SnapshotConflictError (store moved off base while we ran) is NOT
+ *                 fatal: the turn is left UNPUBLISHED (superseded), the sentinel
+ *                 stays dirty so the next preamble rehydrates the winner, and the
+ *                 caller emits `session.snapshot_unpublished`. A user-stopped
+ *                 result skips the commit entirely (also unpublished).
+ *             c3. write the local version marker (published turns only)
+ *             c4. clear the turn sentinel (published turns only)
  *
  * @internal
  */
@@ -92,6 +98,15 @@ export interface TurnCommitOutcome {
     published: boolean;
     /** Why the snapshot was not published (only when `published` is false). */
     unpublishedReason?: "stopped" | "superseded";
+    /**
+     * For a `superseded` unpublish: the store coordinates of the writer that
+     * won the base — carried from the `SnapshotConflictError` so the emitted
+     * `snapshot_unpublished` event can name what superseded this turn (foreign
+     * writer vs restore race vs the session's own discarded turn). Absent for a
+     * `stopped` unpublish (no commit was attempted, so nothing was observed).
+     */
+    observedStoreVersion?: number;
+    observedStoreTurnKey?: string;
 }
 
 export interface TurnLifecycleContext {
@@ -415,6 +430,8 @@ export async function runTurnCommit(
                     alreadyCommitted: false,
                     published: false,
                     unpublishedReason: "superseded",
+                    observedStoreVersion: error.storedVersion,
+                    ...(error.storedTurnKey ? { observedStoreTurnKey: error.storedTurnKey } : {}),
                 };
             }
             lastError = error;
