@@ -713,7 +713,11 @@ describe("session refresh UI recovery", () => {
         assertEqual(rendered.includes("Session Summary"), false, "summary pane should not render a card title");
 
         const chrome = selectChatPaneChrome(store.getState());
-        assertEqual(chrome.titleRight, null, "summary mode should suppress transient live-progress labels");
+        // titleRight mirrors the session-row meta (status·model·context) even in
+        // summary mode; only the transient live-progress label must be
+        // suppressed — animateTitleRight (below) verifies no live progress runs.
+        const summaryTitleRightText = (chrome.titleRight || []).map((run) => run?.text || "").join("");
+        assertEqual(/thinking|working|sending/i.test(summaryTitleRightText), false, "summary mode should suppress transient live-progress labels");
         assertEqual(chrome.animateTitleRight, false, "summary mode should not animate the chat title");
     });
 

@@ -675,7 +675,12 @@ describe("history pane UI behavior", () => {
         const chrome = selectChatPaneChrome(state);
 
         assertEqual(text.includes("Thinking"), false, "the chat transcript should not contain an inline Thinking card once the assistant responds");
-        assertEqual((chrome.titleRight || []).length, 0, "the chat header should clear the Thinking status once the assistant responds");
+        // titleRight now persistently mirrors the session-row meta
+        // (status·model·context); the intent here is that the transient
+        // live-progress ("Thinking") label clears once the assistant responds.
+        const titleRightText = (chrome.titleRight || []).map((run) => run?.text || "").join("");
+        assertEqual(/thinking|working|sending/i.test(titleRightText), false, "the chat header should clear the Thinking status once the assistant responds");
+        assertEqual(chrome.animateTitleRight, false, "the chat header should not animate a live-progress label once the assistant responds");
         assertIncludes(text, "Agent: The stall is coming from blob-storage I/O during hydration.", "the final assistant message should replace the pending Thinking state");
     });
 
