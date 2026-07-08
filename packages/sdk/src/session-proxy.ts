@@ -487,7 +487,7 @@ export function createSessionProxy(
             prompt: string,
             bootstrap?: boolean,
             turnIndex?: number,
-            turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; cycleOrigin?: "cron" | "cron_at"; retryCount?: number; clientMessageIds?: string[]; snapshot?: { expectedVersion: number; turnKey: string } },
+            turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; cycleOrigin?: "cron" | "cron_at"; retryCount?: number; clientMessageIds?: string[]; snapshot?: { expectedVersion?: number; turnKey: string } },
         ) {
             return ctx.scheduleActivityOnSession(
                 "runTurn",
@@ -807,7 +807,7 @@ export function registerActivities(
             cycleOrigin?: "cron" | "cron_at";
             retryCount?: number;
             /** Session lifecycle protocol (orchestration 1.0.57+). Absent → legacy behavior. */
-            snapshot?: { expectedVersion: number; turnKey: string };
+            snapshot?: { expectedVersion?: number; turnKey: string };
         },
     ): Promise<TurnResult> => {
         activityCtx.traceInfo(`[runTurn] session=${input.sessionId}`);
@@ -900,7 +900,12 @@ export function registerActivities(
                     store: sessionStore,
                     sessionStateDir: sessionManager.getSessionStateDir(),
                     sessionId: input.sessionId,
-                    expectedVersion: input.snapshot.expectedVersion,
+                    // Store-wins: expectedVersion is non-load-bearing and 1.0.59
+                    // stops sending it (dead for the reconcile — the worker
+                    // ignores it for every control decision). Default to 0 for
+                    // frozen versions that still supply it, and for the two
+                    // observability-only reads (lossy flag, snapshot_store_empty).
+                    expectedVersion: input.snapshot.expectedVersion ?? 0,
                     turnKey: input.snapshot.turnKey,
                     dropWarmSession: () => sessionManager.dropWarmSession(input.sessionId),
                     trace,
@@ -968,7 +973,7 @@ export function registerActivities(
                     () => catalog!.recordEvents(input.sessionId, [{
                         eventType: "session.snapshot_store_empty",
                         data: {
-                            expectedVersion: input.snapshot!.expectedVersion,
+                            expectedVersion: input.snapshot!.expectedVersion ?? 0,
                             message: "Snapshot store held no data for a session with committed turns; falling back to fresh-session recovery.",
                         },
                     }], workerNodeId),

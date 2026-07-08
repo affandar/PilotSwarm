@@ -62,6 +62,15 @@ describe("orchestration 1.0.58 freeze boundary (replay safety)", () => {
     it("frozen 1.0.58 hardcodes its own version string", () => {
         expect(frozenRuntime).toMatch(/CURRENT_ORCHESTRATION_VERSION\s*=\s*"1\.0\.58"/);
     });
+
+    it("1.0.59 retires expectedVersion from the runTurn input; frozen 1.0.58 still sends it", () => {
+        // Store-wins: the worker reconciles against the store's own version, so
+        // the orchestration's belief is dead on the wire. The latest sends only
+        // turnKey; the frozen handler keeps the field its histories recorded.
+        expect(workingTurn).toContain("snapshot: { turnKey: snapshotTurnKey }");
+        expect(workingTurn).not.toMatch(/snapshot: \{ expectedVersion/);
+        expect(frozenTurn).toMatch(/snapshot: \{ expectedVersion: state\.snapshotVersion, turnKey/);
+    });
 });
 
 // Behavioural firing of the lineage-jump yield is driven end-to-end through the

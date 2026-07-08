@@ -352,8 +352,13 @@ export function* processPrompt(
             ...(cycleOrigin ? { cycleOrigin } : {}),
             retryCount: state.retryCount,
             ...(clientMessageIds && clientMessageIds.length > 0 ? { clientMessageIds } : {}),
+            // Store-wins (1.0.59): send only the turnKey. expectedVersion is
+            // retired from the wire — the store-wins worker reconciles against
+            // the store's own version, never the orchestration's belief.
+            // state.snapshotVersion remains an internal telemetry mirror (it
+            // powers snapshot_lineage_jump); it is simply no longer transmitted.
             ...(snapshotTurnKey
-                ? { snapshot: { expectedVersion: state.snapshotVersion, turnKey: snapshotTurnKey } }
+                ? { snapshot: { turnKey: snapshotTurnKey } }
                 : {}),
         });
         const stopTask = ctx.dequeueEvent(stopTurnQueueName(state.iteration));
