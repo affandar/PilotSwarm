@@ -330,6 +330,53 @@ describe("turn lifecycle commit", () => {
         expect(readTurnSentinel(h.sessionDir)).not.toBeNull();
     });
 
+    it("a user-stopped turn is NOT committed, so the next turn re-hydrates and commits without a CAS conflict", async () => {
+        // Regression: stop-turn snapshot CAS divergence (waldemort session
+        // 0addb1e1, 2026-07-07). A user Stop during a long turn made the
+        // race-loser runTurn commit its snapshot (v+1), but the orchestration
+        // discarded the turn and kept state.snapshotVersion at the base — so
+        // every later turn failed "Snapshot CAS conflict: expected N, found
+        // N+1". The fix: runTurnCommit skips the commit for a "stopped" result.
+        const h = makeHarness();
+        makeSessionLayout(h.sessionStateDir, h.sessionId);
+
+        // Turn 1 commits v1.
+        const t1 = await runHealthyTurn(h, 0, "t1");
+        expect(t1.committed.version).toBe(1);
+
+        // Turn 2 runs, but the user clicks Stop mid-flight: ManagedSession
+        // reclassifies the unwind as { type: "stopped" }. The commit MUST be
+        // skipped — committing here is the divergence bug.
+        const ctx2 = h.ctxFor(1, "t2");
+        const pre2 = await runTurnPreamble(ctx2);
+        expect(pre2.kind).toBe("warm");
+        expect(pre2.baseVersion).toBe(1);
+        writeTurnSentinel(h.sessionDir, "t2");
+        fs.appendFileSync(path.join(h.sessionDir, "events.jsonl"), '{"m":"partial-stopped-turn"}\n');
+        const stopped = await runTurnCommit(ctx2, pre2.baseVersion, { type: "stopped", reason: "Stopped by user" });
+
+        // Commit skipped: outcome carries the BASE version, the store did NOT
+        // advance (would be 2 without the guard), and the sentinel is left
+        // dirty so the partial turn is distrusted.
+        expect(stopped.version).toBe(1);
+        expect(stopped.alreadyCommitted).toBe(false);
+        expect((await h.store.probeSnapshot(h.sessionId)).version).toBe(1);
+        expect(readTurnSentinel(h.sessionDir)).not.toBeNull();
+
+        // Turn 3 (the next real turn) sees the dirty sentinel, resolves from the
+        // store at v1, and commits v2 cleanly — the zombie-duplicate fence that
+        // produced the CAS conflict never fires.
+        const ctx3 = h.ctxFor(1, "t3");
+        const pre3 = await runTurnPreamble(ctx3);
+        expect(pre3.kind).toBe("hydrated");
+        expect(pre3.baseVersion).toBe(1);
+        writeTurnSentinel(h.sessionDir, "t3");
+        fs.appendFileSync(path.join(h.sessionDir, "events.jsonl"), '{"m":"turn3"}\n');
+        const t3 = await runTurnCommit(ctx3, pre3.baseVersion, { type: "completed", content: "turn3" });
+        expect(t3.version).toBe(2);
+        expect(t3.alreadyCommitted).toBe(false);
+    });
+
     it("F2: crash before the CAS write → retry re-runs the turn from clean state", async () => {
         const h = makeHarness();
         makeSessionLayout(h.sessionStateDir, h.sessionId);

@@ -275,6 +275,24 @@ export async function runTurnCommit(
     baseVersion: number,
     result: unknown,
 ): Promise<TurnCommitOutcome> {
+    // Stop-turn divergence guard: a user-stopped turn (result type "stopped")
+    // is discarded by the orchestration (stop won the ctx.race →
+    // handleTurnStopped; this runTurn is the dropped race loser) and its
+    // turnKey is never re-run. Committing its snapshot would advance the
+    // stored version while the orchestration keeps state.snapshotVersion at the
+    // base — leaving the store one ahead so every later turn fails the CAS
+    // (zombie-duplicate fence: "expected N, found N+1"). Skip the commit and
+    // leave the .ps-turn-inprogress sentinel in place so the next preamble
+    // re-hydrates the base version and discards this partial turn. (Drain and
+    // lock-steal classify as "cancelled", not "stopped", and DO commit so their
+    // same-turnKey re-run adopts the already-committed snapshot.)
+    if ((result as any)?.type === "stopped") {
+        ctx.trace(
+            `session=${ctx.sessionId} user-stopped turn: skipping snapshot commit at ` +
+            `base v${baseVersion}; sentinel left dirty for next-turn re-hydrate`,
+        );
+        return { version: baseVersion, contentHash: "", alreadyCommitted: false };
+    }
     const sessionDir = sessionDirOf(ctx);
     writeTurnCommitFile(sessionDir, ctx.turnKey, result);
     faultPoint("turn.commit.before-cas");
