@@ -356,6 +356,22 @@ export interface UserPrincipal {
     displayName?: string | null;
 }
 
+/**
+ * The first-class "system" user. Platform-managed sessions carry
+ * `owner: null` in the catalog; for credential resolution they act as this
+ * principal, so an admin-stored GitHub Copilot key on the system user (Admin
+ * Console → "Store as System key") is picked up by ownerless system sessions
+ * through the exact same per-user key path as everyone else. The user row is
+ * created lazily on first key set (`cms_set_user_github_copilot_key`
+ * upserts via `cms_register_user`).
+ */
+export const SYSTEM_USER_PRINCIPAL: UserPrincipal = {
+    provider: "system",
+    subject: "system",
+    email: null,
+    displayName: "System",
+};
+
 /** Aggregate of a session and all its descendants. */
 export interface SessionTreeStats {
     rootSessionId: string;

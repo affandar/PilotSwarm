@@ -281,6 +281,14 @@ export class WebPilotSwarmManagementClient {
         return this._api.call("setCurrentUserGitHubCopilotKey", { key });
     }
 
+    async setSystemGitHubCopilotKey(_actor: unknown, key: string | null): Promise<any> {
+        return this._api.call("setSystemGitHubCopilotKey", { key });
+    }
+
+    async getSystemGitHubCopilotKeyStatus(): Promise<any> {
+        return this._api.call("getSystemGitHubCopilotKeyStatus");
+    }
+
     // ── Models (async in web mode — always `await`) ─────────────────────
 
     async listModels(): Promise<any[]> {

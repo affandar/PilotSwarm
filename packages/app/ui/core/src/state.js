@@ -247,6 +247,21 @@ export function createInitialState({ mode = "local", branding = null, themeId = 
                 saving: false,
                 error: null,
                 lastSavedAt: 0,
+                // Admin-only target switch: when true, Set/Replace/Clear
+                // act on the SYSTEM user's key (used by ownerless system
+                // sessions) instead of the caller's own key.
+                storeAsSystem: false,
+            },
+            // Status of the SYSTEM user's Copilot key (admins only; never
+            // the key itself). `supported` flips on the first successful
+            // status load so non-admin/legacy transports hide the toggle.
+            systemGhcpKey: {
+                supported: false,
+                loading: false,
+                configured: false,
+                changedBy: null,
+                changedAt: null,
+                error: null,
             },
         },
     };

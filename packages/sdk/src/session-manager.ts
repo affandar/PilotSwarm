@@ -7,6 +7,7 @@ import { createFactTools } from "./facts-tools.js";
 import { createGraphTools } from "./graph-tools.js";
 import { createInspectTools } from "./inspect-tools.js";
 import type { SessionCatalog } from "./cms.js";
+import { SYSTEM_USER_PRINCIPAL } from "./cms.js";
 import type { FactStore } from "./facts-store.js";
 import { isEnhancedFactStore } from "./facts-store.js";
 import type { GraphStore } from "./graph-store.js";
@@ -418,16 +419,22 @@ export class SessionManager {
                 return undefined;
             }
         }
+        // Ownerless system sessions act as the first-class SYSTEM user for
+        // credential purposes: an admin-stored System key (Admin Console →
+        // "Store as System key") resolves through the same per-user path.
         const owner = row?.owner;
-        if (!owner?.provider || !owner?.subject) return undefined;
-
-        try {
-            const userKey = await this.sessionCatalog.getUserGitHubCopilotKey({
+        const principal = owner?.provider && owner?.subject
+            ? {
                 provider: owner.provider,
                 subject: owner.subject,
                 email: owner.email ?? null,
                 displayName: owner.displayName ?? null,
-            });
+            }
+            : (row?.isSystem ? SYSTEM_USER_PRINCIPAL : null);
+        if (!principal) return undefined;
+
+        try {
+            const userKey = await this.sessionCatalog.getUserGitHubCopilotKey(principal);
             return userKey ?? undefined;
         } catch {
             return undefined;
@@ -833,7 +840,7 @@ export class SessionManager {
             : undefined;
         if (resolvedProvider?.type === "github" && !userGithubToken && !this.githubToken && !resolvedProvider.githubToken) {
             throw new Error(
-                "GitHub Copilot key not configured. Set GITHUB_TOKEN on the worker or set your per-user GitHub Copilot key in Admin before creating GitHub Copilot model sessions.",
+                "GitHub Copilot key not configured. Set GITHUB_TOKEN on the worker, set your per-user GitHub Copilot key in Admin, or (for system sessions) have an admin store a System key in the Admin Console before creating GitHub Copilot model sessions.",
             );
         }
         const desiredClientKey = userGithubToken || "";

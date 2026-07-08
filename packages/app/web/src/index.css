@@ -2436,6 +2436,8 @@ body.is-resizing-pane-y * {
 .ps-admin-console__section h3 { margin: 0; font-size: 14px; }
 .ps-admin-console__hint { margin: 0; color: var(--ps-muted); font-size: 12px; }
 .ps-admin-console__status { margin: 0; font-size: 12px; color: var(--ps-muted); }
+.ps-admin-console__system-toggle { display: flex; align-items: center; gap: 8px; margin: 2px 0; font-size: 12px; color: var(--ps-fg); cursor: pointer; user-select: none; }
+.ps-admin-console__system-toggle input { accent-color: var(--ps-accent, #4a9eff); }
 .ps-admin-console__status.is-error { color: var(--ps-error, #d33); }
 .ps-admin-console__error {
   border: 1px solid var(--ps-error, #d33);

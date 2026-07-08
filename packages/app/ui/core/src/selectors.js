@@ -2735,19 +2735,34 @@ export function selectAdminConsole(state) {
         }
         : (state.auth?.principal || null);
 
+    const systemGhcpKey = admin.systemGhcpKey || { supported: false, loading: false, configured: false, changedBy: null, changedAt: null, error: null };
+    const isAdmin = Boolean(profile?.isAdmin);
+    // Admin-only target switch: when on, Set/Replace/Clear act on the
+    // SYSTEM user's key (ownerless system sessions run on it).
+    const storeAsSystem = isAdmin && Boolean(ghcpKey.storeAsSystem);
+    const targetConfigured = storeAsSystem ? Boolean(systemGhcpKey.configured) : Boolean(profile?.githubCopilotKeySet);
+    const keyNoun = storeAsSystem ? "System key" : "key";
+
+    const systemProvenance = systemGhcpKey.configured && systemGhcpKey.changedBy
+        ? ` (set by ${systemGhcpKey.changedBy})`
+        : "";
     const ghcpStatusText = ghcpKey.saving
         ? "Saving..."
         : ghcpKey.editing
             ? "Editing — Enter to save, Esc to cancel"
-            : (profile?.githubCopilotKeySet
-                ? "Configured (overrides env GITHUB_TOKEN for this user)"
-                : "Not configured (using env GITHUB_TOKEN fallback)");
+            : storeAsSystem
+                ? (systemGhcpKey.configured
+                    ? `System key configured — ownerless system sessions use it for GitHub Copilot models${systemProvenance}`
+                    : "System key not configured — ownerless system sessions fall back to env GITHUB_TOKEN")
+                : (profile?.githubCopilotKeySet
+                    ? "Configured (overrides env GITHUB_TOKEN for this user)"
+                    : "Not configured (using env GITHUB_TOKEN fallback)");
 
     const actions = [];
     if (!ghcpKey.editing) {
-        actions.push({ id: "edit", label: profile?.githubCopilotKeySet ? "Replace key" : "Set key", key: "e" });
-        if (profile?.githubCopilotKeySet) {
-            actions.push({ id: "clear", label: "Clear key", key: "c" });
+        actions.push({ id: "edit", label: targetConfigured ? `Replace ${keyNoun}` : `Set ${keyNoun}`, key: "e" });
+        if (targetConfigured) {
+            actions.push({ id: "clear", label: `Clear ${keyNoun}`, key: "c" });
         }
         actions.push({ id: "refresh", label: "Refresh", key: "r" });
     } else {
@@ -2761,14 +2776,25 @@ export function selectAdminConsole(state) {
         loading: Boolean(admin.loading),
         loadError: admin.loadError || null,
         principal,
+        isAdmin,
         ghcpKey: {
             configured: Boolean(profile?.githubCopilotKeySet),
+            targetConfigured,
+            storeAsSystem,
             editing: Boolean(ghcpKey.editing),
             draft: ghcpKey.draft || "",
             cursorIndex: Math.max(0, Math.min(Number(ghcpKey.cursorIndex) || 0, String(ghcpKey.draft || "").length)),
             saving: Boolean(ghcpKey.saving),
             error: ghcpKey.error || null,
             statusText: ghcpStatusText,
+        },
+        systemGhcpKey: {
+            supported: Boolean(systemGhcpKey.supported),
+            loading: Boolean(systemGhcpKey.loading),
+            configured: Boolean(systemGhcpKey.configured),
+            changedBy: systemGhcpKey.changedBy || null,
+            changedAt: systemGhcpKey.changedAt || null,
+            error: systemGhcpKey.error || null,
         },
         actions,
     };

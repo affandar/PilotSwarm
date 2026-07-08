@@ -2160,11 +2160,41 @@ export class PilotSwarmUiController {
         try {
             const profile = await this.transport.getCurrentUserProfile();
             this.dispatch({ type: "admin/profile/loaded", profile });
+            await this.refreshSystemGhcpKeyStatus(profile);
             return profile || null;
         } catch (error) {
             this.dispatch({ type: "admin/profile/loadFailed", error: error?.message || String(error) });
             return null;
         }
+    }
+
+    /**
+     * Load the SYSTEM user's Copilot key status (admins only). Quietly a
+     * no-op when the caller is not admin or the transport predates the
+     * feature, so the Admin Console degrades to the per-user-only view.
+     */
+    async refreshSystemGhcpKeyStatus(profile = null) {
+        const effective = profile || this.getState().admin?.profile || null;
+        if (!effective?.isAdmin) return null;
+        if (typeof this.transport.getSystemGitHubCopilotKeyStatus !== "function") return null;
+        this.dispatch({ type: "admin/systemGhcpKey/loading" });
+        try {
+            const status = await this.transport.getSystemGitHubCopilotKeyStatus();
+            this.dispatch({ type: "admin/systemGhcpKey/loaded", status });
+            return status || null;
+        } catch (error) {
+            this.dispatch({ type: "admin/systemGhcpKey/loadFailed", error: error?.message || String(error) });
+            return null;
+        }
+    }
+
+    /**
+     * Admin-only: switch the key editor between "your key" and
+     * "System key" (the key ownerless system sessions run on).
+     */
+    setAdminGhcpKeyStoreAsSystem(value) {
+        if (value && !this.getState().admin?.profile?.isAdmin) return;
+        this.dispatch({ type: "admin/ghcpKey/setSystemTarget", value: Boolean(value) });
     }
 
     beginAdminEditGhcpKey() {
@@ -2218,8 +2248,12 @@ export class PilotSwarmUiController {
      * use `clearAdminGhcpKey()` for that.
      */
     async saveAdminGhcpKey() {
-        if (typeof this.transport.setCurrentUserGitHubCopilotKey !== "function") {
-            this.dispatch({ type: "admin/ghcpKey/saveFailed", error: "Admin Console is not available on this transport." });
+        const storeAsSystem = Boolean(this.getState().admin.ghcpKey.storeAsSystem);
+        const setter = storeAsSystem ? "setSystemGitHubCopilotKey" : "setCurrentUserGitHubCopilotKey";
+        if (typeof this.transport[setter] !== "function") {
+            this.dispatch({ type: "admin/ghcpKey/saveFailed", error: storeAsSystem
+                ? "This deployment does not support System keys yet."
+                : "Admin Console is not available on this transport." });
             return;
         }
         const draft = String(this.getState().admin.ghcpKey.draft || "").trim();
@@ -2229,8 +2263,13 @@ export class PilotSwarmUiController {
         }
         this.dispatch({ type: "admin/ghcpKey/saving" });
         try {
-            const profile = await this.transport.setCurrentUserGitHubCopilotKey({ key: draft });
-            this.dispatch({ type: "admin/ghcpKey/saved", profile });
+            if (storeAsSystem) {
+                const status = await this.transport.setSystemGitHubCopilotKey({ key: draft });
+                this.dispatch({ type: "admin/systemGhcpKey/saved", status });
+            } else {
+                const profile = await this.transport.setCurrentUserGitHubCopilotKey({ key: draft });
+                this.dispatch({ type: "admin/ghcpKey/saved", profile });
+            }
         } catch (error) {
             this.dispatch({ type: "admin/ghcpKey/saveFailed", error: error?.message || String(error) });
         }
@@ -2241,14 +2280,23 @@ export class PilotSwarmUiController {
      * worker's env-supplied default token.
      */
     async clearAdminGhcpKey() {
-        if (typeof this.transport.setCurrentUserGitHubCopilotKey !== "function") {
-            this.dispatch({ type: "admin/ghcpKey/saveFailed", error: "Admin Console is not available on this transport." });
+        const storeAsSystem = Boolean(this.getState().admin.ghcpKey.storeAsSystem);
+        const setter = storeAsSystem ? "setSystemGitHubCopilotKey" : "setCurrentUserGitHubCopilotKey";
+        if (typeof this.transport[setter] !== "function") {
+            this.dispatch({ type: "admin/ghcpKey/saveFailed", error: storeAsSystem
+                ? "This deployment does not support System keys yet."
+                : "Admin Console is not available on this transport." });
             return;
         }
         this.dispatch({ type: "admin/ghcpKey/saving" });
         try {
-            const profile = await this.transport.setCurrentUserGitHubCopilotKey({ key: null });
-            this.dispatch({ type: "admin/ghcpKey/saved", profile });
+            if (storeAsSystem) {
+                const status = await this.transport.setSystemGitHubCopilotKey({ key: null });
+                this.dispatch({ type: "admin/systemGhcpKey/saved", status });
+            } else {
+                const profile = await this.transport.setCurrentUserGitHubCopilotKey({ key: null });
+                this.dispatch({ type: "admin/ghcpKey/saved", profile });
+            }
         } catch (error) {
             this.dispatch({ type: "admin/ghcpKey/saveFailed", error: error?.message || String(error) });
         }

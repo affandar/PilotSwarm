@@ -214,10 +214,12 @@ export class PortalRuntime {
                     includeDeleted: safeParams.includeDeleted,
                     since: safeParams.since ? new Date(safeParams.since) : undefined,
                 });
-            case "getCurrentUserProfile":
-                return this.transport.getCurrentUserProfile({
+            case "getCurrentUserProfile": {
+                const profile = await this.transport.getCurrentUserProfile({
                     principal: requireUserPrincipal(authContext, "getCurrentUserProfile"),
                 });
+                return profile ? { ...profile, isAdmin } : profile;
+            }
             case "setCurrentUserProfileSettings":
                 return this.transport.setCurrentUserProfileSettings({
                     principal: requireUserPrincipal(authContext, "setCurrentUserProfileSettings"),
@@ -228,6 +230,25 @@ export class PortalRuntime {
                     principal: requireUserPrincipal(authContext, "setCurrentUserGitHubCopilotKey"),
                     key: typeof safeParams.key === "string" ? safeParams.key : null,
                 });
+            case "setSystemGitHubCopilotKey": {
+                if (!isAdmin) {
+                    const err = new Error("Portal RPC 'setSystemGitHubCopilotKey' requires the admin role.");
+                    err.code = "PORTAL_ADMIN_REQUIRED";
+                    throw err;
+                }
+                return this.transport.setSystemGitHubCopilotKey({
+                    actor: normalizeSessionOwner(authContext),
+                    key: typeof safeParams.key === "string" ? safeParams.key : null,
+                });
+            }
+            case "getSystemGitHubCopilotKeyStatus": {
+                if (!isAdmin) {
+                    const err = new Error("Portal RPC 'getSystemGitHubCopilotKeyStatus' requires the admin role.");
+                    err.code = "PORTAL_ADMIN_REQUIRED";
+                    throw err;
+                }
+                return this.transport.getSystemGitHubCopilotKeyStatus();
+            }
             case "getSessionSkillUsage":
                 return this.transport.getSessionSkillUsage(safeParams.sessionId, {
                     since: safeParams.since ? new Date(safeParams.since) : undefined,

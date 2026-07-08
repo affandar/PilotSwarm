@@ -1488,6 +1488,7 @@ export function appReducer(state, action) {
                         saving: false,
                         error: null,
                         lastSavedAt: state.admin.ghcpKey.lastSavedAt,
+                        storeAsSystem: Boolean(state.admin.ghcpKey.storeAsSystem),
                     },
                 },
             };
@@ -1524,6 +1525,7 @@ export function appReducer(state, action) {
                         saving: false,
                         error: null,
                         lastSavedAt: state.admin.ghcpKey.lastSavedAt,
+                        storeAsSystem: Boolean(state.admin.ghcpKey.storeAsSystem),
                     },
                 },
             };
@@ -1567,6 +1569,91 @@ export function appReducer(state, action) {
                         saving: false,
                         error: null,
                         lastSavedAt: Date.now(),
+                        storeAsSystem: Boolean(state.admin.ghcpKey.storeAsSystem),
+                    },
+                },
+            };
+        }
+        case "admin/ghcpKey/setSystemTarget": {
+            const storeAsSystem = Boolean(action.value);
+            if (Boolean(state.admin.ghcpKey.storeAsSystem) === storeAsSystem) return state;
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    ghcpKey: {
+                        ...state.admin.ghcpKey,
+                        storeAsSystem,
+                        error: null,
+                    },
+                },
+            };
+        }
+        case "admin/systemGhcpKey/loading": {
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    systemGhcpKey: {
+                        ...state.admin.systemGhcpKey,
+                        loading: true,
+                        error: null,
+                    },
+                },
+            };
+        }
+        case "admin/systemGhcpKey/loaded": {
+            const status = action.status || {};
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    systemGhcpKey: {
+                        supported: true,
+                        loading: false,
+                        configured: Boolean(status.configured),
+                        changedBy: status.changedBy || null,
+                        changedAt: status.changedAt || null,
+                        error: null,
+                    },
+                },
+            };
+        }
+        case "admin/systemGhcpKey/loadFailed": {
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    systemGhcpKey: {
+                        ...state.admin.systemGhcpKey,
+                        loading: false,
+                        error: action.error ? String(action.error) : "Failed to load System key status",
+                    },
+                },
+            };
+        }
+        case "admin/systemGhcpKey/saved": {
+            const status = action.status || {};
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    ghcpKey: {
+                        editing: false,
+                        draft: "",
+                        cursorIndex: 0,
+                        saving: false,
+                        error: null,
+                        lastSavedAt: Date.now(),
+                        storeAsSystem: Boolean(state.admin.ghcpKey.storeAsSystem),
+                    },
+                    systemGhcpKey: {
+                        supported: true,
+                        loading: false,
+                        configured: Boolean(status.configured),
+                        changedBy: status.changedBy || null,
+                        changedAt: status.changedAt || null,
+                        error: null,
                     },
                 },
             };

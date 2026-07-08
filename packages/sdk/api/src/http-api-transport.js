@@ -280,6 +280,16 @@ export class HttpApiTransport {
         });
     }
 
+    async setSystemGitHubCopilotKey({ key } = {}) {
+        return this.api.call("setSystemGitHubCopilotKey", {
+            key: typeof key === "string" ? key : null,
+        });
+    }
+
+    async getSystemGitHubCopilotKeyStatus() {
+        return this.api.call("getSystemGitHubCopilotKeyStatus");
+    }
+
     // ── Models ──────────────────────────────────────────────────────────
 
     async listModels() {

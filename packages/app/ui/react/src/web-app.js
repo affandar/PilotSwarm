@@ -4105,11 +4105,27 @@ function AdminConsolePanel({ controller }) {
             : null,
         React.createElement("section", { className: "ps-admin-console__section" },
             React.createElement("h3", null, "GitHub Copilot key"),
-            React.createElement("p", { className: "ps-admin-console__hint" },
-                "Per-user override for the GitHub Copilot model provider token. ",
-                "When set, this key is used instead of the worker's env-supplied ",
-                "GITHUB_TOKEN for sessions you own. Clearing the key reverts to ",
-                "the worker default."),
+            view.ghcpKey.storeAsSystem
+                ? React.createElement("p", { className: "ps-admin-console__hint" },
+                    "System-wide key for platform-managed (ownerless) system ",
+                    "sessions — agent tuners, repo cache managers, and other ",
+                    "sessions with no owner resolve this key for GitHub Copilot ",
+                    "models. Clearing it reverts them to the worker default.")
+                : React.createElement("p", { className: "ps-admin-console__hint" },
+                    "Per-user override for the GitHub Copilot model provider token. ",
+                    "When set, this key is used instead of the worker's env-supplied ",
+                    "GITHUB_TOKEN for sessions you own. Clearing the key reverts to ",
+                    "the worker default."),
+            view.isAdmin && view.systemGhcpKey.supported
+                ? React.createElement("label", { className: "ps-admin-console__system-toggle" },
+                    React.createElement("input", {
+                        type: "checkbox",
+                        checked: view.ghcpKey.storeAsSystem,
+                        disabled: view.ghcpKey.saving,
+                        onChange: (event) => controller.setAdminGhcpKeyStoreAsSystem(event.target.checked),
+                    }),
+                    "Store as System key")
+                : null,
             React.createElement("p", { className: `ps-admin-console__status${view.ghcpKey.error ? " is-error" : ""}` },
                 view.ghcpKey.error || view.ghcpKey.statusText),
             view.ghcpKey.editing
@@ -4141,13 +4157,15 @@ function AdminConsolePanel({ controller }) {
                         type: "button",
                         className: "ps-primary-button",
                         onClick: onBeginEdit,
-                    }, view.ghcpKey.configured ? "Replace key" : "Set key"),
-                    view.ghcpKey.configured
+                    }, view.ghcpKey.targetConfigured
+                        ? (view.ghcpKey.storeAsSystem ? "Replace System key" : "Replace key")
+                        : (view.ghcpKey.storeAsSystem ? "Set System key" : "Set key")),
+                    view.ghcpKey.targetConfigured
                         ? React.createElement("button", {
                             type: "button",
                             className: "ps-mini-button",
                             onClick: onClear,
-                        }, "Clear key")
+                        }, view.ghcpKey.storeAsSystem ? "Clear System key" : "Clear key")
                         : null,
                     React.createElement("button", {
                         type: "button",

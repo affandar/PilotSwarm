@@ -27,6 +27,7 @@ import type {
     StopTurnResult,
 } from "./types.js";
 import type { SessionCatalog, SessionRow, TopEventEmitterRow } from "./cms.js";
+import { SYSTEM_USER_PRINCIPAL } from "./cms.js";
 import type {
     SessionMetricSummary,
     TokensByModelRow,
@@ -194,6 +195,13 @@ function ownerLabel(owner: SessionOwnerInfo | null | undefined): string {
 }
 
 export type SystemSessionRestartDisposition = "complete" | "terminate" | "hard_delete" | "hardDelete";
+
+/** Status view of the SYSTEM user's GitHub Copilot key (never the key itself). */
+export interface SystemGitHubCopilotKeyStatus {
+    configured: boolean;
+    changedBy: string | null;
+    changedAt: string | null;
+}
 
 export interface RestartSystemSessionOptions {
     disposition: SystemSessionRestartDisposition;
@@ -1597,6 +1605,46 @@ export class PilotSwarmManagementClient {
     ): Promise<UserProfile> {
         this._ensureStarted();
         return this._catalog!.setUserGitHubCopilotKey(principal, key);
+    }
+
+    /**
+     * Set or clear the SYSTEM user's GitHub Copilot key (admin surface).
+     * Ownerless system sessions resolve this key through the same per-user
+     * path as owned sessions resolve their owner's key. The system user row
+     * is created lazily on first set. `actor` — the admin performing the
+     * change — is recorded in the system user's profile settings for audit
+     * (pass `null` on anonymous/no-auth deployments).
+     */
+    async setSystemGitHubCopilotKey(
+        actor: UserPrincipal | null,
+        key: string | null,
+    ): Promise<SystemGitHubCopilotKeyStatus> {
+        this._ensureStarted();
+        await this._catalog!.setUserGitHubCopilotKey(SYSTEM_USER_PRINCIPAL, key);
+        const cleared = !(typeof key === "string" && key.trim().length > 0);
+        await this._catalog!.setUserProfileSettings(SYSTEM_USER_PRINCIPAL, {
+            githubCopilotKey: {
+                changedBy: actor?.email || actor?.displayName || actor?.subject || "anonymous",
+                changedAt: new Date().toISOString(),
+                cleared,
+            },
+        });
+        return this.getSystemGitHubCopilotKeyStatus();
+    }
+
+    /**
+     * Whether a System GitHub Copilot key is configured, and who last
+     * changed it. Never returns the key itself.
+     */
+    async getSystemGitHubCopilotKeyStatus(): Promise<SystemGitHubCopilotKeyStatus> {
+        this._ensureStarted();
+        const profile = await this._catalog!.getUserProfile(SYSTEM_USER_PRINCIPAL);
+        const meta = (profile?.profileSettings as any)?.githubCopilotKey ?? {};
+        return {
+            configured: Boolean(profile?.githubCopilotKeySet),
+            changedBy: typeof meta.changedBy === "string" ? meta.changedBy : null,
+            changedAt: typeof meta.changedAt === "string" ? meta.changedAt : null,
+        };
     }
 
     /**

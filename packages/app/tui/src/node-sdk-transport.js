@@ -766,6 +766,23 @@ export class NodeSdkTransport {
         return this.mgmt.setUserGitHubCopilotKey(resolved, normalized);
     }
 
+    /**
+     * Admin: set or clear the SYSTEM user's GitHub Copilot key (used by
+     * ownerless system sessions). The web runtime enforces the admin role
+     * before dispatching here; `actor` is recorded for audit.
+     */
+    async setSystemGitHubCopilotKey({ actor, key } = {}) {
+        const resolvedActor = actor && actor.provider && actor.subject
+            ? normalizeUserPrincipal(actor)
+            : normalizeUserPrincipal(this.currentUser);
+        const normalized = typeof key === "string" && key.trim().length > 0 ? key : null;
+        return this.mgmt.setSystemGitHubCopilotKey(resolvedActor, normalized);
+    }
+
+    async getSystemGitHubCopilotKeyStatus() {
+        return this.mgmt.getSystemGitHubCopilotKeyStatus();
+    }
+
     async getSessionSkillUsage(sessionId, opts) {
         return this.mgmt.getSessionSkillUsage(sessionId, opts);
     }

@@ -155,6 +155,8 @@ export const OPERATIONS = [
     { name: "getCurrentUserProfile", method: "GET", path: "/me/profile", summary: "Profile of the authenticated principal." },
     { name: "setCurrentUserProfileSettings", method: "PATCH", path: "/me/profile/settings", params: { settings: body() }, summary: "Replace profile settings." },
     { name: "setCurrentUserGitHubCopilotKey", method: "PUT", path: "/me/github-copilot-key", params: { key: body() }, summary: "Set (or clear with null) the per-user GitHub Copilot key." },
+    { name: "setSystemGitHubCopilotKey", method: "PUT", path: "/admin/system-github-copilot-key", params: { key: body() }, admin: true, summary: "Set (or clear with null) the System user's GitHub Copilot key, used by ownerless system sessions. [admin]" },
+    { name: "getSystemGitHubCopilotKeyStatus", method: "GET", path: "/admin/system-github-copilot-key", admin: true, summary: "Whether a System GitHub Copilot key is configured and who last changed it. [admin]" },
 
     // ── System ──────────────────────────────────────────────────────────
     { name: "getLogConfig", method: "GET", path: "/system/log-config", summary: "Log tail availability." },
