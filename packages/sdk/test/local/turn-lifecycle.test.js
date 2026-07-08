@@ -76,17 +76,20 @@ async function runHealthyTurn(h, expectedVersion, turnKey, mutation = `turn-${tu
 }
 
 describe("turn lifecycle preamble", () => {
-    it("warm-starts with zero store I/O when marker matches and no sentinel", async () => {
+    it("warm-starts after a single probe (store-wins) when the marker matches the store version+hash", async () => {
         const h = makeHarness();
         makeSessionLayout(h.sessionStateDir, h.sessionId);
         const { committed } = await runHealthyTurn(h, 0, "t1");
         expect(committed.version).toBe(1);
         h.calls.length = 0;
 
+        // Store-wins does ONE metadata probe per turn (never trusting the
+        // orchestration's stale expectedVersion); when the local marker names
+        // the stored version AND content hash, it warm-starts without hydrating.
         const pre = await runTurnPreamble(h.ctxFor(1, "t2"));
         expect(pre.kind).toBe("warm");
         expect(pre.baseVersion).toBe(1);
-        expect(h.calls).toEqual([]); // the whole point: no store round-trip
+        expect(h.calls).toEqual(["probe"]); // one HEAD, then trust local
     });
 
     it("keeps a clean unmarked dir when the orchestration has no committed version (legacy continuity)", async () => {
@@ -138,18 +141,55 @@ describe("turn lifecycle preamble", () => {
         expect(fs.existsSync(path.join(h.sessionDir, "workspace.yaml"))).toBe(true);
     });
 
-    it("fences a zombie duplicate: store ahead of expected under a foreign turnKey throws", async () => {
+    it("store-wins: store ahead under a foreign turnKey hydrates the stored version (no fence)", async () => {
         const h = makeHarness();
         makeSessionLayout(h.sessionStateDir, h.sessionId);
         await runHealthyTurn(h, 0, "t1");
         await runHealthyTurn(h, 1, "t2");
 
-        // A stale attempt of turn 2 (scheduled against v1) wakes up after
-        // turn 2 already committed under a different key and turn 3 advanced
-        // the chain — re-running it would double-apply the turn.
+        // A stale attempt scheduled against v1 wakes up after the store has
+        // advanced to v2 under a different key. The old protocol FENCED here
+        // (threw SnapshotConflictError) and bricked the session — this is the
+        // incident. Store-wins simply hydrates whatever the store holds and
+        // proceeds from it.
         fs.rmSync(h.sessionDir, { recursive: true, force: true });
-        await expect(runTurnPreamble(h.ctxFor(1, "t-zombie")))
-            .rejects.toMatchObject({ name: "SnapshotConflictError", storedVersion: 2 });
+        const pre = await runTurnPreamble(h.ctxFor(1, "t-zombie"));
+        expect(pre.kind).toBe("hydrated");
+        expect(pre.baseVersion).toBe(2);
+    });
+
+    it("store-wins: a same-version content mismatch (rule-breaking restore) forces a hydrate", async () => {
+        const h = makeHarness();
+        makeSessionLayout(h.sessionStateDir, h.sessionId);
+        await runHealthyTurn(h, 0, "t1"); // store v1 (hash H), marker v1 (hash H)
+
+        // Version alone would warm-start. But the marker's content hash no
+        // longer matches the store's v1 — the store's v1 content was swapped
+        // out-of-band (an operator restore over the same version number). The
+        // ETag CAS cannot see that; the hash gate must, and hydrate the store.
+        const stored = await h.store.probeSnapshot(h.sessionId);
+        const bogus = "0".repeat(64);
+        expect(stored.contentHash).not.toBe(bogus);
+        writeSnapshotMarker(h.sessionDir, { version: 1, turnKey: "t1", contentHash: bogus });
+
+        const pre = await runTurnPreamble(h.ctxFor(1, "t2"));
+        expect(pre.kind).toBe("hydrated");
+        expect(pre.baseVersion).toBe(1);
+    });
+
+    it("store-wins: a store below the local marker hydrates and flags regressed", async () => {
+        const h = makeHarness();
+        makeSessionLayout(h.sessionStateDir, h.sessionId);
+        await runHealthyTurn(h, 0, "t1"); // store v1, marker v1
+
+        // Local marker advanced past the store — the store was restored from an
+        // OLDER backup (or lost data). Store wins: hydrate what it holds, and
+        // report `regressed` so the caller emits session.snapshot_regressed.
+        writeSnapshotMarker(h.sessionDir, { version: 5, turnKey: "t-old", contentHash: "0".repeat(64) });
+        const pre = await runTurnPreamble(h.ctxFor(5, "t2"));
+        expect(pre.kind).toBe("hydrated");
+        expect(pre.baseVersion).toBe(1);
+        expect(pre.regressed).toEqual({ markerVersion: 5, storeVersion: 1 });
     });
 
     it("hydrates exactly the stored version when the marker is missing or stale", async () => {
@@ -314,20 +354,50 @@ describe("turn lifecycle commit", () => {
         expect(fs.readFileSync(path.join(h.sessionDir, "events.jsonl"), "utf8")).toBe(v1Events);
     });
 
-    it("throws on a foreign CAS advance (split-brain fence)", async () => {
+    it("store-wins: a foreign CAS advance leaves the turn unpublished (superseded), sentinel dirty, no throw", async () => {
         const h = makeHarness();
         makeSessionLayout(h.sessionStateDir, h.sessionId);
         await runHealthyTurn(h, 0, "t1");
 
-        // A foreign worker advances the store to v2 out-of-band.
+        // A foreign worker advances the store to v2 out-of-band while our turn
+        // (based on v1) runs — the H3 mid-turn landing.
         await h.store.commitSnapshot(h.sessionId, { baseVersion: 1, turnKey: "t-foreign" });
 
         const ctx = h.ctxFor(1, "t-mine");
         writeTurnSentinel(h.sessionDir, "t-mine");
-        await expect(runTurnCommit(ctx, 1, { type: "completed", content: "x" }))
-            .rejects.toMatchObject({ name: "SnapshotConflictError" });
-        // Sentinel must survive a failed commit — the retry distrusts the dir.
+        // Old protocol threw (brick). Store-wins gives up the publish: the turn
+        // result still returns to the orchestration, but the store is NOT
+        // advanced and the next preamble rehydrates the winner.
+        const committed = await runTurnCommit(ctx, 1, { type: "completed", content: "x" });
+        expect(committed.published).toBe(false);
+        expect(committed.unpublishedReason).toBe("superseded");
+        // Sentinel must survive so the next preamble distrusts the dir and
+        // rehydrates the foreign winner (v2).
         expect(readTurnSentinel(h.sessionDir)).not.toBeNull();
+    });
+
+    it("store-wins: after a superseded commit the next turn rehydrates the winner and commits — no stuck loop (incident self-heal)", async () => {
+        const h = makeHarness();
+        makeSessionLayout(h.sessionStateDir, h.sessionId);
+        await runHealthyTurn(h, 0, "t1"); // store v1
+
+        // A discarded/foreign turn advances the store to v2 while our turn runs.
+        await h.store.commitSnapshot(h.sessionId, { baseVersion: 1, turnKey: "t-zombie" });
+
+        // Our turn (base v1) commits → superseded, sentinel left dirty.
+        const ctx2 = h.ctxFor(1, "t2");
+        writeTurnSentinel(h.sessionDir, "t2");
+        fs.appendFileSync(path.join(h.sessionDir, "events.jsonl"), '{"m":"superseded-turn"}\n');
+        const superseded = await runTurnCommit(ctx2, 1, { type: "completed", content: "x" });
+        expect(superseded.published).toBe(false);
+
+        // The NEXT turn must NOT loop forever (the old brick did). It sees the
+        // dirty sentinel + store v2, rehydrates v2, and commits v3 cleanly.
+        const t3 = await runHealthyTurn(h, 1, "t3");
+        expect(t3.pre.kind).toBe("hydrated");
+        expect(t3.pre.baseVersion).toBe(2);
+        expect(t3.committed.published).toBe(true);
+        expect(t3.committed.version).toBe(3);
     });
 
     it("a user-stopped turn is NOT committed, so the next turn re-hydrates and commits without a CAS conflict", async () => {

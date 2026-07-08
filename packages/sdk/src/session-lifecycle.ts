@@ -44,7 +44,18 @@ import {
 
 export type TurnPreambleOutcome =
     | { kind: "warm"; baseVersion: number }
-    | { kind: "hydrated"; baseVersion: number; storeBehindExpected: boolean }
+    | {
+        kind: "hydrated";
+        baseVersion: number;
+        storeBehindExpected: boolean;
+        /**
+         * Store-wins anomaly: the store's version was BELOW this worker's
+         * local marker (a restore from an older backup, or store data loss).
+         * The store still wins — we hydrate what it holds — but the caller
+         * emits `session.snapshot_regressed` so the regression is visible.
+         */
+        regressed?: { markerVersion: number; storeVersion: number };
+      }
     | { kind: "already-committed"; version: number; result: unknown }
     /**
      * Local dir was cleared (or never existed) and the store holds nothing:
@@ -70,6 +81,17 @@ export interface TurnCommitOutcome {
      * its own body's (§3.2 restore-not-replay).
      */
     storedResult?: unknown;
+    /**
+     * Store-wins: whether this commit actually advanced the store.
+     *   true  — a new version (or an alreadyCommitted same-turnKey winner) landed.
+     *   false — the snapshot was NOT published: the turn was user-stopped, or a
+     *           discarded/foreign turn advanced the store off our base while we
+     *           ran (superseded). The sentinel is left dirty so the next turn
+     *           rehydrates the winner; the caller emits `snapshot_unpublished`.
+     */
+    published: boolean;
+    /** Why the snapshot was not published (only when `published` is false). */
+    unpublishedReason?: "stopped" | "superseded";
 }
 
 export interface TurnLifecycleContext {
@@ -104,6 +126,19 @@ function hasUsableSessionLayout(sessionDir: string): boolean {
     return fs.existsSync(path.join(sessionDir, "workspace.yaml"));
 }
 
+/**
+ * Content-identity gate for the warm fast path. Only a mismatch between two
+ * PRESENT hashes forces a hydrate (a rule-breaking restore that overwrote the
+ * same version number with different content — the ETag CAS can't catch that,
+ * §5.1). When either side lacks a hash (a legacy marker/probe), fall back to
+ * version-only trust so an upgrade doesn't churn every warm worker into a
+ * spurious one-time hydrate.
+ */
+function contentMatches(markerHash?: string, probeHash?: string): boolean {
+    if (markerHash && probeHash) return markerHash === probeHash;
+    return true;
+}
+
 function markerFromHydrate(sessionDir: string, hydrated: SnapshotHydrateResult): void {
     writeSnapshotMarker(sessionDir, {
         version: hydrated.version,
@@ -136,7 +171,10 @@ async function recoverAlreadyCommitted(ctx: TurnLifecycleContext): Promise<TurnP
     return { kind: "hydrated", baseVersion: hydrated.version, storeBehindExpected: false };
 }
 
-async function resolveFromStore(ctx: TurnLifecycleContext): Promise<TurnPreambleOutcome> {
+async function resolveFromStore(
+    ctx: TurnLifecycleContext,
+    regressed?: { markerVersion: number; storeVersion: number },
+): Promise<TurnPreambleOutcome> {
     const sessionDir = sessionDirOf(ctx);
     await ctx.dropWarmSession();
     const hydrated = await ctx.store.hydrateSnapshot(ctx.sessionId);
@@ -149,29 +187,41 @@ async function resolveFromStore(ctx: TurnLifecycleContext): Promise<TurnPreamble
             `expected v${ctx.expectedVersion} (store restored from backup?); proceeding from stored state`,
         );
     }
-    return { kind: "hydrated", baseVersion: hydrated.version, storeBehindExpected };
+    if (regressed) {
+        ctx.trace(
+            `session=${ctx.sessionId} store snapshot v${regressed.storeVersion} is BELOW the local marker ` +
+            `v${regressed.markerVersion} (store restored/lost data); store wins — hydrating v${hydrated.version}`,
+        );
+    }
+    return {
+        kind: "hydrated",
+        baseVersion: hydrated.version,
+        storeBehindExpected,
+        ...(regressed ? { regressed } : {}),
+    };
 }
 
 /**
- * Preamble (p1/p2). Runs under the per-session run-turn lock, before
- * getOrCreate. On return the local dir is in exactly one of these states:
- * trusted at `baseVersion` (warm/hydrated), absent (fresh), or restored at
- * the committed version (already-committed — the caller returns the stored
- * result without running the body).
+ * Preamble (store-wins). Runs under the per-session run-turn lock, before
+ * getOrCreate. ONE probe per turn is the reconcile oracle — never the
+ * orchestration's `expectedVersion`, which goes stale the moment a stopped or
+ * zombie turn advances the store the control plane discarded (the divergence
+ * this protocol removes). On return the local dir is in exactly one state:
+ * trusted at `baseVersion` (warm — local marker matches the store's
+ * version+hash), restored at the stored version (hydrated — the store wins),
+ * absent (fresh), or restored at this turn's committed version
+ * (already-committed — the caller returns the stored result without a body).
  */
 export async function runTurnPreamble(ctx: TurnLifecycleContext): Promise<TurnPreambleOutcome> {
     const sessionDir = sessionDirOf(ctx);
     const sentinel = readTurnSentinel(sessionDir);
     const marker = readSnapshotMarker(sessionDir);
-    const localDirExists = fs.existsSync(sessionDir);
-    const localDirUsable = localDirExists && hasUsableSessionLayout(sessionDir);
+    const localDirUsable = fs.existsSync(sessionDir) && hasUsableSessionLayout(sessionDir);
 
-    // p2 fast path: trusted local files at exactly the expected version.
-    // Requires the layout anchor — a marker orphaned by a torn delete must
-    // not be trusted (the store may hold a perfect copy).
-    if (!sentinel && marker && marker.version === ctx.expectedVersion && localDirUsable) {
-        return { kind: "warm", baseVersion: marker.version };
-    }
+    // Store-wins: one metadata probe is the ONLY oracle. `expectedVersion`
+    // rides in the input for frozen orchestration versions but is load-bearing
+    // for nothing here except the lossy-replay observability flag.
+    const probe = await ctx.store.probeSnapshot(ctx.sessionId);
 
     if (sentinel) {
         ctx.trace(
@@ -180,67 +230,59 @@ export async function runTurnPreamble(ctx: TurnLifecycleContext): Promise<TurnPr
         );
     }
 
-    // Legacy warm continuity: the orchestration has never recorded a commit
-    // (expected 0) and the dir is clean but unmarked — typically a
-    // 1.0.56-era warm session that just migrated onto the new protocol.
-    // Trust it ONLY after confirming the store doesn't hold a versioned
-    // chain (a crash inside already-committed recovery of turn 1 leaves
-    // exactly this local shape while the store already has v1).
-    if (!sentinel && !marker && ctx.expectedVersion === 0 && localDirUsable) {
-        const probe0 = await ctx.store.probeSnapshot(ctx.sessionId);
-        if (!probe0.exists || probe0.legacy) {
-            return { kind: "warm", baseVersion: 0 };
-        }
-        if (probe0.turnKey && probe0.turnKey === ctx.turnKey) {
-            return recoverAlreadyCommitted(ctx);
-        }
-        ctx.trace(
-            `session=${ctx.sessionId} unmarked local dir but the store holds versioned v${probe0.version}; ` +
-            `resolving from store`,
-        );
-        return resolveFromStore(ctx);
-    }
-
-    // Local is untrusted (dirty sentinel) or stale (marker mismatch/absent):
-    // resolve from the store.
-    const probe = await ctx.store.probeSnapshot(ctx.sessionId);
-
-    if (!probe.exists) {
-        // Nothing stored. A clean, usable dir is still the best data
-        // available — trust it over a fresh replay.
-        if (!sentinel && localDirUsable) {
-            ctx.trace(
-                `session=${ctx.sessionId} store empty but clean local dir exists ` +
-                `(marker=${marker?.version ?? "none"} expected=${ctx.expectedVersion}); using local files`,
-            );
-            return { kind: "warm", baseVersion: marker?.version ?? 0 };
-        }
-        // Dirty or unusable local + empty store → fresh; lossy iff turns had
-        // been committed before (W3 in the protocol doc).
-        await ctx.dropWarmSession();
-        fs.rmSync(sessionDir, { recursive: true, force: true });
-        return { kind: "fresh", baseVersion: 0, lossy: ctx.expectedVersion > 0 };
-    }
-
-    // Already-committed recovery: the store bears this very turn's turnKey —
-    // the previous attempt crashed after its CAS landed (or a racing
-    // duplicate attempt already won). Restore, never replay.
-    if (probe.turnKey && probe.turnKey === ctx.turnKey) {
+    // Idempotency (keeper): the store bears THIS turn's own key — a prior
+    // attempt of this very turn already committed (crash-after-commit, or a
+    // racing drain/lock-steal duplicate). Restore, never replay.
+    if (probe.exists && probe.turnKey && probe.turnKey === ctx.turnKey) {
         return recoverAlreadyCommitted(ctx);
     }
 
-    // Zombie-duplicate fence: the store is AHEAD of what this attempt was
-    // scheduled against, under a DIFFERENT turn's key. A later turn already
-    // committed — re-running this one would silently double-apply it (and
-    // its rebased CAS would succeed). Fail loudly; duroxide's retry/poison
-    // machinery surfaces it instead of corrupting the chain.
-    if (ctx.expectedVersion > 0 && probe.version > ctx.expectedVersion) {
-        throw new SnapshotConflictError(ctx.sessionId, ctx.expectedVersion, probe.version, probe.turnKey);
+    // Store holds nothing.
+    if (!probe.exists) {
+        // A clean, usable local dir is the best (only) data — trust it over a
+        // fresh replay; the fresh chain publishes from here.
+        if (!sentinel && localDirUsable) {
+            return { kind: "warm", baseVersion: marker?.version ?? 0 };
+        }
+        // Dirty or unusable local + empty store → fresh; lossy iff turns had
+        // been committed before (marker present, or a frozen orchestration
+        // still reports a nonzero expected version). W3 in the protocol doc.
+        await ctx.dropWarmSession();
+        fs.rmSync(sessionDir, { recursive: true, force: true });
+        return { kind: "fresh", baseVersion: 0, lossy: (marker?.version ?? ctx.expectedVersion) > 0 };
     }
 
-    // Normal resolve: hydrate exactly what the store holds (equal to
-    // expected after a migration/crash, or behind after a store restore).
-    return resolveFromStore(ctx);
+    // Legacy snapshot (pre-protocol, no version metadata, counts as v0): a
+    // clean local dir is still trustworthy; otherwise hydrate what's stored.
+    if (probe.legacy) {
+        if (!sentinel && localDirUsable) {
+            return { kind: "warm", baseVersion: marker?.version ?? 0 };
+        }
+        return resolveFromStore(ctx);
+    }
+
+    // Regressed: the store sits BELOW this worker's own marker — a restore from
+    // an older backup, or store data loss. Anomalous (surfaced by the caller),
+    // but the store still wins: we hydrate what it holds.
+    const regressed = marker && probe.version < marker.version
+        ? { markerVersion: marker.version, storeVersion: probe.version }
+        : undefined;
+
+    // Warm fast path: a clean local dir whose marker names EXACTLY the stored
+    // state — same version AND (when both carry a hash) same content. The
+    // layout anchor guards a marker orphaned by a torn delete; the hash guards
+    // a rule-breaking same-version restore (§5.1). Only branch that trusts
+    // local files without hydrating.
+    if (!sentinel && localDirUsable && marker
+        && marker.version === probe.version
+        && contentMatches(marker.contentHash, probe.contentHash)) {
+        return { kind: "warm", baseVersion: marker.version };
+    }
+
+    // Store wins for everything else: store AHEAD (a discarded/foreign turn
+    // advanced it — the incident; adopt it, no zombie fence), a same-version
+    // content swap, a torn/dirty dir, or no marker.
+    return resolveFromStore(ctx, regressed);
 }
 
 /**
@@ -291,7 +333,13 @@ export async function runTurnCommit(
             `session=${ctx.sessionId} user-stopped turn: skipping snapshot commit at ` +
             `base v${baseVersion}; sentinel left dirty for next-turn re-hydrate`,
         );
-        return { version: baseVersion, contentHash: "", alreadyCommitted: false };
+        return {
+            version: baseVersion,
+            contentHash: "",
+            alreadyCommitted: false,
+            published: false,
+            unpublishedReason: "stopped",
+        };
     }
     const sessionDir = sessionDirOf(ctx);
     writeTurnCommitFile(sessionDir, ctx.turnKey, result);
@@ -325,6 +373,7 @@ export async function runTurnCommit(
                     ...(hydrated.sizeBytes != null ? { sizeBytes: hydrated.sizeBytes } : {}),
                     ...(hydrated.rawSizeBytes != null ? { rawSizeBytes: hydrated.rawSizeBytes } : {}),
                     alreadyCommitted: true,
+                    published: true,
                     ...(commitFile && commitFile.turnKey === ctx.turnKey
                         ? { storedResult: commitFile.result }
                         : {}),
@@ -345,9 +394,29 @@ export async function runTurnCommit(
                 ...(committed.sizeBytes != null ? { sizeBytes: committed.sizeBytes } : {}),
                 ...(committed.rawSizeBytes != null ? { rawSizeBytes: committed.rawSizeBytes } : {}),
                 alreadyCommitted: false,
+                published: true,
             };
         } catch (error: unknown) {
-            if (error instanceof SnapshotConflictError) throw error;
+            if (error instanceof SnapshotConflictError) {
+                // Store-wins: a turn the control plane discarded — or a foreign
+                // writer — advanced the store off our base while this turn ran.
+                // Do NOT brick (the old zombie-duplicate fence). Give up this
+                // publish: leave the sentinel dirty so the next preamble
+                // rehydrates the winner. The turn's result still returns to the
+                // orchestration; only its snapshot memory is superseded, and
+                // the caller emits `session.snapshot_unpublished{superseded}`.
+                ctx.trace(
+                    `session=${ctx.sessionId} commit superseded: store advanced off base v${baseVersion} ` +
+                    `while this turn ran (${error.message}); leaving turn unpublished, sentinel dirty`,
+                );
+                return {
+                    version: baseVersion,
+                    contentHash: "",
+                    alreadyCommitted: false,
+                    published: false,
+                    unpublishedReason: "superseded",
+                };
+            }
             lastError = error;
             const message = error instanceof Error ? error.message : String(error);
             ctx.trace(

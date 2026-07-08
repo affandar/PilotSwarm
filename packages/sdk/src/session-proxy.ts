@@ -943,6 +943,25 @@ export function registerActivities(
             if (lifecycleRehydrated) {
                 await recordLifecycleHydration(pre.baseVersion);
             }
+            if (pre.kind === "hydrated" && pre.regressed && catalog) {
+                // Store-wins anomaly: the store was BELOW this worker's marker
+                // (backup restore / data loss). The store still won — we
+                // hydrated it — but surface the regression. Best-effort (P7).
+                const regressed = pre.regressed;
+                await cmsRetryBestEffort(
+                    `runTurn.recordEvent snapshot-regressed session=${input.sessionId}`,
+                    () => catalog!.recordEvents(input.sessionId, [{
+                        eventType: "session.snapshot_regressed",
+                        data: {
+                            markerVersion: regressed.markerVersion,
+                            storeVersion: regressed.storeVersion,
+                            hydratedVersion: pre.baseVersion,
+                            message: "Snapshot store version was below the worker's local marker (restore from an older backup, or store data loss); store wins — hydrated the stored version.",
+                        },
+                    }], workerNodeId),
+                    (msg) => activityCtx.traceInfo(msg),
+                );
+            }
             if (pre.kind === "fresh" && pre.lossy && catalog) {
                 await cmsRetryBestEffort(
                     `runTurn.recordEvent snapshot-store-empty session=${input.sessionId}`,
@@ -2181,6 +2200,29 @@ export function registerActivities(
             : null;
         if (lifecycle && lifecycleSessionDir && fs.existsSync(path.join(lifecycleSessionDir, "workspace.yaml"))) {
             const committed = await runTurnCommit(lifecycle, lifecycleBaseVersion, bodyResult);
+            if (!committed.published && catalog) {
+                // Store-wins: the snapshot was NOT advanced — a user stop, or a
+                // discarded/foreign turn superseded this one at the store. The
+                // turn's result still returns; record the memory loss so it is
+                // operator-visible (never a bare heartbeat). Best-effort (P7).
+                const reason = committed.unpublishedReason ?? "superseded";
+                await cmsRetryBestEffort(
+                    `runTurn.recordEvent snapshot-unpublished session=${input.sessionId}`,
+                    () => catalog!.recordEvents(input.sessionId, [{
+                        eventType: "session.snapshot_unpublished",
+                        data: {
+                            reason,
+                            baseVersion: lifecycleBaseVersion,
+                            turnKey: input.snapshot?.turnKey,
+                            ...(input.turnIndex != null ? { turnIndex: input.turnIndex } : {}),
+                            message: reason === "stopped"
+                                ? "User-stopped turn: snapshot not committed (intentional discard)."
+                                : "Turn snapshot superseded: the store advanced off this turn's base before it committed; the next turn rehydrates the winner.",
+                        },
+                    }], workerNodeId),
+                    (msg) => activityCtx.traceInfo(msg),
+                );
+            }
             if (catalog && committed.sizeBytes != null) {
                 await cmsRetryBestEffort(
                     `runTurn.commitSummary session=${input.sessionId}`,
