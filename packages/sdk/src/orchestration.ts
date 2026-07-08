@@ -42,5 +42,5 @@ export const CURRENT_ORCHESTRATION_VERSION = DURABLE_SESSION_LATEST_VERSION;
  */
 
 export {
-    durableSessionOrchestration_1_0_58,
+    durableSessionOrchestration_1_0_59,
 } from "./orchestration/index.js";

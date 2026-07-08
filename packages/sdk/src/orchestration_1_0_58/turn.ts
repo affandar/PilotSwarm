@@ -423,24 +423,9 @@ export function* processPrompt(
     let result: TurnResult = typeof turnResult === "string" ? JSON.parse(turnResult) : turnResult;
     // Lifecycle protocol: adopt the version the activity committed. The
     // returned value is authoritative even when it disagrees with the
-    // expectation (self-healing after a store restore). state.snapshotVersion
-    // is a telemetry MIRROR only — store-wins never gates on it.
+    // expectation (self-healing after a store restore).
     if (typeof (result as any)?.snapshotVersion === "number") {
-        const adoptedVersion = (result as any).snapshotVersion as number;
-        const priorVersion = state.snapshotVersion;
-        // Store-wins observability: the adopted store version jumped past
-        // prior+1 — a discarded/foreign turn published in the gap and this turn
-        // hydrated + committed on top (the incident's self-heal). Record it.
-        // Deterministic on replay: both operands come from recorded state and
-        // the recorded activity result. (New yield in 1.0.59 — the reason this
-        // change required freezing 1.0.58; see orchestration_1_0_58/.)
-        if (priorVersion > 0 && adoptedVersion > priorVersion + 1) {
-            yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
-                eventType: "session.snapshot_lineage_jump",
-                data: { from: priorVersion, to: adoptedVersion },
-            }]);
-        }
-        state.snapshotVersion = adoptedVersion;
+        state.snapshotVersion = (result as any).snapshotVersion;
     }
     const observedAt: number = yield ctx.utcNow();
     state.contextUsage = updateContextUsageFromEvents(state.contextUsage, (result as any)?.events, observedAt);

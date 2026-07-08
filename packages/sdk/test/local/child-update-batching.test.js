@@ -1055,3 +1055,36 @@ describe("orchestration shutdown semantics", () => {
         expect(response.error).toContain("Graceful done timed out after 60s");
     });
 });
+
+// Store-wins Layer 2 (docs/proposals/snapshot-store-wins.md): the 1.0.59
+// orchestration records session.snapshot_lineage_jump when the adopted store
+// version jumps past prior+1 — a discarded/foreign turn published in the gap
+// and this turn hydrated + committed on top. Driven end-to-end through the real
+// turn harness. (Version-ceremony + freeze-boundary guards live in
+// snapshot-lineage-jump.test.js.)
+describe("snapshot_lineage_jump behaviour (store-wins Layer 2)", () => {
+    beforeEach(() => {
+        vi.resetModules();
+    });
+
+    const lineageJumpEvents = (state) =>
+        state.recordedEvents
+            .flatMap((e) => e.events ?? [])
+            .filter((ev) => ev.eventType === "session.snapshot_lineage_jump");
+
+    it("records a lineage jump when the adopted store version exceeds prior+1", async () => {
+        // Prior mirror 169; the activity returns 171 — a discarded/foreign turn
+        // published 170 in the gap and this turn hydrated + committed 171.
+        const harness = createHarness({ inputOverrides: { snapshotVersion: 169 } });
+        const res = await harness.runThroughTurn({ type: "completed", content: "x", snapshotVersion: 171 });
+        const jumps = lineageJumpEvents(res.state);
+        expect(jumps).toHaveLength(1);
+        expect(jumps[0].data).toEqual({ from: 169, to: 171 });
+    });
+
+    it("records NO lineage jump on a normal +1 advance", async () => {
+        const harness = createHarness({ inputOverrides: { snapshotVersion: 169 } });
+        const res = await harness.runThroughTurn({ type: "completed", content: "x", snapshotVersion: 170 });
+        expect(lineageJumpEvents(res.state)).toHaveLength(0);
+    });
+});
