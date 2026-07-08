@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { sessionIdShape } from "../session-id.js";
 import type { ServerContext } from "../context.js";
 import { jsonResult, errorResult, withToolErrors } from "../util/respond.js";
 
@@ -191,7 +192,7 @@ export function registerObservabilityTools(server: McpServer, ctx: ServerContext
                     "Export a session's full execution history to an artifact on the session; returns the artifact "
                     + "metadata. Retrieve it with get_artifact / list_artifacts.",
                 inputSchema: {
-                    session_id: z.string().uuid({ message: "session_id must be a valid UUID" }).describe("The session to export"),
+                    session_id: sessionIdShape().describe("The session to export"),
                 },
             },
             withToolErrors(async ({ session_id }) => {

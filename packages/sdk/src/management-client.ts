@@ -1161,9 +1161,14 @@ export class PilotSwarmManagementClient {
         const models = this.listModels();
         const match = models.find((m) => m.qualifiedName === trimmed);
         if (!match) throw new Error(`Unknown model: ${trimmed}`);
-        const nextReasoningEffort = opts && "reasoningEffort" in opts
-            ? (opts.reasoningEffort ?? null)
-            : (match.defaultReasoningEffort ?? null);
+        // Reasoning effort is applied ONLY when the caller asked for one.
+        // When omitted, the key is left out of the command args entirely so
+        // the orchestration's set_model handler PRESERVES the session's
+        // current effort (args.reasoningEffort === undefined → keep old).
+        // Injecting the model descriptor's defaultReasoningEffort here used
+        // to silently override the session's effort on every switch.
+        const hasExplicitEffort = !!opts && "reasoningEffort" in opts;
+        const nextReasoningEffort = hasExplicitEffort ? (opts!.reasoningEffort ?? null) : undefined;
         if (nextReasoningEffort) {
             const supported = match.supportedReasoningEfforts ?? [];
             if (!supported.includes(nextReasoningEffort)) {
@@ -1177,7 +1182,7 @@ export class PilotSwarmManagementClient {
             id: buildLifecycleCommandId("set-model"),
             args: {
                 model: trimmed,
-                reasoningEffort: nextReasoningEffort,
+                ...(hasExplicitEffort ? { reasoningEffort: nextReasoningEffort } : {}),
                 source: opts?.source ?? "user",
             },
         });

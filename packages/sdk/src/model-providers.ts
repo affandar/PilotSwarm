@@ -303,13 +303,23 @@ export class ModelProviderRegistry {
  * Falls back to building a config from env vars for backwards compatibility.
  */
 export function loadModelProviders(filePath?: string): ModelProviderRegistry | null {
-    const envOverridePath = process.env.PS_MODEL_PROVIDERS_PATH || process.env.MODEL_PROVIDERS_PATH;
-    const resolvedPath = filePath || envOverridePath;
-
-    if (resolvedPath && fs.existsSync(resolvedPath)) {
+    const resolvedPath = resolveModelProvidersPath(filePath);
+    if (resolvedPath) {
         const raw = fs.readFileSync(resolvedPath, "utf-8");
         return new ModelProviderRegistry(JSON.parse(raw));
     }
+    return buildFromEnv();
+}
+
+/**
+ * Resolve the model_providers.json path `loadModelProviders` would read:
+ * explicit file path > PS_MODEL_PROVIDERS_PATH/MODEL_PROVIDERS_PATH env >
+ * auto-discovery. Returns null when no file exists (env-var fallback case).
+ */
+export function resolveModelProvidersPath(filePath?: string): string | null {
+    const envOverridePath = process.env.PS_MODEL_PROVIDERS_PATH || process.env.MODEL_PROVIDERS_PATH;
+    const overridePath = filePath || envOverridePath;
+    if (overridePath && fs.existsSync(overridePath)) return overridePath;
 
     const searchPaths = [
         ".model_providers.json",
@@ -330,13 +340,51 @@ export function loadModelProviders(filePath?: string): ModelProviderRegistry | n
         dir = parent;
     }
     for (const p of searchPaths) {
-        if (fs.existsSync(p)) {
-            const raw = fs.readFileSync(p, "utf-8");
-            return new ModelProviderRegistry(JSON.parse(raw));
-        }
+        if (fs.existsSync(p)) return p;
     }
+    return null;
+}
 
-    return buildFromEnv();
+/**
+ * Mtime-watched wrapper around `loadModelProviders`: `checkAndReload()`
+ * re-reads the config file when its mtime changed since the last load, so a
+ * ConfigMap rollout applies without a process restart (the registry used to
+ * be loaded exactly once at startup, leaving workers on a stale catalog
+ * until the next deploy — the model-catalog staleness behind the silent
+ * model-substitution incident). Malformed content never replaces a good
+ * registry: parse failures keep the current one and return false.
+ */
+export function createModelProvidersReloader(filePath?: string): {
+    current: ModelProviderRegistry | null;
+    readonly path: string | null;
+    checkAndReload(): boolean;
+} {
+    const resolved = resolveModelProvidersPath(filePath);
+    const statMtime = (): number => {
+        if (!resolved) return 0;
+        try { return fs.statSync(resolved).mtimeMs; } catch { return 0; }
+    };
+    let lastMtimeMs = statMtime();
+    const state = {
+        current: loadModelProviders(filePath),
+        path: resolved,
+        checkAndReload(): boolean {
+            if (!resolved) return false;
+            const mtimeMs = statMtime();
+            if (mtimeMs === 0 || mtimeMs === lastMtimeMs) return false;
+            // Record the observed mtime up-front so a persistently broken
+            // file doesn't re-parse on every poll tick.
+            lastMtimeMs = mtimeMs;
+            try {
+                const raw = fs.readFileSync(resolved, "utf-8");
+                state.current = new ModelProviderRegistry(JSON.parse(raw));
+                return true;
+            } catch {
+                return false;
+            }
+        },
+    };
+    return state;
 }
 
 /** Build a ModelProviderRegistry from legacy env vars. */

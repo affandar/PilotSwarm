@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { sessionIdShape } from "../session-id.js";
 import type { ServerContext } from "../context.js";
 import { jsonResult, errorResult, withToolErrors } from "../util/respond.js";
 
@@ -21,7 +22,7 @@ export function registerArtifactTools(server: McpServer, ctx: ServerContext) {
             title: "List Artifacts",
             description: "List the artifacts (files) a PilotSwarm session has produced or been given.",
             inputSchema: {
-                session_id: z.string().uuid({ message: "session_id must be a valid UUID" }).describe("The session whose artifacts to list"),
+                session_id: sessionIdShape().describe("The session whose artifacts to list"),
             },
         },
         withToolErrors(async ({ session_id }) => {
@@ -39,7 +40,7 @@ export function registerArtifactTools(server: McpServer, ctx: ServerContext) {
                 "Fetch a session artifact. include controls what comes back: 'meta' (metadata), 'text' (content as "
                 + "text — for text artifacts). Binary artifacts: use the download_url returned in meta.",
             inputSchema: {
-                session_id: z.string().uuid({ message: "session_id must be a valid UUID" }).describe("The session owning the artifact"),
+                session_id: sessionIdShape().describe("The session owning the artifact"),
                 filename: z.string().min(1).describe("Artifact filename"),
                 include: z.array(z.enum(["meta", "text"])).optional().describe("What to fetch (default ['meta'])"),
             },
@@ -76,7 +77,7 @@ export function registerArtifactTools(server: McpServer, ctx: ServerContext) {
                 "Upload an artifact into a session (visible to the agent). Text content directly, or base64 with "
                 + "content_encoding='base64' for binary. 2 MB JSON envelope limit.",
             inputSchema: {
-                session_id: z.string().uuid({ message: "session_id must be a valid UUID" }).describe("The session to attach the artifact to"),
+                session_id: sessionIdShape().describe("The session to attach the artifact to"),
                 filename: z.string().min(1).describe("Artifact filename"),
                 content: z.string().describe("Content (text, or base64 when content_encoding='base64')"),
                 content_type: z.string().optional().describe("MIME type (e.g. text/markdown, application/pdf)"),
@@ -101,7 +102,7 @@ export function registerArtifactTools(server: McpServer, ctx: ServerContext) {
             title: "Delete Artifact",
             description: "Delete an artifact from a session.",
             inputSchema: {
-                session_id: z.string().uuid({ message: "session_id must be a valid UUID" }).describe("The session owning the artifact"),
+                session_id: sessionIdShape().describe("The session owning the artifact"),
                 filename: z.string().min(1).describe("Artifact filename to delete"),
             },
         },

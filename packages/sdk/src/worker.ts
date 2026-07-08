@@ -11,7 +11,7 @@ import type { SessionCatalog } from "./cms.js";
 import { loadAgentFiles } from "./agent-loader.js";
 import { startSystemAgents } from "./system-agents.js";
 import { loadMcpConfig } from "./mcp-loader.js";
-import { loadModelProviders, type ModelProviderRegistry } from "./model-providers.js";
+import { createModelProvidersReloader, type ModelProviderRegistry } from "./model-providers.js";
 import { createArtifactTools } from "./artifact-tools.js";
 import { isEnhancedFactStore, PgFactStore, type FactStore } from "./facts-store.js";
 import type { GraphStore } from "./graph-store.js";
@@ -140,6 +140,9 @@ export class PilotSwarmWorker {
     private _loadedMcpServers: Record<string, any> = {};
     /** Model provider registry — multi-provider LLM config. */
     private _modelProviders: ModelProviderRegistry | null = null;
+    /** Mtime watcher that re-loads model_providers.json on file change. */
+    private _modelProvidersReloader: ReturnType<typeof createModelProvidersReloader> | null = null;
+    private _modelProvidersReloadTimer: ReturnType<typeof setInterval> | null = null;
     /** Embedded PilotSwarm framework prompt. */
     private _frameworkBasePrompt: string | null = null;
     /** Tool names declared by the embedded PilotSwarm framework default agent. */
@@ -198,8 +201,12 @@ export class PilotSwarmWorker {
         // Load plugins and merge with direct config — must happen before SessionManager init
         this._loadPlugins();
 
-        // Load model providers: explicit file path > auto-discover > env vars fallback
-        this._modelProviders = loadModelProviders(options.modelProvidersPath);
+        // Load model providers: explicit file path > auto-discover > env vars
+        // fallback. The reloader mtime-watches the resolved file so a
+        // ConfigMap rollout (new/changed models) applies without a pod
+        // restart — the registry used to be read exactly once at startup.
+        this._modelProvidersReloader = createModelProvidersReloader(options.modelProvidersPath);
+        this._modelProviders = this._modelProvidersReloader.current;
 
         this.sessionManager = new SessionManager(
             options.githubToken,
@@ -222,6 +229,24 @@ export class PilotSwarmWorker {
             },
             effectiveSessionStateDir,
         );
+
+        // Poll for model_providers.json changes (30s, unref'd so it never
+        // holds the process open). On reload, swap the worker's registry AND
+        // the SessionManager's — new sessions and per-turn model resolution
+        // pick up the fresh catalog immediately.
+        if (this._modelProvidersReloader?.path) {
+            this._modelProvidersReloadTimer = setInterval(() => {
+                if (this._modelProvidersReloader!.checkAndReload()) {
+                    this._modelProviders = this._modelProvidersReloader!.current;
+                    this.sessionManager.setModelProviders(this._modelProviders);
+                    console.log(
+                        `[PilotSwarmWorker] model providers reloaded from ${this._modelProvidersReloader!.path} ` +
+                        `(${this._modelProviders?.allModels.length ?? 0} models)`,
+                    );
+                }
+            }, 30_000);
+            this._modelProvidersReloadTimer.unref?.();
+        }
     }
 
     // ─── Public API ──────────────────────────────────────────

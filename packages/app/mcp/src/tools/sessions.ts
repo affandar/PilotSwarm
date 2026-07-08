@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { sessionIdShape } from "../session-id.js";
 import type { PilotSwarmSession } from "pilotswarm-sdk";
 import type { ServerContext } from "../context.js";
 
@@ -136,7 +137,7 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                 "Send a fire-and-forget message to a PilotSwarm session. Pass client_message_ids to make the "
                 + "message(s) cancellable later via cancel_pending_messages; enqueue_only queues without waking the session.",
             inputSchema: {
-                session_id: z.string().uuid({ message: "session_id must be a valid UUID" }).describe("The session to send the message to"),
+                session_id: sessionIdShape().describe("The session to send the message to"),
                 message: z.string().describe("The message to send"),
                 client_message_ids: z.array(z.string().min(1)).optional().describe("Caller-chosen ids for this message — required later by cancel_pending_messages"),
                 enqueue_only: z.boolean().optional().describe("Queue the message without triggering processing (web mode only)"),
@@ -202,7 +203,7 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
             title: "Send and Wait",
             description: "Send a message to a PilotSwarm session and wait for the response",
             inputSchema: {
-                session_id: z.string().uuid({ message: "session_id must be a valid UUID" }).describe("The session to send the message to"),
+                session_id: sessionIdShape().describe("The session to send the message to"),
                 message: z.string().describe("The message to send"),
                 timeout_ms: z.number().optional().describe("Timeout in milliseconds (default 120000)"),
             },
@@ -258,7 +259,7 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
             title: "Send Answer",
             description: "Answer a pending input_required question in a PilotSwarm session",
             inputSchema: {
-                session_id: z.string().uuid({ message: "session_id must be a valid UUID" }).describe("The session awaiting an answer"),
+                session_id: sessionIdShape().describe("The session awaiting an answer"),
                 answer: z.string().describe("The answer to provide"),
             },
         },
@@ -294,7 +295,7 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
             title: "Abort Session",
             description: "Cancel a running PilotSwarm session",
             inputSchema: {
-                session_id: z.string().uuid({ message: "session_id must be a valid UUID" }).describe("The session to abort"),
+                session_id: sessionIdShape().describe("The session to abort"),
                 reason: z.string().optional().describe("Optional reason for cancellation"),
             },
         },
@@ -331,7 +332,7 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
             title: "Rename Session",
             description: "Rename a PilotSwarm session",
             inputSchema: {
-                session_id: z.string().uuid({ message: "session_id must be a valid UUID" }).describe("The session to rename"),
+                session_id: sessionIdShape().describe("The session to rename"),
                 title: z.string().min(1).max(512).describe("The new title for the session"),
             },
         },
@@ -476,7 +477,7 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                 "Get detailed information for a specific PilotSwarm session including status, context usage, cron state, and pending questions. " +
                 "Use 'include' to fetch additional data: 'status' for live orchestration status, 'response' for latest LLM response, 'dump' for full Markdown dump.",
             inputSchema: {
-                session_id: z.string().uuid({ message: "session_id must be a valid UUID" }).describe("The session ID to inspect"),
+                session_id: sessionIdShape().describe("The session ID to inspect"),
                 include: z
                     .array(z.enum(["status", "response", "dump"]))
                     .optional()
@@ -545,7 +546,7 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
             title: "Delete Session",
             description: "Delete a PilotSwarm session",
             inputSchema: {
-                session_id: z.string().uuid({ message: "session_id must be a valid UUID" }).describe("The session to delete"),
+                session_id: sessionIdShape().describe("The session to delete"),
             },
         },
         async ({ session_id }) => {
@@ -594,7 +595,7 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                 "history paging with before_seq, server-side event_types filtering, and long-polling " +
                 "with wait=true to block until new events or a status change arrives.",
             inputSchema: {
-                session_id: z.string().uuid({ message: "session_id must be a valid UUID" }).describe("The session to read events for"),
+                session_id: sessionIdShape().describe("The session to read events for"),
                 after_seq: z.number().optional().describe("Return events after this CMS sequence number (forward paging)"),
                 before_seq: z.number().optional().describe("Return events BEFORE this sequence number (backward history paging; mutually exclusive with after_seq/wait)"),
                 event_types: z.array(z.string()).optional().describe("Server-side filter to these event types (e.g. chat transcript paging)"),

@@ -297,6 +297,16 @@ export class SessionManager {
         this.sessionCatalog = catalog;
     }
 
+    /**
+     * Hot-swap the model-provider registry after a config-file change on
+     * disk (ConfigMap update). Applies to all subsequent model resolution;
+     * live warm sessions keep their bound client until their next
+     * getOrCreate re-resolves.
+     */
+    setModelProviders(registry: import("./model-providers.js").ModelProviderRegistry | null): void {
+        this.workerDefaults.modelProviders = registry ?? undefined;
+    }
+
     /** Set the duroxide client for tuner-only inspect tools. */
     setDuroxideClient(client: any): void {
         this._duroxideClient = client;
@@ -391,6 +401,7 @@ export class SessionManager {
         sessionId: string,
         config: ManagedSessionConfig,
         effectiveModel: string,
+        preloadedRow?: any,
     ): Promise<string | undefined> {
         if (!this.sessionCatalog) return undefined;
 
@@ -399,11 +410,13 @@ export class SessionManager {
         const resolved = registry.resolve(effectiveModel);
         if (!resolved || resolved.type !== "github") return undefined;
 
-        let row: any = null;
-        try {
-            row = await this.sessionCatalog.getSession(sessionId);
-        } catch {
-            return undefined;
+        let row: any = preloadedRow ?? null;
+        if (!row) {
+            try {
+                row = await this.sessionCatalog.getSession(sessionId);
+            } catch {
+                return undefined;
+            }
         }
         const owner = row?.owner;
         if (!owner?.provider || !owner?.subject) return undefined;
@@ -761,6 +774,44 @@ export class SessionManager {
         };
         this.sessionConfigs.set(sessionId, config);
 
+        // ── Catalog model is the source of truth ─────────────────────────
+        // The CMS session row's `model` is what the user selected and what
+        // every surface displays. If the runtime config disagrees (a create
+        // path that dropped the field, a stale snapshot from an older
+        // deploy, a CMS-only model edit), complain LOUDLY and adopt the
+        // catalog model — a session must never silently run something other
+        // than what the catalog says. Adopting before the warm-session check
+        // below means requiresModelRebind() also recreates a warm CLI
+        // session that was frozen on the wrong model.
+        let catalogRow: any = null;
+        if (this.sessionCatalog) {
+            try {
+                catalogRow = await this.sessionCatalog.getSession(sessionId);
+            } catch { /* row not readable — fall through to configured model */ }
+            const catalogModel = String(catalogRow?.model || "").trim();
+            const configuredModel = String(config.model || "").trim();
+            if (catalogModel && catalogModel !== configuredModel) {
+                emitSessionManagerTrace(
+                    sessionId,
+                    `model mismatch: catalog=${catalogModel} configured=${configuredModel || "(default)"}; catalog wins`,
+                    { trace },
+                );
+                config.model = catalogModel;
+                this.sessionConfigs.set(sessionId, config);
+                try {
+                    await this.sessionCatalog.recordEvents(sessionId, [{
+                        eventType: "session.model_mismatch",
+                        data: {
+                            catalogModel,
+                            configuredModel: configuredModel || null,
+                            action: "catalog_model_adopted",
+                            message: "Runtime session config disagreed with the session catalog model; the catalog is authoritative and its model was adopted for this turn.",
+                        },
+                    }]);
+                } catch { /* observability only — never fails the create */ }
+            }
+        }
+
         // Resolve model up-front so we can pick the right CopilotClient
         // (per-user GitHub Copilot token) before any session create/resume.
         const registry = this.workerDefaults.modelProviders;
@@ -778,7 +829,7 @@ export class SessionManager {
         // for the SessionManager unit tests that exercise lock ordering
         // by counting microtasks before the first `resumeSession()` call.
         const userGithubToken = this.sessionCatalog
-            ? await this._resolveSessionGitHubToken(sessionId, config, effectiveModel)
+            ? await this._resolveSessionGitHubToken(sessionId, config, effectiveModel, catalogRow)
             : undefined;
         if (resolvedProvider?.type === "github" && !userGithubToken && !this.githubToken && !resolvedProvider.githubToken) {
             throw new Error(

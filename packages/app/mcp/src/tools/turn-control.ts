@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { sessionIdShape } from "../session-id.js";
 import type { ServerContext } from "../context.js";
 import { jsonResult, errorResult, withToolErrors } from "../util/respond.js";
 
@@ -26,7 +27,7 @@ export function registerTurnControlTools(server: McpServer, ctx: ServerContext) 
                 "Abort the in-flight turn of a running PilotSwarm session without cancelling the session — it stays "
                 + "alive and accepts new messages. Use abort_session only when the whole session should end.",
             inputSchema: {
-                session_id: z.string().uuid({ message: "session_id must be a valid UUID" }).describe("The session whose current turn to stop"),
+                session_id: sessionIdShape().describe("The session whose current turn to stop"),
                 reason: z.string().optional().describe("Optional reason, surfaced to the session"),
                 timeout_ms: z.number().int().positive().optional().describe("Max time to wait for the turn to stop"),
             },
@@ -48,7 +49,7 @@ export function registerTurnControlTools(server: McpServer, ctx: ServerContext) 
                 "Mark a PilotSwarm session completed (a successful terminal state — distinct from abort_session's "
                 + "cancelled). Use when the session's work is done and it should stop cleanly.",
             inputSchema: {
-                session_id: z.string().uuid({ message: "session_id must be a valid UUID" }).describe("The session to complete"),
+                session_id: sessionIdShape().describe("The session to complete"),
                 reason: z.string().optional().describe("Optional completion reason"),
             },
         },
@@ -69,7 +70,7 @@ export function registerTurnControlTools(server: McpServer, ctx: ServerContext) 
                 "Cancel queued (not yet processed) messages in a session, identified by the client_message_ids they "
                 + "were sent with. Pair with send_message's client_message_ids parameter.",
             inputSchema: {
-                session_id: z.string().uuid({ message: "session_id must be a valid UUID" }).describe("The session holding the queued messages"),
+                session_id: sessionIdShape().describe("The session holding the queued messages"),
                 client_message_ids: z.array(z.string().min(1)).min(1).describe("Client message ids to cancel"),
             },
         },
@@ -109,7 +110,7 @@ export function registerTurnControlTools(server: McpServer, ctx: ServerContext) 
                     "Inject a custom named event into a PilotSwarm session (e.g. a webhook-style signal an agent "
                     + "is waiting on). Not a chat message — use send_message for prompts.",
                 inputSchema: {
-                    session_id: z.string().uuid({ message: "session_id must be a valid UUID" }).describe("The target session"),
+                    session_id: sessionIdShape().describe("The target session"),
                     event_name: z.string().min(1).describe("Event name the session listens for"),
                     data: z.record(z.string(), z.any()).optional().describe("Event payload"),
                 },

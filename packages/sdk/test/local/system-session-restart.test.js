@@ -168,7 +168,10 @@ describe("system session restart management", () => {
         assertEqual(commandCall.name, "messages", "system model switch uses the orchestration message queue");
         assertEqual(commandCall.body.cmd, "set_model", "system model switch should use the normal set_model command");
         assertEqual(commandCall.body.args.model, "test:sonnet-4.6", "system model switch command should carry target model");
-        assertEqual(commandCall.body.args.reasoningEffort, "medium", "system model switch should use target default effort");
+        assert(
+            !("reasoningEffort" in commandCall.body.args),
+            "switch without explicit effort must omit reasoningEffort (absent key = preserve current effort; the descriptor default must not be injected)",
+        );
         assertEqual(commandCall.body.args.source, "user", "control-plane system switch source");
         assertEqual(rows.get(sessionId).deletedAt, null, "system model switch should not archive/delete the CMS row");
         assertEqual(rows.get(sessionId).state, "running", "system model switch should leave the existing row running until command processing");
@@ -177,6 +180,17 @@ describe("system session restart management", () => {
         assert(!callTypes(calls).includes("archiveSystemSessionForRestart"), "system model switch should not archive for restart");
         assert(!callTypes(calls).includes("startOrchestrationVersioned"), "system model switch should not recreate the system agent");
         assert(!callTypes(calls).includes("deleteSessionFactsForSession"), "system model switch should not clear session facts");
+    });
+
+    it("carries an explicitly requested reasoning effort on a system session model switch", async () => {
+        const { mgmt, calls, sessionId } = createRestartHarness();
+
+        await mgmt.setSessionModel(sessionId, "test:sonnet-4.6", { reasoningEffort: "high" });
+
+        const commandCall = calls.find((call) => call.type === "enqueueEvent");
+        assert(commandCall, "system model switch should enqueue a durable command");
+        assertEqual(commandCall.body.args.model, "test:sonnet-4.6", "switch command carries the target model");
+        assertEqual(commandCall.body.args.reasoningEffort, "high", "explicit effort must be carried in the command");
     });
 
     it("hard-deletes a system session through the privileged restart path and recreates it", async () => {

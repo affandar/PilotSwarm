@@ -62,7 +62,7 @@
     "test:tui": "node --test tui/test/*.test.mjs",
     "test:web": "node --test web/test/*.test.mjs",
     "test:ui": "node --test ui/core/test/*.test.mjs",
-    "test:mcp": "node mcp/test/unit/sendCommandAndWait.unit.mjs && node mcp/test/unit/registration.unit.mjs && node mcp/test/unit/dispatch.unit.mjs",
+    "test:mcp": "node mcp/test/unit/sendCommandAndWait.unit.mjs && node mcp/test/unit/registration.unit.mjs && node mcp/test/unit/dispatch.unit.mjs && node mcp/test/unit/session-id.unit.mjs",
     "test:mcp:integration": "node mcp/test/integration/smoke.live.mjs",
     "test:mcp:integration:horizondb": "MCP_PARITY_REQUIRE=search,graph node --env-file=../../.env.horizondb mcp/test/integration/parity.live.mjs",
     "test:mcp:integration:all": "node mcp/test/integration/smoke.live.mjs && node mcp/test/integration/tools.live.mjs && node mcp/test/integration/edge-cases.live.mjs && node mcp/test/integration/verify.live.mjs && node mcp/test/integration/parity.live.mjs",
