@@ -917,6 +917,19 @@ export class PilotSwarmClient {
                         onIntermediateContent(customStatus.intermediateContent);
                     }
 
+                    if (customStatus.status === "error" && customStatus.authFailure) {
+                        // Terminal auth failure: the orchestration stopped
+                        // retrying this turn and will publish no response until
+                        // credentials are fixed. Surface the real error now
+                        // instead of burning the caller's full timeout. Record
+                        // the seen version so a retry after the credential is
+                        // fixed does not re-throw on this stale status.
+                        this.lastSeenStatusVersion.set(orchestrationId, lastSeenVersion);
+                        this.lastSeenIteration.set(orchestrationId, lastSeenIteration);
+                        this.lastSeenResponseVersion.set(orchestrationId, lastSeenResponseVersion);
+                        throw new Error(String(customStatus.error ?? "Model provider authentication failed"));
+                    }
+
                     if (customStatus.turnResult && customStatus.iteration > lastSeenIteration) {
                         lastSeenIteration = customStatus.iteration;
                         const result = customStatus.turnResult;

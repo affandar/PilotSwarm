@@ -231,6 +231,18 @@ export async function preflightChecks() {
         );
     }
 
+    // GitHub providers stay in the registry even without a credential (per-user
+    // keys can arrive later from CMS), so the check above passes while every
+    // live turn would fail with "GitHub Copilot key not configured" and burn
+    // the full sendAndWait timeout. Fail fast with the real cause instead.
+    const resolvedDefault = registry?.resolve?.();
+    if (resolvedDefault?.type === "github" && !resolvedDefault.githubToken && !process.env.GITHUB_TOKEN) {
+        throw new Error(
+            `Default test model "${registry.defaultModel}" is GitHub Copilot-backed but GITHUB_TOKEN is not set. ` +
+            `Export it first, e.g.: export GITHUB_TOKEN=$(gh auth token)`,
+        );
+    }
+
     const pg = await import("pg");
     const client = new pg.default.Client({
         connectionString: DATABASE_URL,

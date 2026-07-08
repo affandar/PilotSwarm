@@ -216,7 +216,15 @@ export function* applyChildUpdate(
             agent.status = "completed";
         } else if (parsed.status === "cancelled") {
             agent.status = "cancelled";
-        } else if (parsed.status === "waiting") {
+        } else if (parsed.status === "waiting" && update.updateType !== "completed") {
+            // A "completed" update means the child turn ended with a final
+            // answer; a concurrent "waiting" probe at that moment is almost
+            // always the auto-resumed remainder of a wait timer the parent's
+            // own message interrupted. Downgrading on it deadlocks
+            // wait_for_agents: the idle child may never speak again, and the
+            // fallback poll cannot re-derive "completed" from an idle probe.
+            // Deliberate continuation waits arrive as updateType "wait" and
+            // still downgrade here.
             agent.status = "waiting";
         }
         if (parsed.result && parsed.result !== "done") {

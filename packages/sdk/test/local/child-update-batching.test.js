@@ -1056,6 +1056,82 @@ describe("orchestration shutdown semantics", () => {
     });
 });
 
+describe("wait_for_agents resolution on child completion", () => {
+    beforeEach(() => {
+        vi.resetModules();
+    });
+
+    it("resolves the wait when a completed child update races the child's auto-resumed wait timer", async () => {
+        // Regression: the child answers (CHILD_UPDATE type=completed) and then
+        // auto-resumes the remainder of the wait timer the parent's message
+        // interrupted, so the parent's live-status probe sees "waiting" at the
+        // moment it applies the update. That probe must not downgrade the
+        // explicit completion — downgrading deadlocks wait_for_agents (the idle
+        // child may never speak again and the fallback poll cannot re-derive
+        // "completed" from an idle probe).
+        const harness = createHarness({
+            messages: [
+                {
+                    atMs: 0,
+                    payload: {
+                        prompt: "[CHILD_UPDATE from=child-session-1 type=completed iter=2]\nCHILD FINAL: BLUE",
+                    },
+                },
+            ],
+            inputOverrides: {
+                cronSchedule: undefined,
+                activeTimerState: undefined,
+                waitingForAgentIds: ["agent-1"],
+                subAgents: [
+                    { orchId: "agent-1", sessionId: "child-session-1", task: "Ask the parent for the token", status: "running" },
+                ],
+                sessionStatuses: {
+                    "child-session-1": { status: "waiting" },
+                },
+            },
+        });
+
+        const result = await harness.runUntilRunTurn();
+
+        expect(result.runTurnCall.prompt).toContain("Sub-agent completed");
+        expect(result.runTurnCall.prompt).toContain("CHILD FINAL: BLUE");
+        expect(result.state.runTurnCall).not.toBeNull();
+    });
+
+    it("still downgrades to waiting on a deliberate wait-type child update", async () => {
+        const harness = createHarness({
+            messages: [
+                {
+                    atMs: 0,
+                    payload: {
+                        prompt: "[CHILD_UPDATE from=child-session-1 type=wait iter=2]\nStill waiting on the source",
+                    },
+                },
+            ],
+            inputOverrides: {
+                cronSchedule: undefined,
+                activeTimerState: undefined,
+                waitingForAgentIds: ["agent-1"],
+                subAgents: [
+                    { orchId: "agent-1", sessionId: "child-session-1", task: "Track the source", status: "running" },
+                ],
+                sessionStatuses: {
+                    "child-session-1": { status: "waiting" },
+                },
+            },
+        });
+
+        const result = await harness.runUntilBlockedOrContinueAsNew();
+
+        // The wait must NOT resolve: no "Sub-agent completed" followup. A
+        // digest wake-up turn or continue-as-new is fine; resolution is not.
+        expect(result.runTurnCall?.prompt ?? "").not.toContain("Sub-agent completed");
+        if (result.continueAsNew) {
+            expect(result.continueAsNew.input.waitingForAgentIds).toEqual(["agent-1"]);
+        }
+    });
+});
+
 // Store-wins Layer 2 (docs/proposals/snapshot-store-wins.md): the 1.0.59
 // orchestration records session.snapshot_lineage_jump when the adopted store
 // version jumps past prior+1 — a discarded/foreign turn published in the gap
