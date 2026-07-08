@@ -1,5 +1,74 @@
 # Changelog
 
+## 0.5.1 — 2026-07-08
+
+### SDK
+
+- **Snapshot store-wins reconcile (orchestration 1.0.59).** The turn preamble
+  now treats one snapshot-store probe as the only reconcile oracle and retires
+  the `expectedVersion` fence: a store that advanced under a foreign turnKey is
+  adopted (hydrated), never fenced, and `expectedVersion` no longer rides in
+  the 1.0.59 `runTurn` input. New observability events:
+  `session.snapshot_lineage_jump` (forward/backward lineage divergence
+  witnessed by the orchestration's version mirror), `session.snapshot_regressed`
+  (store below the worker's local marker), and a richer
+  `session.snapshot_unpublished` carrying the winning store coordinates for
+  superseded commits. User-stopped turns skip the snapshot commit entirely.
+  The previous latest is frozen as `orchestration_1_0_58/`. Design doc:
+  `docs/proposals/snapshot-store-wins.md`.
+- **`wait_for_agents` deadlock fix.** An explicit `completed` child update is
+  no longer downgraded by a concurrent `waiting` status probe — that probe
+  usually observes the auto-resumed remainder of a wait timer the parent's own
+  message interrupted. Previously a parent could wait forever on a child that
+  had already delivered its final answer; resolution depended on the child
+  volunteering a second answer at an idle moment. Deliberate continuation
+  waits still arrive as updateType `wait` and keep their semantics.
+- **Faster failure surfacing.** `PilotSwarmClient` turn waits throw
+  immediately on terminal auth-failure statuses (`authFailure: true`) instead
+  of burning the caller's full timeout in silence.
+
+### Portal + TUI
+
+- Live-activity "Working" card follows the session's running state instead of
+  disappearing when the first assistant message lands (streamed and
+  tool-interleaved replies kept the turn going after text appeared).
+- Chat status, session refresh, and pending-outbox UX fixes across the portal
+  and native TUI; persistent chat-header session-meta.
+- Proposal doc: `docs/proposals/session-transcript-continue-as-new.md`.
+
+### Tests
+
+- Local-suite preflight fails fast with an actionable message when the default
+  test model is GitHub Copilot-backed and `GITHUB_TOKEN` is unset, instead of
+  every live test timing out opaquely.
+- Deterministic harness coverage for store-wins lineage jumps, unpublished
+  snapshots, and `wait_for_agents` resolution; ui-core live-activity tests.
+
+## 0.5.0 — 2026-07-06
+
+_Backfilled from the v0.5.0 GitHub Release notes (the entry was missed at
+release time)._
+
+### SDK
+
+- **MCP server reaches Web API parity.** New tools — artifacts, capabilities,
+  debug, facts-enhanced, graph, groups, observability, system, turn-control —
+  plus artifacts/capabilities/graph resources, dispatch/registration unit
+  tests, and a live parity harness.
+- **Sonnet 5 model config.** `github-copilot:claude-sonnet-5` added to the
+  model provider configs (example, ghcp, gitops worker base) and adopted as
+  the default GitHub Copilot model.
+
+### npm
+
+- All packages bumped to 0.5.0 (`pilotswarm-sdk`, `pilotswarm-horizon-store`,
+  `pilotswarm`) with inter-package specs raised to `^0.5.0`.
+
+### Ops
+
+- Portal Dockerfile, MCP k8s manifest, and `deploy-mcp.sh`; `run.sh`
+  stale-path fixes.
+
 ## 0.4.1 — 2026-07-04
 
 ### SDK
