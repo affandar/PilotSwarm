@@ -455,9 +455,14 @@ describe("session refresh UI recovery", () => {
             }],
         });
 
-        const rowText = selectSessionRows(store.getState())[0]?.text || "";
-        assertIncludes(rowText, `[cron ${expected}]`, "wall-clock cron rows should use the unified cron badge with client-local time");
-        assert(!rowText.includes("cron_at"), "wall-clock cron rows should not expose the internal cron_at tool name");
+        const row = selectSessionRows(store.getState())[0] || {};
+        const mainText = row.text || "";
+        const detailText = (row.detailRuns || []).map((run) => run.text).join("");
+        // Collapsed rows carry a compact ⏱ glyph; the full wall-clock cadence
+        // rides in the detail line revealed when the row is expanded.
+        assertIncludes(mainText, "⏱", "scheduled cron rows should show the compact clock glyph on the main line");
+        assertIncludes(detailText, `[cron ${expected}]`, "the cron detail should use the unified cron badge with client-local time");
+        assert(!`${mainText} ${detailText}`.includes("cron_at"), "wall-clock cron rows should not expose the internal cron_at tool name");
     });
 
     it("keeps the waiting icon stable when a same-age detail refresh reports idle", async () => {
@@ -544,9 +549,11 @@ describe("session refresh UI recovery", () => {
         });
 
         await controller.syncSessionDetail("cron-joke-session");
-        let rowText = selectSessionRows(store.getState())[0]?.text || "";
+        let row = selectSessionRows(store.getState())[0] || {};
+        let rowText = row.text || "";
+        let detailText = (row.detailRuns || []).map((run) => run.text).join("");
         assertIncludes(rowText, "~ Joke cron", "same-age detail should keep the cron wait icon");
-        assertIncludes(rowText, "[cron 5m 0s]", "same-age detail should keep the cron badge");
+        assertIncludes(detailText, "[cron 5m 0s]", "same-age detail should keep the cron badge");
 
         const originalNow = Date.now;
         let nowMs = 1_000;
@@ -557,9 +564,11 @@ describe("session refresh UI recovery", () => {
                 updatedAt: 200,
             };
             await controller.syncSessionDetail("cron-joke-session");
-            rowText = selectSessionRows(store.getState())[0]?.text || "";
+            row = selectSessionRows(store.getState())[0] || {};
+            rowText = row.text || "";
+            detailText = (row.detailRuns || []).map((run) => run.text).join("");
             assertIncludes(rowText, "~ Joke cron", "newer non-cron detail should keep the cron wait icon for the 5s anti-flicker hold");
-            assert(!rowText.includes("[cron 5m 0s]"), "newer non-cron detail should clear the cron badge immediately");
+            assert(!detailText.includes("[cron 5m 0s]"), "newer non-cron detail should clear the cron badge immediately");
 
             nowMs += 5_000;
             await controller.syncSessionDetail("cron-joke-session");
@@ -1192,6 +1201,8 @@ describe("session refresh UI recovery", () => {
                 displayName: "Affan Dar",
             },
         });
+        // Owner chips surface only in a genuine multi-user context (more than
+        // one distinct human owner); a second owner turns decoration on.
         store.dispatch({
             type: "sessions/loaded",
             sessions: [
@@ -1209,28 +1220,43 @@ describe("session refresh UI recovery", () => {
                     },
                 },
                 {
-                    sessionId: "legacy-session",
-                    title: "Legacy Work",
+                    sessionId: "other-owned-session",
+                    title: "Other Work",
                     status: "idle",
                     createdAt: 3,
                     updatedAt: 4,
+                    owner: {
+                        provider: "test",
+                        subject: "user-2",
+                        email: "bianca@example.com",
+                        displayName: "Bianca Kim",
+                    },
+                },
+                {
+                    sessionId: "legacy-session",
+                    title: "Legacy Work",
+                    status: "idle",
+                    createdAt: 5,
+                    updatedAt: 6,
                 },
             ],
         });
 
         const rows = selectVisibleSessionRows(store.getState(), 8);
         const renderedRows = rows.map((row) => row.runs.map((run) => run.text).join(""));
-        assert(renderedRows.some((row) => row.includes("(ad) Owned Work")), "owned row should include owner initials");
-        assert(renderedRows.some((row) => row.includes("(?) Legacy Work")), "unowned row should include the (?) marker");
+        assert(renderedRows.some((row) => row.includes("ad · Owned Work")), "owned row should include owner initials");
+        assert(renderedRows.some((row) => row.includes("? · Legacy Work")), "unowned row should include the ? owner marker");
 
         store.dispatch({ type: "sessions/selected", sessionId: "owned-session" });
         const chromeTitle = selectChatPaneChrome(store.getState()).title.map((run) => run.text).join("");
-        assert(!chromeTitle.includes("(ad)"), "chat header should not include the owner prefix");
+        assert(!chromeTitle.includes("ad · "), "chat header should not include the owner prefix");
     });
 
     it("renders owner prefixes in the session list without auth context when owner metadata exists", () => {
         const { store } = createController();
 
+        // Two distinct owners in the metadata alone (no auth principal) is a
+        // multi-user context, so owner chips render off the metadata.
         store.dispatch({
             type: "sessions/loaded",
             sessions: [
@@ -1248,22 +1274,35 @@ describe("session refresh UI recovery", () => {
                     },
                 },
                 {
-                    sessionId: "legacy-session",
-                    title: "Legacy Work",
+                    sessionId: "other-owned-session",
+                    title: "Other Work",
                     status: "idle",
                     createdAt: 3,
                     updatedAt: 4,
+                    owner: {
+                        provider: "test",
+                        subject: "user-2",
+                        email: "bianca@example.com",
+                        displayName: "Bianca Kim",
+                    },
+                },
+                {
+                    sessionId: "legacy-session",
+                    title: "Legacy Work",
+                    status: "idle",
+                    createdAt: 5,
+                    updatedAt: 6,
                 },
             ],
         });
 
         const renderedRows = selectVisibleSessionRows(store.getState(), 8)
             .map((row) => row.runs.map((run) => run.text).join(""));
-        assert(renderedRows.some((row) => row.includes("(ad) Owned Work")), "owner metadata alone should enable owner initials in the session list");
-        assert(renderedRows.some((row) => row.includes("(?) Legacy Work")), "owner metadata should also mark unowned rows in the session list");
+        assert(renderedRows.some((row) => row.includes("ad · Owned Work")), "owner metadata alone should enable owner initials in the session list");
+        assert(renderedRows.some((row) => row.includes("? · Legacy Work")), "owner metadata should also mark unowned rows in the session list");
     });
 
-    it("renders owner markers for groups without reintroducing idle dots", () => {
+    it("renders group rows and idle rows without reintroducing status dots", () => {
         const { store } = createController();
 
         store.dispatch({
@@ -1305,7 +1344,10 @@ describe("session refresh UI recovery", () => {
             .map((row) => row.runs.map((run) => run.text).join(""));
         const groupRow = renderedRows.find((row) => row.includes("Release Group")) || "";
         const idleRow = renderedRows.find((row) => row.includes("Idle Work")) || "";
-        assertIncludes(groupRow, "🗂  (?) Release Group", "group row should show the group badge and owner prefix");
+        assertIncludes(groupRow, "🗂  Release Group", "group row should show the group badge");
+        // Single-owner list → owner decoration stays off, so no owner chip on
+        // any row (group rows never carry one regardless).
+        assertEqual(groupRow.includes(" · Release Group"), false, "single-owner list should not decorate group rows with an owner chip");
         assertEqual(idleRow.includes(". Idle Work"), false, "idle rows should not render a dot status glyph");
     });
 
@@ -1603,8 +1645,10 @@ describe("session refresh UI recovery", () => {
                 .filter((row) => row.sessionId === "group:mine-group" || row.sessionId === "group:legacy-group")
                 .map((row) => row.text)
                 .join("\n");
-            assertIncludes(rowText, "(mu) Mine Group", "owned group rows should show the same owner initials prefix as sessions");
-            assertIncludes(rowText, "(mu) Legacy Group", "groups should derive owner initials from their member sessions");
+            // Group rows render by title in the dense list (member count + age
+            // in the meta column); they no longer carry an owner-initials chip.
+            assertIncludes(rowText, "Mine Group", "the current user's owned group should render in the list");
+            assertIncludes(rowText, "Legacy Group", "a group with current-user members should render in the list");
 
             controller.openSessionOwnerFilter();
             const modalText = selectSessionOwnerFilterModal(store.getState()).rows

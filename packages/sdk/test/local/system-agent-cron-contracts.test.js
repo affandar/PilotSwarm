@@ -100,15 +100,19 @@ describe("system agent cron contracts", () => {
         assertIncludes(client, "cronNextFireAt,", "client session info should expose cronNextFireAt");
     });
 
-    it("keeps cron, collapse, and unread badges in a stable order", () => {
+    it("keeps cron, collapse, and context rendering in a stable structure", () => {
         const selectors = readRepoFile("packages/app/ui/core/src/selectors.js");
 
-        assertIncludes(selectors, "for (const badge of [", "session rows should build badges in one canonical place");
-        assertIncludes(selectors, "getCronBadge(session),", "session-row suffixes should lead with the cron badge");
-        assertIncludes(selectors, "getContextListBadge(session?.contextUsage),", "context badge should follow the cron badge");
-        // Since the portal sessions/themes refresh, the collapse badge renders
-        // inline with the session title rather than in the suffix badge array.
-        assertIncludes(selectors, "getCollapseBadge(session?.sessionId, entry, totalDescendantCounts, visibleDescendantCounts);", "collapse badge should render inline with the session title");
+        // The dense session row resolves each decoration in one canonical place.
+        // Collapse badge renders inline with the session title.
+        assertIncludes(selectors, "const collapseBadge = getCollapseBadge(session?.sessionId, entry, totalDescendantCounts, visibleDescendantCounts);", "collapse badge should render inline with the session title");
+        // Scheduled rows carry a compact clock glyph on the title; the full cron
+        // cadence rides in the detail line revealed on expand.
+        assertIncludes(selectors, "const cronBadge = getCronBadge(session);", "session rows should resolve the cron badge in one canonical place");
+        assertIncludes(selectors, 'titleRuns.push({ text: " ⏱", color: "magenta" });', "scheduled rows should show the compact clock glyph on the title");
+        assertIncludes(selectors, "detailRuns.push({ text: cronBadge.text, color: cronBadge.color });", "the full cron cadence should render in the detail line");
+        // Context usage renders as a right-column percentage, not a suffix badge.
+        assertIncludes(selectors, "const ctxPercent = computeContextPercent(session?.contextUsage);", "context usage should render as the right-column percentage");
     });
 
     it("keeps cron rows non-magenta in the session list while preserving the cron badge", () => {
