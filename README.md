@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.1** — Snapshot store-wins reconcile (orchestration 1.0.59) with lineage-jump/regression observability, a `wait_for_agents` deadlock fix for parent/child roundtrips, faster auth-failure surfacing in turn waits, and live-activity/chat-status UX fixes across the portal and TUI.
+> **Latest release: v0.5.2** — First-class System user so admins can lend a GitHub Copilot key to ownerless system sessions, a single-line live-activity strip with first-class fact/graph/skill phases replacing the Working card, mobile pane-header fixes (separator-safe compaction, descender clipping, edge fades), and a trimmed default plugin MCP config.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 

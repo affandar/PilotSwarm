@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.5.2 — 2026-07-08
+
+### SDK
+
+- **First-class System user for GitHub Copilot keys.** Ownerless system
+  sessions (`owner: null`) previously could not use GitHub Copilot models on
+  deployments without a worker-level `GITHUB_TOKEN` — per-user keys resolve
+  only through the session owner. A new `SYSTEM_USER_PRINCIPAL`
+  (`system`/`system`) lets an admin store a Copilot key on the system user;
+  ownerless `isSystem` sessions resolve it through the same per-user path
+  (fresh read per turn, warm-client recycling on change), and an owner's key
+  always wins for owned sessions. New management APIs
+  `setSystemGitHubCopilotKey` / `getSystemGitHubCopilotKeyStatus` (admin,
+  key never returned; the acting admin is recorded for audit).
+
+### Portal / TUI
+
+- **Live-activity strip replaces the Working card.** The multi-line bordered
+  card is now a single dim status line pinned in the bottom-sticky strip
+  (portal) / below the transcript (TUI), so it stays put while chat scrolls
+  and drops the instant the turn ends. It shows a high-level phase — including
+  first-class fact-store, graph-store, and skill phases (`reading facts…`,
+  `writing to the graph…`, `loading skills…`) — never raw event payloads.
+  The turn timer is scoped to the current turn (no idle-gap flash on a new
+  turn).
+- **Admin Console "Store as System key"** — an admin-only checkbox retargets
+  the key editor to the system user, with provenance in the status line.
+- **Mobile pane-header fixes** — title-right meta keeps its `·` separators
+  when compacted (no more `runninggpt-5.4ctx…`), descenders in the header
+  meta are no longer clipped, and the chat transcript fades its top/bottom
+  edges instead of shearing partial rows.
+
+### Maintainer Workflow
+
+- **Default plugin MCP config trimmed.** The bundled plugin dir ships zero MCP
+  servers by default (context7 removed); deployments add their own via
+  `PLUGIN_DIRS`.
+
 ## 0.5.1 — 2026-07-08
 
 ### SDK
