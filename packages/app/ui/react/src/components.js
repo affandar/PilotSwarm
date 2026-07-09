@@ -318,6 +318,7 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
             activeSessionId,
             activeSession: activeSessionId ? state.sessions.byId[activeSessionId] || null : null,
             activeHistory: activeSessionId ? state.history.bySessionId.get(activeSessionId) || null : null,
+            activeOutbox: activeSessionId ? state.outbox?.bySessionId?.[activeSessionId] || null : null,
             branding: state.branding,
             connectionError: state.connection.error,
             connectionMode: state.connection.mode,
@@ -348,11 +349,21 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
             history: {
                 bySessionId: historyMap,
             },
+            // The queued-prompt overlay reads state.outbox; without it here the
+            // TUI ChatPane's synthetic selectorState always saw an empty outbox
+            // and rendered no "queued prompts: N" even though the item was
+            // durably queued in the real store.
+            outbox: {
+                bySessionId: chatView.activeSessionId && chatView.activeOutbox
+                    ? { [chatView.activeSessionId]: chatView.activeOutbox }
+                    : {},
+            },
         };
     }, [
         chatView.activeHistory,
         chatView.activeSessionId,
         chatView.activeSession,
+        chatView.activeOutbox,
         chatView.branding,
         chatView.chatViewMode,
         chatView.connectionError,
