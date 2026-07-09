@@ -1297,9 +1297,16 @@ function buildChatMessagePrefix(message) {
         glyph = "x";
         glyphColor = "red";
     } else if (message?.role === "user" && !message?.optimistic && !message?.pendingPhase) {
-        // Real durable user.message in transcript — show the "sent" double-check.
-        glyph = "✓✓";
-        glyphColor = "green";
+        if (message?.stopped) {
+            // Delivered, but its turn was user-stopped mid-flight — the model
+            // may not have acted on it. Amber prohibition ("no parking") sign.
+            glyph = "⊘";
+            glyphColor = "yellow";
+        } else {
+            // Real durable user.message in transcript — show the "sent" double-check.
+            glyph = "✓✓";
+            glyphColor = "green";
+        }
     }
 
     const roleColor = message?.pendingPhase === "pending"

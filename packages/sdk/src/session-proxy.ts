@@ -2182,6 +2182,30 @@ export function registerActivities(
                     }),
                     (msg) => activityCtx.traceInfo(msg),
                 );
+
+                // User-stopped turn: leave a durable, prompt-linked trace so
+                // the client can mark the interrupted prompt(s) distinctly. The
+                // durable `user.message` (what makes a prompt show as "sent")
+                // stays as-is — the turn was delivered — but this event carries
+                // the same clientMessageIds so the UI can flag those prompts as
+                // stopped-mid-turn rather than fully processed.
+                if (result.type === "stopped") {
+                    const stoppedClientMessageIds: string[] = Array.isArray((input as any).clientMessageIds)
+                        ? ((input as any).clientMessageIds as unknown[]).filter((id) => typeof id === "string" && id) as string[]
+                        : [];
+                    await cmsRetryBestEffort(
+                        `runTurn.recordStop session=${input.sessionId}`,
+                        () => catalog!.recordEvents(input.sessionId, [{
+                            eventType: "session.turn_stopped",
+                            data: {
+                                turnIndex: input.turnIndex ?? 0,
+                                reason: "user_stopped",
+                                ...(stoppedClientMessageIds.length > 0 ? { clientMessageIds: stoppedClientMessageIds } : {}),
+                            },
+                        }], workerNodeId),
+                        (msg) => activityCtx.traceInfo(msg),
+                    );
+                }
             }
 
             return result;

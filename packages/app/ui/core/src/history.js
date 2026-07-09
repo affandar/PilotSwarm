@@ -360,12 +360,16 @@ function buildChatMessage(event, role) {
 
     const text = extractVisibleChatText(rawText, role);
     if (!hasVisibleMessageText(text)) return null;
+    const clientMessageIds = Array.isArray(event?.data?.clientMessageIds)
+        ? event.data.clientMessageIds.filter((id) => typeof id === "string" && id)
+        : [];
     return {
         id: `${event.sessionId}:${event.seq}`,
         role: deriveChatRole(event, role, text),
         text,
         time: formatTimestamp(event.createdAt),
         createdAt: event.createdAt instanceof Date ? event.createdAt.getTime() : new Date(event.createdAt).getTime(),
+        ...(clientMessageIds.length > 0 ? { clientMessageIds } : {}),
     };
 }
 
@@ -873,13 +877,43 @@ export function appendEventToHistory(history, event) {
         loadedEventLimit,
         loadedEventCount: Math.max(Number(history?.loadedEventCount || 0), nextEvents.length),
         hasOlderEvents: Boolean(history?.hasOlderEvents),
+        // clientMessageIds whose turn was user-stopped mid-flight. Carried
+        // across appends so a prompt stays flagged even as the transcript
+        // clamps/reloads.
+        stoppedMessageIds: Array.isArray(history?.stoppedMessageIds) ? history.stoppedMessageIds : [],
     };
+
+    // A stopped turn leaves a durable session.turn_stopped carrying the
+    // interrupted prompt's clientMessageIds. Record them and retroactively
+    // flag any matching transcript message (the user.message usually lands
+    // first, at turn start; the stop lands at turn end).
+    if (event.eventType === "session.turn_stopped") {
+        const ids = Array.isArray(event?.data?.clientMessageIds)
+            ? event.data.clientMessageIds.filter((id) => typeof id === "string" && id)
+            : [];
+        if (ids.length > 0) {
+            const merged = new Set([...next.stoppedMessageIds, ...ids]);
+            next.stoppedMessageIds = Array.from(merged);
+            next.chat = next.chat.map((m) => (
+                Array.isArray(m.clientMessageIds) && m.clientMessageIds.some((id) => merged.has(id))
+                    ? { ...m, stopped: true }
+                    : m
+            ));
+        }
+        return next;
+    }
 
     if (event.eventType === "user.message") {
         next.activity.push(...buildEmbeddedSystemNoticeActivityItems(event, "user"));
         next.activity = clampHistoryItems(next.activity, loadedEventLimit);
         const message = buildChatMessage(event, "user");
         if (!message) return next;
+        // Prospective flag: covers a bulk load where the stop event arrived
+        // before this message in the reduce order.
+        if (Array.isArray(message.clientMessageIds)
+            && message.clientMessageIds.some((id) => next.stoppedMessageIds.includes(id))) {
+            message.stopped = true;
+        }
         next.chat = reconcileOptimisticMessage(next.chat, message);
         next.chat.push(message);
         next.chat = clampHistoryItems(dedupeChatMessages(next.chat), loadedEventLimit);
