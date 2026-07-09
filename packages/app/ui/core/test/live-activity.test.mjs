@@ -42,7 +42,7 @@ test("emits ONE line with Working, elapsed, and a high-level tool phase", () => 
     const state = loadRunningSessionWithActivity([{
         seq: 10,
         eventType: "tool.execution_start",
-        text: "[tool.execution_start] get_file_contents {\"path\":\"src/x.ts\"}",
+        text: "20:07 \u25b6 get_file_contents(path: src/x.ts)",
         createdAt: 1_700_000_002_000,
     }]);
 
@@ -102,7 +102,7 @@ test("fact, graph, and skill tools get first-class phases instead of generic too
         const state = loadRunningSessionWithActivity([{
             seq: 20,
             eventType: "tool.execution_start",
-            text: `[tool.execution_start] ${tool} {"q":"secret"}`,
+            text: `20:07 \u25b6 ${tool}(q: secret)`,
             createdAt: 1_700_000_002_000,
         }]);
         const text = flatten(selectLiveActivityLines(state, { spinnerFrame: "*", now: 1_700_000_010_000, maxWidth: 96 }));
@@ -112,15 +112,27 @@ test("fact, graph, and skill tools get first-class phases instead of generic too
     }
 });
 
-test("learned-skill read events surface as loading skills", () => {
-    const state = loadRunningSessionWithActivity([{
-        seq: 21,
-        eventType: "learned_skill.read",
-        text: "[learned_skill.read] {\"name\":\"deploy-checklist\"}",
-        createdAt: 1_700_000_002_000,
-    }]);
-    const text = flatten(selectLiveActivityLines(state, { spinnerFrame: "*", now: 1_700_000_010_000, maxWidth: 96 }));
-    assert.match(text, /— loading skills…/);
+test("SDK knowledge events map directly: skills, facts, graph", () => {
+    const cases = [
+        ["learned_skill.read", /— loading skills…/],
+        ["skills.searched", /— loading skills…/],
+        ["facts.searched", /— reading facts…/],
+        ["facts.similar", /— reading facts…/],
+        ["graph.searched", /— reading the graph…/],
+        ["graph.node_loaded", /— reading the graph…/],
+        ["graph.namespace_mutated", /— writing to the graph…/],
+    ];
+    for (const [eventType, expected] of cases) {
+        const state = loadRunningSessionWithActivity([{
+            seq: 21,
+            eventType,
+            text: `20:07 [${eventType}] {"detail":"hidden"}`,
+            createdAt: 1_700_000_002_000,
+        }]);
+        const text = flatten(selectLiveActivityLines(state, { spinnerFrame: "*", now: 1_700_000_010_000, maxWidth: 96 }));
+        assert.match(text, expected, eventType);
+        assert.doesNotMatch(text, /hidden/, `${eventType} payload must not leak`);
+    }
 });
 
 test("new-turn gap: no stale elapsed or phase while history still shows the previous turn ended", () => {

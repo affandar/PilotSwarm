@@ -1934,6 +1934,7 @@ function liveActivityPhaseText(item) {
         const raw = String(item?.text || "")
             .replace(/^\s*\d{1,2}:\d{2}(?::\d{2})?\s*/, "")
             .replace(/^\[[^\]]+\]\s*/, "")
+            .replace(/^[^A-Za-z0-9_]+/, "")
             .trim();
         const name = (raw.match(/^[A-Za-z0-9_.:-]+/) || [""])[0];
         if (!name) return "running tools\u2026";
@@ -1947,6 +1948,13 @@ function liveActivityPhaseText(item) {
     switch (type) {
         case "skill.invoked": return "loading skills\u2026";
         case "learned_skill.read": return "loading skills\u2026";
+        case "skills.searched": return "loading skills\u2026";
+        case "facts.searched":
+        case "facts.similar": return "reading facts\u2026";
+        case "graph.searched":
+        case "graph.node_searched":
+        case "graph.node_loaded": return "reading the graph\u2026";
+        case "graph.namespace_mutated": return "writing to the graph\u2026";
         case "assistant.reasoning": return "thinking\u2026";
         case "assistant.intent": return "planning\u2026";
         case "assistant.message_start":

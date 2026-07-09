@@ -1716,54 +1716,6 @@ function PortalSequenceLines({ lines, theme, completionByTurn }) {
 }
 
 
-// Hold the strip briefly after the turn ends: on the transition to empty,
-// swap the last "Working" line for a dim "Done" line, keep it for 5s, then
-// clear. The countdown starts ONCE per transition — later renders that are
-// still empty must NOT reset it (the selector re-emits a fresh [] identity
-// on every store update, and the portal polls constantly; resetting on each
-// would keep the strip up forever). Fresh non-empty lines cancel the
-// countdown, which is also what prevents flicker on status flaps.
-const LIVE_ACTIVITY_LINGER_MS = 5_000;
-function deriveDoneLine(lines) {
-    const runs = Array.isArray(lines?.[0]) ? lines[0] : [];
-    const elapsedRun = runs.find((run) => String(run?.text || "").startsWith(" \u00b7 "));
-    return [[
-        { text: "\u2713 ", color: "green" },
-        { text: "Done", color: "gray" },
-        ...(elapsedRun ? [{ text: elapsedRun.text, color: "gray" }] : []),
-    ]];
-}
-function useLingeringLines(lines, ms = LIVE_ACTIVITY_LINGER_MS) {
-    const [held, setHeld] = React.useState([]);
-    const timerRef = React.useRef(null);
-    const lastLiveRef = React.useRef([]);
-    React.useEffect(() => {
-        if (lines.length > 0) {
-            lastLiveRef.current = lines;
-            if (timerRef.current) {
-                clearTimeout(timerRef.current);
-                timerRef.current = null;
-            }
-            if (held.length > 0) setHeld([]);
-            return;
-        }
-        // Empty input: if we just left a live line behind, start the Done
-        // countdown exactly once; an already-armed timer keeps its deadline.
-        if (lastLiveRef.current.length > 0 && !timerRef.current) {
-            setHeld(deriveDoneLine(lastLiveRef.current));
-            lastLiveRef.current = [];
-            timerRef.current = setTimeout(() => {
-                timerRef.current = null;
-                setHeld([]);
-            }, ms);
-        }
-    }, [lines, ms, held]);
-    React.useEffect(() => () => {
-        if (timerRef.current) clearTimeout(timerRef.current);
-    }, []);
-    return lines.length > 0 ? lines : held;
-}
-
 function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, lines, stickyLines = [], bottomStickyLines = [], scrollOffset = 0, scrollMode = "top", paneKey, controller, className = "", panelClassName = "", topContent = null, bottomContent = null, structuredBlocks = false, stickyBottom = false, renderBody = null }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
@@ -2168,9 +2120,8 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
     );
     // The live-activity line is pinned in the bottom-sticky strip (with the
     // outbox overlay), NOT appended to the transcript — it must stay put while
-    // chat content scrolls. A short linger keeps it up briefly after the turn
-    // ends so it never blinks or flickers on status flaps.
-    const pinnedActivityLines = useLingeringLines(liveActivityLines);
+    // chat content scrolls, and it drops the instant the turn ends.
+    const pinnedActivityLines = liveActivityLines;
     const outboxLines = React.useMemo(
         () => selectOutboxOverlayLines(selectorState, viewState.contentWidth, { tableMode: "sentinel" }),
         [selectorState, viewState.contentWidth],
