@@ -365,7 +365,7 @@ export function* processPrompt(
         const race: any = yield ctx.race(turnTask, stopTask);
 
         if (race.index === 1) {
-            yield* handleTurnStopped(runtime, race.value);
+            yield* handleTurnStopped(runtime, race.value, clientMessageIds);
             return;
         }
 
@@ -475,7 +475,7 @@ export function* processPrompt(
     }
     yield* drainLeadingQueuedScheduleActions(runtime, prompt);
 
-    yield* handleTurnResult(runtime, result, prompt, cycleOrigin);
+    yield* handleTurnResult(runtime, result, prompt, cycleOrigin, clientMessageIds);
 }
 
 // ─── Stop-turn race support ─────────────────────────────────
@@ -513,6 +513,7 @@ export function normalizeRacedTurnValue(value: any): { kind: "result"; result: a
 function* handleTurnStopped(
     runtime: DurableSessionRuntime,
     stopEventRaw: any,
+    clientMessageIds?: string[],
 ): Generator<any, void, any> {
     const { ctx, state } = runtime;
     let stopEvent: any = stopEventRaw;
@@ -554,6 +555,7 @@ function* handleTurnStopped(
                 turnIndex: stoppedIteration,
                 interrupt: abortOutcome?.outcome ?? "unknown",
                 ...(abortOutcome?.detail ? { detail: abortOutcome.detail } : {}),
+                ...(clientMessageIds && clientMessageIds.length > 0 ? { clientMessageIds } : {}),
             },
         },
         { eventType: "system.message", data: { content: "Turn stopped by user." } },
@@ -821,6 +823,7 @@ export function* handleTurnResult(
     result: TurnResult,
     sourcePrompt: string,
     cycleOrigin?: "cron" | "cron_at",
+    clientMessageIds?: string[],
 ): Generator<any, void, any> {
     const { ctx, state, options } = runtime;
     result = coerceChildQuestionToWait(runtime, result);
@@ -1064,6 +1067,7 @@ export function* handleTurnResult(
                     reason: (result as any).reason ?? "Stopped by user",
                     turnIndex: state.iteration - 1,
                     interrupt: "turn-result",
+                    ...(clientMessageIds && clientMessageIds.length > 0 ? { clientMessageIds } : {}),
                 },
             }]);
             yield runtime.manager.updateCmsState(runtime.input.sessionId, "idle");
