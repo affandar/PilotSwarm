@@ -1804,25 +1804,27 @@ function SessionRowContent({ row, theme, structured = false }) {
             : row.text;
     }
 
-    const hasMeta = Array.isArray(row.metaRuns) && row.metaRuns.length > 0;
-    const hasBadges = Array.isArray(row.badgeRuns) && row.badgeRuns.length > 0;
-    const hasSelectedMeta = row.active && Array.isArray(row.selectedMetaRuns) && row.selectedMetaRuns.length > 0;
+    // Dense row: the title takes one line (clamped by CSS) and the context %
+    // is pinned to the right. The full id · time · model · ctx detail unfolds
+    // only under the selected row.
+    const ctxRuns = Array.isArray(row.ctxRuns) ? row.ctxRuns : [];
+    const detailRuns = Array.isArray(row.detailRuns)
+        ? row.detailRuns
+        : (Array.isArray(row.selectedMetaRuns) ? row.selectedMetaRuns : []);
+    const hasCtx = ctxRuns.length > 0;
+    const hasDetail = row.active && detailRuns.length > 0;
 
     return React.createElement(React.Fragment, null,
-        React.createElement("div", { className: "ps-session-row-title" },
-            React.createElement(Runs, { runs: row.titleRuns, theme }),
-            // Meta (timestamp / member count) sits inline on the title line.
-            hasMeta
-                ? React.createElement("span", { className: "ps-session-row-meta" },
-                    React.createElement(Runs, { runs: [{ text: " ", color: "gray" }, ...row.metaRuns], theme }))
+        React.createElement("div", { className: "ps-session-row-line" },
+            React.createElement("div", { className: "ps-session-row-title" },
+                React.createElement(Runs, { runs: row.titleRuns, theme })),
+            hasCtx
+                ? React.createElement("div", { className: "ps-session-row-ctx" },
+                    React.createElement(Runs, { runs: ctxRuns, theme }))
                 : null),
-        hasBadges
-            ? React.createElement("div", { className: "ps-session-row-badges" },
-                React.createElement(Runs, { runs: row.badgeRuns, theme }))
-            : null,
-        hasSelectedMeta
-            ? React.createElement("div", { className: "ps-session-row-selected-meta" },
-                React.createElement(Runs, { runs: row.selectedMetaRuns, theme }))
+        hasDetail
+            ? React.createElement("div", { className: "ps-session-row-detail" },
+                React.createElement(Runs, { runs: detailRuns, theme }))
             : null);
 }
 

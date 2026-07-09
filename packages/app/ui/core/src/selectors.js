@@ -10,7 +10,6 @@ import {
     decorateArtifactLinksForChat,
     extractArtifactLinks,
     extractHttpLinks,
-    formatDisplayDateTime,
     formatHumanDurationSeconds,
     formatTimestamp,
     padRunsToDisplayWidth,
@@ -21,9 +20,9 @@ import {
     wrapRunsToDisplayWidth,
 } from "./formatting.js";
 import {
+    computeContextPercent,
     getContextCompactionBadge,
     getContextHeaderBadge,
-    getContextListBadge,
 } from "./context-usage.js";
 import { canonicalSystemTitle } from "./system-titles.js";
 import { normalizeArtifactEntries } from "./state.js";
@@ -217,17 +216,20 @@ function ownerInitials(owner) {
 }
 
 function shouldDecorateSessionOwners(state) {
-    if (state.auth?.principal) return true;
+    // Decorate owners only when the list actually surfaces more than one
+    // distinct human owner — otherwise the owner chip is pure noise on every
+    // row (you are always "you"). A narrowed owner filter is an explicit
+    // multi-user context, so honor that too.
     if (state.sessions?.ownerFilter && state.sessions.ownerFilter.all !== true) return true;
-    if (Object.values(state.sessions?.byId || {}).some((session) => session?.owner)) return true;
+    const owners = new Set();
+    for (const session of Object.values(state.sessions?.byId || {})) {
+        if (!session || session.isSystem || session.isGroup) continue;
+        const key = ownerKeyForOwner(session.owner);
+        if (!key) continue;
+        owners.add(key);
+        if (owners.size > 1) return true;
+    }
     return false;
-}
-
-function buildSessionListTitle(session, brandingTitle, decorateOwners = false) {
-    const title = buildSessionTitle(session, brandingTitle);
-    if (!decorateOwners || session?.isSystem) return title;
-    const prefix = session?.owner ? ownerInitials(session.owner) : "?";
-    return `(${prefix}) ${title}`;
 }
 
 function groupMemberSessions(group, byId = {}) {
@@ -575,68 +577,118 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
 
     const mainColor = session?.isGroup ? "cyan" : session?.isSystem ? "yellow" : sessionStatusColor(session, mode);
     const effectiveOwner = effectiveSessionOwner(session, state.sessions?.byId || {});
-    const titleText = buildSessionListTitle(
-        effectiveOwner !== (session?.owner ?? null) ? { ...session, owner: effectiveOwner } : session,
-        state.branding?.title || "PilotSwarm",
-        shouldDecorateSessionOwners(state),
-    );
-    // Show the session's last-updated time at the end of the row. For groups,
-    // keep the member-count badge but append the last-updated timestamp so the
-    // row reflects the same value the list is sorted by. `formatDisplayDateTime`
-    // uses the system locale/timezone, so the timestamp renders in the
-    // browser/client local zone.
+
+    const shortId = shortSessionId(session?.sessionId);
+
+    // Row age — last-updated (the value the list is sorted by). Coarse buckets
+    // so it doesn't tick every second: <1min · Nmin · NhMMm · NdHHh · Nw.
     const rowTimestampMs = session?.updatedAt
         || session?.summaryUpdatedAt
         || session?.latestSummaryUpdatedAt
         || session?.createdAt
         || 0;
-    const formattedRowTimestamp = rowTimestampMs ? formatDisplayDateTime(rowTimestampMs) : "";
-    const titleRuns = [
-        ...prefixRuns,
-        {
-        text: titleText,
-        color: mainColor,
-        bold: Boolean(session?.isSystem),
-        },
-    ];
+    const relTime = rowTimestampMs ? formatSessionAge(rowTimestampMs) : "";
+    const modelLabel = shortModelReasoningLabel(session?.model, session?.reasoningEffort);
+
+    // A regular session with no human title otherwise renders as a bare
+    // "(guid)" — an empty, ugly line. For those, pull the meta (id · age ·
+    // model) UP onto the main line so it carries information. Titled rows keep
+    // the title on the line and expand id·age·model·ctx only when selected.
+    const rawTitle = session?.isSystem
+        ? canonicalSystemTitle(session, state.branding?.title || "PilotSwarm")
+        : buildSessionDisplayTitle(session);
+    const hasRealTitle = Boolean(session?.isSystem || session?.isGroup || (rawTitle && rawTitle.trim()));
+
+    const titleRuns = [...prefixRuns];
+    // Owner chip — only when the list actually surfaces more than one human
+    // owner (shouldDecorateSessionOwners). Otherwise it's noise on every row.
+    if (shouldDecorateSessionOwners(state) && !session?.isSystem && !session?.isGroup) {
+        const initials = effectiveOwner ? ownerInitials(effectiveOwner) : "?";
+        titleRuns.push({ text: `${initials} · `, color: "cyan" });
+    }
+    if (hasRealTitle) {
+        titleRuns.push({ text: rawTitle, color: mainColor, bold: Boolean(session?.isSystem || session?.isGroup) });
+    } else {
+        // Untitled → id · age · model on one line (no wasted title line).
+        titleRuns.push({ text: shortId, color: mainColor });
+        if (relTime) { titleRuns.push({ text: " · ", color: "gray" }); titleRuns.push({ text: relTime, color: "gray" }); }
+        if (modelLabel) { titleRuns.push({ text: " · ", color: "gray" }); titleRuns.push({ text: modelLabel, color: "green" }); }
+    }
+
     const collapseBadge = getCollapseBadge(session?.sessionId, entry, totalDescendantCounts, visibleDescendantCounts);
     if (collapseBadge) {
         titleRuns.push({ text: ` ${collapseBadge.text}`, color: collapseBadge.color, bold: collapseBadge.bold });
     }
+    // Scheduled sessions keep a compact clock glyph on the title; the full
+    // cron cadence rides in the detail line.
+    const cronBadge = getCronBadge(session);
+    if (cronBadge) {
+        titleRuns.push({ text: " ⏱", color: "magenta" });
+    }
 
+    // Right-column context %: on every row that has usage. Compaction in
+    // flight takes precedence; else green normally, amber ≥70, red ≥85.
+    const ctxRuns = [];
+    const compactionState = session?.contextUsage?.compaction?.state;
+    const ctxPercent = computeContextPercent(session?.contextUsage);
+    if (session?.isGroup) {
+        if (session?.memberCount != null) ctxRuns.push({ text: `${session.memberCount}`, color: "gray" });
+    } else if (compactionState === "running") {
+        ctxRuns.push({ text: "⇊", color: "magenta" });
+    } else if (compactionState === "failed") {
+        ctxRuns.push({ text: "!", color: "red" });
+    } else if (ctxPercent != null) {
+        ctxRuns.push({ text: `${ctxPercent}%`, color: ctxPercent >= 85 ? "red" : ctxPercent >= 70 ? "yellow" : "green" });
+    } else {
+        ctxRuns.push({ text: "—", color: "gray" });
+    }
+
+    // Kept for backward-compat consumers; groups carry a member/time meta.
     const metaRuns = [];
     if (session?.isGroup && session?.memberCount != null) {
         metaRuns.push({ text: `${session.memberCount} member${session.memberCount === 1 ? "" : "s"}`, color: "gray" });
-    }
-    if (formattedRowTimestamp) {
-        if (metaRuns.length > 0) metaRuns.push({ text: " · ", color: "gray" });
-        metaRuns.push({ text: formattedRowTimestamp, color: "gray" });
+        if (relTime) { metaRuns.push({ text: " · ", color: "gray" }); metaRuns.push({ text: relTime, color: "gray" }); }
     }
 
-    const badgeRuns = [];
-
-    for (const badge of [
-        getCronBadge(session),
-        getContextListBadge(session?.contextUsage),
-    ]) {
-        if (!badge) continue;
-        if (badgeRuns.length > 0) badgeRuns.push({ text: " ", color: "gray" });
-        badgeRuns.push({ text: badge.text, color: badge.color, bold: badge.bold });
+    // Detail — expanded under the SELECTED row. Titled rows repeat
+    // id · age · model here; untitled rows already carry those on the main
+    // line, so their detail starts at the ctx breakdown to avoid repetition.
+    const detailRuns = [];
+    const pushSep = () => { if (detailRuns.length) detailRuns.push({ text: " · ", color: "gray" }); };
+    if (session?.isGroup) {
+        detailRuns.push(...metaRuns);
+    } else {
+        if (hasRealTitle) {
+            detailRuns.push({ text: shortId, color: "cyan" });
+            if (relTime) { pushSep(); detailRuns.push({ text: relTime, color: "gray" }); }
+            if (modelLabel) { pushSep(); detailRuns.push({ text: modelLabel, color: "green" }); }
+        }
+        const cu = session?.contextUsage;
+        if (cu && Number.isFinite(cu.currentTokens) && Number.isFinite(cu.tokenLimit) && cu.tokenLimit > 0) {
+            pushSep();
+            detailRuns.push({ text: `ctx ${formatCompactNumber(cu.currentTokens)}/${formatCompactNumber(cu.tokenLimit)}`, color: "gray" });
+        }
+        const childCount = totalDescendantCounts?.[session?.sessionId];
+        if (childCount) { pushSep(); detailRuns.push({ text: `${childCount} child${childCount === 1 ? "" : "ren"}`, color: "gray" }); }
+        if (cronBadge) { pushSep(); detailRuns.push({ text: cronBadge.text, color: cronBadge.color }); }
     }
 
-    const selectedMetaRuns = buildSelectedSessionMetaRuns(session, mode);
+    // Flat runs for the TUI: title + (for titled rows) dim age + context.
     const runs = [
         ...titleRuns,
-        ...(metaRuns.length > 0 ? [{ text: " ", color: "gray" }, ...metaRuns] : []),
-        ...(badgeRuns.length > 0 ? [{ text: " ", color: "gray" }, ...badgeRuns] : []),
+        ...(hasRealTitle && relTime && !session?.isGroup ? [{ text: "  ", color: "gray" }, { text: relTime, color: "gray" }] : []),
+        ...(ctxRuns.length && !session?.isGroup ? [{ text: " · ", color: "gray" }, ...ctxRuns] : []),
+        ...(session?.isGroup && metaRuns.length ? [{ text: " ", color: "gray" }, ...metaRuns] : []),
     ];
 
     return {
         runs,
         titleRuns,
+        ctxRuns,
         metaRuns,
-        badgeRuns,
-        selectedMetaRuns,
+        badgeRuns: [],
+        selectedMetaRuns: detailRuns,
+        detailRuns,
     };
 }
 
@@ -4636,6 +4688,23 @@ function formatRelativeTime(ts) {
     if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ago`;
     if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h ago`;
     return `${Math.floor(ms / 86_400_000)}d ago`;
+}
+
+// Coarse session-age buckets for the list. Seconds tick too fast and just
+// distract, so the smallest bucket is "<1min"; then whole minutes to an hour,
+// then hours+minutes, then days+hours, then weeks. No "ago" suffix — the age
+// column context makes it clear.
+function formatSessionAge(ts) {
+    if (!ts) return "—";
+    const ms = Date.now() - ts;
+    if (ms < 60_000) return "<1min";
+    const totalMin = Math.floor(ms / 60_000);
+    if (totalMin < 60) return `${totalMin}min`;
+    const totalHours = Math.floor(totalMin / 60);
+    if (totalHours < 24) return `${totalHours}h${String(totalMin % 60).padStart(2, "0")}m`;
+    const days = Math.floor(totalHours / 24);
+    if (days < 14) return `${days}d${String(totalHours % 24).padStart(2, "0")}h`;
+    return `${Math.floor(days / 7)}w`;
 }
 
 function formatLocalTimestamp(ts) {

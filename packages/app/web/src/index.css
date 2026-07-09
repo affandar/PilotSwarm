@@ -1494,43 +1494,53 @@ body.is-resizing-pane-y * {
   overflow: visible;
 }
 
-.ps-session-row-title,
-.ps-session-row-badges,
-.ps-session-row-selected-meta {
+/* Dense row: title on one clamped line, context % pinned to the right. */
+.ps-session-row-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
   min-width: 0;
   max-width: 100%;
 }
 
 .ps-session-row-title {
-  line-height: 1.25;
+  min-width: 0;
+  flex: 1 1 auto;
+  line-height: 1.28;
 }
 
-/* Meta (timestamp / member count) renders inline after the title. */
-.ps-session-row-meta {
+/* Right-hand context % — never shrinks, tabular so it forms a column. */
+.ps-session-row-ctx {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding-inline-start: 8px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  opacity: 0.96;
+}
+
+/* Expanded id · time · model · ctx, only under the selected row. */
+.ps-session-row-detail {
+  margin-top: 3px;
+  padding-inline-start: 20px;
+  line-height: 1.24;
   font-size: 0.94em;
+  opacity: 0.9;
 }
 
-.ps-session-row-badges,
-.ps-session-row-selected-meta {
-  margin-top: 2px;
-  padding-inline-start: 18px;
-  line-height: 1.22;
-  font-size: 0.94em;
-}
-
-.ps-session-row-selected-meta {
-  padding-top: 2px;
-  opacity: 0.94;
-}
-
+/* Compact column mode (narrow): rows lay out at max-content so the list
+   scrolls horizontally as ONE unit (is-session-compact on the grid). */
 .ps-session-pane:not(.ps-mobile-session-pane) .ps-session-row-content,
+.ps-session-pane:not(.ps-mobile-session-pane) .ps-session-row-line,
 .ps-session-pane:not(.ps-mobile-session-pane) .ps-session-row-title,
-.ps-session-pane:not(.ps-mobile-session-pane) .ps-session-row-badges,
-.ps-session-pane:not(.ps-mobile-session-pane) .ps-session-row-selected-meta {
-  display: block;
+.ps-session-pane:not(.ps-mobile-session-pane) .ps-session-row-detail {
   width: max-content;
   min-width: max-content;
   max-width: none;
+}
+.ps-session-pane:not(.ps-mobile-session-pane) .ps-session-row-title {
+  white-space: nowrap;
+  overflow: visible;
 }
 
 .ps-session-pane .ps-action-list .ps-line {
@@ -1560,12 +1570,32 @@ body.is-resizing-pane-y * {
 }
 
 .ps-workspace-main-grid.is-session-wrap .ps-session-pane .ps-session-row-content,
+.ps-workspace-main-grid.is-session-wrap .ps-session-pane .ps-session-row-line,
 .ps-workspace-main-grid.is-session-wrap .ps-session-pane .ps-session-row-title,
-.ps-workspace-main-grid.is-session-wrap .ps-session-pane .ps-session-row-badges,
-.ps-workspace-main-grid.is-session-wrap .ps-session-pane .ps-session-row-selected-meta {
+.ps-workspace-main-grid.is-session-wrap .ps-session-pane .ps-session-row-detail {
   width: auto;
   min-width: 0;
   max-width: 100%;
+}
+
+/* Wrap mode: the title wraps up to two lines then ellipsizes; the % stays
+   pinned right. Narrow enough and the grid flips to is-session-compact, where
+   the max-content rules above give the whole list one horizontal scrollbar. */
+.ps-workspace-main-grid.is-session-wrap .ps-session-pane .ps-session-row-title {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.ps-session-pane.ps-mobile-session-pane .ps-session-row-title {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .ps-workspace-main-grid.is-session-wrap .ps-session-pane .ps-action-list .ps-line {
