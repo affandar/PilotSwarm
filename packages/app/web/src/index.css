@@ -1836,6 +1836,12 @@ body.is-resizing-pane-y * {
 
 .ps-chat-panel .ps-scroll-panel {
   padding-top: 6px;
+  /* The transcript is bottom-pinned, so the top row is routinely clipped
+     mid-glyph (content height is rarely a whole multiple of line height,
+     and structured blocks make exact snapping impossible). Fade the top
+     edge so a partial row dissolves instead of shearing letters. */
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 18px, #000 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 18px, #000 100%);
 }
 
 .ps-chat-panel .ps-panel-bottom-sticky {
