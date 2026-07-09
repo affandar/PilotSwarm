@@ -1,7 +1,1 @@
-{
-    "context7": {
-        "type": "http",
-        "url": "https://mcp.context7.com/mcp",
-        "tools": ["resolve-library-id", "query-docs"]
-    }
-}
+{}
