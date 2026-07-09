@@ -519,9 +519,20 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                     return;
                 }
                 if (!controller.getState().ui.prompt) {
-                    if (controller.cancelLatestQueuedOutbox) {
+                    // Empty prompt: if a message is queued, Esc retracts the
+                    // latest one and stays; otherwise Esc exits to navigation
+                    // (ESC mode) — same as pressing Esc with text. Previously
+                    // this returned unconditionally, so an empty prompt with
+                    // nothing queued swallowed Esc and never blurred.
+                    const activeId = controller.getState().sessions.activeSessionId;
+                    const queued = controller.getQueuedOutboxItems
+                        ? controller.getQueuedOutboxItems(activeId)
+                        : [];
+                    if (queued.length > 0 && controller.cancelLatestQueuedOutbox) {
                         controller.cancelLatestQueuedOutbox().catch(() => {});
+                        return;
                     }
+                    controller.handleCommand(UI_COMMANDS.FOCUS_SESSIONS).catch(() => {});
                     return;
                 }
                 controller.setPrompt("");
