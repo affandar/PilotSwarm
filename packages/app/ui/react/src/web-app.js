@@ -431,19 +431,29 @@ function compactTitleRuns(title, maxWidth = 40) {
         return [{ text: text.length > maxWidth ? `${text.slice(0, maxWidth - 1)}…` : text, color: "white", bold: true }];
     }
     const compactRuns = [];
+    // Gray runs are dropped on tight widths as decoration (ids, badges) —
+    // EXCEPT pure separators (" · "). Dropping those fuses adjacent values:
+    // "running · gpt-5.4 · ctx 33%" became "runninggpt-5.4ctx…".
+    const isSeparator = (run) => /^[\s·—-]+$/.test(String(run?.text || ""));
     let remaining = Math.max(8, maxWidth);
     for (const run of title) {
         if (remaining <= 0) break;
         const color = run?.color;
-        if (color === "gray" && compactRuns.length > 0) continue;
+        if (color === "gray" && compactRuns.length > 0 && !isSeparator(run)) continue;
         const text = String(run?.text || "");
         if (!text) continue;
+        // Don't start a separator we can't follow with content.
+        if (isSeparator(run) && remaining < text.length + 2) break;
         const chunk = text.length > remaining && remaining > 1
             ? `${text.slice(0, remaining - 1)}…`
             : text.slice(0, remaining);
         if (!chunk) continue;
         compactRuns.push({ ...run, text: chunk });
         remaining -= chunk.length;
+    }
+    // Never end on a dangling separator.
+    while (compactRuns.length > 0 && isSeparator(compactRuns[compactRuns.length - 1])) {
+        compactRuns.pop();
     }
     return compactRuns.length > 0 ? compactRuns : title;
 }
