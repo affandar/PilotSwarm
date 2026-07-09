@@ -888,7 +888,10 @@ body.is-resizing-pane-y * {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 0.82rem;
-  line-height: 1;
+  /* line-height 1 + overflow:hidden clipped glyph descenders (g, p, y)
+     flat — the em box excludes them. 1.35 encloses the full glyph while
+     the ellipsis clipping stays horizontal-only in practice. */
+  line-height: 1.35;
 }
 
 .ps-panel-actions {
