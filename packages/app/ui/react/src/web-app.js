@@ -1747,20 +1747,25 @@ function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, l
         });
     }, []);
 
-    const [scrolledUp, setScrolledUp] = React.useState(false);
-    const updateScrolledUp = React.useCallback((el) => {
+    // Edge fades follow real overflow: fade the TOP only when content is
+    // clipped above (scrolled down) and the BOTTOM only when clipped below
+    // (scrolled up). With content that fits, neither fades — the first and
+    // last lines stay crisp.
+    const [scrollShadow, setScrollShadow] = React.useState({ up: false, down: false });
+    const updateScrollShadow = React.useCallback((el) => {
         if (!el) return;
         const up = el.scrollHeight - el.scrollTop - el.clientHeight > 4;
-        setScrolledUp((current) => (current === up ? current : up));
+        const down = el.scrollTop > 4;
+        setScrollShadow((cur) => (cur.up === up && cur.down === down ? cur : { up, down }));
     }, []);
     const handleBodyScroll = React.useCallback((event) => {
         onScroll();
-        updateScrolledUp(event.currentTarget);
+        updateScrollShadow(event.currentTarget);
         if (!preserveHorizontalScroll || syncingHorizontalRef.current) return;
         syncScrollLeft(event.currentTarget, stickyRef.current);
-    }, [onScroll, preserveHorizontalScroll, syncScrollLeft, updateScrolledUp]);
+    }, [onScroll, preserveHorizontalScroll, syncScrollLeft, updateScrollShadow]);
     React.useEffect(() => {
-        updateScrolledUp(ref.current);
+        updateScrollShadow(ref.current);
     });
 
     const handleStickyScroll = React.useCallback((event) => {
@@ -1779,7 +1784,7 @@ function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, l
                 normalizedSticky.map((line, index) => React.createElement(Line, { key: `sticky:${index}`, line, theme })),
             )
             : null,
-        React.createElement("div", { ref, className: `ps-scroll-panel ${className}${scrolledUp ? " is-scrolled-up" : ""}`.trim(), onScroll: handleBodyScroll, onWheel, onTouchStart, onTouchMove, onTouchEnd, onTouchCancel: onTouchEnd },
+        React.createElement("div", { ref, className: `ps-scroll-panel ${className}${scrollShadow.down ? " is-scrolled-down" : ""}${scrollShadow.up ? " is-scrolled-up" : ""}`.trim(), onScroll: handleBodyScroll, onWheel, onTouchStart, onTouchMove, onTouchEnd, onTouchCancel: onTouchEnd },
             typeof renderBody === "function"
                 ? renderBody(normalizedLines, theme)
                 : structuredBlocks
