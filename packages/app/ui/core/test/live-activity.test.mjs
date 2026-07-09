@@ -87,6 +87,44 @@ test("unmapped event types fall back to a bare Working line — no raw detail le
     assert.doesNotMatch(text, /—/, "no phase suffix for unmapped types");
 });
 
+test("new-turn gap: no stale elapsed or phase while history still shows the previous turn ended", () => {
+    // Status is already "running" for the NEW turn, but history so far only
+    // contains the PREVIOUS turn (user msg → tool → turn_end). The old bug:
+    // elapsed anchored on the stale user message → flashed the whole idle
+    // gap ("2h 14m") before snapping to the real timer.
+    const state = loadRunningSessionWithActivity([
+        { seq: 1, eventType: "assistant.turn_start", text: "[assistant.turn_start] {}", createdAt: 1_700_000_000_500 },
+        { seq: 2, eventType: "tool.execution_complete", text: "[tool.execution_complete] search_code {}", createdAt: 1_700_000_001_500 },
+        { seq: 3, eventType: "assistant.turn_end", text: "[assistant.turn_end] {}", createdAt: 1_700_000_002_000 },
+    ]);
+
+    const text = flatten(selectLiveActivityLines(state, {
+        spinnerFrame: "*",
+        now: 1_700_008_000_000, // ~2h13m after the stale anchors
+        maxWidth: 96,
+    }));
+    assert.match(text, /Working/);
+    assert.doesNotMatch(text, /·/, "no elapsed until evidence of the current turn exists");
+    assert.doesNotMatch(text, /2h/, "the idle gap must never flash as elapsed");
+    assert.doesNotMatch(text, /finished tool/, "previous turn's phase must not leak");
+});
+
+test("cron/command turns anchor elapsed on the current turn_start, not the old user message", () => {
+    const state = loadRunningSessionWithActivity([
+        { seq: 1, eventType: "assistant.turn_end", text: "[assistant.turn_end] {}", createdAt: 1_700_000_002_000 },
+        { seq: 2, eventType: "assistant.turn_start", text: "[assistant.turn_start] {}", createdAt: 1_700_007_935_000 },
+        { seq: 3, eventType: "assistant.reasoning", text: "[assistant.reasoning] planning", createdAt: 1_700_007_940_000 },
+    ]);
+
+    const text = flatten(selectLiveActivityLines(state, {
+        spinnerFrame: "*",
+        now: 1_700_008_000_000, // 65s after the new turn_start
+        maxWidth: 96,
+    }));
+    assert.match(text, /1m 05s/, "elapsed measures the current turn, not the gap since the last user message");
+    assert.match(text, /— thinking…/);
+});
+
 test("hides when the session is no longer running", () => {
     let state = loadRunningSessionWithActivity([{
         seq: 13,

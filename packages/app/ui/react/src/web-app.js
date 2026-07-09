@@ -1716,37 +1716,51 @@ function PortalSequenceLines({ lines, theme, completionByTurn }) {
 }
 
 
-// Hold the last non-empty live-activity line for a few seconds after the turn
-// ends so the status strip doesn't blink out the instant status flips — and
-// doesn't flicker when status flaps mid-turn. Fresh lines cancel the pending
-// clear; only a full linger window of continuous emptiness hides the strip.
+// Hold the strip briefly after the turn ends: on the transition to empty,
+// swap the last "Working" line for a dim "Done" line, keep it for 5s, then
+// clear. The countdown starts ONCE per transition — later renders that are
+// still empty must NOT reset it (the selector re-emits a fresh [] identity
+// on every store update, and the portal polls constantly; resetting on each
+// would keep the strip up forever). Fresh non-empty lines cancel the
+// countdown, which is also what prevents flicker on status flaps.
 const LIVE_ACTIVITY_LINGER_MS = 5_000;
+function deriveDoneLine(lines) {
+    const runs = Array.isArray(lines?.[0]) ? lines[0] : [];
+    const elapsedRun = runs.find((run) => String(run?.text || "").startsWith(" \u00b7 "));
+    return [[
+        { text: "\u2713 ", color: "green" },
+        { text: "Done", color: "gray" },
+        ...(elapsedRun ? [{ text: elapsedRun.text, color: "gray" }] : []),
+    ]];
+}
 function useLingeringLines(lines, ms = LIVE_ACTIVITY_LINGER_MS) {
-    const [held, setHeld] = React.useState(lines);
+    const [held, setHeld] = React.useState([]);
     const timerRef = React.useRef(null);
+    const lastLiveRef = React.useRef([]);
     React.useEffect(() => {
         if (lines.length > 0) {
+            lastLiveRef.current = lines;
             if (timerRef.current) {
                 clearTimeout(timerRef.current);
                 timerRef.current = null;
             }
-            setHeld(lines);
-            return undefined;
+            if (held.length > 0) setHeld([]);
+            return;
         }
-        if (held.length === 0) return undefined;
-        if (timerRef.current) clearTimeout(timerRef.current);
-        timerRef.current = setTimeout(() => {
-            timerRef.current = null;
-            setHeld([]);
-        }, ms);
-        return () => {
-            if (timerRef.current) {
-                clearTimeout(timerRef.current);
+        // Empty input: if we just left a live line behind, start the Done
+        // countdown exactly once; an already-armed timer keeps its deadline.
+        if (lastLiveRef.current.length > 0 && !timerRef.current) {
+            setHeld(deriveDoneLine(lastLiveRef.current));
+            lastLiveRef.current = [];
+            timerRef.current = setTimeout(() => {
                 timerRef.current = null;
-            }
-        };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [lines, ms]);
+                setHeld([]);
+            }, ms);
+        }
+    }, [lines, ms, held]);
+    React.useEffect(() => () => {
+        if (timerRef.current) clearTimeout(timerRef.current);
+    }, []);
     return lines.length > 0 ? lines : held;
 }
 

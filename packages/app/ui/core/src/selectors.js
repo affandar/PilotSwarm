@@ -1961,18 +1961,39 @@ export function selectLiveActivityLines(state, options = {}) {
         }
     }
     const activity = Array.isArray(history?.activity) ? history.activity : [];
+    // Current-turn boundaries. When a new turn starts, status flips to
+    // "running" BEFORE fresh history lands; anchoring the clock on stale
+    // data flashes a huge elapsed (the whole idle gap) that then snaps to
+    // the real value. Anchor only on evidence belonging to THIS turn — a
+    // user message or turn_start newer than the last turn end — and show
+    // no timer (and no phase) until such evidence exists.
+    let lastTurnStartAt = 0;
+    let lastTurnEndAt = 0;
+    for (let i = activity.length - 1; i >= 0; i -= 1) {
+        const item = activity[i];
+        const type = item?.eventType;
+        const at = Number(item?.createdAt || 0);
+        if (!lastTurnStartAt && type === "assistant.turn_start") lastTurnStartAt = at;
+        if (!lastTurnEndAt && (type === "assistant.turn_end" || type === "session.turn_completed")) lastTurnEndAt = at;
+        if (lastTurnStartAt && lastTurnEndAt) break;
+    }
+    let startAt = 0;
+    if (turnStartAt > lastTurnEndAt) {
+        startAt = turnStartAt;                       // user-triggered turn
+    } else if (lastTurnStartAt > lastTurnEndAt) {
+        startAt = lastTurnStartAt;                   // cron/command-triggered turn
+    }
     let latest = null;
-    let oldestGatheredAt = 0;
     for (let i = activity.length - 1; i >= 0; i -= 1) {
         const item = activity[i];
         if (!item || LIVE_ACTIVITY_SKIP.has(item.eventType)) continue;
+        // Phase must come from the current turn — a stale "finished tool"
+        // from the previous turn must not flash on turn start.
+        if (Number(item.createdAt || 0) <= lastTurnEndAt) break;
         latest = item;
-        const at = Number(item.createdAt || 0);
-        if (at > 0) oldestGatheredAt = at;
         break;
     }
     const nowMs = Number.isFinite(options.now) ? options.now : Date.now();
-    const startAt = turnStartAt || oldestGatheredAt;
     const elapsedLabel = startAt > 0 ? formatElapsed(nowMs - startAt) : "";
     const spinner = String(options.spinnerFrame || "").trim() || "\u25cf";
     const phase = latest ? liveActivityPhaseText(latest) : "";
