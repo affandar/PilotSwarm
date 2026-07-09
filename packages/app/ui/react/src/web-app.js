@@ -1715,6 +1715,41 @@ function PortalSequenceLines({ lines, theme, completionByTurn }) {
     );
 }
 
+
+// Hold the last non-empty live-activity line for a few seconds after the turn
+// ends so the status strip doesn't blink out the instant status flips — and
+// doesn't flicker when status flaps mid-turn. Fresh lines cancel the pending
+// clear; only a full linger window of continuous emptiness hides the strip.
+const LIVE_ACTIVITY_LINGER_MS = 5_000;
+function useLingeringLines(lines, ms = LIVE_ACTIVITY_LINGER_MS) {
+    const [held, setHeld] = React.useState(lines);
+    const timerRef = React.useRef(null);
+    React.useEffect(() => {
+        if (lines.length > 0) {
+            if (timerRef.current) {
+                clearTimeout(timerRef.current);
+                timerRef.current = null;
+            }
+            setHeld(lines);
+            return undefined;
+        }
+        if (held.length === 0) return undefined;
+        if (timerRef.current) clearTimeout(timerRef.current);
+        timerRef.current = setTimeout(() => {
+            timerRef.current = null;
+            setHeld([]);
+        }, ms);
+        return () => {
+            if (timerRef.current) {
+                clearTimeout(timerRef.current);
+                timerRef.current = null;
+            }
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [lines, ms]);
+    return lines.length > 0 ? lines : held;
+}
+
 function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, lines, stickyLines = [], bottomStickyLines = [], scrollOffset = 0, scrollMode = "top", paneKey, controller, className = "", panelClassName = "", topContent = null, bottomContent = null, structuredBlocks = false, stickyBottom = false, renderBody = null }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
@@ -2117,18 +2152,18 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         () => selectLiveActivityLines(selectorState, { spinnerFrame, maxWidth: viewState.contentWidth }),
         [selectorState, spinnerFrame, viewState.contentWidth],
     );
-    // Concatenate the isolated live-activity block onto the (expensive) message
-    // lines so the spinner tick only recomputes the small block, not the whole
-    // transcript. The block clears itself once the reply lands.
-    const chatLines = React.useMemo(
-        () => (liveActivityLines.length > 0
-            ? [...lines, [{ text: "", color: null }], ...liveActivityLines]
-            : lines),
-        [lines, liveActivityLines],
-    );
+    // The live-activity line is pinned in the bottom-sticky strip (with the
+    // outbox overlay), NOT appended to the transcript — it must stay put while
+    // chat content scrolls. A short linger keeps it up briefly after the turn
+    // ends so it never blinks or flickers on status flaps.
+    const pinnedActivityLines = useLingeringLines(liveActivityLines);
     const outboxLines = React.useMemo(
         () => selectOutboxOverlayLines(selectorState, viewState.contentWidth, { tableMode: "sentinel" }),
         [selectorState, viewState.contentWidth],
+    );
+    const stickyBottom = React.useMemo(
+        () => (pinnedActivityLines.length > 0 ? [...outboxLines, ...pinnedActivityLines] : outboxLines),
+        [outboxLines, pinnedActivityLines],
     );
     const composer = showComposer && !viewState.activeSessionIsGroup && viewState.chatViewMode !== "summary"
         ? React.createElement("div", { className: "ps-chat-composer" },
@@ -2144,8 +2179,8 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         actions: null,
         color: chrome.color,
         focused: viewState.focused,
-        lines: chatLines,
-        bottomStickyLines: outboxLines,
+        lines,
+        bottomStickyLines: stickyBottom,
         scrollOffset: viewState.scroll,
         scrollMode: "bottom",
         paneKey: "chat",

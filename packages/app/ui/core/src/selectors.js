@@ -1887,60 +1887,6 @@ const LIVE_ACTIVITY_SKIP = new Set([
     "tool.execution_progress",
 ]);
 
-// Consecutive events of these types collapse into a single line (streaming
-// reasoning/intent fires many events per turn).
-const LIVE_ACTIVITY_COLLAPSE = new Set(["assistant.reasoning", "assistant.intent"]);
-
-// Friendly verbs for the live activity lines, keyed by event type. An empty
-// string means "show the detail as-is" (e.g. tool calls, where the tool name is
-// the action). Types absent from the map fall back to their cleaned detail.
-const LIVE_ACTIVITY_VERBS = {
-    "tool.execution_start": "",
-    "tool.execution_complete": "",
-    "assistant.reasoning": "Thinking",
-    "assistant.intent": "Planning",
-    "session.agent_spawned": "Spawning sub-agent",
-    "session.wait_started": "Waiting",
-    "session.input_required_started": "Awaiting input",
-    "session.command_received": "Command",
-    "session.command_completed": "Command",
-    "session.compaction_start": "Compacting context",
-    "session.compaction_complete": "Context compacted",
-    "session.dehydrated": "Dehydrating",
-    "session.hydrated": "Rehydrated",
-    "session.rehydrated": "Rehydrated",
-    "session.lossy_handoff": "Handed off to a new worker",
-    "session.error": "Error",
-    "session.cron_started": "Scheduled",
-    "session.cron_scheduled": "Scheduled",
-    "session.cron_fired": "Woke on schedule",
-    "session.cron_at_scheduled": "Scheduled",
-    "session.cron_at_started": "Scheduled",
-    "session.cron_at_fired": "Woke on schedule",
-    "system.message": "",
-};
-
-// Turn a raw activity item into a friendly one-line action label: strip the
-// timestamp and [bracket] tag, then prefix a human verb where one applies.
-function friendlyLiveActivity(item, maxLen = 96) {
-    const raw = String(item?.text || "")
-        .replace(/^\s*\d{1,2}:\d{2}(?::\d{2})?\s*/, "")
-        .replace(/^\[[^\]]+\]\s*/, "")
-        .replace(/\s+/g, " ")
-        .trim();
-    const verb = LIVE_ACTIVITY_VERBS[item?.eventType];
-    let text;
-    if (verb === undefined || verb === "") {
-        text = raw;
-    } else if (raw) {
-        text = `${verb} \u2014 ${raw}`;
-    } else {
-        text = verb;
-    }
-    text = text || "Working";
-    return text.length > maxLen ? `${text.slice(0, maxLen - 1)}\u2026` : text;
-}
-
 // Format an elapsed duration for the live activity card header (e.g. "12s",
 // "1m 05s", "1h 02m").
 function formatElapsed(ms) {
@@ -1954,12 +1900,50 @@ function formatElapsed(ms) {
     return `${hours}h ${String(mins).padStart(2, "0")}m`;
 }
 
-// Claude-style live activity: while a turn is running, surface the last few
-// actions as a short text scrollback. Assistant messages can land before the
-// turn is actually done (streamed/tool-interleaved replies), so the card is
-// governed by session status rather than by the newest transcript role.
-// `options.spinnerFrame` animates the active (latest) line's marker;
-// `options.maxActions` caps the line count.
+// High-level phase for the live activity status line. Maps the newest
+// activity event to a short human description ("thinking\u2026", "running tool:
+// read_file\u2026") — never raw payloads; detail lives in the Inspector.
+function liveActivityPhaseText(item) {
+    const type = String(item?.eventType || "");
+    if (type === "tool.execution_start" || type === "tool.execution_complete") {
+        const raw = String(item?.text || "")
+            .replace(/^\s*\d{1,2}:\d{2}(?::\d{2})?\s*/, "")
+            .replace(/^\[[^\]]+\]\s*/, "")
+            .trim();
+        const name = (raw.match(/^[A-Za-z0-9_.:-]+/) || [""])[0];
+        if (!name) return "running tools\u2026";
+        const shortName = name.length > 28 ? `${name.slice(0, 27)}\u2026` : name;
+        return type === "tool.execution_start"
+            ? `running tool: ${shortName}\u2026`
+            : `finished tool: ${shortName}`;
+    }
+    switch (type) {
+        case "assistant.reasoning": return "thinking\u2026";
+        case "assistant.intent": return "planning\u2026";
+        case "assistant.message_start":
+        case "assistant.message": return "writing reply\u2026";
+        case "session.compaction_start": return "compacting context\u2026";
+        case "session.compaction_complete": return "context compacted";
+        case "session.dehydrated": return "dehydrating\u2026";
+        case "session.hydrated":
+        case "session.rehydrated": return "rehydrating\u2026";
+        case "session.agent_spawned": return "coordinating agents\u2026";
+        case "session.wait_started": return "waiting\u2026";
+        case "session.input_required_started": return "awaiting input\u2026";
+        case "session.lossy_handoff": return "moving to a new worker\u2026";
+        case "session.error": return "recovering from an error\u2026";
+        default: return "";
+    }
+}
+
+// Single-line live activity status: while a turn is running, one dim line —
+// spinner + "Working" + elapsed + a high-level phase. Replaces the old
+// bordered multi-line card: hosts pin it OUTSIDE the scrolling transcript
+// (portal: bottom-sticky strip above the composer; TUI: appended below the
+// transcript, which autoscroll keeps at the bottom). Assistant messages can
+// land before the turn is actually done (streamed/tool-interleaved replies),
+// so visibility is governed by session status rather than transcript role.
+// `options.spinnerFrame` animates the marker.
 export function selectLiveActivityLines(state, options = {}) {
     if (state?.ui?.chatViewMode === "summary") return [];
     const session = selectActiveSession(state);
@@ -1967,76 +1951,39 @@ export function selectLiveActivityLines(state, options = {}) {
     const status = String(session?.status || "").toLowerCase();
     if (status !== "running") return [];
     const history = state.history?.bySessionId?.get(session.sessionId) || null;
-    // Use the latest user message as the elapsed-time anchor when available,
-    // but do not hide the card just because assistant text has already landed;
-    // the session may still be running tools or follow-up model work.
+    // Latest user message anchors the elapsed clock when available.
     const chat = Array.isArray(history?.chat) ? history.chat : [];
     let turnStartAt = 0;
     for (let i = chat.length - 1; i >= 0; i -= 1) {
-        const role = chat[i]?.role;
-        if (role === "user") {
+        if (chat[i]?.role === "user") {
             turnStartAt = Number(chat[i]?.createdAt || 0);
             break;
         }
     }
     const activity = Array.isArray(history?.activity) ? history.activity : [];
-    const maxActions = Number.isFinite(options.maxActions) ? options.maxActions : 3;
-    const recent = [];
-    let acceptedType = null;
+    let latest = null;
     let oldestGatheredAt = 0;
-    for (let i = activity.length - 1; i >= 0 && recent.length < maxActions; i -= 1) {
+    for (let i = activity.length - 1; i >= 0; i -= 1) {
         const item = activity[i];
         if (!item || LIVE_ACTIVITY_SKIP.has(item.eventType)) continue;
-        if (item.eventType === acceptedType && LIVE_ACTIVITY_COLLAPSE.has(item.eventType)) continue;
-        const detail = friendlyLiveActivity(item);
-        if (!detail) continue;
-        recent.unshift(detail);
-        acceptedType = item.eventType;
+        latest = item;
         const at = Number(item.createdAt || 0);
-        if (at > 0) oldestGatheredAt = oldestGatheredAt ? Math.min(oldestGatheredAt, at) : at;
+        if (at > 0) oldestGatheredAt = at;
+        break;
     }
-    if (recent.length === 0) return [];
-    // Render as a bordered card: the portal turns box-drawing lines whose top
-    // row has >2 runs into a `ps-chat-card`; the terminal shows the box art.
-    // Header carries the animated spinner + "Working"; body lists the recent
-    // actions, most recent highlighted.
-    const borderColor = "cyan";
-    const spinner = String(options.spinnerFrame || "").trim() || "\u25cf";
     const nowMs = Number.isFinite(options.now) ? options.now : Date.now();
     const startAt = turnStartAt || oldestGatheredAt;
     const elapsedLabel = startAt > 0 ? formatElapsed(nowMs - startAt) : "";
-    const titleRuns = [
-        { text: ` ${spinner} Working `, color: borderColor, bold: true },
-        ...(elapsedLabel ? [{ text: `\u00b7 ${elapsedLabel} `, color: "gray" }] : []),
+    const spinner = String(options.spinnerFrame || "").trim() || "\u25cf";
+    const phase = latest ? liveActivityPhaseText(latest) : "";
+    const runs = [
+        { text: `${spinner} `, color: "cyan" },
+        { text: "Working", color: "cyan" },
+        ...(elapsedLabel ? [{ text: ` \u00b7 ${elapsedLabel}`, color: "gray" }] : []),
+        ...(phase ? [{ text: ` \u2014 ${phase}`, color: "gray" }] : []),
     ];
-    const titleWidth = titleRuns.reduce((sum, run) => sum + String(run.text || "").length, 0);
-    const maxWidth = Math.max(24, Math.min(96, Math.floor(Number(options.maxWidth) || 64)));
-    const widestBody = recent.reduce((max, detail) => Math.max(max, detail.length + 2), 0);
-    const cardWidth = Math.max(20, Math.min(maxWidth, Math.max(titleWidth + 3, widestBody + 4)));
-    const contentWidth = Math.max(1, cardWidth - 4);
-    const bodyLines = recent.map((detail, index) => {
-        const isLatest = index === recent.length - 1;
-        return fitRuns([
-            { text: isLatest ? "\u25cf " : "\u00b7 ", color: isLatest ? "cyan" : "gray", bold: isLatest },
-            { text: detail, color: isLatest ? "cyan" : "gray" },
-        ], contentWidth);
-    });
-    const topFill = Math.max(0, cardWidth - titleWidth - 3);
-    const card = [[
-        { text: "\u250c\u2500", color: borderColor },
-        ...titleRuns,
-        { text: `${"\u2500".repeat(topFill)}\u2510`, color: borderColor },
-    ]];
-    for (const runs of bodyLines) {
-        card.push([
-            { text: "\u2502 ", color: borderColor },
-            ...padRunsToDisplayWidth(runs, contentWidth),
-            { text: " \u2502", color: borderColor },
-        ]);
-    }
-    card.push([{ text: `\u2514${"\u2500".repeat(Math.max(1, cardWidth - 2))}\u2518`, color: borderColor }]);
-    card.push([{ text: "", color: null }]);
-    return card;
+    const maxWidth = Math.max(24, Math.min(120, Math.floor(Number(options.maxWidth) || 80)));
+    return [fitRuns(runs, maxWidth)];
 }
 
 export function selectChatLines(state, maxWidth = 80, options = {}) {
