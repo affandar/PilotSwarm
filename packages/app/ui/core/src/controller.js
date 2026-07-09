@@ -5220,11 +5220,14 @@ export class PilotSwarmUiController {
 
         const contentWidth = Math.max(20, layout.leftWidth - 4);
         const contentHeight = Math.max(1, layout.chatPaneHeight - 2);
-        const lines = [
-            ...selectChatLines(state, contentWidth),
+        const lines = selectChatLines(state, contentWidth);
+        // The live "Working" strip and the queued-prompt overlay are both
+        // pinned in the bottom-sticky region (matching the ChatPane render),
+        // so the transcript scroll math must reserve them here — not inline.
+        const bottomStickyLines = [
+            ...selectOutboxOverlayLines(state, contentWidth),
             ...selectLiveActivityLines(state),
         ];
-        const bottomStickyLines = selectOutboxOverlayLines(state, contentWidth);
         const bottomStickyHeight = Math.min(
             Math.max(0, Math.floor(contentHeight * 0.34)),
             countWrappedRenderableLines(bottomStickyLines, contentWidth),

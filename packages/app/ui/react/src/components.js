@@ -10,6 +10,7 @@ import {
     selectChatPaneChrome,
     selectLiveActivityLines,
     selectChatLines,
+    selectOutboxOverlayLines,
     selectActivityPane,
     selectArtifactUploadModal,
     selectArtifactPickerModal,
@@ -383,13 +384,19 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
         () => (startupError ? [] : selectLiveActivityLines(selectorState, { spinnerFrame, maxWidth: contentWidth })),
         [selectorState, startupError, spinnerFrame, contentWidth],
     );
-    // Concat the isolated live-activity block so the spinner tick only recomputes
-    // the small block, not the whole transcript.
-    const chatLines = React.useMemo(
-        () => (liveActivityLines.length > 0
-            ? [...elements, [{ text: "", color: null }], ...liveActivityLines]
-            : elements),
-        [elements, liveActivityLines],
+    const outboxLines = React.useMemo(
+        () => (startupError ? [] : selectOutboxOverlayLines(selectorState, contentWidth)),
+        [selectorState, startupError, contentWidth],
+    );
+    // The queued-prompt overlay and the live "Working" strip are pinned in the
+    // bottom-sticky region (outbox above, strip at the very bottom), so they
+    // stay put at the foot of the pane instead of scrolling inline with the
+    // transcript — matching the portal. The transcript itself stays crisp.
+    const bottomStickyLines = React.useMemo(
+        () => (outboxLines.length > 0 || liveActivityLines.length > 0
+            ? [...outboxLines, ...liveActivityLines]
+            : []),
+        [outboxLines, liveActivityLines],
     );
 
     return React.createElement(platform.Panel, {
@@ -399,7 +406,8 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
         focused: chatView.focused,
         width,
         height,
-        lines: chatLines,
+        lines: elements,
+        bottomStickyLines,
         scrollOffset: chatView.chatScroll,
         scrollMode: "bottom",
         paneId: "chat",
