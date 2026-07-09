@@ -1844,6 +1844,14 @@ body.is-resizing-pane-y * {
   mask-image: linear-gradient(to bottom, transparent 0, #000 18px, #000 100%);
 }
 
+/* Scrolled up from the live tail: the bottom edge also clips mid-row, so
+   fade it too. Never applied while pinned at the bottom — the newest line
+   must stay fully crisp. */
+.ps-chat-panel .ps-scroll-panel.is-scrolled-up {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 18px, #000 calc(100% - 18px), transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 18px, #000 calc(100% - 18px), transparent 100%);
+}
+
 .ps-chat-panel .ps-panel-bottom-sticky {
   box-shadow: 0 -10px 22px color-mix(in srgb, #000 24%, transparent);
 }

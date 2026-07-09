@@ -1747,11 +1747,21 @@ function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, l
         });
     }, []);
 
+    const [scrolledUp, setScrolledUp] = React.useState(false);
+    const updateScrolledUp = React.useCallback((el) => {
+        if (!el) return;
+        const up = el.scrollHeight - el.scrollTop - el.clientHeight > 4;
+        setScrolledUp((current) => (current === up ? current : up));
+    }, []);
     const handleBodyScroll = React.useCallback((event) => {
         onScroll();
+        updateScrolledUp(event.currentTarget);
         if (!preserveHorizontalScroll || syncingHorizontalRef.current) return;
         syncScrollLeft(event.currentTarget, stickyRef.current);
-    }, [onScroll, preserveHorizontalScroll, syncScrollLeft]);
+    }, [onScroll, preserveHorizontalScroll, syncScrollLeft, updateScrolledUp]);
+    React.useEffect(() => {
+        updateScrolledUp(ref.current);
+    });
 
     const handleStickyScroll = React.useCallback((event) => {
         if (!preserveHorizontalScroll || syncingHorizontalRef.current) return;
@@ -1769,7 +1779,7 @@ function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, l
                 normalizedSticky.map((line, index) => React.createElement(Line, { key: `sticky:${index}`, line, theme })),
             )
             : null,
-        React.createElement("div", { ref, className: `ps-scroll-panel ${className}`.trim(), onScroll: handleBodyScroll, onWheel, onTouchStart, onTouchMove, onTouchEnd, onTouchCancel: onTouchEnd },
+        React.createElement("div", { ref, className: `ps-scroll-panel ${className}${scrolledUp ? " is-scrolled-up" : ""}`.trim(), onScroll: handleBodyScroll, onWheel, onTouchStart, onTouchMove, onTouchEnd, onTouchCancel: onTouchEnd },
             typeof renderBody === "function"
                 ? renderBody(normalizedLines, theme)
                 : structuredBlocks
