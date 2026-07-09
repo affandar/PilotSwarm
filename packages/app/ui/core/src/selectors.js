@@ -1900,6 +1900,31 @@ function formatElapsed(ms) {
     return `${hours}h ${String(mins).padStart(2, "0")}m`;
 }
 
+// Fact-store, graph-store, and skill tools get first-class phases instead of
+// the generic "running tool: X". Classification is pattern-based so new tools
+// in these families inherit the right phase without a table update.
+const FACTS_READ_TOOLS = new Set(["read_facts", "facts_search", "facts_similar", "facts_read_uncrawled", "facts_tombstone_stats"]);
+const FACTS_WRITE_TOOLS = new Set(["store_fact", "delete_fact", "facts_set_crawled", "facts_purge_tombstones", "facts_force_purge"]);
+function knowledgeToolPhase(name, starting) {
+    const n = String(name || "").toLowerCase();
+    if (n === "search_skills" || n.includes("skill")) {
+        return starting ? "loading skills\u2026" : "loaded skills";
+    }
+    if (FACTS_READ_TOOLS.has(n)) return starting ? "reading facts\u2026" : "read facts";
+    if (FACTS_WRITE_TOOLS.has(n)) return starting ? "writing facts\u2026" : "wrote facts";
+    if (n.startsWith("graph_")) {
+        const writes = /upsert|delete|archive|merge|remove|set_/.test(n);
+        if (writes) return starting ? "writing to the graph\u2026" : "wrote to the graph";
+        return starting ? "reading the graph\u2026" : "read the graph";
+    }
+    if (n.startsWith("facts_") || n.endsWith("_fact") || n.endsWith("_facts")) {
+        // Unrecognized fact-family tool: read/write by verb.
+        const writes = /store|write|set|delete|purge|update/.test(n);
+        return writes ? (starting ? "writing facts\u2026" : "wrote facts") : (starting ? "reading facts\u2026" : "read facts");
+    }
+    return "";
+}
+
 // High-level phase for the live activity status line. Maps the newest
 // activity event to a short human description ("thinking\u2026", "running tool:
 // read_file\u2026") — never raw payloads; detail lives in the Inspector.
@@ -1912,12 +1937,16 @@ function liveActivityPhaseText(item) {
             .trim();
         const name = (raw.match(/^[A-Za-z0-9_.:-]+/) || [""])[0];
         if (!name) return "running tools\u2026";
+        const knowledge = knowledgeToolPhase(name, type === "tool.execution_start");
+        if (knowledge) return knowledge;
         const shortName = name.length > 28 ? `${name.slice(0, 27)}\u2026` : name;
         return type === "tool.execution_start"
             ? `running tool: ${shortName}\u2026`
             : `finished tool: ${shortName}`;
     }
     switch (type) {
+        case "skill.invoked": return "loading skills\u2026";
+        case "learned_skill.read": return "loading skills\u2026";
         case "assistant.reasoning": return "thinking\u2026";
         case "assistant.intent": return "planning\u2026";
         case "assistant.message_start":

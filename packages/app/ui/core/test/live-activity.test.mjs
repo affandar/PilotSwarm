@@ -87,6 +87,42 @@ test("unmapped event types fall back to a bare Working line — no raw detail le
     assert.doesNotMatch(text, /—/, "no phase suffix for unmapped types");
 });
 
+test("fact, graph, and skill tools get first-class phases instead of generic tool text", () => {
+    const cases = [
+        ["read_facts", /— reading facts…/],
+        ["facts_search", /— reading facts…/],
+        ["store_fact", /— writing facts…/],
+        ["graph_search_nodes", /— reading the graph…/],
+        ["graph_neighbourhood", /— reading the graph…/],
+        ["graph_upsert_node", /— writing to the graph…/],
+        ["graph_merge_nodes", /— writing to the graph…/],
+        ["search_skills", /— loading skills…/],
+    ];
+    for (const [tool, expected] of cases) {
+        const state = loadRunningSessionWithActivity([{
+            seq: 20,
+            eventType: "tool.execution_start",
+            text: `[tool.execution_start] ${tool} {"q":"secret"}`,
+            createdAt: 1_700_000_002_000,
+        }]);
+        const text = flatten(selectLiveActivityLines(state, { spinnerFrame: "*", now: 1_700_000_010_000, maxWidth: 96 }));
+        assert.match(text, expected, `${tool} phase`);
+        assert.doesNotMatch(text, /running tool:/, `${tool} must not fall back to generic phase`);
+        assert.doesNotMatch(text, /secret/, `${tool} payload must not leak`);
+    }
+});
+
+test("learned-skill read events surface as loading skills", () => {
+    const state = loadRunningSessionWithActivity([{
+        seq: 21,
+        eventType: "learned_skill.read",
+        text: "[learned_skill.read] {\"name\":\"deploy-checklist\"}",
+        createdAt: 1_700_000_002_000,
+    }]);
+    const text = flatten(selectLiveActivityLines(state, { spinnerFrame: "*", now: 1_700_000_010_000, maxWidth: 96 }));
+    assert.match(text, /— loading skills…/);
+});
+
 test("new-turn gap: no stale elapsed or phase while history still shows the previous turn ended", () => {
     // Status is already "running" for the NEW turn, but history so far only
     // contains the PREVIOUS turn (user msg → tool → turn_end). The old bug:
