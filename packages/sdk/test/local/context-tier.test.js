@@ -201,3 +201,88 @@ describe("context tier new-session flow", () => {
         }
     });
 });
+
+// ─── Switch-model flow ───────────────────────────────────────────
+
+describe("context tier switch-model flow", () => {
+    function switchController() {
+        let setModelArgs = null;
+        const { controller, store } = createController({
+            listModels: async () => [TIERED_MODEL],
+            getModelsByProvider: () => [
+                { providerId: "github-copilot", type: "github", models: [TIERED_MODEL] },
+            ],
+            setSessionModel: async (sessionId, opts) => { setModelArgs = { sessionId, ...opts }; },
+        });
+        // An active session on a different model, ready to switch.
+        store.dispatch({
+            type: "sessions/loaded",
+            sessions: [{ sessionId: "switch-session", title: "S", status: "idle", model: "github-copilot:claude-sonnet-5", createdAt: 1, updatedAt: 2 }],
+        });
+        store.dispatch({ type: "sessions/selected", sessionId: "switch-session" });
+        return { controller, store, getSetModelArgs: () => setModelArgs };
+    }
+
+    it("offers the tier picker after reasoning effort and threads the tier into the switch", async () => {
+        const { controller, store, getSetModelArgs } = switchController();
+        try {
+            await controller.start();
+            await controller.openSwitchModelPicker();
+            assertEqual(store.getState().ui.modal?.type, "modelPicker", "switch opens the model picker");
+            await controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+            assertEqual(store.getState().ui.modal?.type, "reasoningEffortPicker", "effort picker first");
+            await controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+            assertEqual(store.getState().ui.modal?.type, "contextTierPicker", "switch flow now surfaces the tier picker");
+
+            const tierModal = selectContextTierPickerModal(store.getState());
+            assert(tierModal, "tier picker renders in switch mode");
+            const preselected = store.getState().ui.modal.items[store.getState().ui.modal.selectedIndex];
+            assertEqual(preselected.id, "default", "smaller window preselected");
+
+            store.dispatch({ type: "ui/modalSelection", index: 1 });
+            await controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+
+            const args = getSetModelArgs();
+            assert(args, "setSessionModel was called");
+            assertEqual(args.sessionId, "switch-session");
+            assertEqual(args.model, "github-copilot:claude-opus-4.8", "switched to the picked model");
+            assertEqual(args.reasoningEffort, "medium", "effort threaded into the switch");
+            assertEqual(args.contextTier, "long_context", "selected tier threaded into the switch");
+        } finally {
+            await controller.stop();
+        }
+    });
+
+    it("skips the tier picker and switches directly for tier-less models", async () => {
+        const plainModel = {
+            qualifiedName: "github-copilot:gpt-5.4",
+            providerId: "github-copilot",
+            providerType: "github",
+            modelName: "gpt-5.4",
+            supportedReasoningEfforts: ["medium"],
+            defaultReasoningEffort: "medium",
+        };
+        let setModelArgs = null;
+        const { controller, store } = createController({
+            listModels: async () => [plainModel],
+            getModelsByProvider: () => [{ providerId: "github-copilot", type: "github", models: [plainModel] }],
+            setSessionModel: async (sessionId, opts) => { setModelArgs = { sessionId, ...opts }; },
+        });
+        store.dispatch({
+            type: "sessions/loaded",
+            sessions: [{ sessionId: "plain-switch", title: "S", status: "idle", model: "github-copilot:claude-sonnet-5", createdAt: 1, updatedAt: 2 }],
+        });
+        store.dispatch({ type: "sessions/selected", sessionId: "plain-switch" });
+        try {
+            await controller.start();
+            await controller.openSwitchModelPicker();
+            await controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+            assertEqual(store.getState().ui.modal?.type, "reasoningEffortPicker");
+            await controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+            assert(setModelArgs, "switch applied without a tier step");
+            assertEqual(setModelArgs.contextTier, undefined, "no contextTier sent for tier-less models");
+        } finally {
+            await controller.stop();
+        }
+    });
+});

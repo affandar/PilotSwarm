@@ -5820,7 +5820,7 @@ const KEYBINDING_HELP = [
         ["m", "cycle inspector tab"],
         ["c / d / D", "cancel / done / delete session"],
         ["ctrl-x  (ctrl-esc)", "stop the current turn", { dim: true }],
-        ["T / N / A", "theme / model / admin"],
+        ["T / N / M / A", "theme / new+model / switch model / admin"],
         ["?", "toggle this help"],
         ["q", "quit (double-tap)"],
         ["Esc", "back / focus sessions"],

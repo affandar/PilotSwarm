@@ -105,6 +105,10 @@ export function registerModelTools(server: McpServer, ctx: ServerContext) {
                     .string()
                     .optional()
                     .describe("Reasoning effort for the new model (e.g. low, medium, high) — web mode only"),
+                context_tier: z
+                    .string()
+                    .optional()
+                    .describe("Context-window tier for the new model: 'default' (smaller) or 'long_context' — web mode only"),
                 timeout_ms: z
                     .number()
                     .int()
@@ -113,23 +117,26 @@ export function registerModelTools(server: McpServer, ctx: ServerContext) {
                     .describe("Max time to wait for the orchestration to acknowledge the switch (default 15000)"),
             },
         },
-        async ({ session_id, model, reasoning_effort, timeout_ms }) => {
+        async ({ session_id, model, reasoning_effort, context_tier, timeout_ms }) => {
             try {
                 if (ctx.webMode) {
                     // Web API mode: the supported model-switch path (same one
                     // the portal UI uses). The server validates the model and
                     // enqueues the switch; rejections surface as API errors.
-                    await (ctx.mgmt.setSessionModel as any)(session_id, model, reasoning_effort !== undefined ? { reasoningEffort: reasoning_effort } : {});
+                    await (ctx.mgmt.setSessionModel as any)(session_id, model, {
+                        ...(reasoning_effort !== undefined ? { reasoningEffort: reasoning_effort } : {}),
+                        ...(context_tier !== undefined ? { contextTier: context_tier } : {}),
+                    });
                     return {
                         content: [
-                            { type: "text" as const, text: JSON.stringify({ switched: true, model, ...(reasoning_effort ? { reasoning_effort } : {}) }) },
+                            { type: "text" as const, text: JSON.stringify({ switched: true, model, ...(reasoning_effort ? { reasoning_effort } : {}), ...(context_tier ? { context_tier } : {}) }) },
                         ],
                     };
                 }
-                if (reasoning_effort !== undefined) {
+                if (reasoning_effort !== undefined || context_tier !== undefined) {
                     return {
                         content: [
-                            { type: "text" as const, text: JSON.stringify({ switched: false, error: "reasoning_effort is only supported in Web API mode" }) },
+                            { type: "text" as const, text: JSON.stringify({ switched: false, error: "reasoning_effort and context_tier are only supported in Web API mode" }) },
                         ],
                         isError: true,
                     };

@@ -67,7 +67,7 @@ export const OPERATIONS = [
     { name: "cancelSession", method: "POST", path: "/management/sessions/:sessionId/cancel", params: { sessionId: path("sessionId") }, summary: "Cancel a session." },
     { name: "completeSession", method: "POST", path: "/management/sessions/:sessionId/complete", params: { sessionId: path("sessionId"), reason: body() }, summary: "Mark a session completed." },
     { name: "stopSessionTurn", method: "POST", path: "/management/sessions/:sessionId/stop-turn", params: { sessionId: path("sessionId"), options: body() }, summary: "Abort the in-flight turn." },
-    { name: "setSessionModel", method: "POST", path: "/management/sessions/:sessionId/model", params: { sessionId: path("sessionId"), options: body() }, summary: "Switch the session model ({ model, reasoningEffort? })." },
+    { name: "setSessionModel", method: "POST", path: "/management/sessions/:sessionId/model", params: { sessionId: path("sessionId"), options: body() }, summary: "Switch the session model ({ model, reasoningEffort?, contextTier? })." },
     { name: "restartSystemSession", method: "POST", path: "/management/sessions/:agentIdOrSessionId/restart-system", params: { agentIdOrSessionId: path("agentIdOrSessionId"), options: body() }, summary: "Restart a system session (complete | terminate | hard_delete)." },
     { name: "exportExecutionHistory", method: "POST", path: "/management/sessions/:sessionId/export-execution-history", params: { sessionId: path("sessionId") }, summary: "Export execution history to an artifact; returns artifact meta." },
     { name: "getSessionStatus", method: "GET", path: "/management/sessions/:sessionId/status", params: { sessionId: path("sessionId") }, summary: "Live custom status + orchestration status." },

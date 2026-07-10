@@ -538,10 +538,20 @@ export function* handleCommand(
             const newEffort = hasEffort
                 ? (cmdMsg.args?.reasoningEffort ? String(cmdMsg.args.reasoningEffort) : null)
                 : oldEffort;
+            // Context-window tier is applied like reasoning effort: omitted from
+            // the args → preserve the session's current tier; present → apply it
+            // (the next turn rebinds the model, requiresModelRebind() sees the
+            // change). Durable via the checkpointed orchestration config.
+            const hasContextTier = cmdMsg.args?.contextTier !== undefined;
+            const oldContextTier = runtime.state.config.contextTier ?? null;
+            const newContextTier = hasContextTier
+                ? (cmdMsg.args?.contextTier ? String(cmdMsg.args.contextTier) : null)
+                : oldContextTier;
             runtime.state.config = {
                 ...runtime.state.config,
                 model: newModel,
                 ...(hasEffort ? { reasoningEffort: (newEffort ?? undefined) as typeof runtime.state.config.reasoningEffort } : {}),
+                ...(hasContextTier ? { contextTier: (newContextTier ?? undefined) as typeof runtime.state.config.contextTier } : {}),
             };
             const newModelLabel = newEffort ? `${newModel}:${newEffort}` : newModel;
             runtime.state.runtimeModelNotice = `Runtime model for this turn is ${newModelLabel}. If asked what model you are using, answer this value.`;
@@ -549,12 +559,12 @@ export function* handleCommand(
             yield runtime.manager.updateSessionModel(runtime.input.sessionId, newModel, newEffort);
             yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
                 eventType: "session.model_changed",
-                data: { oldModel, newModel, oldReasoningEffort: oldEffort, newReasoningEffort: newEffort, source: cmdMsg.args?.source ?? "user" },
+                data: { oldModel, newModel, oldReasoningEffort: oldEffort, newReasoningEffort: newEffort, oldContextTier, newContextTier, source: cmdMsg.args?.source ?? "user" },
             }]);
             const resp: CommandResponse = {
                 id: cmdMsg.id,
                 cmd: cmdMsg.cmd,
-                result: { ok: true, oldModel, newModel, oldReasoningEffort: oldEffort, newReasoningEffort: newEffort, appliesOn: "next_turn" },
+                result: { ok: true, oldModel, newModel, oldReasoningEffort: oldEffort, newReasoningEffort: newEffort, oldContextTier, newContextTier, appliesOn: "next_turn" },
             };
             yield* writeCommandResponse(runtime, resp);
             publishStatus(runtime, "idle");

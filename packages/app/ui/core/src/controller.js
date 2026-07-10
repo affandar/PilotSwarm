@@ -3514,10 +3514,8 @@ export class PilotSwarmUiController {
         const supported = normalizeReasoningEfforts(modelItem?.supportedReasoningEfforts);
         const selectedEffort = sessionOptions?.reasoningEffort || resolveDefaultReasoningEffort(modelItem);
         if (!supported.length || !selectedEffort) {
-            if (sessionOptions?.mode === "switchModel") {
-                await this.switchSessionModel({ ...sessionOptions, model: modelItem?.id });
-                return;
-            }
+            // No effort step for this model — fall through to the context-tier
+            // step, which handles both the new-session and switch-model flows.
             await this.openContextTierPicker(modelItem, sessionOptions);
             return;
         }
@@ -3553,7 +3551,9 @@ export class PilotSwarmUiController {
         // the catalog default ("default", the smaller window).
         const supported = normalizeContextTiers(modelItem?.supportedContextTiers);
         const selectedTier = sessionOptions?.contextTier || resolveDefaultContextTier(modelItem);
-        if (!supported.length || !selectedTier || sessionOptions?.mode === "switchModel") {
+        if (!supported.length || !selectedTier) {
+            // Model declares no context-window tiers — skip straight to applying
+            // the switch (switch flow) or to the agent picker (new-session flow).
             if (sessionOptions?.mode === "switchModel") {
                 await this.switchSessionModel({ ...sessionOptions, model: modelItem?.id });
                 return;
@@ -3679,9 +3679,12 @@ export class PilotSwarmUiController {
         await this.transport.setSessionModel(sessionId, {
             model,
             ...("reasoningEffort" in options ? { reasoningEffort: options.reasoningEffort ?? null } : {}),
+            ...("contextTier" in options ? { contextTier: options.contextTier ?? null } : {}),
             source: "ui",
         });
-        this.dispatch({ type: "ui/status", text: `Next turn will use ${options.reasoningEffort ? `${model}:${options.reasoningEffort}` : model}` });
+        const modelLabel = options.reasoningEffort ? `${model}:${options.reasoningEffort}` : model;
+        const tierSuffix = options.contextTier ? ` · ${CONTEXT_TIER_LABELS[options.contextTier] || options.contextTier}` : "";
+        this.dispatch({ type: "ui/status", text: `Next turn will use ${modelLabel}${tierSuffix}` });
         await this.refreshSessions();
     }
 
@@ -4485,13 +4488,6 @@ export class PilotSwarmUiController {
             if (previousFocus) {
                 this.setFocus(previousFocus);
             }
-            if (sessionOptions?.mode === "switchModel") {
-                await this.switchSessionModel({
-                    ...sessionOptions,
-                    ...(item?.id ? { reasoningEffort: item.id } : {}),
-                });
-                return;
-            }
             await this.openContextTierPicker(modal.modelItem, {
                 ...sessionOptions,
                 ...(item?.id ? { reasoningEffort: item.id } : {}),
@@ -4506,10 +4502,17 @@ export class PilotSwarmUiController {
             if (previousFocus) {
                 this.setFocus(previousFocus);
             }
-            await this.openSessionAgentPicker({
+            const nextOptions = {
                 ...sessionOptions,
                 ...(item?.id ? { contextTier: item.id } : {}),
-            });
+            };
+            // Switch-model flow ends here — apply the model/effort/tier switch.
+            // New-session flow continues to the agent picker.
+            if (sessionOptions?.mode === "switchModel") {
+                await this.switchSessionModel({ ...nextOptions, model: modal.modelItem?.id || sessionOptions.model });
+                return;
+            }
+            await this.openSessionAgentPicker(nextOptions);
             return;
         }
         if (modal.type === "sessionAgentPicker") {
@@ -6209,6 +6212,9 @@ export class PilotSwarmUiController {
                 return;
             case UI_COMMANDS.OPEN_MODEL_PICKER:
                 await this.openModelPicker();
+                return;
+            case UI_COMMANDS.OPEN_SWITCH_MODEL_PICKER:
+                await this.openSwitchModelPicker();
                 return;
             case UI_COMMANDS.OPEN_THEME_PICKER:
                 this.openThemePicker();

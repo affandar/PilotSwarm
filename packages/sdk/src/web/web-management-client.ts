@@ -85,7 +85,7 @@ export class WebPilotSwarmManagementClient {
         return this._api.call("stopSessionTurn", { sessionId, options: opts });
     }
 
-    async setSessionModel(sessionId: string, model: string, opts: { reasoningEffort?: string | null; source?: string } = {}): Promise<void> {
+    async setSessionModel(sessionId: string, model: string, opts: { reasoningEffort?: string | null; contextTier?: string | null; source?: string } = {}): Promise<void> {
         await this._api.call("setSessionModel", { sessionId, options: { model, ...opts } });
     }
 

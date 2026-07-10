@@ -63,7 +63,7 @@ import type {
 import { resolveStorageConfig, type StorageConfig } from "./storage-config.js";
 import { getDuroxideStorageProvider, getRuntimeStorageProvider } from "./storage-providers.js";
 import { SessionDumper } from "./session-dumper.js";
-import { loadModelProviders, type ModelProviderRegistry, type ModelDescriptor, type ReasoningEffort } from "./model-providers.js";
+import { loadModelProviders, type ModelProviderRegistry, type ModelDescriptor, type ReasoningEffort, type ContextTier } from "./model-providers.js";
 import { deriveStatusFromCmsAndRuntime, shouldSyncCompletedStatus, shouldSyncFailedStatus } from "./session-status.js";
 import { assertUnambiguousProvider, isWebOptions, type PilotSwarmWebOptions } from "./web/api-connection.js";
 import { WebPilotSwarmManagementClient } from "./web/web-management-client.js";
@@ -1163,7 +1163,7 @@ export class PilotSwarmManagementClient {
     async setSessionModel(
         sessionId: string,
         model: string,
-        opts?: { reasoningEffort?: ReasoningEffort | null; source?: string },
+        opts?: { reasoningEffort?: ReasoningEffort | null; contextTier?: ContextTier | null; source?: string },
     ): Promise<void> {
         this._ensureStarted();
         const trimmed = String(model || "").trim();
@@ -1185,6 +1185,15 @@ export class PilotSwarmManagementClient {
                 throw new Error(`Model ${trimmed} does not support reasoning effort '${nextReasoningEffort}'`);
             }
         }
+        // Context-window tier follows the same preserve-when-omitted contract.
+        const hasExplicitContextTier = !!opts && "contextTier" in opts;
+        const nextContextTier = hasExplicitContextTier ? (opts!.contextTier ?? null) : undefined;
+        if (nextContextTier) {
+            const supported = match.supportedContextTiers ?? [];
+            if (!supported.includes(nextContextTier)) {
+                throw new Error(`Model ${trimmed} does not support context tier '${nextContextTier}'`);
+            }
+        }
         const session = await this.getSession(sessionId).catch(() => null);
         if (!session) throw new Error(`Session ${sessionId.slice(0, 8)} was not found`);
         await this.sendCommand(sessionId, {
@@ -1193,6 +1202,7 @@ export class PilotSwarmManagementClient {
             args: {
                 model: trimmed,
                 ...(hasExplicitEffort ? { reasoningEffort: nextReasoningEffort } : {}),
+                ...(hasExplicitContextTier ? { contextTier: nextContextTier } : {}),
                 source: opts?.source ?? "user",
             },
         });

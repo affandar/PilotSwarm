@@ -1115,6 +1115,7 @@ export class NodeSdkTransport {
     async setSessionModel(sessionId, options = {}) {
         return this.mgmt.setSessionModel(sessionId, options.model, {
             ...("reasoningEffort" in options ? { reasoningEffort: options.reasoningEffort ?? null } : {}),
+            ...("contextTier" in options ? { contextTier: options.contextTier ?? null } : {}),
             source: options.source || "ui",
         });
     }

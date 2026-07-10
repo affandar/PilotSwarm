@@ -243,6 +243,7 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
         const isCtrlJ = matchesCtrlKey("j", "\n");
         const isCtrlA = matchesCtrlKey("a", "\u0001");
         const isShiftN = input === "N" || (key.shift && key.name === "n");
+        const isShiftM = !key.ctrl && !key.meta && !key.alt && (input === "M" || (key.shift && key.name === "m"));
         const isShiftD = input === "D" || (key.shift && key.name === "d");
         const isShiftT = !key.ctrl && !key.meta && !key.alt && (input === "T" || (key.shift && key.name === "t"));
         const isShiftA = !key.ctrl && !key.meta && !key.alt && (input === "A" || (key.shift && key.name === "a"));
@@ -546,6 +547,11 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
 
         if (focus !== "prompt" && isShiftN) {
             controller.handleCommand(UI_COMMANDS.OPEN_MODEL_PICKER).catch(() => {});
+            return;
+        }
+
+        if (focus !== "prompt" && isShiftM) {
+            controller.handleCommand(UI_COMMANDS.OPEN_SWITCH_MODEL_PICKER).catch(() => {});
             return;
         }
 

@@ -13,6 +13,7 @@ export const UI_COMMANDS = {
     REFRESH: "refresh",
     NEW_SESSION: "newSession",
     OPEN_MODEL_PICKER: "openModelPicker",
+    OPEN_SWITCH_MODEL_PICKER: "openSwitchModelPicker",
     OPEN_THEME_PICKER: "openThemePicker",
     OPEN_RENAME_SESSION: "openRenameSession",
     OPEN_SESSION_FILTER: "openSessionFilter",
