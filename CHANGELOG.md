@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.5 — 2026-07-10
+
+### Portal / TUI
+
+- **Answers to a pending question are delivered immediately instead of being
+  queued.** A question renders from the live `session.input_required_started`
+  event well before the slower `customStatus` detail-sync populates
+  `session.pendingQuestion`. An answer typed inside that window failed the
+  `pendingQuestion` gate and fell through to the outbox queue — where, being a
+  queued message rather than an orchestration answer, it sat unconsumed until
+  the next send flushed it. The controller now sets `pendingQuestion` + status
+  synchronously from the event (which already carries the question, choices, and
+  freeform flag) so the answer takes the direct `sendAnswer` path, and guards
+  that freshly-shown question against a stale same-age detail-sync that raced
+  the event. Affects both the portal and the TUI.
+
 ## 0.5.4 — 2026-07-10
 
 ### SDK
