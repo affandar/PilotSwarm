@@ -1,6 +1,6 @@
 import { isSessionLockAcquireTimeoutError, type SessionManager } from "./session-manager.js";
 import type { SessionStateStore } from "./session-store.js";
-import type { SessionCatalog } from "./cms.js";
+import { resolveEffectiveSpawnOwner, type SessionCatalog } from "./cms.js";
 import type { StorageConfig } from "./storage-config.js";
 import { SESSION_STATE_MISSING_PREFIX, type AbortTurnResult, type SerializableSessionConfig, type TurnResult, type OrchestrationInput } from "./types.js";
 import type { AgentConfig } from "./agent-loader.js";
@@ -1275,18 +1275,24 @@ export function registerActivities(
                         applyAgentDef(agentDef, resolvedAgentName !== args.agent_name);
                     }
 
-                    // A session spawned by a system session is itself a system
-                    // session. System sessions are ownerless, so a child inherits
-                    // no owner — its only route to a GitHub Copilot credential is
-                    // the ownerless SYSTEM identity (the admin-stored System key,
-                    // resolved from the child's own row.isSystem). Read the
-                    // parent's authoritative CMS row rather than any in-memory
-                    // flag (which does not survive a worker restart). Without
-                    // this, sub-agents of a working system session fail every
-                    // GitHub Copilot turn with "key not configured".
+                    // Spawned children inherit the parent lineage's EFFECTIVE
+                    // owner instead of any system flag: the nearest owned
+                    // ancestor's user, or — when the lineage is system (system
+                    // sessions are ownerless by design) — the concrete SYSTEM
+                    // user principal. Owning the child by the System user lets
+                    // it resolve the admin-stored System GitHub Copilot key
+                    // through the ordinary per-owner credential path while
+                    // staying a normal, deletable, manageable session
+                    // (deliberately NOT is_system — that flag blocks deletion
+                    // and pins it into the system tree). Read via the
+                    // authoritative CMS rows, not in-memory flags, so it
+                    // survives worker restarts.
+                    let inheritedOwner: import("./cms.js").UserPrincipal | null = null;
                     if (catalog) {
-                        const parentRow = await catalog.getSession(input.sessionId).catch(() => null);
-                        if (parentRow?.isSystem) agentIsSystem = true;
+                        inheritedOwner = await resolveEffectiveSpawnOwner(
+                            (id) => catalog!.getSession(id),
+                            input.sessionId,
+                        ).catch(() => null);
                     }
 
                     if (agentModel && !agentModel.includes(":")) {
@@ -1368,14 +1374,14 @@ export function registerActivities(
                         toolNames: childConfig.toolNames,
                         waitThreshold: childConfig.waitThreshold,
                         agentId,
+                        // Explicit owner takes the cms_set_session_owner path
+                        // (lazily registering the user row); when null, the CMS
+                        // falls back to copying the direct parent's owner row.
+                        ...(inheritedOwner ? { owner: inheritedOwner } : {}),
                     });
 
                     if (catalog) {
                         const meta: Record<string, any> = {};
-                        // Mark the child a system session BEFORE its bootstrap
-                        // turn is sent below, so its first GitHub Copilot turn
-                        // resolves the System key from its own row.isSystem.
-                        if (agentIsSystem) meta.isSystem = true;
                         if (agentTitle) {
                             meta.title = (agentTitleIsExplicit || agentIsSystem)
                                 ? agentTitle
@@ -2877,33 +2883,29 @@ export function registerActivities(
             }
             trace(`model normalization done (${input.config.model ?? "inherit"})`);
 
-            // Inherit the parent's owner so the spawned child renders under
-            // the same owner-filtered tree the parent already passes. System
-            // children stay unowned by design — they should always render
-            // under the system-include filter regardless of who triggered
-            // the spawn. For non-system children we walk up to the nearest
-            // owned ancestor so a system parent (e.g. Facts Manager)
-            // spawning a named agent on behalf of a user still attributes
-            // the new child to that user.
+            // Inherit the lineage's EFFECTIVE owner so the spawned child
+            // renders under the same owner-filtered tree the parent already
+            // passes: the nearest owned ancestor's user, or the SYSTEM user
+            // principal when the lineage is system (system sessions are
+            // ownerless by design — mapping to the System user lets the child
+            // resolve the admin-stored System GitHub Copilot key through the
+            // ordinary per-owner path while staying a normal deletable
+            // session). True system children (input.isSystem — the
+            // worker-managed agents) stay unowned by design and keep their
+            // is_system row flag.
             let inheritedOwner: any = null;
             if (!input.isSystem && catalog) {
                 const ownerLookupAt = Date.now();
-                let ancestorId: string | undefined = input.parentSessionId;
-                let hops = 0;
-                while (ancestorId && hops < 8) {
+                inheritedOwner = await resolveEffectiveSpawnOwner(
                     // Critical: skipping this read leaves the child unowned,
                     // making it invisible under owner-filtered tree views.
-                    const lookupId = ancestorId;
-                    const ancestor: any = await cmsRetryCritical(
-                        `spawnChildSession.getSession ancestor=${lookupId}`,
-                        () => catalog!.getSession(lookupId),
+                    (id) => cmsRetryCritical(
+                        `spawnChildSession.getSession ancestor=${id}`,
+                        () => catalog!.getSession(id),
                         (msg) => activityCtx.traceInfo(msg),
-                    );
-                    if (!ancestor) break;
-                    if (ancestor.owner) { inheritedOwner = ancestor.owner; break; }
-                    ancestorId = ancestor.parentSessionId || undefined;
-                    hops += 1;
-                }
+                    ),
+                    input.parentSessionId,
+                );
                 trace(`owner inheritance lookup done (${Date.now() - ownerLookupAt}ms; ${inheritedOwner ? "found" : "none"})`);
             }
 

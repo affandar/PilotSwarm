@@ -1,25 +1,23 @@
 /**
- * Sub-agent integration test: a child spawned by a SYSTEM session is itself a
- * system session — end to end, across the exact "worker didn't create it"
- * boundary that broke in production.
+ * Sub-agent integration test (real spawn path): a child spawned by a SYSTEM
+ * session inherits the SYSTEM user as its OWNER — it is NOT itself a system
+ * session, so it stays deletable and manageable.
  *
- * System sessions are ownerless, so a spawned child inherits no owner; its
- * only route to a GitHub Copilot credential is the ownerless SYSTEM identity
- * (the admin-stored System key, resolved only when the row is isSystem AND has
- * no owner). Two regressions had to be fixed for this to work:
+ * Why this shape: system sessions are ownerless by design, and the
+ * admin-stored System GitHub Copilot key is resolved per-owner. Marking
+ * children is_system (the 0.5.8 approach) reached the key but made every
+ * spawned child undeletable ("Cannot delete system session") and pinned it
+ * into the system tree. Instead the spawn paths now resolve the lineage's
+ * EFFECTIVE owner (resolveEffectiveSpawnOwner): nearest owned ancestor's
+ * user, or the SYSTEM user principal for a system lineage. The child then
+ * resolves the System key through the ordinary per-owner credential path
+ * (covered by system-copilot-key.test.js) while remaining an ordinary
+ * session.
  *
- *   1. handleSubAgentAction dropped the parent->child isSystem propagation
- *      (restored in orchestration/agents.ts; unit-guarded in
- *      system-child-propagation.test.js).
- *   2. The orchestration input's isSystem was read from the in-memory
- *      systemSessions set, which a worker restart empties for resumed managed
- *      system agents — so a system session run by a worker that didn't create
- *      it lost isSystem, and its spawned children came out non-system. Fixed
- *      by adopting the authoritative CMS row (client.ts _ensureOrchestrationAndSend).
- *
- * This test exercises both: the session is created by the test client, but the
- * (separate) embedded worker runs the turns — so it only sees the system flag
- * through the CMS row. The child must still be spawned as a system session.
+ * This exercises the REAL path end to end: the session is created by the
+ * test client but the co-located worker runs the turns and performs the
+ * spawn via controlBridge.spawnAgent — the exact boundary where both the
+ * 0.5.7 (wrong path) and pre-0.5.8 (no owner at all) regressions lived.
  *
  * Run: npx vitest run test/local/sub-agents/system-inheritance.test.js
  */
@@ -33,7 +31,7 @@ import { createCatalog } from "../../helpers/cms-helpers.js";
 const TIMEOUT = 180_000;
 const getEnv = useSuiteEnv(import.meta.url);
 
-async function testSystemChildInheritsIsSystem(env) {
+async function testSystemChildInheritsSystemOwner(env) {
     const catalog = await createCatalog(env);
 
     try {
@@ -63,14 +61,40 @@ async function testSystemChildInheritsIsSystem(env) {
             const child = children[0];
             console.log(`  Child ${child.sessionId.slice(0, 8)} isSystem=${child.isSystem} owner=${JSON.stringify(child.owner)}`);
 
+            // 1. NOT a system session — ordinary, manageable.
             assertEqual(
-                child.isSystem,
-                true,
-                "Child of a system session must itself be a system session so it can resolve the admin-stored System GHCP key",
+                Boolean(child.isSystem),
+                false,
+                "Child of a system session must NOT be a system session (that would make it undeletable)",
             );
+
+            // 2. Owned by the SYSTEM user — the credential identity that
+            //    resolves the admin-stored System GHCP key per-owner.
+            assert(child.owner, "Child must carry the inherited System owner, not be ownerless");
+            assertEqual(child.owner.provider, "system", "owner.provider is the System user");
+            assertEqual(child.owner.subject, "system", "owner.subject is the System user");
+
+            // 3. Deletable — the exact capability the is_system approach broke.
+            //    (Both the client guard and the CMS soft-delete refuse system
+            //    sessions, so success proves the child is a normal session.)
+            await client.deleteSession(child.sessionId);
+            const afterDelete = await catalog.listSessions();
             assert(
-                !child.owner,
-                "A system-session child is ownerless — it inherits the SYSTEM identity, not a user owner",
+                !afterDelete.some(s => s.sessionId === child.sessionId),
+                "Deleted child must no longer appear in the session list",
+            );
+            console.log("  Child deleted cleanly ✓");
+
+            // 4. Boundary check: the system PARENT itself stays protected.
+            let parentDeleteError = null;
+            try {
+                await client.deleteSession(system.sessionId);
+            } catch (err) {
+                parentDeleteError = err;
+            }
+            assert(
+                parentDeleteError && /system/i.test(String(parentDeleteError.message)),
+                "The system parent must still refuse deletion",
             );
         });
     } finally {
@@ -78,10 +102,10 @@ async function testSystemChildInheritsIsSystem(env) {
     }
 }
 
-describe("Sub-Agent: System Inheritance", () => {
+describe("Sub-Agent: System Owner Inheritance", () => {
     beforeAll(async () => { await preflightChecks(); });
 
-    it("child spawned by a system session is itself a system session (can reach the System GHCP key)", { timeout: TIMEOUT * 2 }, async () => {
-        await testSystemChildInheritsIsSystem(getEnv());
+    it("child of a system session is System-OWNED, non-system, and deletable", { timeout: TIMEOUT * 2 }, async () => {
+        await testSystemChildInheritsSystemOwner(getEnv());
     });
 });

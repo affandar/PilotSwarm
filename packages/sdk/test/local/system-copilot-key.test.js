@@ -139,6 +139,23 @@ describe("system session token resolution", () => {
         assertEqual(token, "SYSTEM_KEY", "system sessions act as the system principal");
     });
 
+    it("System-OWNED non-system sessions resolve the SYSTEM key via the ordinary owner path", async () => {
+        // The shape sub-agents of system sessions get since the effective-owner
+        // inheritance fix: owner = the System user, is_system = false. They
+        // must reach the admin-stored System key exactly like any owned
+        // session reaches its owner's key — while staying deletable (no
+        // is_system flag).
+        const token = await resolveWith({
+            row: {
+                sessionId: "s6",
+                isSystem: false,
+                owner: { provider: SYSTEM_USER_PRINCIPAL.provider, subject: SYSTEM_USER_PRINCIPAL.subject },
+            },
+            keys: KEYS,
+        });
+        assertEqual(token, "SYSTEM_KEY", "System-owned child resolves the System key without is_system");
+    });
+
     it("ownerless NON-system sessions get no per-user key (worker default applies)", async () => {
         const token = await resolveWith({
             row: { sessionId: "s3", isSystem: false, owner: null },

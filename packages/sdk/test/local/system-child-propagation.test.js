@@ -1,19 +1,14 @@
 /**
- * Unit test: handleSubAgentAction propagates a system parent's isSystem to
- * the child it spawns.
+ * Unit tests: what isSystem a spawned child gets from handleSubAgentAction.
  *
- * System sessions are ownerless. A spawned child inherits no owner, so its
- * ONLY route to a GitHub Copilot credential is the ownerless SYSTEM identity
- * (the admin-stored System key, which _resolveSessionGitHubToken resolves
- * only when the row is isSystem AND has no owner). The modular orchestration
- * dropped the parent->child isSystem propagation the pre-modular version had,
- * so a child spawned by a working system session was created ownerless AND
- * non-system and then failed GitHub Copilot turns with "GitHub Copilot key
- * not configured" — even though the parent ran fine on the System key.
- *
- * This drives handleSubAgentAction directly (no worker/LLM) and asserts the
- * child is spawned with isSystem = true whenever the parent runtime is a
- * system session, and inherits the agent-definition's own flag otherwise.
+ * Contract (post effective-owner-inheritance fix):
+ *   - a SYSTEM parent does NOT make its ad-hoc children system — they stay
+ *     ordinary deletable sessions and inherit the SYSTEM user as their OWNER
+ *     instead (resolveEffectiveSpawnOwner inside the spawnChildSession
+ *     activity), which is how they reach the admin-stored System GHCP key;
+ *   - the agent DEFINITION's own `system` flag still drives isSystem (the
+ *     worker-managed system agents bootstrap through this and must keep
+ *     their protected is_system rows).
  *
  * Run: npx vitest run test/local/system-child-propagation.test.js
  */
@@ -22,59 +17,79 @@ import { describe, it } from "vitest";
 import { handleSubAgentAction } from "../../src/orchestration/agents.ts";
 import { assertEqual } from "../helpers/assertions.js";
 
-// Drive the generator far enough that the spawnChildSession activity is
-// scheduled (the spy captures its args synchronously on the call). Benign
-// mock returns satisfy any follow-on yields; we only care about the spawn.
-function driveUntilSpawn(gen, isCaptured) {
+// Pump the generator, answering each yielded manager-activity marker via
+// `responders` until the spawn is captured (or the generator finishes).
+function pump(gen, responders, isDone) {
     let step = gen.next();
     let guard = 0;
-    while (!step.done && !isCaptured() && guard++ < 50) {
-        step = gen.next("mock-child-session-id");
+    while (!step.done && !isDone() && guard++ < 100) {
+        const tag = step.value?.__activity;
+        const responder = tag ? responders[tag] : undefined;
+        step = gen.next(responder ? responder(step.value) : undefined);
     }
 }
 
-function makeRuntime(optionsOverrides = {}) {
+function makeRuntime({ isSystem, agentDef = null }) {
     const captured = {};
     const runtime = {
         ctx: { traceInfo: () => {} },
         state: { subAgents: [], config: {} },
-        options: { isSystem: false, nestingLevel: 0, ...optionsOverrides },
+        options: { isSystem, nestingLevel: 0 },
         input: { sessionId: "parent-session" },
         manager: {
+            resolveAgentConfig: (name) => ({ __activity: "resolveAgentConfig", name }),
             // Signature: (parentSessionId, config, task, nestingLevel, isSystem, ...)
-            spawnChildSession: (_parentId, _config, _task, _nesting, isSystem) => {
-                captured.isSystem = isSystem;
+            spawnChildSession: (_parentId, _config, _task, _nesting, spawnIsSystem) => {
+                captured.isSystem = spawnIsSystem;
                 return { __activity: "spawnChildSession" };
             },
-            // Any other manager methods the post-spawn path might touch are
-            // harmless no-op yieldables — we stop at the spawn.
             recordSessionEvent: () => ({ __activity: "recordSessionEvent" }),
             sendToSession: () => ({ __activity: "sendToSession" }),
         },
     };
-    return { runtime, captured };
+    const responders = {
+        resolveAgentConfig: () => agentDef,
+        spawnChildSession: () => "mock-child-session-id",
+    };
+    return { runtime, captured, responders };
 }
 
-describe("sub-agent isSystem propagation", () => {
-    it("a system-session parent spawns its child as a system session", () => {
-        const { runtime, captured } = makeRuntime({ isSystem: true });
+describe("sub-agent isSystem contract", () => {
+    it("a SYSTEM parent's ad-hoc child is NOT a system session", () => {
+        const { runtime, captured, responders } = makeRuntime({ isSystem: true });
         const gen = handleSubAgentAction(runtime, { type: "spawn_agent", task: "Reply with DONE" });
-        driveUntilSpawn(gen, () => captured.isSystem !== undefined);
-        assertEqual(
-            captured.isSystem,
-            true,
-            "child of a system session must be spawned as a system session so it can reach the System GHCP key",
-        );
-    });
-
-    it("a non-system parent spawns a non-system custom child (no false positives)", () => {
-        const { runtime, captured } = makeRuntime({ isSystem: false });
-        const gen = handleSubAgentAction(runtime, { type: "spawn_agent", task: "Reply with DONE" });
-        driveUntilSpawn(gen, () => captured.isSystem !== undefined);
+        pump(gen, responders, () => captured.isSystem !== undefined);
         assertEqual(
             captured.isSystem,
             false,
-            "a custom child of a non-system session stays non-system (inherits the owner instead)",
+            "children of system sessions stay ordinary deletable sessions (they inherit the System OWNER instead)",
         );
+    });
+
+    it("a non-system parent's ad-hoc child is not a system session either", () => {
+        const { runtime, captured, responders } = makeRuntime({ isSystem: false });
+        const gen = handleSubAgentAction(runtime, { type: "spawn_agent", task: "Reply with DONE" });
+        pump(gen, responders, () => captured.isSystem !== undefined);
+        assertEqual(captured.isSystem, false);
+    });
+
+    it("an agent DEFINITION with system:true still spawns a system child (worker-managed agents)", () => {
+        const { runtime, captured, responders } = makeRuntime({
+            isSystem: false,
+            agentDef: { name: "managed-sys", id: "managed-sys", system: true, title: "Managed", initialPrompt: "Go." },
+        });
+        const gen = handleSubAgentAction(runtime, { type: "spawn_agent", agentName: "managed-sys" });
+        pump(gen, responders, () => captured.isSystem !== undefined);
+        assertEqual(captured.isSystem, true, "definition-driven system flag is preserved");
+    });
+
+    it("a SYSTEM parent spawning a NON-system agent definition does not upgrade it to system", () => {
+        const { runtime, captured, responders } = makeRuntime({
+            isSystem: true,
+            agentDef: { name: "helper", id: "helper", system: false, title: "Helper", initialPrompt: "Go." },
+        });
+        const gen = handleSubAgentAction(runtime, { type: "spawn_agent", agentName: "helper" });
+        pump(gen, responders, () => captured.isSystem !== undefined);
+        assertEqual(captured.isSystem, false, "parent system-ness must not leak into definition-driven children");
     });
 });

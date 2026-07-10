@@ -372,6 +372,57 @@ export const SYSTEM_USER_PRINCIPAL: UserPrincipal = {
     displayName: "System",
 };
 
+/**
+ * Resolve the owner a spawned sub-agent should inherit, by walking up the
+ * session lineage from `startSessionId` (normally the spawning parent):
+ *
+ * - The nearest ancestor with an owner wins — a user-owned parent's children
+ *   stay attributed to that user.
+ * - A SYSTEM ancestor (ownerless by design) maps to the concrete SYSTEM user
+ *   principal. The child is then a normal, deletable session whose owner is
+ *   the System user — so it resolves the admin-stored System GitHub Copilot
+ *   key through the ordinary per-owner credential path, WITHOUT being marked
+ *   `is_system` itself (which would make it undeletable/unmanageable).
+ * - An unresolvable lineage (missing rows, no owner, no system ancestor,
+ *   depth exhausted) yields null: the child is created ownerless, exactly as
+ *   before.
+ *
+ * Pure lineage logic — callers supply the row lookup so worker activities and
+ * unit tests share one implementation.
+ */
+export async function resolveEffectiveSpawnOwner(
+    getSession: (sessionId: string) => Promise<{
+        owner?: SessionOwnerInfo | null;
+        isSystem?: boolean;
+        parentSessionId?: string | null;
+    } | null | undefined>,
+    startSessionId: string | null | undefined,
+    maxDepth = 8,
+): Promise<UserPrincipal | null> {
+    let cursor: string | null | undefined = startSessionId;
+    for (let depth = 0; depth < maxDepth && cursor; depth++) {
+        let row: Awaited<ReturnType<typeof getSession>>;
+        try {
+            row = await getSession(cursor);
+        } catch {
+            return null;
+        }
+        if (!row) return null;
+        const owner = row.owner;
+        if (owner?.provider && owner?.subject) {
+            return {
+                provider: owner.provider,
+                subject: owner.subject,
+                email: owner.email ?? null,
+                displayName: owner.displayName ?? null,
+            };
+        }
+        if (row.isSystem) return { ...SYSTEM_USER_PRINCIPAL };
+        cursor = row.parentSessionId ?? null;
+    }
+    return null;
+}
+
 /** Aggregate of a session and all its descendants. */
 export interface SessionTreeStats {
     rootSessionId: string;

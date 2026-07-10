@@ -617,18 +617,13 @@ export function* handleSubAgentAction(
                 applyAgentDef(agentDef, resolvedAgentName !== result.agentName);
             }
 
-            // A session spawned by a system session is itself a system session.
-            // System sessions are ownerless, so a child inherits no owner — its
-            // only route to a GitHub Copilot credential is the ownerless SYSTEM
-            // identity, which resolves the admin-stored System key
-            // (_resolveSessionGitHubToken → SYSTEM_USER_PRINCIPAL, gated on
-            // row.isSystem). Without propagating isSystem here the child is
-            // ownerless AND non-system, so GitHub Copilot turns fail with
-            // "key not configured" even though the parent works. This restores
-            // the parent→child propagation the pre-modular orchestration had.
-            if (runtime.options.isSystem) {
-                agentIsSystem = true;
-            }
+            // NOTE: a system parent does NOT make its children system.
+            // agentIsSystem stays purely definition-driven (agentDef.system —
+            // the worker-managed agents). Ad-hoc children of system sessions
+            // are ordinary deletable sessions that inherit the SYSTEM user as
+            // their OWNER instead (resolveEffectiveSpawnOwner in the
+            // spawnChildSession activity), which is how they reach the
+            // admin-stored System GitHub Copilot key.
 
             if (agentModel && !agentModel.includes(":")) {
                 ctx.traceInfo(`[orch] spawn_agent denied: unqualified model override "${agentModel}"`);
