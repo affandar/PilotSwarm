@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.5.3 — 2026-07-09
+
+### SDK
+
+- **User-stopped turns record their prompt's `clientMessageIds`.** When a turn
+  is stopped mid-flight, the durable `session.turn_stopped` event now carries
+  the interrupted prompt's `clientMessageIds` — on both stop paths (the
+  abort-race that cancels an in-flight turn and the self-unwind where the turn
+  returns "stopped"). This lets clients correlate the stop back to the exact
+  prompt. Purely additive to the event payload — the durable-operation surface
+  is unchanged, so no orchestration version bump.
+
+### Portal / TUI
+
+- **Denser session list.** The session list is now single-line rows with a
+  right-aligned context-% column (green / amber ≥70 / red ≥85, `⇊` while
+  compacting), owner chips that surface only in a genuine multi-user context,
+  group rails, coarse relative-time buckets (`<1min · Nmin · NhMMm · NdHHh ·
+  Nw`), a compact `⏱` glyph for scheduled sessions, and an id·age·model·ctx
+  detail line that expands under the selected row. Untitled sessions pull
+  id·age·model onto the main line instead of rendering a bare `(guid)`.
+- **User-stopped prompts are marked.** A prompt whose turn you stopped now
+  shows an amber ⊘ ("no-parking") marker instead of the green `✓✓` sent check
+  — it was delivered, but you interrupted the turn, so it reads as stopped
+  rather than fully processed. Works in both the portal and the TUI.
+- **Crisp chat edge fades.** The transcript's top/bottom fades track real
+  overflow (no fade when nothing is clipped), and the wasted left gutter in the
+  chat/sequence panes is reclaimed.
+- **TUI fixes.** Esc on an empty prompt exits to navigation instead of being
+  swallowed; the live-activity strip and queued-prompt overlay are pinned to
+  the chat foot (matching the portal); and queued prompts render again (the
+  ChatPane selector had been dropping the outbox).
+
 ## 0.5.2 — 2026-07-08
 
 ### SDK
