@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.6** — The context-window tier selector is now part of Switch Model too (model → effort → context window → apply), threaded end-to-end through the `set_model` command, the management/web APIs, and the MCP `switch_model` tool; Switch Model also gains a TUI keybinding (`Shift+M`). Plus (v0.5.5) answers to a pending question are delivered immediately instead of being queued until the next message.
+> **Latest release: v0.5.7** — A child spawned by a system session is again a system session, so it can resolve the admin-stored System GitHub Copilot key (the parent→child `isSystem` propagation had regressed, leaving sub-agents of system sessions failing with "key not configured"). Plus (v0.5.6) the context-window tier selector in Switch Model + a `Shift+M` TUI keybinding, and (v0.5.5) immediate answer delivery for pending questions.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 

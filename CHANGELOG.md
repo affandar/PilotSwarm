@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.7 — 2026-07-10
+
+### SDK
+
+- **A child spawned by a system session is again a system session.** System
+  sessions are ownerless, so a spawned child inherits no owner — its only route
+  to a GitHub Copilot credential is the ownerless SYSTEM identity, i.e. the
+  admin-stored System key (`_resolveSessionGitHubToken` falls back to
+  `SYSTEM_USER_PRINCIPAL` only when the row is `isSystem` **and** has no owner).
+  The modular orchestration set a child's `isSystem` only from the spawned
+  agent definition's own `system` flag and dropped the parent→child propagation
+  the pre-modular orchestration had, so children of a working system session
+  came out ownerless **and** non-system and then failed every GitHub Copilot
+  turn with "GitHub Copilot key not configured" — even though the parent ran
+  fine on the System key. `handleSubAgentAction` now propagates the parent's
+  `isSystem` to the child.
+
 ## 0.5.6 — 2026-07-10
 
 ### SDK / API / MCP
