@@ -64,18 +64,6 @@
                         "xhigh"
                     ],
                     "defaultReasoningEffort": "medium"
-                },
-                {
-                    "name": "gpt-5.5",
-                    "description": "GPT-5.5. High-capability GPT model for advanced reasoning and coding tasks through GitHub Copilot.",
-                    "cost": "high",
-                    "supportedReasoningEfforts": [
-                        "low",
-                        "medium",
-                        "high",
-                        "xhigh"
-                    ],
-                    "defaultReasoningEffort": "medium"
                 }
             ]
         }
