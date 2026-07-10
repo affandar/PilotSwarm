@@ -163,6 +163,33 @@ function resolveDefaultReasoningEffort(model) {
     return supported[0] || null;
 }
 
+function normalizeContextTiers(values) {
+    if (!Array.isArray(values)) return [];
+    const out = [];
+    for (const raw of values) {
+        const value = String(raw || "").trim().toLowerCase();
+        if (!value || out.includes(value)) continue;
+        if (value !== "default" && value !== "long_context") continue;
+        out.push(value);
+    }
+    return out;
+}
+
+function resolveDefaultContextTier(model) {
+    const supported = normalizeContextTiers(model?.supportedContextTiers);
+    if (supported.length === 0) return null;
+    const candidate = String(model?.defaultContextTier || "").trim().toLowerCase();
+    if (candidate && supported.includes(candidate)) return candidate;
+    // Default to the smaller window.
+    if (supported.includes("default")) return "default";
+    return supported[0] || null;
+}
+
+const CONTEXT_TIER_LABELS = {
+    default: "Default (smaller window)",
+    long_context: "Long context (larger window, higher cost)",
+};
+
 function extractSessionModelFromEvents(events = []) {
     // Only explicit model-change events may update the session's model.
     // Deriving it from any event that happens to carry a `model` field lets
@@ -3464,7 +3491,7 @@ export class PilotSwarmUiController {
                 await this.switchSessionModel({ ...sessionOptions, model: modelItem?.id });
                 return;
             }
-            await this.openSessionAgentPicker(sessionOptions);
+            await this.openContextTierPicker(modelItem, sessionOptions);
             return;
         }
 
@@ -3490,6 +3517,44 @@ export class PilotSwarmUiController {
             },
         });
         this.dispatch({ type: "ui/status", text: "Select a reasoning effort and press Enter" });
+    }
+
+    async openContextTierPicker(modelItem, sessionOptions = {}) {
+        // Context-window tier step of the new-session flow. Only models whose
+        // catalog entry declares supportedContextTiers get this picker; all
+        // others skip straight to the agent picker. The preselected tier is
+        // the catalog default ("default", the smaller window).
+        const supported = normalizeContextTiers(modelItem?.supportedContextTiers);
+        const selectedTier = sessionOptions?.contextTier || resolveDefaultContextTier(modelItem);
+        if (!supported.length || !selectedTier || sessionOptions?.mode === "switchModel") {
+            if (sessionOptions?.mode === "switchModel") {
+                await this.switchSessionModel({ ...sessionOptions, model: modelItem?.id });
+                return;
+            }
+            await this.openSessionAgentPicker(sessionOptions);
+            return;
+        }
+
+        const items = supported.map((tier) => ({
+            id: tier,
+            tier,
+            label: CONTEXT_TIER_LABELS[tier] || tier,
+            isDefault: selectedTier === tier,
+        }));
+        const selectedIndex = Math.max(0, items.findIndex((item) => item.id === selectedTier));
+        this.dispatch({
+            type: "ui/modal",
+            modal: {
+                type: "contextTierPicker",
+                title: `Context window for ${modelItem?.modelName || modelItem?.qualifiedName || "model"}`,
+                items,
+                selectedIndex,
+                previousFocus: this.getState().ui.focusRegion,
+                modelItem,
+                sessionOptions,
+            },
+        });
+        this.dispatch({ type: "ui/status", text: "Select a context window and press Enter" });
     }
 
     async openModelPicker(sessionOptions = {}) {
@@ -3526,6 +3591,8 @@ export class PilotSwarmUiController {
                         cost: model.cost || null,
                         supportedReasoningEfforts: normalizeReasoningEfforts(model.supportedReasoningEfforts),
                         defaultReasoningEffort: model.defaultReasoningEffort || null,
+                        supportedContextTiers: normalizeContextTiers(model.supportedContextTiers),
+                        defaultContextTier: model.defaultContextTier || null,
                         isDefault: defaultModel === model.qualifiedName,
                     };
                     items.push(item);
@@ -4398,9 +4465,23 @@ export class PilotSwarmUiController {
                 });
                 return;
             }
-            await this.openSessionAgentPicker({
+            await this.openContextTierPicker(modal.modelItem, {
                 ...sessionOptions,
                 ...(item?.id ? { reasoningEffort: item.id } : {}),
+            });
+            return;
+        }
+        if (modal.type === "contextTierPicker") {
+            const item = modal.items?.[modal.selectedIndex || 0];
+            const previousFocus = modal.previousFocus;
+            const sessionOptions = modal.sessionOptions || {};
+            this.dispatch({ type: "ui/modal", modal: null });
+            if (previousFocus) {
+                this.setFocus(previousFocus);
+            }
+            await this.openSessionAgentPicker({
+                ...sessionOptions,
+                ...(item?.id ? { contextTier: item.id } : {}),
             });
             return;
         }

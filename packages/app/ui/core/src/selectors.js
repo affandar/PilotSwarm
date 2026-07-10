@@ -4131,6 +4131,55 @@ export function selectReasoningEffortPickerModal(state, maxWidth = 64) {
     };
 }
 
+export function selectContextTierPickerModal(state, maxWidth = 64) {
+    const modal = state.ui.modal;
+    if (!modal || modal.type !== "contextTierPicker") return null;
+
+    const items = Array.isArray(modal.items) ? modal.items : [];
+    const selectedIndex = Math.max(0, Number(modal.selectedIndex) || 0);
+    const contentWidth = Math.max(24, maxWidth - 4);
+
+    const rows = items.map((item, index) => {
+        const isSelected = index === selectedIndex;
+        const labelRuns = fitRuns([
+            { text: "· ", color: "gray" },
+            { text: String(item?.label || item?.id || "tier"), color: "white", bold: true },
+            ...(item?.isDefault ? [{ text: " ← model default", color: "gray" }] : []),
+        ], contentWidth);
+        return isSelected
+            ? buildActiveHighlightLine(labelRuns.map((run) => run.text).join("").padEnd(contentWidth, " "))
+            : labelRuns;
+    });
+
+    const selectedItem = items[selectedIndex] || null;
+    const modelItem = modal.modelItem || null;
+    const detailsLines = [
+        [{ text: modelItem?.modelName || modelItem?.qualifiedName || "Selected model", color: "white", bold: true }],
+        [{ text: `${modelItem?.providerId || "provider"} (${modelItem?.providerType || "provider"})`, color: "gray" }],
+        [{ text: "", color: "gray" }],
+        [{ text: selectedItem?.id ? `Using context window: ${selectedItem.id}` : "Choose a context window.", color: "white" }],
+        [{ text: "Long context costs more per token.", color: "gray" }],
+    ];
+
+    return {
+        title: modal.title || "Select context window",
+        rows,
+        selectedRowIndex: selectedIndex,
+        detailsTitle: "Context Window",
+        detailsLines,
+        idealWidth: Math.min(
+            Math.max(
+                46,
+                rows.reduce((max, row) => {
+                    if (Array.isArray(row)) return Math.max(max, flattenRunsLength(row));
+                    return Math.max(max, String(row?.text || "").length);
+                }, 0) + 4,
+            ),
+            maxWidth,
+        ),
+    };
+}
+
 export function selectSessionGroupPickerModal(state, maxWidth = 72) {
     const modal = state.ui.modal;
     if (!modal || modal.type !== "sessionGroupPicker") return null;

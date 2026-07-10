@@ -138,6 +138,8 @@ export interface TurnOptions {
 export interface SerializableSessionConfig {
     model?: string;
     reasoningEffort?: ReasoningEffort;
+    /** Context-window tier ("default" = smaller window; "long_context" = the model's long-context tier). */
+    contextTier?: import("./model-providers.js").ContextTier;
     systemMessage?: string | { mode: "append" | "replace"; content: string };
     /** Internal: orchestration-generated system guidance for the next turn only. */
     turnSystemPrompt?: string;

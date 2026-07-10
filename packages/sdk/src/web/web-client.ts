@@ -58,6 +58,7 @@ export class WebPilotSwarmClient {
     async createSession(config?: {
         model?: string;
         reasoningEffort?: string;
+        contextTier?: string;
         groupId?: string | null;
         onUserInputRequest?: UserInputHandler;
     } & Record<string, unknown>): Promise<WebPilotSwarmSession> {
@@ -69,6 +70,7 @@ export class WebPilotSwarmClient {
         const view = await this._api.call("createSession", {
             model: config?.model,
             reasoningEffort: config?.reasoningEffort,
+            contextTier: config?.contextTier,
             groupId: config?.groupId,
         });
         return new WebPilotSwarmSession(view.sessionId, this._api, config?.onUserInputRequest);
@@ -77,6 +79,7 @@ export class WebPilotSwarmClient {
     async createSessionForAgent(agentName: string, opts?: {
         model?: string;
         reasoningEffort?: string;
+        contextTier?: string;
         title?: string;
         splash?: string;
         splashMobile?: string;
@@ -88,6 +91,7 @@ export class WebPilotSwarmClient {
             agentName,
             model: opts?.model,
             reasoningEffort: opts?.reasoningEffort,
+            contextTier: opts?.contextTier,
             title: opts?.title,
             splash: opts?.splash,
             splashMobile: opts?.splashMobile,

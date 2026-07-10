@@ -27,7 +27,12 @@
                     "supportedReasoningEfforts": [
                         "medium"
                     ],
-                    "defaultReasoningEffort": "medium"
+                    "defaultReasoningEffort": "medium",
+                    "supportedContextTiers": [
+                        "default",
+                        "long_context"
+                    ],
+                    "defaultContextTier": "default"
                 },
                 {
                     "name": "gpt-5.6-sol",
@@ -39,7 +44,12 @@
                         "high",
                         "xhigh"
                     ],
-                    "defaultReasoningEffort": "medium"
+                    "defaultReasoningEffort": "medium",
+                    "supportedContextTiers": [
+                        "default",
+                        "long_context"
+                    ],
+                    "defaultContextTier": "default"
                 },
                 {
                     "name": "gpt-5.6-luna",
@@ -51,7 +61,12 @@
                         "high",
                         "xhigh"
                     ],
-                    "defaultReasoningEffort": "medium"
+                    "defaultReasoningEffort": "medium",
+                    "supportedContextTiers": [
+                        "default",
+                        "long_context"
+                    ],
+                    "defaultContextTier": "default"
                 },
                 {
                     "name": "gpt-5.6-terra",
@@ -63,7 +78,12 @@
                         "high",
                         "xhigh"
                     ],
-                    "defaultReasoningEffort": "medium"
+                    "defaultReasoningEffort": "medium",
+                    "supportedContextTiers": [
+                        "default",
+                        "long_context"
+                    ],
+                    "defaultContextTier": "default"
                 }
             ]
         },

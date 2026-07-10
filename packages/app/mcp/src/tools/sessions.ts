@@ -23,11 +23,12 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                 title: z.string().min(1).max(512).optional().describe("Optional title — if omitted, PilotSwarm auto-generates one from the conversation after the first turn"),
                 prompt: z.string().optional().describe("Initial message to send immediately after session creation (fire-and-forget)"),
                 reasoning_effort: z.string().optional().describe("Reasoning effort for the session's model (e.g. low, medium, high)"),
+                context_tier: z.string().optional().describe("Context-window tier for the session's model: 'default' (smaller window) or 'long_context'"),
                 group_id: z.string().optional().describe("Session group to create the session in"),
                 splash: z.string().optional().describe("Splash text shown in the portal UI (agent-bound sessions only)"),
             },
         },
-        async ({ model, agent, system_message, title, prompt, reasoning_effort, group_id, splash }) => {
+        async ({ model, agent, system_message, title, prompt, reasoning_effort, context_tier, group_id, splash }) => {
             try {
                 // system_message is a worker-side option with no Web API
                 // carrier: the web client silently DROPS it (it is not sent
@@ -55,6 +56,7 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                             model,
                             title,
                             reasoningEffort: reasoning_effort,
+                            contextTier: context_tier,
                             groupId: group_id,
                             splash,
                         } as any);
@@ -64,6 +66,7 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                         model,
                         ...(ctx.webMode ? {} : { systemMessage: system_message }),
                         reasoningEffort: reasoning_effort,
+                        contextTier: context_tier,
                         groupId: group_id,
                     } as any);
                 }

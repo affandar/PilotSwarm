@@ -826,10 +826,26 @@ export class SessionManager {
         const resolvedProvider = registry?.resolve(effectiveModel);
         const resolvedProviderConfig = this._resolveProviderConfig(effectiveModel);
         let sdkModelName = effectiveModel;
+        let modelDescriptor: import("./model-providers.js").ModelDescriptor | undefined;
         if (registry && effectiveModel) {
             const desc = registry.getDescriptor(effectiveModel);
-            if (desc) sdkModelName = desc.modelName;
+            if (desc) {
+                sdkModelName = desc.modelName;
+                modelDescriptor = desc;
+            }
         }
+
+        // Context-window tier: only models whose catalog entry declares
+        // supportedContextTiers get the field at all. An explicit valid tier
+        // wins; otherwise fall back to the catalog default ("default" — the
+        // smaller window — per registry normalization). A stale/invalid tier
+        // on a tier-less model is dropped rather than forwarded.
+        const supportedTiers = modelDescriptor?.supportedContextTiers ?? [];
+        config.contextTier = supportedTiers.length > 0
+            ? (config.contextTier && supportedTiers.includes(config.contextTier)
+                ? config.contextTier
+                : (modelDescriptor?.defaultContextTier ?? "default"))
+            : undefined;
 
         // Resolve the per-user GitHub Copilot token only when a catalog
         // is wired in. Skipping the await on the no-catalog path matters
@@ -998,6 +1014,7 @@ export class SessionManager {
             tools: allTools,
             model: sdkModelName,
             ...(config.reasoningEffort ? { reasoningEffort: config.reasoningEffort } : {}),
+            ...(config.contextTier ? { contextTier: config.contextTier } : {}),
             systemMessage: systemMessage
                 ? (typeof systemMessage === "string" ? { content: systemMessage } : systemMessage)
                 : undefined,

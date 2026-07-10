@@ -168,7 +168,7 @@ export { createInspectTools } from "./inspect-tools.js";
 export { createResourceManagerTools } from "./resourcemgr-tools.js";
 // Model providers
 export { loadModelProviders, ModelProviderRegistry } from "./model-providers.js";
-export type { ModelEntry, ModelDescriptor, ModelProviderConfig, ModelProvidersFile, ResolvedProvider, ReasoningEffort } from "./model-providers.js";
+export type { ModelEntry, ModelDescriptor, ModelProviderConfig, ModelProvidersFile, ResolvedProvider, ReasoningEffort, ContextTier } from "./model-providers.js";
 export { composeSystemPrompt, extractPromptContent, mergePromptSections } from "./prompt-layering.js";
 export type { PromptLayeringKind } from "./prompt-layering.js";
 export {

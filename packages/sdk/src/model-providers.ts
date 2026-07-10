@@ -22,6 +22,13 @@ import path from "node:path";
 /** Reasoning effort levels accepted by the Copilot SDK. */
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 
+/**
+ * Context-window tier accepted by the Copilot SDK (CLI 1.0.6x+).
+ * "default" is the smaller/cheaper window; "long_context" pins the session to
+ * the model's long-context tier (larger window, higher token cost).
+ */
+export type ContextTier = "default" | "long_context";
+
 /** A model entry within a provider. */
 export interface ModelEntry {
     /** Model name (deployment name for Azure). */
@@ -34,6 +41,10 @@ export interface ModelEntry {
     supportedReasoningEfforts?: ReasoningEffort[];
     /** Optional default reasoning effort when creating sessions. */
     defaultReasoningEffort?: ReasoningEffort;
+    /** Optional context-window tiers exposed in the UI for this model. */
+    supportedContextTiers?: ContextTier[];
+    /** Optional default context tier when creating sessions (prefer "default", the smaller window). */
+    defaultContextTier?: ContextTier;
 }
 
 /** A single provider entry in model_providers.json. */
@@ -87,6 +98,10 @@ export interface ModelDescriptor {
     supportedReasoningEfforts?: ReasoningEffort[];
     /** Optional default reasoning effort when creating sessions. */
     defaultReasoningEffort?: ReasoningEffort;
+    /** Optional context-window tiers exposed in the UI for this model. */
+    supportedContextTiers?: ContextTier[];
+    /** Optional default context tier when creating sessions. */
+    defaultContextTier?: ContextTier;
 }
 
 /** Resolved provider info for a specific model — ready to use. */
@@ -152,6 +167,14 @@ export class ModelProviderRegistry {
                 const defaultReasoningEffort = supportedReasoningEfforts.includes(entry.defaultReasoningEffort as ReasoningEffort)
                     ? entry.defaultReasoningEffort
                     : undefined;
+                const supportedContextTiers = normalizeContextTiers(entry.supportedContextTiers);
+                // Default to the smaller window: an explicit valid default wins,
+                // otherwise "default" whenever tiers are offered at all.
+                const defaultContextTier = supportedContextTiers.length > 0
+                    ? (supportedContextTiers.includes(entry.defaultContextTier as ContextTier)
+                        ? entry.defaultContextTier
+                        : "default")
+                    : undefined;
                 const qualified = `${p.id}:${entry.name}`;
                 const desc: ModelDescriptor = {
                     qualifiedName: qualified,
@@ -162,6 +185,8 @@ export class ModelProviderRegistry {
                     cost: entry.cost,
                     ...(supportedReasoningEfforts.length > 0 ? { supportedReasoningEfforts } : {}),
                     ...(defaultReasoningEffort ? { defaultReasoningEffort } : {}),
+                    ...(supportedContextTiers.length > 0 ? { supportedContextTiers } : {}),
+                    ...(defaultContextTier ? { defaultContextTier } : {}),
                 };
                 this.descriptors.set(qualified, desc);
                 this.qualifiedToProvider.set(qualified, p);
@@ -287,8 +312,11 @@ export class ModelProviderRegistry {
                 const reasoningLabel = m.supportedReasoningEfforts?.length
                     ? ` [reasoning: ${m.supportedReasoningEfforts.join(", ")}${m.defaultReasoningEffort ? `; default: ${m.defaultReasoningEffort}` : ""}]`
                     : "";
+                const contextTierLabel = m.supportedContextTiers?.length
+                    ? ` [context: ${m.supportedContextTiers.join(", ")}${m.defaultContextTier ? `; default: ${m.defaultContextTier}` : ""}]`
+                    : "";
                 const desc = m.description ? ` — ${m.description}` : "";
-                lines.push(`- ${m.qualifiedName}${costLabel}${reasoningLabel}${desc}`);
+                lines.push(`- ${m.qualifiedName}${costLabel}${reasoningLabel}${contextTierLabel}${desc}`);
             }
         }
         lines.push(`\nDefault: ${this._defaultModel || "none"}`);
@@ -434,6 +462,20 @@ function normalizeReasoningEfforts(values?: ReasoningEffort[]): ReasoningEffort[
         if (!REASONING_EFFORTS.has(value)) continue;
         if (out.includes(value as ReasoningEffort)) continue;
         out.push(value as ReasoningEffort);
+    }
+    return out;
+}
+
+const CONTEXT_TIERS = new Set(["default", "long_context"]);
+
+function normalizeContextTiers(values?: ContextTier[]): ContextTier[] {
+    if (!Array.isArray(values)) return [];
+    const out: ContextTier[] = [];
+    for (const raw of values) {
+        const value = String(raw || "").trim().toLowerCase();
+        if (!CONTEXT_TIERS.has(value)) continue;
+        if (out.includes(value as ContextTier)) continue;
+        out.push(value as ContextTier);
     }
     return out;
 }

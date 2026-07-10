@@ -150,6 +150,7 @@ export class PilotSwarmClient {
             const fullConfig: ManagedSessionConfig = {
                 model: config.model,
                 reasoningEffort: config.reasoningEffort,
+                contextTier: config.contextTier,
                 systemMessage: config.systemMessage,
                 boundAgentName: config.boundAgentName,
                 promptLayering: config.promptLayering,
@@ -199,6 +200,7 @@ export class PilotSwarmClient {
     async createSessionForAgent(agentName: string, opts?: {
         model?: string;
         reasoningEffort?: ManagedSessionConfig["reasoningEffort"];
+        contextTier?: ManagedSessionConfig["contextTier"];
         onUserInputRequest?: UserInputHandler;
         toolNames?: string[];
         title?: string;
@@ -219,6 +221,7 @@ export class PilotSwarmClient {
         const session = await this.createSession({
             model: opts?.model,
             reasoningEffort: opts?.reasoningEffort,
+            contextTier: opts?.contextTier,
             toolNames: opts?.toolNames,
             onUserInputRequest: opts?.onUserInputRequest,
             agentId: agentName,
@@ -504,6 +507,13 @@ export class PilotSwarmClient {
 
         const serializableConfig: SerializableSessionConfig = {
             model: fullConfig?.model,
+            // Creation-time model options must ride the durable orchestration
+            // input — the worker builds the CopilotSession from input.config,
+            // not from the CMS row (the CMS copy is for display/management).
+            // reasoningEffort was historically omitted here, which silently
+            // dropped the user's creation-time effort on the worker side.
+            reasoningEffort: fullConfig?.reasoningEffort,
+            contextTier: fullConfig?.contextTier,
             systemMessage: fullConfig?.systemMessage,
             workingDirectory: fullConfig?.workingDirectory,
             waitThreshold: fullConfig?.waitThreshold ?? this.config.waitThreshold,

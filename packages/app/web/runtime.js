@@ -361,6 +361,7 @@ export class PortalRuntime {
                 return this.transport.createSession({
                     model: safeParams.model,
                     reasoningEffort: safeParams.reasoningEffort,
+                    contextTier: safeParams.contextTier,
                     groupId: safeParams.groupId,
                     owner,
                 });
@@ -368,6 +369,7 @@ export class PortalRuntime {
                 return this.transport.createSessionForAgent(safeParams.agentName, {
                     model: safeParams.model,
                     reasoningEffort: safeParams.reasoningEffort,
+                    contextTier: safeParams.contextTier,
                     title: safeParams.title,
                     splash: safeParams.splash,
                     splashMobile: safeParams.splashMobile,

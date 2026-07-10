@@ -331,6 +331,8 @@ export interface ModelSummary {
     cost?: string;
     supportedReasoningEfforts?: ReasoningEffort[];
     defaultReasoningEffort?: ReasoningEffort;
+    supportedContextTiers?: import("./model-providers.js").ContextTier[];
+    defaultContextTier?: import("./model-providers.js").ContextTier;
 }
 
 /** Credential availability for a configured model provider. */
@@ -2241,6 +2243,8 @@ export class PilotSwarmManagementClient {
             cost: m.cost,
             ...(m.supportedReasoningEfforts?.length ? { supportedReasoningEfforts: m.supportedReasoningEfforts } : {}),
             ...(m.defaultReasoningEffort ? { defaultReasoningEffort: m.defaultReasoningEffort } : {}),
+            ...(m.supportedContextTiers?.length ? { supportedContextTiers: m.supportedContextTiers } : {}),
+            ...(m.defaultContextTier ? { defaultContextTier: m.defaultContextTier } : {}),
         }));
     }
 
@@ -2261,6 +2265,8 @@ export class PilotSwarmManagementClient {
                 cost: m.cost,
                 ...(m.supportedReasoningEfforts?.length ? { supportedReasoningEfforts: m.supportedReasoningEfforts } : {}),
                 ...(m.defaultReasoningEffort ? { defaultReasoningEffort: m.defaultReasoningEffort } : {}),
+                ...(m.supportedContextTiers?.length ? { supportedContextTiers: m.supportedContextTiers } : {}),
+                ...(m.defaultContextTier ? { defaultContextTier: m.defaultContextTier } : {}),
             })),
         }));
     }

@@ -956,23 +956,25 @@ export class NodeSdkTransport {
         );
     }
 
-    async createSession({ model, reasoningEffort, owner, groupId } = {}) {
+    async createSession({ model, reasoningEffort, contextTier, owner, groupId } = {}) {
         const effectiveModel = await this.assertSessionModelCreatable({ model, owner });
         const session = await this.client.createSession({
             ...(effectiveModel ? { model: effectiveModel } : {}),
             ...(reasoningEffort ? { reasoningEffort } : {}),
+            ...(contextTier ? { contextTier } : {}),
             ...(owner ? { owner } : {}),
             ...(groupId ? { groupId } : {}),
         });
         this.sessionHandles.set(session.sessionId, session);
-        return { sessionId: session.sessionId, model: effectiveModel, reasoningEffort: reasoningEffort || undefined };
+        return { sessionId: session.sessionId, model: effectiveModel, reasoningEffort: reasoningEffort || undefined, contextTier: contextTier || undefined };
     }
 
-    async createSessionForAgent(agentName, { model, reasoningEffort, title, splash, splashMobile, initialPrompt, owner, groupId } = {}) {
+    async createSessionForAgent(agentName, { model, reasoningEffort, contextTier, title, splash, splashMobile, initialPrompt, owner, groupId } = {}) {
         const effectiveModel = await this.assertSessionModelCreatable({ model, owner });
         const session = await this.client.createSessionForAgent(agentName, {
             ...(effectiveModel ? { model: effectiveModel } : {}),
             ...(reasoningEffort ? { reasoningEffort } : {}),
+            ...(contextTier ? { contextTier } : {}),
             ...(title ? { title } : {}),
             ...(splash ? { splash } : {}),
             ...(splashMobile ? { splashMobile } : {}),

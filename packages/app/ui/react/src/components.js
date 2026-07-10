@@ -22,6 +22,7 @@ import {
     selectLogFilterModal,
     selectModelPickerModal,
     selectReasoningEffortPickerModal,
+    selectContextTierPickerModal,
     selectRenameSessionModal,
     selectSessionAgentPickerModal,
     selectSessionGroupNameModal,
@@ -1078,6 +1079,60 @@ function ReasoningEffortPickerModalContainer({ controller }) {
     return React.createElement(ReasoningEffortPickerModal, { state });
 }
 
+function ContextTierPickerModal({ state }) {
+    const platform = useUiPlatform();
+    const modal = selectContextTierPickerModal(state);
+    if (!modal) return null;
+
+    const viewport = typeof platform.getViewport === "function"
+        ? platform.getViewport()
+        : { width: 120, height: 40 };
+    const width = Math.max(46, Math.min(modal.idealWidth || 64, (viewport.width || 120) - 16));
+    const listHeight = Math.max(7, Math.min(modal.rows.length + 2, 10, (viewport.height || 40) - 16));
+    const detailsHeight = Math.max(6, Math.min(8, (viewport.height || 40) - listHeight - 10));
+    const lines = modal.rows.length > 0
+        ? modal.rows
+        : [{ text: "No context windows available.", color: "gray" }];
+    const contentRows = Math.max(1, listHeight - 2);
+    const scrollOffset = Math.max(0, modal.selectedRowIndex - Math.floor(contentRows / 2));
+
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Column, { width },
+            React.createElement(platform.Panel, {
+                title: modal.title,
+                color: "cyan",
+                focused: false,
+                width,
+                height: listHeight,
+                lines,
+                scrollOffset,
+                scrollMode: "top",
+                marginBottom: 1,
+                fillColor: "surface",
+            }),
+            React.createElement(platform.Panel, {
+                title: modal.detailsTitle || "Context Window",
+                color: "cyan",
+                focused: false,
+                width,
+                height: detailsHeight,
+                lines: modal.detailsLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                fillColor: "surface",
+            }),
+        ));
+}
+
+function ContextTierPickerModalContainer({ controller }) {
+    const state = useControllerSelector(controller, (rootState) => ({
+        ui: {
+            modal: rootState.ui.modal,
+        },
+    }), shallowEqualObject);
+    return React.createElement(ContextTierPickerModal, { state });
+}
+
 function SessionAgentPickerModal({ state }) {
     const platform = useUiPlatform();
     const modal = selectSessionAgentPickerModal(state);
@@ -2056,6 +2111,7 @@ export function SharedPilotSwarmApp({ controller, versionLabel = null }) {
         React.createElement(HelpModalContainer, { controller }),
         React.createElement(ModelPickerModalContainer, { controller }),
         React.createElement(ReasoningEffortPickerModalContainer, { controller }),
+        React.createElement(ContextTierPickerModalContainer, { controller }),
         React.createElement(ThemePickerModalContainer, { controller }),
         React.createElement(SessionAgentPickerModalContainer, { controller }),
         React.createElement(SessionGroupPickerModalContainer, { controller }),

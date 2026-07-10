@@ -30,6 +30,7 @@ import {
     selectLogFilterModal,
     selectModelPickerModal,
     selectReasoningEffortPickerModal,
+    selectContextTierPickerModal,
     selectRenameSessionModal,
     selectSessionAgentPickerModal,
     selectSessionGroupNameModal,
@@ -3352,6 +3353,7 @@ function ModalLayer({ controller }) {
         themePicker: selectThemePickerModal(state),
         modelPicker: selectModelPickerModal(state),
         reasoningEffortPicker: selectReasoningEffortPickerModal(state),
+        contextTierPicker: selectContextTierPickerModal(state),
         sessionAgentPicker: selectSessionAgentPickerModal(state),
         sessionGroupPicker: selectSessionGroupPickerModal(state),
         sessionGroupName: selectSessionGroupNameModal(state),
@@ -3406,6 +3408,7 @@ function ModalLayer({ controller }) {
             "themePicker",
             "modelPicker",
             "reasoningEffortPicker",
+            "contextTierPicker",
             "sessionAgentPicker",
             "sessionGroupPicker",
             "artifactPicker",
@@ -3429,6 +3432,7 @@ function ModalLayer({ controller }) {
         modalState.themePicker?.selectedRowIndex,
         modalState.modelPicker?.selectedRowIndex,
         modalState.reasoningEffortPicker?.selectedRowIndex,
+        modalState.contextTierPicker?.selectedRowIndex,
         modalState.sessionAgentPicker?.selectedRowIndex,
         modalState.sessionGroupPicker?.selectedRowIndex,
         modalState.artifactPicker?.selectedRowIndex,
@@ -3445,7 +3449,7 @@ function ModalLayer({ controller }) {
     const renderListModal = (presentation, confirmLabel = "Apply") => {
         const rows = Array.isArray(presentation.rows) ? presentation.rows : [];
         const rowItemIndexes = Array.isArray(presentation.rowItemIndexes) ? presentation.rowItemIndexes : null;
-        const usesHangingIndent = modal.type === "modelPicker" || modal.type === "reasoningEffortPicker" || modal.type === "sessionAgentPicker";
+        const usesHangingIndent = modal.type === "modelPicker" || modal.type === "reasoningEffortPicker" || modal.type === "contextTierPicker" || modal.type === "sessionAgentPicker";
         const renderedList = rowItemIndexes && rowItemIndexes.length === rows.length
             ? rows.map((row, rowIndex) => {
                 const itemIndex = rowItemIndexes[rowIndex];
@@ -3539,6 +3543,9 @@ function ModalLayer({ controller }) {
     }
     if (modal.type === "reasoningEffortPicker" && modalState.reasoningEffortPicker) {
         return renderListModal(modalState.reasoningEffortPicker, pickerConfirmLabel);
+    }
+    if (modal.type === "contextTierPicker" && modalState.contextTierPicker) {
+        return renderListModal(modalState.contextTierPicker, pickerConfirmLabel);
     }
     if (modal.type === "sessionAgentPicker" && modalState.sessionAgentPicker) {
         return renderListModal(modalState.sessionAgentPicker, "Create Session");
