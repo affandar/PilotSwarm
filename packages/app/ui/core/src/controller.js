@@ -300,7 +300,12 @@ function buildSessionMergePatch(previousSession, nextSession) {
         changed = true;
     }
 
-    if (nextSession.pendingQuestion === undefined && previousSession?.pendingQuestion && nextSession.status !== "input_required") {
+    if (nextSession.pendingQuestion === undefined && previousSession?.pendingQuestion && nextSession.status !== "input_required"
+        && !isSameOrOlderSessionUpdate(previousSession, nextSession)) {
+        // Only a genuinely newer update may clear a pending question. A stale or
+        // in-flight detail-sync that raced the input_required_started event (and
+        // so still reports the pre-question status with no pendingQuestion) must
+        // not wipe the question the user is looking at.
         patch.pendingQuestion = null;
         changed = true;
     }
@@ -3026,6 +3031,28 @@ export class PilotSwarmUiController {
             sessionId,
             history: appendEventToHistory(existing, event),
         });
+        // The input_required_started event carries the full question payload and
+        // reaches us on the live event stream — well ahead of the slower
+        // customStatus detail-sync (scheduleSessionDetailSync below). Set
+        // pendingQuestion + status synchronously so an answer typed the moment the
+        // question appears takes the direct sendAnswer path instead of being
+        // misrouted into the outbox queue, where it would sit until a later send
+        // flushed it. The eventual detail-sync reconciles to the authoritative
+        // customStatus.
+        if (event.eventType === "session.input_required_started" && event.data?.question) {
+            this.dispatch({
+                type: "sessions/merged",
+                session: {
+                    sessionId,
+                    status: "input_required",
+                    pendingQuestion: {
+                        question: event.data.question,
+                        choices: Array.isArray(event.data.choices) ? event.data.choices : undefined,
+                        allowFreeform: event.data.allowFreeform ?? true,
+                    },
+                },
+            });
+        }
         this.reconcileOutboxAgainstEvent(sessionId, event);
         const derivedModel = extractSessionModelFromEvent(event);
         const currentSession = this.getState().sessions.byId[sessionId] || { sessionId };

@@ -520,6 +520,86 @@ describe("session refresh UI recovery", () => {
         }
     });
 
+    it("routes an answer typed the instant a question arrives to sendAnswer, not the outbox queue", async () => {
+        const sendAnswerCalls = [];
+        const sendMessageCalls = [];
+        const { controller, store } = createController({
+            // The slower customStatus detail-sync has not caught up yet: it would
+            // still report the pre-question running status with no pendingQuestion.
+            getSession: async () => ({ sessionId: "q-session", status: "running", createdAt: 1, updatedAt: 100 }),
+            sendAnswer: async (sessionId, answer) => { sendAnswerCalls.push({ sessionId, answer }); },
+            sendMessage: async (sessionId, text, opts) => { sendMessageCalls.push({ sessionId, text, opts }); },
+        });
+
+        store.dispatch({
+            type: "sessions/loaded",
+            sessions: [{ sessionId: "q-session", title: "Q", status: "running", createdAt: 1, updatedAt: 100 }],
+        });
+        store.dispatch({ type: "sessions/selected", sessionId: "q-session" });
+
+        // The question arrives on the live event stream (ahead of the detail-sync).
+        controller.mergeSessionEvent("q-session", {
+            seq: 5,
+            eventType: "session.input_required_started",
+            createdAt: 200,
+            data: { question: "Which recovery path?", choices: ["a", "b"], allowFreeform: false },
+        });
+
+        // Fix part 1: pendingQuestion is available synchronously, from the event.
+        assertEqual(
+            store.getState().sessions.byId["q-session"].pendingQuestion?.question,
+            "Which recovery path?",
+            "input_required_started event sets pendingQuestion immediately",
+        );
+
+        // The user answers right away — before any detail-sync runs.
+        controller.setPrompt("run the repo-cache cleanup and retry", 0);
+        await controller.sendPrompt();
+
+        assertEqual(sendAnswerCalls.length, 1, "answer took the direct sendAnswer path");
+        assertEqual(sendAnswerCalls[0].answer, "run the repo-cache cleanup and retry", "answer text delivered as the answer");
+        assertEqual(sendMessageCalls.length, 0, "answer was NOT misrouted into the outbox queue");
+    });
+
+    it("keeps a freshly-shown pending question when a stale same-age detail-sync races it", async () => {
+        let detail = { sessionId: "q2-session", status: "running", createdAt: 1, updatedAt: 100 };
+        const { controller, store } = createController({
+            getSession: async () => detail,
+        });
+        store.dispatch({
+            type: "sessions/loaded",
+            sessions: [{ sessionId: "q2-session", title: "Q2", status: "running", createdAt: 1, updatedAt: 100 }],
+        });
+        store.dispatch({ type: "sessions/selected", sessionId: "q2-session" });
+
+        controller.mergeSessionEvent("q2-session", {
+            seq: 3,
+            eventType: "session.input_required_started",
+            createdAt: 150,
+            data: { question: "Pick one", choices: ["x"], allowFreeform: false },
+        });
+        assertEqual(store.getState().sessions.byId["q2-session"].pendingQuestion?.question, "Pick one", "question shown from the event");
+
+        // Fix part 2: a same-age (stale/in-flight) detail-sync that raced the event
+        // still reports "running" with no pendingQuestion — it must not wipe it.
+        await controller.syncSessionDetail("q2-session");
+        assertEqual(
+            store.getState().sessions.byId["q2-session"].pendingQuestion?.question,
+            "Pick one",
+            "stale same-age detail-sync must not clear the pending question",
+        );
+
+        // A genuinely newer detail-sync that reports the session moved past the
+        // question does clear it.
+        detail = { sessionId: "q2-session", status: "idle", createdAt: 1, updatedAt: 300 };
+        await controller.syncSessionDetail("q2-session");
+        assertEqual(
+            store.getState().sessions.byId["q2-session"].pendingQuestion ?? null,
+            null,
+            "a newer detail-sync past input_required clears the pending question",
+        );
+    });
+
     it("keeps cron row metadata stable when a same-age detail refresh omits cron fields", async () => {
         let detailStatus = {
             sessionId: "cron-joke-session",
