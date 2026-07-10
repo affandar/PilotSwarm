@@ -1799,6 +1799,12 @@ export function registerActivities(
                 "assistant.message_delta",
                 "assistant.streaming_delta",
                 "assistant.reasoning_delta",
+                // Tool-call argument streaming fragments — the same transient
+                // per-token class as the other *_delta events. The assembled
+                // call is persisted separately as tool.execution_start, so
+                // recording these only bloats the CMS stream and floods the
+                // client event buffer (starving the milestone-only sequence view).
+                "assistant.tool_call_delta",
                 "user.message", // Already recorded explicitly above — skip the SDK's duplicate
             ]);
             const onEvent = catalog
