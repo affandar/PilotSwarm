@@ -2663,7 +2663,14 @@ export function registerActivities(
                 rawTitle: string,
                 source: "llm" | "fallback",
             ): Promise<string> => {
-                const title = rawTitle.slice(0, 60).trim();
+                // Defensive cleanup: models occasionally wrap the title in
+                // quotes or add trailing punctuation despite instructions.
+                const cleaned = String(rawTitle || "")
+                    .trim()
+                    .replace(/^["'`“”‘’]+|["'`“”‘’]+$/g, "")
+                    .replace(/[.。!?…\s]+$/g, "")
+                    .trim();
+                const title = cleaned.slice(0, 60).trim();
                 if (!title) return "";
                 const finalTitle = agentTitlePrefix ? `${agentTitlePrefix}: ${title}` : title;
                 if (finalTitle === session?.title) return "";
@@ -2688,8 +2695,14 @@ export function registerActivities(
 
             const transcript = lines.join("\n");
             const summaryPrompt =
-                "Summarize the following conversation in exactly 3-5 words. " +
-                "Return ONLY the summary, nothing else. No quotes, no punctuation at the end.\n\n" +
+                "Write a short, specific title (4-8 words) for this session so it is easy to " +
+                "recognize in a long session list. Capture WHAT the session is about — the task, " +
+                "target system, repo, PR, workflow, or goal — never the latest status update, a " +
+                "greeting, or repeated monitoring chatter. For a recurring/supervision loop, name " +
+                "what it monitors or produces, not the current cycle's progress. Prefer concrete " +
+                "nouns and identifiers from the conversation (repo names, PR/work-item numbers, " +
+                "feature names). Ignore filler or nonsense fragments in the transcript. " +
+                "Return ONLY the title: no quotes, no trailing punctuation, no preamble.\n\n" +
                 transcript;
 
             // Use a one-shot CopilotSession to generate the title.
