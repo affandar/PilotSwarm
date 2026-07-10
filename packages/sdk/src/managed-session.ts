@@ -1647,8 +1647,14 @@ export class ManagedSession {
             ...subAgentToolsForTurn,
         ];
 
-        // Re-register tools for this turn (may have changed)
-        this.copilotSession.registerTools(allTools);
+        // Re-register tools for this turn (may have changed). Tool
+        // *declarations* reach the CLI server via sessionConfig.tools at
+        // create/resume; this call only refreshes the client-side handler map
+        // so per-turn closures dispatch correctly. copilot-sdk 1.0.6 removed
+        // registerTools from the public types (it was always @internal) but
+        // ships it unchanged in dist/session.js — cast until a public
+        // handler-refresh API exists.
+        (this.copilotSession as any).registerTools(allTools);
 
         // Collect the final assistant content and all events via on()
         let finalContent: string | undefined;
@@ -2127,9 +2133,11 @@ export class ManagedSession {
 
     /**
      * Get conversation messages from the underlying session.
+     * copilot-sdk 1.0.6 renamed getMessages() → getEvents() (same
+     * "session.getMessages" RPC underneath); keep our wrapper name stable.
      */
     async getMessages(): Promise<unknown[]> {
-        return this.copilotSession.getMessages();
+        return this.copilotSession.getEvents();
     }
 
     /**
@@ -2138,6 +2146,7 @@ export class ManagedSession {
     updateConfig(config: Partial<ManagedSessionConfig>): void {
         if (config.model !== undefined) this.config.model = config.model;
         if (config.reasoningEffort !== undefined) this.config.reasoningEffort = config.reasoningEffort;
+        if (config.contextTier !== undefined) this.config.contextTier = config.contextTier;
         if (config.tools !== undefined) this.config.tools = config.tools;
         if (config.systemMessage !== undefined) this.config.systemMessage = config.systemMessage;
         if (config.turnSystemPrompt !== undefined) this.config.turnSystemPrompt = config.turnSystemPrompt;
@@ -2151,9 +2160,17 @@ export class ManagedSession {
         const nextReasoningEffort = config.reasoningEffort !== undefined
             ? config.reasoningEffort ?? null
             : this.config.reasoningEffort ?? null;
+        // Context tier is a session-creation option on the Copilot side —
+        // changing it (like model or effort) requires a fresh CopilotSession.
+        const currentContextTier = this.config.contextTier ?? null;
+        const nextContextTier = config.contextTier !== undefined
+            ? config.contextTier ?? null
+            : this.config.contextTier ?? null;
         return Boolean(
             (currentModel || nextModel)
-            && (currentModel !== nextModel || currentReasoningEffort !== nextReasoningEffort)
+            && (currentModel !== nextModel
+                || currentReasoningEffort !== nextReasoningEffort
+                || currentContextTier !== nextContextTier)
         );
     }
 

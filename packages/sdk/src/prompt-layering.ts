@@ -2,7 +2,7 @@ import type {
     SectionOverride,
     SystemMessageConfig,
     SystemMessageCustomizeConfig,
-    SystemPromptSection,
+    SystemMessageSection,
 } from "@github/copilot-sdk";
 import type { SerializableSessionConfig } from "./types.js";
 import type { PromptLayerDescriptor } from "./prompt-layers.js";
@@ -21,7 +21,7 @@ export interface ComposeSystemPromptOptions {
 }
 
 export interface ComposeStructuredSystemMessageOptions extends ComposeSystemPromptOptions {
-    additionalSections?: Partial<Record<SystemPromptSection, SectionOverride>>;
+    additionalSections?: Partial<Record<SystemMessageSection, SectionOverride>>;
     additionalContent?: string | null;
 }
 
@@ -72,8 +72,8 @@ export function extractPromptContent(
 
 export function buildPromptLayerSections(
     options: ComposeSystemPromptOptions,
-): Partial<Record<SystemPromptSection, SectionOverride>> {
-    const sections: Partial<Record<SystemPromptSection, SectionOverride>> = {};
+): Partial<Record<SystemMessageSection, SectionOverride>> {
+    const sections: Partial<Record<SystemMessageSection, SectionOverride>> = {};
     const frameworkBase = normalizeSection(options.frameworkBase);
     const appDefault = options.includeAppDefault === false ? undefined : normalizeSection(options.appDefault);
     const activeAgentPrompt = normalizeSection(options.activeAgentPrompt);
