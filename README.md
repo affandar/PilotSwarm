@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.5** — Answers to a pending question are delivered immediately (direct `sendAnswer`) instead of being misrouted into the outbox queue while the `pendingQuestion` state syncs, so an answer no longer sits "queued" until the next message flushes it (portal + TUI).
+> **Latest release: v0.5.6** — The context-window tier selector is now part of Switch Model too (model → effort → context window → apply), threaded end-to-end through the `set_model` command, the management/web APIs, and the MCP `switch_model` tool; Switch Model also gains a TUI keybinding (`Shift+M`). Plus (v0.5.5) answers to a pending question are delivered immediately instead of being queued until the next message.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 

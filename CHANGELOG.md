@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.5.6 — 2026-07-10
+
+### SDK / API / MCP
+
+- **Context-window tier is now part of the Switch Model path, end to end.** The
+  durable `set_model` command handler applies `contextTier` to the session
+  config like reasoning effort — omitted preserves the current tier, present
+  rebinds the model on the next turn (via the existing `requiresModelRebind`).
+  `management-client.setSessionModel` (and the web-management client) validate
+  the tier against the target model's `supportedContextTiers` and forward it,
+  and the MCP `switch_model` tool gains a `context_tier` argument (Web API
+  mode). The `POST /management/sessions/:id/model` body accepts `contextTier`.
+
+### Portal / TUI
+
+- **Switch Model offers the context-window step.** Previously the picker chain
+  was model → effort → apply; for tier-capable models it is now model → effort
+  → context window → apply (tier-less models still apply directly), preselecting
+  the smaller window. Works in both the portal and the TUI.
+- **Switch Model is reachable in the TUI.** It had no keybinding (only the
+  portal button); it is now bound to `Shift+M` (sibling of `Shift+N` =
+  new+model) and listed in the keybinding help.
+
 ## 0.5.5 — 2026-07-10
 
 ### Portal / TUI
