@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.3** — A denser single-line session list (context-% column, on-demand owner chips, a scheduled-session glyph, expand-on-select detail), an amber ⊘ marker for prompts whose turn you stopped, crisp overflow-tracking chat edge fades, and TUI fixes (Esc-to-navigate, pinned activity strip, queued-prompt rendering).
+> **Latest release: v0.5.4** — A per-session context-window tier selector (`default` / `long_context`, defaulting to the smaller window) surfaced through the creation APIs, model providers, and a new picker step; the 1.0.70 Copilot CLI + 1.0.6 SDK; a refreshed model catalog (GPT-5.6 sol/luna/terra in, Claude 4.6/4.7 + GPT-5.5 out); more descriptive session titles; a reasoning-effort-on-creation fix; and a blank-sequence-diagram fix (tool-call deltas are no longer persisted).
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 

@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.5.4 — 2026-07-10
+
+### SDK
+
+- **Context-window tier selector.** Sessions can now choose a Copilot
+  context-window tier via a new `contextTier` field (`"default"` |
+  `"long_context"`) on the creation APIs, threaded from `model_providers.json`
+  (`supportedContextTiers` / `defaultContextTier`) through `createSession`, the
+  durable orchestration input, and the worker's `CopilotSession`. Tiers are
+  declared per-model and **always default to the smaller ("default") window**;
+  models that declare no tiers are unaffected. This closes the gap where the
+  same model reported wildly different context limits depending only on the CLI
+  version.
+- **Upgraded to the 1.0.70 Copilot CLI and 1.0.6 Copilot SDK** (from 1.0.50 /
+  1.0.0-beta.4). The newer CLI introduces the context-window tiers above and no
+  longer exposes the built-in `report_intent` / `write_bash` tools.
+- **Reasoning effort now survives session creation.** The durable orchestration
+  input (`serializableConfig`) had been dropping `reasoningEffort`, so a fresh
+  session ran at the model's default effort even though the CMS and UI showed
+  the requested level (only a later *Switch Model* would take effect). The
+  serialized config now carries both `reasoningEffort` and `contextTier`.
+- **Model catalog refresh.** Added GPT-5.6 (`sol` / `luna` / `terra`) alongside
+  Claude Opus 4.8, and retired Claude 4.6/4.7 and GPT-5.5 from the GitHub
+  Copilot provider.
+- **More descriptive session titles.** The title-generation prompt now asks for
+  a task/topic-naming 4–8 word title (ignoring status chatter and filler)
+  instead of a terse 3–5 word fragment, with defensive quote/punctuation
+  stripping on the result.
+- **Stop persisting `assistant.tool_call_delta` to the CMS.** The assembled
+  tool call is already recorded as `tool.execution_start`; persisting the
+  streaming deltas flooded the capped history buffer and evicted the milestone
+  events the sequence diagram plots (leaving it blank). The delta is now
+  ephemeral, like the other streaming deltas.
+
+### Portal / TUI
+
+- **Context-window picker.** The new-session flow gains a dedicated
+  context-window step after the reasoning-effort picker, offered only for
+  models that declare tiers, preselecting the smaller window. Wired into both
+  the portal and the TUI.
+
 ## 0.5.3 — 2026-07-09
 
 ### SDK
