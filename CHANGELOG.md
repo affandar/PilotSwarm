@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.5.8 — 2026-07-10
+
+### SDK
+
+- **Sub-agents of a system session are marked system in the spawn path the LLM
+  actually uses.** 0.5.7 restored the parent→child `isSystem` propagation in
+  `handleSubAgentAction`, but the `spawn_agent` tool routes through
+  `controlBridge.spawnAgent` (session-proxy) — a separate, near-duplicate spawn
+  path that never set the child's `isSystem` at all (it computed `agentIsSystem`
+  from the agent definition and used it only for the title). So sub-agents of a
+  working system session were still created non-system and kept failing GitHub
+  Copilot turns with "key not configured". The real path now reads the parent's
+  authoritative CMS row (not any in-memory flag, which a worker restart drops)
+  and sets the child's `is_system` **before** its bootstrap turn is sent, so the
+  child's first turn resolves the System key from its own row. The
+  orchestration input also adopts `cmsRow.isSystem` in
+  `_ensureOrchestrationAndSend`, so a resumed system session's flag survives
+  worker restarts. Guarded by a restored end-to-end integration test that
+  exercises the real path (it failed against the 0.5.7 build).
+
 ## 0.5.7 — 2026-07-10
 
 ### SDK
