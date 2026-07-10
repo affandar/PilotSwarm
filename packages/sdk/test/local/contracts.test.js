@@ -78,7 +78,8 @@ const EXPECTED_LLM_VISIBLE_TOOL_NAMES = [
     "list_bash",
     "read_agent",
     "read_bash",
-    "report_intent",
+    // report_intent and write_bash were built-in Copilot CLI tools in 1.0.50;
+    // the 1.0.70 CLI no longer exposes them.
     "parallel",
     "rg",
     "skill",
@@ -87,7 +88,6 @@ const EXPECTED_LLM_VISIBLE_TOOL_NAMES = [
     "stop_bash",
     "view",
     "web_fetch",
-    "write_bash",
 ];
 
 // Derive the expected enhanced tools from the SAME storage registry the SDK

@@ -25,17 +25,29 @@ describe("starter docker model config", () => {
         expect(config.defaultModel).toBe("github-copilot:claude-sonnet-5");
         expect(names).toEqual([
             "claude-sonnet-5",
-            "claude-sonnet-4.6",
             "gpt-5.4",
             "gpt-5.4-mini",
             "claude-opus-4.8",
-            "claude-opus-4.6",
-            "gpt-5.5",
+            "gpt-5.6-sol",
+            "gpt-5.6-luna",
+            "gpt-5.6-terra",
         ]);
+        // Retired from the catalog.
         expect(names).not.toContain("claude-opus-4.7");
+        expect(names).not.toContain("claude-opus-4.6");
+        expect(names).not.toContain("claude-sonnet-4.6");
+        expect(names).not.toContain("gpt-5.5");
         expect(names).not.toContain("gpt-5-mini");
         expect(names).not.toContain("gpt-5.4-nano");
         expect(names).not.toContain("gpt-5.1");
+
+        // Context-window tiers are declared on the models that support them,
+        // and always default to the smaller ("default") window.
+        for (const name of ["claude-opus-4.8", "gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.6-terra"]) {
+            const model = provider.models.find((m) => (typeof m === "string" ? m : m.name) === name);
+            expect(model.supportedContextTiers).toEqual(["default", "long_context"]);
+            expect(model.defaultContextTier).toBe("default");
+        }
     });
 
     it("persists starter SSH host keys in the data volume", () => {
