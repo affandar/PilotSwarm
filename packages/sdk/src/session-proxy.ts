@@ -1275,6 +1275,20 @@ export function registerActivities(
                         applyAgentDef(agentDef, resolvedAgentName !== args.agent_name);
                     }
 
+                    // A session spawned by a system session is itself a system
+                    // session. System sessions are ownerless, so a child inherits
+                    // no owner — its only route to a GitHub Copilot credential is
+                    // the ownerless SYSTEM identity (the admin-stored System key,
+                    // resolved from the child's own row.isSystem). Read the
+                    // parent's authoritative CMS row rather than any in-memory
+                    // flag (which does not survive a worker restart). Without
+                    // this, sub-agents of a working system session fail every
+                    // GitHub Copilot turn with "key not configured".
+                    if (catalog) {
+                        const parentRow = await catalog.getSession(input.sessionId).catch(() => null);
+                        if (parentRow?.isSystem) agentIsSystem = true;
+                    }
+
                     if (agentModel && !agentModel.includes(":")) {
                         return `[SYSTEM: spawn_agent failed — model "${agentModel}" is not allowed. ` +
                             `When overriding a sub-agent model, first call list_available_models and then use the exact provider:model value from that list. ` +
@@ -1358,6 +1372,10 @@ export function registerActivities(
 
                     if (catalog) {
                         const meta: Record<string, any> = {};
+                        // Mark the child a system session BEFORE its bootstrap
+                        // turn is sent below, so its first GitHub Copilot turn
+                        // resolves the System key from its own row.isSystem.
+                        if (agentIsSystem) meta.isSystem = true;
                         if (agentTitle) {
                             meta.title = (agentTitleIsExplicit || agentIsSystem)
                                 ? agentTitle

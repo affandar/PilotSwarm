@@ -525,6 +525,15 @@ export class PilotSwarmClient {
         trace(`[client] ensureOrchestrationAndSend start session=${sessionId} active=${this.activeOrchestrations.has(sessionId)}`);
 
         const cmsRow = await this._catalog.getSession(sessionId);
+        // The CMS row's is_system flag is authoritative and durable; the
+        // in-memory systemSessions set is not — a worker restart empties it,
+        // and a resumed managed system agent (a deterministic system child,
+        // reused not re-created) is never re-added. Without adopting the row
+        // here, a resumed system session's orchestration input loses isSystem,
+        // so the children it spawns come out non-system and cannot resolve the
+        // admin-stored System GitHub Copilot key (the parent still resolves it
+        // via its own row, which is why only the sub-agents fail).
+        if (cmsRow?.isSystem) this.systemSessions.add(sessionId);
         if (
             (cmsRow?.state === "completed" || cmsRow?.state === "cancelled")
             && cmsRow.parentSessionId
