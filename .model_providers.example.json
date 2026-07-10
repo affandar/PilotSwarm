@@ -15,27 +15,44 @@
                     "defaultReasoningEffort": "medium"
                 },
                 {
-                    "name": "claude-opus-4.6",
-                    "description": "Claude Opus 4.6. Most capable model. Deep reasoning, complex multi-step tasks, nuanced analysis. Use for hard problems where quality matters most.",
+                    "name": "gpt-5.6-sol",
+                    "description": "GPT-5.6 Sol via GitHub Copilot. High-capability GPT-5.6 variant for advanced reasoning and coding; ~1M-token context.",
                     "cost": "high",
                     "supportedReasoningEfforts": [
-                        "medium"
+                        "low",
+                        "medium",
+                        "high",
+                        "xhigh"
+                    ],
+                    "defaultReasoningEffort": "medium"
+                },
+                {
+                    "name": "gpt-5.6-luna",
+                    "description": "GPT-5.6 Luna via GitHub Copilot. High-capability GPT-5.6 variant for advanced reasoning and coding; ~1M-token context.",
+                    "cost": "high",
+                    "supportedReasoningEfforts": [
+                        "low",
+                        "medium",
+                        "high",
+                        "xhigh"
+                    ],
+                    "defaultReasoningEffort": "medium"
+                },
+                {
+                    "name": "gpt-5.6-terra",
+                    "description": "GPT-5.6 Terra via GitHub Copilot. High-capability GPT-5.6 variant for advanced reasoning and coding; ~1M-token context.",
+                    "cost": "high",
+                    "supportedReasoningEfforts": [
+                        "low",
+                        "medium",
+                        "high",
+                        "xhigh"
                     ],
                     "defaultReasoningEffort": "medium"
                 },
                 {
                     "name": "claude-sonnet-5",
                     "description": "Claude Sonnet 5. Latest Sonnet — strong all-rounder with improved reasoning and coding over 4.6.",
-                    "cost": "medium",
-                    "supportedReasoningEfforts": [
-                        "medium",
-                        "high"
-                    ],
-                    "defaultReasoningEffort": "medium"
-                },
-                {
-                    "name": "claude-sonnet-4.6",
-                    "description": "Claude Sonnet 4.6. Strong all-rounder. Good balance of capability and speed. Use for general coding, analysis, and multi-step tasks.",
                     "cost": "medium",
                     "supportedReasoningEfforts": [
                         "medium",

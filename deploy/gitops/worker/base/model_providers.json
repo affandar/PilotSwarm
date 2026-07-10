@@ -11,11 +11,6 @@
                     "cost": "medium"
                 },
                 {
-                    "name": "claude-sonnet-4.6",
-                    "description": "Claude Sonnet 4.6. Balanced default for everyday coding, chat, and multi-step work.",
-                    "cost": "medium"
-                },
-                {
                     "name": "gpt-5.4",
                     "description": "GPT-5.4. Strong flagship GPT model for harder reasoning, planning, and coding tasks through GitHub Copilot.",
                     "cost": "high"
@@ -35,9 +30,40 @@
                     "defaultReasoningEffort": "medium"
                 },
                 {
-                    "name": "claude-opus-4.6",
-                    "description": "Claude Opus 4.6. Most capable option for deeper analysis and harder tasks.",
-                    "cost": "high"
+                    "name": "gpt-5.6-sol",
+                    "description": "GPT-5.6 Sol via GitHub Copilot. High-capability GPT-5.6 variant for advanced reasoning and coding; ~1M-token context.",
+                    "cost": "high",
+                    "supportedReasoningEfforts": [
+                        "low",
+                        "medium",
+                        "high",
+                        "xhigh"
+                    ],
+                    "defaultReasoningEffort": "medium"
+                },
+                {
+                    "name": "gpt-5.6-luna",
+                    "description": "GPT-5.6 Luna via GitHub Copilot. High-capability GPT-5.6 variant for advanced reasoning and coding; ~1M-token context.",
+                    "cost": "high",
+                    "supportedReasoningEfforts": [
+                        "low",
+                        "medium",
+                        "high",
+                        "xhigh"
+                    ],
+                    "defaultReasoningEffort": "medium"
+                },
+                {
+                    "name": "gpt-5.6-terra",
+                    "description": "GPT-5.6 Terra via GitHub Copilot. High-capability GPT-5.6 variant for advanced reasoning and coding; ~1M-token context.",
+                    "cost": "high",
+                    "supportedReasoningEfforts": [
+                        "low",
+                        "medium",
+                        "high",
+                        "xhigh"
+                    ],
+                    "defaultReasoningEffort": "medium"
                 },
                 {
                     "name": "gpt-5.5",
