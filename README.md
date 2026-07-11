@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.8** — Sub-agents of a system session are now marked system in the spawn path the `spawn_agent` tool actually uses (`controlBridge.spawnAgent`), so they resolve the admin-stored System GitHub Copilot key from their own row instead of failing with "key not configured" (the 0.5.7 fix landed in a different, unused spawn path). Plus (v0.5.6) the context-window tier selector in Switch Model + a `Shift+M` TUI keybinding, and (v0.5.5) immediate answer delivery for pending questions.
+> **Latest release: v0.5.9** — Sub-agents of a system session now inherit the SYSTEM *user* as their owner (staying deletable and manageable) instead of being marked `is_system`, while still resolving the admin-stored System GitHub Copilot key through the ordinary per-owner path. Plus portal session-owner-filter fixes — one unified "System" bucket, a default view that reliably shows your own sessions, and a filter list that stays live while open — and light dividers between rows in the full-screen session list.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 

@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.5.9 — 2026-07-10
+
+### SDK
+
+- **A sub-agent spawned by a system session now inherits the SYSTEM *user* as
+  its owner instead of being marked `is_system`.** 0.5.7/0.5.8 fixed the Copilot
+  "key not configured" failure by propagating `isSystem` to the child, but that
+  made every spawned child undeletable and unmanageable ("Cannot delete system
+  session") and pinned it into the system tree. Both spawn paths
+  (`controlBridge.spawnAgent` and the `spawnChildSession` activity) now resolve
+  the lineage's *effective owner* through a single shared
+  `resolveEffectiveSpawnOwner` walk: the nearest owned ancestor's user wins, and
+  a system ancestor maps to the first-class SYSTEM user principal. The child is a
+  normal, deletable session that resolves the admin-stored System key through the
+  ordinary per-owner credential path — with no `is_system` flag. Definition-driven
+  system agents still get their protected `is_system` rows.
+
+### Portal
+
+- **One "System" bucket in the session owner filter.** System-agent children are
+  now owned by the SYSTEM user (above), which previously minted a second,
+  duplicate "System" owner entry beside the static one. The single System filter
+  now covers both `is_system` agents and System-owned children; the duplicate
+  bucket is gone.
+- **The default view reliably shows your own sessions.** The portal's
+  "no persisted filter" fallback was a mount-time snapshot of the owner filter
+  (`{all:true}` before the principal resolved), which could drift a signed-in
+  user's saved filter to All — or briefly hide their own sessions. The fallback
+  is now derived from the resolved principal (Me + System), recomputed each
+  profile-settings poll.
+- **The owner-filter list stays live while open.** Its entries were snapshotted
+  at open time; the periodic catalog refresh mutated owners underneath it, so a
+  newly-arrived owner never appeared without reopening. The open modal now
+  rebuilds its entries in place (preserving the highlighted row) on each refresh.
+- **Light row dividers in the full-screen portal session list** — hairlines
+  between top-level rows in the desktop portal only (not the mobile portal, and
+  not the TUI).
+
 ## 0.5.8 — 2026-07-10
 
 ### SDK
