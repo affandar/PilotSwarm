@@ -40,6 +40,7 @@ import {
     selectStatusBar,
     selectThemePickerModal,
     selectConfirmModal,
+    defaultOwnerFilterForPrincipal,
     normalizeStoredLayoutAdjustments,
     normalizeStoredPinnedSessionIds,
 } from "pilotswarm/ui-core";
@@ -204,7 +205,13 @@ function profileSettingsFromViewState(state) {
 function buildDefaultProfileSettingsFromState(state) {
     return normalizeProfileSettings({
         themeId: state?.ui?.themeId,
-        sessionOwnerFilter: state?.sessions?.ownerFilter,
+        // Derive the owner-filter default from the RESOLVED principal, never a
+        // snapshot of state.sessions.ownerFilter — at mount that snapshot is
+        // still {all:true} (principal not yet applied), and using it as the
+        // "no persisted filter" fallback would drift an authenticated user's
+        // saved filter to All (or, mid-resolve, hide their own sessions). This
+        // guarantees the fallback is always Me+System for a signed-in user.
+        sessionOwnerFilter: defaultOwnerFilterForPrincipal(state?.auth?.principal ?? null),
         layoutAdjustments: state?.ui?.layout,
         pinnedSessionIds: state?.sessions?.pinnedIds,
         collapsedSessionIds: state?.sessions?.collapsedIds,
@@ -4333,6 +4340,11 @@ export function PilotSwarmWebApp({ controller }) {
             try {
                 const profile = await transport.getCurrentUserProfile();
                 if (!active) return;
+                // Recompute the fallback defaults from CURRENT state each poll:
+                // the principal is resolved by now (it was likely null at mount),
+                // so the "no persisted filter" fallback becomes the correct
+                // principal-scoped default (Me+System) instead of {all:true}.
+                defaultProfileSettingsRef.current = buildDefaultProfileSettingsFromState(controller.getState());
                 const settings = materializeProfileSettings(
                     profile?.profileSettings,
                     defaultProfileSettingsRef.current,

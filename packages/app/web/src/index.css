@@ -1443,6 +1443,15 @@ body.is-resizing-pane-y * {
   overflow: visible;
 }
 
+/* Light hairline divider between rows — full-screen (desktop) portal list only.
+   Excludes the mobile portal pane and the chat-focus overlay (which can render
+   in a mobile context); the TUI is terminal-rendered and unaffected by CSS.
+   The `+` sibling combinator draws the line only BETWEEN rows (never above the
+   first or below the last). Higher specificity than the `border: 0` base rule. */
+.ps-session-pane:not(.ps-mobile-session-pane):not(.ps-chat-focus-pane) .ps-session-list-button + .ps-session-list-button {
+  border-top: 1px solid color-mix(in srgb, var(--ps-border) 22%, transparent);
+}
+
 .ps-session-pane .ps-session-list-button {
   display: block;
   border: 0;

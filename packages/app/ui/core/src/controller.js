@@ -467,6 +467,12 @@ function ownerDisplayName(owner, fallback = "unknown user") {
     return String(owner?.displayName || owner?.email || "").trim() || fallback;
 }
 
+// Owner key of the first-class System user. System-agent children inherit this
+// owner; they belong to the static "System" filter entry, so we never mint a
+// second, duplicate "System" owner bucket for them. Computed via the join
+// helper so it stays byte-identical to real owner keys.
+const SYSTEM_OWNER_KEY = ownerKeyForPrincipal({ provider: "system", subject: "system" });
+
 function buildSessionOwnerFilterItems(state) {
     const principal = state.auth?.principal || null;
     const principalKey = ownerKeyForPrincipal(principal);
@@ -506,7 +512,9 @@ function buildSessionOwnerFilterItems(state) {
     for (const session of Object.values(state.sessions?.byId || {})) {
         const owner = session?.owner;
         const key = ownerKeyForPrincipal(owner);
-        if (!key || key === principalKey || ownersByKey.has(key)) continue;
+        // Skip the current user (covered by "Me") and the System user (covered
+        // by the static "System" entry — never a duplicate owner bucket).
+        if (!key || key === principalKey || key === SYSTEM_OWNER_KEY || ownersByKey.has(key)) continue;
         ownersByKey.set(key, owner);
     }
 
@@ -527,7 +535,7 @@ function buildSessionOwnerFilterItems(state) {
     return items;
 }
 
-function defaultOwnerFilterForPrincipal(principal) {
+export function defaultOwnerFilterForPrincipal(principal) {
     return ownerKeyForPrincipal(principal)
         ? {
             all: false,
@@ -1574,6 +1582,36 @@ export class PilotSwarmUiController {
         });
     }
 
+    // Keep the open Session Filter modal's entry list in sync with the live
+    // session set. The item list is snapshotted into modal.items at open time
+    // (it must be — the shared keyboard-nav handler indexes into it), but the
+    // periodic catalog refresh mutates owners underneath it: a user whose first
+    // session arrives after the modal opened would otherwise never see their
+    // owner bucket without reopening. Rebuild in place, preserving the
+    // highlighted row by its stable id, and only when the shape actually
+    // changed (so we don't churn the modal on every 4s refresh).
+    refreshOpenSessionOwnerFilterModal() {
+        const state = this.getState();
+        const modal = state.ui.modal;
+        if (!modal || modal.type !== "sessionOwnerFilter") return;
+        const nextItems = buildSessionOwnerFilterItems(state);
+        const prevItems = Array.isArray(modal.items) ? modal.items : [];
+        const sameShape = prevItems.length === nextItems.length
+            && prevItems.every((item, i) => item?.id === nextItems[i]?.id);
+        if (sameShape) return;
+        const prevSelectedId = prevItems[Math.max(0, Number(modal.selectedIndex) || 0)]?.id;
+        const remappedIndex = prevSelectedId != null
+            ? nextItems.findIndex((item) => item.id === prevSelectedId)
+            : -1;
+        const nextSelectedIndex = remappedIndex >= 0
+            ? remappedIndex
+            : Math.max(0, Math.min(Number(modal.selectedIndex) || 0, Math.max(0, nextItems.length - 1)));
+        this.dispatch({
+            type: "ui/modal",
+            modal: { ...modal, items: nextItems, selectedIndex: nextSelectedIndex },
+        });
+    }
+
     setFilesFilter(patch = {}) {
         this.dispatch({
             type: "files/filter",
@@ -1743,6 +1781,7 @@ export class PilotSwarmUiController {
             });
         }
         this.dispatch({ type: "sessions/loaded", sessions });
+        this.refreshOpenSessionOwnerFilterModal();
         const selected = this.getState().sessions.activeSessionId;
         const syncedIds = new Set();
         if (selected) {

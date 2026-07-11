@@ -198,6 +198,13 @@ function ownerDisplayName(owner, fallback = "unknown user") {
     return String(owner?.displayName || owner?.email || "").trim() || fallback;
 }
 
+// The owner key of the first-class System user. Sessions a system agent spawns
+// on a user's behalf inherit this owner (they are NOT is_system, so they stay
+// deletable) — but they belong to the same "System" bucket as the real system
+// agents, so the single System filter entry covers both. Computed via the same
+// join helper so it stays byte-identical to real owner keys.
+const SYSTEM_OWNER_KEY = ownerKeyForOwner({ provider: "system", subject: "system" });
+
 function initialsFromText(value) {
     const text = String(value || "").trim();
     if (!text) return "";
@@ -335,6 +342,10 @@ function matchesOwnerFilterDirect(session, ownerFilter = {}, auth = {}, ownerOve
     if (session?.isSystem) return ownerFilter.includeSystem === true;
     const ownerKey = ownerKeyForOwner(ownerOverride !== undefined ? ownerOverride : session?.owner);
     if (!ownerKey) return ownerFilter.includeUnowned === true;
+    // Sessions OWNED BY the System user (children a system agent spawned) share
+    // the "System" bucket with the real is_system agents — one entry, one
+    // meaning. Gate them on includeSystem, never on Me / owner keys.
+    if (ownerKey === SYSTEM_OWNER_KEY) return ownerFilter.includeSystem === true;
     const currentUserKey = ownerKeyForOwner(auth?.principal);
     if (ownerFilter.includeMe && currentUserKey && ownerKey === currentUserKey) return true;
     return Array.isArray(ownerFilter.ownerKeys) && ownerFilter.ownerKeys.includes(ownerKey);
