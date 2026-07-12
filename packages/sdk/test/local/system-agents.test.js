@@ -39,6 +39,15 @@ import { systemAgentUUID, systemChildAgentUUID } from "../../src/index.ts";
 
 const TIMEOUT = 180_000; // System agent flows need time for LLM tool calls
 
+// Splash banners render the role letter-spaced inside a box (e.g.
+// "C l u s t e r   O r c h e s t r a t o r") and wrap every line in
+// {color-fg} markup. Strip markup + all whitespace before matching so the
+// assertions check the role IDENTITY, not the exact spacing/decoration of the
+// current banner design.
+const splashText = (s) => String(s || "").replace(/\{[^}]*\}/g, "").replace(/\s+/g, "");
+const assertSplashIncludes = (splash, role, label) =>
+    assertIncludes(splashText(splash), splashText(role), label);
+
 /**
  * Start a worker with management agents enabled.
  * Returns the worker — caller is responsible for stopping it.
@@ -77,7 +86,7 @@ async function testPilotswarmRootCreated(env) {
 
         // Splash should be present
         assertNotNull(row.splash, "pilotswarm should have a splash banner");
-        assertIncludes(row.splash, "Cluster Orchestrator", "splash should contain 'Cluster Orchestrator'");
+        assertSplashIncludes(row.splash, "Cluster Orchestrator", "splash should contain 'Cluster Orchestrator'");
 
         ("Pilotswarm Root Agent Created");
     } finally {
@@ -225,12 +234,12 @@ async function testChildAgentSplash(env) {
 
         // Splash banners should be present and contain identifying text
         assertNotNull(sweeper.splash, "Sweeper should have a splash banner");
-        assertIncludes(sweeper.splash, "System Maintenance Agent", "Sweeper splash should contain 'System Maintenance Agent'");
+        assertSplashIncludes(sweeper.splash, "System Maintenance", "Sweeper splash should contain 'System Maintenance'");
 
         assertNotNull(resourcemgr.splash, "Resource Manager should have a splash banner");
-        assertIncludes(resourcemgr.splash, "Resource Manager", "ResourceManager splash should contain 'Resource Manager'");
+        assertSplashIncludes(resourcemgr.splash, "Resource Manager", "ResourceManager splash should contain 'Resource Manager'");
         assertNotNull(factsManager.splash, "Facts Manager should have a splash banner");
-        assertIncludes(factsManager.splash, "Knowledge Curator", "Facts Manager splash should contain 'Knowledge Curator'");
+        assertSplashIncludes(factsManager.splash, "Knowledge Curator", "Facts Manager splash should contain 'Knowledge Curator'");
 
         console.log(`  ✓ Sweeper splash: ${sweeper.splash.split("\n").length} lines`);
         console.log(`  ✓ ResourceManager splash: ${resourcemgr.splash.split("\n").length} lines`);
