@@ -1,113 +1,114 @@
 {
-  "name": "pilotswarm-sdk",
-  "version": "0.5.9",
-  "description": "A durable execution runtime for GitHub Copilot SDK agents. Crash recovery, durable timers, session dehydration, and multi-node scaling \u2014 powered by duroxide.",
-  "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+    "name": "pilotswarm-sdk",
+    "version": "0.5.9",
+    "description": "A durable execution runtime for GitHub Copilot SDK agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by duroxide.",
+    "type": "module",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "import": "./dist/index.js"
+        },
+        "./api": {
+            "types": "./api/index.d.ts",
+            "import": "./api/index.js"
+        },
+        "./package.json": "./package.json"
     },
-    "./api": {
-      "types": "./api/index.d.ts",
-      "import": "./api/index.js"
+    "scripts": {
+        "build": "tsc",
+        "dev": "tsc --watch",
+        "test": "node --env-file=../../.env test/sdk.test.js",
+        "test:local:smoke": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/smoke-*.test.js",
+        "test:local:durability": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/durability.test.js test/local/wait-*.test.js",
+        "test:local:multi-worker": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/multi-worker.test.js",
+        "test:local:commands": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/commands-*.test.js",
+        "test:local:management": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/management.test.js",
+        "test:local:cross-session": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/cross-session-messaging.test.js",
+        "test:local:sub-agents": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/sub-agents/*.test.js",
+        "test:local:kv-transport": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/kv-transport.test.js",
+        "test:local:cms": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/list-sessions-page-owner.test.js",
+        "test:local:contracts": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/contracts.test.js",
+        "test:local:chaos": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/chaos.test.js",
+        "test:local:system-agents": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/system-agents.test.js test/local/system-session-restart.test.js",
+        "test:local:sweeper": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/sweeper-cleanup-guard.test.js",
+        "test:local:session-policy": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/session-policy-*.test.js",
+        "test:local:reliability": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/reliability-*.test.js",
+        "test:local:knowledge-pipeline": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/knowledge-pipeline.test.js test/local/facts.test.js",
+        "test:local:inspect-tools": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/inspect-tools.test.js",
+        "test:local:agent-tuner": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/agent-tuner.test.js",
+        "test:local:skill-usage": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/skill-usage.test.js",
+        "test:local:retrieval-usage": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/retrieval-usage-stats.test.js",
+        "test:local:cache-observability": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/cache-observability.test.js",
+        "test:local:facts-stats": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/facts-stats.test.js",
+        "test:local:storage": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/storage-config.test.js test/local/duroxide-schema-migration.test.js",
+        "test:local:sdk-disk-format": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/sdk-disk-format.test.js",
+        "test:local:dehydrate-no-fallback": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/dehydrate-no-fallback.test.js",
+        "test:local": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run",
+        "test:perf": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs --config vitest.perf.config.js run",
+        "test:perf:spawn": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs --config vitest.perf.config.js run test/perf/spawn.perf.test.js",
+        "lint": "tsc --noEmit",
+        "clean": "rm -rf dist",
+        "test:api": "node --test api/test/*.test.mjs",
+        "test:local:snapshot-protocol": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/snapshot-protocol-fs.test.js test/local/turn-lifecycle.test.js",
+        "test:local:snapshot-blob": "node ../../node_modules/vitest/vitest.mjs run test/local/snapshot-protocol-blob.test.js",
+        "test:local:fault-injection-live": "npm run build && node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/fault-injection-live.test.js",
+        "test:unit": "node --test test/unit/*.test.mjs"
     },
-    "./package.json": "./package.json"
-  },
-  "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch",
-    "test": "node --env-file=../../.env test/sdk.test.js",
-    "test:local:smoke": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/smoke-*.test.js",
-    "test:local:durability": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/durability.test.js test/local/wait-*.test.js",
-    "test:local:multi-worker": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/multi-worker.test.js",
-    "test:local:commands": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/commands-*.test.js",
-    "test:local:management": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/management.test.js",
-    "test:local:cross-session": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/cross-session-messaging.test.js",
-    "test:local:sub-agents": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/sub-agents/*.test.js",
-    "test:local:kv-transport": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/kv-transport.test.js",
-    "test:local:cms": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/cms-*.test.js",
-    "test:local:contracts": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/contracts.test.js",
-    "test:local:chaos": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/chaos.test.js",
-    "test:local:system-agents": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/system-agents.test.js test/local/system-session-restart.test.js",
-    "test:local:sweeper": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/sweeper-cleanup-guard.test.js",
-    "test:local:session-policy": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/session-policy-*.test.js",
-    "test:local:reliability": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/reliability-*.test.js",
-    "test:local:knowledge-pipeline": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/knowledge-pipeline.test.js test/local/facts.test.js",
-    "test:local:inspect-tools": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/inspect-tools.test.js",
-    "test:local:agent-tuner": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/agent-tuner.test.js",
-    "test:local:skill-usage": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/skill-usage.test.js",
-    "test:local:retrieval-usage": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/retrieval-usage-stats.test.js",
-    "test:local:cache-observability": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/cache-observability.test.js",
-    "test:local:facts-stats": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/facts-stats.test.js",
-    "test:local:storage": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/storage-config.test.js test/local/duroxide-schema-migration.test.js",
-    "test:local:sdk-disk-format": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/sdk-disk-format.test.js",
-    "test:local:dehydrate-no-fallback": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/dehydrate-no-fallback.test.js",
-    "test:local": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run",
-    "test:perf": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs --config vitest.perf.config.js run",
-    "test:perf:spawn": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs --config vitest.perf.config.js run test/perf/spawn.perf.test.js",
-    "lint": "tsc --noEmit",
-    "clean": "rm -rf dist",
-    "test:api": "node --test api/test/*.test.mjs",
-    "test:local:snapshot-protocol": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/snapshot-protocol-fs.test.js test/local/turn-lifecycle.test.js",
-    "test:local:snapshot-blob": "node ../../node_modules/vitest/vitest.mjs run test/local/snapshot-protocol-blob.test.js",
-    "test:local:fault-injection-live": "npm run build && node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/fault-injection-live.test.js"
-  },
-  "keywords": [
-    "copilot",
-    "durable",
-    "duroxide",
-    "agent",
-    "orchestration",
-    "async"
-  ],
-  "author": "Affan Dar",
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/affandar/PilotSwarm"
-  },
-  "homepage": "https://github.com/affandar/PilotSwarm",
-  "bugs": {
-    "url": "https://github.com/affandar/PilotSwarm/issues"
-  },
-  "dependencies": {
-    "@azure/identity": "^4.13.1",
-    "@azure/storage-blob": "^12.31.0",
-    "@github/copilot": "^1.0.70",
-    "@github/copilot-sdk": "^1.0.6",
-    "@opentelemetry/api": "^1.9.0",
-    "duroxide": "^0.1.27",
-    "file-type": "^20.5.0",
-    "pg": "^8.18.0"
-  },
-  "peerDependencies": {
-    "pilotswarm-horizon-store": "^0.5.8"
-  },
-  "peerDependenciesMeta": {
-    "pilotswarm-horizon-store": {
-      "optional": true
-    }
-  },
-  "devDependencies": {
-    "@types/node": "^22.0.0",
-    "@types/pg": "^8.16.0",
-    "pilotswarm-horizon-store": "*",
-    "typescript": "^5.0.0",
-    "vitest": "^4.1.0"
-  },
-  "engines": {
-    "node": ">=24.0.0"
-  },
-  "files": [
-    "dist/**/*",
-    "plugins/**/*",
-    "api/index.js",
-    "api/index.d.ts",
-    "api/src/**/*",
-    "api/README.md",
-    "README.md"
-  ]
+    "keywords": [
+        "copilot",
+        "durable",
+        "duroxide",
+        "agent",
+        "orchestration",
+        "async"
+    ],
+    "author": "Affan Dar",
+    "license": "MIT",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/affandar/PilotSwarm"
+    },
+    "homepage": "https://github.com/affandar/PilotSwarm",
+    "bugs": {
+        "url": "https://github.com/affandar/PilotSwarm/issues"
+    },
+    "dependencies": {
+        "@azure/identity": "^4.13.1",
+        "@azure/storage-blob": "^12.31.0",
+        "@github/copilot": "^1.0.70",
+        "@github/copilot-sdk": "^1.0.6",
+        "@opentelemetry/api": "^1.9.0",
+        "duroxide": "^0.1.27",
+        "file-type": "^20.5.0",
+        "pg": "^8.18.0"
+    },
+    "peerDependencies": {
+        "pilotswarm-horizon-store": "^0.5.8"
+    },
+    "peerDependenciesMeta": {
+        "pilotswarm-horizon-store": {
+            "optional": true
+        }
+    },
+    "devDependencies": {
+        "@types/node": "^22.0.0",
+        "@types/pg": "^8.16.0",
+        "pilotswarm-horizon-store": "*",
+        "typescript": "^5.0.0",
+        "vitest": "^4.1.0"
+    },
+    "engines": {
+        "node": ">=24.0.0"
+    },
+    "files": [
+        "dist/**/*",
+        "plugins/**/*",
+        "api/index.js",
+        "api/index.d.ts",
+        "api/src/**/*",
+        "api/README.md",
+        "README.md"
+    ]
 }
