@@ -1148,11 +1148,17 @@ export function* processTimer(
             return;
         }
         case "cron": {
+            const activeCron = state.cronSchedule;
+            if (!activeCron) {
+                // A cancel cannot retract the already-scheduled durable timer,
+                // so a stale cron fire with no schedule is expected — ignore it.
+                ctx.traceInfo("[orch] cron timer fired but no active cronSchedule exists");
+                return;
+            }
             yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
                 eventType: "session.cron_fired",
                 data: {},
             }]);
-            const activeCron = state.cronSchedule!;
             const cycleReportGuidance = "If this cycle finds material changes or blockers that should wake your parent, call report_cycle(status='material' or status='blocked', summary='...') before finishing. If nothing material changed, do NOT call report_cycle at all — just end the turn silently. Do not emit report_cycle(status='quiet') on an uneventful cycle, and never write a tool call as text.";
             const cronPrompt = `[SYSTEM: Scheduled cron wake-up for: "${activeCron.reason}". Resume your recurring task. ${cycleReportGuidance}]`;
             if (timer.shouldRehydrate) {
