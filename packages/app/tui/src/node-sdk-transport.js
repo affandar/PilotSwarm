@@ -357,6 +357,13 @@ function normalizeCreatableAgent(agent) {
         title: String(agent?.title || "").trim() || (name.charAt(0).toUpperCase() + name.slice(1)),
         description: String(agent?.description || "").trim(),
         splash: typeof agent?.splash === "string" && agent.splash.trim() ? agent.splash : null,
+        // Narrow-viewport splash variant. Must be carried alongside `splash`:
+        // the session-agent picker (controller.openSessionAgentPicker) forwards
+        // both to createSessionForAgent, which persists them to the session's
+        // splash / splash_mobile columns. Dropping it here (while keeping
+        // `splash`) is why agent sessions stored only the desktop art and the
+        // mobile portal had nothing to swap to on narrow screens.
+        splashMobile: typeof agent?.splashMobile === "string" && agent.splashMobile.trim() ? agent.splashMobile : null,
         initialPrompt: typeof agent?.initialPrompt === "string" && agent.initialPrompt.trim() ? agent.initialPrompt : null,
         tools: Array.isArray(agent?.tools) ? agent.tools.filter(Boolean) : [],
     };

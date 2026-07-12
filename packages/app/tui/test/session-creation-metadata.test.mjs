@@ -61,3 +61,35 @@ test("remote metadata rejects unknown bundled default agents", () => {
         /unknown bundled agent.*not-a-bundled-agent/i,
     );
 });
+
+test("creatable agents carry BOTH splash and splashMobile", () => {
+    // Regression: normalizeCreatableAgent forwarded `splash` but dropped
+    // `splashMobile`, so the session-agent picker persisted only the desktop
+    // art and the mobile portal had nothing to swap to on narrow screens.
+    const dir = makePluginDir({
+        version: 1,
+        creation: { mode: "open", allowGeneric: true },
+    });
+    fs.mkdirSync(path.join(dir, "agents"), { recursive: true });
+    fs.writeFileSync(
+        path.join(dir, "agents", "splashy.agent.md"),
+        [
+            "---",
+            "name: splashy",
+            "description: splash fixture",
+            "splash: |",
+            "  DESKTOP-ART-WIDE",
+            "splashMobile: |",
+            "  MOBILE-ART",
+            "---",
+            "You are a fixture agent.",
+            "",
+        ].join("\n"),
+    );
+
+    const metadata = loadSessionCreationMetadataFromPluginDirs([dir]);
+    const agent = metadata.creatableAgents.find((a) => a.name === "splashy");
+    assert.ok(agent, "fixture agent should be creatable");
+    assert.match(agent.splash, /DESKTOP-ART-WIDE/);
+    assert.match(agent.splashMobile, /MOBILE-ART/, "splashMobile must survive normalizeCreatableAgent");
+});

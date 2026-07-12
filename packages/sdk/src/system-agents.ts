@@ -240,6 +240,7 @@ export async function startSystemAgents(opts: {
                 isSystem: true,
                 agentId: agent.id,
                 splash: agent.splash ?? undefined,
+                splashMobile: agent.splashMobile ?? undefined,
             });
             const title = agent.title ?? (agent.name.charAt(0).toUpperCase() + agent.name.slice(1) + " Agent");
             await opts.catalog.updateSession(sessionId, { title });

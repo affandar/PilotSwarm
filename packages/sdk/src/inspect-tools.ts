@@ -400,6 +400,7 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
                     lastError: row.lastError ?? null,
                     waitReason: row.waitReason ?? null,
                     splash: row.splash ?? null,
+                    splashMobile: row.splashMobile ?? null,
                     createdAt: row.createdAt instanceof Date ? row.createdAt.toISOString() : String(row.createdAt),
                     updatedAt: row.updatedAt
                         ? (row.updatedAt instanceof Date ? row.updatedAt.toISOString() : String(row.updatedAt))
