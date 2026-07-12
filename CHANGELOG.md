@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.5.11 — 2026-07-12
+
+### SDK
+
+- **Zombie turns now self-settle.** When the Copilot CLI subprocess died
+  mid-turn (e.g. V8 heap OOM), `session.idle` never arrived and
+  `ManagedSession.runTurn` awaited forever — the durable `runTurn` activity
+  stayed in-flight permanently and the session wedged while its message queue
+  backed up. Two worker-side guards now settle the turn (no orchestration
+  change; an explicit `0` disables either):
+  - **Inactivity watchdog** (`turnInactivityTimeoutMs`, default 5 minutes): a
+    live turn emits a steady event stream, so total silence means the
+    subprocess is dead or wedged. Settles as a retryable transport-loss error
+    whose message matches the connection-closed classifier, riding the
+    existing recovery path — release affinity, retry on a fresh subprocess,
+    bounded lossy-handoff fallback.
+  - **Wall-clock turn cap** (`turnTimeoutMs`, default 10 minutes): the
+    pre-existing timeout race was dead code — nothing ever set it. It is now
+    on by default as the blunt backstop.
+  - Guard timers are cleared when the turn settles and their rejections are
+    pre-handled; both guards also cover the text-tool-call correction loop's
+    idle waits.
+- **A stale cron timer fire after `cron(action="cancel")` no longer kills the
+  session.** Cancel clears the schedule, but the already-armed durable timer
+  for the next tick cannot be retracted. When it fired, `processTimer`'s
+  `cron` branch dereferenced the missing schedule and threw a `TypeError`
+  that surfaced as a non-retryable `OrchestrationFailed` — permanently
+  failing the session and orphaning its sub-agents. The stale fire is now
+  ignored (traced, no `session.cron_fired`), matching the guard the `cron_at`
+  branch already had.
+
+### Tests
+
+- `turn-inactivity-watchdog.test.js` — the incident shape (subprocess acks
+  `send()` then goes silent forever) must settle as a transport-loss error
+  the orchestration's connection-closed classifier accepts; steady event flow
+  past the threshold must never trip the watchdog; defaults-on behavior;
+  `0`-disables contract; no armed timers after a clean turn.
+- `orchestration-stale-cron-timer.test.mjs` — a stale cron fire after cancel
+  is a no-op (no throw, no `session.cron_fired`); an active cron fire still
+  records `session.cron_fired` first.
+
 ## 0.5.10 — 2026-07-12
 
 ### SDK

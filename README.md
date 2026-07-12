@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.10** — The portal session list now shows real owner initials instead of `?` (a paged-list read path, `cms_list_sessions_page`, wasn't joining the owner — fixed in CMS migration 0028; ownership was always persisted). Agent mobile splash screens now persist correctly — `splashMobile` is carried through session creation so phones get the narrow-viewport banner instead of the wide desktop art. Plus redesigned management-agent desktop splashes (solid ANSI-Shadow logos with color bands).
+> **Latest release: v0.5.11** — Two session-reliability fixes. A dead Copilot CLI subprocess can no longer wedge a session forever: turns now self-settle via an inactivity watchdog (default 5 min of total event silence) plus a default 10-minute wall-clock turn cap, then retry on a fresh subprocess through the existing transport-loss recovery. And a stale cron timer firing after `cron(action="cancel")` no longer hard-fails the orchestration — the unretractable next-tick timer is now ignored instead of dereferencing the cleared schedule.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 
