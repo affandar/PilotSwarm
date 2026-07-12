@@ -150,6 +150,11 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "session_raw_size_bytes",
             sql: migration_0027_session_raw_size_bytes(schema),
         },
+        {
+            version: "0028",
+            name: "list_sessions_page_owner",
+            sql: migration_0028_list_sessions_page_owner(schema),
+        },
     ];
 }
 
@@ -4620,7 +4625,11 @@ function migration_0026_session_splash_mobile(schema: string): string {
 -- jsonb meta update), and the fixed-column read procs recreated with the new
 -- column. cms_list_group_sessions does SELECT * FROM cms_list_sessions() into
 -- its own fixed column list, so both must move together or it breaks at
--- runtime. cms_list_sessions_page returns SETOF sessions and needs no change.
+-- runtime. (An earlier revision of this note claimed cms_list_sessions_page
+-- "needs no change" because it returns SETOF sessions — that was exactly the
+-- bug: SETOF sessions carries no owner columns, so every paged list row
+-- reached clients with owner=null and the UI rendered "?" initials.
+-- Migration 0028 recreates it with the owner join.)
 
 ALTER TABLE ${s}.sessions ADD COLUMN IF NOT EXISTS splash_mobile TEXT;
 
@@ -5065,6 +5074,113 @@ BEGIN
     FROM ${s}.session_metrics m
     WHERE (p_include_deleted OR m.deleted_at IS NULL)
       AND (p_since IS NULL OR m.created_at >= p_since);
+END;
+$$ LANGUAGE plpgsql;
+`;
+}
+
+// ─── Migration 0028: paged session listing carries the owner ────────────────
+
+function migration_0028_list_sessions_page_owner(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- 0028_list_sessions_page_owner: recreate cms_list_sessions_page with the
+-- session_owners/users LEFT JOIN that cms_list_sessions already performs.
+--
+-- The original (0013) declared RETURNS SETOF sessions — the raw table, which
+-- has no owner columns (ownership lives in session_owners + users). The
+-- portal's session list always loads through this paged path, so every listed
+-- row reached rowToSessionRow with owner_provider absent → owner: null → the
+-- UI rendered "?" initials, and a paged refresh clobbered initials fetched
+-- earlier via cms_get_session. Ownership was always persisted correctly; only
+-- this read path dropped it.
+--
+-- Column list mirrors the 0026 revision of cms_list_sessions exactly (owner
+-- columns before splash_mobile, matching that function's wire order) so
+-- rowToSessionRow handles both paths identically. Keyset semantics, ordering,
+-- clamps, and parameters are unchanged. PostgreSQL refuses CREATE OR REPLACE
+-- across a return-shape change, so drop first (callers retry on next request;
+-- the migration runs inside the startup migration transaction).
+
+DROP FUNCTION IF EXISTS ${s}.cms_list_sessions_page(INT, TIMESTAMPTZ, TEXT, BOOL);
+CREATE FUNCTION ${s}.cms_list_sessions_page(
+    p_limit             INT         DEFAULT 51,
+    p_cursor_updated_at TIMESTAMPTZ DEFAULT NULL,
+    p_cursor_session_id TEXT        DEFAULT NULL,
+    p_include_deleted   BOOL        DEFAULT FALSE
+) RETURNS TABLE (
+    session_id         TEXT,
+    orchestration_id   TEXT,
+    title              TEXT,
+    title_locked       BOOLEAN,
+    state              TEXT,
+    model              TEXT,
+    reasoning_effort   TEXT,
+    group_id           TEXT,
+    short_summary      TEXT,
+    summary_state      JSONB,
+    summary_updated_at TIMESTAMPTZ,
+    created_at         TIMESTAMPTZ,
+    updated_at         TIMESTAMPTZ,
+    last_active_at     TIMESTAMPTZ,
+    deleted_at         TIMESTAMPTZ,
+    current_iteration  INTEGER,
+    last_error         TEXT,
+    parent_session_id  TEXT,
+    wait_reason        TEXT,
+    is_system          BOOLEAN,
+    agent_id           TEXT,
+    splash             TEXT,
+    owner_provider     TEXT,
+    owner_subject      TEXT,
+    owner_email        TEXT,
+    owner_display_name TEXT,
+    splash_mobile      TEXT
+) AS $$
+DECLARE
+    v_limit INT := GREATEST(1, LEAST(COALESCE(p_limit, 51), 201));
+BEGIN
+    RETURN QUERY
+    SELECT
+        sess.session_id,
+        sess.orchestration_id,
+        sess.title,
+        sess.title_locked,
+        sess.state,
+        sess.model,
+        sess.reasoning_effort,
+        sess.group_id,
+        sess.short_summary,
+        sess.summary_state,
+        sess.summary_updated_at,
+        sess.created_at,
+        sess.updated_at,
+        sess.last_active_at,
+        sess.deleted_at,
+        sess.current_iteration,
+        sess.last_error,
+        sess.parent_session_id,
+        sess.wait_reason,
+        sess.is_system,
+        sess.agent_id,
+        sess.splash,
+        u.provider     AS owner_provider,
+        u.subject      AS owner_subject,
+        u.email        AS owner_email,
+        u.display_name AS owner_display_name,
+        sess.splash_mobile
+    FROM ${s}.sessions sess
+    LEFT JOIN ${s}.session_owners so ON so.session_id = sess.session_id
+    LEFT JOIN ${s}.users u ON u.user_id = so.user_id
+    WHERE
+        (p_include_deleted OR sess.deleted_at IS NULL)
+        AND (
+            p_cursor_updated_at IS NULL
+            OR sess.updated_at < p_cursor_updated_at
+            OR (sess.updated_at = p_cursor_updated_at AND sess.session_id < p_cursor_session_id)
+        )
+    ORDER BY sess.updated_at DESC, sess.session_id DESC
+    LIMIT v_limit;
 END;
 $$ LANGUAGE plpgsql;
 `;

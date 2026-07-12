@@ -12,17 +12,21 @@ tools:
   - read_facts
   - delete_fact
 splash: |
-  {bold}{green-fg}
-   ___ _ _     _   ___                       
-  | _ (_) |___| |_/ __|_ __ ____ _ _ _ _ __  
-  |  _/ | / _ \  _\__ \ V  V / _` | '_| '  \ 
-  |_| |_|_\___/\__|___/\_/\_/\__,_|_| |_|_|_|
-  {/green-fg}{white-fg}Agent{/white-fg}
+  {bold}
+  {red-fg}██████╗ ██╗██╗      ██████╗ ████████╗███████╗██╗    ██╗ █████╗ ██████╗ ███╗   ███╗{/red-fg}
+  {yellow-fg}██╔══██╗██║██║     ██╔═══██╗╚══██╔══╝██╔════╝██║    ██║██╔══██╗██╔══██╗████╗ ████║{/yellow-fg}
+  {green-fg}██████╔╝██║██║     ██║   ██║   ██║   ███████╗██║ █╗ ██║███████║██████╔╝██╔████╔██║{/green-fg}
+  {cyan-fg}██╔═══╝ ██║██║     ██║   ██║   ██║   ╚════██║██║███╗██║██╔══██║██╔══██╗██║╚██╔╝██║{/cyan-fg}
+  {blue-fg}██║     ██║███████╗╚██████╔╝   ██║   ███████║╚███╔███╔╝██║  ██║██║  ██║██║ ╚═╝ ██║{/blue-fg}
+  {magenta-fg}╚═╝     ╚═╝╚══════╝ ╚═════╝    ╚═╝   ╚══════╝ ╚══╝╚══╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝     ╚═╝{/magenta-fg}
   {/bold}
-    {bold}{white-fg}Cluster Orchestrator{/white-fg}{/bold}
-    {green-fg}Agents{/green-fg} · {yellow-fg}Infrastructure{/yellow-fg} · {cyan-fg}Maintenance{/cyan-fg} · {magenta-fg}Monitoring{/magenta-fg}
+  {cyan-fg}   ╔═════════════════════════════════════════════════════════════════════╗{/cyan-fg}
+  {cyan-fg}   ║{/cyan-fg}{bold}{white-fg}               C l u s t e r   O r c h e s t r a t o r               {/white-fg}{/bold}{cyan-fg}║{/cyan-fg}
+  {cyan-fg}   ╚═════════════════════════════════════════════════════════════════════╝{/cyan-fg}
 
-    {green-fg}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{/green-fg}
+    {bold}{cyan-fg}Agents{/cyan-fg} · {yellow-fg}Infrastructure{/yellow-fg} · {green-fg}Maintenance{/green-fg} · {magenta-fg}Monitoring{/magenta-fg}{/bold}
+    {bold}{red-fg}Spawn{/red-fg} · {cyan-fg}Steer{/cyan-fg} · {yellow-fg}Sweep{/yellow-fg} · {blue-fg}Scale{/blue-fg}{/bold}
+    {gray-fg}Many agents. One formation.{/gray-fg}
 splashMobile: |
   {bold}{green-fg}█▀█ █ █   █▀█ ▀█▀ █▀ █ █ █ ▄▀█ █▀█ █▀▄▀█{/green-fg}{/bold}
   {bold}{green-fg}█▀▀ █ █▄▄ █▄█  █  ▄█ ▀▄▀▄▀ █▀█ █▀▄ █ ▀ █{/green-fg}{/bold}

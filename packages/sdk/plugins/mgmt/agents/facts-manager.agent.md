@@ -18,17 +18,20 @@ tools:
   - export_artifact
   - manage_embedder
 splash: |
-  {bold}{cyan-fg}
-   ___         _         __  __
-  | __|_ _ __ | |_ ___  |  \/  |__ _ _ _  __ _ __ _ ___ _ _
-  | _/ _` / _||  _(_-<  | |\/| / _` | ' \/ _` / _` / -_) '_|
-  |_|\__,_\__| \__/__/  |_|  |_\__,_|_||_\__,_\__, \___|_|
-                                               |___/
-  {/cyan-fg}{/bold}
-    {bold}{white-fg}Knowledge Curator{/white-fg}{/bold}
-    {cyan-fg}Intake{/cyan-fg} · {green-fg}Triage{/green-fg} · {yellow-fg}Skills{/yellow-fg} · {magenta-fg}Asks{/magenta-fg}
+  {bold}
+  {green-fg}███████╗ █████╗  ██████╗████████╗███████╗{/green-fg}
+  {green-fg}██╔════╝██╔══██╗██╔════╝╚══██╔══╝██╔════╝{/green-fg}
+  {cyan-fg}█████╗  ███████║██║        ██║   ███████╗{/cyan-fg}
+  {cyan-fg}██╔══╝  ██╔══██║██║        ██║   ╚════██║{/cyan-fg}
+  {blue-fg}██║     ██║  ██║╚██████╗   ██║   ███████║{/blue-fg}
+  {blue-fg}╚═╝     ╚═╝  ╚═╝ ╚═════╝   ╚═╝   ╚══════╝{/blue-fg}
+  {/bold}
+  {green-fg}   ╔═══════════════════════════════════════════╗{/green-fg}
+  {green-fg}   ║{/green-fg}{bold}{white-fg}     K n o w l e d g e   C u r a t o r     {/white-fg}{/bold}{green-fg}║{/green-fg}
+  {green-fg}   ╚═══════════════════════════════════════════╝{/green-fg}
 
-    {cyan-fg}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{/cyan-fg}
+    {bold}{green-fg}Intake{/green-fg} · {yellow-fg}Triage{/yellow-fg} · {cyan-fg}Skills{/cyan-fg} · {magenta-fg}Asks{/magenta-fg}{/bold}
+    {gray-fg}Records everything. Forgets nothing.{/gray-fg}
 splashMobile: |
    {bold}{cyan-fg}█▀▀ ▄▀█ █▀▀ ▀█▀ █▀  █▀▄▀█ █▀▀ █▀█{/cyan-fg}{/bold}
    {bold}{cyan-fg}█▀  █▀█ █▄▄  █  ▄█  █ ▀ █ █▄█ █▀▄{/cyan-fg}{/bold}

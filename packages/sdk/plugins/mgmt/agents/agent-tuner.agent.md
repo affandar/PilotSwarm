@@ -32,17 +32,20 @@ tools:
   - list_orchestrations_by_status
   - read_facts
 splash: |
-  {bold}{magenta-fg}
-     ___                   __     ______
-    /   |  ___ ____  ___  / /_   /_  __/_  ______  ___  _____
-   / /| | / _ `/ _ \/ _ \/ __/    / / / / / / __ \/ _ \/ ___/
-  / ___ |/ /_/ /  __/ / / /_     / / / /_/ / / / /  __/ /
- /_/  |_|\__, /\___/_/ /_/\__/   /_/  \__,_/_/ /_/\___/_/
-       /____/                                            {/magenta-fg}{/bold}
-    {bold}{white-fg}Read-only Diagnostic Agent{/white-fg}{/bold}
-    {magenta-fg}Inspect{/magenta-fg} · {cyan-fg}Diagnose{/cyan-fg} · {green-fg}Recommend{/green-fg}
+  {bold}
+  {magenta-fg}████████╗██╗   ██╗███╗   ██╗███████╗██████╗ {/magenta-fg}
+  {magenta-fg}╚══██╔══╝██║   ██║████╗  ██║██╔════╝██╔══██╗{/magenta-fg}
+  {blue-fg}   ██║   ██║   ██║██╔██╗ ██║█████╗  ██████╔╝{/blue-fg}
+  {blue-fg}   ██║   ██║   ██║██║╚██╗██║██╔══╝  ██╔══██╗{/blue-fg}
+  {cyan-fg}   ██║   ╚██████╔╝██║ ╚████║███████╗██║  ██║{/cyan-fg}
+  {cyan-fg}   ╚═╝    ╚═════╝ ╚═╝  ╚═══╝╚══════╝╚═╝  ╚═╝{/cyan-fg}
+  {/bold}
+  {magenta-fg}   ╔═══════════════════════════════════════════════════╗{/magenta-fg}
+  {magenta-fg}   ║{/magenta-fg}{bold}{white-fg}     R e a d - o n l y   D i a g n o s t i c s     {/white-fg}{/bold}{magenta-fg}║{/magenta-fg}
+  {magenta-fg}   ╚═══════════════════════════════════════════════════╝{/magenta-fg}
 
-    {magenta-fg}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{/magenta-fg}
+    {bold}{magenta-fg}Inspect{/magenta-fg} · {cyan-fg}Diagnose{/cyan-fg} · {green-fg}Recommend{/green-fg}{/bold}
+    {gray-fg}Reads every dial — never grabs the stick.{/gray-fg}
 splashMobile: |
    {bold}{magenta-fg}▀█▀ █ █ █▄ █ █▀▀ █▀█{/magenta-fg}{/bold}
    {bold}{magenta-fg} █  █▄█ █ ▀█ ██▄ █▀▄{/magenta-fg}{/bold}

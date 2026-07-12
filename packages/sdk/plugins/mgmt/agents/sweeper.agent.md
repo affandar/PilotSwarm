@@ -15,18 +15,20 @@ tools:
   - write_artifact
   - export_artifact
 splash: |
-  {bold}{yellow-fg}
-     ____                                      
-    / ___/      _____  ___  ____  ___  _____   
-    \__ \ | /| / / _ \/ _ \/ __ \/ _ \/ ___/   
-   ___/ / |/ |/ /  __/  __/ /_/ /  __/ /       
-  /____/|__/|__/\___/\___/ .___/\___/_/        
-                         /_/            {/yellow-fg}{white-fg}Agent{/white-fg}
+  {bold}
+  {yellow-fg}███████╗██╗    ██╗███████╗███████╗██████╗ ███████╗██████╗ {/yellow-fg}
+  {yellow-fg}██╔════╝██║    ██║██╔════╝██╔════╝██╔══██╗██╔════╝██╔══██╗{/yellow-fg}
+  {red-fg}███████╗██║ █╗ ██║█████╗  █████╗  ██████╔╝█████╗  ██████╔╝{/red-fg}
+  {red-fg}╚════██║██║███╗██║██╔══╝  ██╔══╝  ██╔═══╝ ██╔══╝  ██╔══██╗{/red-fg}
+  {magenta-fg}███████║╚███╔███╔╝███████╗███████╗██║     ███████╗██║  ██║{/magenta-fg}
+  {magenta-fg}╚══════╝ ╚══╝╚══╝ ╚══════╝╚══════╝╚═╝     ╚══════╝╚═╝  ╚═╝{/magenta-fg}
   {/bold}
-    {bold}{white-fg}System Maintenance Agent{/white-fg}{/bold}
-    {yellow-fg}Cleanup{/yellow-fg} · {green-fg}Monitoring{/green-fg} · {cyan-fg}Session lifecycle{/cyan-fg}
+  {yellow-fg}   ╔══════════════════════════════════════════════════╗{/yellow-fg}
+  {yellow-fg}   ║{/yellow-fg}{bold}{white-fg}       S y s t e m   M a i n t e n a n c e        {/white-fg}{/bold}{yellow-fg}║{/yellow-fg}
+  {yellow-fg}   ╚══════════════════════════════════════════════════╝{/yellow-fg}
 
-    {yellow-fg}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{/yellow-fg}
+    {bold}{yellow-fg}Cleanup{/yellow-fg} · {green-fg}Monitoring{/green-fg} · {cyan-fg}Session lifecycle{/cyan-fg}{/bold}
+    {gray-fg}Clears the deck. Keeps the swarm lean.{/gray-fg}
 splashMobile: |
    {bold}{yellow-fg}█▀ █ █ █ █▀▀ █▀▀ █▀█ █▀▀ █▀█{/yellow-fg}{/bold}
    {bold}{yellow-fg}▄█ ▀▄▀▄▀ ██▄ ██▄ █▀▀ ██▄ █▀▄{/yellow-fg}{/bold}

@@ -20,17 +20,20 @@ tools:
   - write_artifact
   - export_artifact
 splash: |
-  {bold}{cyan-fg}
-  ___                             __  __                             
- | _ \___ ___ ___ _  _ _ _ __ ___|  \/  |__ _ _ _  __ _ __ _ ___ _ _ 
- |   / -_|_-</ _ \ || | '_/ _/ -_) |\/| / _` | ' \/ _` / _` / -_) '_|
- |_|_\___/__/\___/\_,_|_| \__\___|_|  |_\__,_|_||_\__,_\__, \___|_|  
-                                                       |___/{/cyan-fg} {white-fg}Agent{/white-fg}
+  {bold}
+  {blue-fg}██████╗ ███████╗███████╗ ██████╗ ██╗   ██╗██████╗  ██████╗███████╗███████╗{/blue-fg}
+  {blue-fg}██╔══██╗██╔════╝██╔════╝██╔═══██╗██║   ██║██╔══██╗██╔════╝██╔════╝██╔════╝{/blue-fg}
+  {cyan-fg}██████╔╝█████╗  ███████╗██║   ██║██║   ██║██████╔╝██║     █████╗  ███████╗{/cyan-fg}
+  {cyan-fg}██╔══██╗██╔══╝  ╚════██║██║   ██║██║   ██║██╔══██╗██║     ██╔══╝  ╚════██║{/cyan-fg}
+  {green-fg}██║  ██║███████╗███████║╚██████╔╝╚██████╔╝██║  ██║╚██████╗███████╗███████║{/green-fg}
+  {green-fg}╚═╝  ╚═╝╚══════╝╚══════╝ ╚═════╝  ╚═════╝ ╚═╝  ╚═╝ ╚═════╝╚══════╝╚══════╝{/green-fg}
   {/bold}
-    {bold}{white-fg}Resource Manager{/white-fg}{/bold}
-    {cyan-fg}Compute{/cyan-fg} · {green-fg}Storage{/green-fg} · {yellow-fg}Database{/yellow-fg} · {magenta-fg}Runtime{/magenta-fg}
+  {blue-fg}   ╔══════════════════════════════════════════════════════════════════╗{/blue-fg}
+  {blue-fg}   ║{/blue-fg}{bold}{white-fg}      C o m p u t e   ·   S t o r a g e   ·   R u n t i m e       {/white-fg}{/bold}{blue-fg}║{/blue-fg}
+  {blue-fg}   ╚══════════════════════════════════════════════════════════════════╝{/blue-fg}
 
-    {cyan-fg}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{/cyan-fg}
+    {bold}{blue-fg}Compute{/blue-fg} · {green-fg}Storage{/green-fg} · {yellow-fg}Database{/yellow-fg} · {magenta-fg}Runtime{/magenta-fg}{/bold}
+    {gray-fg}Compute, storage, fuel — provisioned on demand.{/gray-fg}
 splashMobile: |
    {bold}{cyan-fg}█▀█ █▀▀ █▀ █▀█ █ █ █▀█ █▀▀ █▀▀{/cyan-fg}{/bold}
    {bold}{cyan-fg}█▀▄ ██▄ ▄█ █▄█ █▄█ █▀▄ █▄▄ ██▄{/cyan-fg}{/bold}
