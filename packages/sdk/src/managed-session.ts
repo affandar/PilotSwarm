@@ -176,6 +176,20 @@ const TEXT_TOOL_CALL_INVOKE_RE = /<(?:antml:)?invoke\s+name\s*=\s*"([^"]+)"/i;
 const TEXT_TOOL_CALL_STRUCTURE_RE = /<\/(?:antml:)?invoke\s*>|<(?:antml:)?parameter\b/i;
 const FENCED_CODE_BLOCK_RE = /```[\s\S]*?```/g;
 
+// Zombie-turn protection. The Copilot CLI subprocess signals turn completion
+// only via events; if it dies mid-turn (e.g. V8 heap OOM), session.idle never
+// arrives, runTurn awaits forever, and the durable runTurn activity stays
+// in-flight permanently while the session's queue backs up. Two guards settle
+// the turn instead. Both are per-turn and worker-side only — no orchestration
+// change. An explicit 0 disables either guard.
+export const DEFAULT_TURN_TIMEOUT_MS = 10 * 60_000;
+export const DEFAULT_TURN_INACTIVITY_TIMEOUT_MS = 5 * 60_000;
+// The inactivity settle is phrased to match isCopilotConnectionClosedError()
+// (orchestration/utils.ts) so the existing connection-closed recovery runs:
+// release affinity, delayed retry on a fresh subprocess, bounded by
+// COPILOT_CONNECTION_CLOSED_MAX_RETRIES with a lossy-handoff fallback.
+export const TURN_INACTIVITY_ERROR_MARKER = "connection is closed or the subprocess is wedged";
+
 /**
  * Detect a tool call the model emitted as literal text instead of a real
  * tool_use block. Requires both the `<invoke name="...">` opener and a closing
@@ -1756,6 +1770,11 @@ export class ManagedSession {
             }
         }
 
+        // Fed by the catch-all handler below; read by the inactivity watchdog.
+        // A live turn emits a steady event stream (streaming deltas, tool
+        // executions, usage updates); a dead subprocess emits nothing.
+        let lastEventAt = Date.now();
+
         const turnComplete = new Promise<void>((resolve, reject) => {
             // Hang-escalation hook: forceSettleTurn() resolves this promise when
             // the SDK never fires session.idle (see stop-turn plan, edge E3).
@@ -1763,6 +1782,7 @@ export class ManagedSession {
             // Catch-all event handler — captures every event and fires onEvent immediately.
             unsubscribers.push(
                 this.copilotSession.on((event: any) => {
+                    lastEventAt = Date.now();
                     const eventType = event.type ?? event.eventType ?? "unknown";
                     const rawEventData = event.data ?? event;
                     let eventData = rawEventData;
@@ -1939,14 +1959,49 @@ export class ManagedSession {
             );
         });
 
-        // Optional timeout race — disabled by default.
-        // Uses turnTimeoutMs from session config if set.
-        const TURN_TIMEOUT = this.config.turnTimeoutMs ?? 0;
+        // Wall-clock turn cap — the blunt backstop. On by default (see
+        // DEFAULT_TURN_TIMEOUT_MS); an explicit turnTimeoutMs of 0 disables it.
+        const TURN_TIMEOUT = this.config.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS;
+        let turnTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
         const timeoutPromise = TURN_TIMEOUT > 0
             ? new Promise<void>((_, reject) => {
-                setTimeout(() => reject(new Error("Turn timed out")), TURN_TIMEOUT);
+                turnTimeoutTimer = setTimeout(() => reject(new Error("Turn timed out")), TURN_TIMEOUT);
+                (turnTimeoutTimer as any).unref?.();
             })
             : null;
+
+        // Inactivity watchdog — the sharp detector for a dead CLI subprocess.
+        // Re-arms from lastEventAt so any event resets it; fires only on total
+        // silence. The threshold must exceed the longest legitimate quiet gap
+        // (a non-streaming external tool call), hence minutes, not seconds.
+        const INACTIVITY_TIMEOUT = this.config.turnInactivityTimeoutMs ?? DEFAULT_TURN_INACTIVITY_TIMEOUT_MS;
+        let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
+        const inactivityPromise = INACTIVITY_TIMEOUT > 0
+            ? new Promise<void>((_, reject) => {
+                const arm = (delayMs: number) => {
+                    inactivityTimer = setTimeout(() => {
+                        const idleMs = Date.now() - lastEventAt;
+                        if (idleMs >= INACTIVITY_TIMEOUT) {
+                            reject(new Error(
+                                `No events from the Copilot CLI subprocess for ${Math.round(idleMs / 1000)}s — `
+                                + `${TURN_INACTIVITY_ERROR_MARKER}; treating the turn as lost.`,
+                            ));
+                            return;
+                        }
+                        arm(INACTIVITY_TIMEOUT - idleMs);
+                    }, delayMs);
+                    (inactivityTimer as any).unref?.();
+                };
+                arm(INACTIVITY_TIMEOUT);
+            })
+            : null;
+
+        // Both guards also race the correction-loop idle waits below. Mark
+        // their rejections as handled so the loser of a race never surfaces
+        // as an unhandled rejection before the finally-block clears its timer.
+        const guards: Promise<void>[] = [timeoutPromise, inactivityPromise]
+            .filter((p): p is Promise<void> => p !== null);
+        for (const guard of guards) guard.catch(() => {});
 
         // Re-armable idle waiter used by the tool-call-as-text guard to wait for
         // the model's response to a mid-turn correction without tearing down the
@@ -1981,9 +2036,10 @@ export class ManagedSession {
                 ...(opts?.requiredTool ? { requiredTool: opts.requiredTool } : {}),
             });
 
-            // Wait for session.idle, or timeout if explicitly enabled.
-            if (timeoutPromise) {
-                await Promise.race([turnComplete, timeoutPromise]);
+            // Wait for session.idle, or a guard rejection (wall-clock cap /
+            // inactivity watchdog) when enabled.
+            if (guards.length > 0) {
+                await Promise.race([turnComplete, ...guards]);
             } else {
                 await turnComplete;
             }
@@ -2015,8 +2071,8 @@ export class ManagedSession {
                 finalContent = undefined;
                 const nextIdle = waitForNextIdle();
                 await this.copilotSession.send({ prompt: buildTextEmittedToolCallCorrection(offendingTool) });
-                if (timeoutPromise) {
-                    await Promise.race([nextIdle, timeoutPromise]);
+                if (guards.length > 0) {
+                    await Promise.race([nextIdle, ...guards]);
                 } else {
                     await nextIdle;
                 }
@@ -2037,8 +2093,21 @@ export class ManagedSession {
                 } as any;
             }
         } catch (err: any) {
-            // Timeout — kill it
             const errMsg = err.message ?? String(err);
+            // Inactivity watchdog — the CLI subprocess is presumed dead or
+            // wedged. Settle as a retryable transport-loss error: the message
+            // matches isCopilotConnectionClosedError(), so the orchestration
+            // retries on a fresh subprocess and lossy-hands-off after bounded
+            // attempts. This is the zombie-turn fix — the activity must settle.
+            if (errMsg.includes(TURN_INACTIVITY_ERROR_MARKER)) {
+                try { this.copilotSession.abort(); } catch {}
+                return {
+                    type: "error",
+                    message: errMsg,
+                    events: collectedEvents,
+                } as any;
+            }
+            // Timeout — kill it
             if (errMsg.includes("timed out")) {
                 try { this.copilotSession.abort(); } catch {}
                 return {
@@ -2051,6 +2120,9 @@ export class ManagedSession {
                 return { type: "error", message: errMsg };
             }
         } finally {
+            // Clear guard timers so a settled turn leaves nothing armed.
+            if (turnTimeoutTimer) clearTimeout(turnTimeoutTimer);
+            if (inactivityTimer) clearTimeout(inactivityTimer);
             // Always clean up subscriptions
             for (const unsub of unsubscribers) unsub();
         }

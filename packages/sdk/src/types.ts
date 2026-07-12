@@ -182,8 +182,20 @@ export interface SerializableSessionConfig {
 export interface ManagedSessionConfig extends SerializableSessionConfig {
     tools?: Tool<any>[];
     hooks?: SessionConfig["hooks"];
-    /** Turn timeout in milliseconds. 0 or undefined = no timeout. */
+    /**
+     * Wall-clock cap on a single turn, in milliseconds. 0 = no cap;
+     * undefined = DEFAULT_TURN_TIMEOUT_MS (10 minutes).
+     */
     turnTimeoutMs?: number;
+    /**
+     * Inactivity watchdog, in milliseconds: settle the turn as a retryable
+     * transport-loss error when the Copilot CLI subprocess emits no events
+     * for this long. A dead subprocess never fires session.idle, so without
+     * this a mid-turn crash leaves the durable runTurn activity in-flight
+     * forever (zombie turn). 0 = disabled; undefined =
+     * DEFAULT_TURN_INACTIVITY_TIMEOUT_MS (5 minutes).
+     */
+    turnInactivityTimeoutMs?: number;
 }
 
 // ─── Session Status ──────────────────────────────────────────────
@@ -610,10 +622,19 @@ export interface PilotSwarmWorkerOptions {
     sessionStore?: SessionStateStore;
 
     /**
-     * Turn timeout in milliseconds. If a single LLM turn takes longer than this,
-     * it is aborted. 0 or undefined = no timeout (default).
+     * Wall-clock cap on a single LLM turn, in milliseconds. If a turn takes
+     * longer than this it is aborted and settled as a retryable error.
+     * 0 = no cap; undefined = 10-minute default.
      */
     turnTimeoutMs?: number;
+
+    /**
+     * Inactivity watchdog for a single LLM turn, in milliseconds. If the
+     * Copilot CLI subprocess emits no events for this long mid-turn, the turn
+     * is settled as a retryable transport-loss error instead of hanging
+     * forever on a dead subprocess. 0 = disabled; undefined = 5-minute default.
+     */
+    turnInactivityTimeoutMs?: number;
 
     /**
      * Base directory for local session state files.

@@ -111,8 +111,10 @@ export interface WorkerDefaults {
     };
     /** Multi-provider model registry. Takes precedence over `provider`. */
     modelProviders?: ModelProviderRegistry;
-    /** Turn timeout in milliseconds. 0 or undefined = no timeout. */
+    /** Wall-clock turn cap in ms. 0 = no cap; undefined = 10-minute default. */
     turnTimeoutMs?: number;
+    /** Turn inactivity watchdog in ms. 0 = disabled; undefined = 5-minute default. */
+    turnInactivityTimeoutMs?: number;
 }
 
 function buildEffectivePromptLayers(workerDefaults: WorkerDefaults, config: SerializableSessionConfig): PromptLayerDescriptor[] {
@@ -778,6 +780,7 @@ export class SessionManager {
             tools: resolvedTools.length > 0 ? resolvedTools : undefined,
             hooks: storedConfig?.hooks,
             turnTimeoutMs: this.workerDefaults.turnTimeoutMs,
+            turnInactivityTimeoutMs: this.workerDefaults.turnInactivityTimeoutMs,
         };
         this.sessionConfigs.set(sessionId, config);
 
