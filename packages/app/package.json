@@ -1,89 +1,89 @@
 {
-  "name": "pilotswarm",
-  "version": "0.5.9",
-  "description": "PilotSwarm application package: terminal UI, browser portal + Web API server, and MCP server — one install, three bins.",
-  "type": "module",
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/affandar/pilotswarm.git",
-    "directory": "packages/app"
-  },
-  "homepage": "https://github.com/affandar/pilotswarm#readme",
-  "bugs": {
-    "url": "https://github.com/affandar/pilotswarm/issues"
-  },
-  "engines": {
-    "node": ">=24"
-  },
-  "bin": {
-    "pilotswarm": "./tui/bin/tui.js",
-    "pilotswarm-cli": "./tui/bin/tui.js",
-    "pilotswarm-web": "./web/bin/serve.js",
-    "pilotswarm-mcp": "./mcp/dist/bin/pilotswarm-mcp.js"
-  },
-  "exports": {
-    ".": "./tui/src/index.js",
-    "./host": "./tui/src/portal.js",
-    "./web": "./web/server.js",
-    "./ui-core": "./ui/core/src/index.js",
-    "./ui-react": "./ui/react/src/index.js",
-    "./package.json": "./package.json"
-  },
-  "files": [
-    "tui/bin/**/*",
-    "tui/src/**/*",
-    "tui/plugins/**/*",
-    "tui/tui-splash.txt",
-    "tui/tui-splash-mobile.txt",
-    "web/auth.js",
-    "web/auth/**/*",
-    "web/api/**/*",
-    "web/bin/**/*",
-    "web/config.js",
-    "web/dist/**/*",
-    "web/runtime.js",
-    "web/server.js",
-    "mcp/dist/**/*",
-    "ui/core/src/**/*",
-    "ui/react/src/**/*",
-    "README.md"
-  ],
-  "scripts": {
-    "build": "npm run build:web && npm run build:mcp",
-    "build:web": "cd web && node ../node_modules/vite/bin/vite.js build",
-    "build:mcp": "cd mcp && tsc",
-    "prepack": "npm run build",
-    "start": "node ./tui/bin/tui.js local --env ../../.env.remote",
-    "start:remote": "node ./tui/bin/tui.js remote --env ../../.env.remote",
-    "web:start": "node web/server.js",
-    "web:dev": "cd web && node ../node_modules/vite/bin/vite.js --host 0.0.0.0",
-    "test": "npm run test:tui && npm run test:web && npm run test:ui && npm run test:mcp",
-    "test:tui": "node --test tui/test/*.test.mjs",
-    "test:web": "node --test web/test/*.test.mjs",
-    "test:ui": "node --test ui/core/test/*.test.mjs",
-    "test:mcp": "node mcp/test/unit/sendCommandAndWait.unit.mjs && node mcp/test/unit/registration.unit.mjs && node mcp/test/unit/dispatch.unit.mjs && node mcp/test/unit/session-id.unit.mjs",
-    "test:mcp:integration": "node mcp/test/integration/smoke.live.mjs",
-    "test:mcp:integration:horizondb": "MCP_PARITY_REQUIRE=search,graph node --env-file=../../.env.horizondb mcp/test/integration/parity.live.mjs",
-    "test:mcp:integration:all": "node mcp/test/integration/smoke.live.mjs && node mcp/test/integration/tools.live.mjs && node mcp/test/integration/edge-cases.live.mjs && node mcp/test/integration/verify.live.mjs && node mcp/test/integration/parity.live.mjs",
-    "clean": "rm -rf web/dist mcp/dist"
-  },
-  "dependencies": {
-    "@azure/msal-browser": "^4.26.1",
-    "@azure/msal-node": "^5.3.1",
-    "@hono/node-server": "^1.19.12",
-    "@modelcontextprotocol/sdk": "^1.28.0",
-    "express": "^5.1.0",
-    "hono": "^4.12.10",
-    "ink": "^6.8.0",
-    "jose": "^6.2.2",
-    "pilotswarm-sdk": "^0.5.9",
-    "react": "^19.2.4",
-    "react-dom": "^19.2.4",
-    "ws": "^8.18.2"
-  },
-  "devDependencies": {
-    "@vitejs/plugin-react": "^5.1.0",
-    "vite": "^7.2.0"
-  }
+    "name": "pilotswarm",
+    "version": "0.5.10",
+    "description": "PilotSwarm application package: terminal UI, browser portal + Web API server, and MCP server — one install, three bins.",
+    "type": "module",
+    "license": "MIT",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/affandar/pilotswarm.git",
+        "directory": "packages/app"
+    },
+    "homepage": "https://github.com/affandar/pilotswarm#readme",
+    "bugs": {
+        "url": "https://github.com/affandar/pilotswarm/issues"
+    },
+    "engines": {
+        "node": ">=24"
+    },
+    "bin": {
+        "pilotswarm": "./tui/bin/tui.js",
+        "pilotswarm-cli": "./tui/bin/tui.js",
+        "pilotswarm-web": "./web/bin/serve.js",
+        "pilotswarm-mcp": "./mcp/dist/bin/pilotswarm-mcp.js"
+    },
+    "exports": {
+        ".": "./tui/src/index.js",
+        "./host": "./tui/src/portal.js",
+        "./web": "./web/server.js",
+        "./ui-core": "./ui/core/src/index.js",
+        "./ui-react": "./ui/react/src/index.js",
+        "./package.json": "./package.json"
+    },
+    "files": [
+        "tui/bin/**/*",
+        "tui/src/**/*",
+        "tui/plugins/**/*",
+        "tui/tui-splash.txt",
+        "tui/tui-splash-mobile.txt",
+        "web/auth.js",
+        "web/auth/**/*",
+        "web/api/**/*",
+        "web/bin/**/*",
+        "web/config.js",
+        "web/dist/**/*",
+        "web/runtime.js",
+        "web/server.js",
+        "mcp/dist/**/*",
+        "ui/core/src/**/*",
+        "ui/react/src/**/*",
+        "README.md"
+    ],
+    "scripts": {
+        "build": "npm run build:web && npm run build:mcp",
+        "build:web": "cd web && node ../node_modules/vite/bin/vite.js build",
+        "build:mcp": "cd mcp && tsc",
+        "prepack": "npm run build",
+        "start": "node ./tui/bin/tui.js local --env ../../.env.remote",
+        "start:remote": "node ./tui/bin/tui.js remote --env ../../.env.remote",
+        "web:start": "node web/server.js",
+        "web:dev": "cd web && node ../node_modules/vite/bin/vite.js --host 0.0.0.0",
+        "test": "npm run test:tui && npm run test:web && npm run test:ui && npm run test:mcp",
+        "test:tui": "node --test tui/test/*.test.mjs",
+        "test:web": "node --test web/test/*.test.mjs",
+        "test:ui": "node --test ui/core/test/*.test.mjs",
+        "test:mcp": "node mcp/test/unit/sendCommandAndWait.unit.mjs && node mcp/test/unit/registration.unit.mjs && node mcp/test/unit/dispatch.unit.mjs && node mcp/test/unit/session-id.unit.mjs",
+        "test:mcp:integration": "node mcp/test/integration/smoke.live.mjs",
+        "test:mcp:integration:horizondb": "MCP_PARITY_REQUIRE=search,graph node --env-file=../../.env.horizondb mcp/test/integration/parity.live.mjs",
+        "test:mcp:integration:all": "node mcp/test/integration/smoke.live.mjs && node mcp/test/integration/tools.live.mjs && node mcp/test/integration/edge-cases.live.mjs && node mcp/test/integration/verify.live.mjs && node mcp/test/integration/parity.live.mjs",
+        "clean": "rm -rf web/dist mcp/dist"
+    },
+    "dependencies": {
+        "@azure/msal-browser": "^4.26.1",
+        "@azure/msal-node": "^5.3.1",
+        "@hono/node-server": "^1.19.12",
+        "@modelcontextprotocol/sdk": "^1.28.0",
+        "express": "^5.1.0",
+        "hono": "^4.12.10",
+        "ink": "^6.8.0",
+        "jose": "^6.2.2",
+        "pilotswarm-sdk": "^0.5.10",
+        "react": "^19.2.4",
+        "react-dom": "^19.2.4",
+        "ws": "^8.18.2"
+    },
+    "devDependencies": {
+        "@vitejs/plugin-react": "^5.1.0",
+        "vite": "^7.2.0"
+    }
 }

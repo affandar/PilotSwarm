@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.5.10 — 2026-07-12
+
+### SDK
+
+- **`splashMobile` is now carried end-to-end through session creation.** The
+  creatable-agent normalizer (`normalizeCreatableAgent`) forwarded `splash` but
+  dropped `splashMobile`, so agent sessions persisted only the desktop banner and
+  the mobile portal had no narrow-viewport variant to swap in — it fell back to
+  the wide desktop art on phones. The field now flows through the normalizer (the
+  single source feeding both the worker path and the portal's baked-plugin-dir
+  catalog), system-agent session creation, and the inspect-tools session readout.
+- **Migration 0028 — the paged session list carries the owner.**
+  `cms_list_sessions_page` returned `SETOF sessions` (the raw table, which has no
+  owner columns), so the portal's always-paginated session list delivered
+  `owner: null` for every row and the UI rendered `?` owner initials — even though
+  ownership was always persisted correctly. It's recreated (DROP + CREATE, the
+  return shape changes) with the same `session_owners`/`users` LEFT JOIN that
+  `cms_list_sessions` already performs; column order mirrors that function so
+  `rowToSessionRow` handles both paths identically. No render-side change.
+
+### Agents
+
+- **Management-agent desktop splashes redesigned** (`pilotswarm`, `sweeper`,
+  `agent-tuner`, `resourcemgr`, `facts-manager`) into solid ANSI-Shadow block
+  logos with per-row color bands, a boxed role, a color-coded capability strip,
+  and a flavor line. `splashMobile` variants unchanged.
+
+### Tests
+
+- Migration-shape unit test (`test:unit`) locking the paged-list `RETURNS TABLE`
+  column set to the canonical `cms_list_sessions` shape — the invariant that
+  would have caught the `?` owner bug — plus a DB-backed test (`test:local:cms`)
+  asserting the keyset-paged list returns the persisted owner and agrees with the
+  full list.
+
 ## 0.5.9 — 2026-07-10
 
 ### SDK

@@ -1,69 +1,69 @@
 {
-  "name": "pilotswarm-horizon-store",
-  "version": "0.5.9",
-  "type": "module",
-  "description": "HorizonDB-backed enhanced facts and graph providers for PilotSwarm.",
-  "main": "./dist/src/index.js",
-  "types": "./dist/src/index.d.ts",
-  "exports": {
-    ".": {
-      "import": "./dist/src/index.js",
-      "types": "./dist/src/index.d.ts"
+    "name": "pilotswarm-horizon-store",
+    "version": "0.5.10",
+    "type": "module",
+    "description": "HorizonDB-backed enhanced facts and graph providers for PilotSwarm.",
+    "main": "./dist/src/index.js",
+    "types": "./dist/src/index.d.ts",
+    "exports": {
+        ".": {
+            "import": "./dist/src/index.js",
+            "types": "./dist/src/index.d.ts"
+        }
+    },
+    "files": [
+        "dist/**/*",
+        "migrations/**/*",
+        "README.md"
+    ],
+    "scripts": {
+        "build": "tsc",
+        "dev": "tsc --watch",
+        "test": "node ../../node_modules/vitest/vitest.mjs run test/graph-model.test.mjs test/query-builder.test.mjs test/provider-guards.test.mjs test/pg-pool.test.mjs test/db-retry.test.mjs test/horizon-migrator.test.mjs",
+        "test:integration": "node --env-file-if-exists=.env ../../node_modules/vitest/vitest.mjs run test/integration",
+        "test:all": "bash scripts/run-tests.sh",
+        "poc:lexical": "node poc/01-lexical.mjs",
+        "poc:semantic": "node poc/02-semantic.mjs",
+        "poc:graph": "node poc/03-graph.mjs",
+        "poc:hybrid": "node poc/04-hybrid.mjs",
+        "poc:crawler": "node poc/05-crawler.mjs",
+        "eval:harvester": "node --env-file-if-exists=.env eval/scenarios.mjs sc1a",
+        "eval:scenarios": "node --env-file-if-exists=.env eval/scenarios.mjs"
+    },
+    "dependencies": {
+        "pg": "^8.13.1"
+    },
+    "peerDependencies": {
+        "pilotswarm-sdk": "^0.5.0"
+    },
+    "devDependencies": {
+        "@github/copilot": "^1.0.50",
+        "@github/copilot-sdk": "^1.0.0-beta.4",
+        "@types/node": "^24.0.0",
+        "@types/pg": "^8.11.10",
+        "pilotswarm-sdk": "^0.5.0",
+        "typescript": "^5.6.0"
+    },
+    "engines": {
+        "node": ">=24.0.0"
+    },
+    "keywords": [
+        "pilotswarm",
+        "horizondb",
+        "facts",
+        "graph",
+        "pgvector",
+        "apache-age"
+    ],
+    "author": "Affan Dar",
+    "license": "MIT",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/affandar/PilotSwarm",
+        "directory": "packages/horizon-store"
+    },
+    "homepage": "https://github.com/affandar/PilotSwarm/tree/main/packages/horizon-store",
+    "bugs": {
+        "url": "https://github.com/affandar/PilotSwarm/issues"
     }
-  },
-  "files": [
-    "dist/**/*",
-    "migrations/**/*",
-    "README.md"
-  ],
-  "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch",
-    "test": "node ../../node_modules/vitest/vitest.mjs run test/graph-model.test.mjs test/query-builder.test.mjs test/provider-guards.test.mjs test/pg-pool.test.mjs test/db-retry.test.mjs test/horizon-migrator.test.mjs",
-    "test:integration": "node --env-file-if-exists=.env ../../node_modules/vitest/vitest.mjs run test/integration",
-    "test:all": "bash scripts/run-tests.sh",
-    "poc:lexical": "node poc/01-lexical.mjs",
-    "poc:semantic": "node poc/02-semantic.mjs",
-    "poc:graph": "node poc/03-graph.mjs",
-    "poc:hybrid": "node poc/04-hybrid.mjs",
-    "poc:crawler": "node poc/05-crawler.mjs",
-    "eval:harvester": "node --env-file-if-exists=.env eval/scenarios.mjs sc1a",
-    "eval:scenarios": "node --env-file-if-exists=.env eval/scenarios.mjs"
-  },
-  "dependencies": {
-    "pg": "^8.13.1"
-  },
-  "peerDependencies": {
-    "pilotswarm-sdk": "^0.5.0"
-  },
-  "devDependencies": {
-    "@github/copilot": "^1.0.50",
-    "@github/copilot-sdk": "^1.0.0-beta.4",
-    "@types/node": "^24.0.0",
-    "@types/pg": "^8.11.10",
-    "pilotswarm-sdk": "^0.5.0",
-    "typescript": "^5.6.0"
-  },
-  "engines": {
-    "node": ">=24.0.0"
-  },
-  "keywords": [
-    "pilotswarm",
-    "horizondb",
-    "facts",
-    "graph",
-    "pgvector",
-    "apache-age"
-  ],
-  "author": "Affan Dar",
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/affandar/PilotSwarm",
-    "directory": "packages/horizon-store"
-  },
-  "homepage": "https://github.com/affandar/PilotSwarm/tree/main/packages/horizon-store",
-  "bugs": {
-    "url": "https://github.com/affandar/PilotSwarm/issues"
-  }
 }

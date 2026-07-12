@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.9** — Sub-agents of a system session now inherit the SYSTEM *user* as their owner (staying deletable and manageable) instead of being marked `is_system`, while still resolving the admin-stored System GitHub Copilot key through the ordinary per-owner path. Plus portal session-owner-filter fixes — one unified "System" bucket, a default view that reliably shows your own sessions, and a filter list that stays live while open — and light dividers between rows in the full-screen session list.
+> **Latest release: v0.5.10** — The portal session list now shows real owner initials instead of `?` (a paged-list read path, `cms_list_sessions_page`, wasn't joining the owner — fixed in CMS migration 0028; ownership was always persisted). Agent mobile splash screens now persist correctly — `splashMobile` is carried through session creation so phones get the narrow-viewport banner instead of the wide desktop art. Plus redesigned management-agent desktop splashes (solid ANSI-Shadow logos with color bands).
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 
