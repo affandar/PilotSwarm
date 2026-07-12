@@ -94,7 +94,12 @@ jobs:
               run: npm ci
 
             - name: Build
-              run: npm run build --workspaces --if-present
+              # Use the root build script (sdk -> horizon-store -> app), NOT
+              # `--workspaces` which builds in alphabetical order (app first) and
+              # fails: app/mcp + horizon-store tsc need pilotswarm-sdk's emitted
+              # .d.ts, which don't exist until the sdk builds. publish-npm.yml
+              # already builds in this order.
+              run: npm run build
 
             - name: Run tests
               run: |
