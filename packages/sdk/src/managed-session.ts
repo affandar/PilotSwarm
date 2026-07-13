@@ -52,9 +52,26 @@ function hasAssistantToolCalls(message: any): boolean {
     return Array.isArray(message?.tool_calls) && message.tool_calls.length > 0;
 }
 
+// Invisible characters a model emits when it is asked to say nothing but the
+// turn still demands a final answer. JS `trim()` does NOT remove these: they are
+// Unicode format characters (Cf), not White_Space, so `"\u200b".trim()` is still
+// one character long and every "blank" filter keyed on trim() lets them through.
+//
+// Observed: an agent on a fast monitoring cron was told to "end the turn
+// silently" on a quiet cycle. Having no way to emit nothing, it produced a
+// zero-width space each cycle — a real assistant.message the SDK dutifully
+// recorded and every UI dutifully rendered as an empty "Agent:" line, once a
+// minute, forever.
+const INVISIBLE_CONTENT_CHARS = /[\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2064\ufeff]/g;
+
+/** Strip invisible/zero-width characters, then whitespace. */
+export function stripInvisibleContent(value: string): string {
+    return value.replace(INVISIBLE_CONTENT_CHARS, "").trim();
+}
+
 function isBlankAssistantContent(content: unknown): boolean {
     if (content == null) return true;
-    if (typeof content === "string") return content.trim().length === 0;
+    if (typeof content === "string") return stripInvisibleContent(content).length === 0;
     if (Array.isArray(content)) return content.length === 0;
     return false;
 }
@@ -120,7 +137,9 @@ function isEmptyAssistantTranscriptEvent(eventType: string, eventData: unknown):
 
 function extractAssistantMessageContent(event: any): string | undefined {
     const content = event?.data?.content ?? event?.data?.text ?? event?.data?.message;
-    return typeof content === "string" && content.trim() ? content : undefined;
+    // Same trap as isBlankAssistantContent: a zero-width-space "silent" reply is
+    // not a response, and must not become the session's latest_response.
+    return typeof content === "string" && stripInvisibleContent(content) ? content : undefined;
 }
 
 function acknowledgeTurnBoundary(action: string): string {
