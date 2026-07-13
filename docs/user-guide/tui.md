@@ -231,11 +231,11 @@ to summarize, get a markdown report you can open externally.
 3. Type around it, e.g.:
 
        Look at artifact://errors.csv. Summarize the top 5 root causes
-       as a markdown report. Use write_artifact + export_artifact so I
+       as a markdown report. Use write_artifact so I
        can open it.
 
 4. Send (`Enter`). The agent reads your CSV, runs analysis, calls
-   `write_artifact` and `export_artifact`.
+   `write_artifact` and replies with the `artifact://` link.
 5. Press `m` until the inspector is on the **files** tab. The new artifact
    appears in the list.
 6. With the file selected:

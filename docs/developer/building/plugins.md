@@ -169,7 +169,7 @@ description: Analyzes datasets and produces summary reports.
 tools:
   - bash
   - write_artifact
-  - export_artifact
+  - read_artifact
 ---
 
 # Data Analyst Agent
@@ -179,7 +179,7 @@ You are a data analyst. When given a dataset:
 1. Load and inspect the data structure.
 2. Compute summary statistics.
 3. Write findings to a markdown report using `write_artifact`.
-4. Export the report with `export_artifact` and include the artifact link.
+4. Include the `artifact://` link from the write result in your response.
 
 Be concise. Use tables for numeric summaries.
 ```

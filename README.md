@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.11** — Two session-reliability fixes. A dead Copilot CLI subprocess can no longer wedge a session forever: turns now self-settle via an inactivity watchdog (default 5 min of total event silence) plus a default 10-minute wall-clock turn cap, then retry on a fresh subprocess through the existing transport-loss recovery. And a stale cron timer firing after `cron(action="cancel")` no longer hard-fails the orchestration — the unretractable next-tick timer is now ignored instead of dereferencing the cleared schedule.
+> **Latest release: v0.5.12** — Artifact API v2: agents get a real data plane. `write_artifact({fromFile})` streams worker-local files (binaries included) server-side, `read_artifact({toFile})` materializes them on another agent's disk, `fromArtifact` copies between sessions with SHA-256 preconditions, and every result carries digest + provenance + the `artifact://` link. `export_artifact` is retired. Also: blob-store env-flag fix (no more silent filesystem fallback), artifact pinning, and MCP `copy_artifact`/`pin_artifact`.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 

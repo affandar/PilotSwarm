@@ -449,6 +449,17 @@ export class PortalRuntime {
                     safeParams.contentType,
                     safeParams.contentEncoding,
                 );
+            case "copyArtifact":
+                return this.transport.copyArtifact(
+                    safeParams.fromSessionId,
+                    safeParams.fromFilename,
+                    safeParams.toSessionId,
+                    safeParams.toFilename,
+                );
+            case "setArtifactPinned":
+                return this.transport.setArtifactPinned(safeParams.sessionId, safeParams.filename, safeParams.pinned);
+            case "readArtifactBase64":
+                return this.transport.readArtifactBase64(safeParams.sessionId, safeParams.filename, safeParams.maxBytes);
             case "exportExecutionHistory":
                 return this.transport.exportExecutionHistory(safeParams.sessionId);
             case "getModelsByProvider":

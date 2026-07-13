@@ -1152,8 +1152,41 @@ export class NodeSdkTransport {
 
     async getArtifactMetadata(sessionId, filename) {
         if (!this.artifactStore || !sessionId || !filename) return null;
+        if (typeof this.artifactStore.statArtifact === "function") {
+            return this.artifactStore.statArtifact(sessionId, filename);
+        }
         const artifacts = await this.artifactStore.listArtifacts(sessionId);
         return (artifacts || []).find((artifact) => artifact?.filename === filename) || null;
+    }
+
+    async copyArtifact(fromSessionId, fromFilename, toSessionId, toFilename) {
+        if (!this.artifactStore) {
+            throw new Error("Artifact store is not available for this transport.");
+        }
+        return this.artifactStore.copyArtifact(fromSessionId, fromFilename, toSessionId, toFilename);
+    }
+
+    async setArtifactPinned(sessionId, filename, pinned) {
+        if (!this.artifactStore) {
+            throw new Error("Artifact store is not available for this transport.");
+        }
+        return this.artifactStore.setArtifactPinned(sessionId, filename, pinned === true);
+    }
+
+    /** Base64 inline read for the MCP surface — JSON-safe, size-guarded. */
+    async readArtifactBase64(sessionId, filename, maxBytes) {
+        if (!this.artifactStore) {
+            throw new Error("Artifact store is not available for this transport.");
+        }
+        const cap = Math.min(Math.max(1, Math.floor(maxBytes || 262144)), 1048576);
+        const result = await this.artifactStore.downloadArtifact(sessionId, filename);
+        const slice = result.body.subarray(0, cap);
+        const { body: _body, ...meta } = result;
+        return {
+            ...meta,
+            base64: slice.toString("base64"),
+            truncated: slice.length < result.body.length,
+        };
     }
 
     async deleteArtifact(sessionId, filename) {
@@ -1195,16 +1228,22 @@ export class NodeSdkTransport {
         }
 
         const filename = path.basename(resolvedPath);
-        const content = await fs.promises.readFile(resolvedPath);
         const contentType = guessArtifactContentType(filename);
-        await this.artifactStore.uploadArtifact(sessionId, filename, content, contentType);
+        let meta;
+        if (typeof this.artifactStore.uploadArtifactFromFile === "function") {
+            meta = await this.artifactStore.uploadArtifactFromFile(sessionId, filename, resolvedPath, contentType, { source: "user" });
+        } else {
+            const content = await fs.promises.readFile(resolvedPath);
+            meta = await this.artifactStore.uploadArtifact(sessionId, filename, content, contentType);
+        }
 
         return {
             sessionId,
             filename,
             resolvedPath,
-            sizeBytes: content.length,
+            sizeBytes: meta?.sizeBytes ?? stat.size,
             contentType,
+            ...(meta?.sha256 ? { sha256: meta.sha256 } : {}),
         };
     }
 
@@ -1837,7 +1876,7 @@ function createArtifactStore() {
         const reason = err?.message || String(err);
         throw new Error(
             `Azure Blob Storage is configured but cannot be initialized (reason: ${reason}). ` +
-            `Either fix the configuration or unset AZURE_STORAGE_CONNECTION_STRING / PILOTSWARM_USE_MANAGED_IDENTITY to fall back to the local filesystem artifact store.`,
+            `Either fix the configuration or unset AZURE_STORAGE_CONNECTION_STRING / PILOTSWARM_BLOB_USE_MANAGED_IDENTITY / PILOTSWARM_USE_MANAGED_IDENTITY / AZURE_STORAGE_ACCOUNT_URL to fall back to the local filesystem artifact store.`,
         );
     }
 

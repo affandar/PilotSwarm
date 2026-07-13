@@ -223,11 +223,11 @@ it to summarize, get a markdown report you can download.
 3. Type around it, e.g.:
 
        Look at artifact://errors.csv. Summarize the top 5 root causes
-       as a markdown report. Use write_artifact + export_artifact so I
+       as a markdown report. Use write_artifact so I
        can download it.
 
 4. Send. The agent reads your CSV, runs analysis, calls
-   `write_artifact` and `export_artifact`.
+   `write_artifact` and replies with the `artifact://` link.
 5. Click the **files** inspector tab. The new artifact appears.
 6. With the file selected:
    - Inline preview renders for markdown / images / PDFs.

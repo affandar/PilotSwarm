@@ -49,7 +49,7 @@ Every generated app `.agent.md` should include `schemaVersion: 1` and a `version
 
 Generated agents should use `cron(seconds=N, reason="...")` for fixed-interval recurring work and `cron_at(minute=M, hour=H, tz="Area/City", reason="...")` for wall-clock schedules. Do not teach agents to wake every N minutes just to check whether a calendar time has arrived. For long-running child sessions, include `contract.wakeOn` guidance so watcher children default to `material_change` instead of waking parents for no-op heartbeats.
 
-Artifact workflows should assume the shared `write_artifact` / `export_artifact` path now handles both text and binary outputs. Builder guidance should preserve `contentType` plus base64 encoding for binary files and explain that the browser portal downloads binary artifacts rather than previewing them inline.
+Artifact workflows should assume the consolidated `write_artifact` / `read_artifact` / `list_artifacts` surface. Files that already exist on the worker (builds, archives, binaries) upload via `write_artifact({fromFile})` and download via `read_artifact({toFile})` — bytes stream server-side and every result carries a `sha256` plus the `artifact://` link. Reserve inline `content` (with `contentType` + base64 for small binaries) for text the agent is authoring, and explain that the browser portal downloads binary artifacts rather than previewing them inline.
 
 The CLI builder template also assumes runnable scaffolds should:
 

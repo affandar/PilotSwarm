@@ -45,7 +45,7 @@ export interface SessionStateStore {
 }
 
 export type ArtifactEncoding = "utf-8" | "base64";
-export type ArtifactSource = "agent" | "user" | "system";
+export type ArtifactSource = "agent" | "user" | "system" | "file" | "copy";
 
 export interface ArtifactMetadata {
     filename: string;
@@ -54,11 +54,19 @@ export interface ArtifactMetadata {
     isBinary: boolean;
     uploadedAt: string;
     source: ArtifactSource;
+    /** SHA-256 (hex) of the stored bytes. Absent only on legacy artifacts written before digests. */
+    sha256?: string;
+    /** How the bytes arrived when source is "file" or "copy" (origin path / artifact ref). */
+    sourceDetail?: string;
+    /** Pinned artifacts survive session cleanup (deleteArtifacts skips them by default). */
+    pinned?: boolean;
 }
 
 export interface ArtifactUploadOptions {
     encoding?: ArtifactEncoding;
     source?: ArtifactSource;
+    sourceDetail?: string;
+    pinned?: boolean;
 }
 
 export interface ArtifactDownloadResult extends ArtifactMetadata {
@@ -176,8 +184,96 @@ export async function resolveArtifactUpload(
             contentType: normalizedContentType,
             isBinary: isBinaryArtifactContentType(normalizedContentType),
             source,
+            sha256: crypto.createHash("sha256").update(body).digest("hex"),
+            ...(opts.sourceDetail ? { sourceDetail: opts.sourceDetail } : {}),
+            ...(opts.pinned ? { pinned: true } : {}),
         },
     };
+}
+
+const DEFAULT_FILE_ARTIFACT_MAX_BYTES = 268_435_456; // 256MB — never transits a context window
+
+export function getFileArtifactMaxBytes(): number {
+    const raw = Number(process.env.PILOTSWARM_ARTIFACT_FILE_MAX_BYTES);
+    return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : DEFAULT_FILE_ARTIFACT_MAX_BYTES;
+}
+
+/**
+ * Resolve metadata for a data-plane upload from a local file: size gate,
+ * streamed SHA-256, and content-type sniffing from the head bytes. The
+ * body is never buffered whole — stores stream the file themselves.
+ */
+export async function resolveArtifactFileUpload(
+    filePath: string,
+    contentType?: string,
+    opts: ArtifactUploadOptions = {},
+): Promise<{ metadata: Omit<ArtifactMetadata, "filename" | "uploadedAt"> }> {
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile()) {
+        throw createArtifactError("ARTIFACT_INVALID_CONTENT", `Not a regular file: ${filePath}`);
+    }
+    const maxBytes = getFileArtifactMaxBytes();
+    if (stat.size > maxBytes) {
+        throw createArtifactError(
+            "ARTIFACT_TOO_LARGE",
+            `File too large for artifact upload: ${stat.size} bytes (max ${maxBytes})`,
+            { maxBytes, actualBytes: stat.size },
+        );
+    }
+
+    const hash = crypto.createHash("sha256");
+    const headChunks: Buffer[] = [];
+    let headBytes = 0;
+    await pipeline(
+        fs.createReadStream(filePath),
+        new Transform({
+            transform(chunk, _enc, cb) {
+                const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+                hash.update(buf);
+                if (headBytes < 4100) {
+                    headChunks.push(buf.subarray(0, 4100 - headBytes));
+                    headBytes += headChunks[headChunks.length - 1].length;
+                }
+                cb();
+            },
+        }),
+    );
+    const sha256 = hash.digest("hex");
+    const head = Buffer.concat(headChunks);
+    const detectedType = await sniffArtifactContentType(head);
+    // file-type only recognizes binary magic bytes; NUL-free UTF-8 heads are text.
+    const looksLikeText = !detectedType && !head.includes(0) && isValidUtf8(head);
+    const normalizedContentType = contentType
+        ? normalizeArtifactContentType(contentType)
+        : (detectedType || (looksLikeText ? "text/plain" : OCTET_STREAM_CONTENT_TYPE));
+    if (contentType && !isCompatibleDetectedArtifactType(normalizedContentType, detectedType)) {
+        throw createArtifactError(
+            "ARTIFACT_CONTENT_TYPE_MISMATCH",
+            `Artifact content type mismatch: declared ${normalizedContentType}, detected ${detectedType}`,
+            { declaredType: normalizedContentType, detectedType },
+        );
+    }
+
+    return {
+        metadata: {
+            sizeBytes: stat.size,
+            contentType: normalizedContentType,
+            isBinary: isBinaryArtifactContentType(normalizedContentType),
+            source: opts.source || "file",
+            sha256,
+            ...(opts.sourceDetail ? { sourceDetail: opts.sourceDetail } : {}),
+            ...(opts.pinned ? { pinned: true } : {}),
+        },
+    };
+}
+
+function isValidUtf8(buf: Buffer): boolean {
+    try {
+        new TextDecoder("utf-8", { fatal: true }).decode(buf);
+        return true;
+    } catch {
+        return false;
+    }
 }
 
 function metadataFromStat(
@@ -193,6 +289,9 @@ function metadataFromStat(
         isBinary: typeof stored?.isBinary === "boolean" ? stored.isBinary : isBinaryArtifactContentType(contentType),
         uploadedAt: String(stored?.uploadedAt || stat.mtime.toISOString()),
         source: (stored?.source as ArtifactSource) || DEFAULT_ARTIFACT_SOURCE,
+        ...(stored?.sha256 ? { sha256: stored.sha256 } : {}),
+        ...(stored?.sourceDetail ? { sourceDetail: stored.sourceDetail } : {}),
+        ...(stored?.pinned ? { pinned: true } : {}),
     };
 }
 
@@ -828,9 +927,27 @@ export interface ArtifactStore {
         contentType?: string,
         opts?: ArtifactUploadOptions,
     ): Promise<ArtifactMetadata>;
+    /** Data-plane write: stream a local file into the store without buffering the whole body. */
+    uploadArtifactFromFile(
+        sessionId: string,
+        filename: string,
+        filePath: string,
+        contentType?: string,
+        opts?: ArtifactUploadOptions,
+    ): Promise<ArtifactMetadata>;
+    /** Data-plane copy between sessions; bytes never leave the store process. */
+    copyArtifact(
+        fromSessionId: string,
+        fromFilename: string,
+        toSessionId: string,
+        toFilename?: string,
+        opts?: ArtifactUploadOptions,
+    ): Promise<ArtifactMetadata>;
     downloadArtifact(sessionId: string, filename: string): Promise<ArtifactDownloadResult>;
     downloadArtifactText(sessionId: string, filename: string): Promise<string>;
+    statArtifact(sessionId: string, filename: string): Promise<ArtifactMetadata | null>;
     listArtifacts(sessionId: string): Promise<ArtifactMetadata[]>;
+    setArtifactPinned(sessionId: string, filename: string, pinned: boolean): Promise<ArtifactMetadata>;
     deleteArtifact(sessionId: string, filename: string): Promise<boolean>;
     artifactExists(sessionId: string, filename: string): Promise<boolean>;
 }
@@ -982,6 +1099,63 @@ export class FilesystemArtifactStore implements ArtifactStore {
 
     async artifactExists(sessionId: string, filename: string): Promise<boolean> {
         return fs.existsSync(this.safePath(sessionId, filename));
+    }
+
+    async statArtifact(sessionId: string, filename: string): Promise<ArtifactMetadata | null> {
+        const filePath = this.safePath(sessionId, filename);
+        if (!fs.existsSync(filePath)) return null;
+        return this.buildMetadata(sessionId, filename);
+    }
+
+    async uploadArtifactFromFile(
+        sessionId: string,
+        filename: string,
+        filePath: string,
+        contentType?: string,
+        opts: ArtifactUploadOptions = {},
+    ): Promise<ArtifactMetadata> {
+        const safeFilename = path.basename(String(filename || "").trim() || filePath);
+        const { metadata } = await resolveArtifactFileUpload(filePath, contentType, {
+            source: "file",
+            sourceDetail: filePath,
+            ...opts,
+        });
+        const targetPath = this.safePath(sessionId, safeFilename);
+        const uploadedAt = new Date().toISOString();
+        fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+        fs.copyFileSync(filePath, `${targetPath}.tmp`);
+        fs.renameSync(`${targetPath}.tmp`, targetPath);
+        this.writeFileAtomic(
+            this.metadataPath(sessionId, safeFilename),
+            JSON.stringify({ filename: safeFilename, uploadedAt, ...metadata }, null, 2),
+        );
+        return { filename: safeFilename, uploadedAt, ...metadata };
+    }
+
+    async copyArtifact(
+        fromSessionId: string,
+        fromFilename: string,
+        toSessionId: string,
+        toFilename?: string,
+        opts: ArtifactUploadOptions = {},
+    ): Promise<ArtifactMetadata> {
+        const source = await this.downloadArtifact(fromSessionId, fromFilename);
+        return this.uploadArtifact(toSessionId, toFilename || source.filename, source.body, source.contentType, {
+            source: "copy",
+            sourceDetail: `artifact://${fromSessionId}/${source.filename}`,
+            ...opts,
+        });
+    }
+
+    async setArtifactPinned(sessionId: string, filename: string, pinned: boolean): Promise<ArtifactMetadata> {
+        const filePath = this.safePath(sessionId, filename);
+        if (!fs.existsSync(filePath)) {
+            throw createArtifactError("ARTIFACT_NOT_FOUND", `Artifact not found: ${filename} in session ${sessionId}`);
+        }
+        const stored = this.readStoredMetadata(sessionId, filename) || {};
+        const merged = { ...stored, filename: path.basename(filename), pinned };
+        this.writeFileAtomic(this.metadataPath(sessionId, filename), JSON.stringify(merged, null, 2));
+        return this.buildMetadata(sessionId, filename);
     }
 }
 

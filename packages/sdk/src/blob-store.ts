@@ -62,6 +62,7 @@ import {
     extractSessionArchive,
     isBinaryArtifactContentType,
     normalizeArtifactContentType,
+    resolveArtifactFileUpload,
     resolveArtifactUpload,
     resolveSnapshotCodec,
     waitForSessionSnapshot,
@@ -707,16 +708,60 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
         const uploadedAt = new Date().toISOString();
         await blob.upload(body, body.length, {
             blobHTTPHeaders: { blobContentType: metadata.contentType },
-            metadata: {
-                source: metadata.source,
-                uploadedAt,
-            },
+            metadata: artifactBlobMetadata(uploadedAt, metadata),
         });
         return {
             filename: safeFilename,
             uploadedAt,
             ...metadata,
         };
+    }
+
+    /**
+     * Data-plane write: stream a worker-local file straight to blob storage.
+     * The body never transits a buffer larger than the SDK's block size —
+     * and, crucially, never transits a model context window.
+     */
+    async uploadArtifactFromFile(
+        sessionId: string,
+        filename: string,
+        filePath: string,
+        contentType?: string,
+        opts: ArtifactUploadOptions = {},
+    ): Promise<ArtifactMetadata> {
+        const safeFilename = path.basename(String(filename || "").trim() || filePath);
+        const { metadata } = await resolveArtifactFileUpload(filePath, contentType, {
+            source: "file",
+            sourceDetail: filePath,
+            ...opts,
+        });
+        const blobPath = this.artifactBlobPath(sessionId, safeFilename);
+        const blob = this.containerClient.getBlockBlobClient(blobPath);
+        const uploadedAt = new Date().toISOString();
+        await blob.uploadFile(filePath, {
+            blobHTTPHeaders: { blobContentType: metadata.contentType },
+            metadata: artifactBlobMetadata(uploadedAt, metadata),
+        });
+        return { filename: safeFilename, uploadedAt, ...metadata };
+    }
+
+    /**
+     * Server-side copy between sessions. Bytes move store-to-store through
+     * this process; no model tokens, no worker filesystem.
+     */
+    async copyArtifact(
+        fromSessionId: string,
+        fromFilename: string,
+        toSessionId: string,
+        toFilename?: string,
+        opts: ArtifactUploadOptions = {},
+    ): Promise<ArtifactMetadata> {
+        const source = await this.downloadArtifact(fromSessionId, fromFilename);
+        return this.uploadArtifact(toSessionId, toFilename || source.filename, source.body, source.contentType, {
+            source: "copy",
+            sourceDetail: `artifact://${fromSessionId}/${source.filename}`,
+            ...opts,
+        });
     }
 
     /**
@@ -740,8 +785,43 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
             isBinary: isBinaryArtifactContentType(contentType),
             uploadedAt: response.lastModified?.toISOString() || new Date().toISOString(),
             source: (response.metadata?.source as ArtifactMetadata["source"]) || "agent",
+            ...artifactMetadataFromBlobMetadata(response.metadata),
             body,
         };
+    }
+
+    async statArtifact(sessionId: string, filename: string): Promise<ArtifactMetadata | null> {
+        const blobPath = this.artifactBlobPath(sessionId, filename);
+        const blob = this.containerClient.getBlockBlobClient(blobPath);
+        try {
+            const properties = await blob.getProperties();
+            const contentType = normalizeArtifactContentType(properties.contentType || undefined);
+            return {
+                filename: path.basename(filename),
+                sizeBytes: Number(properties.contentLength) || 0,
+                contentType,
+                isBinary: isBinaryArtifactContentType(contentType),
+                uploadedAt: properties.lastModified?.toISOString() || new Date().toISOString(),
+                source: (properties.metadata?.source as ArtifactMetadata["source"]) || "agent",
+                ...artifactMetadataFromBlobMetadata(properties.metadata),
+            };
+        } catch (err: any) {
+            if (err?.statusCode === 404) return null;
+            throw err;
+        }
+    }
+
+    async setArtifactPinned(sessionId: string, filename: string, pinned: boolean): Promise<ArtifactMetadata> {
+        const blobPath = this.artifactBlobPath(sessionId, filename);
+        const blob = this.containerClient.getBlockBlobClient(blobPath);
+        const properties = await blob.getProperties();
+        const merged: Record<string, string> = { ...(properties.metadata || {}) };
+        if (pinned) merged.pinned = "1";
+        else delete merged.pinned;
+        await blob.setMetadata(merged);
+        const stat = await this.statArtifact(sessionId, filename);
+        if (!stat) throw new Error(`Artifact not found after pin update: ${filename}`);
+        return stat;
     }
 
     async downloadArtifactText(sessionId: string, filename: string): Promise<string> {
@@ -775,6 +855,7 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
                 isBinary: isBinaryArtifactContentType(contentType),
                 uploadedAt: properties.lastModified?.toISOString() || new Date().toISOString(),
                 source: (properties.metadata?.source as ArtifactMetadata["source"]) || "agent",
+                ...artifactMetadataFromBlobMetadata(properties.metadata),
             });
         }
         return files;
@@ -847,17 +928,47 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
     }
 
     /**
-     * Delete all artifacts for a session.
+     * Delete all artifacts for a session. Pinned artifacts survive unless
+     * `includePinned` is set — a parent's cleanup or failure must not
+     * destroy deliverables that were explicitly marked to outlive it.
      */
-    async deleteArtifacts(sessionId: string): Promise<number> {
+    async deleteArtifacts(sessionId: string, opts: { includePinned?: boolean } = {}): Promise<number> {
         const prefix = `artifacts/${sessionId}/`;
         let count = 0;
-        for await (const blob of this.containerClient.listBlobsFlat({ prefix })) {
+        for await (const blob of this.containerClient.listBlobsFlat({ prefix, includeMetadata: true })) {
+            if (!opts.includePinned && blob.metadata?.pinned === "1") continue;
             await this.containerClient.getBlockBlobClient(blob.name).deleteIfExists();
             count++;
         }
         return count;
     }
+}
+
+/** Serialize artifact provenance fields into blob metadata (string-valued, lowercase-safe keys). */
+function artifactBlobMetadata(
+    uploadedAt: string,
+    metadata: Omit<ArtifactMetadata, "filename" | "uploadedAt">,
+): Record<string, string> {
+    return {
+        source: metadata.source,
+        uploadedAt,
+        ...(metadata.sha256 ? { sha256: metadata.sha256 } : {}),
+        ...(metadata.sourceDetail ? { sourcedetail: metadata.sourceDetail } : {}),
+        ...(metadata.pinned ? { pinned: "1" } : {}),
+    };
+}
+
+/** Parse provenance fields back out of blob metadata (keys may come back lowercased). */
+function artifactMetadataFromBlobMetadata(
+    blobMetadata: Record<string, string> | undefined,
+): Partial<ArtifactMetadata> {
+    if (!blobMetadata) return {};
+    const sourceDetail = blobMetadata.sourcedetail ?? blobMetadata.sourceDetail;
+    return {
+        ...(blobMetadata.sha256 ? { sha256: blobMetadata.sha256 } : {}),
+        ...(sourceDetail ? { sourceDetail } : {}),
+        ...(blobMetadata.pinned === "1" ? { pinned: true } : {}),
+    };
 }
 
 // ─── Factory ─────────────────────────────────────────────────────────────
@@ -873,9 +984,26 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
  */
 export interface SessionBlobStoreEnv {
     /**
+     * Blob-specific managed-identity flag — takes precedence over
+     * `PILOTSWARM_USE_MANAGED_IDENTITY` whenever it is set (to any
+     * value, truthy or not).
+     *
+     * Deploy overlays (bicep-deploy / waldemort) set THIS name for blob
+     * auth while reusing the unsuffixed name for database AAD auth, so
+     * the two can legitimately disagree (blob=1, db=0). Reading only the
+     * unsuffixed name here made the portal silently fall back to the
+     * filesystem artifact store while workers wrote to blob — agents
+     * could exchange artifacts, but every portal/TUI/MCP download and
+     * listing returned "not found".
+     */
+    PILOTSWARM_BLOB_USE_MANAGED_IDENTITY?: string;
+    /**
      * `1` / `true` selects managed-identity mode. When set, the factory
      * requires `AZURE_STORAGE_ACCOUNT_URL` and ignores any
      * `AZURE_STORAGE_CONNECTION_STRING` value.
+     *
+     * Legacy/shared name: also doubles as the database AAD flag in some
+     * deploys — prefer `PILOTSWARM_BLOB_USE_MANAGED_IDENTITY` for blob.
      *
      * Why a flag and not "MI iff conn string is absent"? Because we want
      * the legacy code path (connection string → shared-key credential →
@@ -898,16 +1026,24 @@ export interface SessionBlobStoreEnv {
  * to the filesystem store).
  *
  * Selection (first match wins):
- *   1. `PILOTSWARM_USE_MANAGED_IDENTITY=1` + `AZURE_STORAGE_ACCOUNT_URL`
- *      → managed-identity mode. Uses {@link DefaultAzureCredential}, which
- *      picks up the workload-identity token in AKS or `az login` /
- *      env-var creds locally. SAS URL minting will throw — callers must
- *      proxy downloads.
+ *   1. MI flag truthy + `AZURE_STORAGE_ACCOUNT_URL` → managed-identity
+ *      mode. The MI flag is `PILOTSWARM_BLOB_USE_MANAGED_IDENTITY` when
+ *      set (blob-specific, wins even when explicitly falsy), else the
+ *      legacy shared `PILOTSWARM_USE_MANAGED_IDENTITY`. Uses
+ *      {@link DefaultAzureCredential}, which picks up the
+ *      workload-identity token in AKS or `az login` / env-var creds
+ *      locally. SAS URL minting will throw — callers must proxy
+ *      downloads.
  *   2. `AZURE_STORAGE_CONNECTION_STRING` set → legacy connection-string
  *      mode. Identical to pre-MI behaviour. Used by the existing
  *      `scripts/deploy-aks.sh` flow, local Docker storage, CI, and any
  *      stamp that hasn't switched the flag on.
- *   3. Otherwise → `null`.
+ *   3. `AZURE_STORAGE_ACCOUNT_URL` set but neither credential path
+ *      enabled → throw. An account URL with no way to authenticate is a
+ *      misconfiguration; silently handing the caller `null` (→ empty
+ *      filesystem store) is how the portal served "artifact not found"
+ *      for months of blob-backed worker writes.
+ *   4. Otherwise → `null`.
  *
  * @internal
  */
@@ -917,14 +1053,17 @@ export function createSessionBlobStore(
 ): SessionBlobStore | null {
     const containerName =
         (env.AZURE_STORAGE_CONTAINER || "").trim() || "copilot-sessions";
-    const useMi = isTruthyFlag(env.PILOTSWARM_USE_MANAGED_IDENTITY);
+    const blobMiFlag = (env.PILOTSWARM_BLOB_USE_MANAGED_IDENTITY || "").trim();
+    const useMi = blobMiFlag !== ""
+        ? isTruthyFlag(blobMiFlag)
+        : isTruthyFlag(env.PILOTSWARM_USE_MANAGED_IDENTITY);
     const accountUrl = (env.AZURE_STORAGE_ACCOUNT_URL || "").trim();
     const connStr = (env.AZURE_STORAGE_CONNECTION_STRING || "").trim();
 
     if (useMi) {
         if (!accountUrl) {
             throw new Error(
-                "PILOTSWARM_USE_MANAGED_IDENTITY=1 but AZURE_STORAGE_ACCOUNT_URL is not set. " +
+                "PILOTSWARM_BLOB_USE_MANAGED_IDENTITY/PILOTSWARM_USE_MANAGED_IDENTITY is set but AZURE_STORAGE_ACCOUNT_URL is not. " +
                 "Set AZURE_STORAGE_ACCOUNT_URL to https://<account>.blob.core.windows.net (the bicep-deploy worker-env ConfigMap wires this automatically).",
             );
         }
@@ -941,6 +1080,16 @@ export function createSessionBlobStore(
 
     if (connStr) {
         return new SessionBlobStore(connStr, containerName, opts.sessionStateDir);
+    }
+
+    if (accountUrl) {
+        throw new Error(
+            `AZURE_STORAGE_ACCOUNT_URL is set (${accountUrl}) but no blob credential path is enabled: ` +
+            "PILOTSWARM_BLOB_USE_MANAGED_IDENTITY / PILOTSWARM_USE_MANAGED_IDENTITY are not truthy and " +
+            "AZURE_STORAGE_CONNECTION_STRING is unset. Refusing to fall back to the filesystem artifact " +
+            "store — it would silently diverge from blob-backed peers. Enable managed identity, provide " +
+            "a connection string, or unset AZURE_STORAGE_ACCOUNT_URL to opt into filesystem storage.",
+        );
     }
 
     return null;

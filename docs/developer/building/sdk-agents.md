@@ -43,7 +43,7 @@ description: Base instructions for all sessions.
 
 You are a helpful assistant running in PilotSwarm.
 
-Always use `write_artifact` + `export_artifact` when you create a file the user should download.
+Always use `write_artifact` when you create a file the user should download, and include the returned `artifact://` link in your response. Upload existing files (builds, archives, binaries) with `fromFile` instead of inline content.
 If you need to wait or poll, use the `wait` tool rather than bash sleep. For long waits, assume the next turn may resume on a different worker unless you intentionally pass `preserveWorkerAffinity: true` for worker-local work.
 Use `store_fact`, `read_facts`, and `delete_fact` for durable structured state rather than hiding important facts only in chat history. Treat facts as the authoritative memory layer for anything important.
 ```
@@ -66,7 +66,8 @@ description: Researches topics and writes concise markdown summaries.
 tools:
   - web_fetch
   - write_artifact
-  - export_artifact
+  - read_artifact
+  - list_artifacts
 ---
 
 # Researcher Agent
@@ -105,7 +106,7 @@ import { PilotSwarmWorker, defineTool } from "pilotswarm-sdk";
 
 const webFetch = defineTool("web_fetch", { /* ... */ });
 const writeArtifact = defineTool("write_artifact", { /* ... */ });
-const exportArtifact = defineTool("export_artifact", { /* ... */ });
+const readArtifact = defineTool("read_artifact", { /* ... */ });
 
 const worker = new PilotSwarmWorker({
   store: process.env.DATABASE_URL!,
@@ -123,9 +124,11 @@ If the tool is not registered on the worker, listing it in an agent file is not 
 
 Use the same `write_artifact` surface for both text and binary outputs.
 
-- For text files, the existing string content flow is unchanged.
-- For binary files, have the agent supply `contentType` and `encoding: "base64"` when it writes the artifact.
-- Keep `export_artifact` for user-facing handoff links after the file is written.
+- For text the agent is authoring, the inline `content` flow is unchanged.
+- For files that already exist on the worker (builds, archives, any binary), pass `fromFile: "<path>"` — bytes stream server-side and never transit the model. Small binaries can still be written inline with `contentType` plus `encoding: "base64"`.
+- To adopt another session's artifact, pass `fromArtifact: { sessionId, filename, expectedSha256? }` for a server-side copy.
+- Every write returns `sha256` and the `artifact://` link — include the link in the agent's response for user-facing handoff.
+- Consumers use `read_artifact` with `toFile` for large/binary artifacts, `metaOnly: true` to verify provenance, or bounded inline content for text.
 - In the browser portal, non-text artifacts are download-only; they do not render inline as markdown previews.
 
 This keeps builder-facing artifact workflows consistent across SDK, TUI, and portal hosts.
@@ -151,7 +154,7 @@ Optional `tools.json` can declare the tools that skill expects:
 
 ```json
 {
-  "tools": ["web_fetch", "write_artifact", "export_artifact"]
+  "tools": ["web_fetch", "write_artifact", "read_artifact"]
 }
 ```
 
@@ -189,7 +192,7 @@ Use system agents only when you want durable background behavior. Most apps only
 ```ts
 const session = await client.createSession({
   model: "github:claude-opus-4.6",
-  toolNames: ["web_fetch", "write_artifact", "export_artifact"],
+  toolNames: ["web_fetch", "write_artifact", "read_artifact"],
 });
 
 await session.sendAndWait("@researcher Find the top 5 announcements from this week and save them as a report.");

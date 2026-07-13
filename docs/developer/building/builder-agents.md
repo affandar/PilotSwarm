@@ -93,7 +93,7 @@ Builder templates should assume:
 - generated recurring agents should use `cron(seconds=N, reason="...")` for fixed intervals and `cron_at(minute=M, hour=H, tz="Area/City", reason="...")` for wall-clock schedules; do not build wall-clock jobs with wake-and-check polling loops
 - generated delegation flows should document `contract.wakeOn` for child sessions: `any` for chatty short-lived work, `material_change` for watchers, and `completion` for done/blocked/error-only children
 - Azure deployment guidance should prefer `kubectl create secret generic ... --from-env-file=...` when semicolon-bearing values such as Azure Storage connection strings are involved
-- builder guidance should treat `write_artifact` / `export_artifact` as the canonical text-and-binary artifact path, using `contentType` plus base64 encoding for binary files and documenting download-only browser behavior for non-text previews
+- builder guidance should treat `write_artifact` / `read_artifact` as the canonical text-and-binary artifact path — `fromFile` streaming for binary writes, `toFile` for binary reads, `sha256` results for provenance — and documenting download-only browser behavior for non-text previews
 
 ## Maintenance Rule
 

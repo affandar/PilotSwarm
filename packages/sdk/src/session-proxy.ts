@@ -1343,7 +1343,8 @@ export function registerActivities(
                         `- If it is ambiguous whether the task should become a long-running recurring workflow, report that ambiguity back to the parent instead of guessing or asking the user directly.\n` +
                         `- When your task is complete, provide a clear summary of your findings/results.\n` +
                         `- Prefer using \`store_fact\` for larger structured context handoffs across your session lineage. Put the durable details in facts, then pass fact keys or \`read_facts\` pointers in messages/prompts instead of pasting large context blobs.\n` +
-                        `- If you write any files with write_artifact, you MUST also call export_artifact and include the artifact:// link in your response.\n` +
+                        `- FILESYSTEM ISOLATION: sessions and sub-agents each run on their own worker pod and do NOT share a filesystem. The artifact store is the only shared byte channel — hand off files (especially binaries/archives) with \`write_artifact({fromFile: "<path>"})\` and consume them with \`read_artifact({toFile: "<path>"})\`; never re-type file bytes as inline content or base64 through messages.\n` +
+                        `- \`write_artifact\` returns the artifact:// link — include it in your response whenever the user should see the file.\n` +
                         `- If you override a sub-agent model, you MUST first call list_available_models in this session and use only an exact provider:model value returned there. ` +
                         `NEVER invent, guess, shorten, or reuse a stale model name.\n` +
                         `- Worker-managed system agents are not valid spawn targets. If you expect one and it is missing, report that the workers likely need to be restarted.\n` +

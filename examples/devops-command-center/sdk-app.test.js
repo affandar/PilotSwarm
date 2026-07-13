@@ -170,7 +170,7 @@ async function testDefaultAgentLayering(env) {
         const reporter = worker.loadedAgents.find(a => a.name === "reporter");
         assertNotNull(reporter, "reporter loaded");
         assertIncludes(reporter.prompt, "write_artifact", "reporter prompt documents artifact creation");
-        assertIncludes(reporter.prompt, "export_artifact", "reporter prompt documents artifact export");
+        assertIncludes(reporter.prompt, "artifact://", "reporter prompt documents the artifact link handoff");
     });
 }
 

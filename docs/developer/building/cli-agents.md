@@ -60,7 +60,8 @@ description: Researches a topic and saves findings as a markdown artifact.
 tools:
   - web_fetch
   - write_artifact
-  - export_artifact
+  - read_artifact
+  - list_artifacts
 ---
 
 # Researcher Agent
@@ -87,7 +88,7 @@ Optional `tools.json`:
 
 ```json
 {
-  "tools": ["web_fetch", "write_artifact", "export_artifact"]
+  "tools": ["web_fetch", "write_artifact", "read_artifact"]
 }
 ```
 

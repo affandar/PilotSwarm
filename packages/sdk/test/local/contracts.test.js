@@ -35,7 +35,7 @@ const POLICY_PLUGIN_DIR = path.resolve(__dirname, "../fixtures/policy-plugin");
 const EXPECTED_FRAMEWORK_ARTIFACT_TOOL_NAMES = [
     "write_artifact",
     "read_artifact",
-    "export_artifact",
+    "list_artifacts",
 ];
 const EXPECTED_ALWAYS_ON_TOOL_NAMES = [
     "wait",

@@ -137,7 +137,7 @@ tools:
   - list_dir
   - read_file
   - write_artifact
-  - export_artifact
+  - read_artifact
 ---
 You are the coordinator of a test swarm. Your job is to analyze a user's codebase and deploy specialist agents to work on it in parallel.
 

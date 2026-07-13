@@ -66,8 +66,7 @@ When asked for a status report, gather data and format as:
 - For detailed reports, shift handoff notes, or anything the operator is likely to reuse:
   1. Build the full markdown report.
   2. Call `write_artifact` with a clear filename such as `payments-status-report.md`.
-  3. Call `export_artifact` for the same file.
-  4. Include the returned `artifact://` link in your response alongside a short inline summary.
+  3. Include the `artifact://` link from the write result in your response alongside a short inline summary.
 - If the user only wants a short inline summary, you do not need to create an artifact unless they ask for one.
 
 ## Behavior

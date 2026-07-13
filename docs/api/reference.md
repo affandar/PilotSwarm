@@ -100,6 +100,9 @@ Operations tagged **[admin]** require the `admin` role (Tier 2 operational surfa
 | downloadArtifact | `GET /api/v1/sessions/:sessionId/artifacts/:filename/text` | sessionId (path), filename (path) | Artifact content as text (JSON envelope). Binary: GET …/download. |
 | uploadArtifact | `PUT /api/v1/sessions/:sessionId/artifacts/:filename` | sessionId (path), filename (path), content (body), contentType (body), contentEncoding (body) | Upload artifact content (base64 for binary; 2 MB JSON limit). |
 | deleteArtifact | `DELETE /api/v1/sessions/:sessionId/artifacts/:filename` | sessionId (path), filename (path) | Delete an artifact. |
+| copyArtifact | JSON-RPC `copyArtifact` | fromSessionId, fromFilename, toSessionId, toFilename? | Server-side artifact copy between sessions; result metadata carries `sha256` and copy provenance. |
+| setArtifactPinned | JSON-RPC `setArtifactPinned` | sessionId, filename, pinned | Pin/unpin an artifact; pinned artifacts survive bulk session cleanup. |
+| readArtifactBase64 | JSON-RPC `readArtifactBase64` | sessionId, filename, maxBytes? | Size-guarded base64 read for binary artifacts (JSON-safe; default 256 KB, max 1 MB). |
 
 ### Management: sessions
 

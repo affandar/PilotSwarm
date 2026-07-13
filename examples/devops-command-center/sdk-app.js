@@ -69,8 +69,8 @@ const SCENARIOS = {
         timeoutMs: 180_000,
         prompt:
             "Generate a detailed status report for payment-service. " +
-            "Write the full markdown report to payment-service-status-report.md with write_artifact, " +
-            "then call export_artifact and include the artifact:// link in your response. " +
+            "Write the full markdown report to payment-service-status-report.md with write_artifact " +
+            "and include the artifact:// link from its result in your response. " +
             "Keep the inline summary to 4 short bullets.",
     },
     "artifact-handoff": {
@@ -148,8 +148,8 @@ async function runArtifactHandoffScenario(entry) {
     const { session: reporter } = await createAgentSession("reporter");
     const reporterPrompt =
         "Generate a detailed status report for payment-service. " +
-        "Write the full markdown report to payment-service-status-report.md with write_artifact, " +
-        "then call export_artifact and include the artifact:// link in your response. " +
+        "Write the full markdown report to payment-service-status-report.md with write_artifact " +
+        "and include the artifact:// link from its result in your response. " +
         "Keep the inline summary brief.";
     console.log(`   Reporter sending: ${reporterPrompt}\n`);
     const reporterResponse = await reporter.sendAndWait(reporterPrompt, entry.timeoutMs);

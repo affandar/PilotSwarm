@@ -1,5 +1,69 @@
 # Changelog
 
+## 0.5.12 — 2026-07-12
+
+### SDK — Artifact API v2: a real data plane for agents
+
+- **Consolidated agent artifact surface: 3 tools, strictly more capability.**
+  `write_artifact` now takes exactly one byte source — inline `content`,
+  `fromFile` (worker-local path, streamed server-side, path-jailed, never
+  transits the model), or `fromArtifact` (server-side copy from another
+  session with an optional `expectedSha256` precondition). `read_artifact`
+  gains `toFile` (stream to worker disk — the binary read path), `metaOnly`
+  (provenance stat), bounded inline reads (`maxBytes`/`offset`, `truncated`
+  flag) and `encoding: "base64"` for small binaries. `list_artifacts` returns
+  full metadata. **BREAKING: `export_artifact` is retired** — every
+  write/read/stat result carries the `artifact://` link directly.
+- **SHA-256 provenance everywhere.** Every upload (inline, file, copy)
+  computes and persists a digest; every result returns `sha256`,
+  `contentType`, `source` (`agent`/`file`/`copy`/`user`), `sourceDetail`, and
+  `pinned`. Verify-without-transfer is now one `metaOnly` call.
+- **Artifact pinning.** `write_artifact({pin: true})` /
+  `setArtifactPinned()`; pinned artifacts survive bulk session cleanup so
+  deliverables outlive a failed or deleted parent.
+- **Both stores upgraded** (`SessionBlobStore`, `FilesystemArtifactStore`):
+  `uploadArtifactFromFile` (streamed + hashed), `copyArtifact`,
+  `statArtifact`, `setArtifactPinned`; pinned-aware `deleteArtifacts`.
+- **Blob store env-flag split-brain fixed.** `createSessionBlobStore` now
+  honors `PILOTSWARM_BLOB_USE_MANAGED_IDENTITY` (blob-specific; an explicit
+  value wins) with the legacy shared name as fallback, and **throws instead
+  of silently falling back to the filesystem store** when
+  `AZURE_STORAGE_ACCOUNT_URL` is set with no credential path. The silent
+  fallback previously left a portal serving "artifact not found" for every
+  blob-backed worker write.
+- **Base prompts teach filesystem isolation.** The framework default agent,
+  sub-agent spawn prompt, and top-level session prompt now state that pods
+  never share a filesystem and that binaries hand off via
+  `write_artifact({fromFile})` → `read_artifact({toFile})`. The framework
+  default agent also ships `list_artifacts` (it had silently dropped off the
+  tool allowlist) and drops `export_artifact`.
+
+### Portal / MCP / TUI
+
+- MCP: new `copy_artifact` (with `expected_sha256`) and `pin_artifact`
+  tools; `get_artifact` gains `include: "base64"` + `max_bytes` and returns a
+  loud not-found instead of `meta: null` with a fabricated download URL.
+- Portal transport: `statArtifact`-backed metadata, `copyArtifact`,
+  `setArtifactPinned`, `readArtifactBase64`; TUI file uploads stream via the
+  store's file path and return `sha256`.
+
+### Docs / Templates / Sample
+
+- Canonical docs, builder templates, and the DevOps sample updated to the
+  new artifact flow (no more write→export two-step); Web API reference
+  documents the new RPCs; design rationale in
+  `docs/proposals/artifact-api-v2.md`.
+
+### Tests
+
+- `artifact-api-v2.test.mjs` (17 cases: source exclusivity, jail, SHA
+  preconditions, truncation/ranging, pinning, local-overwrite-on-toFile,
+  prompt contract) and `blob-store-mi-flag.test.mjs` (7 cases, red on the
+  old code). Full `run-tests.sh --all-providers` matrix green on both
+  storage providers (postgres 1058 tests / HorizonDB overlay 1071 tests);
+  live smoke on AKS verified byte-exact binary handoff top-level↔top-level
+  and parent↔child.
+
 ## 0.5.11 — 2026-07-12
 
 ### SDK

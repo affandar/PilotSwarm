@@ -143,7 +143,7 @@ These demonstrate:
 - feeding that `artifact://...` link into a second session so the Investigator can read the stored artifact and continue the workflow
 - carrying a stable `session://...` breadcrumb alongside the artifact reference for operator-visible handoff metadata
 
-The same artifact flow now also supports binary outputs in the core runtime. When you need a downloadable `.zip`, `.pdf`, `.xlsx`, or image artifact, use `write_artifact` with `contentType` plus `encoding: "base64"`, then `export_artifact`. The portal will download those files intact and show a download-only placeholder instead of trying to preview the raw bytes inline.
+The same artifact flow now also supports binary outputs in the core runtime. When you need a downloadable `.zip`, `.pdf`, `.xlsx`, or image artifact, use `write_artifact({fromFile})` for files built on the worker, or `contentType` plus `encoding: "base64"` for small inline payloads. The portal will download those files intact and show a download-only placeholder instead of trying to preview the raw bytes inline.
 
 In raw SDK code there is no `@` / `@@` autocomplete layer, but the same underlying references still work: you can pass literal `artifact://sessionId/filename` and `session://sessionId` strings in `sendAndWait(...)` prompts when you already have them.
 
@@ -219,7 +219,7 @@ devops-command-center/
 | Sub-agent spawning | Investigator fans out parallel queries |
 | Durable timers | Watchdog uses `wait` tool for periodic monitoring |
 | Affinity-aware waits | Builder preserves worker affinity only for worker-local builds |
-| Storage-backed artifacts | Reporter and Investigator can exchange markdown via `write_artifact`, `read_artifact`, and `export_artifact` |
+| Storage-backed artifacts | Reporter and Investigator can exchange markdown and binaries via `write_artifact` and `read_artifact` (with `fromFile`/`toFile` for streamed byte handoff) |
 | Prompt reference workflow | TUI `@` / `@@` autocomplete inserts durable artifact/session references that can also be reused from SDK prompts |
 | `ask_user` | Deployer asks for human approval before deploying |
 | Title prefixing | Named-agent sessions keep their prefix, e.g. "Investigator: CPU Spike Analysis" |
