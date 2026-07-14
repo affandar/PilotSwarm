@@ -71,6 +71,8 @@ export interface AgentConfig {
     description?: string;
     prompt: string;
     tools?: string[] | null;
+    /** Skill names to preload from the session's configured skill directories. */
+    skills?: string[];
     /** If true, this is a system agent started automatically by workers. */
     system?: boolean;
     /** Deterministic ID slug for system agents (e.g. "sweeper"). Used to derive a fixed session UUID. */
@@ -118,13 +120,13 @@ export interface AgentConfig {
 
 /**
  * Parse YAML frontmatter from an .agent.md file.
- * Handles simple `key: value` pairs and YAML list syntax for `tools`.
+ * Handles simple `key: value` pairs and YAML list syntax for `tools` and `skills`.
  */
 function parseAgentFrontmatter(content: string): {
-    meta: { name?: string; description?: string; tools?: string[]; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; splashMobile?: string; initialPrompt?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string };
+    meta: { name?: string; description?: string; tools?: string[]; skills?: string[]; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; splashMobile?: string; initialPrompt?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string };
     body: string;
 } {
-    const meta: { name?: string; description?: string; tools?: string[]; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; splashMobile?: string; initialPrompt?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string } = {};
+    const meta: { name?: string; description?: string; tools?: string[]; skills?: string[]; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; splashMobile?: string; initialPrompt?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string } = {};
 
     if (!content.startsWith("---")) {
         return { meta, body: content };
@@ -172,9 +174,15 @@ function parseAgentFrontmatter(content: string): {
         }
 
         // YAML list item (e.g. "  - view")
-        if (trimmed.startsWith("- ") && currentKey === "tools") {
-            if (!meta.tools) meta.tools = [];
-            meta.tools.push(trimmed.slice(2).trim());
+        if (trimmed.startsWith("- ") && (currentKey === "tools" || currentKey === "skills")) {
+            const item = trimmed.slice(2).trim();
+            if (currentKey === "tools") {
+                if (!meta.tools) meta.tools = [];
+                meta.tools.push(item);
+            } else {
+                if (!meta.skills) meta.skills = [];
+                meta.skills.push(item);
+            }
             continue;
         }
 
@@ -212,6 +220,10 @@ function parseAgentFrontmatter(content: string): {
         } else if (key === "tools" && !value) {
             // Will be followed by list items
             meta.tools = [];
+        } else if (key === "skills" && value) {
+            meta.skills = value.replace(/[\[\]]/g, "").split(",").map(s => s.trim()).filter(Boolean);
+        } else if (key === "skills" && !value) {
+            meta.skills = [];
         } else if ((key === "splash" || key === "splashMobile" || key === "initialPrompt") && (value === "|" || value === ">")) {
             // YAML block scalar (| literal, > folded)
             currentBlockStyle = value;
@@ -279,6 +291,7 @@ export function loadAgentFiles(agentsDir: string): AgentConfig[] {
                 description: meta.description,
                 prompt: body,
                 tools: meta.tools && meta.tools.length > 0 ? meta.tools : null,
+                skills: meta.skills && meta.skills.length > 0 ? meta.skills : undefined,
                 system: meta.system,
                 id: meta.id,
                 title: meta.title,

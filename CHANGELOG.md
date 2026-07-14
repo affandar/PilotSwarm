@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.5.13 — 2026-07-14
+
+### SDK
+
+- **Agent `skills` frontmatter now reaches the Copilot SDK.** Agent files may
+  declare list or inline skill names to preload from configured plugin skill
+  directories; the declarations remain visible in worker agent metadata.
+- **Child result contracts now publish and normalize output references.**
+  `complete_agent.result` and `cancel_agent.partial_result` expose concrete
+  `factsWritten` / `artifactsWritten` schemas. Exact compatibility aliases,
+  including `outputs`, `evidenceFactKeys`, and `artifactPointers`, are accepted;
+  missing declarations report `missing_*_reference` instead of claiming the
+  underlying fact or artifact does not exist.
+- **Child sessions inherit context tier with model and reasoning effort.** Both
+  inline and durable activity spawn paths now pass the complete model
+  configuration into child SDK creation.
+- **Reused session handles cannot return an earlier fire-and-forget response
+  from `sendAndWait`.** Direct and Web SDK sessions refresh durable status,
+  iteration, and response cursors immediately before enqueueing a waited turn.
+- **Non-retryable GitHub credential failures are visible and recoverable.** A
+  `401 Bad credentials` turn now persists CMS `error`, writes a durable error
+  latest-response for chat and waiting clients, and keeps custom status in the
+  error state instead of falling back to idle. After the user repairs the key in
+  Admin, their next prompt clears the block and retries the live orchestration.
+- **Pending-question answers no longer wait for the 30-minute affinity hold.**
+  After the input grace period expired, an answer could win the durable message
+  race but remain buffered behind the still-active idle timer. The orchestration
+  now cancels the input hold and dispatches the answer immediately. Durable
+  orchestration `1.0.59` is frozen for replay; new executions use `1.0.60`.
+
+### App / MCP / Docs
+
+- **The published `pilotswarm` package now has a complete remote-client
+  quickstart.** Its package README documents shared Entra login, remote TUI
+  attachment, local stdio MCP setup for Claude Code/Desktop, GitHub Copilot
+  CLI, VS Code, and Cursor, non-interactive credentials, and the guarded HTTP
+  transport. The MCP README keeps the full tool, resource, authentication, and
+  security reference.
+- **MCP live coverage now protects cached-handle response ordering.** The web
+  smoke creates a session with an initial fire-and-forget prompt, waits for it
+  to settle, then verifies `send_and_wait` returns only the second response.
+
 ## 0.5.12 — 2026-07-12
 
 ### SDK — Artifact API v2: a real data plane for agents

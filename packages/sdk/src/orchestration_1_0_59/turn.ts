@@ -197,27 +197,6 @@ function retryContinueOverrides(state: DurableSessionRuntime["state"], rc: Retry
     };
 }
 
-/** @internal Project a non-retryable credential failure without terminating the orchestration. */
-export function* projectAuthFailure(
-    runtime: DurableSessionRuntime,
-    errorMessage: string,
-): Generator<any, void, any> {
-    const blockedDetail = `${errorMessage} — ${AUTH_FAILURE_USER_HINT}`;
-    runtime.state.blockedError = { message: blockedDetail, authFailure: true };
-    publishStatus(runtime, "error", {
-        error: blockedDetail,
-        retriesExhausted: true,
-        authFailure: true,
-    });
-    yield* writeLatestResponse(runtime, {
-        iteration: runtime.state.iteration,
-        type: "error",
-        content: blockedDetail,
-    });
-    yield runtime.manager.updateCmsState(runtime.input.sessionId, "error", blockedDetail, null);
-    runtime.state.retryCount = 0;
-}
-
 function* handleGenericRetry(
     runtime: DurableSessionRuntime,
     errorMessage: string,
@@ -412,8 +391,14 @@ export function* processPrompt(
         }
 
         if (isAuthFailureError(errorMsg)) {
+            const blockedDetail = `${errorMsg} — ${AUTH_FAILURE_USER_HINT}`;
             ctx.traceInfo(`[orch] runTurn FAILED with auth error; not retrying: ${errorMsg}`);
-            yield* projectAuthFailure(runtime, errorMsg);
+            publishStatus(runtime, "error", {
+                error: blockedDetail,
+                retriesExhausted: true,
+                authFailure: true,
+            });
+            state.retryCount = 0;
             return;
         }
 

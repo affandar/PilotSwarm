@@ -175,18 +175,24 @@ export class WebPilotSwarmSession {
         this.pendingTurn = true;
     }
 
-    private async _seedTurnCursors(): Promise<void> {
-        if (this.seeded) return;
+    private async _seedTurnCursors(force = false): Promise<void> {
+        if (this.seeded && !force) return;
         this.seeded = true;
         try {
             const status: any = await this.api.call("getSessionStatus", { sessionId: this.sessionId });
             const version = Number(status?.customStatusVersion) || 0;
-            if (version > this.lastSeenVersion) this.lastSeenVersion = version;
+            if (force) this.lastSeenVersion = version;
+            else if (version > this.lastSeenVersion) this.lastSeenVersion = version;
             const customStatus = status?.customStatus && typeof status.customStatus === "object" ? status.customStatus : null;
             if (customStatus) {
                 if (typeof customStatus.iteration === "number") this.lastSeenIteration = customStatus.iteration;
+                else if (force) this.lastSeenIteration = -1;
                 const responseVersion = Number(customStatus.responseVersion) || 0;
-                if (responseVersion > this.lastSeenResponseVersion) this.lastSeenResponseVersion = responseVersion;
+                if (force) this.lastSeenResponseVersion = responseVersion;
+                else if (responseVersion > this.lastSeenResponseVersion) this.lastSeenResponseVersion = responseVersion;
+            } else if (force) {
+                this.lastSeenIteration = -1;
+                this.lastSeenResponseVersion = 0;
             }
         } catch {
             // Best-effort, like the direct client: a fresh session has no
@@ -200,6 +206,9 @@ export class WebPilotSwarmSession {
         onIntermediateContent?: (content: string) => void,
         opts?: { signal?: AbortSignal },
     ): Promise<string | undefined> {
+        // Reusing a handle after fire-and-forget sends must not let an older
+        // completed response satisfy this new wait.
+        await this._seedTurnCursors(true);
         await this.send(prompt);
         return this._waitForTurnResult(timeout ?? 300_000, onIntermediateContent, opts?.signal);
     }
@@ -348,6 +357,10 @@ export class WebPilotSwarmSession {
                             this.pendingTurn = false;
                             return response.content;
                         }
+                    }
+                    if (response?.type === "error" && response.content) {
+                        this.pendingTurn = false;
+                        throw new Error(response.content);
                     }
                     if (response?.type === "wait" && response.content && onIntermediateContent) {
                         onIntermediateContent(response.content);

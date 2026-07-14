@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { ManagedSession } from "../../src/managed-session.ts";
-import { prepareStickySessionTitleUpdate } from "../../src/session-proxy.ts";
+import { collectContractViolations, prepareStickySessionTitleUpdate } from "../../src/session-proxy.ts";
 
 class FakeCopilotSession {
     registeredTools = [];
@@ -270,6 +270,8 @@ describe("inline control tool execution", () => {
         const cancelTool = fakeSession.registeredTools.find((tool) => tool.name === "cancel_agent");
         expect(spawnTool?.parameters?.properties?.contract?.type).toBe("object");
         expect(completeTool?.parameters?.properties?.result?.type).toBe("object");
+        expect(completeTool?.parameters?.properties?.result?.properties?.factsWritten?.type).toBe("array");
+        expect(completeTool?.parameters?.properties?.result?.properties?.artifactsWritten?.type).toBe("array");
         expect(cancelTool?.parameters?.properties?.partial_result?.type).toBe("object");
         expect(controlToolBridge.spawnAgent).toHaveBeenCalledWith(expect.objectContaining({
             task: "collect evidence",
@@ -284,6 +286,32 @@ describe("inline control tool execution", () => {
             partial_result: expect.objectContaining({ verdict: "cancelled" }),
         }));
         expect(result.type).toBe("completed");
+    });
+
+    it("normalizes canonical and compatibility child output references", () => {
+        const factKey = "runbooks/runs/1/result";
+        const artifactPath = "reports/run-1.md";
+        const contractJson = {
+            current: {
+                expectedFacts: [{ key: factKey, required: true }],
+                expectedArtifacts: [{ path: artifactPath, required: true }],
+            },
+        };
+
+        expect(collectContractViolations(contractJson, {
+            factsWritten: [{ key: factKey }],
+            artifactsWritten: [{ path: artifactPath }],
+        })).toEqual([]);
+        expect(collectContractViolations(contractJson, { outputs: [factKey, artifactPath] })).toEqual([]);
+        expect(collectContractViolations(contractJson, {
+            evidenceFactKeys: [factKey],
+            artifactPointers: [artifactPath],
+        })).toEqual([]);
+
+        expect(collectContractViolations(contractJson, { outputs: [] })).toEqual([
+            expect.objectContaining({ code: "missing_fact_reference" }),
+            expect.objectContaining({ code: "missing_artifact_reference" }),
+        ]);
     });
 
     it("forwards summary and cross-session coordination tools inline", async () => {

@@ -217,17 +217,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
 
         } else if (needsBlockingDequeue(runtime)) {
             if (i > 0) break;
-            if (state.pendingInputQuestion) {
-                publishStatus(runtime, "input_required");
-            } else if (state.blockedError) {
-                publishStatus(runtime, "error", {
-                    error: state.blockedError.message,
-                    retriesExhausted: true,
-                    ...(state.blockedError.authFailure ? { authFailure: true } : {}),
-                });
-            } else {
-                publishStatus(runtime, "idle");
-            }
+            publishStatus(runtime, state.pendingInputQuestion ? "input_required" : "idle");
             const rawMsg: any = yield ctx.dequeueEvent("messages");
             msg = typeof rawMsg === "string" ? JSON.parse(rawMsg) : rawMsg;
 
@@ -291,20 +281,12 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
         }
 
         if (msg.answer !== undefined) {
-            const interruptsInputHold = Boolean(state.pendingInputQuestion)
-                && (state.activeTimer?.type === "input-grace" || state.activeTimer?.type === "idle");
-            if (interruptsInputHold) {
-                ctx.traceInfo(`[drain] answer interrupted ${state.activeTimer!.type} timer`);
-                state.activeTimer = null;
-            }
             stash.push({ kind: "answer", answer: msg.answer, wasFreeform: msg.wasFreeform });
-            if (interruptsInputHold) break;
             continue;
         }
 
         if (msg.prompt) {
             let userPrompt = msg.prompt;
-            state.blockedError = undefined;
 
             if (state.activeTimer?.type === "wait") {
                 const now: number = yield ctx.utcNow();

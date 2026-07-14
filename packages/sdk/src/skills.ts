@@ -72,7 +72,7 @@ function parseFrontmatter(content: string): { meta: Record<string, string>; body
  * @param skillsDir - Path to the skills root directory.
  * @returns Array of loaded skills. Directories without SKILL.md are skipped.
  */
-export async function loadSkills(skillsDir: string): Promise<Skill[]> {
+export function loadSkillsSync(skillsDir: string): Skill[] {
     const absDir = path.resolve(skillsDir);
 
     if (!fs.existsSync(absDir)) {
@@ -117,4 +117,27 @@ export async function loadSkills(skillsDir: string): Promise<Skill[]> {
     }
 
     return skills;
+}
+
+export async function loadSkills(skillsDir: string): Promise<Skill[]> {
+    return loadSkillsSync(skillsDir);
+}
+
+export function composeDeclaredSkillsPrompt(
+    agentPrompt: string,
+    declaredSkillNames: string[] | undefined,
+    skills: Skill[],
+): { prompt: string; missing: string[] } {
+    const byName = new Map(skills.map((skill) => [skill.name, skill]));
+    const sections = [agentPrompt];
+    const missing: string[] = [];
+    for (const name of [...new Set(declaredSkillNames ?? [])]) {
+        const skill = byName.get(name);
+        if (!skill) {
+            missing.push(name);
+            continue;
+        }
+        sections.push(`[PRELOADED SKILL: ${name}]\n${skill.prompt}`);
+    }
+    return { prompt: sections.filter(Boolean).join("\n\n"), missing };
 }

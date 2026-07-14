@@ -109,7 +109,38 @@ Examples:
 
 - normalize mistaken named-agent spawns where safe
 
-## 9. Long Waits May Migrate Unless Affinity Is Preserved
+## 9. Child Results Declare Output References
+
+Contract:
+
+- `complete_agent.result` and `cancel_agent.partial_result` use a structured result
+- produced facts are declared as `factsWritten: [{ key: "..." }]`
+- produced artifacts are declared as `artifactsWritten: [{ path: "..." }]`
+- string arrays and compatibility aliases such as `outputs`, `factKeys`,
+	`evidenceFactKeys`, `artifactPaths`, and `artifactPointers` are normalized by exact match
+- a missing declaration is reported as `missing_fact_reference` or
+	`missing_artifact_reference`; this does not claim the underlying store entry is absent
+
+Why it matters:
+
+- contract validation and store existence are separate questions
+- explicit references let parents find outputs without copying child transcripts
+
+## 10. Child Model Configuration Inherits As A Unit
+
+Contract:
+
+- without a spawn override, children inherit the parent's current durable model,
+	reasoning effort, and context tier
+- explicit `model` and `reasoning_effort` override only those requested fields
+- the final child SDK creation call receives all three model configuration fields
+
+Why it matters:
+
+- model identity, reasoning effort, and context-window tier jointly define runtime behavior
+- dropping the context tier can silently shrink a child session's available context
+
+## 11. Long Waits May Migrate Unless Affinity Is Preserved
 
 Contract:
 
@@ -124,7 +155,7 @@ Why it matters:
 - reject invalid sub-agent model overrides
 - preserve orchestration behavior even if prompt wording drifts
 
-## 10. Artifact Rules Should Be Visible And Durable
+## 12. Artifact Rules Should Be Visible And Durable
 
 Contract:
 
@@ -136,7 +167,7 @@ Why it matters:
 - artifact links are how durable outputs move back to the user
 - losing the export step produces confusing “the file exists somewhere” behavior
 
-## 11. Session Summary State Is Structured
+## 13. Session Summary State Is Structured
 
 Contract:
 
@@ -151,7 +182,7 @@ Why it matters:
 - session lists, search, and the Summary tab depend on durable summary state
 - smaller models need an explicit object shape to avoid passing a short string
 
-## 12. Cross-Session Request/Response Uses Reply Tooling
+## 14. Cross-Session Request/Response Uses Reply Tooling
 
 Contract:
 
@@ -166,7 +197,7 @@ Why it matters:
 - cross-session coordination should be auditable and durable
 - the sender needs a structured response event, not an answer stranded in another transcript
 
-## 13. Change Procedure
+## 15. Change Procedure
 
 If you change one of these contracts, update:
 

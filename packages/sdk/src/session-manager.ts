@@ -96,7 +96,7 @@ export interface WorkerDefaults {
     /** Skill directories to pass to the Copilot SDK. */
     skillDirectories?: string[];
     /** Custom agents to pass to the Copilot SDK. */
-    customAgents?: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null }>;
+    customAgents?: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; skills?: string[] }>;
     /** MCP server configs to pass to the Copilot SDK. */
     mcpServers?: Record<string, any>;
     /**

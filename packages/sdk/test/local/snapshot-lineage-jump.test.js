@@ -4,10 +4,11 @@
  * observability event at the turn-result adoption site.
  *
  * Two things must hold and are guarded here:
- *   1. VERSION CEREMONY — 1.0.58 is frozen and still registered; latest is 1.0.59.
- *   2. FREEZE BOUNDARY — the new durable yield exists ONLY in the latest handler,
- *      never in frozen 1.0.58 (in-flight 1.0.58 histories recorded WITHOUT it and
- *      would fail replay against a mutated handler — the beae878 incident class).
+ *   1. VERSION CEREMONY — 1.0.58 and 1.0.59 are frozen and still registered;
+ *      latest is 1.0.60.
+ *   2. FREEZE BOUNDARY — the durable yield exists from 1.0.59 onward, never in
+ *      frozen 1.0.58 (in-flight 1.0.58 histories recorded WITHOUT it and would
+ *      fail replay against a mutated handler — the beae878 incident class).
  *   3. BEHAVIOUR — the event fires when the adopted store version jumps past
  *      prior+1 (a discarded/foreign turn published in the gap), and NOT on a
  *      normal +1 advance.
@@ -20,20 +21,20 @@ import {
 } from "../../src/orchestration-registry.ts";
 import * as dispatcher from "../../src/orchestration.ts";
 
-describe("orchestration version registry (1.0.59 store-wins bump)", () => {
-    it("latest is 1.0.59, registered, and exported from the dispatcher", () => {
-        expect(LATEST).toBe("1.0.59");
+describe("orchestration version registry (1.0.60 input-answer bump)", () => {
+    it("latest is 1.0.60, registered, and exported from the dispatcher", () => {
+        expect(LATEST).toBe("1.0.60");
         const latest = REGISTRY.find((e) => e.version === LATEST);
         expect(latest?.handler).toBeTypeOf("function");
-        expect(latest.handler.name).toBe("durableSessionOrchestration_1_0_59");
-        expect(dispatcher.durableSessionOrchestration_1_0_59).toBeTypeOf("function");
+        expect(latest.handler.name).toBe("durableSessionOrchestration_1_0_60");
+        expect(dispatcher.durableSessionOrchestration_1_0_60).toBeTypeOf("function");
     });
 
-    it("freezes 1.0.58 as a distinct registered handler", () => {
-        const frozen = REGISTRY.find((e) => e.version === "1.0.58");
+    it("freezes 1.0.59 as a distinct registered handler", () => {
+        const frozen = REGISTRY.find((e) => e.version === "1.0.59");
         const latest = REGISTRY.find((e) => e.version === LATEST);
         expect(frozen?.handler).toBeTypeOf("function");
-        expect(frozen.handler.name).toBe("durableSessionOrchestration_1_0_58");
+        expect(frozen.handler.name).toBe("durableSessionOrchestration_1_0_59");
         expect(frozen.handler).not.toBe(latest.handler); // frozen != latest
     });
 
@@ -50,17 +51,24 @@ describe("orchestration version registry (1.0.59 store-wins bump)", () => {
 
 describe("orchestration 1.0.58 freeze boundary (replay safety)", () => {
     const frozenTurn = readFileSync(new URL("../../src/orchestration_1_0_58/turn.ts", import.meta.url), "utf8");
+    const frozen159Turn = readFileSync(new URL("../../src/orchestration_1_0_59/turn.ts", import.meta.url), "utf8");
     const workingTurn = readFileSync(new URL("../../src/orchestration/turn.ts", import.meta.url), "utf8");
     const frozenRuntime = readFileSync(new URL("../../src/orchestration_1_0_58/runtime.ts", import.meta.url), "utf8");
+    const frozen159Runtime = readFileSync(new URL("../../src/orchestration_1_0_59/runtime.ts", import.meta.url), "utf8");
 
-    it("the snapshot_lineage_jump yield exists ONLY in the latest, not in frozen 1.0.58", () => {
+    it("the snapshot_lineage_jump yield exists from 1.0.59 onward, not in frozen 1.0.58", () => {
         // This yield is the schedule change that required the version bump.
         expect(workingTurn).toContain("session.snapshot_lineage_jump");
+        expect(frozen159Turn).toContain("session.snapshot_lineage_jump");
         expect(frozenTurn).not.toContain("session.snapshot_lineage_jump");
     });
 
     it("frozen 1.0.58 hardcodes its own version string", () => {
         expect(frozenRuntime).toMatch(/CURRENT_ORCHESTRATION_VERSION\s*=\s*"1\.0\.58"/);
+    });
+
+    it("frozen 1.0.59 hardcodes its own version string", () => {
+        expect(frozen159Runtime).toMatch(/CURRENT_ORCHESTRATION_VERSION\s*=\s*"1\.0\.59"/);
     });
 
     it("1.0.59 retires expectedVersion from the runTurn input; frozen 1.0.58 still sends it", () => {

@@ -421,7 +421,6 @@ export function buildContinueInput(
         nextSummarizeAt: state.nextSummarizeAt,
         taskContext: state.taskContext,
         baseSystemMessage: options.baseSystemMessage,
-        ...(state.blockedError ? { blockedError: { ...state.blockedError } } : {}),
         ...(state.cronSchedule ? { cronSchedule: state.cronSchedule } : {}),
         ...(state.cronAtSchedule ? { cronAtSchedule: state.cronAtSchedule } : {}),
         ...(state.contextUsage ? { contextUsage: state.contextUsage } : {}),

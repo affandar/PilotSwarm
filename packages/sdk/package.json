@@ -1,6 +1,6 @@
 {
     "name": "pilotswarm-sdk",
-    "version": "0.5.12",
+    "version": "0.5.13",
     "description": "A durable execution runtime for GitHub Copilot SDK agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by duroxide.",
     "type": "module",
     "main": "./dist/index.js",
@@ -68,9 +68,10 @@
     "license": "MIT",
     "repository": {
         "type": "git",
-        "url": "https://github.com/affandar/PilotSwarm"
+        "url": "https://github.com/affandar/PilotSwarm",
+        "directory": "packages/sdk"
     },
-    "homepage": "https://github.com/affandar/PilotSwarm",
+    "homepage": "https://github.com/affandar/PilotSwarm/tree/main/packages/sdk",
     "bugs": {
         "url": "https://github.com/affandar/PilotSwarm/issues"
     },

@@ -9,6 +9,7 @@ import {
 import { PgSessionCatalog } from "./cms.js";
 import type { SessionCatalog } from "./cms.js";
 import { loadAgentFiles } from "./agent-loader.js";
+import { composeDeclaredSkillsPrompt, loadSkillsSync, type Skill } from "./skills.js";
 import { startSystemAgents } from "./system-agents.js";
 import { loadMcpConfig } from "./mcp-loader.js";
 import { createModelProvidersReloader, type ModelProviderRegistry } from "./model-providers.js";
@@ -130,12 +131,14 @@ export class PilotSwarmWorker {
     private toolRegistry = new Map<string, Tool<any>>();
     /** Loaded skill directories from plugins + direct config. */
     private _loadedSkillDirs: string[] = [];
+    /** Loaded skills by name for agent-declared eager prompt injection. */
+    private _loadedSkills = new Map<string, Skill>();
     /** Raw loaded user-creatable agent configs from plugins + direct config. */
-    private _rawLoadedAgents: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; namespace?: string; crawler?: boolean; harvester?: boolean; promptLayerKind?: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" }> = [];
+    private _rawLoadedAgents: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; skills?: string[]; namespace?: string; crawler?: boolean; harvester?: boolean; promptLayerKind?: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" }> = [];
     /** Optional PilotSwarm-bundled user agents, loaded only when session policy opts in. */
     private _availableBundledAgents = new Map<string, AgentConfig>();
     /** Loaded agent configs from plugins + direct config, composed for SDK customAgents. */
-    private _loadedAgents: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; namespace?: string }> = [];
+    private _loadedAgents: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; skills?: string[]; namespace?: string }> = [];
     /** Loaded MCP server configs from plugins + direct config. */
     private _loadedMcpServers: Record<string, any> = {};
     /** Model provider registry — multi-provider LLM config. */
@@ -303,7 +306,7 @@ export class PilotSwarmWorker {
     }
 
     /** Loaded agent configs. */
-    get loadedAgents(): Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; namespace?: string }> {
+    get loadedAgents(): Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; skills?: string[]; namespace?: string }> {
         return this._loadedAgents;
     }
 
@@ -610,6 +613,7 @@ export class PilotSwarmWorker {
                         qualifiedName: `${(a as any).namespace || "custom"}:${a.name}`,
                         description: a.description || null,
                         tools: a.tools || [],
+                        skills: a.skills || [],
                         system: false,
                         creatable: true,
                         id: null,
@@ -808,7 +812,10 @@ export class PilotSwarmWorker {
 
         // ── Tier 5: Direct config (inline options override all) ──────
         if (this.config.skillDirectories?.length) {
-            this._loadedSkillDirs.push(...this.config.skillDirectories);
+            for (const skillsDir of this.config.skillDirectories) {
+                this._loadedSkillDirs.push(skillsDir);
+                for (const skill of loadSkillsSync(skillsDir)) this._loadedSkills.set(skill.name, skill);
+            }
         }
         if (this.config.customAgents?.length) {
             for (const agent of this.config.customAgents) {
@@ -828,12 +835,13 @@ export class PilotSwarmWorker {
             this._appDefaultPrompt,
             this.config.systemMessage,
         ]) ?? null;
+        this._applyDeclaredAgentSkills();
         this._loadedAgents = this._rawLoadedAgents.map((agent) => ({
             ...agent,
             prompt: composeSystemPrompt({
                 frameworkBase: this._frameworkBasePrompt,
                 appDefault: this._appDefaultPrompt,
-                activeAgentPrompt: agent.prompt,
+                activeAgentPrompt: this._agentPromptLookup[agent.name]?.prompt ?? agent.prompt,
             }) ?? agent.prompt,
         }));
 
@@ -891,6 +899,19 @@ export class PilotSwarmWorker {
             type: isSystemAuthored ? "system" : "app",
             ...(agent.sourcePath ? { source: agent.sourcePath } : {}),
         };
+    }
+
+    private _applyDeclaredAgentSkills(): void {
+        const skills = [...this._loadedSkills.values()];
+        for (const agent of [...this._rawLoadedAgents, ...this._loadedSystemAgents]) {
+            if (!agent.skills?.length) continue;
+            const composed = composeDeclaredSkillsPrompt(agent.prompt, agent.skills, skills);
+            const existing = this._agentPromptLookup[agent.name];
+            if (existing) existing.prompt = composed.prompt;
+            for (const missing of composed.missing) {
+                console.warn(`[PilotSwarmWorker] Agent ${agent.name} declares missing skill ${JSON.stringify(missing)}; available skill directories did not provide it.`);
+            }
+        }
     }
 
     private _loadBundledDefaultAgents(absDir: string): void {
@@ -975,6 +996,7 @@ export class PilotSwarmWorker {
         const skillsDir = path.join(absDir, "skills");
         if (fs.existsSync(skillsDir)) {
             this._loadedSkillDirs.push(skillsDir);
+            for (const skill of loadSkillsSync(skillsDir)) this._loadedSkills.set(skill.name, skill);
         }
 
         // Agents — tag each with namespace

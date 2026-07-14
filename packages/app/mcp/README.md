@@ -39,7 +39,7 @@ Each client below shows both **Stdio** (local, recommended) and **HTTP** (remote
 
 ### GitHub Copilot CLI
 
-Add to your `.mcp.json` (project root or `~/.copilot/`):
+Add to `.copilot/mcp-config.json` (repo-scoped) or `~/.copilot/mcp-config.json` (global):
 
 **Stdio (local):**
 

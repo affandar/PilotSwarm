@@ -12,9 +12,10 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it } from "vitest";
 import { useSuiteEnv } from "../helpers/local-env.js";
-import { assert, assertEqual } from "../helpers/assertions.js";
-import { PgSessionCatalogProvider } from "../../src/index.ts";
+import { assert, assertEqual, assertIncludes } from "../helpers/assertions.js";
+import { PgSessionCatalogProvider, PilotSwarmWorker } from "../../src/index.ts";
 import { loadAgentFiles } from "../../src/agent-loader.ts";
+import { composeDeclaredSkillsPrompt } from "../../src/skills.ts";
 import { createSplashCard } from "../../../app/ui/core/src/history.js";
 import { selectChatLines, selectActiveChat } from "../../../app/ui/core/src/selectors.js";
 import { appReducer } from "../../../app/ui/core/src/reducer.js";
@@ -140,6 +141,96 @@ describe("session splashMobile", () => {
             assertEqual(inline.splashMobile, "TINY", "inline splashMobile parses");
         } finally {
             fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it("parses agent skill declarations in list and inline forms", () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ps-agent-skills-"));
+        try {
+            fs.writeFileSync(path.join(dir, "listed.agent.md"), [
+                "---",
+                "name: listed",
+                "schemaVersion: 1",
+                "version: 1.0.0",
+                "skills:",
+                "  - runbook-marshal",
+                "  - runbook-child-lifecycle",
+                "---",
+                "You are listed.",
+            ].join("\n"));
+            fs.writeFileSync(path.join(dir, "inline.agent.md"), [
+                "---",
+                "name: inline",
+                "schemaVersion: 1",
+                "version: 1.0.0",
+                "skills: [runbook-authoring, ado-markdowns]",
+                "---",
+                "You are inline.",
+            ].join("\n"));
+
+            const agents = loadAgentFiles(dir);
+            assertEqual(
+                JSON.stringify(agents.find((agent) => agent.name === "listed")?.skills),
+                JSON.stringify(["runbook-marshal", "runbook-child-lifecycle"]),
+                "list-form skills parse",
+            );
+            assertEqual(
+                JSON.stringify(agents.find((agent) => agent.name === "inline")?.skills),
+                JSON.stringify(["runbook-authoring", "ado-markdowns"]),
+                "inline skills parse",
+            );
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it("injects declared skill bodies and reports missing declarations", () => {
+        const result = composeDeclaredSkillsPrompt(
+            "You are the runbook marshal.",
+            ["runbook-marshal", "runbook-child-lifecycle", "missing-skill", "runbook-marshal"],
+            [
+                { name: "runbook-marshal", description: "", prompt: "Validate the runbook.", toolNames: [], dir: "/skills/runbook-marshal" },
+                { name: "runbook-child-lifecycle", description: "", prompt: "Checkpoint before recycle.", toolNames: [], dir: "/skills/runbook-child-lifecycle" },
+            ],
+        );
+
+        assertIncludes(result.prompt, "[PRELOADED SKILL: runbook-marshal]", "declared primary skill is injected");
+        assertIncludes(result.prompt, "Validate the runbook.", "primary skill body is injected");
+        assertIncludes(result.prompt, "[PRELOADED SKILL: runbook-child-lifecycle]", "declared lifecycle skill is injected");
+        assertEqual(result.prompt.match(/PRELOADED SKILL: runbook-marshal/g)?.length, 1, "duplicate declarations inject once");
+        assertEqual(JSON.stringify(result.missing), JSON.stringify(["missing-skill"]), "missing declarations are reported");
+    });
+
+    it("composes declared plugin skills into the worker agent prompt", () => {
+        const pluginDir = fs.mkdtempSync(path.join(os.tmpdir(), "ps-plugin-skills-"));
+        try {
+            fs.mkdirSync(path.join(pluginDir, "agents"));
+            fs.mkdirSync(path.join(pluginDir, "skills", "runbook-child-lifecycle"), { recursive: true });
+            fs.writeFileSync(path.join(pluginDir, "agents", "marshal.agent.md"), [
+                "---",
+                "name: marshal",
+                "schemaVersion: 1",
+                "version: 1.0.0",
+                "skills:",
+                "  - runbook-child-lifecycle",
+                "---",
+                "Coordinate the runbook.",
+            ].join("\n"));
+            fs.writeFileSync(path.join(pluginDir, "skills", "runbook-child-lifecycle", "SKILL.md"), [
+                "---",
+                "name: runbook-child-lifecycle",
+                "description: Child lifecycle protocol",
+                "---",
+                "Checkpoint before recycling a child.",
+            ].join("\n"));
+
+            const worker = new PilotSwarmWorker({ pluginDirs: [pluginDir], disableManagementAgents: true });
+            const marshal = worker.loadedAgents.find((agent) => agent.name === "marshal");
+            assertIncludes(marshal?.prompt ?? "", "Coordinate the runbook.", "agent prompt is preserved");
+            assertIncludes(marshal?.prompt ?? "", "[PRELOADED SKILL: runbook-child-lifecycle]", "declared skill marker is composed");
+            assertIncludes(marshal?.prompt ?? "", "Checkpoint before recycling a child.", "declared skill body is composed");
+        } finally {
+            fs.rmSync(pluginDir, { recursive: true, force: true });
         }
     });
 

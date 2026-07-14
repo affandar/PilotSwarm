@@ -346,6 +346,28 @@ export class PilotSwarmClient {
         return new PilotSwarmSession(sessionId, this, config?.onUserInputRequest);
     }
 
+    private async _syncTurnCursors(orchestrationId: string): Promise<void> {
+        if (!this.duroxideClient) return;
+        try {
+            const orchStatus = await this.duroxideClient.getStatus(orchestrationId);
+            this.lastSeenStatusVersion.set(orchestrationId, Number(orchStatus.customStatusVersion) || 0);
+            const customStatus = orchStatus.customStatus
+                ? (typeof orchStatus.customStatus === "string" ? JSON.parse(orchStatus.customStatus) : orchStatus.customStatus)
+                : null;
+            this.lastSeenIteration.set(
+                orchestrationId,
+                typeof customStatus?.iteration === "number" ? customStatus.iteration : -1,
+            );
+            this.lastSeenResponseVersion.set(
+                orchestrationId,
+                Number(customStatus?.responseVersion) || 0,
+            );
+        } catch {
+            // A new session has no orchestration status yet. The send path will
+            // create it, and zero cursors are correct for its first response.
+        }
+    }
+
     async listSessions(): Promise<PilotSwarmSessionInfo[]> {
         const rows = await this._catalog.listSessions();
         return rows.map(row => ({
@@ -628,6 +650,10 @@ export class PilotSwarmClient {
         onIntermediateContent?: (content: string) => void,
         opts?: { bootstrap?: boolean; signal?: AbortSignal; requiredTool?: string },
     ): Promise<string | undefined> {
+        // A cached handle may have sent fire-and-forget turns whose responses
+        // nobody observed. Snapshot the durable cursors immediately before this
+        // prompt so sendAndWait cannot return one of those earlier responses.
+        await this._syncTurnCursors(`session-${sessionId}`);
         const orchestrationId = await this._ensureOrchestrationAndSend(sessionId, prompt, opts);
 
         return this._waitForTurnResult(
@@ -998,6 +1024,10 @@ export class PilotSwarmClient {
                                 return response.content;
                             }
                             if (onIntermediateContent) onIntermediateContent(response.content);
+                        }
+
+                        if (response?.type === "error" && response.content) {
+                            throw new Error(response.content);
                         }
 
                         if (response?.type === "wait" && response.content && onIntermediateContent) {

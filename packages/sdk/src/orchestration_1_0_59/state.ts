@@ -68,7 +68,6 @@ export interface DurableSessionState {
     pendingRequiredTool?: string;
     pendingSystemPrompt?: string;
     runtimeModelNotice?: string;
-    blockedError?: { message: string; authFailure?: boolean };
     pendingCycleOrigin?: "cron" | "cron_at";
     bootstrapPrompt: boolean;
 
@@ -201,7 +200,6 @@ export function createInitialState(input: OrchestrationInput, options: DurableSe
         pendingRequiredTool: input.requiredTool,
         pendingSystemPrompt: input.systemPrompt,
         runtimeModelNotice: input.runtimeModelNotice,
-        blockedError: input.blockedError ? { ...input.blockedError } : undefined,
         pendingCycleOrigin: input.cycleOrigin,
         bootstrapPrompt: input.bootstrapPrompt ?? false,
 

@@ -399,6 +399,8 @@ export interface OrchestrationInput {
     systemPrompt?: string;
     /** Internal: one-shot current-model guidance attached to the next real prompt after a model switch. */
     runtimeModelNotice?: string;
+    /** Internal: non-retryable turn error kept visible until the next user prompt. */
+    blockedError?: { message: string; authFailure?: boolean };
     /** Internal: pending prompt is a bootstrap message, not a user-authored prompt. */
     bootstrapPrompt?: boolean;
     /** Internal: the pending prompt was produced by a recurring cron/cron_at timer fire. */
@@ -791,6 +793,7 @@ export interface PilotSwarmWorkerOptions {
         description?: string;
         prompt: string;
         tools?: string[] | null;
+        skills?: string[];
     }>;
 
     /**
@@ -1006,7 +1009,7 @@ export interface SessionResponsePayload {
     schemaVersion: 1;
     version: number;
     iteration: number;
-    type: "completed" | "wait" | "input_required";
+    type: "completed" | "wait" | "input_required" | "error";
     content?: string;
     question?: string;
     choices?: string[];

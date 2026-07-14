@@ -8,11 +8,13 @@
 //   1. Cold-session send: create_session without a prompt, then send through
 //      the send_and_wait tool — the resumeSession+send path (the B2 fix),
 //      end-to-end through the Web API.
-//   2. list_models field shape (qualified_name + model_name) served WITHOUT
+//   2. Cached-handle cursor refresh: create_session with a fire-and-forget
+//      prompt, let it finish, then send_and_wait returns only response two.
+//   3. list_models field shape (qualified_name + model_name) served WITHOUT
 //      --model-providers: web mode reads models from the deployment
 //      (mgmt.getModelsByProvider fallback).
-//   3. switch_model in web mode (mgmt.setSessionModel — the portal UI path).
-//   4. send_command surfaces the clear direct-mode-only error.
+//   4. switch_model in web mode (mgmt.setSessionModel — the portal UI path).
+//   5. send_command surfaces the clear direct-mode-only error.
 //
 // Usage:  node packages/app/mcp/test/integration/smoke.live.mjs
 // Requires: PostgreSQL via DATABASE_URL, GITHUB_TOKEN (or model provider
@@ -42,12 +44,27 @@ function parseToolResult(result) {
     try { return JSON.parse(text); } catch { return text; }
 }
 
+async function waitForSettledSession(client, sessionId, timeoutMs = 180_000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        const detail = parseToolResult(await client.callTool({
+            name: "get_session_detail",
+            arguments: { session_id: sessionId, include: ["status", "response"] },
+        }));
+        const status = detail?.session?.status;
+        if (["idle", "waiting", "input_required", "completed", "failed", "cancelled"].includes(status)) return detail;
+        await new Promise((resolvePromise) => setTimeout(resolvePromise, 500));
+    }
+    throw new Error(`session ${sessionId} did not settle within ${timeoutMs}ms`);
+}
+
 async function main() {
     const env = await startWebEnv(ROOT);
     const transport = new StdioClientTransport(mcpStdioArgs(ROOT, env.apiUrl));
     const client = new Client({ name: "mcp-web-smoke", version: "1.0.0" }, { capabilities: {} });
 
     let sessionId = null;
+    let cursorSessionId = null;
     try {
         await client.connect(transport);
         record("connect (stdio, --api-url)", "PASS");
@@ -94,7 +111,38 @@ async function main() {
             }
         } catch (err) { fail("cold-session send_and_wait (B2 path)", err); }
 
-        // ── 3. switch_model over the Web API ──
+        // ── 3. Cached handle: initial fire-and-forget must not satisfy turn 2 ──
+        try {
+            const firstMarker = "FIRST_CURSOR_MARKER";
+            const secondMarker = "SECOND_CURSOR_MARKER";
+            const created = parseToolResult(await client.callTool({
+                name: "create_session",
+                arguments: {
+                    title: "mcp-web-cursor-smoke",
+                    prompt: `Reply with exactly: ${firstMarker}`,
+                },
+            }));
+            cursorSessionId = created?.session_id ?? null;
+            if (!cursorSessionId) throw new Error(`no session_id in ${JSON.stringify(created).slice(0, 120)}`);
+            await waitForSettledSession(client, cursorSessionId);
+
+            const answer = parseToolResult(await client.callTool({
+                name: "send_and_wait",
+                arguments: {
+                    session_id: cursorSessionId,
+                    message: `Reply with exactly: ${secondMarker}`,
+                    timeout_ms: 180_000,
+                },
+            }));
+            const text = String(answer?.response ?? answer ?? "");
+            if (text.includes(secondMarker) && !text.includes(firstMarker)) {
+                record("cached send_and_wait cursor refresh", "PASS", `"${text.slice(0, 60)}"`);
+            } else {
+                record("cached send_and_wait cursor refresh", "FAIL", `response: ${text.slice(0, 120)}`);
+            }
+        } catch (err) { fail("cached send_and_wait cursor refresh", err); }
+
+        // ── 4. switch_model over the Web API ──
         if (sessionId) {
             try {
                 const models = parseToolResult(await client.callTool({ name: "list_models", arguments: {} }));
@@ -112,7 +160,7 @@ async function main() {
             } catch (err) { fail("switch_model (web setSessionModel path)", err); }
         }
 
-        // ── 4. send_command is direct-mode only ──
+        // ── 5. send_command is direct-mode only ──
         if (sessionId) {
             try {
                 const res = await client.callTool({
@@ -131,6 +179,7 @@ async function main() {
         // Cleanup: delete the smoke session, disconnect, stop the portal.
         try {
             if (sessionId) await client.callTool({ name: "delete_session", arguments: { session_id: sessionId } });
+            if (cursorSessionId) await client.callTool({ name: "delete_session", arguments: { session_id: cursorSessionId } });
         } catch {}
         try { await client.close(); } catch {}
         await env.stop();

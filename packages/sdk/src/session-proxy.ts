@@ -180,32 +180,49 @@ function appendContractPatchJson(existing: Record<string, unknown> | null, patch
     return { current, revisions };
 }
 
-function collectContractViolations(contractJson: Record<string, unknown> | null, result: Record<string, unknown> | null, missingResultCode?: string): Array<Record<string, unknown>> {
+function collectReferenceValues(result: Record<string, unknown>, fields: string[], objectField: "key" | "path"): Set<string> {
+    const values = new Set<string>();
+    for (const field of fields) {
+        const items = Array.isArray(result[field]) ? result[field] as unknown[] : [];
+        for (const item of items) {
+            if (typeof item === "string" && item.trim()) {
+                values.add(item.trim());
+            } else if (item && typeof item === "object") {
+                const value = (item as Record<string, unknown>)[objectField];
+                if (typeof value === "string" && value.trim()) values.add(value.trim());
+            }
+        }
+    }
+    return values;
+}
+
+/** @internal Exported for contract normalization tests. */
+export function collectContractViolations(contractJson: Record<string, unknown> | null, result: Record<string, unknown> | null, missingResultCode?: string): Array<Record<string, unknown>> {
     const contract = normalizeJsonObject(contractJson?.current);
     if (!contract) return [];
     if (!result) {
         return missingResultCode ? [{ code: missingResultCode, message: "Contracted child closed without a structured result." }] : [];
     }
 
-    const factsWritten = Array.isArray(result.factsWritten) ? result.factsWritten : [];
-    const artifactsWritten = Array.isArray(result.artifactsWritten) ? result.artifactsWritten : [];
-    const factKeys = new Set(factsWritten.map((item: any) => item?.key).filter((key: unknown): key is string => typeof key === "string"));
-    const artifactPaths = new Set(artifactsWritten.map((item: any) => item?.path).filter((path: unknown): path is string => typeof path === "string"));
+    const factKeys = collectReferenceValues(result, ["factsWritten", "factKeys", "facts", "evidenceFactKeys"], "key");
+    const artifactPaths = collectReferenceValues(result, ["artifactsWritten", "artifactPaths", "artifacts", "artifactPointers"], "path");
+    const genericFactOutputs = collectReferenceValues(result, ["outputs", "outputReferences"], "key");
+    const genericArtifactOutputs = collectReferenceValues(result, ["outputs", "outputReferences"], "path");
     const violations: Array<Record<string, unknown>> = [];
 
     for (const expected of Array.isArray(contract.expectedFacts) ? contract.expectedFacts : []) {
         const key = (expected as any)?.key;
         if ((expected as any)?.required === false || typeof key !== "string") continue;
-        if (!factKeys.has(key)) {
-            violations.push({ code: "missing_fact", message: `Required fact was not declared in the result: ${key}`, expected });
+        if (!factKeys.has(key) && !genericFactOutputs.has(key) && !genericArtifactOutputs.has(key)) {
+            violations.push({ code: "missing_fact_reference", message: `Required fact was not referenced in the result: ${key}`, expected });
         }
     }
 
     for (const expected of Array.isArray(contract.expectedArtifacts) ? contract.expectedArtifacts : []) {
         const path = (expected as any)?.path;
         if ((expected as any)?.required === false || typeof path !== "string") continue;
-        if (!artifactPaths.has(path)) {
-            violations.push({ code: "missing_artifact", message: `Required artifact was not declared in the result: ${path}`, expected });
+        if (!artifactPaths.has(path) && !genericArtifactOutputs.has(path) && !genericFactOutputs.has(path)) {
+            violations.push({ code: "missing_artifact_reference", message: `Required artifact was not referenced in the result: ${path}`, expected });
         }
     }
 
@@ -637,6 +654,15 @@ export function resolveCrawlerRole(
 
 /** @deprecated Use `resolveCrawlerRole`; retained for compatibility. */
 export const resolveHarvesterRole = resolveCrawlerRole;
+
+/** @internal Child model options shared by inline and activity spawn paths. */
+export function childModelCreationOptions(config: SerializableSessionConfig) {
+    return {
+        model: config.model,
+        reasoningEffort: config.reasoningEffort,
+        contextTier: config.contextTier,
+    };
+}
 
 
 
@@ -1367,8 +1393,7 @@ export function registerActivities(
                     const childSession = await sdkClient.createSession({
                         parentSessionId: input.sessionId,
                         nestingLevel: childNestingLevel,
-                        model: childConfig.model,
-                        reasoningEffort: childConfig.reasoningEffort,
+                        ...childModelCreationOptions(childConfig),
                         systemMessage: childConfig.systemMessage,
                         boundAgentName: childConfig.boundAgentName,
                         promptLayering: childConfig.promptLayering,
@@ -2916,8 +2941,7 @@ export function registerActivities(
                 sessionId: childSessionId,
                 parentSessionId: input.parentSessionId,
                 nestingLevel: input.nestingLevel,
-                model: input.config.model,
-                reasoningEffort: input.config.reasoningEffort,
+                ...childModelCreationOptions(input.config),
                 systemMessage: input.config.systemMessage,
                 boundAgentName: input.config.boundAgentName,
                 promptLayering: input.config.promptLayering,

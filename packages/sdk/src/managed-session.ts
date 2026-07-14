@@ -47,6 +47,40 @@ const SESSION_SUMMARY_STATE_SCHEMA = {
 
 const SESSION_SUMMARY_STATE_TEMPLATE =
     "Use summary_state={schemaVersion:1,updatedAt:<ISO timestamp>,intent:<string>,summary:<string>,state:{},openQuestions:[],blockers:[],nextActions:[],links:[],structureChangeLog:[]}.";
+const CHILD_SESSION_RESULT_SCHEMA = {
+    type: "object",
+    additionalProperties: true,
+    properties: {
+        verdict: {
+            type: "string",
+            enum: ["success", "partial", "blocked", "failed", "cancelled", "timed_out"],
+            description: "Outcome verdict.",
+        },
+        summary: { type: "string", description: "Compact outcome summary." },
+        factsWritten: {
+            type: "array",
+            description: "Facts produced by the child. Prefer objects with a key; string keys are accepted for compatibility.",
+            items: {
+                oneOf: [
+                    { type: "string" },
+                    { type: "object", required: ["key"], properties: { key: { type: "string" } }, additionalProperties: true },
+                ],
+            },
+        },
+        artifactsWritten: {
+            type: "array",
+            description: "Artifacts produced by the child. Prefer objects with a path; string paths are accepted for compatibility.",
+            items: {
+                oneOf: [
+                    { type: "string" },
+                    { type: "object", required: ["path"], properties: { path: { type: "string" } }, additionalProperties: true },
+                ],
+            },
+        },
+        blockers: { type: "array", items: { type: "string" } },
+        nextActions: { type: "array", items: { type: "string" } },
+    },
+} as const;
 
 function hasAssistantToolCalls(message: any): boolean {
     return Array.isArray(message?.tool_calls) && message.tool_calls.length > 0;
@@ -716,8 +750,8 @@ export class ManagedSession {
                 properties: {
                     agent_id: { type: "string", description: "The sub-agent's ID (returned by spawn_agent)" },
                     result: {
-                        type: "object",
-                        description: "Optional structured completion result with verdict, summary, output references, blockers, and next actions.",
+                        ...CHILD_SESSION_RESULT_SCHEMA,
+                        description: "Optional structured completion result. Declare produced facts in factsWritten and artifacts in artifactsWritten so child contracts can validate references.",
                     },
                 },
                 required: ["agent_id"],
@@ -736,8 +770,8 @@ export class ManagedSession {
                     agent_id: { type: "string", description: "The sub-agent's ID (returned by spawn_agent)" },
                     reason: { type: "string", description: "Optional reason for cancellation" },
                     partial_result: {
-                        type: "object",
-                        description: "Optional structured partial result for cancelled, blocked, or timed-out work.",
+                        ...CHILD_SESSION_RESULT_SCHEMA,
+                        description: "Optional structured partial result. Declare produced facts in factsWritten and artifacts in artifactsWritten so child contracts can validate references.",
                     },
                 },
                 required: ["agent_id"],
@@ -1550,8 +1584,8 @@ export class ManagedSession {
                 properties: {
                     agent_id: { type: "string", description: "The sub-agent's ID (returned by spawn_agent)" },
                     result: {
-                        type: "object",
-                        description: "Optional structured completion result with verdict, summary, output references, blockers, and next actions.",
+                        ...CHILD_SESSION_RESULT_SCHEMA,
+                        description: "Optional structured completion result. Declare produced facts in factsWritten and artifacts in artifactsWritten so child contracts can validate references.",
                     },
                 },
                 required: ["agent_id"],
@@ -1577,8 +1611,8 @@ export class ManagedSession {
                     agent_id: { type: "string", description: "The sub-agent's ID (returned by spawn_agent)" },
                     reason: { type: "string", description: "Optional reason for cancellation" },
                     partial_result: {
-                        type: "object",
-                        description: "Optional structured partial result for cancelled, blocked, or timed-out work.",
+                        ...CHILD_SESSION_RESULT_SCHEMA,
+                        description: "Optional structured partial result. Declare produced facts in factsWritten and artifacts in artifactsWritten so child contracts can validate references.",
                     },
                 },
                 required: ["agent_id"],

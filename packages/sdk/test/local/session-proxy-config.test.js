@@ -1,5 +1,5 @@
 import { describe, it } from "vitest";
-import { buildRunTurnConfig } from "../../src/session-proxy.ts";
+import { buildRunTurnConfig, childModelCreationOptions } from "../../src/session-proxy.ts";
 import { assertEqual, assertIncludes } from "../helpers/assertions.js";
 
 describe("runTurn config backfill", () => {
@@ -29,5 +29,17 @@ describe("runTurn config backfill", () => {
         );
 
         assertEqual(config.agentIdentity, "facts-manager", "explicit identity should win over fallback");
+    });
+
+    it("forwards model, reasoning effort, and context tier to child creation", () => {
+        const options = childModelCreationOptions({
+            model: "github-copilot:gpt-5.6-terra",
+            reasoningEffort: "xhigh",
+            contextTier: "long_context",
+        });
+
+        assertEqual(options.model, "github-copilot:gpt-5.6-terra", "child model should inherit");
+        assertEqual(options.reasoningEffort, "xhigh", "child reasoning effort should inherit");
+        assertEqual(options.contextTier, "long_context", "child context tier should inherit");
     });
 });

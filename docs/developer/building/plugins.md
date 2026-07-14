@@ -153,6 +153,7 @@ Agents are defined as Markdown files with YAML frontmatter. The frontmatter decl
 | `name` | string | **Yes** | Unique agent identifier. Used for selection and collision resolution. |
 | `description` | string | No | Short description shown in agent lists. |
 | `tools` | string[] | No | Tool names this agent can access. |
+| `skills` | string[] | No | Skill names to preload into this agent's context from the plugin skill directories. |
 | `system` | boolean | No | If `true`, agent is auto-started by the worker as a background session. |
 | `id` | string | No | Deterministic slug for system agents (e.g. `"sweeper"`). Used to derive a stable session UUID. |
 | `title` | string | No | Display name in session lists. Falls back to capitalized `name` + " Agent". |
@@ -170,6 +171,8 @@ tools:
   - bash
   - write_artifact
   - read_artifact
+skills:
+  - data-analysis
 ---
 
 # Data Analyst Agent
@@ -217,6 +220,11 @@ pilotswarm (root, system: true, id: "pilotswarm")
 ## 5. Skills
 
 Skills inject domain knowledge into the LLM context. They are directories, not standalone files.
+
+Skills are available from every configured plugin skill directory. Add a skill
+name to an agent's `skills` frontmatter when that agent should eagerly preload
+the full skill into its context. Omitted skills remain available for normal SDK
+skill discovery; `skills` is a preload declaration, not a directory filter.
 
 ### Directory Structure
 
