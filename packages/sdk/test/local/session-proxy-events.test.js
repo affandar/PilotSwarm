@@ -29,6 +29,9 @@ function makeHarness(options = {}) {
     const recordedEvents = [];
     const catalog = {
         recordEvents: vi.fn(async (_sessionId, events) => {
+            if (typeof options.beforeRecordEvents === "function") {
+                await options.beforeRecordEvents(events);
+            }
             recordedEvents.push(...events);
         }),
         upsertSessionMetricSummary: vi.fn(async () => {}),
@@ -67,6 +70,51 @@ function makeHarness(options = {}) {
 }
 
 describe("session-proxy CMS prompt classification", () => {
+    it("waits for the durable user.message acknowledgement before completing the turn", async () => {
+        let releaseUserMessage;
+        const userMessageBarrier = new Promise((resolve) => {
+            releaseUserMessage = resolve;
+        });
+        let userMessageWriteStarted = false;
+        const { runTurn, recordedEvents } = makeHarness({
+            beforeRecordEvents: async (events) => {
+                if (events.some((event) => event.eventType === "user.message")) {
+                    userMessageWriteStarted = true;
+                    await userMessageBarrier;
+                }
+            },
+        });
+
+        let settled = false;
+        const turnPromise = runTurn(
+            { traceInfo: () => {}, isCancelled: () => false },
+            {
+                sessionId: "session-ack-barrier",
+                prompt: "send the cost summary",
+                config: {},
+                turnIndex: 0,
+                clientMessageIds: ["msg:cost-summary"],
+            },
+        ).then((result) => {
+            settled = true;
+            return result;
+        });
+
+        await vi.waitFor(() => expect(userMessageWriteStarted).toBe(true));
+        expect(settled).toBe(false);
+        releaseUserMessage();
+        await turnPromise;
+
+        const userMessage = recordedEvents.find((event) => event.eventType === "user.message");
+        expect(userMessage).toEqual({
+            eventType: "user.message",
+            data: {
+                content: "send the cost summary",
+                clientMessageIds: ["msg:cost-summary"],
+            },
+        });
+    });
+
     it("records orchestration-generated followups as system.message", async () => {
         const { runTurn, recordedEvents } = makeHarness();
 

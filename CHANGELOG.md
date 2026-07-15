@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### SDK / Portal / TUI
+
+- **Processed outbox prompts no longer remain stuck as queued.** Explicit
+  `user.message`, system-prompt, and `session.turn_started` CMS writes now join
+  the existing post-turn event-write barrier. A fast turn can no longer finish
+  before its durable `user.message` acknowledgement, including the
+  `clientMessageIds` the shared portal/TUI uses to remove the local queued item.
+
 ## 0.5.13 — 2026-07-14
 
 ### SDK

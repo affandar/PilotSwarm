@@ -1926,14 +1926,14 @@ export function registerActivities(
                     input.config.turnSystemPrompt,
                     workerNodeId,
                 );
-                void cmsRetryBestEffort(
+                trackEventWrite(cmsRetryBestEffort(
                     `runTurn.recordEvent system-prompt session=${input.sessionId}`,
                     () => catalog!.recordEvents(input.sessionId, [{
                         eventType: "system.message",
                         data: { content: persistedSystemPrompt },
                     }], workerNodeId),
                     (msg) => activityCtx.traceInfo(msg),
-                );
+                ));
             }
             if (catalog && !isTimerPrompt && !input.bootstrap && !isRetryAttempt) {
                 const promptEventType = isInternalSystemPrompt(input.prompt) ? "system.message" : "user.message";
@@ -1950,14 +1950,14 @@ export function registerActivities(
                     eventData.clientMessageIds = incomingClientMessageIds;
                 }
                 const capturedPromptEventType = promptEventType;
-                void cmsRetryBestEffort(
+                trackEventWrite(cmsRetryBestEffort(
                     `runTurn.recordEvent ${capturedPromptEventType} session=${input.sessionId}`,
                     () => catalog!.recordEvents(input.sessionId, [{
                         eventType: capturedPromptEventType,
                         data: eventData,
                     }], workerNodeId),
                     (msg) => activityCtx.traceInfo(msg),
-                );
+                ));
             }
 
             // Mark session as "running" in CMS before the turn, and publish the
@@ -1983,14 +1983,14 @@ export function registerActivities(
 
             // Record turn_started CMS event
             if (catalog) {
-                void cmsRetryBestEffort(
+                trackEventWrite(cmsRetryBestEffort(
                     `runTurn.recordEvent turn_started session=${input.sessionId}`,
                     () => catalog!.recordEvents(input.sessionId, [{
                         eventType: "session.turn_started",
                         data: { iteration: input.turnIndex ?? 0 },
                     }], workerNodeId),
                     (msg) => activityCtx.traceInfo(msg),
-                );
+                ));
             }
 
             const runTurnWithPrompt = async (targetSession: any, prompt: string) => {
