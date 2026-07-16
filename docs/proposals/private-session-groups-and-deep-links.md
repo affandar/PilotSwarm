@@ -68,7 +68,9 @@ That behavior produces two distinct problems.
 A recipient cannot place a shared session in their own group because:
 
 1. the group and session have different owners;
-2. the move operation requires `session:manage`, which recipients do not have;
+2. the move operation is classed `group:manage`, and its per-session gate
+   additionally requires `session:manage` on every moved session, which
+   recipients do not have;
 3. even if allowed, the operation would overwrite the owner's placement.
 
 Returning the source `groupId` to the recipient is also a privacy leak. Even if
@@ -137,6 +139,17 @@ CREATE TABLE user_session_group_placements (
 Add a unique constraint on `(group_id, user_id)` to
 `session_group_owners` so the composite foreign key is valid. The existing
 `group_id` primary key still guarantees one owner per group.
+
+Add a supporting index on `user_session_group_placements (group_id, user_id)`
+for group aggregates and owner-side cascades. PostgreSQL does not index the
+referencing side of a foreign key, and the primary key on
+`(user_id, root_session_id)` does not cover group-keyed reads.
+
+**Removed behavior:** the composite foreign key forbids placement rows for
+ownerless groups. This deliberately removes the migration-0020 behavior where
+an empty ownerless group adopted the first mover's owner. New groups always
+create their `session_group_owners` row atomically; legacy ownerless groups
+are handled by migration only (see below).
 
 Use `users.user_id`, not a second `(provider, subject)` identity copy. API
 procedures resolve the authenticated principal through the existing users
@@ -255,10 +268,13 @@ Group CRUD remains owner-only:
   it may ungroup its placements through `ON DELETE CASCADE`;
 - assigning and moving sessions changes only caller placement.
 
-Bulk cancel/complete actions may remain as conveniences, but a group grants no
-authority. The server resolves the caller's currently visible placements and
-independently requires write/manage access for every target. The action fails
-atomically if any target lacks the required capability.
+`cancelSessionGroup` and `completeSessionGroup` are deprecated rather than
+respecified. They exist only at the transport layer today — no portal or TUI
+surface calls them — and once a group is a heterogeneous-access container of
+owned and shared sessions, atomic bulk authority would fail routinely. If
+bulk actions return, they operate on the caller's currently visible
+placements with per-target authorization and per-target results, and a group
+still grants no authority.
 
 ### Session creation
 
@@ -300,16 +316,18 @@ Both rows refer to the same session tree; the group containers are unrelated.
 
 ### Filters
 
-The default authenticated catalog should include:
+The default authenticated catalog must include:
 
 - sessions owned by me;
 - sessions shared with me;
 - visible system sessions.
 
-The owner filter should distinguish at least `Mine`, `Shared with me`, and
-`System`. A shared session must not disappear merely because its owner is
-someone else while the default filter is described as the viewer's normal
-workspace.
+The owner filter must provide first-class `Mine`, `Shared with me`, and
+`System` buckets. Today a shared session maps only to a dynamically generated
+per-owner bucket that is off by default, so without this change a newly
+shared session is invisible until the recipient discovers the sharer's
+bucket — which breaks the recipient-at-root promise. This filter change is a
+hard rollout dependency, not a polish item (see Rollout).
 
 ### Share and copy-link UX
 
@@ -395,22 +413,30 @@ migration diff document.
    users. Existing groups containing owned sessions may adopt that single
    owner only when all live members agree; ambiguous groups remain admin-only
    until repaired.
-5. Switch viewer-scoped list/get/group procedures and mutation APIs to
-   placements.
-6. Stop writing, updating, and inheriting `sessions.group_id`.
-7. Keep reading the legacy column only behind a temporary compatibility path
-   during a rolling deployment.
-8. After all supported writers understand placements, remove creation
-   `p_group_id` from CMS session procedures and drop `sessions.group_id` in a
-   later migration.
+5. Cut reads and writes over to placements in one step: switch viewer-scoped
+   list/get/group procedures and mutation APIs to placements, and stop
+   writing, updating, and inheriting `sessions.group_id`, in the same
+   migration and release.
+
+   There is deliberately no per-row legacy-read fallback. A missing placement
+   row means "No Group"; falling back to the legacy column would resurrect a
+   group the viewer explicitly removed, because ungrouping deletes the row
+   and absence cannot distinguish "never placed" from "explicitly
+   ungrouped". The backfill and the read cutover land atomically using the
+   0029 steps-migration shape, and the single-web-writer topology makes the
+   rolling window effectively zero.
+6. After the cutover release, remove creation `p_group_id` from CMS session
+   procedures and drop `sessions.group_id` in a later migration.
 
 Migration preserves the owner's existing visual organization while shared
 viewers correctly see those sessions at their own root.
 
 ## Security and privacy requirements
 
-- No viewer-scoped response may contain a foreign group ID or group-derived
-  aggregate.
+- No viewer-scoped payload of any shape may contain a foreign group ID or
+  group-derived aggregate — session list rows, detail DTOs, access
+  responses, and WebSocket/event payloads included. After cutover, no
+  payload anywhere carries `sessions.group_id`.
 - Placement procedures derive the actor from authenticated request context;
   clients cannot submit `user_id`, provider, or subject as trusted placement
   identity.
@@ -486,15 +512,55 @@ to exercise the real HTTP stack.
 - Retryable network failures are distinguishable from not-found/access
   failures.
 
+### Migration and backfill
+
+- Conflicting legacy child assignments in one tree resolve to the root's
+  group and the anomaly appears in migration diagnostics.
+- Backfill skips and reports rows whose group owner does not match the root
+  owner.
+- Single-owner legacy groups adopt that owner; ambiguous and ownerless
+  groups are quarantined admin-only.
+- Re-running the migration is idempotent.
+
+### Enforcement matrix
+
+- The authorization suite runs under both `AUTHZ_ENFORCE_OWNERSHIP=true` and
+  `false`; permissive-mode placement behavior (placement allowed wherever
+  read is allowed, still viewer-private) is pinned by explicit tests.
+
+### Payload shape
+
+- Schema-shaped assertions, not only behavioral ones: recipient-facing list
+  rows, detail DTOs, access responses, and event payloads contain no
+  foreign `groupId` / `group_id` key at all.
+
+### Concurrency
+
+- Two clients placing/ungrouping the same root concurrently resolve via
+  upsert without error or cross-viewer bleed.
+- Deleting a group concurrently with a placement insert surfaces a clean
+  conflict error, not an internal failure.
+
+### UI regression
+
+- A TUI smoke test drives the shared-controller move picker.
+- The profile-hydration first-apply path (initial hydration, before any
+  local write) cannot displace a pending deep-link target.
+
 ## Rollout
 
-1. Add placement schema, backfill, and dual-read compatibility.
-2. Add viewer-scoped catalog/group procedures and placement mutation API.
-3. Switch portal/TUI adapters and move/create-group flows.
-4. Land deep-link precedence, ancestor expansion, transient filter reveal,
+1. Add placement schema and backfill, and cut placement reads and writes
+   over in the same release (no dual-read window).
+2. Add viewer-scoped catalog/group procedures and the placement mutation
+   API.
+3. Ship the default-filter change: the authenticated default catalog
+   includes owned, shared-with-me, and visible system sessions, with a
+   first-class `Shared with me` bucket. Hard dependency for the sharing UX.
+4. Switch portal/TUI adapters and move/create-group flows.
+5. Land deep-link precedence, ancestor expansion, transient filter reveal,
    and explicit errors.
-5. Enable placement-only writes and monitor migration diagnostics.
-6. Remove legacy `sessions.group_id` reads and later drop the column.
+6. Monitor migration diagnostics; in a later release remove creation
+   `p_group_id` and drop `sessions.group_id`.
 
 The rollout gate is a two-user test where the same shared session is visibly
 organized into different groups in two browser tabs and a copied deep link
@@ -511,3 +577,7 @@ group.
 - Admins do not see foreign group organization through ordinary session
   APIs.
 - Deep links do not grant access and never silently fall back.
+- Placement cutover is atomic; there is no per-row legacy `group_id`
+  fallback.
+- Group bulk cancel/complete are deprecated rather than respecified;
+  ownerless-group adopt-on-move (migration 0020) is removed.
