@@ -52,6 +52,11 @@ export function createConnectionHandler(runtime, { allowThemeMessages = false } 
                 if (!sessionId || sessionSubscriptions.has(sessionId)) return;
                 try {
                     await runtime.start();
+                    // Ownership/visibility gate: live events are a content
+                    // read, same predicate as the REST catch-up path.
+                    if (typeof runtime.authorizeSessionSubscribe === "function") {
+                        await runtime.authorizeSessionSubscribe(sessionId, auth);
+                    }
                     const unsubscribe = runtime.subscribeSession(sessionId, (event) => {
                         send({ type: "sessionEvent", sessionId, event });
                     });
@@ -77,6 +82,10 @@ export function createConnectionHandler(runtime, { allowThemeMessages = false } 
                 if (logUnsubscribe) return;
                 try {
                     await runtime.start();
+                    // Log tail is fleet-wide observability: admin-gated.
+                    if (typeof runtime.authorizeLogSubscribe === "function") {
+                        await runtime.authorizeLogSubscribe(auth);
+                    }
                     logUnsubscribe = runtime.startLogTail((entry) => {
                         send({ type: "logEntry", entry });
                     });

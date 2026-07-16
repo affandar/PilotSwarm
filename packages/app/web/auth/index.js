@@ -1,11 +1,16 @@
 import { createNoAuthProvider } from "./providers/none.js";
 import { createEntraAuthProvider } from "./providers/entra.js";
+import { createDevAuthProvider } from "./providers/dev.js";
 import { authorizePrincipal } from "./authz/engine.js";
 import { loadAuthorizationPolicy, resolveAuthProviderId, resolvePluginAuthConfigFromPluginDirs } from "./config.js";
 
 const PROVIDERS = {
     none: createNoAuthProvider,
     entra: createEntraAuthProvider,
+    // Test personas, no real authentication. Never inferred — only an explicit
+    // PORTAL_AUTH_PROVIDER=dev selects it, and its factory throws without
+    // PORTAL_AUTH_DEV_ALLOW=true (see providers/dev.js).
+    dev: createDevAuthProvider,
 };
 
 const NO_AUTH_UNKNOWN_PRINCIPAL = Object.freeze({

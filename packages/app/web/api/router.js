@@ -137,12 +137,12 @@ export function createApiRouter({ runtime, requireAuth }) {
             return;
         }
         try {
-            const artifact = await runtime.downloadArtifactBinary(req.params.sessionId, req.params.filename);
+            const artifact = await runtime.downloadArtifactBinary(req.params.sessionId, req.params.filename, req.auth);
             res.setHeader("content-type", String(artifact?.contentType || "application/octet-stream"));
             res.setHeader("content-disposition", `attachment; filename="${path.basename(req.params.filename)}"`);
             res.send(artifact.body);
         } catch (error) {
-            sendError(res, error, 404);
+            sendError(res, error, error?.code === "FORBIDDEN" ? 403 : 404);
         }
     });
 
@@ -151,10 +151,11 @@ export function createApiRouter({ runtime, requireAuth }) {
         const expressPath = op.path.replace(/:([\w]+)/g, ":$1");
         router[op.method.toLowerCase()](expressPath, async (req, res) => {
             try {
-                // Tier-2 operational ops require the admin role. This is the
-                // API's only per-route role check; every other op shares the
-                // binary admission gate (requireAuth above).
-                if (op.admin && !isAdminAuth(req.auth)) {
+                // Tier-2 operational ops require the admin role — a hard gate
+                // regardless of the ownership dark-launch flag. Finer-grained
+                // ownership/visibility classes (op.access) are enforced inside
+                // runtime.call(), the shared dispatch chokepoint.
+                if ((op.admin || op.access === "fleet:admin") && !isAdminAuth(req.auth)) {
                     sendError(res, Object.assign(new Error("This operation requires the admin role."), { code: "FORBIDDEN" }), 403);
                     return;
                 }

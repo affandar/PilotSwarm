@@ -181,7 +181,7 @@ export async function startServer(opts = {}) {
         try {
             const sessionId = req.params.sessionId;
             const filename = req.params.filename;
-            const artifact = await runtime.downloadArtifactBinary(sessionId, filename);
+            const artifact = await runtime.downloadArtifactBinary(sessionId, filename, req.auth);
             const contentType = String(artifact?.contentType || "application/octet-stream");
             res.setHeader("content-type", contentType);
             res.setHeader("content-disposition", `attachment; filename="${path.basename(filename)}"`);
@@ -196,7 +196,7 @@ export async function startServer(opts = {}) {
         try {
             const sessionId = req.params.sessionId;
             const filename = req.params.filename;
-            const metadata = await runtime.getArtifactMetadata(sessionId, filename);
+            const metadata = await runtime.getArtifactMetadata(sessionId, filename, req.auth);
             if (!metadata) {
                 res.status(404).json({ ok: false, error: "Artifact not found" });
                 return;

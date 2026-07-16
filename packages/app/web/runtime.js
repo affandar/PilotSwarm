@@ -1,4 +1,13 @@
 import { NodeSdkTransport } from "pilotswarm/host";
+import {
+    loadAuthzConfig,
+    normalizeVisibility,
+    getMethodAccess,
+    evaluateSessionAccess,
+    relationFor,
+    forbiddenError,
+    notFoundError,
+} from "./authz.js";
 
 function normalizeParams(params) {
     return params && typeof params === "object" ? params : {};
@@ -82,12 +91,278 @@ function requireUserPrincipal(authContext, methodName) {
     return principal;
 }
 
+// Break-glass audit coverage: every non-read session op, plus the reads that
+// expose content (transcript, artifacts, history). Status polling and list
+// metadata are excluded to keep the audit stream signal-dense.
+const BREAK_GLASS_AUDITED = {
+    any: true,
+    getSessionEvents: true,
+    getSessionEventsBefore: true,
+    downloadArtifact: true,
+    readArtifactBase64: true,
+    getExecutionHistory: true,
+    getLatestResponse: true,
+    listSessionShares: true,
+};
+
 export class PortalRuntime {
     constructor({ store, mode, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser } = {}) {
         this.transport = new NodeSdkTransport({ store, mode, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser });
         this.mode = mode;
         this.started = false;
         this.startPromise = null;
+        this.authz = loadAuthzConfig();
+        // Throttle repeated break-glass audit rows for the same actor+session
+        // (the portal polls events continuously while a session is open).
+        this._breakGlassSeen = new Map(); // key -> expiry epoch ms
+    }
+
+    // ── Authorization (security model) ──────────────────────────────────
+
+    _recordAudit(entry) {
+        if (typeof this.transport.recordAuthzAudit !== "function") return;
+        this.transport.recordAuthzAudit(entry).catch(() => {});
+    }
+
+    _auditActor(authContext) {
+        const principal = authContext?.principal;
+        return {
+            provider: principal?.provider ?? null,
+            subject: principal?.subject ?? null,
+            display: principal?.displayName ?? principal?.email ?? null,
+        };
+    }
+
+    _shouldRecordBreakGlass(actorKey, sessionId) {
+        const key = `${actorKey}${sessionId}`;
+        const now = Date.now();
+        const expiry = this._breakGlassSeen.get(key);
+        if (expiry && expiry > now) return false;
+        if (this._breakGlassSeen.size > 5000) this._breakGlassSeen.clear();
+        this._breakGlassSeen.set(key, now + 15 * 60 * 1000);
+        return true;
+    }
+
+    /**
+     * Gate one dispatched method. Returns { snapshot } (the access snapshot
+     * for session-scoped ops, so handlers can reuse it — e.g. sender
+     * relation) or throws 403/404. With enforcement off, would-be denials
+     * are audited and allowed through (dark launch).
+     */
+    async _authorizeCall(method, safeParams, authContext, { owner, isAdmin }) {
+        const spec = getMethodAccess(method);
+        const access = spec?.access || "authed";
+
+        if (access === "authed" || access === "session:create" || access === "facts:read" || access === "group:list" || access === "session:list") {
+            // List/read scoping happens in the case handlers (viewer-scoped
+            // catalog paths); creation stamps owner+visibility there too.
+            return { snapshot: null };
+        }
+
+        if (access === "fleet:read" || access === "fleet:admin") {
+            if (!isAdmin) {
+                const reason = access === "fleet:admin"
+                    ? "This operation requires the admin role."
+                    : "Fleet-wide observability requires the admin role.";
+                this._recordAudit({
+                    actor: this._auditActor(authContext),
+                    action: method,
+                    decision: this.authz.enforce ? "deny" : "would_deny",
+                    reason,
+                });
+                if (this.authz.enforce || access === "fleet:admin") {
+                    // fleet:admin has always been enforced (op.admin) —
+                    // keep it hard regardless of the dark-launch flag.
+                    throw forbiddenError(reason);
+                }
+            }
+            return { snapshot: null };
+        }
+
+        if (access === "facts:write") {
+            await this._authorizeFactsWrite(method, safeParams, authContext, { owner, isAdmin });
+            return { snapshot: null };
+        }
+
+        if (access === "group:manage") {
+            await this._authorizeGroupManage(method, safeParams, authContext, { owner, isAdmin });
+            return { snapshot: null };
+        }
+
+        if (access === "authz:audit") {
+            const sessionId = safeParams.sessionId ? String(safeParams.sessionId) : null;
+            if (isAdmin) return { snapshot: null };
+            if (!sessionId) throw forbiddenError("Fleet-wide audit requires the admin role. Pass sessionId to read audit for a session you own.");
+            // Owner-only, and hard-enforced (session:share) so a missing/deleted
+            // session id can't open the audit trail during dark-launch.
+            return this._gateSession(method, "session:share", sessionId, authContext, { owner, isAdmin });
+        }
+
+        if (access === "session:copy") {
+            const [from, to] = await Promise.all([
+                this._gateSession(method, "session:read", safeParams.fromSessionId, authContext, { owner, isAdmin }),
+                this._gateSession(method, "session:write", safeParams.toSessionId, authContext, { owner, isAdmin }),
+            ]);
+            return { snapshot: to.snapshot ?? from.snapshot };
+        }
+
+        if (access.startsWith("session:")) {
+            const sessionId = safeParams[spec.sessionParam];
+            return this._gateSession(method, access, sessionId, authContext, { owner, isAdmin });
+        }
+
+        return { snapshot: null };
+    }
+
+    /** Whether the deployment's transport can resolve access snapshots at all. */
+    _accessSnapshotSupported() {
+        return typeof this.transport.getSessionAccess === "function";
+    }
+
+    async _getAccessSnapshot(sessionId, owner) {
+        if (!sessionId || !this._accessSnapshotSupported()) return null;
+        return this.transport.getSessionAccess(String(sessionId), {
+            provider: owner?.provider ?? "",
+            subject: owner?.subject ?? "",
+        });
+    }
+
+    async _gateSession(method, accessClass, sessionId, authContext, { owner, isAdmin }) {
+        // session:share is a brand-new capability with no pre-model behavior
+        // to preserve, so it is enforced even during the ownership dark-launch
+        // — otherwise a user could pre-plant a durable grant that survives the
+        // flip to enforce (adversarial review HIGH-2).
+        const effectiveEnforce = this.authz.enforce || accessClass === "session:share";
+        const hasSessionId = sessionId != null && String(sessionId).trim() !== "";
+
+        // HIGH-1: a supplied-but-unresolvable id (missing OR soft-deleted —
+        // cms_get_session_access returns no row for either) must not open the
+        // gate. Only genuinely id-less ops get the permissive null path. Skip
+        // when the transport can't resolve snapshots at all (legacy/no-auth).
+        if (hasSessionId && this._accessSnapshotSupported()) {
+            const snapshot = await this._getAccessSnapshot(sessionId, owner);
+            if (!snapshot) {
+                this._recordAudit({
+                    actor: this._auditActor(authContext),
+                    action: method,
+                    sessionId: String(sessionId),
+                    decision: effectiveEnforce ? "deny" : "would_deny",
+                    reason: "session not found or deleted",
+                });
+                if (!effectiveEnforce) return { snapshot: null };
+                throw notFoundError();
+            }
+            return this._decideSessionAccess(method, accessClass, snapshot, sessionId, authContext, { isAdmin, effectiveEnforce });
+        }
+
+        const snapshot = await this._getAccessSnapshot(sessionId, owner);
+        return this._decideSessionAccess(method, accessClass, snapshot, sessionId, authContext, { isAdmin, effectiveEnforce });
+    }
+
+    _decideSessionAccess(method, accessClass, snapshot, sessionId, authContext, { isAdmin, effectiveEnforce }) {
+        const decision = evaluateSessionAccess(accessClass, snapshot, {
+            isAdmin,
+            systemReadable: this.authz.systemVisibility === "read",
+        });
+
+        if (decision.allowed) {
+            if (decision.breakGlass && BREAK_GLASS_AUDITED[accessClass !== "session:read" ? "any" : method]) {
+                const actor = this._auditActor(authContext);
+                const actorKey = `${actor.provider}/${actor.subject}`;
+                if (this._shouldRecordBreakGlass(actorKey, String(sessionId))) {
+                    this._recordAudit({
+                        actor,
+                        action: method,
+                        sessionId: String(sessionId),
+                        decision: "break_glass",
+                        reason: "Admin access to a private session owned by another user",
+                    });
+                }
+            }
+            return { snapshot };
+        }
+
+        this._recordAudit({
+            actor: this._auditActor(authContext),
+            action: method,
+            sessionId: sessionId ? String(sessionId) : null,
+            decision: effectiveEnforce ? "deny" : "would_deny",
+            reason: decision.notFound ? "not visible" : decision.reason,
+        });
+
+        if (!effectiveEnforce) return { snapshot };
+        throw decision.notFound ? notFoundError() : forbiddenError(decision.reason);
+    }
+
+    /**
+     * Facts write containment: non-admin callers may write/delete shared
+     * facts (the deployment's collaboration memory) and facts of sessions
+     * they can WRITE; anything else — in particular pattern deletes over
+     * other sessions' private facts — is denied.
+     */
+    async _authorizeFactsWrite(method, safeParams, authContext, { owner, isAdmin }) {
+        if (isAdmin) return;
+        const inputs = Array.isArray(safeParams.input) ? safeParams.input : [safeParams.input];
+        for (const input of inputs) {
+            const sessionId = typeof input?.sessionId === "string" && input.sessionId.trim() ? input.sessionId.trim() : null;
+            const scopeKey = typeof input?.scopeKey === "string" ? input.scopeKey : "";
+            const sessionScopeFromKey = scopeKey.startsWith("session:") ? scopeKey.split(":")[1] || null : null;
+            const targetSession = sessionId || sessionScopeFromKey;
+            const isSharedScope = !targetSession && (input?.shared === true || scopeKey.startsWith("shared:") || input?.scope === "shared" || (!scopeKey && !sessionId));
+            if (isSharedScope) continue;
+            await this._gateSession(method, "session:write", targetSession, authContext, { owner, isAdmin });
+        }
+    }
+
+    async _authorizeGroupManage(method, safeParams, authContext, { owner, isAdmin }) {
+        if (isAdmin) return;
+        const groupId = safeParams.groupId ? String(safeParams.groupId) : null;
+        if (groupId) {
+            const groups = await this.transport.listSessionGroups().catch(() => []);
+            const group = (groups || []).find((g) => g.groupId === groupId);
+            if (group) {
+                const groupOwner = normalizeOwnerPrincipal(group.owner);
+                const allowed = !groupOwner || (owner && groupOwner.provider === owner.provider && groupOwner.subject === owner.subject);
+                if (!allowed) {
+                    this._recordAudit({
+                        actor: this._auditActor(authContext),
+                        action: method,
+                        target: `group:${groupId}`,
+                        decision: this.authz.enforce ? "deny" : "would_deny",
+                        reason: "group owned by another user",
+                    });
+                    if (this.authz.enforce) {
+                        throw forbiddenError("Only the group owner or an admin can manage this group.");
+                    }
+                }
+            }
+        }
+        // Assign/move (including ungroup, groupId=null) also mutates the
+        // sessions themselves — gate each as session:manage so a user can't
+        // pull another user's session out of (or into) a group
+        // (adversarial review MEDIUM-2).
+        const sessionIds = Array.isArray(safeParams.sessionIds) ? safeParams.sessionIds : [];
+        for (const sessionId of sessionIds) {
+            await this._gateSession(method, "session:manage", sessionId, authContext, { owner, isAdmin });
+        }
+    }
+
+    /**
+     * Viewer descriptor for viewer-scoped listing, or null for unfiltered.
+     * A non-admin without a resolvable identity in enforce mode gets a viewer
+     * that matches no owner and no targeted share, so they see only
+     * deployment-shared trees (shared_read/shared_write are visible to every
+     * admitted user by design) — never the unfiltered fleet or another user's
+     * private sessions (adversarial review LOW-1 / NEW-5).
+     */
+    _listViewer(owner, isAdmin) {
+        if (isAdmin || !this.authz.enforce) return null;
+        if (!owner) return { provider: " nomatch", subject: " nomatch", systemVisible: false };
+        return {
+            provider: owner.provider,
+            subject: owner.subject,
+            systemVisible: this.authz.systemVisibility === "read",
+        };
     }
 
     async start() {
@@ -160,6 +435,14 @@ export class PortalRuntime {
             sessionCreationPolicy: typeof this.transport.getSessionCreationPolicy === "function"
                 ? this.transport.getSessionCreationPolicy()
                 : null,
+            // Ownership/visibility posture (security model) so clients (portal,
+            // MCP, TUI) can explain why a session isn't listed or a send was
+            // refused, and default the share UI correctly.
+            authz: {
+                ownershipEnforced: this.authz.enforce,
+                defaultVisibility: this.authz.defaultVisibility,
+                systemVisibility: this.authz.systemVisibility,
+            },
         };
     }
 
@@ -172,11 +455,24 @@ export class PortalRuntime {
         // visibility so a plain caller cannot read another session's private facts.
         const role = authContext?.authorization?.role;
         const isAdmin = role === "admin" || role === "anonymous";
+        // Ownership/visibility gate — the single enforcement point for both
+        // the generated /api/v1 routes and the legacy /api/rpc dispatcher.
+        const gate = await this._authorizeCall(method, safeParams, authContext, { owner, isAdmin });
+        const listViewer = this._listViewer(owner, isAdmin);
         switch (method) {
             case "listSessions":
-                return this.transport.listSessions();
-            case "listSessionGroups":
-                return this.transport.listSessionGroups();
+                return listViewer && typeof this.transport.listSessionsVisible === "function"
+                    ? this.transport.listSessionsVisible(listViewer)
+                    : this.transport.listSessions();
+            case "listSessionGroups": {
+                const groups = await this.transport.listSessionGroups();
+                if (!listViewer) return groups;
+                // Non-admin group listing: own groups plus ownerless ones.
+                return (groups || []).filter((group) => {
+                    const groupOwner = normalizeOwnerPrincipal(group?.owner);
+                    return !groupOwner || (groupOwner.provider === owner.provider && groupOwner.subject === owner.subject);
+                });
+            }
             case "createSessionGroup":
                 return this.transport.createSessionGroup({
                     ...(safeParams.input || {}),
@@ -193,7 +489,10 @@ export class PortalRuntime {
             case "listChildOutcomes":
                 return this.transport.listChildOutcomes(safeParams.parentSessionId);
             case "listSessionsPage":
-                return this.transport.listSessionsPage(normalizeSessionPageOptions(safeParams));
+                return this.transport.listSessionsPage({
+                    ...normalizeSessionPageOptions(safeParams),
+                    ...(listViewer ? { viewer: listViewer } : {}),
+                });
             case "getSession":
                 return this.transport.getSession(safeParams.sessionId);
             case "getOrchestrationStats":
@@ -364,6 +663,7 @@ export class PortalRuntime {
                     contextTier: safeParams.contextTier,
                     groupId: safeParams.groupId,
                     owner,
+                    visibility: normalizeVisibility(safeParams.visibility, this.authz.defaultVisibility),
                 });
             case "createSessionForAgent":
                 return this.transport.createSessionForAgent(safeParams.agentName, {
@@ -376,17 +676,105 @@ export class PortalRuntime {
                     initialPrompt: safeParams.initialPrompt,
                     groupId: safeParams.groupId,
                     owner,
+                    visibility: normalizeVisibility(safeParams.visibility, this.authz.defaultVisibility),
                 });
             case "listCreatableAgents":
                 return this.transport.listCreatableAgents();
             case "getSessionCreationPolicy":
                 return this.transport.getSessionCreationPolicy();
             case "sendMessage":
-                return this.transport.sendMessage(safeParams.sessionId, safeParams.prompt, safeParams.options);
+                return this.transport.sendMessage(safeParams.sessionId, safeParams.prompt, {
+                    ...(safeParams.options && typeof safeParams.options === "object" ? safeParams.options : {}),
+                    // Server-stamped; a client-supplied options.sender is overwritten.
+                    sender: this._buildSender(authContext, gate.snapshot, { isAdmin, origin: safeParams.options?.origin }),
+                });
             case "sendAnswer":
-                return this.transport.sendAnswer(safeParams.sessionId, safeParams.answer);
+                return this.transport.sendAnswer(safeParams.sessionId, safeParams.answer, {
+                    sender: this._buildSender(authContext, gate.snapshot, { isAdmin }),
+                });
             case "sendSessionEvent":
                 return this.transport.sendSessionEvent(safeParams.sessionId, safeParams.eventName, safeParams.data);
+
+            // ── Session sharing (security model) ────────────────────────
+            case "getSessionAccess": {
+                const snapshot = gate.snapshot ?? await this._getAccessSnapshot(safeParams.sessionId, owner);
+                if (!snapshot) {
+                    throw notFoundError();
+                }
+                const relation = snapshot.viewerIsOwner ? "owner" : (isAdmin ? "admin" : (snapshot.viewerShareAccess ? "collaborator" : "none"));
+                const canWrite = isAdmin || snapshot.viewerIsOwner || snapshot.visibility === "shared_write" || snapshot.viewerShareAccess === "write";
+                const canManage = isAdmin || snapshot.viewerIsOwner;
+                return {
+                    sessionId: safeParams.sessionId,
+                    rootSessionId: snapshot.rootSessionId,
+                    isSystem: snapshot.isSystem,
+                    visibility: snapshot.visibility,
+                    owner: snapshot.owner,
+                    relation,
+                    canWrite: snapshot.isSystem ? isAdmin : canWrite,
+                    canManage: snapshot.isSystem ? isAdmin : canManage,
+                    enforced: this.authz.enforce,
+                };
+            }
+            case "setSessionVisibility": {
+                const visibility = normalizeVisibility(safeParams.visibility, null);
+                if (!visibility) {
+                    throw Object.assign(new Error("visibility must be private | shared_read | shared_write"), { code: "INVALID_REQUEST" });
+                }
+                await this.transport.setSessionVisibility(safeParams.sessionId, visibility);
+                this._recordAudit({
+                    actor: this._auditActor(authContext),
+                    action: "setSessionVisibility",
+                    sessionId: String(safeParams.sessionId),
+                    decision: "share_change",
+                    reason: `visibility=${visibility}`,
+                });
+                return { sessionId: safeParams.sessionId, visibility };
+            }
+            case "grantSessionShare": {
+                const grantee = safeParams.user && typeof safeParams.user === "object" ? safeParams.user : {};
+                const access = safeParams.access === "write" ? "write" : safeParams.access === "read" ? "read" : null;
+                if (!grantee.provider || !grantee.subject || !access) {
+                    throw Object.assign(new Error("grantSessionShare requires user { provider, subject } and access read|write"), { code: "INVALID_REQUEST" });
+                }
+                await this.transport.grantSessionShare(safeParams.sessionId, grantee, access, owner);
+                this._recordAudit({
+                    actor: this._auditActor(authContext),
+                    action: "grantSessionShare",
+                    sessionId: String(safeParams.sessionId),
+                    target: `${grantee.provider}/${grantee.subject}`,
+                    decision: "share_change",
+                    reason: `access=${access}`,
+                });
+                return { sessionId: safeParams.sessionId, granted: { ...grantee, access } };
+            }
+            case "revokeSessionShare": {
+                const grantee = safeParams.user && typeof safeParams.user === "object" ? safeParams.user : {};
+                if (!grantee.provider || !grantee.subject) {
+                    throw Object.assign(new Error("revokeSessionShare requires user { provider, subject }"), { code: "INVALID_REQUEST" });
+                }
+                await this.transport.revokeSessionShare(safeParams.sessionId, grantee);
+                this._recordAudit({
+                    actor: this._auditActor(authContext),
+                    action: "revokeSessionShare",
+                    sessionId: String(safeParams.sessionId),
+                    target: `${grantee.provider}/${grantee.subject}`,
+                    decision: "share_change",
+                    reason: "revoked",
+                });
+                return { sessionId: safeParams.sessionId, revoked: grantee };
+            }
+            case "listSessionShares":
+                return this.transport.listSessionShares(safeParams.sessionId);
+            case "listKnownUsers":
+                return typeof this.transport.listKnownUsers === "function"
+                    ? this.transport.listKnownUsers({ limit: safeParams.limit })
+                    : [];
+            case "listAuthzAudit":
+                return this.transport.listAuthzAudit({
+                    limit: safeParams.limit,
+                    sessionId: safeParams.sessionId ?? null,
+                });
             case "getSessionStatus":
                 return this.transport.getSessionStatus(safeParams.sessionId);
             case "waitForStatusChange": {
@@ -481,19 +869,42 @@ export class PortalRuntime {
         }
     }
 
-    async downloadArtifact(sessionId, filename) {
+    /**
+     * Server-stamped message sender: identity from the validated auth
+     * context, relation from the access snapshot. Never trusts
+     * client-supplied identity fields; `origin` is client-declared display
+     * metadata only.
+     */
+    _buildSender(authContext, snapshot, { isAdmin = false, origin } = {}) {
+        const principal = normalizeSessionOwner(authContext);
+        if (!principal) return undefined;
+        const allowedOrigins = new Set(["portal", "tui", "mcp", "api"]);
+        return {
+            kind: "user",
+            provider: principal.provider,
+            subject: principal.subject,
+            display: principal.displayName || principal.email || principal.subject,
+            relation: relationFor(snapshot, { isAdmin }),
+            origin: allowedOrigins.has(origin) ? origin : "api",
+        };
+    }
+
+    async downloadArtifact(sessionId, filename, authContext = null) {
         await this.start();
+        await this._gateBespokeRead("downloadArtifact", sessionId, authContext);
         return this.transport.downloadArtifact(sessionId, filename);
     }
 
-    async getArtifactMetadata(sessionId, filename) {
+    async getArtifactMetadata(sessionId, filename, authContext = null) {
         await this.start();
+        await this._gateBespokeRead("getArtifactMetadata", sessionId, authContext);
         if (typeof this.transport.getArtifactMetadata !== "function") return null;
         return this.transport.getArtifactMetadata(sessionId, filename);
     }
 
-    async downloadArtifactBinary(sessionId, filename) {
+    async downloadArtifactBinary(sessionId, filename, authContext = null) {
         await this.start();
+        await this._gateBespokeRead("downloadArtifact", sessionId, authContext);
         if (typeof this.transport.downloadArtifactBinary === "function") {
             return this.transport.downloadArtifactBinary(sessionId, filename);
         }
@@ -507,6 +918,39 @@ export class PortalRuntime {
             source: "agent",
             body: Buffer.from(content, "utf8"),
         };
+    }
+
+    /** session:read gate for the bespoke (non-dispatched) artifact routes. */
+    async _gateBespokeRead(action, sessionId, authContext) {
+        const role = authContext?.authorization?.role;
+        const isAdmin = role === "admin" || role === "anonymous";
+        const owner = normalizeSessionOwner(authContext);
+        await this._gateSession(action, "session:read", sessionId, authContext, { owner, isAdmin });
+    }
+
+    /**
+     * WebSocket subscription gate (api/ws.js). Throws 403/404 when the
+     * caller cannot read the session; audited like every other decision.
+     */
+    async authorizeSessionSubscribe(sessionId, authContext) {
+        await this.start();
+        await this._gateBespokeRead("subscribeSession", sessionId, authContext);
+    }
+
+    /** Log tail is fleet-wide observability: admin (or dark-launch). */
+    async authorizeLogSubscribe(authContext) {
+        const role = authContext?.authorization?.role;
+        const isAdmin = role === "admin" || role === "anonymous";
+        if (isAdmin) return;
+        this._recordAudit({
+            actor: this._auditActor(authContext),
+            action: "subscribeLogs",
+            decision: this.authz.enforce ? "deny" : "would_deny",
+            reason: "log tail requires the admin role",
+        });
+        if (this.authz.enforce) {
+            throw forbiddenError("The live log tail requires the admin role.");
+        }
     }
 
     subscribeSession(sessionId, handler) {

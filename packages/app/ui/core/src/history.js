@@ -353,16 +353,33 @@ export function dedupeChatMessages(chat = []) {
     return deduped;
 }
 
+// In a multi-writer session the runtime prepends a `[FROM: name (relation)]`
+// attribution line to the prompt so the agent knows who is speaking. The chat
+// pane conveys the same thing through the message's speaker label + color, so
+// strip the raw marker from the DISPLAY text (the structured `sender` below
+// drives the label). Only a leading marker is removed.
+function stripLeadingSenderMarker(text) {
+    return typeof text === "string"
+        ? text.replace(/^\[FROM:[^\]\n]*\]\n?/, "")
+        : text;
+}
+
 function buildChatMessage(event, role) {
     const rawText = messageTextFromEvent(event);
     const sessionMessageCard = buildSessionMessageChatCard(event, rawText);
     if (sessionMessageCard) return sessionMessageCard;
 
-    const text = extractVisibleChatText(rawText, role);
+    const text = stripLeadingSenderMarker(extractVisibleChatText(rawText, role));
     if (!hasVisibleMessageText(text)) return null;
     const clientMessageIds = Array.isArray(event?.data?.clientMessageIds)
         ? event.data.clientMessageIds.filter((id) => typeof id === "string" && id)
         : [];
+    // Structured sender identity (security model): who sent this message. The
+    // chat selector uses it to label the line with the sender's name and a
+    // distinct color when it is not the current viewer.
+    const sender = event?.data?.sender && typeof event.data.sender === "object"
+        ? event.data.sender
+        : null;
     return {
         id: `${event.sessionId}:${event.seq}`,
         role: deriveChatRole(event, role, text),
@@ -370,6 +387,7 @@ function buildChatMessage(event, role) {
         time: formatTimestamp(event.createdAt),
         createdAt: event.createdAt instanceof Date ? event.createdAt.getTime() : new Date(event.createdAt).getTime(),
         ...(clientMessageIds.length > 0 ? { clientMessageIds } : {}),
+        ...(sender ? { sender } : {}),
     };
 }
 

@@ -161,6 +161,10 @@ changes anywhere, your browser reflects it within a poll cycle.
 
 - Use the **owner filter** in the Sessions pane header to narrow to
   just your sessions when there are many users on the same Postgres.
+- To share a session with teammates (or open it deployment-wide), use the
+  session's share controls — visibility (private / shared read / shared
+  write) plus per-person grants. Who can see and act on what is covered in
+  [Access, sharing & security](./security-and-sharing.md).
 
 ---
 

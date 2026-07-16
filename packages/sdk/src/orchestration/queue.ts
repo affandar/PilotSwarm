@@ -1,4 +1,5 @@
 import type { CommandMessage, OrchestrationInput, TurnResult } from "../types.js";
+import { messageSenderKey } from "../message-sender.js";
 import {
     applyChildUpdate,
     maybeResolveAgentWaitCompletion,
@@ -29,7 +30,7 @@ import {
     type PendingChildDigest,
 } from "./state.js";
 import { handleTurnResult, processPrompt, processTimer } from "./turn.js";
-import { validClientMessageIds } from "./utils.js";
+import { validClientMessageIds , noteMessageSender, applySenderAttribution, maybeQueueSharedPreamble } from "./utils.js";
 
 // ─── KV FIFO bucket primitives ──────────────────────────────
 
@@ -297,7 +298,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 ctx.traceInfo(`[drain] answer interrupted ${state.activeTimer!.type} timer`);
                 state.activeTimer = null;
             }
-            stash.push({ kind: "answer", answer: msg.answer, wasFreeform: msg.wasFreeform });
+            stash.push({ kind: "answer", answer: msg.answer, wasFreeform: msg.wasFreeform, ...(msg.sender && typeof msg.sender === "object" ? { sender: msg.sender } : {}) });
             if (interruptsInputHold) break;
             continue;
         }
@@ -407,6 +408,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 bootstrap: Boolean(msg.bootstrap),
                 ...(msg.requiredTool ? { requiredTool: msg.requiredTool } : {}),
                 ...(incomingClientMessageIds.length > 0 ? { clientMessageIds: incomingClientMessageIds } : {}),
+                ...(msg.sender && typeof msg.sender === "object" ? { sender: msg.sender } : {}),
             });
             continue;
         }
@@ -477,7 +479,7 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
         }
 
         if (msg.answer !== undefined) {
-            stash.push({ kind: "answer", answer: msg.answer, wasFreeform: msg.wasFreeform });
+            stash.push({ kind: "answer", answer: msg.answer, wasFreeform: msg.wasFreeform, ...(msg.sender && typeof msg.sender === "object" ? { sender: msg.sender } : {}) });
             continue;
         }
 
@@ -494,6 +496,7 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
                 bootstrap: Boolean(msg.bootstrap),
                 ...(msg.requiredTool ? { requiredTool: msg.requiredTool } : {}),
                 ...(incomingClientMessageIds.length > 0 ? { clientMessageIds: incomingClientMessageIds } : {}),
+                ...(msg.sender && typeof msg.sender === "object" ? { sender: msg.sender } : {}),
             });
             continue;
         }
@@ -509,8 +512,12 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
 function* processAnswer(runtime: DurableSessionRuntime, answerItem: any): Generator<any, void, any> {
     const question = runtime.state.pendingInputQuestion?.question ?? "a question";
     runtime.state.pendingInputQuestion = null;
-    const answerPrompt = `The user was asked: "${question}"\nThe user responded: "${answerItem.answer}"`;
-    yield* processPrompt(runtime, answerPrompt, false);
+    // Any writer may answer (security model); attribution shows who did.
+    const sender = noteMessageSender(runtime, answerItem.sender);
+    const answeredBy = runtime.state.multiWriter && sender?.display ? ` (answered by ${sender.display})` : "";
+    const answerPrompt = `The user was asked: "${question}"\nThe user responded${answeredBy}: "${answerItem.answer}"`;
+    maybeQueueSharedPreamble(runtime);
+    yield* processPrompt(runtime, answerPrompt, false, undefined, undefined, undefined, sender);
 }
 
 export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean, any> {
@@ -558,10 +565,17 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
                 }
 
                 // Batch consecutive prompt FIFO items into a single Copilot turn.
-                let mergedPrompt = String(item.prompt || "");
+                // Multi-writer attribution: note each item's sender (may flip
+                // the session to multi-writer), prefix segments with [FROM:]
+                // once flipped, and keep a single turn-level sender only when
+                // every merged segment came from the same identity.
+                const firstSender = noteMessageSender(runtime, item.sender);
+                let mergedPrompt = applySenderAttribution(runtime, firstSender, String(item.prompt || ""));
                 let mergedBootstrap = item.bootstrap ?? false;
                 let mergedRequiredTool = item.requiredTool;
                 const mergedClientMessageIds: string[] = [...ids];
+                let turnSender = firstSender;
+                let mixedSenders = false;
                 while (true) {
                     const peek = popFifoItem(runtime);
                     if (!peek) break;
@@ -575,17 +589,24 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
                         yield* recordCancelledMessageIds(runtime, peekIds, "decide-merge");
                         continue;
                     }
-                    mergedPrompt = `${mergedPrompt}\n\n${String(peek.prompt || "")}`;
+                    const peekSender = noteMessageSender(runtime, peek.sender);
+                    if (messageSenderKey(peekSender ?? null) !== messageSenderKey(turnSender ?? null)) {
+                        mixedSenders = true;
+                    }
+                    mergedPrompt = `${mergedPrompt}\n\n${applySenderAttribution(runtime, peekSender, String(peek.prompt || ""))}`;
                     mergedBootstrap = mergedBootstrap || (peek.bootstrap ?? false);
                     if (!mergedRequiredTool && peek.requiredTool) mergedRequiredTool = peek.requiredTool;
                     for (const id of peekIds) mergedClientMessageIds.push(id);
                 }
+                maybeQueueSharedPreamble(runtime);
                 yield* processPrompt(
                     runtime,
                     mergedPrompt,
                     mergedBootstrap,
                     mergedRequiredTool,
                     mergedClientMessageIds.length > 0 ? mergedClientMessageIds : undefined,
+                    undefined,
+                    mixedSenders ? undefined : turnSender,
                 );
                 break;
             }

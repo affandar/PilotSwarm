@@ -18,7 +18,9 @@ import type {
     SessionResponsePayload,
     SessionOwnerInfo,
 } from "./types.js";
-import type { SessionCatalog, SessionEvent } from "./cms.js";
+import type { SessionCatalog, SessionEvent, SessionVisibility } from "./cms.js";
+import type { MessageSender } from "./message-sender.js";
+import { normalizeMessageSender } from "./message-sender.js";
 import type { FactStore } from "./facts-store.js";
 import { resolveStorageConfig } from "./storage-config.js";
 import { getDuroxideStorageProvider, getRuntimeStorageProvider } from "./storage-providers.js";
@@ -117,6 +119,8 @@ export class PilotSwarmClient {
         owner?: SessionOwnerInfo | null;
         /** Optional visual session group assignment. */
         groupId?: string | null;
+        /** Sharing level for a new ROOT session (children resolve through their root). */
+        visibility?: SessionVisibility | null;
     }): Promise<PilotSwarmSession> {
         // ── Policy enforcement (client-side) ─────────────────
         const policy = this._sessionPolicy;
@@ -170,6 +174,7 @@ export class PilotSwarmClient {
             parentSessionId: config?.parentSessionId,
             owner: config?.owner ?? null,
             groupId: config?.groupId ?? null,
+            visibility: config?.visibility ?? null,
         });
 
         // Track parentSessionId for sub-agent orchestration input
@@ -209,6 +214,7 @@ export class PilotSwarmClient {
         initialPrompt?: string;
         owner?: SessionOwnerInfo | null;
         groupId?: string | null;
+        visibility?: SessionVisibility | null;
     }): Promise<PilotSwarmSession> {
         // Validate the agent exists and is non-system
         const allowed = this._allowedAgentNames;
@@ -229,6 +235,7 @@ export class PilotSwarmClient {
             promptLayering: { kind: "app-agent" },
             owner: opts?.owner ?? null,
             groupId: opts?.groupId ?? null,
+            visibility: opts?.visibility ?? null,
         });
 
         // Set agent metadata in CMS (agentId + prefixed title)
@@ -510,7 +517,7 @@ export class PilotSwarmClient {
     private async _ensureOrchestrationAndSend(
         sessionId: string,
         prompt: string,
-        opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[] },
+        opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[]; sender?: MessageSender },
     ): Promise<string> {
         if (!this.duroxideClient) throw new Error("Not started.");
         const _trace = this.config.traceWriter ?? (() => {});
@@ -633,6 +640,10 @@ export class PilotSwarmClient {
                 ...(opts?.clientMessageIds && opts.clientMessageIds.length > 0
                     ? { clientMessageIds: opts.clientMessageIds }
                     : {}),
+                ...(() => {
+                    const sender = normalizeMessageSender(opts?.sender);
+                    return sender ? { sender } : {};
+                })(),
             }),
         );
         trace(`[client] enqueueEvent done (${Date.now() - enqueueAt}ms bootstrap=${opts?.bootstrap === true})`);
@@ -670,7 +681,7 @@ export class PilotSwarmClient {
     async _startTurn(
         sessionId: string,
         prompt: string,
-        opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[] },
+        opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[]; sender?: MessageSender },
     ): Promise<string> {
         return this._ensureOrchestrationAndSend(sessionId, prompt, opts);
     }
@@ -1127,7 +1138,7 @@ export class PilotSwarmSession {
         );
     }
 
-    async send(prompt: string, opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[] }): Promise<void> {
+    async send(prompt: string, opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[]; sender?: MessageSender }): Promise<void> {
         this.lastOrchestrationId = await this.client._startTurn(this.sessionId, prompt, opts);
     }
 

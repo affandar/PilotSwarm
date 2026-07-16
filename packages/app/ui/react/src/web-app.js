@@ -1,4 +1,8 @@
 import React from "react";
+// createPortal is only invoked when an IconButton tooltip renders (portal only,
+// never in the TUI); the import itself is side-effect-free and react-dom is a
+// dependency wherever this file loads, so it is safe in the shared module.
+import { createPortal } from "react-dom";
 import { appendAnimatedDotsToRuns, useAnimatedDots, useSpinnerFrame } from "./chat-status.js";
 import {
     UI_COMMANDS,
@@ -85,6 +89,18 @@ const INSPECTOR_TAB_LABELS = {
     history: "History",
     files: "Files",
     stats: "Stats",
+};
+// Glyphs for the icon-only Inspector tab row (labels move into hover/long-press
+// tooltips via IconButton, matching the session toolbar treatment).
+// Monochrome line-art codepoints only — emoji-default glyphs (📄 📊 🗑 ⏹) get
+// force-rendered as colored emoji on iOS and clash with the rest of the UI.
+const INSPECTOR_TAB_ICONS = {
+    sequence: "⇶",
+    logs: "≣",
+    nodes: "⬡",
+    history: "⟲",
+    files: "⧉",
+    stats: "▁▄▇",
 };
 
 function cycleTabs(tabs, current, delta) {
@@ -1878,7 +1894,25 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     const activeSession = viewState.activeSessionId
         ? viewState.sessionsById[viewState.activeSessionId] || null
         : null;
-    const canRenameActiveSession = Boolean(activeSession && !activeSession.isSystem);
+    // "Modify" combines rename + sharing in one modal (opened from the toolbar
+    // so the composer chrome stays minimal, esp. on mobile). Rename AND sharing
+    // are owner/admin-only (session:manage / session:share), so the button is
+    // disabled for anyone else — the server enforces too, but a disabled button
+    // is clearer than a 403.
+    const [modifyOpen, setModifyOpen] = React.useState(false);
+    const authPrincipal = viewState.auth?.principal || null;
+    const viewerRole = viewState.auth?.authorization?.role;
+    const isAdminViewer = viewerRole === "admin" || viewerRole === "anonymous";
+    const ownsActiveSession = Boolean(
+        activeSession?.owner
+        && authPrincipal
+        && String(activeSession.owner.provider) === String(authPrincipal.provider)
+        && String(activeSession.owner.subject) === String(authPrincipal.subject),
+    );
+    const canModifyActiveSession = Boolean(
+        activeSession && !activeSession.isSystem && !activeSession.isGroup
+        && (isAdminViewer || ownsActiveSession),
+    );
     const selectedCount = Array.isArray(viewState.selectedIds) ? viewState.selectedIds.length : 0;
     const isBulkSelection = selectedCount > 1;
     const canPinActiveSession = Boolean(
@@ -1948,55 +1982,68 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             }, `${selectedCount} selected`)
             : null,
         isBulkSelection
-            ? React.createElement("button", {
-                type: "button",
+            ? React.createElement(IconButton, {
                 className: "ps-mini-button",
+                icon: "✕",
+                label: "Clear multi-selection",
                 onClick: () => controller.handleCommand(UI_COMMANDS.CLEAR_SESSION_SELECTION).catch(() => {}),
-                title: "Clear multi-selection",
-            }, "Clear")
-            : React.createElement("button", {
-                type: "button",
+            })
+            : React.createElement(IconButton, {
                 className: "ps-mini-button",
+                icon: "📌",
                 onClick: () => controller.handleCommand(UI_COMMANDS.PIN_SESSION).catch(() => {}),
                 disabled: !canPinActiveSession,
-                title: canPinActiveSession
-                    ? (isActivePinned
-                        ? "Unpin this session"
-                        : "Pin this session to the top of the list")
+                active: isActivePinned,
+                label: canPinActiveSession
+                    ? (isActivePinned ? "Unpin this session" : "Pin this session to the top of the list")
                     : "Only top-level non-system sessions can be pinned",
-            }, isActivePinned ? "Unpin" : "Pin"),
-        React.createElement("button", {
-            type: "button",
+            }),
+        React.createElement(IconButton, {
             className: "ps-mini-button",
+            icon: groupableIds.length > 1 ? `⊞${groupableIds.length}` : "⊞",
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_MOVE_TO_GROUP).catch(() => {}),
             disabled: !canMoveToGroup,
-            title: canMoveToGroup
+            label: canMoveToGroup
                 ? (groupableIds.length > 1 ? `Move ${groupableIds.length} selected sessions to a group` : "Move this session to a group")
                 : "Select a top-level non-system session to move to a group",
-        }, groupableIds.length > 1 ? `Group (${groupableIds.length})` : "Group"),
-        React.createElement("button", {
-            type: "button",
+        }),
+        React.createElement(IconButton, {
             className: "ps-mini-button",
-            onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_RENAME_SESSION).catch(() => {}),
-            disabled: !canRenameActiveSession || isBulkSelection,
-            title: isBulkSelection ? "Disabled while multiple sessions are selected" : undefined,
-        }, "Rename"),
-        React.createElement("button", {
-            type: "button",
+            icon: React.createElement(ShareGlyph),
+            onClick: () => {
+                const sid = activeSession?.sessionId;
+                if (!sid || typeof window === "undefined" || !window.location) return;
+                const url = `${window.location.origin}${window.location.pathname}?session=${encodeURIComponent(sid)}`;
+                if (navigator?.clipboard?.writeText) navigator.clipboard.writeText(url).catch(() => {});
+                controller.dispatch({ type: "ui/status", text: "Session link copied to clipboard" });
+            },
+            disabled: !activeSession || activeSession.isGroup || isBulkSelection,
+            label: "Share — copy a direct link to this session",
+        }),
+        React.createElement(IconButton, {
             className: "ps-mini-button",
+            icon: "✎",
+            onClick: () => setModifyOpen(true),
+            disabled: !canModifyActiveSession || isBulkSelection,
+            label: isBulkSelection ? "Disabled while multiple sessions are selected" : "Modify — rename and share access",
+        }),
+        React.createElement(IconButton, {
+            className: "ps-mini-button",
+            icon: activeSession?.isSystem ? "↻" : "⊗",
             onClick: () => controller.handleCommand(activeSession?.isGroup ? UI_COMMANDS.DELETE_SESSION : UI_COMMANDS.OPEN_TERMINATE_PICKER).catch(() => {}),
             disabled: !canTerminate,
-            title: isBulkSelection
+            label: isBulkSelection
                 ? `Terminate ${selectedCount} selected sessions (Mark Completed, Cancel, or Delete)`
                 : activeSession?.isGroup
-                    ? activeGroupCanDelete ? "Delete this empty group" : "Show why this group cannot be deleted yet"
+                    ? (activeGroupCanDelete ? "Delete this empty group" : "This group cannot be deleted yet")
                     : activeSession?.isSystem
-                        ? "Restart this system session; choose complete, terminate, or hard delete disposition"
-                        : "Mark Completed, Cancel, or Delete the active session",
-        }, activeSessionActionLabel),
+                        ? "Restart this system session (complete, terminate, or hard delete)"
+                        : `${activeSessionActionLabel} — mark completed, cancel, or delete`,
+        }),
         actions);
 
-    return React.createElement(Panel, {
+    return React.createElement(React.Fragment, null,
+    React.createElement(Panel, {
         title: [{ text: "Sessions", color: "yellow", bold: true }],
         color: "yellow",
         focused: viewState.focused,
@@ -2070,7 +2117,234 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             },
                 React.createElement(SessionRowContent, { row, theme, structured: structuredRows })),
             )),
-    ));
+    )),
+    (modifyOpen && activeSession && !activeSession.isGroup)
+        ? React.createElement(SessionModifyModal, {
+            controller,
+            sessionId: activeSession.sessionId,
+            initialTitle: activeSession.title || "",
+            principal: viewState.auth?.principal || null,
+            onClose: () => setModifyOpen(false),
+            onChanged: () => {},
+        })
+        : null);
+}
+
+const VISIBILITY_META = {
+    private: { glyph: "🔒", label: "Private" },
+    shared_read: { glyph: "👁", label: "Shared · read" },
+    shared_write: { glyph: "✎", label: "Shared · write" },
+};
+
+// The standard "share" glyph (three connected nodes). Inherits the button's
+// text color via currentColor. Used for the session deep-link Share button.
+function ShareGlyph() {
+    return React.createElement("svg", {
+        className: "ps-share-glyph", viewBox: "0 0 24 24", fill: "none",
+        stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round",
+        "aria-hidden": "true",
+    },
+    React.createElement("circle", { cx: "18", cy: "5", r: "3" }),
+    React.createElement("circle", { cx: "6", cy: "12", r: "3" }),
+    React.createElement("circle", { cx: "18", cy: "19", r: "3" }),
+    React.createElement("line", { x1: "8.6", y1: "10.5", x2: "15.4", y2: "6.5" }),
+    React.createElement("line", { x1: "8.6", y1: "13.5", x2: "15.4", y2: "17.5" }));
+}
+
+/**
+ * Fetch the caller's effective access to the active session (security model).
+ * Returns { access, loading, reload }. access is the getSessionAccess payload
+ * ({ visibility, relation, canWrite, canManage, owner, isSystem, enforced }),
+ * or null while loading / on error / when the transport lacks the method
+ * (older deployments — treated as full access so the UI never over-restricts
+ * a deployment that isn't enforcing).
+ */
+function useActiveSessionAccess(controller, activeSessionId, isGroup) {
+    const [state, setState] = React.useState({ access: null, loading: false });
+    const reload = React.useCallback(() => {
+        if (!activeSessionId || isGroup || typeof controller.transport.getSessionAccess !== "function") {
+            setState({ access: null, loading: false });
+            return;
+        }
+        let cancelled = false;
+        setState((s) => ({ ...s, loading: true }));
+        controller.transport.getSessionAccess(activeSessionId)
+            .then((access) => { if (!cancelled) setState({ access, loading: false }); })
+            .catch(() => { if (!cancelled) setState({ access: null, loading: false }); });
+        return () => { cancelled = true; };
+    }, [controller, activeSessionId, isGroup]);
+    React.useEffect(() => reload(), [reload]);
+    return { access: state.access, loading: state.loading, reload };
+}
+
+// Combined "Modify" modal opened from the session list toolbar: rename plus
+// (for the owner/admin) sharing — visibility + per-person grants. Fetches its
+// own access snapshot so callers only pass the session id + current title.
+function SessionModifyModal({ controller, sessionId, initialTitle, principal, onClose, onChanged }) {
+    const [access, setAccess] = React.useState(null);
+    const [title, setTitle] = React.useState(initialTitle || "");
+    const [shares, setShares] = React.useState([]);
+    const [visibility, setVisibility] = React.useState("private");
+    const [granteeQuery, setGranteeQuery] = React.useState("");
+    const [granteeAccess, setGranteeAccess] = React.useState("write");
+    const [directory, setDirectory] = React.useState([]);
+    const [busy, setBusy] = React.useState(false);
+    const [error, setError] = React.useState(null);
+
+    React.useEffect(() => {
+        let cancelled = false;
+        controller.transport.getSessionAccess(sessionId)
+            .then((a) => { if (!cancelled && a) { setAccess(a); setVisibility(a.visibility || "private"); } })
+            .catch(() => {});
+        // Member directory for name autocomplete (excludes synthetic principals).
+        if (typeof controller.transport.listKnownUsers === "function") {
+            controller.transport.listKnownUsers({ limit: 500 })
+                .then((users) => { if (!cancelled) setDirectory(Array.isArray(users) ? users : []); })
+                .catch(() => {});
+        }
+        return () => { cancelled = true; };
+    }, [controller, sessionId]);
+
+    const loadShares = React.useCallback(() => {
+        controller.transport.listSessionShares(sessionId)
+            .then((rows) => setShares(Array.isArray(rows) ? rows : []))
+            .catch(() => setShares([]));
+    }, [controller, sessionId]);
+    React.useEffect(() => { loadShares(); }, [loadShares]);
+
+    const run = async (fn) => {
+        setBusy(true); setError(null);
+        try { await fn(); onChanged?.(); }
+        catch (err) { setError(err?.message || String(err)); }
+        finally { setBusy(false); }
+    };
+
+    const saveTitle = () => run(async () => {
+        await controller.transport.renameSession(sessionId, title.trim());
+    });
+    const applyVisibility = (value) => run(async () => {
+        await controller.transport.setSessionVisibility(sessionId, value);
+        setVisibility(value);
+    });
+    // Resolve the typed text to a directory member (by name, email, or id).
+    // Falls back to treating the text as a raw subject for a not-yet-seen user.
+    const resolveGrantee = (text) => {
+        const q = text.trim().toLowerCase();
+        if (!q) return null;
+        const match = directory.find((u) =>
+            (u.displayName && u.displayName.toLowerCase() === q)
+            || (u.email && u.email.toLowerCase() === q)
+            || (u.subject && u.subject.toLowerCase() === q));
+        if (match) return match;
+        return { provider: principal?.provider || "dev", subject: text.trim(), email: null, displayName: null };
+    };
+    const grantTo = (grantee) => run(async () => {
+        await controller.transport.grantSessionShare(
+            sessionId,
+            { provider: grantee.provider, subject: grantee.subject, email: grantee.email ?? null, displayName: grantee.displayName ?? null },
+            granteeAccess,
+        );
+        setGranteeQuery("");
+        loadShares();
+    });
+    const addGrant = () => {
+        const grantee = resolveGrantee(granteeQuery);
+        if (grantee) grantTo(grantee);
+    };
+
+    // Autocomplete suggestions: directory members matching the query, minus
+    // the owner and anyone already granted.
+    const grantedKeys = new Set(shares.map((r) => `${r.provider}${r.subject}`));
+    const ownerKey = access?.owner ? `${access.owner.provider}${access.owner.subject}` : null;
+    const q = granteeQuery.trim().toLowerCase();
+    const suggestions = q
+        ? directory.filter((u) => {
+            const key = `${u.provider}${u.subject}`;
+            if (key === ownerKey || grantedKeys.has(key)) return false;
+            return (u.displayName && u.displayName.toLowerCase().includes(q))
+                || (u.email && u.email.toLowerCase().includes(q))
+                || (u.subject && u.subject.toLowerCase().includes(q));
+        }).slice(0, 25)
+        : [];
+    const revoke = (row) => run(async () => {
+        await controller.transport.revokeSessionShare(sessionId, { provider: row.provider, subject: row.subject });
+        loadShares();
+    });
+
+    const canManage = Boolean(access?.canManage);
+    const stop = (e) => e.stopPropagation();
+    return React.createElement("div", { className: "ps-share-overlay", onClick: onClose },
+        React.createElement("div", { className: "ps-share-modal", onClick: stop },
+            React.createElement("div", { className: "ps-share-modal-head" },
+                React.createElement("span", null, "Modify session"),
+                React.createElement("button", { className: "ps-modal-close", onClick: onClose }, "✕")),
+
+            // ── Rename ────────────────────────────────────────────────
+            React.createElement("div", { className: "ps-share-section-label" }, "Name"),
+            React.createElement("div", { className: "ps-share-add-row" },
+                React.createElement("input", {
+                    className: "ps-share-add-input", placeholder: "Session title",
+                    value: title, disabled: busy,
+                    onChange: (e) => setTitle(e.target.value),
+                    onKeyDown: (e) => { if (e.key === "Enter") saveTitle(); },
+                }),
+                React.createElement("button", { className: "ps-mini-button", disabled: busy || !title.trim(), onClick: saveTitle }, "Save")),
+
+            // ── Sharing (owner / admin only) ──────────────────────────
+            canManage ? React.createElement(React.Fragment, null,
+                React.createElement("div", { className: "ps-share-section-label" }, "General access"),
+                React.createElement("div", { className: "ps-share-section-sub" }, "The baseline level for everyone signed in to this workspace."),
+                ["private", "shared_read", "shared_write"].map((value) =>
+                    React.createElement("label", { key: value, className: `ps-share-radio${visibility === value ? " is-active" : ""}` },
+                        React.createElement("input", {
+                            type: "radio", name: "visibility", checked: visibility === value,
+                            disabled: busy, onChange: () => applyVisibility(value),
+                        }),
+                        React.createElement("span", { className: "ps-share-radio-glyph" }, VISIBILITY_META[value].glyph),
+                        React.createElement("span", null, VISIBILITY_META[value].label),
+                        React.createElement("span", { className: "ps-share-radio-hint" },
+                            value === "private" ? "only you and admins"
+                                : value === "shared_read" ? "everyone here can view"
+                                    : "everyone here can view and send"))),
+                React.createElement("div", { className: "ps-share-section-label" }, "Special access"),
+                React.createElement("div", { className: "ps-share-section-sub" }, "Give specific people more than the general level. A person's grant wins over general access."),
+                shares.length === 0
+                    ? React.createElement("div", { className: "ps-share-empty" }, "No individual grants — everyone has the general access above.")
+                    : shares.map((row) => React.createElement("div", { key: `${row.provider}/${row.subject}`, className: "ps-share-grant-row" },
+                        React.createElement("span", { className: "ps-share-grant-name" }, row.displayName || row.subject),
+                        React.createElement("span", { className: "ps-share-grant-access" }, `can ${row.access}`),
+                        React.createElement("button", { className: "ps-mini-button", disabled: busy, onClick: () => revoke(row) }, "Revoke"))),
+                React.createElement("div", { className: "ps-share-add-wrap" },
+                    React.createElement("div", { className: "ps-share-add-row" },
+                        React.createElement("input", {
+                            className: "ps-share-add-input", placeholder: "Name, email, or id",
+                            value: granteeQuery, disabled: busy, autoComplete: "off",
+                            onChange: (e) => setGranteeQuery(e.target.value),
+                            onKeyDown: (e) => { if (e.key === "Enter") addGrant(); },
+                        }),
+                        React.createElement("select", {
+                            className: "ps-share-add-select", value: granteeAccess, disabled: busy,
+                            onChange: (e) => setGranteeAccess(e.target.value),
+                        },
+                        React.createElement("option", { value: "read" }, "can read"),
+                        React.createElement("option", { value: "write" }, "can write")),
+                        React.createElement("button", { className: "ps-mini-button", disabled: busy || !granteeQuery.trim(), onClick: addGrant }, "Add")),
+                    suggestions.length > 0
+                        ? React.createElement("div", { className: "ps-share-suggestions" },
+                            suggestions.map((u) => React.createElement("button", {
+                                key: `${u.provider}/${u.subject}`,
+                                type: "button", className: "ps-share-suggestion", disabled: busy,
+                                onClick: () => grantTo(u),
+                            },
+                            React.createElement("span", { className: "ps-share-suggestion-name" }, u.displayName || u.subject),
+                            u.email ? React.createElement("span", { className: "ps-share-suggestion-email" }, u.email) : null)))
+                        : null),
+                React.createElement("div", { className: "ps-share-foot-hint" },
+                    "Sharing applies to this session and its sub-agents. Suggestions are people who have "
+                    + "signed in before — you can also grant by email to someone who hasn't; it takes effect "
+                    + "when they first sign in."))
+                : null,
+            error ? React.createElement("div", { className: "ps-share-error" }, error) : null));
 }
 
 function ChatPane({ controller, mobile = false, fullWidth = false, showComposer = true }) {
@@ -2099,12 +2373,16 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
             activeSessionStatus: activeSessionId ? String(state.sessions.byId[activeSessionId]?.status || "").toLowerCase() : "",
             focused: state.ui.focusRegion === "chat",
             scroll: state.ui.scroll.chat,
+            // Viewer identity — so the transcript can say "You" for the viewer's
+            // own messages and name others (with an "(owner)" tag).
+            authPrincipal: state.auth?.principal || null,
             contentWidth,
         };
     }, shallowEqualObject);
     const selectorState = React.useMemo(() => ({
         branding: viewState.branding,
         connection: viewState.connection,
+        auth: { principal: viewState.authPrincipal },
         sessions: {
             activeSessionId: viewState.activeSessionId,
             byId: viewState.sessionsById,
@@ -2128,6 +2406,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         viewState.activeHistory,
         viewState.activeSessionId,
         viewState.activeOutbox,
+        viewState.authPrincipal,
         viewState.branding,
         viewState.connection,
         viewState.chatViewMode,
@@ -2165,9 +2444,21 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         () => (pinnedActivityLines.length > 0 ? [...outboxLines, ...pinnedActivityLines] : outboxLines),
         [outboxLines, pinnedActivityLines],
     );
-    const composer = showComposer && !viewState.activeSessionIsGroup && viewState.chatViewMode !== "summary"
+    // Read-only gating: a view-only viewer (shared_read / read grant, no write)
+    // gets an explanatory notice instead of the composer. The visibility chip
+    // and Share affordance now live in the session list "Modify" modal and the
+    // selected-session details, keeping the composer chrome minimal (mobile).
+    const { access } = useActiveSessionAccess(
+        controller, viewState.activeSessionId, viewState.activeSessionIsGroup,
+    );
+    const composerBase = showComposer && !viewState.activeSessionIsGroup && viewState.chatViewMode !== "summary";
+    const readOnly = Boolean(access) && access.canWrite === false;
+    const composer = composerBase
         ? React.createElement("div", { className: "ps-chat-composer" },
-            React.createElement(PromptComposer, { controller, mobile, active: true }))
+            readOnly
+                ? React.createElement("div", { className: "ps-composer-readonly" },
+                    `You have view access to this session. Ask ${access.owner?.displayName || access.owner?.email || "the owner"} for write access to participate.`)
+                : React.createElement(PromptComposer, { controller, mobile, active: true }))
         : null;
 
     return React.createElement(ScrollLinesPanel, {
@@ -2222,29 +2513,21 @@ function MobileWorkspace({ controller, sessionsCollapsed, setSessionsCollapsed }
 
 function InspectorTabs({ activeTab, controller }) {
     const visibleTabs = React.useMemo(() => getVisibleInspectorTabs(controller), [controller]);
-    // Tab labels in mobile fall on a single row only when each label is
-    // short. "Node Map" is the only multi-word label, so we shorten it
-    // to "Map" below the mobile breakpoint to keep all six tabs on one
-    // line.
-    const isMobile = typeof window !== "undefined"
-        && (window.innerWidth || 0) > 0
-        && (window.innerWidth || 0) < MOBILE_BREAKPOINT;
-    const labelFor = (tab) => {
-        if (isMobile && tab === "nodes") return "Map";
-        return INSPECTOR_TAB_LABELS[tab] || tab;
-    };
-    return React.createElement("div", { className: "ps-tab-row" },
-        visibleTabs.map((tab) => React.createElement("button", {
+    // Icon-only tabs: the full label (e.g. "Node Map") lives in the IconButton
+    // tooltip, so there's no per-label width pressure and no mobile shortening.
+    // Default IconButton className ("ps-toolbar-button") so these render
+    // identically to the session toolbar icons.
+    return React.createElement("div", { className: "ps-tab-row ps-tab-row-icons" },
+        visibleTabs.map((tab) => React.createElement(IconButton, {
             key: tab,
-            type: "button",
-            className: `ps-tab${activeTab === tab ? " is-active" : ""}`,
-            title: `Switch to ${INSPECTOR_TAB_LABELS[tab] || tab}`,
-            "aria-pressed": activeTab === tab,
+            icon: INSPECTOR_TAB_ICONS[tab] || "•",
+            label: INSPECTOR_TAB_LABELS[tab] || tab,
+            active: activeTab === tab,
             onClick: () => {
                 controller.setFocus("inspector");
                 controller.selectInspectorTab(tab).catch(() => {});
             },
-        }, labelFor(tab))));
+        })));
 }
 
 function FilesPane({ controller, focused, mobile = false }) {
@@ -2338,40 +2621,40 @@ function FilesPane({ controller, focused, mobile = false }) {
                 event.currentTarget.value = "";
             },
         }),
-        React.createElement("button", {
-            type: "button",
-            className: "ps-mini-button",
+        React.createElement(IconButton, {
+            icon: "↥",
+            label: "Upload",
             onClick: openUploadPicker,
             disabled: !viewState.canBrowserUpload && !viewState.canPathUpload,
-        }, "Up"),
-        React.createElement("button", {
-            type: "button",
-            className: "ps-mini-button",
+        }),
+        React.createElement(IconButton, {
+            icon: "↧",
+            label: "Download",
             onClick: () => controller.handleCommand(UI_COMMANDS.DOWNLOAD_SELECTED_FILE).catch(() => {}),
             disabled: !hasSelection,
-        }, "Down"),
-        viewState.canDeleteArtifacts ? React.createElement("button", {
-            type: "button",
-            className: "ps-mini-button",
+        }),
+        viewState.canDeleteArtifacts ? React.createElement(IconButton, {
+            icon: "✕",
+            label: "Delete",
             onClick: () => controller.handleCommand(UI_COMMANDS.DELETE_SELECTED_FILE).catch(() => {}),
             disabled: !hasSelection,
-        }, "Delete") : null,
-        viewState.canOpenLocally ? React.createElement("button", {
-            type: "button",
-            className: "ps-mini-button",
+        }) : null,
+        viewState.canOpenLocally ? React.createElement(IconButton, {
+            icon: "↗",
+            label: "Open locally",
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_SELECTED_FILE).catch(() => {}),
             disabled: !hasSelection,
-        }, "Open") : null,
-        React.createElement("button", {
-            type: "button",
-            className: "ps-mini-button",
+        }) : null,
+        React.createElement(IconButton, {
+            icon: "▾",
+            label: "Filter",
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_FILES_FILTER).catch(() => {}),
-        }, "Filter"),
-        React.createElement("button", {
-            type: "button",
-            className: "ps-mini-button",
+        }),
+        React.createElement(IconButton, {
+            icon: viewState.fullscreen ? "⇱" : "⛶",
+            label: viewState.fullscreen ? "Exit fullscreen" : "Fullscreen",
             onClick: () => controller.handleCommand(UI_COMMANDS.TOGGLE_FILE_PREVIEW_FULLSCREEN).catch(() => {}),
-        }, viewState.fullscreen ? "Close" : "FS"));
+        }));
 
     const listContent = items.length === 0
         ? normalizeLines(filesView.listBodyLines || []).map((line, index) => React.createElement(Line, {
@@ -2555,39 +2838,42 @@ function InspectorPane({ controller, mobile = false, panelClassName = "", extraA
 
     const actions = [];
     if (viewState.inspectorTab === "logs") {
-        actions.push(React.createElement("button", {
+        actions.push(React.createElement(IconButton, {
             key: "tail",
-            type: "button",
-            className: "ps-mini-button",
+            icon: viewState.logsTailing ? "■" : "⇣",
+            label: viewState.logsTailing ? "Stop tailing" : "Tail (follow)",
+            active: viewState.logsTailing,
             onClick: () => controller.handleCommand(UI_COMMANDS.TOGGLE_LOG_TAIL).catch(() => {}),
-        }, viewState.logsTailing ? "Stop Tail" : "Tail"));
-        actions.push(React.createElement("button", {
+        }));
+        actions.push(React.createElement(IconButton, {
             key: "filter",
-            type: "button",
-            className: "ps-mini-button",
+            icon: "▾",
+            label: "Filter",
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_LOG_FILTER).catch(() => {}),
-        }, "Filter"));
+        }));
     } else if (viewState.inspectorTab === "history") {
-        actions.push(React.createElement("button", {
+        actions.push(React.createElement(IconButton, {
             key: "refresh",
-            type: "button",
-            className: "ps-mini-button",
+            icon: "↻",
+            label: "Refresh",
             onClick: () => controller.handleCommand(UI_COMMANDS.REFRESH_EXECUTION_HISTORY).catch(() => {}),
-        }, "Refresh"));
-        actions.push(React.createElement("button", {
+        }));
+        actions.push(React.createElement(IconButton, {
             key: "save",
-            type: "button",
-            className: "ps-mini-button",
+            icon: "⇩",
+            label: "Export as artifact",
             onClick: () => controller.handleCommand(UI_COMMANDS.EXPORT_EXECUTION_HISTORY).catch(() => {}),
-        }, "Artifact"));
+        }));
     } else if (viewState.inspectorTab === "stats") {
+        const STATS_MODE_ICONS = { session: "◉", fleet: "⬢", users: "⚇" };
         for (const mode of ["session", "fleet", "users"]) {
-            actions.push(React.createElement("button", {
+            actions.push(React.createElement(IconButton, {
                 key: `stats-view:${mode}`,
-                type: "button",
-                className: `ps-mini-button${viewState.statsViewMode === mode ? " is-active" : ""}`,
+                icon: STATS_MODE_ICONS[mode],
+                label: `${mode.replace(/^./u, (char) => char.toUpperCase())} stats`,
+                active: viewState.statsViewMode === mode,
                 onClick: () => controller.setStatsViewMode(mode),
-            }, mode.replace(/^./u, (char) => char.toUpperCase())));
+            }));
         }
     }
 
@@ -2936,6 +3222,152 @@ function StatusStrip({ controller }) {
     );
 }
 
+// A compact icon button whose meaning is revealed on demand via a custom
+// tooltip: desktop hover shows it after a fixed 1s (the native `title` delay is
+// browser-controlled and too long); touch devices get a long-press tooltip
+// (hold ~450ms to see the label, release to dismiss — the long-press does not
+// fire onClick). aria-label carries the meaning for assistive tech.
+const ICON_HOVER_TOOLTIP_MS = 1000;
+function IconButton({ icon, label, onClick, disabled = false, active = false, className = "ps-toolbar-button" }) {
+    // The tooltip is portaled to <body> so it escapes the toolbar/pane
+    // overflow-clipping and stacking contexts (nested tooltips were hidden
+    // behind, or bled through by, the panes). Coordinates are computed from
+    // the button rect; it flips above when there's no room below.
+    const [tip, setTip] = React.useState(null); // { x, y, placement } | null
+    const btnRef = React.useRef(null);
+    const tipRef = React.useRef(null);
+    const timerRef = React.useRef(null);
+    const longPressRef = React.useRef(false);
+
+    // Keep the tooltip within the viewport horizontally — the leftmost/rightmost
+    // buttons would otherwise clip off the edge (the tooltip is center-anchored).
+    React.useLayoutEffect(() => {
+        if (!tip || !tipRef.current || typeof window === "undefined") return;
+        const half = tipRef.current.offsetWidth / 2;
+        const margin = 6;
+        const clampedX = Math.max(half + margin, Math.min(tip.x, window.innerWidth - half - margin));
+        tipRef.current.style.left = `${clampedX}px`;
+    }, [tip]);
+
+    const reveal = (preferAbove = false) => {
+        const el = btnRef.current;
+        if (!el || typeof window === "undefined") return;
+        const r = el.getBoundingClientRect();
+        // Touch prefers ABOVE (the finger covers anything below the button);
+        // hover prefers below. Either flips when there's no room.
+        const below = preferAbove
+            ? r.top - 44 < 0
+            : r.bottom + 44 < window.innerHeight;
+        setTip({
+            x: r.left + r.width / 2,
+            y: below ? r.bottom + 6 : r.top - 6,
+            placement: below ? "below" : "above",
+        });
+    };
+
+    // Touch and hover are handled through pointer events so each path can
+    // filter on pointerType — the synthesized mouse events iOS fires after
+    // touchend used to restart the hover timer and leave a ghost tooltip
+    // stuck open (a finger never produces mouseleave).
+    const hideTimerRef = React.useRef(null);
+    const pressOriginRef = React.useRef(null);
+
+    const startHover = (e) => {
+        if (e.pointerType !== "mouse") return;
+        clearTimeout(timerRef.current);
+        clearTimeout(hideTimerRef.current);
+        timerRef.current = setTimeout(reveal, ICON_HOVER_TOOLTIP_MS);
+    };
+    const endHover = (e) => {
+        if (e.pointerType !== "mouse") return;
+        clearTimeout(timerRef.current);
+        clearTimeout(hideTimerRef.current);
+        setTip(null);
+    };
+    const startPress = (e) => {
+        if (e.pointerType === "mouse") return;
+        longPressRef.current = false;
+        pressOriginRef.current = { x: e.clientX, y: e.clientY };
+        clearTimeout(timerRef.current);
+        clearTimeout(hideTimerRef.current);
+        timerRef.current = setTimeout(() => { longPressRef.current = true; reveal(true); }, 450);
+    };
+    const movePress = (e) => {
+        // Fingers jitter during a long-press; only real movement (a scroll
+        // intent) cancels. A hide-on-any-move here is what made the bubble
+        // vanish mid-press.
+        if (e.pointerType === "mouse" || !pressOriginRef.current) return;
+        const dx = e.clientX - pressOriginRef.current.x;
+        const dy = e.clientY - pressOriginRef.current.y;
+        if (dx * dx + dy * dy > 100) {
+            pressOriginRef.current = null;
+            clearTimeout(timerRef.current);
+            setTip(null);
+        }
+    };
+    const endPress = (e) => {
+        if (e.pointerType === "mouse") return;
+        pressOriginRef.current = null;
+        clearTimeout(timerRef.current);
+        if (longPressRef.current) {
+            // Long-press: keep the bubble up while pressed, then linger 3s
+            // after the finger lifts.
+            clearTimeout(hideTimerRef.current);
+            hideTimerRef.current = setTimeout(() => setTip(null), 3000);
+            // The suppressed click usually fires right after pointerup and
+            // consumes the flag; clear it shortly after in case it never
+            // arrives, so the NEXT tap isn't swallowed.
+            setTimeout(() => { longPressRef.current = false; }, 250);
+        } else {
+            setTip(null);
+        }
+    };
+    React.useEffect(() => () => {
+        clearTimeout(timerRef.current);
+        clearTimeout(hideTimerRef.current);
+    }, []);
+
+    const handleClick = (e) => {
+        // Suppress the click that follows a long-press (tooltip reveal only).
+        if (longPressRef.current) { longPressRef.current = false; e.preventDefault?.(); return; }
+        if (!disabled) onClick?.(e);
+    };
+
+    // iOS fires contextmenu on long-press; without this (plus the
+    // touch-callout/user-select CSS on .ps-icon-button) the system
+    // loupe/copy/zoom callout opens on top of our tooltip.
+    const handleContextMenu = (e) => { e.preventDefault?.(); };
+
+    const tooltipNode = tip && typeof document !== "undefined" && document.body
+        ? createPortal(
+            React.createElement("span", {
+                ref: tipRef,
+                className: `ps-icon-tooltip is-${tip.placement}`,
+                role: "tooltip",
+                style: { left: `${tip.x}px`, top: `${tip.y}px` },
+            }, label),
+            document.body)
+        : null;
+
+    return React.createElement("button", {
+        ref: btnRef,
+        type: "button",
+        className: `${className} ps-icon-button${active ? " is-active" : ""}`,
+        onClick: handleClick,
+        disabled,
+        "aria-label": label,
+        onPointerEnter: startHover,
+        onPointerLeave: endHover,
+        onPointerDown: startPress,
+        onPointerMove: movePress,
+        onPointerUp: endPress,
+        onPointerCancel: endPress,
+        onContextMenu: handleContextMenu,
+    },
+    React.createElement("span", { className: "ps-icon-button-glyph", "aria-hidden": "true" }, icon),
+    tooltipNode);
+}
+
 function Toolbar({ controller, mobile, chatFocusMode = false, onToggleChatFocus = null, chatFocusDisabled = false }) {
     const adminVisible = useControllerSelector(controller, (state) => Boolean(state.admin?.visible));
     const chatView = useControllerSelector(controller, (state) => ({
@@ -2945,79 +3377,85 @@ function Toolbar({ controller, mobile, chatFocusMode = false, onToggleChatFocus 
     }), shallowEqualObject);
     const switchModelDisabled = !chatView.hasActiveSession || chatView.activeSessionIsGroup;
 
+    // Icon-first toolbar: the glyph is the affordance, the label rides a
+    // tooltip (desktop hover via title; mobile long-press via IconButton).
     const buttonDefs = [
         {
             key: "new",
-            label: "New",
+            icon: "＋",
+            label: "New session",
             onClick: () => controller.handleCommand(UI_COMMANDS.NEW_SESSION).catch(() => {}),
         },
         {
             key: "model",
-            label: mobile ? "Model" : "New + Model",
+            icon: "＋⚙",
+            label: "New session + choose model",
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_MODEL_PICKER).catch(() => {}),
         },
         {
             key: "switch-model",
-            label: mobile ? "Switch" : "Switch Model",
+            icon: "⇄",
+            label: switchModelDisabled ? "Select a session to switch its model" : "Switch the selected session's model",
             onClick: () => controller.openSwitchModelPicker().catch((err) => {
                 controller.dispatch({ type: "ui/status", text: err?.message || String(err) || "Failed to switch model" });
             }),
             disabled: switchModelDisabled,
-            title: switchModelDisabled ? "Select a session to switch its model" : "Switch the selected session model at the next turn boundary",
         },
         {
             key: "filter",
-            label: "Filter",
+            icon: "▾",
+            label: "Filter sessions",
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_SESSION_FILTER).catch(() => {}),
         },
         {
             key: "theme",
+            icon: "◑",
             label: "Theme",
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_THEME_PICKER).catch(() => {}),
         },
         {
             key: "summary",
-            label: chatView.mode === "summary" ? "Chat" : "Summary",
+            icon: chatView.mode === "summary" ? "💬" : "≣",
+            label: chatView.activeSessionIsGroup
+                ? "Groups show group details"
+                : (chatView.mode === "summary" ? "Show chat transcript" : "Show summary"),
             onClick: () => controller.setChatViewMode(chatView.mode === "summary" ? "transcript" : "summary"),
             disabled: chatView.activeSessionIsGroup,
-            title: chatView.activeSessionIsGroup ? "Groups show group details" : "Toggle Chat / Summary view",
             active: chatView.mode === "summary",
         },
         ...(onToggleChatFocus ? [{
             key: "focus",
-            label: mobile
-                ? (chatFocusMode ? "Exit Focus" : "Focus")
-                : (chatFocusMode ? "Exit Focus" : "Chat Focus"),
+            icon: chatFocusMode ? "⇱" : "⛶",
+            label: chatFocusMode ? "Exit focus mode" : "Focus the chat pane",
             onClick: onToggleChatFocus,
             disabled: chatFocusDisabled,
             active: chatFocusMode,
         }] : []),
         {
             key: "admin",
-            label: adminVisible ? "Close Admin" : "Admin",
+            icon: "⚙",
+            label: adminVisible ? "Close admin console" : "Admin console",
             onClick: () => controller.handleCommand(adminVisible ? UI_COMMANDS.CLOSE_ADMIN_CONSOLE : UI_COMMANDS.OPEN_ADMIN_CONSOLE).catch(() => {}),
             active: adminVisible,
         },
     ];
 
-    const renderButton = (def) => React.createElement("button", {
+    const renderButton = (def) => React.createElement(IconButton, {
         key: def.key,
-        type: "button",
-        className: `ps-toolbar-button${def.active ? " is-active" : ""}`,
+        icon: def.icon,
+        label: def.label,
         onClick: def.onClick,
         disabled: Boolean(def.disabled),
-        title: def.title,
-    }, def.label);
+        active: Boolean(def.active),
+    });
 
     if (mobile) {
-        const firstRowButtons = buttonDefs.slice(0, 4);
-        const secondRowButtons = buttonDefs.slice(4);
-
+        // Single line: icon buttons are compact enough to fit one row; the
+        // ps-toolbar-row-actions container scrolls horizontally (hidden
+        // scrollbar) on the narrowest screens instead of wrapping.
         return React.createElement("div", { className: "ps-toolbar is-mobile" },
             React.createElement("div", { className: "ps-toolbar-row ps-toolbar-row-primary" },
-                firstRowButtons.map(renderButton)),
-            React.createElement("div", { className: "ps-toolbar-row ps-toolbar-row-secondary" },
-                React.createElement("div", { className: "ps-toolbar-row-actions" }, secondRowButtons.map(renderButton))),
+                React.createElement("div", { className: "ps-toolbar-row-actions" }, buttonDefs.map(renderButton))),
         );
     }
 

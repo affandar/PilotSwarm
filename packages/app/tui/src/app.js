@@ -361,7 +361,7 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                 }
                 return;
             }
-            if (modal.type === "renameSession" || modal.type === "artifactUpload" || modal.type === "sessionGroupName") {
+            if (modal.type === "renameSession" || modal.type === "artifactUpload" || modal.type === "sessionGroupName" || modal.type === "shareSession") {
                 if (key.escape) {
                     controller.handleCommand(UI_COMMANDS.CLOSE_MODAL).catch(() => {});
                     return;
@@ -373,36 +373,42 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                 if (key.leftArrow) {
                     if (modal.type === "renameSession") controller.moveRenameSessionCursor(-1);
                     else if (modal.type === "sessionGroupName") controller.moveSessionGroupNameCursor(-1);
+                    else if (modal.type === "shareSession") controller.moveShareSessionCursor(-1);
                     else controller.moveArtifactUploadCursor(-1);
                     return;
                 }
                 if (key.rightArrow) {
                     if (modal.type === "renameSession") controller.moveRenameSessionCursor(1);
                     else if (modal.type === "sessionGroupName") controller.moveSessionGroupNameCursor(1);
+                    else if (modal.type === "shareSession") controller.moveShareSessionCursor(1);
                     else controller.moveArtifactUploadCursor(1);
                     return;
                 }
                 if (key.home) {
                     if (modal.type === "renameSession") controller.moveRenameSessionCursorToBoundary("start");
                     else if (modal.type === "sessionGroupName") controller.moveSessionGroupNameCursorToBoundary("start");
+                    else if (modal.type === "shareSession") controller.moveShareSessionCursorToBoundary("start");
                     else controller.moveArtifactUploadCursorToBoundary("start");
                     return;
                 }
                 if (key.end) {
                     if (modal.type === "renameSession") controller.moveRenameSessionCursorToBoundary("end");
                     else if (modal.type === "sessionGroupName") controller.moveSessionGroupNameCursorToBoundary("end");
+                    else if (modal.type === "shareSession") controller.moveShareSessionCursorToBoundary("end");
                     else controller.moveArtifactUploadCursorToBoundary("end");
                     return;
                 }
                 if (key.backspace || key.delete) {
                     if (modal.type === "renameSession") controller.deleteRenameSessionChar();
                     else if (modal.type === "sessionGroupName") controller.deleteSessionGroupNameChar();
+                    else if (modal.type === "shareSession") controller.deleteShareSessionChar();
                     else controller.deleteArtifactUploadChar();
                     return;
                 }
                 if (!key.ctrl && !key.meta && input) {
                     if (modal.type === "renameSession") controller.insertRenameSessionText(input);
                     else if (modal.type === "sessionGroupName") controller.insertSessionGroupNameText(input);
+                    else if (modal.type === "shareSession") controller.insertShareSessionText(input);
                     else controller.insertArtifactUploadText(input);
                 }
                 return;
@@ -609,7 +615,10 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             controller.handleCommand(UI_COMMANDS.TOGGLE_FILE_PREVIEW_FULLSCREEN).catch(() => {});
             return;
         }
-        if (focus !== "prompt" && input === "v") {
+        // The sessions pane repurposes lowercase v for visibility cycling,
+        // so the fullscreen toggle only claims v elsewhere (Esc still
+        // closes a fullscreen sessions pane).
+        if (focus !== "prompt" && focus !== "sessions" && input === "v") {
             controller.handleCommand(UI_COMMANDS.TOGGLE_PANE_FULLSCREEN).catch(() => {});
             return;
         }
@@ -834,6 +843,14 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             }
             if (plainShortcut && input === "P") {
                 controller.handleCommand(UI_COMMANDS.PIN_SESSION).catch(() => {});
+                return;
+            }
+            if (plainShortcut && input === "v") {
+                controller.handleCommand(UI_COMMANDS.CYCLE_SESSION_VISIBILITY).catch(() => {});
+                return;
+            }
+            if (plainShortcut && input === "S") {
+                controller.handleCommand(UI_COMMANDS.OPEN_SHARE_SESSION).catch(() => {});
                 return;
             }
             if (plainShortcut && input === "V") {

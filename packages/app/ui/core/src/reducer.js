@@ -1000,6 +1000,10 @@ export function appReducer(state, action) {
                 ui: {
                     ...state.ui,
                     chatScrollBySession: savedChatScroll,
+                    // Status notices are per-moment, usually per-session (send
+                    // refusals, access hints) — a stale one must not follow the
+                    // user to the next session.
+                    statusText: previousActiveId !== action.sessionId ? "" : state.ui.statusText,
                     scroll: {
                         ...state.ui.scroll,
                         chat: Number(savedChatScroll[action.sessionId]) || 0,

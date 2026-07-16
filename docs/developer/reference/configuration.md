@@ -65,6 +65,11 @@ PORTAL_AUTH_ENTRA_TENANT_ID=<tenant-id>
 PORTAL_AUTH_ENTRA_CLIENT_ID=<client-id>
 PORTAL_AUTHZ_ADMIN_GROUPS=admin1@contoso.com,admin2@contoso.com
 PORTAL_AUTHZ_USER_GROUPS=user1@contoso.com,user2@contoso.com
+
+# Per-user session ownership and sharing posture
+AUTHZ_ENFORCE_OWNERSHIP=true
+SESSIONS_DEFAULT_VISIBILITY=private
+SESSIONS_SYSTEM_VISIBILITY=read
 ```
 
 For now, `PORTAL_AUTHZ_ADMIN_GROUPS` and `PORTAL_AUTHZ_USER_GROUPS` are interpreted
@@ -130,11 +135,18 @@ identity to browser users: `provider=none`, `subject=unknown`, display name
 therefore share the same Admin Console profile, GitHub Copilot key override,
 profile settings, and session owner identity.
 
-Current authorization is Phase 1 only:
+When `AUTHZ_ENFORCE_OWNERSHIP=true`, every session request is checked against
+the authenticated principal's owner/share relationship. `private` sessions are
+owner/admin only; `shared_read` and targeted read grants allow reads;
+`shared_write` and targeted write grants allow reads and messages. Manage,
+destroy, and share operations remain owner/admin only. Set
+`SESSIONS_SYSTEM_VISIBILITY=admin` to hide system sessions from ordinary users.
 
-- group-based allow/deny
-- normalized `admin` / `user` role assignment
-- no session ownership filtering yet
+`SESSIONS_DEFAULT_VISIBILITY` applies only to newly-created sessions. Migration
+`0029` stamps existing sessions as `private`; before enabling enforcement on an
+existing collaborative deployment, explicitly share the sessions that should
+remain visible or keep enforcement disabled during the transition. See
+[Access, sharing & security](../../user-guide/security-and-sharing.md).
 
 ## PostgreSQL Setup
 

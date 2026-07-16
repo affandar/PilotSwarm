@@ -1,3 +1,4 @@
+import type { MessageSender } from "../message-sender.js";
 import type { OrchestrationInput, TurnResult } from "../types.js";
 import { SESSION_STATE_MISSING_PREFIX, stopTurnQueueName } from "../types.js";
 import { createSessionProxy } from "../session-proxy.js";
@@ -263,6 +264,7 @@ export function* processPrompt(
     requiredTool?: string,
     clientMessageIds?: string[],
     cycleOrigin?: "cron" | "cron_at",
+    sender?: MessageSender,
 ): Generator<any, void, any> {
     const { ctx, state } = runtime;
     let prompt = promptText;
@@ -373,6 +375,7 @@ export function* processPrompt(
             ...(cycleOrigin ? { cycleOrigin } : {}),
             retryCount: state.retryCount,
             ...(clientMessageIds && clientMessageIds.length > 0 ? { clientMessageIds } : {}),
+            ...(sender ? { sender } : {}),
             // Store-wins (1.0.59): send only the turnKey. expectedVersion is
             // retired from the wire — the store-wins worker reconciles against
             // the store's own version, never the orchestration's belief.

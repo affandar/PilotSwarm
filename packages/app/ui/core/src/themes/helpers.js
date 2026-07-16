@@ -57,6 +57,10 @@ export function createTheme({ id, label, description, page, terminal, tui = {} }
         cyan: terminal?.cyan || "#55ffff",
         userChat: "#ffd866",
         userChatLabel: "#ffec99",
+        // Speaker label for a message from ANOTHER person in a shared session
+        // (distinct from the viewer's gold "You", the agent's green, and
+        // System's yellow). Every theme inherits this; a theme may override it.
+        otherUserChatLabel: terminal?.brightMagenta || terminal?.magenta || "#c9a3ff",
         activeHighlightBackground: terminal?.blue || "#5555ff",
         activeHighlightForeground: terminal?.background || "#000000",
         selectionBackground: terminal?.cursor || terminal?.blue || "#5555ff",

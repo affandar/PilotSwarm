@@ -28,6 +28,8 @@ import type {
 } from "./types.js";
 import type { SessionCatalog, SessionRow, TopEventEmitterRow } from "./cms.js";
 import { SYSTEM_USER_PRINCIPAL } from "./cms.js";
+import type { MessageSender } from "./message-sender.js";
+import { normalizeMessageSender } from "./message-sender.js";
 import type {
     SessionMetricSummary,
     TokensByModelRow,
@@ -48,6 +50,11 @@ import type {
     UserPrincipal,
     SessionGroupRow,
     ChildOutcomeRow,
+    SessionVisibility,
+    SessionShareInfo,
+    SessionAccessSnapshot,
+    AuthzAuditEntry,
+    KnownUserInfo,
 } from "./cms.js";
 import type {
     FactStore, EnhancedFactStore, FactsStatsRow, FactsTombstoneStats, FactRecord, StoreFactInput,
@@ -253,6 +260,8 @@ function sessionViewFromCmsRow(row: SessionRow): PilotSwarmSessionView {
         error: row.lastError ?? undefined,
         waitReason: row.waitReason ?? undefined,
         statusVersion: undefined,
+        visibility: row.visibility ?? "private",
+        rootSessionId: row.rootSessionId ?? row.sessionId,
     };
 }
 
@@ -299,6 +308,10 @@ export interface PilotSwarmSessionView {
     contextUsage?: SessionContextUsage;
     /** customStatusVersion for change tracking. */
     statusVersion?: number;
+    /** Sharing level of the session's tree root (private | shared_read | shared_write). */
+    visibility?: SessionVisibility;
+    /** Denormalized session-tree root id (self for top-level sessions). */
+    rootSessionId?: string;
 }
 
 /** Cursor for keyset-paginated session listing. */
@@ -312,6 +325,8 @@ export interface ListSessionsPageOptions {
     limit?: number;
     cursor?: SessionPageCursor | null;
     includeDeleted?: boolean;
+    /** When set, restrict rows to what this principal can read (viewer-scoped listing). */
+    viewer?: { provider: string; subject: string; systemVisible?: boolean } | null;
 }
 
 /** One bounded page of management session views. */
@@ -697,6 +712,7 @@ export class PilotSwarmManagementClient {
             cursorUpdatedAt,
             cursorSessionId,
             includeDeleted: opts.includeDeleted,
+            viewer: opts.viewer ?? null,
         });
         const visibleRows = rows.slice(0, limit);
         const hasMore = rows.length > limit;
@@ -709,6 +725,86 @@ export class PilotSwarmManagementClient {
                 ? { nextCursor: { updatedAt: last.updatedAt.getTime(), sessionId: last.sessionId } }
                 : {}),
         };
+    }
+
+    /** List sessions visible to a principal (non-paged viewer-scoped listing). */
+    async listSessionsVisible(viewer: { provider: string; subject: string; systemVisible?: boolean }): Promise<PilotSwarmSessionView[]> {
+        this._ensureStarted();
+        const rows = await this._catalog!.listSessionsVisible(viewer);
+        return rows.map(sessionViewFromCmsRow);
+    }
+
+    /** Member directory for share autocomplete (excludes synthetic principals). */
+    async listKnownUsers(opts?: { limit?: number }): Promise<KnownUserInfo[]> {
+        this._ensureStarted();
+        return this._catalog!.listKnownUsers(opts);
+    }
+
+    // ─── Session sharing / access (security model) ────────────
+
+    /** Access snapshot for the enforcement predicate (null = missing/deleted session). */
+    async getSessionAccess(sessionId: string, viewer: { provider: string; subject: string }): Promise<SessionAccessSnapshot | null> {
+        this._ensureStarted();
+        return this._catalog!.getSessionAccess(sessionId, viewer);
+    }
+
+    /** Set the sharing level on the ROOT of the given session's tree. */
+    async setSessionVisibility(sessionId: string, visibility: SessionVisibility): Promise<void> {
+        this._ensureStarted();
+        await this._catalog!.setSessionVisibility(sessionId, visibility);
+    }
+
+    /** Grant (or update) a targeted share on the session's tree root. */
+    async grantSessionShare(
+        sessionId: string,
+        grantee: { provider: string; subject: string; email?: string | null; displayName?: string | null },
+        access: "read" | "write",
+        grantedBy?: { provider: string; subject: string } | null,
+    ): Promise<void> {
+        this._ensureStarted();
+        await this._catalog!.grantSessionShare(
+            sessionId,
+            {
+                provider: grantee.provider,
+                subject: grantee.subject,
+                email: grantee.email ?? null,
+                displayName: grantee.displayName ?? null,
+            },
+            access,
+            grantedBy ? { provider: grantedBy.provider, subject: grantedBy.subject, email: null, displayName: null } : null,
+        );
+    }
+
+    /** Revoke a targeted share on the session's tree root. */
+    async revokeSessionShare(sessionId: string, grantee: { provider: string; subject: string }): Promise<void> {
+        this._ensureStarted();
+        await this._catalog!.revokeSessionShare(sessionId, grantee);
+    }
+
+    /** List targeted shares on the session's tree root. */
+    async listSessionShares(sessionId: string): Promise<SessionShareInfo[]> {
+        this._ensureStarted();
+        return this._catalog!.listSessionShares(sessionId);
+    }
+
+    /** Append one authz audit record (fire-and-forget friendly; errors surface to the caller). */
+    async recordAuthzAudit(entry: {
+        actor?: { provider?: string | null; subject?: string | null; display?: string | null } | null;
+        action: string;
+        sessionId?: string | null;
+        target?: string | null;
+        decision: string;
+        reason?: string | null;
+        details?: Record<string, unknown> | null;
+    }): Promise<void> {
+        this._ensureStarted();
+        await this._catalog!.recordAuthzAudit(entry);
+    }
+
+    /** Read authz audit records, newest first (optionally scoped to one session). */
+    async listAuthzAudit(opts?: { limit?: number; sessionId?: string | null }): Promise<AuthzAuditEntry[]> {
+        this._ensureStarted();
+        return this._catalog!.listAuthzAudit(opts);
     }
 
     /**
@@ -2096,11 +2192,16 @@ export class PilotSwarmManagementClient {
      *   that contributed to this (potentially merged) prompt. The orchestration
      *   preserves these and records them on the durable user.message event so
      *   the client can ack/cancel by exact id rather than text match.
+     * @param options.sender Server-stamped sender identity (security model).
+     *   Trusted metadata from the API edge — never client-supplied — recorded
+     *   on the durable user.message event and used for multi-writer prompt
+     *   attribution. Optional so the payload stays byte-identical for callers
+     *   that don't pass it (frozen orchestration replay safety).
      */
     async sendMessage(
         sessionId: string,
         prompt: string,
-        options?: { clientMessageIds?: string[] },
+        options?: { clientMessageIds?: string[]; sender?: MessageSender },
     ): Promise<void> {
         this._ensureStarted();
         const session = await this.getSession(sessionId);
@@ -2140,6 +2241,8 @@ export class PilotSwarmManagementClient {
         if (options?.clientMessageIds && options.clientMessageIds.length > 0) {
             payload.clientMessageIds = options.clientMessageIds;
         }
+        const sender = normalizeMessageSender(options?.sender);
+        if (sender) payload.sender = sender;
         await this._duroxideClient.enqueueEvent(
             orchId,
             "messages",
@@ -2191,14 +2294,17 @@ export class PilotSwarmManagementClient {
     /**
      * Send an answer to a pending question from a session.
      */
-    async sendAnswer(sessionId: string, answer: string): Promise<void> {
+    async sendAnswer(sessionId: string, answer: string, options?: { sender?: MessageSender }): Promise<void> {
         this._ensureStarted();
         const orchId = `session-${sessionId}`;
         await this._assertOrchestrationLive(orchId, sessionId, "sendAnswer");
+        const payload: Record<string, unknown> = { answer, wasFreeform: true };
+        const sender = normalizeMessageSender(options?.sender);
+        if (sender) payload.sender = sender;
         await this._duroxideClient.enqueueEvent(
             orchId,
             "messages",
-            JSON.stringify({ answer, wasFreeform: true }),
+            JSON.stringify(payload),
         );
     }
 

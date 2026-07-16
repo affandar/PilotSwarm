@@ -1423,13 +1423,33 @@ export class PilotSwarmUiController {
             this.scheduleSessionsRefresh(250);
             return true;
         })().catch((error) => {
-            // Revert the merged envelope back to the original pending items so
-            // the user can edit/retry them.
+            const authRefused = error?.code === "FORBIDDEN" || error?.code === "UNAUTHORIZED"
+                || error?.status === 403 || error?.status === 401;
             const items = this.getSessionOutbox(sessionId);
-            const reverted = items.flatMap((item) => (
-                item.id === mergedItem.id ? pendingItems : [item]
-            ));
-            this.setSessionOutboxItems(sessionId, reverted);
+            if (authRefused) {
+                // Authorization refusals are terminal — retrying can't succeed.
+                // Mark the envelope rejected (renders as the red ✗, same as a
+                // cancelled send) and drop it shortly after instead of leaving
+                // a forever-pending item.
+                const rejected = items.map((item) => (
+                    item.id === mergedItem.id ? { ...item, phase: "rejected" } : item
+                ));
+                this.setSessionOutboxItems(sessionId, rejected);
+                setTimeout(() => {
+                    const current = this.getSessionOutbox(sessionId);
+                    const remaining = current.filter((item) => !(item.id === mergedItem.id && item.phase === "rejected"));
+                    if (remaining.length !== current.length) {
+                        this.setSessionOutboxItems(sessionId, remaining);
+                    }
+                }, 6000);
+            } else {
+                // Transient failure: revert the merged envelope back to the
+                // original pending items so the user can edit/retry them.
+                const reverted = items.flatMap((item) => (
+                    item.id === mergedItem.id ? pendingItems : [item]
+                ));
+                this.setSessionOutboxItems(sessionId, reverted);
+            }
             this.dispatch({
                 type: "ui/status",
                 text: error?.message || String(error),
@@ -4351,6 +4371,245 @@ export class PilotSwarmUiController {
         }
     }
 
+    /**
+     * Cycle the active session's general visibility:
+     * private → shared_read → shared_write → private. Visibility is a
+     * per-session property, so system sessions and group rows are refused.
+     */
+    async cycleSessionVisibility() {
+        const state = this.getState();
+        const sessionId = state.sessions.activeSessionId;
+        const session = sessionId ? state.sessions.byId[sessionId] : null;
+        if (!session) {
+            this.dispatch({ type: "ui/status", text: "No session selected" });
+            return;
+        }
+        if (session.isSystem) {
+            this.dispatch({ type: "ui/status", text: "System sessions are always private" });
+            return;
+        }
+        if (session.isGroup) {
+            this.dispatch({ type: "ui/status", text: "Groups don't have visibility" });
+            return;
+        }
+        if (typeof this.transport.setSessionVisibility !== "function") {
+            this.dispatch({ type: "ui/status", text: "Not supported by this transport" });
+            return;
+        }
+        const next = cycleValue(
+            ["private", "shared_read", "shared_write"],
+            session.visibility || "private",
+            1,
+        );
+        try {
+            await this.transport.setSessionVisibility(sessionId, next);
+            await this.refreshSessions();
+            this.dispatch({ type: "ui/status", text: `Visibility → ${next}` });
+        } catch (error) {
+            this.dispatch({ type: "ui/status", text: error?.message || String(error) });
+        }
+    }
+
+    /**
+     * Open the Share modal for the active session: shows the general
+     * visibility plus the per-person grant list, with a single input line
+     * for edits — `name [r|w]` grants, `-name` revokes. The current grants
+     * are loaded up front so the modal (and revoke matching) can render
+     * them without another round trip.
+     */
+    async openShareSessionModal() {
+        const state = this.getState();
+        const sessionId = state.sessions.activeSessionId;
+        const session = sessionId ? state.sessions.byId[sessionId] : null;
+        if (!session) {
+            this.dispatch({ type: "ui/status", text: "No session selected" });
+            return;
+        }
+        if (session.isSystem) {
+            this.dispatch({ type: "ui/status", text: "System sessions are always private" });
+            return;
+        }
+        if (session.isGroup) {
+            this.dispatch({ type: "ui/status", text: "Groups can't be shared" });
+            return;
+        }
+        if (typeof this.transport.listSessionShares !== "function") {
+            this.dispatch({ type: "ui/status", text: "Session sharing is not supported by this transport" });
+            return;
+        }
+        let shares;
+        try {
+            shares = await this.transport.listSessionShares(sessionId);
+        } catch (error) {
+            this.dispatch({ type: "ui/status", text: error?.message || String(error) });
+            return;
+        }
+        this.dispatch({
+            type: "ui/modal",
+            modal: {
+                type: "shareSession",
+                title: `Share (${shortSessionIdValue(sessionId)})`,
+                sessionId,
+                previousFocus: state.ui.focusRegion,
+                value: "",
+                cursorIndex: 0,
+                shares: Array.isArray(shares) ? shares : [],
+                visibility: session.visibility || "private",
+            },
+        });
+        this.dispatch({ type: "ui/status", text: "name [r|w] grants · -name revokes · Enter apply" });
+    }
+
+    updateShareSessionModal(updater) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "shareSession") return null;
+        const nextModal = typeof updater === "function" ? updater(modal) : updater;
+        if (!nextModal) return null;
+        this.dispatch({ type: "ui/modal", modal: { ...modal, ...nextModal } });
+        return this.getState().ui.modal;
+    }
+
+    setShareSessionValue(value, cursorIndex = String(value || "").length) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "shareSession") return;
+        const safeValue = clampRenameSessionValue(value, 120);
+        const safeCursor = clampPromptCursor(safeValue, cursorIndex);
+        this.updateShareSessionModal({ value: safeValue, cursorIndex: safeCursor });
+    }
+
+    insertShareSessionText(text) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "shareSession") return;
+        const next = insertPromptTextAtCursor(modal.value || "", modal.cursorIndex || 0, clampRenameSessionValue(text, 120));
+        this.setShareSessionValue(next.prompt, next.cursor);
+    }
+
+    deleteShareSessionChar() {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "shareSession") return;
+        const next = deletePromptCharBackward(modal.value || "", modal.cursorIndex || 0);
+        this.setShareSessionValue(next.prompt, next.cursor);
+    }
+
+    moveShareSessionCursor(delta) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "shareSession") return;
+        this.setShareSessionValue(modal.value || "", clampPromptCursor(modal.value || "", (modal.cursorIndex || 0) + delta));
+    }
+
+    moveShareSessionCursorToBoundary(kind) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "shareSession") return;
+        this.setShareSessionValue(modal.value || "", kind === "start" ? 0 : String(modal.value || "").length);
+    }
+
+    /**
+     * Apply the typed share command. Empty input just closes the modal.
+     * `-name` (or `revoke name`) revokes an existing grant; anything else
+     * grants, with an optional trailing r/read/w/write access token
+     * (default read). The grantee is resolved against the member directory
+     * when the transport exposes it; unmatched text falls back to a raw
+     * subject so a grant can target someone who has never signed in —
+     * an email-keyed grant binds at their first sign-in.
+     */
+    async confirmShareSessionModal() {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "shareSession") return;
+        const sessionId = modal.sessionId;
+        if (!sessionId) return;
+
+        const raw = String(modal.value || "").trim();
+        const previousFocus = modal.previousFocus;
+        if (!raw) {
+            this.dispatch({ type: "ui/modal", modal: null });
+            if (previousFocus) this.setFocus(previousFocus);
+            return;
+        }
+
+        // Revoke: `-name` or `revoke name` targets an existing grant by
+        // subject, email, or display name (case-insensitive).
+        const revokeWho = raw.startsWith("-")
+            ? raw.slice(1).trim()
+            : (raw.toLowerCase().startsWith("revoke ") ? raw.slice("revoke ".length).trim() : null);
+        if (revokeWho !== null) {
+            const needle = revokeWho.toLowerCase();
+            const grant = (modal.shares || []).find((row) =>
+                (row.subject && String(row.subject).toLowerCase() === needle)
+                || (row.email && String(row.email).toLowerCase() === needle)
+                || (row.displayName && String(row.displayName).toLowerCase() === needle));
+            if (!grant) {
+                this.dispatch({ type: "ui/status", text: `No grant matching "${revokeWho}"` });
+                return;
+            }
+            this.dispatch({ type: "ui/modal", modal: null });
+            if (previousFocus) this.setFocus(previousFocus);
+            try {
+                await this.transport.revokeSessionShare(sessionId, { provider: grant.provider, subject: grant.subject });
+                this.dispatch({ type: "ui/status", text: `Revoked ${revokeWho}` });
+            } catch (error) {
+                this.dispatch({ type: "ui/status", text: error?.message || String(error) });
+            }
+            return;
+        }
+
+        // Grant: an optional trailing access token picks read/write.
+        const tokens = raw.split(/\s+/);
+        const accessByToken = { r: "read", read: "read", w: "write", write: "write" };
+        const lastToken = tokens.length > 1 ? tokens[tokens.length - 1].toLowerCase() : null;
+        const access = lastToken && accessByToken[lastToken] ? accessByToken[lastToken] : "read";
+        const who = lastToken && accessByToken[lastToken] ? tokens.slice(0, -1).join(" ") : raw;
+
+        // Resolve the typed text against the member directory: an exact
+        // displayName/email/subject match wins; otherwise a unique partial
+        // match is accepted and multiple partial matches are ambiguous.
+        const needle = who.toLowerCase();
+        let grantee = null;
+        if (typeof this.transport.listKnownUsers === "function") {
+            let users = [];
+            try {
+                users = await this.transport.listKnownUsers({ limit: 500 });
+            } catch {
+                users = [];
+            }
+            const candidates = Array.isArray(users) ? users : [];
+            grantee = candidates.find((user) =>
+                (user.displayName && user.displayName.toLowerCase() === needle)
+                || (user.email && user.email.toLowerCase() === needle)
+                || (user.subject && user.subject.toLowerCase() === needle)) || null;
+            if (!grantee) {
+                const partial = candidates.filter((user) =>
+                    (user.displayName && user.displayName.toLowerCase().includes(needle))
+                    || (user.email && user.email.toLowerCase().includes(needle))
+                    || (user.subject && user.subject.toLowerCase().includes(needle)));
+                if (partial.length === 1) {
+                    grantee = partial[0];
+                } else if (partial.length > 1) {
+                    this.dispatch({ type: "ui/status", text: `"${who}" is ambiguous (${partial.length} matches)` });
+                    return;
+                }
+            }
+        }
+        if (!grantee) {
+            // Not-yet-seen user: treat the text as a raw subject under the
+            // caller's provider (mirrors the portal's resolveGrantee).
+            const principal = this.getState().auth?.principal || null;
+            grantee = { provider: principal?.provider || "dev", subject: who, email: null, displayName: null };
+        }
+
+        this.dispatch({ type: "ui/modal", modal: null });
+        if (previousFocus) this.setFocus(previousFocus);
+        try {
+            await this.transport.grantSessionShare(
+                sessionId,
+                { provider: grantee.provider, subject: grantee.subject, email: grantee.email ?? null, displayName: grantee.displayName ?? null },
+                access,
+            );
+            this.dispatch({ type: "ui/status", text: `Granted ${access} to ${who}` });
+        } catch (error) {
+            this.dispatch({ type: "ui/status", text: error?.message || String(error) });
+        }
+    }
+
     closeModal() {
         const modal = this.getState().ui.modal;
         if (!modal) return;
@@ -4453,6 +4712,10 @@ export class PilotSwarmUiController {
         }
         if (modal.type === "renameSession") {
             await this.confirmRenameSessionModal();
+            return;
+        }
+        if (modal.type === "shareSession") {
+            await this.confirmShareSessionModal();
             return;
         }
         if (modal.type === "sessionGroupPicker") {
@@ -6260,6 +6523,12 @@ export class PilotSwarmUiController {
                 return;
             case UI_COMMANDS.OPEN_RENAME_SESSION:
                 this.openRenameSessionModal();
+                return;
+            case UI_COMMANDS.CYCLE_SESSION_VISIBILITY:
+                await this.cycleSessionVisibility();
+                return;
+            case UI_COMMANDS.OPEN_SHARE_SESSION:
+                await this.openShareSessionModal();
                 return;
             case UI_COMMANDS.OPEN_SESSION_FILTER:
                 this.openSessionOwnerFilter();

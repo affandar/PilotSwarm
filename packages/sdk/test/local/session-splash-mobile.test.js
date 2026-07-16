@@ -86,7 +86,11 @@ describe("session splashMobile", () => {
 
         try {
             await catalog.initialize();
+            // Simulate a DB with no splashMobile-aware create proc: drop BOTH
+            // the 0026 9-arg overload AND the 0029 10-arg (visibility) overload
+            // — both persist splash_mobile — leaving only the pre-0026 8-arg.
             await directQuery(env, `DROP FUNCTION "${env.cmsSchema}".cms_create_session(TEXT, TEXT, TEXT, TEXT, BOOLEAN, TEXT, TEXT, TEXT, TEXT)`);
+            await directQuery(env, `DROP FUNCTION "${env.cmsSchema}".cms_create_session(TEXT, TEXT, TEXT, TEXT, BOOLEAN, TEXT, TEXT, TEXT, TEXT, TEXT)`);
 
             const freshCatalog = await PgSessionCatalogProvider.create(env.store, env.cmsSchema);
             try {

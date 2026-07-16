@@ -78,7 +78,7 @@ describe("portal browser contracts", () => {
         assertIncludes(runtime, 'case "uploadArtifact":', "portal runtime should expose artifact upload RPC");
         assertIncludes(runtime, 'case "deleteArtifact":', "portal runtime should expose single-artifact deletion RPC");
         assertIncludes(runtime, "safeParams.contentEncoding", "portal runtime should forward upload contentEncoding to the node transport");
-        assertIncludes(runtime, "async downloadArtifactBinary(sessionId, filename)", "portal runtime should expose a raw-byte artifact download path for HTTP downloads");
+        assertIncludes(runtime, "async downloadArtifactBinary(sessionId, filename", "portal runtime should expose a raw-byte artifact download path for HTTP downloads");
         assertIncludes(httpTransport, "async getUserStats(opts)", "web transport should expose user stats");
         assertIncludes(runtime, 'case "getUserStats":', "portal runtime should expose user stats RPC");
         assertIncludes(httpTransport, "async listSessionsPage(opts = {})", "web transport should expose bounded session paging");
@@ -100,7 +100,7 @@ describe("portal browser contracts", () => {
         assertIncludes(nodeTransport, "async deleteArtifact(sessionId, filename)", "node transport should expose single-artifact deletion against the artifact store");
         assertIncludes(nodeTransport, 'if (contentEncoding === "base64")', "node transport should decode base64 upload payloads back to raw bytes");
         assertIncludes(nodeTransport, "return Array.isArray(artifacts)", "node transport should preserve artifact metadata records for shared UI callers");
-        assertIncludes(server, "const artifact = await runtime.downloadArtifactBinary(sessionId, filename);", "portal download route should fetch raw artifact bytes from the runtime");
+        assertIncludes(server, "const artifact = await runtime.downloadArtifactBinary(sessionId, filename, req.auth);", "portal download route should fetch raw artifact bytes from the runtime");
         assertIncludes(server, "res.send(artifact.body);", "portal download route should send raw bytes instead of text strings");
         assertIncludes(controller, "findArtifactEntry(current?.entries, filename)", "shared controller should look up artifact metadata before previewing a file");
         assertIncludes(controller, "entry?.isBinary === true", "shared controller should skip downloadArtifact when metadata already marks a file binary");
@@ -149,7 +149,7 @@ describe("portal browser contracts", () => {
         assertIncludes(webApp, "setInterval(() =>", "portal should continuously refresh remote profile settings");
         assertIncludes(webApp, "appliedProfileSettingsJsonRef.current !== settingsJson", "portal should skip profile-settings re-dispatch when payload is unchanged");
         assertIncludes(webApp, "supportsArtifactBrowser(controller)", "portal should keep the artifact browser available when transport-backed artifacts exist");
-        assertIncludes(webApp, '}, "Delete")', "portal files pane should surface artifact deletion directly from the viewer");
+        assertIncludes(webApp, 'label: "Delete"', "portal files pane should surface artifact deletion directly from the viewer (now an icon button)");
         assert(!webApp.includes("Keyboard Shortcuts"), "portal keybinding legend should be removed");
         assert(!webApp.includes('label: "Keys"'), "portal toolbar should no longer expose a Keys button");
         assert(!webApp.includes('label: "Prompt"'), "portal toolbar should no longer expose a Prompt button");
@@ -162,9 +162,9 @@ describe("portal browser contracts", () => {
         assertIncludes(nodeTransport, "return this.mgmt.getSessionTokensByModel(sessionId);", "node transport should forward per-session model buckets to management API");
         assertIncludes(webApp, 'controller.handleCommand(UI_COMMANDS.DOWNLOAD_SELECTED_FILE)', "portal files pane should download the selected artifact");
         assertIncludes(webApp, 'controller.handleCommand(UI_COMMANDS.DELETE_SELECTED_FILE)', "portal files pane should delete the selected artifact through the shared command");
-        assertIncludes(webApp, '}, "Up")', "portal files pane should surface a shortened upload label directly in the files pane");
-        assertIncludes(webApp, '}, "Down")', "portal files pane should surface a shortened download label directly in the files pane");
-        assertIncludes(webApp, 'viewState.fullscreen ? "Close" : "FS"', "portal files pane should shorten the fullscreen action label for mobile layouts");
+        assertIncludes(webApp, 'label: "Upload"', "portal files pane should surface an upload affordance directly in the files pane (now an icon button)");
+        assertIncludes(webApp, 'label: "Download"', "portal files pane should surface a download affordance directly in the files pane (now an icon button)");
+        assertIncludes(webApp, 'viewState.fullscreen ? "Exit fullscreen" : "Fullscreen"', "portal files pane should offer a fullscreen toggle (now an icon button with a tooltip label)");
         assertIncludes(webApp, "ps-workspace-full", "portal should render a dedicated fullscreen files workspace");
         assertIncludes(webApp, 'title: [{ text: "Sessions", color: "yellow", bold: true }]', "portal should keep the Sessions title data plain while the panel chrome paints the full header strip");
         assertIncludes(webApp, "React.createElement(Line, {", "portal file rows should render through the shared line component");

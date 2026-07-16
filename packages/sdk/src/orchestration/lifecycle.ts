@@ -444,6 +444,14 @@ export function buildContinueInput(
         ...(state.interruptedCronTimer ? { interruptedCronTimer: state.interruptedCronTimer } : {}),
         ...(state.pendingChildDigest ? { pendingChildDigest: state.pendingChildDigest } : {}),
         ...(state.pendingShutdown ? { pendingShutdown: state.pendingShutdown } : {}),
+        // Multi-writer attribution posture (security model): carried so a
+        // shared session stays attributed across continue-as-new. Omitted
+        // entirely for single-writer sessions, keeping the CAN input
+        // byte-identical to pre-sender builds.
+        ...(state.observedSenderKeys?.length ? { observedSenderKeys: [...state.observedSenderKeys] } : {}),
+        ...(state.multiWriter ? { multiWriter: true } : {}),
+        ...(state.sharedPreambleSent ? { sharedPreambleSent: true } : {}),
+        ...(state.ownerDisplay ? { ownerDisplay: state.ownerDisplay } : {}),
         ...restOverrides,
     };
 }

@@ -56,7 +56,7 @@ COPY packages/sdk/api/index.js packages/sdk/api/index.d.ts ./packages/sdk/api/
 COPY packages/sdk/api/src/ ./packages/sdk/api/src/
 
 # Copy portal sources
-COPY packages/app/web/server.js packages/app/web/auth.js packages/app/web/config.js packages/app/web/runtime.js packages/app/web/index.html ./packages/app/web/
+COPY packages/app/web/server.js packages/app/web/auth.js packages/app/web/authz.js packages/app/web/config.js packages/app/web/runtime.js packages/app/web/index.html ./packages/app/web/
 COPY packages/app/web/auth/ ./packages/app/web/auth/
 COPY packages/app/web/api/ ./packages/app/web/api/
 COPY packages/app/web/src/ ./packages/app/web/src/

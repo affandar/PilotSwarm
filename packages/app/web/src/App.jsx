@@ -241,25 +241,51 @@ function PortalLoadingScreen({ branding, ui, shellStyle, error = null }) {
         ));
 }
 
+function DevPersonaPicker({ authConfig, onSignIn }) {
+    const users = authConfig?.client?.users || [];
+    return React.createElement("div", { className: "portal-dev-persona-list" },
+        users.map((user) => React.createElement("button", {
+            key: user.id,
+            type: "button",
+            className: "portal-dev-persona-button",
+            onClick: () => onSignIn(user.id).catch(() => {}),
+        },
+        React.createElement("span", { className: "portal-dev-persona-initials" },
+            (user.displayName || user.id).split(/\s+/).map((part) => part.charAt(0)).join("").slice(0, 2).toLowerCase()),
+        React.createElement("span", { className: "portal-dev-persona-name" }, user.displayName || user.id),
+        React.createElement("span", { className: `portal-dev-persona-role is-${user.role}` }, user.role),
+        )));
+}
+
 function PortalSignedOut({ branding, authUi, authConfig, error, onSignIn, shellStyle }) {
     const providerDisplayName = authConfig?.displayName || branding?.title || "Authentication";
+    const isDevProvider = authConfig?.provider === "dev";
     return React.createElement("div", { className: "portal-gate", style: shellStyle },
         React.createElement("div", { className: "portal-gate-card" },
+            isDevProvider
+                ? React.createElement("div", { className: "portal-dev-banner" }, authConfig?.banner || "DEV AUTH — not for production")
+                : null,
             React.createElement("div", { className: "portal-gate-brand" },
                 React.createElement(PortalBrandMark, { branding, size: "large" }),
                 React.createElement("div", { className: "portal-gate-kicker" }, providerDisplayName)),
-            React.createElement("h1", { className: "portal-gate-title" }, authUi?.signInTitle || `Sign in to ${getWorkspaceTitle(branding)}`),
-            React.createElement("p", { className: "portal-gate-copy" }, resolveSignInMessage({
-                authUi,
-                authConfig,
-                branding,
-                error,
-            })),
-            React.createElement("button", {
-                type: "button",
-                className: "portal-primary-button",
-                onClick: () => onSignIn().catch(() => {}),
-            }, authUi?.signInLabel || "Sign In"),
+            React.createElement("h1", { className: "portal-gate-title" }, isDevProvider
+                ? `Sign in to ${getWorkspaceTitle(branding)} as…`
+                : (authUi?.signInTitle || `Sign in to ${getWorkspaceTitle(branding)}`)),
+            React.createElement("p", { className: "portal-gate-copy" }, isDevProvider
+                ? (error || "Pick a test persona. Each browser tab can sign in as a different persona.")
+                : resolveSignInMessage({
+                    authUi,
+                    authConfig,
+                    branding,
+                    error,
+                })),
+            isDevProvider
+                ? React.createElement(DevPersonaPicker, { authConfig, onSignIn })
+                : React.createElement("button", {
+                    type: "button",
+                    className: "portal-primary-button",
+                    onClick: () => onSignIn().catch(() => {}),
+                }, authUi?.signInLabel || "Sign In"),
         ));
 }
 
@@ -280,8 +306,10 @@ function PortalForbidden({ branding, authUi, authConfig, error, onSignOut, shell
         ));
 }
 
-function PortalHeader({ account, authEnabled, branding, onSignOut, versionLabel = null, statusText = "" }) {
-    const name = account?.name || account?.username || "Signed in";
+function PortalHeader({ account, authEnabled, isAdmin = false, branding, onSignOut, versionLabel = null, statusText = "" }) {
+    // Admins are marked with a leading "(*)" so elevated rights are visible at a glance.
+    const baseName = account?.name || account?.username || "Signed in";
+    const name = isAdmin ? `(*) ${baseName}` : baseName;
     const email = account?.username || account?.idTokenClaims?.preferred_username || "";
     return React.createElement("header", { className: "portal-header" },
         React.createElement("div", { className: "portal-header-brand" },
@@ -334,14 +362,25 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
 
     React.useEffect(() => {
         let active = true;
-        controller.start().catch((error) => {
-            if (!active) return;
-            controller.dispatch({
-                type: "connection/error",
-                error: error?.message || String(error),
-                statusText: `Startup failed: ${error?.message || String(error)}`,
+        controller.start()
+            .then(() => {
+                if (!active) return;
+                // Deep link: ?session=<id> selects that session on load and the
+                // reducer auto-expands its parent/group chain. Access is
+                // enforced server-side — an inaccessible id simply doesn't open.
+                const deepLinkSessionId = new URLSearchParams(window.location.search).get("session");
+                if (deepLinkSessionId && typeof controller.loadSession === "function") {
+                    controller.loadSession(deepLinkSessionId).catch(() => {});
+                }
+            })
+            .catch((error) => {
+                if (!active) return;
+                controller.dispatch({
+                    type: "connection/error",
+                    error: error?.message || String(error),
+                    statusText: `Startup failed: ${error?.message || String(error)}`,
+                });
             });
-        });
         return () => {
             active = false;
             controller.stop().catch(() => {});
@@ -350,9 +389,14 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
     }, [controller, transport]);
 
     return React.createElement("div", { className: "portal-app-shell", style: shellStyle },
+        auth.provider === "dev"
+            ? React.createElement("div", { className: "portal-dev-banner is-fixed" },
+                `${auth.config?.banner || "DEV AUTH — not for production"} · signed in as ${auth.account?.name || "?"}`)
+            : null,
         React.createElement(PortalHeader, {
             account: auth.account,
             authEnabled: auth.authEnabled,
+            isAdmin: auth.authorization?.role === "admin",
             branding: portal?.branding,
             onSignOut: auth.signOut,
             versionLabel: PILOTSWARM_PORTAL_VERSION_LABEL,

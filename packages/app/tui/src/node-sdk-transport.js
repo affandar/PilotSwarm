@@ -710,8 +710,46 @@ export class NodeSdkTransport {
         return this.mgmt.listSessionsPage(opts);
     }
 
+    async listSessionsVisible(viewer) {
+        return this.mgmt.listSessionsVisible(viewer);
+    }
+
+    async listKnownUsers(opts) {
+        return this.mgmt.listKnownUsers(opts);
+    }
+
     async getSession(sessionId) {
         return this.mgmt.getSession(sessionId);
+    }
+
+    // ── Session sharing / access (security model) ────────────────
+
+    async getSessionAccess(sessionId, viewer) {
+        return this.mgmt.getSessionAccess(sessionId, viewer);
+    }
+
+    async setSessionVisibility(sessionId, visibility) {
+        return this.mgmt.setSessionVisibility(sessionId, visibility);
+    }
+
+    async grantSessionShare(sessionId, grantee, access, grantedBy) {
+        return this.mgmt.grantSessionShare(sessionId, grantee, access, grantedBy);
+    }
+
+    async revokeSessionShare(sessionId, grantee) {
+        return this.mgmt.revokeSessionShare(sessionId, grantee);
+    }
+
+    async listSessionShares(sessionId) {
+        return this.mgmt.listSessionShares(sessionId);
+    }
+
+    async recordAuthzAudit(entry) {
+        return this.mgmt.recordAuthzAudit(entry);
+    }
+
+    async listAuthzAudit(opts) {
+        return this.mgmt.listAuthzAudit(opts);
     }
 
     async getOrchestrationStats(sessionId) {
@@ -963,7 +1001,7 @@ export class NodeSdkTransport {
         );
     }
 
-    async createSession({ model, reasoningEffort, contextTier, owner, groupId } = {}) {
+    async createSession({ model, reasoningEffort, contextTier, owner, groupId, visibility } = {}) {
         const effectiveModel = await this.assertSessionModelCreatable({ model, owner });
         const session = await this.client.createSession({
             ...(effectiveModel ? { model: effectiveModel } : {}),
@@ -971,12 +1009,13 @@ export class NodeSdkTransport {
             ...(contextTier ? { contextTier } : {}),
             ...(owner ? { owner } : {}),
             ...(groupId ? { groupId } : {}),
+            ...(visibility ? { visibility } : {}),
         });
         this.sessionHandles.set(session.sessionId, session);
         return { sessionId: session.sessionId, model: effectiveModel, reasoningEffort: reasoningEffort || undefined, contextTier: contextTier || undefined };
     }
 
-    async createSessionForAgent(agentName, { model, reasoningEffort, contextTier, title, splash, splashMobile, initialPrompt, owner, groupId } = {}) {
+    async createSessionForAgent(agentName, { model, reasoningEffort, contextTier, title, splash, splashMobile, initialPrompt, owner, groupId, visibility } = {}) {
         const effectiveModel = await this.assertSessionModelCreatable({ model, owner });
         const session = await this.client.createSessionForAgent(agentName, {
             ...(effectiveModel ? { model: effectiveModel } : {}),
@@ -988,6 +1027,7 @@ export class NodeSdkTransport {
             ...(initialPrompt ? { initialPrompt } : {}),
             ...(owner ? { owner } : {}),
             ...(groupId ? { groupId } : {}),
+            ...(visibility ? { visibility } : {}),
         });
         this.sessionHandles.set(session.sessionId, session);
         return {
@@ -1027,9 +1067,14 @@ export class NodeSdkTransport {
             throw new Error(buildTerminalSendError(sessionId, session));
         }
 
-        const sendOptions = options?.clientMessageIds && Array.isArray(options.clientMessageIds) && options.clientMessageIds.length > 0
-            ? { clientMessageIds: options.clientMessageIds }
-            : undefined;
+        const sendOptions = {
+            ...(options?.clientMessageIds && Array.isArray(options.clientMessageIds) && options.clientMessageIds.length > 0
+                ? { clientMessageIds: options.clientMessageIds }
+                : {}),
+            // Server-stamped sender identity (security model) — set by the
+            // portal runtime from the validated auth context.
+            ...(options?.sender && typeof options.sender === "object" ? { sender: options.sender } : {}),
+        };
 
         if (options?.enqueueOnly) {
             // enqueueOnly originally routed through mgmt.sendMessage to skip
@@ -1054,11 +1099,11 @@ export class NodeSdkTransport {
         // "Working…" forever. Propagate the error so the caller can retry
         // through the full sessionHandle.send path that owns the start.
         const sessionHandle = await this.getSessionHandle(sessionId);
-        await sessionHandle.send(prompt);
+        await sessionHandle.send(prompt, sendOptions);
     }
 
-    async sendAnswer(sessionId, answer) {
-        await this.mgmt.sendAnswer(sessionId, answer);
+    async sendAnswer(sessionId, answer, options = {}) {
+        await this.mgmt.sendAnswer(sessionId, answer, options?.sender ? { sender: options.sender } : undefined);
     }
 
     async sendSessionEvent(sessionId, eventName, data) {

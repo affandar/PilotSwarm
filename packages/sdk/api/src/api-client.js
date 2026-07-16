@@ -74,7 +74,7 @@ export class ApiClient {
         return headers;
     }
 
-    async request(method, pathWithQuery, { body, headers } = {}) {
+    async request(method, pathWithQuery, { body, headers, authProbe = false } = {}) {
         const requestHeaders = await this.authHeaders(headers || {});
         if (body !== undefined && !requestHeaders["content-type"]) {
             requestHeaders["content-type"] = "application/json";
@@ -90,7 +90,11 @@ export class ApiClient {
         }
         if (response.status === 403) {
             const error = await readErrorEnvelope(response);
-            this.onForbidden(error.message || "Forbidden");
+            // Only an ADMISSION probe (/auth/me, /bootstrap) flips the whole
+            // app to the "access denied" gate. A per-operation 403 (e.g. a
+            // non-owner tries to rename) is a normal authz denial — throw it so
+            // the caller surfaces it inline, don't sign the user out of the app.
+            if (authProbe) this.onForbidden(error.message || "Forbidden");
             throw error;
         }
         if (!response.ok) {
@@ -131,11 +135,11 @@ export class ApiClient {
     }
 
     async getAuthContext() {
-        return this.request("GET", `${API_PREFIX}/auth/me`);
+        return this.request("GET", `${API_PREFIX}/auth/me`, { authProbe: true });
     }
 
     async getBootstrap() {
-        return this.request("GET", `${API_PREFIX}/bootstrap`);
+        return this.request("GET", `${API_PREFIX}/bootstrap`, { authProbe: true });
     }
 
     /** Raw artifact download; returns the Response for streaming/blob use. */
@@ -150,9 +154,9 @@ export class ApiClient {
             throw await readErrorEnvelope(response);
         }
         if (response.status === 403) {
-            const error = await readErrorEnvelope(response);
-            this.onForbidden(error.message || "Forbidden");
-            throw error;
+            // Per-artifact denial (no access to this session) — surface inline,
+            // don't flip the whole app to the admission gate.
+            throw await readErrorEnvelope(response);
         }
         if (!response.ok) throw await readErrorEnvelope(response);
         return response;

@@ -380,6 +380,12 @@ with `get_capabilities` to see the shape of this server.
 | `list_sessions` | Discovery — list all sessions with status, model, agent info, and parent/child relationships; keyset pagination via `limit`/`cursor`/`include_deleted` |
 | `get_session_detail` | Discovery — get detailed info for a session including status, context usage, cron state, and pending questions |
 | `get_session_events` | Discovery — CMS event stream with `after_seq` forward paging, `before_seq` history paging, `event_types` server-side filter, and long-poll support |
+| `get_session_access` | Effective caller access, visibility, relation, and owner for one session tree |
+| `set_session_visibility` | Set `private`, `shared_read`, or `shared_write` on an owned session tree |
+| `grant_session_share` / `revoke_session_share` | Owner/admin targeted read/write grant management |
+| `list_session_shares` | Owner/admin listing of targeted grants on a session tree |
+| `list_known_users` | Bounded member directory used to resolve a grantee; helper only, not an allowlist |
+| `list_authz_audit` | Owner audit for one session or admin fleet-wide authorization audit |
 
 ### Turn & Queue Control
 
@@ -463,6 +469,12 @@ External MCP clients can **inspect** the sub-agent tree freely:
 External clients **cannot** spawn, message, or cancel a sub-agent. Calling a removed tool name returns the standard MCP "unknown tool" error.
 
 Top-level session control (`create_session`, `send_message`, `delete_session`, etc.) is unaffected by this boundary — those tools remain on the external surface.
+
+Session visibility still applies to every MCP operation. A server running with
+`--api-url` acts as the cached Entra principal from `pilotswarm auth login` (or
+the supplied bearer token): unreadable sessions are absent/not-found, writes
+require owner/admin, `shared_write`, or a targeted write grant, and sharing
+metadata is owner/admin only.
 
 ### Agent Management
 

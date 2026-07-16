@@ -25,6 +25,7 @@ import {
     selectContextTierPickerModal,
     selectRenameSessionModal,
     selectSessionAgentPickerModal,
+    selectShareSessionModal,
     selectSessionGroupNameModal,
     selectSessionGroupPickerModal,
     selectSessionOwnerFilterModal,
@@ -138,8 +139,30 @@ function formatProcessRssTitleRuns(rssBytes) {
     ];
 }
 
-function buildSessionTitleRightRuns(rssRuns, versionLabel = null) {
-    const titleRuns = [...(Array.isArray(rssRuns) ? rssRuns : [])];
+// The signed-in identity shown in the sessions header. Admins are marked with
+// a leading "(*)" so an operator can tell at a glance they hold elevated rights.
+function formatSignedInIdentityLabel(auth) {
+    const principal = auth?.principal;
+    if (!principal) return null;
+    const base = principal.displayName || principal.email || principal.subject || null;
+    if (!base) return null;
+    const isAdmin = auth?.authorization?.role === "admin"
+        || (Array.isArray(principal.roles) && principal.roles.includes("admin"));
+    return isAdmin ? `(*) ${base}` : base;
+}
+
+function buildSessionTitleRightRuns(rssRuns, versionLabel = null, identityLabel = null) {
+    const titleRuns = [];
+    // Signed-in identity (multi-user deployments) sits left of the rss gauge
+    // so it's always visible without giving up a whole line.
+    const normalizedIdentityLabel = typeof identityLabel === "string" ? identityLabel.trim() : "";
+    if (normalizedIdentityLabel) {
+        titleRuns.push({ text: normalizedIdentityLabel, color: "yellow", bold: true });
+    }
+    if (Array.isArray(rssRuns) && rssRuns.length > 0) {
+        if (titleRuns.length > 0) titleRuns.push({ text: "  ", color: "gray" });
+        titleRuns.push(...rssRuns);
+    }
     const normalizedVersionLabel = typeof versionLabel === "string" ? versionLabel.trim() : "";
     if (!normalizedVersionLabel) return titleRuns.length > 0 ? titleRuns : null;
     if (titleRuns.length > 0) {
@@ -269,16 +292,19 @@ function buildWorkspacePaneFrames(layout) {
 const SessionList = React.memo(function SessionList({ controller, maxRows, width, height, frame, versionLabel = null }) {
     const platform = useUiPlatform();
     const rssTitleRuns = useProcessRssTitleRuns();
-    const titleRightRuns = React.useMemo(
-        () => buildSessionTitleRightRuns(rssTitleRuns, versionLabel),
-        [rssTitleRuns, versionLabel],
-    );
     const sessionView = useControllerSelector(controller, (state) => ({
         sessions: state.sessions,
         mode: state.connection?.mode || "local",
         brandingTitle: state.branding?.title || "PilotSwarm",
         focused: state.ui.focusRegion === "sessions",
+        // Who am I signed in as (null on identity-less/local deployments);
+        // admins are prefixed with "(*)".
+        identityLabel: formatSignedInIdentityLabel(state.auth),
     }), shallowEqualObject);
+    const titleRightRuns = React.useMemo(
+        () => buildSessionTitleRightRuns(rssTitleRuns, versionLabel, sessionView.identityLabel),
+        [rssTitleRuns, versionLabel, sessionView.identityLabel],
+    );
     const selectorState = React.useMemo(() => ({
         sessions: sessionView.sessions,
         connection: { mode: sessionView.mode },
@@ -320,6 +346,9 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
             activeSession: activeSessionId ? state.sessions.byId[activeSessionId] || null : null,
             activeHistory: activeSessionId ? state.history.bySessionId.get(activeSessionId) || null : null,
             activeOutbox: activeSessionId ? state.outbox?.bySessionId?.[activeSessionId] || null : null,
+            // Viewer identity — so the transcript can say "You" for the viewer's
+            // own messages (and tag the owner) in shared sessions.
+            authPrincipal: state.auth?.principal || null,
             branding: state.branding,
             connectionError: state.connection.error,
             connectionMode: state.connection.mode,
@@ -336,6 +365,7 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
         }
         return {
             branding: chatView.branding,
+            auth: { principal: chatView.authPrincipal },
             connection: {
                 error: chatView.connectionError,
                 mode: chatView.connectionMode,
@@ -365,6 +395,7 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
         chatView.activeSessionId,
         chatView.activeSession,
         chatView.activeOutbox,
+        chatView.authPrincipal,
         chatView.branding,
         chatView.chatViewMode,
         chatView.connectionError,
@@ -1420,6 +1451,63 @@ function RenameSessionModalContainer({ controller }) {
     return React.createElement(RenameSessionModal, { state });
 }
 
+function ShareSessionModal({ state }) {
+    const platform = useUiPlatform();
+    const modal = selectShareSessionModal(state);
+    if (!modal) return null;
+
+    const viewport = typeof platform.getViewport === "function"
+        ? platform.getViewport()
+        : { width: 120, height: 40 };
+    const width = Math.max(56, Math.min(modal.idealWidth || 72, (viewport.width || 120) - 12));
+    const detailsHeight = Math.max(6, Math.min((modal.detailsLines?.length || 0) + 2, 14, (viewport.height || 40) - 14));
+    const helpHeight = Math.max(4, Math.min(5, (viewport.height || 40) - detailsHeight - 8));
+
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Column, { width },
+            React.createElement(platform.Panel, {
+                title: modal.title,
+                color: "cyan",
+                focused: false,
+                width,
+                height: detailsHeight,
+                lines: modal.detailsLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                marginBottom: 1,
+                fillColor: "surface",
+            }),
+            React.createElement(platform.Input, {
+                label: "grant",
+                value: modal.value,
+                cursorIndex: modal.cursorIndex,
+                focused: true,
+                placeholder: modal.placeholder,
+                rows: 1,
+            }),
+            React.createElement(platform.Panel, {
+                title: modal.helpTitle || "Share Rules",
+                color: "cyan",
+                focused: false,
+                width,
+                height: helpHeight,
+                lines: modal.helpLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                fillColor: "surface",
+            }),
+        ));
+}
+
+function ShareSessionModalContainer({ controller }) {
+    const state = useControllerSelector(controller, (rootState) => ({
+        ui: {
+            modal: rootState.ui.modal,
+        },
+    }), shallowEqualObject);
+    return React.createElement(ShareSessionModal, { state });
+}
+
 function ArtifactUploadModal({ state }) {
     const platform = useUiPlatform();
     const modal = selectArtifactUploadModal(state);
@@ -2106,6 +2194,7 @@ export function SharedPilotSwarmApp({ controller, versionLabel = null }) {
         React.createElement(StatusBar, { controller }),
         React.createElement(PromptBar, { controller, rows: layoutState.promptRows }),
         React.createElement(RenameSessionModalContainer, { controller }),
+        React.createElement(ShareSessionModalContainer, { controller }),
         React.createElement(ArtifactUploadModalContainer, { controller }),
         React.createElement(ArtifactPickerModalContainer, { controller }),
         React.createElement(HelpModalContainer, { controller }),

@@ -437,6 +437,16 @@ export interface OrchestrationInput {
     /** Latest known context-window usage snapshot captured from session events. */
     contextUsage?: SessionContextUsage;
 
+    // ─── Multi-writer attribution (security model) ───────────
+    /** Distinct sender identity keys observed on sender-carrying messages. */
+    observedSenderKeys?: string[];
+    /** True once a non-owner sender (or a second distinct sender) appeared. */
+    multiWriter?: boolean;
+    /** Whether the [SHARED SESSION] preamble has been issued to the agent. */
+    sharedPreambleSent?: boolean;
+    /** Owner display name learned from an owner-relation sender. */
+    ownerDisplay?: string;
+
     // ─── Flat event loop state (v1.0.32+) ───────────────────
     /** Timer state carried across continueAsNew for the flat event loop. */
     activeTimerState?: {

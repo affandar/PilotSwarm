@@ -91,6 +91,12 @@ Your Entra app role gates the surface: admin-only tools (embedder start/stop,
 `facts_admin`, `restart_system_session`, graph-namespace writes) register only
 for admin credentials.
 
+On shared deployments, sessions are owner-scoped. Owners can open a whole
+session tree as read/write or grant a named teammate targeted read/write access;
+management, deletion, and sharing remain owner/admin operations. The portal,
+TUI, Web API, WebSocket stream, and MCP server enforce the same rules. See the
+[security and sharing guide](https://github.com/affandar/pilotswarm/blob/main/docs/user-guide/security-and-sharing.md).
+
 ### Claude Code
 
 ```bash

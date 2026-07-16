@@ -15,6 +15,14 @@ export function buildCapabilities(ctx: ServerContext) {
     return {
         mode: ctx.webMode ? "web" : "direct",
         admin: ctx.admin,
+        // Ownership/visibility posture (security model): the caller's role and
+        // whether the deployment enforces per-user session access. When
+        // ownership_enforced is true, list_sessions returns only sessions you
+        // can read and a send/read to another user's private session is
+        // refused with the reason in the error.
+        role: ctx.role ?? null,
+        ownership_enforced: ctx.authz?.ownershipEnforced ?? false,
+        default_visibility: ctx.authz?.defaultVisibility ?? "private",
         facts: {
             search: Boolean(ctx.enhancedFacts?.capabilities.search),
             embedder: Boolean(ctx.enhancedFacts?.capabilities.embedder),

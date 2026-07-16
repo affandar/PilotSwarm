@@ -161,6 +161,7 @@ Current overlap to preserve unless intentionally changed:
 - `Ctrl+G` in the sessions pane opens the move-to-group picker for the selected top-level non-system sessions, or for the active top-level non-system session when multi-select is off
 - `t` in the sessions pane opens the rename-title dialog
 - `P` in the sessions pane pins or unpins the active top-level session (system sessions, child sub-agent sessions, and sessions contained in a group cannot be pinned; if a pinned session is moved into a group its pin is dropped automatically)
+- `v` in the sessions pane cycles an owned non-system session tree through private, shared-read, and shared-write visibility; `Shift+S` opens targeted user sharing. The portal exposes equivalent selected-session controls. Keep lowercase `v`, uppercase `S`, and uppercase `V` (multi-select) distinct.
 - `V` in the sessions pane toggles multi-select; `Space` toggles selection on the active row; `c` cancels, `d` completes, and `D` hard-deletes the selected non-system non-group sessions in one confirmation; `Ctrl+G` moves selected top-level non-system sessions to a group; `Esc` exits select mode. The portal `Terminate (n)` action opens the three-disposition picker for Complete, Cancel, and Hard Delete.
 - `t` in the logs inspector toggles log tailing
 - `s` in the chat pane toggles between the transcript and the current session summary view

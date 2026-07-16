@@ -32,6 +32,8 @@ export const ACTIVE_HIGHLIGHT_BACKGROUND = "activeHighlightBackground";
 export const ACTIVE_HIGHLIGHT_FOREGROUND = "activeHighlightForeground";
 const USER_CHAT_COLOR = "userChat";
 const USER_CHAT_LABEL_COLOR = "userChatLabel";
+// Speaker label for a message from another person in a shared session.
+const OTHER_PERSON_CHAT_LABEL_COLOR = "otherUserChatLabel";
 
 const totalDescendantCountsCache = new WeakMap();
 const visibleDescendantCountsCache = new WeakMap();
@@ -613,9 +615,13 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
     const titleRuns = [...prefixRuns];
     // Owner chip — only when the list actually surfaces more than one human
     // owner (shouldDecorateSessionOwners). Otherwise it's noise on every row.
+    // Bracketed + bold so it reads as an owner badge, not part of the title.
+    // The current viewer's own sessions get a distinct color so "mine" pops.
     if (shouldDecorateSessionOwners(state) && !session?.isSystem && !session?.isGroup) {
         const initials = effectiveOwner ? ownerInitials(effectiveOwner) : "?";
-        titleRuns.push({ text: `${initials} · `, color: "cyan" });
+        const viewerKey = ownerKeyForOwner(state?.auth?.principal);
+        const isMine = viewerKey && ownerKeyForOwner(effectiveOwner) === viewerKey;
+        titleRuns.push({ text: `[${initials}] `, color: isMine ? "green" : "cyan", bold: true });
     }
     if (hasRealTitle) {
         titleRuns.push({ text: rawTitle, color: mainColor, bold: Boolean(session?.isSystem || session?.isGroup) });
@@ -682,6 +688,15 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
         const childCount = totalDescendantCounts?.[session?.sessionId];
         if (childCount) { pushSep(); detailRuns.push({ text: `${childCount} child${childCount === 1 ? "" : "ren"}`, color: "gray" }); }
         if (cronBadge) { pushSep(); detailRuns.push({ text: cronBadge.text, color: cronBadge.color }); }
+        // Shared-session marker (security model): private needs no marker;
+        // shared_read/shared_write surface here in the selected-row details.
+        if (session?.visibility === "shared_read" || session?.visibility === "shared_write") {
+            pushSep();
+            detailRuns.push({
+                text: session.visibility === "shared_write" ? "shared·write" : "shared·read",
+                color: "magenta",
+            });
+        }
     }
 
     // Flat runs for the TUI: title + (for titled rows) dim age + context.
@@ -868,9 +883,11 @@ function buildPendingOutboxMessage(sessionId, item) {
         createdAt: Number(item.createdAt) || Date.now(),
         pendingPhase: item.phase === "cancelling"
             ? "cancelling"
-            : item.phase === "queued"
-                ? "queued"
-                : "pending",
+            : item.phase === "rejected"
+                ? "rejected"
+                : item.phase === "queued"
+                    ? "queued"
+                    : "pending",
     };
 }
 
@@ -1281,20 +1298,44 @@ function prefixRuns(text, color = "gray", options = {}) {
     }];
 }
 
-function buildChatMessagePrefix(message) {
+function buildChatMessagePrefix(message, options = {}) {
     const time = formatTimestamp(message?.createdAt || message?.time);
-    const roleLabel = message?.role === "user"
-        ? "You"
+    // A user.message is labeled from the CURRENT VIEWER's perspective: "You"
+    // for the viewer's own messages, the sender's name for anyone else. When
+    // the sender is the session owner, an "(owner)" tag is appended — so the
+    // viewing owner sees "You (owner):" and everyone else sees "Alice (owner):".
+    // A distinct color marks messages from other people.
+    const sender = message?.sender;
+    const senderKey = sender?.kind === "user" ? ownerKeyForOwner(sender) : null;
+    const viewerKey = options?.viewerKey || null;
+    const ownerKey = options?.ownerKey || null;
+    // Only distinguish speakers / show the owner tag in a SHARED session — a
+    // private solo session stays plain "You" / "Agent" (no noise).
+    const sharedContext = options?.sharedContext === true;
+    const isUser = message?.role === "user";
+    const isSelf = isUser && senderKey && viewerKey && senderKey === viewerKey;
+    const fromOtherPerson = sharedContext && isUser && senderKey && !isSelf;
+    // Owner tag: the sender is the session owner (or, for a sender-less own
+    // message, the viewer themselves is the owner).
+    const senderIsOwner = sharedContext && isUser && ownerKey && (
+        (senderKey && senderKey === ownerKey)
+        || (!senderKey && viewerKey && viewerKey === ownerKey)
+    );
+    const ownerSuffix = senderIsOwner ? " (owner)" : "";
+
+    const roleLabel = isUser
+        ? ((fromOtherPerson ? (sender.display || sender.subject || "User") : "You") + ownerSuffix)
         : message?.role === "assistant"
             ? "Agent"
             : message?.role === "system"
                 ? "System"
                 : "PilotSwarm";
 
-    // 3-state delivery glyph for user messages:
+    // Delivery glyph for user messages:
     //   ○   pending  — client outbox, not yet durable
     //   ✓   queued   — durably enqueued, waiting for orchestration to drain
     //   x   cancelling — durable cancel requested, waiting for runtime outcome
+    //   x   rejected — server refused the send (authz); auto-dropped shortly
     //   ✓✓  sent     — persisted as user.message in CMS, LLM has it
     let glyph = null;
     let glyphColor = null;
@@ -1304,7 +1345,7 @@ function buildChatMessagePrefix(message) {
     } else if (message?.pendingPhase === "queued") {
         glyph = "✓";
         glyphColor = "cyan";
-    } else if (message?.pendingPhase === "cancelling") {
+    } else if (message?.pendingPhase === "cancelling" || message?.pendingPhase === "rejected") {
         glyph = "x";
         glyphColor = "red";
     } else if (message?.role === "user" && !message?.optimistic && !message?.pendingPhase) {
@@ -1324,8 +1365,10 @@ function buildChatMessagePrefix(message) {
         ? "yellow"
         : message?.pendingPhase === "queued"
             ? "cyan"
-            : message?.pendingPhase === "cancelling"
+            : message?.pendingPhase === "cancelling" || message?.pendingPhase === "rejected"
                 ? "red"
+            : fromOtherPerson
+                ? OTHER_PERSON_CHAT_LABEL_COLOR
             : message?.role === "user"
                 ? USER_CHAT_LABEL_COLOR
         : message?.role === "assistant"
@@ -1907,7 +1950,7 @@ function buildChatMessageLines(message, maxWidth, options = {}) {
             ? "red"
             : message?.role === "user" ? USER_CHAT_COLOR : null,
     );
-    const prefix = options.skipPrefix ? [] : buildChatMessagePrefix(message);
+    const prefix = options.skipPrefix ? [] : buildChatMessagePrefix(message, options);
 
     if (tintedMarkdownLines.length === 0) {
         return prefix.length > 0 ? [prefix] : [];
@@ -2120,7 +2163,26 @@ export function selectChatLines(state, maxWidth = 80, options = {}) {
         return [{ text: "No messages yet.", color: "gray" }];
     }
 
-    const buildOptions = options?.tableMode ? { tableMode: options.tableMode } : {};
+    // The current viewer's identity key — a user.message whose sender differs
+    // is labeled with the sender's name (others) vs "You" (the viewer). The
+    // session owner's messages additionally carry an "(owner)" tag.
+    const viewerKey = ownerKeyForOwner(state?.auth?.principal);
+    const activeSessionId = state?.sessions?.activeSessionId;
+    const activeSession = activeSessionId ? state?.sessions?.byId?.[activeSessionId] : null;
+    const ownerKey = ownerKeyForOwner(activeSession?.owner);
+    // A shared context = the session is shared deployment-wide, or the viewer
+    // is not its owner (someone shared it with them). Only then does the
+    // transcript name speakers and tag the owner.
+    const sharedContext = Boolean(activeSession && (
+        (activeSession.visibility && activeSession.visibility !== "private")
+        || (ownerKey && viewerKey && ownerKey !== viewerKey)
+    ));
+    const buildOptions = {
+        ...(options?.tableMode ? { tableMode: options.tableMode } : {}),
+        ...(viewerKey ? { viewerKey } : {}),
+        ...(ownerKey ? { ownerKey } : {}),
+        ...(sharedContext ? { sharedContext: true } : {}),
+    };
     const lines = [];
     for (const [index, message] of messages.entries()) {
         const messageLines = buildChatMessageLines(message, maxWidth, buildOptions);
@@ -2145,10 +2207,12 @@ export function selectOutboxOverlayLines(state, maxWidth = 80, options = {}) {
     const queuedCount = messages.filter((message) => message.pendingPhase === "queued").length;
     const pendingCount = messages.filter((message) => message.pendingPhase === "pending").length;
     const cancellingCount = messages.filter((message) => message.pendingPhase === "cancelling").length;
+    const rejectedCount = messages.filter((message) => message.pendingPhase === "rejected").length;
     const parts = [];
     if (pendingCount > 0) parts.push(`${pendingCount} pending`);
     if (queuedCount > 0) parts.push(`${queuedCount} queued`);
     if (cancellingCount > 0) parts.push(`${cancellingCount} cancelling`);
+    if (rejectedCount > 0) parts.push(`${rejectedCount} rejected`);
     const label = parts.length > 0 ? parts.join(" · ") : "queued prompts";
     const labelText = ` queued prompts: ${label} `;
     const rightRule = Math.max(1, safeWidth - labelText.length);
@@ -2969,6 +3033,12 @@ export function selectStatusBar(state) {
             right: "type title · left/right move · enter save · esc cancel",
         };
     }
+    if (state.ui.modal?.type === "shareSession") {
+        return {
+            left: "Share the selected session",
+            right: "name [r|w] grants · -name revokes · enter apply · esc close",
+        };
+    }
     if (state.ui.modal?.type === "artifactPicker") {
         return {
             left: "Select a linked artifact or URL",
@@ -3040,7 +3110,7 @@ export function selectStatusBar(state) {
     const chatViewMode = state.ui?.chatViewMode === "summary" ? "summary" : "transcript";
     const chatViewHint = chatViewMode === "summary" ? "s transcript" : "s summary";
     const hints = {
-        [FOCUS_REGIONS.SESSIONS]: `up/down switch · ctrl-u/ctrl-d page · ctrl-g move group · f filter · P pin · V select · d done · D delete · r refresh · t title · ${fullscreenHint} · [/] resize pane · {/} columns · T themes · ? help · a linked items · drag copy · tab next pane · p prompt`,
+        [FOCUS_REGIONS.SESSIONS]: `up/down switch · ctrl-u/ctrl-d page · ctrl-g move group · f filter · P pin · V select · d done · D delete · r refresh · t title · v visibility · S share · [/] resize pane · {/} columns · T themes · ? help · a linked items · drag copy · tab next pane · p prompt`,
         [FOCUS_REGIONS.CHAT]: `${chatViewHint} · j/k scroll · ctrl-u/ctrl-d page · e older history · g/G top/bottom · d done · ${fullscreenHint} · [/] resize pane · {/} columns · T themes · ? help · a linked items · drag copy · tab next pane · p prompt`,
         [FOCUS_REGIONS.INSPECTOR]: state.ui.inspectorTab === "logs"
             ? `j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · t tail · f filter · ${fullscreenHint} · left/right tab · [/] resize pane · {/} columns · T themes · ? help · a linked items · drag copy · tab next pane`
@@ -4318,6 +4388,59 @@ export function selectRenameSessionModal(state, maxWidth = 76) {
                 56,
                 displayLength(currentTitle || "(untitled session)") + 18,
                 displayLength(previewTitle) + 18,
+            ),
+            maxWidth,
+        ),
+    };
+}
+
+export function selectShareSessionModal(state, maxWidth = 76) {
+    const modal = state.ui.modal;
+    if (!modal || modal.type !== "shareSession") return null;
+
+    const value = String(modal.value || "");
+    const shares = Array.isArray(modal.shares) ? modal.shares : [];
+    const detailsLines = [
+        [{
+            text: "General: ",
+            color: "gray",
+        }, {
+            text: String(modal.visibility || "private"),
+            color: "white",
+            bold: true,
+        }],
+        ...(shares.length === 0
+            ? [[{ text: "No individual grants.", color: "gray" }]]
+            : shares.map((row) => [{
+                text: `${row.displayName || row.subject}  `,
+                color: "white",
+            }, {
+                text: `can ${row.access}`,
+                color: "gray",
+            }])),
+    ];
+
+    return {
+        title: modal.title || "Share Session",
+        value,
+        cursorIndex: Math.max(0, Math.min(Number(modal.cursorIndex) || 0, value.length)),
+        placeholder: "Name, email, or id",
+        helpTitle: "Share Rules",
+        helpLines: [
+            [{
+                text: "name-or-email [r|w] grants · -name revokes · Enter apply · Esc close",
+                color: "gray",
+            }],
+            [{
+                text: "Grantee needn't have signed in — an email grant binds at their first sign-in.",
+                color: "gray",
+            }],
+        ],
+        detailsLines,
+        idealWidth: Math.min(
+            Math.max(
+                56,
+                ...detailsLines.map((line) => flattenRunsLength(line) + 6),
             ),
             maxWidth,
         ),
@@ -5825,7 +5948,7 @@ const KEYBINDING_HELP = [
         ["p", "focus the prompt"],
         ["[  ]", "shrink / grow the focused pane"],
         ["{  }", "grow left / right column"],
-        ["v", "fullscreen the focused pane"],
+        ["v", "fullscreen the focused pane (sessions pane: cycle visibility)"],
         ["n / r", "new session / refresh"],
         ["a", "linked items — artifacts to download, links to open"],
         ["m", "cycle inspector tab"],
@@ -5843,6 +5966,8 @@ const KEYBINDING_HELP = [
         ["+ / -", "expand / collapse subtree"],
         ["t", "rename"],
         ["P", "pin / unpin"],
+        ["v", "cycle visibility (private / shared read / shared write)"],
+        ["S", "share — grant / revoke individual access"],
         ["V / space", "select mode / toggle selection"],
         ["f", "filter"],
     ] },

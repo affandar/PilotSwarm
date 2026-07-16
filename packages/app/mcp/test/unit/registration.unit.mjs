@@ -118,6 +118,9 @@ const ALWAYS_TOOLS = [
     "list_session_groups", "manage_session_group", "get_session_metrics", "get_fleet_overview",
     "list_child_outcomes", "get_execution_history", "list_agents", "get_agent_tree",
     "debug_session",
+    // Security model: sharing management + the grantee-lookup helper.
+    "set_session_visibility", "grant_session_share", "revoke_session_share",
+    "list_session_shares", "list_known_users",
 ];
 
 function expectAll(names, tools, present, label) {

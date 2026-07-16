@@ -83,6 +83,7 @@ The advanced scenarios deliberately include real durability moments —
 
 ## Reference
 
+- [Access, sharing & security](./security-and-sharing.md) — who can see and act on a session, visibility levels, targeted shares, roles, and admin break-glass
 - [Keybindings cheat sheet](./keybindings.md) — every TUI key in one table
 - [Configuration](../developer/reference/configuration.md) — environment variables, blob storage, worker/client options
 - [Architecture](../architecture/system.md) — what's underneath the UI

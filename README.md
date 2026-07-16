@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.13** — Reliability and contract hardening: pending answers no longer wait behind the 30-minute affinity hold; GitHub credential failures stay visible and recover after the key is repaired; reused SDK/MCP handles cannot return stale responses; child model/context inheritance and result references are explicit; and agent `skills:` declarations preload their named plugin skills. The published app README also includes complete Entra, remote TUI, and MCP client setup.
+> **Latest release: v0.5.14** — Multi-user security and sharing: owner-scoped session trees, private/shared visibility, targeted read/write grants, server-stamped sender identity, audited admin break-glass access, dev-auth personas, and synchronized portal/TUI/MCP controls. Also fixes processed prompts left visibly queued and advances durable orchestration to replay-safe `1.0.61`.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 

@@ -504,7 +504,7 @@ export function createSessionProxy(
             prompt: string,
             bootstrap?: boolean,
             turnIndex?: number,
-            turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; cycleOrigin?: "cron" | "cron_at"; retryCount?: number; clientMessageIds?: string[]; snapshot?: { expectedVersion?: number; turnKey: string } },
+            turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; cycleOrigin?: "cron" | "cron_at"; retryCount?: number; clientMessageIds?: string[]; sender?: unknown; snapshot?: { expectedVersion?: number; turnKey: string } },
         ) {
             return ctx.scheduleActivityOnSession(
                 "runTurn",
@@ -522,6 +522,10 @@ export function createSessionProxy(
                     ...(turnMeta?.clientMessageIds && turnMeta.clientMessageIds.length > 0
                         ? { clientMessageIds: turnMeta.clientMessageIds }
                         : {}),
+                    // Security-model sender identity: forward it into the runTurn
+                    // activity input so the worker records it on the user.message
+                    // event (session-proxy reads input.sender below).
+                    ...(turnMeta?.sender ? { sender: turnMeta.sender } : {}),
                     ...(turnMeta?.snapshot ? { snapshot: turnMeta.snapshot } : {}),
                 },
                 affinityKey,
@@ -1948,6 +1952,13 @@ export function registerActivities(
                 const eventData: Record<string, unknown> = { content: input.prompt };
                 if (incomingClientMessageIds.length > 0) {
                     eventData.clientMessageIds = incomingClientMessageIds;
+                }
+                // Security model: structured sender identity (server-stamped
+                // at the API edge) rides the durable user.message event so
+                // UIs can render attribution chips without parsing [FROM:]
+                // markers out of the prompt text.
+                if ((input as any).sender && typeof (input as any).sender === "object") {
+                    eventData.sender = (input as any).sender;
                 }
                 const capturedPromptEventType = promptEventType;
                 trackEventWrite(cmsRetryBestEffort(

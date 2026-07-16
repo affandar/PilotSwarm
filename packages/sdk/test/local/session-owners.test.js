@@ -33,13 +33,14 @@ describe("session owner catalog", () => {
         await directQuery(getEnv(), "SELECT 1");
     });
 
-    it("lazily registers users with first-seen profile fields", { timeout: TIMEOUT }, async () => {
+    it("registers users once and refreshes display fields on sighting (migration 0030)", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const catalog = await PgSessionCatalogProvider.create(env.store, env.cmsSchema);
         await catalog.initialize();
         const subject = uniqueId("owner-user");
         const firstSessionId = uniqueId("owned-session-a");
         const secondSessionId = uniqueId("owned-session-b");
+        const thirdSessionId = uniqueId("owned-session-c");
 
         try {
             await catalog.createSession(firstSessionId, {
@@ -50,6 +51,8 @@ describe("session owner catalog", () => {
                     displayName: "First Seen",
                 },
             });
+            // A later sighting with real display fields REFRESHES them
+            // (update-on-sighting) — one row, latest non-null values win.
             await catalog.createSession(secondSessionId, {
                 owner: {
                     provider: "test",
@@ -65,13 +68,27 @@ describe("session owner catalog", () => {
                 ["test", subject],
             );
             assertEqual(users.length, 1, "same provider/subject should register one user");
-            assertEqual(users[0].email, "first@example.com", "first-seen email should win");
-            assertEqual(users[0].display_name, "First Seen", "first-seen display name should win");
+            assertEqual(users[0].email, "second@example.com", "sighting refreshes email");
+            assertEqual(users[0].display_name, "Second Seen", "sighting refreshes display name");
 
+            // A sighting carrying NULL display fields (e.g. a share grant) must
+            // NOT wipe the existing values.
+            await catalog.createSession(thirdSessionId, {
+                owner: { provider: "test", subject, email: null, displayName: null },
+            });
+            const { rows: afterNull } = await directQuery(
+                env,
+                `SELECT email, display_name FROM "${env.cmsSchema}".users WHERE provider = $1 AND subject = $2`,
+                ["test", subject],
+            );
+            assertEqual(afterNull[0].email, "second@example.com", "null sighting does not wipe email");
+            assertEqual(afterNull[0].display_name, "Second Seen", "null sighting does not wipe display name");
+
+            // The join resolves the (refreshed) profile for every owned session.
             const firstRow = await catalog.getSession(firstSessionId);
             const secondRow = await catalog.getSession(secondSessionId);
-            assertEqual(firstRow?.owner?.email, "first@example.com", "first session should expose joined owner email");
-            assertEqual(secondRow?.owner?.displayName, "First Seen", "second session should expose first-seen user profile");
+            assertEqual(firstRow?.owner?.email, "second@example.com", "first session exposes the refreshed owner email");
+            assertEqual(secondRow?.owner?.displayName, "Second Seen", "second session exposes the refreshed owner profile");
         } finally {
             await catalog.close();
         }

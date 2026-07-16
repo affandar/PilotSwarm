@@ -2257,6 +2257,13 @@ body.is-resizing-pane-y * {
     flex-wrap: nowrap;
   }
 
+  /* Single-line toolbar: trim per-button padding so all eight icons fit a
+     phone width; ps-toolbar-row-actions scroll-overflows on the narrowest. */
+  .ps-toolbar.is-mobile .ps-icon-button {
+    flex: 0 0 auto;
+    padding: 8px 9px;
+  }
+
   .ps-toolbar.is-mobile .ps-toolbar-status {
     margin-left: auto;
     max-width: 44%;
@@ -2526,4 +2533,331 @@ body.is-resizing-pane-y * {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+/* ── Dev auth provider (test personas) ─────────────────────────────────── */
+
+.portal-dev-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: var(--ps-radius-sm);
+  background: repeating-linear-gradient(
+    -45deg,
+    rgba(234, 179, 8, 0.22),
+    rgba(234, 179, 8, 0.22) 12px,
+    rgba(234, 179, 8, 0.10) 12px,
+    rgba(234, 179, 8, 0.10) 24px
+  );
+  border: 1px solid rgba(234, 179, 8, 0.55);
+  color: var(--ps-foreground);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin-bottom: 14px;
+}
+
+.portal-dev-banner.is-fixed {
+  border-radius: 0;
+  border-left: none;
+  border-right: none;
+  border-top: none;
+  margin-bottom: 0;
+}
+
+.portal-dev-persona-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.portal-dev-persona-button {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 14px;
+  border: 1px solid var(--ps-modal-border);
+  border-radius: var(--ps-radius-sm);
+  background: color-mix(in srgb, var(--ps-surface) 94%, transparent);
+  color: var(--ps-foreground);
+  cursor: pointer;
+  text-align: left;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.portal-dev-persona-button:hover {
+  background: var(--ps-highlight-background);
+  color: var(--ps-highlight-foreground);
+}
+
+.portal-dev-persona-initials {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--ps-foreground) 12%, transparent);
+  font-size: 11px;
+  font-weight: 700;
+  flex: none;
+}
+
+.portal-dev-persona-name {
+  flex: 1;
+  font-weight: 600;
+}
+
+.portal-dev-persona-role {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ps-muted);
+}
+
+.portal-dev-persona-role.is-admin {
+  color: #f59e0b;
+  font-weight: 700;
+}
+
+/* ── Session access bar + share modal (security model) ─────────────────── */
+
+.ps-access-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 6px 8px;
+  font-size: 12px;
+  color: var(--ps-muted);
+}
+
+.ps-access-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--ps-modal-border);
+  background: color-mix(in srgb, var(--ps-surface) 92%, transparent);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.ps-access-owner { font-style: italic; }
+
+.ps-access-readonly {
+  color: #f59e0b;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 11px;
+}
+
+.ps-access-spacer { flex: 1; }
+
+.ps-composer-readonly {
+  padding: 12px 14px;
+  border: 1px dashed var(--ps-modal-border);
+  border-radius: var(--ps-radius-sm);
+  color: var(--ps-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.ps-share-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 24px;
+}
+
+.ps-share-modal {
+  width: min(440px, 100%);
+  max-height: 80vh;
+  overflow-y: auto;
+  background: var(--ps-modal-background, var(--ps-surface));
+  border: 1px solid var(--ps-modal-border);
+  border-radius: var(--ps-radius-md);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.4);
+  padding: 18px;
+  color: var(--ps-foreground);
+}
+
+.ps-share-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 16px;
+  font-weight: 700;
+  margin-bottom: 12px;
+}
+
+.ps-share-section-label {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ps-muted);
+  margin: 14px 0 6px;
+}
+
+.ps-share-radio {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: var(--ps-radius-sm);
+  cursor: pointer;
+  font-size: 13px;
+}
+.ps-share-radio.is-active { background: color-mix(in srgb, var(--ps-highlight-background) 22%, transparent); }
+.ps-share-radio-glyph { width: 18px; text-align: center; }
+.ps-share-radio-hint { color: var(--ps-muted); font-size: 11px; margin-left: auto; }
+
+.ps-share-grant-row,
+.ps-share-add-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+}
+.ps-share-grant-name { flex: 1; font-size: 13px; }
+.ps-share-grant-access {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ps-muted);
+}
+.ps-share-empty { color: var(--ps-muted); font-size: 12px; padding: 4px 0; }
+
+.ps-share-add-input {
+  flex: 1;
+  padding: 6px 8px;
+  border: 1px solid var(--ps-modal-border);
+  border-radius: var(--ps-radius-sm);
+  background: var(--ps-background);
+  color: var(--ps-foreground);
+  font-size: 13px;
+}
+.ps-share-add-select {
+  padding: 6px 8px;
+  border: 1px solid var(--ps-modal-border);
+  border-radius: var(--ps-radius-sm);
+  background: var(--ps-background);
+  color: var(--ps-foreground);
+  font-size: 13px;
+}
+
+.ps-share-error {
+  margin-top: 10px;
+  color: #ef4444;
+  font-size: 12px;
+}
+.ps-share-foot-hint {
+  margin-top: 14px;
+  color: var(--ps-muted);
+  font-size: 11px;
+}
+
+.ps-share-section-sub {
+  color: var(--ps-muted);
+  font-size: 11px;
+  line-height: 1.4;
+  margin: -2px 0 6px;
+}
+
+.ps-share-add-wrap { position: relative; }
+
+.ps-share-suggestions {
+  display: flex;
+  flex-direction: column;
+  margin-top: 4px;
+  border: 1px solid var(--ps-modal-border);
+  border-radius: var(--ps-radius-sm);
+  background: var(--ps-background);
+  /* At most ~3 rows visible; scroll the rest so a large directory stays tidy. */
+  max-height: 108px;
+  overflow-y: auto;
+}
+
+.ps-share-suggestion {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 10px;
+  border: none;
+  background: transparent;
+  color: var(--ps-foreground);
+  cursor: pointer;
+  text-align: left;
+  font-size: 13px;
+}
+.ps-share-suggestion:hover {
+  background: var(--ps-highlight-background);
+  color: var(--ps-highlight-foreground);
+}
+.ps-share-suggestion-name { font-weight: 600; }
+.ps-share-suggestion-email { color: var(--ps-muted); font-size: 11px; }
+.ps-share-suggestion:hover .ps-share-suggestion-email { color: inherit; }
+
+/* ── Icon toolbar buttons + long-press tooltip (mobile-friendly) ───────── */
+
+.ps-icon-button {
+  position: relative;
+  min-width: 44px;
+  padding: 8px 12px;
+  /* Long-press shows OUR tooltip; keep iOS from treating the glyph as
+     selectable text (loupe) or opening the copy/look-up callout, and drop
+     the 300ms double-tap-zoom delay. Paired with onContextMenu prevention
+     in IconButton. */
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: manipulation;
+}
+
+.ps-icon-button-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+
+/* Tooltip renders BELOW the button so top-of-page toolbars don't clip it. */
+/* Portaled to <body> and positioned via fixed coords from the button rect, so
+   it can never be clipped or overpainted by the toolbar/pane stacking. The
+   inline left/top are the button's horizontal center and the chosen edge. */
+.ps-icon-tooltip {
+  position: fixed;
+  max-width: 220px;
+  white-space: normal;
+  text-align: center;
+  background: var(--ps-foreground);
+  color: var(--ps-background);
+  padding: 5px 9px;
+  border-radius: var(--ps-radius-sm);
+  font-size: 11px;
+  line-height: 1.35;
+  font-weight: 500;
+  z-index: 100000;
+  pointer-events: none;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+}
+.ps-icon-tooltip.is-below { transform: translateX(-50%); }
+.ps-icon-tooltip.is-above { transform: translate(-50%, -100%); }
+
+.ps-share-glyph {
+  width: 18px;
+  height: 18px;
+  display: block;
 }

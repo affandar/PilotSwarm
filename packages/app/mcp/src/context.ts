@@ -53,6 +53,15 @@ export interface ServerContext {
      * [admin]-tagged tools register iff true.
      */
     admin: boolean;
+    /**
+     * The caller's normalized role (`admin` | `user` | `anonymous` | null),
+     * and the deployment's ownership/visibility posture. Web mode reads these
+     * from /auth/me and /bootstrap; direct mode is privileged (`admin`) with
+     * enforcement off. Surfaced by get_capabilities so an agent can explain a
+     * refusal instead of retrying blindly.
+     */
+    role: string | null;
+    authz: { ownershipEnforced: boolean; defaultVisibility: string; systemVisibility: string };
     /** True when running over the Web API (`--api-url`); false in direct mode. */
     webMode: boolean;
     models: ModelProviderRegistry | null;
@@ -97,6 +106,8 @@ export async function createContext(opts: CreateContextOptions): Promise<ServerC
     let graph: GraphStore | null = null;
     let api: ApiClient | null = null;
     let admin = false;
+    let ctxRole: string | null = null;
+    let ctxAuthz = { ownershipEnforced: false, defaultVisibility: "private", systemVisibility: "read" };
     let webAgents: AgentConfig[] | null = null;
 
     if (opts.apiUrl) {
@@ -125,8 +136,23 @@ export async function createContext(opts: CreateContextOptions): Promise<ServerC
             const me: any = await api.getAuthContext();
             const role = me?.authorization?.role;
             admin = role === "admin" || role === "anonymous";
+            ctxRole = typeof role === "string" ? role : null;
         } catch {
             admin = false;
+        }
+
+        // Ownership/visibility posture from /bootstrap (security model).
+        try {
+            const boot: any = await api.getBootstrap();
+            if (boot?.authz && typeof boot.authz === "object") {
+                ctxAuthz = {
+                    ownershipEnforced: Boolean(boot.authz.ownershipEnforced),
+                    defaultVisibility: String(boot.authz.defaultVisibility || "private"),
+                    systemVisibility: String(boot.authz.systemVisibility || "read"),
+                };
+            }
+        } catch {
+            // leave defaults
         }
 
         // Registered agents: the deployment's creatable-agent catalog is the
@@ -150,6 +176,7 @@ export async function createContext(opts: CreateContextOptions): Promise<ServerC
         // Direct mode (internal/testing): straight to the datastore. A
         // process holding DATABASE_URL is definitionally privileged.
         admin = true;
+        ctxRole = "admin";
         client = new PilotSwarmClient({ store: opts.store });
         await client.start();
         mgmt = new PilotSwarmManagementClient({ store: opts.store });
@@ -256,6 +283,8 @@ export async function createContext(opts: CreateContextOptions): Promise<ServerC
         graph,
         api,
         admin,
+        role: ctxRole,
+        authz: ctxAuthz,
         webMode: Boolean(opts.apiUrl),
         models,
         skills,

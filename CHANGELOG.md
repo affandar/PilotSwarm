@@ -1,6 +1,48 @@
 # Changelog
 
-## Unreleased
+## 0.5.14 — 2026-07-15
+
+### Security model — per-user ownership, visibility, and sharing
+
+A multi-user access model for deployments where more than one person shares a
+fleet. Design: `docs/proposals/user-admin-security-model.md`. Dark-launch by
+default (`AUTHZ_ENFORCE_OWNERSHIP=false`) — classification and audit run, but
+nothing is blocked until an operator flips enforcement on.
+
+- **Ownership is now an enforcement boundary, not just a label.** Sessions have
+  a tree-root `visibility` (`private` | `shared_read` | `shared_write`) plus
+  targeted per-user `session_shares` (read/write). Access resolves at the
+  session-tree root, so sharing a session shares its sub-agent tree. Users see
+  and act only on sessions they own or that are shared with them; admins retain
+  fleet-wide visibility, with break-glass reads of private sessions recorded in
+  a new `authz_audit` trail. Migration 0029 adds `sessions.visibility` /
+  `sessions.root_session_id`, `session_shares`, `authz_audit`, and
+  viewer-scoped list procedures.
+- **Every Web API operation carries an access class** (`session:read/write/
+  manage/destroy/share`, `fleet:read/admin`, …) enforced at the single runtime
+  dispatch chokepoint (`packages/app/web/runtime.js`), with WebSocket subscribe
+  gating and artifact-route gating. Unreadable session ids return `404` (no
+  existence oracle). `session:share` and `fleet:admin` stay hard-enforced even
+  during dark-launch.
+- **Messages carry a server-stamped sender identity.** `user.message` events
+  and the durable queue payload record who sent each message
+  (`provider`/`subject`/`display`/`relation`/`origin`), stamped from the
+  validated auth context — never client-supplied. In multi-writer sessions the
+  agent sees a `[FROM: name (relation)]` attribution line and a one-shot
+  `[SHARED SESSION]` preamble establishing owner priority (the owner's
+  standing directives outrank a collaborator's). Single-writer sessions are
+  byte-identical to before; forged `[FROM:]`/`[SHARED SESSION]` markers in
+  user text are neutralized.
+- **`dev` auth provider for local multi-user testing.** Five predefined
+  personas authenticate as `Bearer dev:<persona>` with no IdP. Fail-closed:
+  never inferred, requires `PORTAL_AUTH_DEV_ALLOW=true`, and refuses to start
+  when any `PORTAL_AUTH_ENTRA_*` env is set. Portal sign-in becomes a persona
+  picker; `sessionStorage` makes each browser tab a different user.
+- **Portal + MCP surfaces.** Portal gains a visibility chip, a read-only
+  composer for view-only sessions, and an owner/admin share dialog. MCP
+  `get_capabilities` reports `role`/`ownership_enforced`/`default_visibility`;
+  new `set_session_visibility` / `grant_session_share` /
+  `revoke_session_share` / `list_session_shares` tools (server-enforced).
 
 ### SDK / Portal / TUI
 
@@ -9,6 +51,12 @@
   the existing post-turn event-write barrier. A fast turn can no longer finish
   before its durable `user.message` acknowledgement, including the
   `clientMessageIds` the shared portal/TUI uses to remove the local queued item.
+- **Durable orchestration `1.0.61`.** The published `1.0.60` schedule is frozen
+  for replay safety; sender-aware shared-session prompt state and queue inputs
+  run only under the new version.
+- **Migration execution modes are fail-closed.** Migration definitions must
+  choose exactly one non-empty transactional `sql` body or non-transactional
+  idempotent `steps` list before any database connection is acquired.
 
 ## 0.5.13 — 2026-07-14
 

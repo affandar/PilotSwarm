@@ -147,6 +147,64 @@ export interface SessionRow {
     summaryUpdatedAt: Date | null;
     /** Authenticated user associated with this session, if any. */
     owner: SessionOwnerInfo | null;
+    /**
+     * Sharing level of this row. Meaningful on ROOT sessions only — access
+     * for a child always resolves through its root's visibility/shares.
+     */
+    visibility: SessionVisibility;
+    /** Denormalized session-tree root (self for top-level sessions). */
+    rootSessionId: string | null;
+}
+
+/** Sharing level of a session tree, set on the root row. */
+export type SessionVisibility = "private" | "shared_read" | "shared_write";
+
+/** A targeted per-user grant on a session tree. */
+export interface SessionShareInfo {
+    provider: string;
+    subject: string;
+    email: string | null;
+    displayName: string | null;
+    access: "read" | "write";
+    grantedAt: Date;
+    grantedByDisplay: string | null;
+}
+
+/**
+ * One round-trip access snapshot for the enforcement predicate: the root's
+ * system flag, visibility, owner, and the viewer's targeted share. Facts
+ * only — combining them with the caller's role is the caller's concern.
+ */
+export interface SessionAccessSnapshot {
+    rootSessionId: string;
+    isSystem: boolean;
+    visibility: SessionVisibility;
+    owner: SessionOwnerInfo | null;
+    viewerIsOwner: boolean;
+    viewerShareAccess: "read" | "write" | null;
+}
+
+/** A directory entry for share autocomplete. */
+export interface KnownUserInfo {
+    provider: string;
+    subject: string;
+    email: string | null;
+    displayName: string | null;
+}
+
+/** One authz audit record (denial, break-glass read, share change). */
+export interface AuthzAuditEntry {
+    auditId: number;
+    occurredAt: Date;
+    actorProvider: string | null;
+    actorSubject: string | null;
+    actorDisplay: string | null;
+    action: string;
+    sessionId: string | null;
+    target: string | null;
+    decision: string;
+    reason: string | null;
+    details: Record<string, unknown>;
 }
 
 /** Fields that can be updated on a session row. */
@@ -613,6 +671,8 @@ export interface SessionCatalog {
         splashMobile?: string;
         groupId?: string | null;
         owner?: SessionOwnerInfo | null;
+        /** Sharing level for a new ROOT session; children resolve through their root. */
+        visibility?: SessionVisibility | null;
     }): Promise<void>;
 
     /** Update one or more fields on an existing session. */
@@ -637,10 +697,49 @@ export interface SessionCatalog {
         cursorUpdatedAt?: Date | null;
         cursorSessionId?: string | null;
         includeDeleted?: boolean;
+        /** When set, restrict rows to what this principal can read (viewer-scoped listing). */
+        viewer?: { provider: string; subject: string; systemVisible?: boolean } | null;
     }): Promise<SessionRow[]>;
+
+    /** List sessions visible to a principal (non-paged viewer-scoped listing). */
+    listSessionsVisible(viewer: { provider: string; subject: string; systemVisible?: boolean }): Promise<SessionRow[]>;
+
+    /** Member directory (for share autocomplete); excludes synthetic principals. */
+    listKnownUsers(opts?: { limit?: number }): Promise<KnownUserInfo[]>;
 
     /** Get a single session by ID (null if not found or deleted). */
     getSession(sessionId: string): Promise<SessionRow | null>;
+
+    // ── Visibility / sharing / audit (security model) ─────────
+
+    /** Set the sharing level on the ROOT of the given session's tree. */
+    setSessionVisibility(sessionId: string, visibility: SessionVisibility): Promise<void>;
+
+    /** Grant (or update) a targeted share on the session's tree root. */
+    grantSessionShare(sessionId: string, grantee: SessionOwnerInfo, access: "read" | "write", grantedBy?: SessionOwnerInfo | null): Promise<void>;
+
+    /** Revoke a targeted share on the session's tree root. */
+    revokeSessionShare(sessionId: string, grantee: { provider: string; subject: string }): Promise<void>;
+
+    /** List targeted shares on the session's tree root. */
+    listSessionShares(sessionId: string): Promise<SessionShareInfo[]>;
+
+    /** Access snapshot for the enforcement predicate (null = missing/deleted session). */
+    getSessionAccess(sessionId: string, viewer: { provider: string; subject: string }): Promise<SessionAccessSnapshot | null>;
+
+    /** Append one authz audit record. */
+    recordAuthzAudit(entry: {
+        actor?: { provider?: string | null; subject?: string | null; display?: string | null } | null;
+        action: string;
+        sessionId?: string | null;
+        target?: string | null;
+        decision: string;
+        reason?: string | null;
+        details?: Record<string, unknown> | null;
+    }): Promise<void>;
+
+    /** Read authz audit records, newest first (optionally scoped to one session). */
+    listAuthzAudit(opts?: { limit?: number; sessionId?: string | null }): Promise<AuthzAuditEntry[]>;
 
     /** Get all descendant session IDs (children, grandchildren, etc.) of a given session. */
     getDescendantSessionIds(sessionId: string): Promise<string[]>;
@@ -821,6 +920,15 @@ function sqlForSchema(schema: string) {
             createSession:              `${s}.cms_create_session`,
             setSessionOwner:            `${s}.cms_set_session_owner`,
             inheritSessionOwner:        `${s}.cms_inherit_session_owner`,
+            setSessionVisibility:       `${s}.cms_set_session_visibility`,
+            grantSessionShare:          `${s}.cms_grant_session_share`,
+            revokeSessionShare:         `${s}.cms_revoke_session_share`,
+            listSessionShares:          `${s}.cms_list_session_shares`,
+            getSessionAccess:           `${s}.cms_get_session_access`,
+            recordAuthzAudit:           `${s}.cms_record_authz_audit`,
+            listAuthzAudit:             `${s}.cms_list_authz_audit`,
+            listSessionsVisible:        `${s}.cms_list_sessions_visible`,
+            listUsers:                  `${s}.cms_list_users`,
             updateSession:              `${s}.cms_update_session`,
             softDeleteSession:          `${s}.cms_soft_delete_session`,
             archiveSystemSessionForRestart: `${s}.cms_archive_system_session_for_restart`,
@@ -945,19 +1053,26 @@ export class PgSessionCatalog implements SessionCatalog {
         splashMobile?: string;
         groupId?: string | null;
         owner?: SessionOwnerInfo | null;
+        visibility?: SessionVisibility | null;
     }): Promise<void> {
         const explicitGroupId = typeof opts?.groupId === "string" && opts.groupId.trim()
             ? opts.groupId.trim()
             : null;
         const createGroupId = explicitGroupId ? null : opts?.groupId ?? null;
-        // A 42883 mid-transaction aborts it, so probe the 9-arg overload's
+        // A 42883 mid-transaction aborts it, so probe the newer overloads'
         // existence up front (once) instead of catch-and-retry inside BEGIN.
-        const useSplashMobileCreate = Boolean(opts?.splashMobile) && await this.supportsSplashMobileCreate();
+        const useVisibilityCreate = await this.supportsVisibilityCreate();
+        const useSplashMobileCreate = !useVisibilityCreate && Boolean(opts?.splashMobile) && await this.supportsSplashMobileCreate();
         const client = await this.pool.connect();
         try {
             await client.query("BEGIN");
             const baseArgs = [sessionId, opts?.model ?? null, opts?.reasoningEffort ?? null, opts?.parentSessionId ?? null, opts?.isSystem ?? false, opts?.agentId ?? null, opts?.splash ?? null, createGroupId];
-            if (useSplashMobileCreate) {
+            if (useVisibilityCreate) {
+                await client.query(
+                    `SELECT ${this.sql.fn.createSession}($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+                    [...baseArgs, opts?.splashMobile ?? null, opts?.visibility ?? null],
+                );
+            } else if (useSplashMobileCreate) {
                 await client.query(
                     `SELECT ${this.sql.fn.createSession}($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
                     [...baseArgs, opts?.splashMobile ?? null],
@@ -1016,6 +1131,19 @@ export class PgSessionCatalog implements SessionCatalog {
         );
         this._splashMobileCreateSupported = Boolean(rows[0]?.supported);
         return this._splashMobileCreateSupported;
+    }
+
+    private _visibilityCreateSupported: boolean | null = null;
+
+    /** Whether the DB has migration 0029's 10-arg cms_create_session overload. Cached per catalog instance. */
+    private async supportsVisibilityCreate(): Promise<boolean> {
+        if (this._visibilityCreateSupported !== null) return this._visibilityCreateSupported;
+        const { rows } = await this.pool.query(
+            `SELECT to_regprocedure($1) IS NOT NULL AS supported`,
+            [`${this.sql.fn.createSession}(text,text,text,text,boolean,text,text,text,text,text)`],
+        );
+        this._visibilityCreateSupported = Boolean(rows[0]?.supported);
+        return this._visibilityCreateSupported;
     }
 
     async updateSession(sessionId: string, updates: SessionRowUpdates): Promise<void> {
@@ -1090,17 +1218,42 @@ export class PgSessionCatalog implements SessionCatalog {
         cursorUpdatedAt?: Date | null;
         cursorSessionId?: string | null;
         includeDeleted?: boolean;
+        viewer?: { provider: string; subject: string; systemVisible?: boolean } | null;
     }): Promise<SessionRow[]> {
         const { rows } = await this.pool.query(
-            `SELECT * FROM ${this.sql.fn.listSessionsPage}($1, $2, $3, $4)`,
+            `SELECT * FROM ${this.sql.fn.listSessionsPage}($1, $2, $3, $4, $5, $6, $7)`,
             [
                 opts?.limit ?? null,
                 opts?.cursorUpdatedAt ?? null,
                 opts?.cursorSessionId ?? null,
                 opts?.includeDeleted ?? false,
+                opts?.viewer?.provider ?? null,
+                opts?.viewer?.subject ?? null,
+                opts?.viewer?.systemVisible ?? true,
             ],
         );
         return rows.map(rowToSessionRow);
+    }
+
+    async listSessionsVisible(viewer: { provider: string; subject: string; systemVisible?: boolean }): Promise<SessionRow[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.listSessionsVisible}($1, $2, $3)`,
+            [viewer.provider, viewer.subject, viewer.systemVisible ?? true],
+        );
+        return rows.map(rowToSessionRow);
+    }
+
+    async listKnownUsers(opts?: { limit?: number }): Promise<KnownUserInfo[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.listUsers}($1)`,
+            [opts?.limit ?? null],
+        );
+        return rows.map((row: any) => ({
+            provider: row.provider,
+            subject: row.subject,
+            email: row.email ?? null,
+            displayName: row.display_name ?? null,
+        }));
     }
 
     async getSession(sessionId: string): Promise<SessionRow | null> {
@@ -1109,6 +1262,130 @@ export class PgSessionCatalog implements SessionCatalog {
             [sessionId],
         );
         return rows.length > 0 ? rowToSessionRow(rows[0]) : null;
+    }
+
+    async setSessionVisibility(sessionId: string, visibility: SessionVisibility): Promise<void> {
+        await this.pool.query(
+            `SELECT ${this.sql.fn.setSessionVisibility}($1, $2)`,
+            [sessionId, visibility],
+        );
+    }
+
+    async grantSessionShare(
+        sessionId: string,
+        grantee: SessionOwnerInfo,
+        access: "read" | "write",
+        grantedBy?: SessionOwnerInfo | null,
+    ): Promise<void> {
+        await this.pool.query(
+            `SELECT ${this.sql.fn.grantSessionShare}($1, $2, $3, $4, $5, $6, $7, $8)`,
+            [
+                sessionId,
+                grantee.provider,
+                grantee.subject,
+                grantee.email ?? null,
+                grantee.displayName ?? null,
+                access,
+                grantedBy?.provider ?? null,
+                grantedBy?.subject ?? null,
+            ],
+        );
+    }
+
+    async revokeSessionShare(sessionId: string, grantee: { provider: string; subject: string }): Promise<void> {
+        await this.pool.query(
+            `SELECT ${this.sql.fn.revokeSessionShare}($1, $2, $3)`,
+            [sessionId, grantee.provider, grantee.subject],
+        );
+    }
+
+    async listSessionShares(sessionId: string): Promise<SessionShareInfo[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.listSessionShares}($1)`,
+            [sessionId],
+        );
+        return rows.map((row: any) => ({
+            provider: row.provider,
+            subject: row.subject,
+            email: row.email ?? null,
+            displayName: row.display_name ?? null,
+            access: row.access,
+            grantedAt: new Date(row.granted_at),
+            grantedByDisplay: row.granted_by_display ?? null,
+        }));
+    }
+
+    async getSessionAccess(
+        sessionId: string,
+        viewer: { provider: string; subject: string },
+    ): Promise<SessionAccessSnapshot | null> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.getSessionAccess}($1, $2, $3)`,
+            [sessionId, viewer.provider ?? "", viewer.subject ?? ""],
+        );
+        if (rows.length === 0) return null;
+        const row = rows[0];
+        const owner = row.owner_provider && row.owner_subject
+            ? {
+                provider: row.owner_provider,
+                subject: row.owner_subject,
+                email: row.owner_email ?? null,
+                displayName: row.owner_display_name ?? null,
+            }
+            : null;
+        return {
+            rootSessionId: row.root_session_id,
+            isSystem: row.is_system ?? false,
+            visibility: row.visibility ?? "private",
+            owner,
+            viewerIsOwner: row.viewer_is_owner ?? false,
+            viewerShareAccess: row.viewer_share_access ?? null,
+        };
+    }
+
+    async recordAuthzAudit(entry: {
+        actor?: { provider?: string | null; subject?: string | null; display?: string | null } | null;
+        action: string;
+        sessionId?: string | null;
+        target?: string | null;
+        decision: string;
+        reason?: string | null;
+        details?: Record<string, unknown> | null;
+    }): Promise<void> {
+        await this.pool.query(
+            `SELECT ${this.sql.fn.recordAuthzAudit}($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+            [
+                entry.actor?.provider ?? null,
+                entry.actor?.subject ?? null,
+                entry.actor?.display ?? null,
+                entry.action,
+                entry.sessionId ?? null,
+                entry.target ?? null,
+                entry.decision,
+                entry.reason ?? null,
+                JSON.stringify(entry.details ?? {}),
+            ],
+        );
+    }
+
+    async listAuthzAudit(opts?: { limit?: number; sessionId?: string | null }): Promise<AuthzAuditEntry[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.listAuthzAudit}($1, $2)`,
+            [opts?.limit ?? null, opts?.sessionId ?? null],
+        );
+        return rows.map((row: any) => ({
+            auditId: Number(row.audit_id),
+            occurredAt: new Date(row.occurred_at),
+            actorProvider: row.actor_provider ?? null,
+            actorSubject: row.actor_subject ?? null,
+            actorDisplay: row.actor_display ?? null,
+            action: row.action,
+            sessionId: row.session_id ?? null,
+            target: row.target ?? null,
+            decision: row.decision,
+            reason: row.reason ?? null,
+            details: row.details ?? {},
+        }));
     }
 
     async getDescendantSessionIds(sessionId: string): Promise<string[]> {
@@ -1923,6 +2200,8 @@ function rowToSessionRow(row: any): SessionRow {
         summaryState: row.summary_state ?? null,
         summaryUpdatedAt: row.summary_updated_at ? new Date(row.summary_updated_at) : null,
         owner,
+        visibility: row.visibility ?? "private",
+        rootSessionId: row.root_session_id ?? row.session_id ?? null,
     };
 }
 

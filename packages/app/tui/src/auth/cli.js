@@ -33,6 +33,19 @@ export async function bootstrapApiAuth(apiUrl, { output = console.error, interac
     if (!authConfig?.enabled || authConfig?.provider === "none") {
         return { authConfig, getAccessToken: async () => null };
     }
+    if (authConfig.provider === "dev") {
+        // Dev roster provider (multi-user test deployments): the bearer token
+        // is `dev:<persona>`. Explicit opt-in via env — no default identity.
+        const persona = String(process.env.PILOTSWARM_DEV_USER || "").trim().toLowerCase();
+        if (!persona) {
+            throw new Error(
+                `${apiUrl} uses the dev auth provider. Set PILOTSWARM_DEV_USER to a persona id `
+                + `(e.g. PILOTSWARM_DEV_USER=alice) to choose who you sign in as.`,
+            );
+        }
+        output(`Signed in to ${apiUrl} as dev persona '${persona}'.`);
+        return { authConfig, getAccessToken: async () => `dev:${persona}` };
+    }
     if (authConfig.provider !== "entra") {
         throw new Error(`Unsupported auth provider '${authConfig.provider}' reported by ${apiUrl}.`);
     }

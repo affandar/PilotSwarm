@@ -100,6 +100,18 @@ export interface DurableSessionState {
     legacyPendingMessage: unknown;
 
     orchestrationResult: string | null;
+
+    // ── Multi-writer attribution (security model) ────────────────
+    // Distinct sender identity keys observed on sender-carrying messages.
+    // Only populated when payloads carry the (optional) sender field, so
+    // pre-sender histories replay identically.
+    observedSenderKeys: string[];
+    /** True once a non-owner sender (or a second distinct sender) appears. */
+    multiWriter: boolean;
+    /** Whether the [SHARED SESSION] preamble has been issued to the agent. */
+    sharedPreambleSent: boolean;
+    /** Owner display name learned from an owner-relation sender. */
+    ownerDisplay?: string;
 }
 
 /** Immutable per-execution configuration derived from the orchestration input. */
@@ -233,6 +245,14 @@ export function createInitialState(input: OrchestrationInput, options: DurableSe
         legacyPendingMessage: undefined,
 
         orchestrationResult: null,
+
+        // Multi-writer attribution: carried across continue-as-new so a
+        // shared session keeps its attribution posture (fields absent on
+        // legacy CAN inputs normalize to single-writer defaults).
+        observedSenderKeys: Array.isArray((input as any).observedSenderKeys) ? [...(input as any).observedSenderKeys] : [],
+        multiWriter: (input as any).multiWriter === true,
+        sharedPreambleSent: (input as any).sharedPreambleSent === true,
+        ownerDisplay: typeof (input as any).ownerDisplay === "string" ? (input as any).ownerDisplay : undefined,
     };
 }
 

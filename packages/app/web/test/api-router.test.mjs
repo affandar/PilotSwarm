@@ -237,3 +237,56 @@ test("binary artifact download streams with attachment headers", async () => {
         await close();
     }
 });
+
+// ── Access classification (security model) ───────────────────────────────
+
+const VALID_ACCESS_CLASSES = new Set([
+    "authed",
+    "session:list", "session:create", "session:read", "session:write",
+    "session:manage", "session:destroy", "session:share",
+    "group:list", "group:manage",
+    "facts:read", "facts:write",
+    "fleet:read", "fleet:admin",
+    "authz:audit",
+]);
+
+test("every protocol operation declares a known access class", () => {
+    // A new op without a classification would default to "authed" in the
+    // runtime gate — i.e. any admitted caller could invoke it. This lint keeps
+    // the ownership model closed: adding an op forces an explicit access class.
+    const unclassified = OPERATIONS.filter((op) => !op.access);
+    assert.deepEqual(unclassified.map((op) => op.name), [], "every op must set `access`");
+
+    const unknown = OPERATIONS.filter((op) => !VALID_ACCESS_CLASSES.has(op.access));
+    assert.deepEqual(unknown.map((op) => `${op.name}:${op.access}`), [], "access classes must be from the known set");
+});
+
+test("every fleet:admin op is also admin-gated at the router", async () => {
+    // The router hard-gates op.admin || op.access==='fleet:admin'. Verify each
+    // fleet:admin op 403s for a non-admin regardless of the ownership flag.
+    const fleetAdminOps = OPERATIONS.filter((op) => op.access === "fleet:admin");
+    assert.ok(fleetAdminOps.length > 0, "there should be fleet:admin ops");
+    const { baseUrl, calls, close } = await createHarness({ role: "user" });
+    try {
+        for (const op of fleetAdminOps) {
+            const path = op.path.replace(/:([\w]+)/g, "test-$1");
+            const res = await fetch(`${baseUrl}/api/v1${path}`, {
+                method: op.method,
+                headers: { "content-type": "application/json" },
+                ...(op.method === "GET" || op.method === "DELETE" ? {} : { body: "{}" }),
+            });
+            assert.equal(res.status, 403, `${op.name} must 403 for a non-admin`);
+        }
+        assert.ok(!calls.some((c) => fleetAdminOps.find((op) => op.name === c.name)), "no fleet:admin op dispatched for a user");
+    } finally {
+        await close();
+    }
+});
+
+test("session sharing ops are classified session:share", () => {
+    for (const name of ["setSessionVisibility", "grantSessionShare", "revokeSessionShare", "listSessionShares"]) {
+        const op = OPERATIONS.find((o) => o.name === name);
+        assert.ok(op, `${name} present in the protocol table`);
+        assert.equal(op.access, "session:share", `${name} must be session:share`);
+    }
+});

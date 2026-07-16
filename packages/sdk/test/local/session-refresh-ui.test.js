@@ -1324,12 +1324,12 @@ describe("session refresh UI recovery", () => {
 
         const rows = selectVisibleSessionRows(store.getState(), 8);
         const renderedRows = rows.map((row) => row.runs.map((run) => run.text).join(""));
-        assert(renderedRows.some((row) => row.includes("ad · Owned Work")), "owned row should include owner initials");
-        assert(renderedRows.some((row) => row.includes("? · Legacy Work")), "unowned row should include the ? owner marker");
+        assert(renderedRows.some((row) => row.includes("[ad] Owned Work")), "owned row should include the bracketed owner badge");
+        assert(renderedRows.some((row) => row.includes("[?] Legacy Work")), "unowned row should include the [?] owner marker");
 
         store.dispatch({ type: "sessions/selected", sessionId: "owned-session" });
         const chromeTitle = selectChatPaneChrome(store.getState()).title.map((run) => run.text).join("");
-        assert(!chromeTitle.includes("ad · "), "chat header should not include the owner prefix");
+        assert(!chromeTitle.includes("[ad]"), "chat header should not include the owner prefix");
     });
 
     it("renders owner prefixes in the session list without auth context when owner metadata exists", () => {
@@ -1378,8 +1378,8 @@ describe("session refresh UI recovery", () => {
 
         const renderedRows = selectVisibleSessionRows(store.getState(), 8)
             .map((row) => row.runs.map((run) => run.text).join(""));
-        assert(renderedRows.some((row) => row.includes("ad · Owned Work")), "owner metadata alone should enable owner initials in the session list");
-        assert(renderedRows.some((row) => row.includes("? · Legacy Work")), "owner metadata should also mark unowned rows in the session list");
+        assert(renderedRows.some((row) => row.includes("[ad] Owned Work")), "owner metadata alone should enable owner initials in the session list");
+        assert(renderedRows.some((row) => row.includes("[?] Legacy Work")), "owner metadata should also mark unowned rows in the session list");
     });
 
     it("renders group rows and idle rows without reintroducing status dots", () => {

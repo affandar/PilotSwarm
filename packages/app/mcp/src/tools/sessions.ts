@@ -364,6 +364,137 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
         },
     );
 
+    // ── Session sharing (security model) ─────────────────────────────
+    // Owner-or-admin operations; the server enforces and returns the authz
+    // reason in the error when refused. Registered for all callers.
+    // Web mode: dispatch through the API (server enforces). Direct mode
+    // (admin/test-only): call the management client with POSITIONAL args —
+    // its signatures are (sessionId, …), not a single params object.
+    const callShare = async (op: string, params: Record<string, unknown>, positional: unknown[]) => {
+        if (ctx.api) return ctx.api.call(op, params);
+        return (ctx.mgmt as any)[op]?.(...positional);
+    };
+    const shareError = (err: unknown, session_id: string) => ({
+        content: [{ type: "text" as const, text: JSON.stringify({ error: err instanceof Error ? err.message : String(err), session_id }) }],
+        isError: true,
+    });
+
+    server.registerTool(
+        "set_session_visibility",
+        {
+            title: "Set Session Visibility",
+            description:
+                "Set the sharing level of a session's tree (owner or admin only): "
+                + "'private' (only owner + admins), 'shared_read' (every user can view), "
+                + "'shared_write' (every user can view and send). Applies to the whole sub-agent tree.",
+            inputSchema: {
+                session_id: sessionIdShape().describe("Session whose tree visibility to set"),
+                visibility: z.enum(["private", "shared_read", "shared_write"]).describe("New visibility level"),
+            },
+        },
+        async ({ session_id, visibility }) => {
+            try {
+                await callShare("setSessionVisibility", { sessionId: session_id, visibility }, [session_id, visibility]);
+                return { content: [{ type: "text" as const, text: JSON.stringify({ session_id, visibility }) }] };
+            } catch (err) { return shareError(err, session_id); }
+        },
+    );
+
+    server.registerTool(
+        "grant_session_share",
+        {
+            title: "Grant Session Share",
+            description:
+                "Grant a specific user read or write access to a session's tree (owner or admin only). "
+                + "Refused with the reason in the error if you are not the owner/admin, or on a system session. "
+                + "The grantee does NOT need to have signed in yet: list_known_users is only a lookup helper. "
+                + "If the grantee's stable subject is unknown, pass their EMAIL as the subject — the grant "
+                + "binds automatically the first time they sign in.",
+            inputSchema: {
+                session_id: sessionIdShape().describe("Session whose tree to share"),
+                provider: z.string().describe("Grantee auth provider (e.g. 'entra', 'dev')"),
+                subject: z.string().describe("Grantee stable subject id, or their email if they have never signed in"),
+                access: z.enum(["read", "write"]).describe("Access level to grant"),
+                email: z.string().nullish().describe("Optional grantee email for display"),
+                display_name: z.string().nullish().describe("Optional grantee display name"),
+            },
+        },
+        async ({ session_id, provider, subject, access, email, display_name }) => {
+            try {
+                const grantee = { provider, subject, email: email ?? null, displayName: display_name ?? null };
+                await callShare("grantSessionShare",
+                    { sessionId: session_id, user: grantee, access },
+                    [session_id, grantee, access]);
+                return { content: [{ type: "text" as const, text: JSON.stringify({ session_id, granted: { provider, subject, access } }) }] };
+            } catch (err) { return shareError(err, session_id); }
+        },
+    );
+
+    server.registerTool(
+        "revoke_session_share",
+        {
+            title: "Revoke Session Share",
+            description: "Revoke a user's targeted share on a session's tree (owner or admin only).",
+            inputSchema: {
+                session_id: sessionIdShape().describe("Session whose share to revoke"),
+                provider: z.string().describe("Grantee auth provider"),
+                subject: z.string().describe("Grantee stable subject id"),
+            },
+        },
+        async ({ session_id, provider, subject }) => {
+            try {
+                await callShare("revokeSessionShare", { sessionId: session_id, user: { provider, subject } }, [session_id, { provider, subject }]);
+                return { content: [{ type: "text" as const, text: JSON.stringify({ session_id, revoked: { provider, subject } }) }] };
+            } catch (err) { return shareError(err, session_id); }
+        },
+    );
+
+    server.registerTool(
+        "list_session_shares",
+        {
+            title: "List Session Shares",
+            description: "List the targeted user grants on a session's tree (owner or admin only).",
+            inputSchema: {
+                session_id: sessionIdShape().describe("Session whose shares to list"),
+            },
+        },
+        async ({ session_id }) => {
+            try {
+                const shares = await callShare("listSessionShares", { sessionId: session_id }, [session_id]);
+                return { content: [{ type: "text" as const, text: JSON.stringify({ session_id, shares: shares ?? [] }) }] };
+            } catch (err) { return shareError(err, session_id); }
+        },
+    );
+
+    server.registerTool(
+        "list_known_users",
+        {
+            title: "List Known Users",
+            description:
+                "Directory of users who have signed in at least once (provider, subject, email, display name) — "
+                + "a HELPER for resolving a grantee's stable subject by name/email before grant_session_share. "
+                + "It is NOT an allowlist: grants may target someone who is not in this directory — even someone "
+                + "who has never signed in. For such users pass their email as the subject; the grant binds "
+                + "automatically when they first sign in.",
+            inputSchema: {
+                limit: z.number().int().min(1).max(2000).nullish().describe("Max entries to return (default 500)"),
+            },
+        },
+        async ({ limit }) => {
+            try {
+                const users = ctx.api
+                    ? await ctx.api.call("listKnownUsers", limit != null ? { limit } : {})
+                    : await (ctx.mgmt as any).listKnownUsers?.(limit != null ? { limit } : undefined);
+                return { content: [{ type: "text" as const, text: JSON.stringify({ users: users ?? [] }) }] };
+            } catch (err) {
+                return {
+                    content: [{ type: "text" as const, text: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }) }],
+                    isError: true,
+                };
+            }
+        },
+    );
+
     // 7. list_sessions — List all sessions with status
     server.registerTool(
         "list_sessions",

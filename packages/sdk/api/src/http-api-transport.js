@@ -89,6 +89,35 @@ export class HttpApiTransport {
         return this.api.call("getSession", { sessionId });
     }
 
+    // ── Session sharing / access (security model) ────────────────────────
+    async getSessionAccess(sessionId) {
+        return this.api.call("getSessionAccess", { sessionId });
+    }
+
+    async setSessionVisibility(sessionId, visibility) {
+        return this.api.call("setSessionVisibility", { sessionId, visibility });
+    }
+
+    async grantSessionShare(sessionId, user, access) {
+        return this.api.call("grantSessionShare", { sessionId, user, access });
+    }
+
+    async revokeSessionShare(sessionId, user) {
+        return this.api.call("revokeSessionShare", { sessionId, user });
+    }
+
+    async listSessionShares(sessionId) {
+        return this.api.call("listSessionShares", { sessionId });
+    }
+
+    async listKnownUsers(opts = {}) {
+        return this.api.call("listKnownUsers", { limit: opts?.limit });
+    }
+
+    async listAuthzAudit(opts = {}) {
+        return this.api.call("listAuthzAudit", { limit: opts?.limit, sessionId: opts?.sessionId });
+    }
+
     async createSession(options = {}) {
         return this.api.call("createSession", options);
     }

@@ -75,21 +75,35 @@ is live-only (no history, no catch-up).
 
 ## Operations
 
-Operations tagged **[admin]** require the `admin` role (Tier 2 operational surface); all others share the binary admission gate.
+Operations tagged **[admin]** require the `admin` role. Session operations are
+also authorized by access class: read/write may be delegated by visibility or
+targeted grants; manage/destroy/share remain owner/admin only. Inaccessible
+sessions return not-found to avoid an existence oracle.
 
 ### Sessions
 
 | Operation | Route | Parameters | Summary |
 |---|---|---|---|
 | listSessions | `GET /api/v1/sessions` | — | List session summaries. |
-| createSession | `POST /api/v1/sessions` | model (body), reasoningEffort (body), groupId (body) | Create a session. Owner is the authenticated principal. |
-| createSessionForAgent | `POST /api/v1/sessions/for-agent` | agentName (body), model (body), reasoningEffort (body), title (body), splash (body), initialPrompt (body), groupId (body) | Create a session bound to a named agent. |
+| createSession | `POST /api/v1/sessions` | model (body), reasoningEffort (body), contextTier (body), groupId (body), visibility (body) | Create a session. Owner is the authenticated principal; visibility defaults to the deployment default. |
+| createSessionForAgent | `POST /api/v1/sessions/for-agent` | agentName (body), model (body), reasoningEffort (body), contextTier (body), title (body), splash (body), initialPrompt (body), groupId (body), visibility (body) | Create a session bound to a named agent. |
 | getSession | `GET /api/v1/sessions/:sessionId` | sessionId (path) | Get one session view (live orchestration status). |
 | deleteSession | `DELETE /api/v1/sessions/:sessionId` | sessionId (path) | Cancel and soft-delete a session. |
 | sendMessage | `POST /api/v1/sessions/:sessionId/messages` | sessionId (path), prompt (body), options (body) | Send a prompt (options: { enqueueOnly?, clientMessageIds? }). |
 | sendAnswer | `POST /api/v1/sessions/:sessionId/answers` | sessionId (path), answer (body) | Answer a pending input-required question. |
 | sendSessionEvent | `POST /api/v1/sessions/:sessionId/events` | sessionId (path), eventName (body), data (body) | Send a custom event into the session. |
 | cancelPendingMessage | `POST /api/v1/sessions/:sessionId/cancel-pending` | sessionId (path), clientMessageIds (body) | Cancel queued messages by client message ids. |
+
+### Session sharing
+
+| Operation | Route | Access | Summary |
+|---|---|---|---|
+| getSessionAccess | `GET /api/v1/sessions/:sessionId/access` | readable session | Effective visibility, relation, owner, and write/manage flags. |
+| setSessionVisibility | `PUT /api/v1/sessions/:sessionId/visibility` | owner/admin | Set `private`, `shared_read`, or `shared_write` on the whole session tree. |
+| grantSessionShare | `POST /api/v1/sessions/:sessionId/shares` | owner/admin | Grant one principal targeted `read` or `write` access. |
+| revokeSessionShare | `POST /api/v1/sessions/:sessionId/shares/revoke` | owner/admin | Revoke one targeted grant. |
+| listSessionShares | `GET /api/v1/sessions/:sessionId/shares` | owner/admin | List targeted grants and grantee metadata. |
+| listAuthzAudit | `GET /api/v1/management/authz-audit` | owner/admin | Owners read audit entries for one owned session; admins can read fleet-wide. |
 
 ### Artifacts
 

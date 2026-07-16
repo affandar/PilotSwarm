@@ -76,6 +76,8 @@ export const UI_COMMANDS = {
     STOP_TURN: "stopTurn",
     DELETE_SESSION: "deleteSession",
     PIN_SESSION: "pinSession",
+    CYCLE_SESSION_VISIBILITY: "cycleSessionVisibility",
+    OPEN_SHARE_SESSION: "openShareSession",
     TOGGLE_SELECT_MODE: "toggleSelectMode",
     TOGGLE_SESSION_SELECTION: "toggleSessionSelection",
     CLEAR_SESSION_SELECTION: "clearSessionSelection",

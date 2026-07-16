@@ -1,7 +1,5 @@
-{bold}{cyan-fg}█▀█ █ █   █▀█ ▀█▀{/cyan-fg} {magenta-fg}█▀ █ █ █ ▄▀█ █▀█ █▀▄▀█{/magenta-fg}{/bold}
-{bold}{cyan-fg}█▀▀ █ █▄▄ █▄█  █ {/cyan-fg} {magenta-fg}▄█ ▀▄▀▄▀ █▀█ █▀▄ █ ▀ █{/magenta-fg}{/bold}
-{yellow-fg}░▒▓██████████████████████████████████▓▒░{/yellow-fg}
- {bold}{white-fg}Durable AI Agent Orchestration{/white-fg}{/bold}
- {cyan-fg}Crash recovery{/cyan-fg} · {magenta-fg}Durable timers{/magenta-fg}
- {yellow-fg}Sub-agents{/yellow-fg} · {green-fg}Multi-node scaling{/green-fg}
- {gray-fg}Powered by duroxide + Copilot SDK{/gray-fg}
+{bold}{green-fg}█▀█ █ █   █▀█ ▀█▀ █▀ █ █ █ ▄▀█ █▀█ █▀▄▀█{/green-fg}{/bold}
+{bold}{green-fg}█▀▀ █ █▄▄ █▄█  █  ▄█ ▀▄▀▄▀ █▀█ █▀▄ █ ▀ █{/green-fg}{/bold}
+{green-fg}░▒▓██████████████████████████████████▓▒░{/green-fg}
+ {bold}{white-fg}Cluster Orchestrator{/white-fg}{/bold}
+ {green-fg}Agents{/green-fg} · {yellow-fg}Infra{/yellow-fg} · {cyan-fg}Maintenance{/cyan-fg}

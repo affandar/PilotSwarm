@@ -1,6 +1,7 @@
 import React from "react";
 import { createNoBrowserAuthProvider } from "./providers/none.js";
 import { createEntraBrowserAuthProvider } from "./providers/entra.js";
+import { createDevBrowserAuthProvider } from "./providers/dev.js";
 
 function buildInitialState(authConfig) {
     return {
@@ -21,6 +22,7 @@ function buildInitialState(authConfig) {
 function createBrowserAuthProvider(providerId) {
     if (!providerId || providerId === "none") return createNoBrowserAuthProvider();
     if (providerId === "entra") return createEntraBrowserAuthProvider();
+    if (providerId === "dev") return createDevBrowserAuthProvider();
     return null;
 }
 
@@ -312,13 +314,15 @@ export function usePortalAuth(authConfig) {
         syncAuthContext,
     ]);
 
-    const signIn = React.useCallback(async () => {
+    const signIn = React.useCallback(async (signInArg) => {
         if (!state.authEnabled) return;
         if (!providerRef.current) {
             throw new Error(`Unsupported portal auth provider "${state.provider}"`);
         }
 
-        const result = await providerRef.current.signIn();
+        // signInArg is provider-specific (the dev provider takes a persona id);
+        // none/entra ignore it.
+        const result = await providerRef.current.signIn(signInArg);
         if (result?.redirected) return;
 
         const account = result?.account || providerRef.current.getAccount() || null;
