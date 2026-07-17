@@ -13,6 +13,7 @@ export function normalizeSessionOwnerFilter(filter) {
         includeSystem: filter?.includeSystem === true,
         includeUnowned: filter?.includeUnowned === true,
         includeMe: filter?.includeMe === true,
+        includeShared: filter?.includeShared === true,
         ownerKeys,
     };
 }
@@ -180,6 +181,8 @@ export function createInitialState({ mode = "local", branding = null, themeId = 
             filterQuery: "",
             ownerFilterExplicit: hasStoredSessionOwnerFilter,
             ownerFilter: normalizeSessionOwnerFilter(sessionOwnerFilter),
+            navigationIntent: null,
+            filterExceptionId: null,
         },
         history: {
             bySessionId: new Map(),

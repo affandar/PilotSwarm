@@ -23,6 +23,11 @@ export function buildCapabilities(ctx: ServerContext) {
         role: ctx.role ?? null,
         ownership_enforced: ctx.authz?.ownershipEnforced ?? false,
         default_visibility: ctx.authz?.defaultVisibility ?? "private",
+        // Session groups are private per-user organization: list_session_groups
+        // returns only the caller's groups, session views carry viewer_group_id
+        // (the caller's own placement), and manage_session_group 'place' needs
+        // only read access to the sessions being organized.
+        viewerScopedGroups: true,
         facts: {
             search: Boolean(ctx.enhancedFacts?.capabilities.search),
             embedder: Boolean(ctx.enhancedFacts?.capabilities.embedder),

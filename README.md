@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.14** — Multi-user security and sharing: owner-scoped session trees, private/shared visibility, targeted read/write grants, server-stamped sender identity, audited admin break-glass access, dev-auth personas, and synchronized portal/TUI/MCP controls. Also fixes processed prompts left visibly queued and advances durable orchestration to replay-safe `1.0.61`.
+> **Latest release: v0.5.15** — Private per-user session groups and reliable deep links: groups become each user's own organization of the sessions they can see (sharing never reveals the owner's grouping; read access suffices to place), a new `placeSessionsInGroup` op with per-root results, a "Shared with me" filter, Share / Copy-link portal UX, and explicit `?session=` deep-link errors instead of silent fallback. Session DTOs now emit `viewerGroupId` (replacing `groupId`); requires migration `0034`.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 

@@ -50,7 +50,7 @@ accumulated ALTERs:
 | `parent_session_id` | TEXT | sub-agent parent linkage |
 | `is_system` / `agent_id` / `splash` | BOOLEAN / TEXT / TEXT | system-agent metadata |
 | `wait_reason` | TEXT | why the session is waiting (durable timer, input, …) |
-| `group_id` | TEXT | session-group membership |
+| `group_id` | TEXT | legacy session-group membership — no longer read or written since migration 0034 (placements live in `user_session_group_placements`; column dropped in a later release) |
 | `short_summary` / `summary_state` / `summary_updated_at` | TEXT / JSONB / TIMESTAMPTZ | rolling summary machinery |
 
 Partial indexes on `(state)` and `(updated_at DESC)` where `deleted_at IS NULL`.
@@ -75,7 +75,8 @@ UI (`GET /api/v1/management/sessions/:id/events?afterSeq=…`):
 |---|---|
 | `session_metric_summaries` | per-session token/cost/turn rollups (fleet stats) |
 | `session_turn_metrics` | per-turn metrics (tokens, duration, reasoning effort) |
-| `session_groups` / `session_group_owners` | session grouping + ownership |
+| `session_groups` / `session_group_owners` | session groups + per-user ownership (groups are private per-user organization) |
+| `user_session_group_placements` | migration 0034: `(user_id, root_session_id) → group_id` — each viewer's private placement of a session tree in one of their own groups; composite FK into `session_group_owners` makes cross-user placement structurally impossible |
 | `session_child_outcomes` | terminal outcomes of sub-agents for parent digests |
 | `users` / `session_owners` | principals, per-user profile/keys, session ownership |
 

@@ -674,16 +674,40 @@ export class NodeSdkTransport {
         };
     }
 
+    /**
+     * Placements are viewer-private, so every read path must scope to the
+     * same principal the write path (placeSessionsInGroup / createSessionGroup)
+     * uses — otherwise the local TUI writes placements it can never read back
+     * (grouping would appear to succeed but never render). Local hosts resolve
+     * to the current/default user.
+     */
+    _placementViewer() {
+        const resolved = resolveUserPrincipalFor(this, null);
+        return { provider: resolved.provider, subject: resolved.subject };
+    }
+
     async listSessions() {
-        return this.mgmt.listSessions();
+        return this.mgmt.listSessions(this._placementViewer());
     }
 
     async listSessionGroups() {
-        return this.mgmt.listSessionGroups();
+        return this.mgmt.listSessionGroups(this._placementViewer());
     }
 
     async createSessionGroup(input) {
-        return this.mgmt.createSessionGroup(input || {});
+        const safeInput = input && typeof input === "object" ? input : {};
+        // Groups are private per-user organization: an ownerless group can
+        // never receive placements, so local TUI hosts that omit the owner
+        // key entirely get the transport's current user stamped. The portal
+        // runtime always sends an explicit owner key (resolved from the auth
+        // context) and passes through untouched.
+        if (Object.hasOwn(safeInput, "owner")) {
+            return this.mgmt.createSessionGroup(safeInput);
+        }
+        return this.mgmt.createSessionGroup({
+            ...safeInput,
+            owner: resolveUserPrincipalFor(this, null),
+        });
     }
 
     async updateSessionGroup(groupId, patch) {
@@ -698,6 +722,22 @@ export class NodeSdkTransport {
         return this.mgmt.moveSessionsToGroup(groupId ?? null, sessionIds || []);
     }
 
+    /**
+     * Viewer-private placement (groupId null = ungroup). The placing viewer
+     * defaults to the transport's current user (local TUI hosts); the portal
+     * runtime dispatches through `transport.mgmt` with the authenticated
+     * principal instead. Direct mode has no ownership enforcement, so the
+     * viewer is passed with isAdmin (every live session is readable).
+     */
+    async placeSessionsInGroup(sessionIds, groupId, viewer) {
+        const resolved = resolveUserPrincipalFor(this, viewer);
+        return this.mgmt.placeSessionsInGroup(
+            { provider: resolved.provider, subject: resolved.subject, isAdmin: true },
+            sessionIds || [],
+            groupId ?? null,
+        );
+    }
+
     async getChildOutcome(childSessionId) {
         return this.mgmt.getChildOutcome(childSessionId);
     }
@@ -707,11 +747,12 @@ export class NodeSdkTransport {
     }
 
     async listSessionsPage(opts) {
-        return this.mgmt.listSessionsPage(opts);
+        const safeOpts = opts && typeof opts === "object" ? opts : {};
+        return this.mgmt.listSessionsPage({ ...safeOpts, placement: safeOpts.placement ?? this._placementViewer() });
     }
 
     async listSessionsVisible(viewer) {
-        return this.mgmt.listSessionsVisible(viewer);
+        return this.mgmt.listSessionsVisible(viewer, this._placementViewer());
     }
 
     async listKnownUsers(opts) {
@@ -719,7 +760,7 @@ export class NodeSdkTransport {
     }
 
     async getSession(sessionId) {
-        return this.mgmt.getSession(sessionId);
+        return this.mgmt.getSession(sessionId, this._placementViewer());
     }
 
     // ── Session sharing / access (security model) ────────────────

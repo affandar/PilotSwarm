@@ -1595,8 +1595,8 @@ export function registerActivities(
                         if (agentId && session.agentId !== agentId) return false;
                         if (state && String(session.status || "").toLowerCase() !== state) return false;
                         if (parentSessionId && session.parentSessionId !== parentSessionId) return false;
-                        if (groupFilter === "null" && session.groupId) return false;
-                        if (groupFilter && groupFilter !== "null" && session.groupId !== groupFilter) return false;
+                        if (groupFilter === "null" && session.viewerGroupId) return false;
+                        if (groupFilter && groupFilter !== "null" && session.viewerGroupId !== groupFilter) return false;
                         if (Number.isFinite(updatedSince)) {
                             const updatedAt = Date.parse(session.updatedAt || session.lastActiveAt || session.createdAt || "");
                             if (!Number.isFinite(updatedAt) || updatedAt < updatedSince) return false;
@@ -1627,7 +1627,7 @@ export function registerActivities(
                         `    Title: ${s.title ?? "(untitled)"}\n` +
                         `    Owner: ${formatSessionOwnerLabel(s)}\n` +
                         `    Agent: ${s.agentId ?? "generic"}\n` +
-                        `    Group: ${s.groupId ?? "none"}\n` +
+                        `    Group: ${s.viewerGroupId ?? "none"}\n` +
                         `    Summary: ${s.shortSummary ?? s.summaryState?.summary ?? "(no summary)"}\n` +
                         `    Summary Updated: ${s.summaryUpdatedAt ? new Date(s.summaryUpdatedAt).toISOString() : "never"}\n` +
                         `    Status: ${s.status}, Iterations: ${s.iterations ?? 0}\n` +

@@ -33,8 +33,8 @@ These keys work whenever focus is not in the prompt editor.
 | `k` / `↑` | Move selection up |
 | `Ctrl+D` / `PageDown` | Page down |
 | `Ctrl+U` / `PageUp` | Page up |
-| `Ctrl+G` | Move the selected top-level non-system session(s) to a group; the picker includes `[New Group]` and `[No Group]` |
-| `f` | Open the session owner filter |
+| `Ctrl+G` | Place the selected top-level non-system session(s) in one of your private groups; the picker includes `[New Group]` and `[No Group]`. Any readable session can be placed; placement is visible only to you |
+| `f` | Open the session owner filter (includes the "Shared with me" bucket) |
 | `+` / `=` | Expand the selected parent session |
 | `-` | Collapse the selected session |
 | `t` | Rename the selected session |

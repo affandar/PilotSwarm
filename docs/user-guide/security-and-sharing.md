@@ -70,9 +70,9 @@ For a given session, your access resolves to:
 
 | You want to… | Allowed if you are… |
 |---|---|
-| **Read** (view transcript, events, history, metrics, artifacts, live updates) | owner · admin · visibility is shared_read/shared_write · granted read or write |
+| **Read** (view transcript, events, history, metrics, artifacts, live updates — and place the session in one of *your own* groups) | owner · admin · visibility is shared_read/shared_write · granted read or write |
 | **Write** (send a message, answer a question, stop a turn, upload an artifact) | owner · admin · visibility is shared_write · granted write |
-| **Manage** (rename, switch model, cancel, complete, delete artifacts, group moves) | owner · admin |
+| **Manage** (rename, switch model, cancel, complete, delete artifacts) | owner · admin |
 | **Destroy** (delete the session) | owner · admin |
 | **Share** (change visibility, grant/revoke access) | owner · admin |
 
@@ -91,13 +91,25 @@ spawns are one piece of work.
   root. Setting visibility or a grant on any node in the tree applies to the
   whole tree.
 
-### Groups don't affect access
+### Groups are private, and don't affect access
 
-A **session group** is an organizational bucket (a label with a title and an
-owner). Groups carry **no sharing semantics**. Putting sessions in a group does
-not share them, and **sharing one session in a group shares only that session's
-tree** — not the group and not the other sessions in it. To share several
-grouped sessions, share each one.
+A **session group** is *your* private way of organizing the sessions you can
+see — like folders in a mail client. Groups carry **no sharing semantics**, and
+your grouping is **never visible to anyone else**:
+
+- Everyone sees **only their own groups** — in the sessions list, in
+  `listSessionGroups`, everywhere. That includes admins.
+- **Sharing a session never reveals the owner's group.** The recipient sees the
+  session ungrouped and can place it into one of **their own** groups; neither
+  side's organization affects the other.
+- **Read access is enough to place** a session in one of your groups —
+  organizing something you can see is your business, not a management action on
+  the session.
+- Putting sessions in a group does not share them, and **sharing one session in
+  a group shares only that session's tree** — not the group and not the other
+  sessions in it. To share several grouped sessions, share each one.
+- **Deleting a group only deletes your organization** — the sessions themselves
+  are untouched.
 
 ### Sessions you can't see simply aren't there
 
@@ -106,6 +118,18 @@ looking it up by id returns **not-found** — not "forbidden." PilotSwarm won't
 confirm that a session you can't see even exists (no existence oracle). A session
 you can *read* but not *write* returns a clear "write access required — ask the
 owner" message when you try to act.
+
+### Links are locators, not grants
+
+The portal's **Copy link** puts a `?session=<id>` deep link on your clipboard.
+The link only *points at* the session — opening it never grants access. If the
+session is private with no grants, only the owner and admins can open the link
+(the portal warns you when you copy a link in that state); share the session
+first if you want a teammate to be able to follow it. Someone without access
+who opens a deep link gets an explicit error — *"This session was not found or
+has not been shared with you"* — deliberately the same message whether the id
+is wrong or the session simply isn't shared — instead of being silently
+dropped onto a different session.
 
 ## System sessions
 

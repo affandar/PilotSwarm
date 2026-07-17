@@ -92,13 +92,39 @@ function normalizeSessionListRow(session) {
     if (session.isGroup) return session;
     return {
         ...session,
-        groupId: session.groupId ?? null,
+        // The wire DTO carries the viewer-private placement as viewerGroupId;
+        // the local groupId field is what the tree/selectors key off.
+        groupId: session.viewerGroupId ?? null,
         parentSessionId: session.parentSessionId ?? null,
     };
 }
 
 function sessionGroupIdFromRowId(sessionId) {
     return String(sessionId || "").startsWith("group:") ? String(sessionId).slice("group:".length) : null;
+}
+
+// Per-row placement skip reasons ('system', 'not_found') folded into a short
+// status-bar suffix, e.g. "2 system, 1 not found".
+function summarizePlacementSkips(rows) {
+    const counts = new Map();
+    for (const row of rows || []) {
+        const label = row?.reason === "system" ? "system" : "not found";
+        counts.set(label, (counts.get(label) || 0) + 1);
+    }
+    return [...counts.entries()].map(([label, count]) => `${count} ${label}`).join(", ");
+}
+
+// Deep-link load failures split into two renderable kinds: a definitive
+// not-found/no-access answer from the server (the API deliberately returns
+// identical shapes for unknown vs unshared sessions), and everything else —
+// network/server faults — which stays retryable.
+function classifyNavigationLoadError(error) {
+    const status = Number(error?.status);
+    const code = String(error?.code || "").toUpperCase();
+    if (status === 404 || status === 403 || code === "NOT_FOUND" || code === "FORBIDDEN") {
+        return "not_found";
+    }
+    return "network";
 }
 
 async function loadSessionCatalogPageWindow(transport) {
@@ -506,6 +532,12 @@ function buildSessionOwnerFilterItems(state) {
             ownerKey: principalKey,
             description: "Show sessions owned by the authenticated user currently signed in.",
         });
+        items.push({
+            id: "shared",
+            kind: "shared",
+            label: "Shared with me",
+            description: "Show sessions other users have shared with you.",
+        });
     }
 
     const ownersByKey = new Map();
@@ -542,6 +574,7 @@ export function defaultOwnerFilterForPrincipal(principal) {
             includeSystem: true,
             includeUnowned: false,
             includeMe: true,
+            includeShared: true,
             ownerKeys: [],
         }
         : {
@@ -549,6 +582,7 @@ export function defaultOwnerFilterForPrincipal(principal) {
             includeSystem: false,
             includeUnowned: false,
             includeMe: false,
+            includeShared: false,
             ownerKeys: [],
         };
 }
@@ -558,6 +592,7 @@ function ownerFilterHasSelections(filter) {
         filter?.includeSystem
         || filter?.includeUnowned
         || filter?.includeMe
+        || filter?.includeShared
         || (Array.isArray(filter?.ownerKeys) && filter.ownerKeys.length > 0),
     );
 }
@@ -571,6 +606,7 @@ function toggleOwnerFilterItem(currentFilter, item, principal) {
             includeSystem: false,
             includeUnowned: false,
             includeMe: false,
+            includeShared: false,
             ownerKeys: [],
         };
     }
@@ -583,6 +619,7 @@ function toggleOwnerFilterItem(currentFilter, item, principal) {
     if (item.kind === "system") next.includeSystem = !next.includeSystem;
     if (item.kind === "unowned") next.includeUnowned = !next.includeUnowned;
     if (item.kind === "me") next.includeMe = !next.includeMe;
+    if (item.kind === "shared") next.includeShared = !next.includeShared;
     if (item.kind === "owner" && item.ownerKey) {
         const existingIndex = next.ownerKeys.indexOf(item.ownerKey);
         if (existingIndex >= 0) {
@@ -594,7 +631,7 @@ function toggleOwnerFilterItem(currentFilter, item, principal) {
 
     return ownerFilterHasSelections(next)
         ? next
-        : { all: true, includeSystem: false, includeUnowned: false, includeMe: false, ownerKeys: [] };
+        : { all: true, includeSystem: false, includeUnowned: false, includeMe: false, includeShared: false, ownerKeys: [] };
 }
 
 function getRenameSessionPrefix(session) {
@@ -1696,7 +1733,7 @@ export class PilotSwarmUiController {
         }).catch(() => {});
     }
 
-    async start() {
+    async start({ initialSessionId = null } = {}) {
         await this.transport.start();
         const authContext = typeof this.transport.getAuthContext === "function"
             ? this.transport.getAuthContext()
@@ -1727,6 +1764,13 @@ export class PilotSwarmUiController {
             workersOnline: typeof this.transport.getWorkerCount === "function" ? this.transport.getWorkerCount() : null,
             statusText: "Connected",
         });
+        // Latch the deep-link intent AFTER the default owner-filter dispatch
+        // (a filter change releases the latch) and BEFORE the first refresh,
+        // so the first catalog load resolves selection onto the link target.
+        const deepLinkSessionId = String(initialSessionId || "").trim();
+        if (deepLinkSessionId) {
+            this.dispatch({ type: "sessions/navigationIntent", sessionId: deepLinkSessionId });
+        }
         await this.refreshSessions();
         this.catalogTimer = setInterval(() => {
             this.refreshSessions().catch((error) => {
@@ -1782,6 +1826,36 @@ export class PilotSwarmUiController {
                 sessions = [...groupRows, ...sessions];
             }
         }
+        // A pending deep-link target may be readable but absent from the
+        // paged catalog window — fetch it explicitly. A definitive failure
+        // (unknown or unshared: identical 404 shapes) fails the intent; the
+        // reducer then refuses fallback selection so the renderer can show
+        // the nav error instead of silently landing somewhere else.
+        const pendingIntent = preRefreshState.sessions.navigationIntent;
+        if (
+            pendingIntent?.status === "pending"
+            && !sessions.some((session) => session?.sessionId === pendingIntent.sessionId)
+            && typeof this.transport.getSession === "function"
+        ) {
+            try {
+                const intentSession = await this.transport.getSession(pendingIntent.sessionId);
+                if (intentSession?.sessionId) {
+                    sessions = [...sessions, normalizeSessionListRow(intentSession)];
+                } else {
+                    this.dispatch({
+                        type: "sessions/navigationIntentFailed",
+                        sessionId: pendingIntent.sessionId,
+                        errorKind: "not_found",
+                    });
+                }
+            } catch (error) {
+                this.dispatch({
+                    type: "sessions/navigationIntentFailed",
+                    sessionId: pendingIntent.sessionId,
+                    errorKind: classifyNavigationLoadError(error),
+                });
+            }
+        }
         const active = previousActive;
         if (
             active
@@ -1807,7 +1881,20 @@ export class PilotSwarmUiController {
         if (selected) {
             if (selected !== previousActive) {
                 if (!this.getState().sessions.byId[selected]?.isGroup) {
-                    await this.loadSession(selected);
+                    const selectedIntent = this.getState().sessions.navigationIntent;
+                    if (selectedIntent && selectedIntent.sessionId === selected && selectedIntent.status !== "failed") {
+                        try {
+                            await this.loadSession(selected);
+                        } catch (error) {
+                            this.dispatch({
+                                type: "sessions/navigationIntentFailed",
+                                sessionId: selected,
+                                errorKind: classifyNavigationLoadError(error),
+                            });
+                        }
+                    } else {
+                        await this.loadSession(selected);
+                    }
                 }
                 return;
             }
@@ -3019,6 +3106,32 @@ export class PilotSwarmUiController {
         });
     }
 
+    /**
+     * Latch a navigation intent (deep link) onto a session id. The intent
+     * outranks in-memory selection and the profile's activeSessionId until
+     * the user navigates manually or changes a filter. Also the retry path
+     * for a failed intent: re-latching resets it to pending.
+     */
+    setNavigationIntent(sessionId) {
+        const id = String(sessionId || "").trim();
+        if (!id) return;
+        this.dispatch({ type: "sessions/navigationIntent", sessionId: id });
+        const state = this.getState();
+        if (state.sessions.byId[id]) {
+            this.loadSession(id).catch((error) => {
+                this.dispatch({
+                    type: "sessions/navigationIntentFailed",
+                    sessionId: id,
+                    errorKind: classifyNavigationLoadError(error),
+                });
+            });
+            return;
+        }
+        if (Object.keys(state.sessions.byId).length > 0) {
+            this.scheduleSessionsRefresh(0);
+        }
+    }
+
     async loadSession(sessionId) {
         if (!sessionId) return;
         const active = this.getState().sessions.activeSessionId;
@@ -3194,7 +3307,9 @@ export class PilotSwarmUiController {
 
     async createSession(options = {}) {
         try {
-            const created = await this.transport.createSession(this.applyActiveGroupDefault(options));
+            const requestOptions = this.applyActiveGroupDefault(options);
+            const created = await this.transport.createSession(requestOptions);
+            await this.placeCreatedSessionInGroup(created, requestOptions.groupId ?? null);
             await this.refreshSessions();
             await this.loadSession(created.sessionId);
             this.setFocus(FOCUS_REGIONS.PROMPT);
@@ -3211,7 +3326,9 @@ export class PilotSwarmUiController {
             throw new Error("Named-agent session creation is not supported by this transport");
         }
         try {
-            const created = await this.transport.createSessionForAgent(agentName, this.applyActiveGroupDefault(options));
+            const requestOptions = this.applyActiveGroupDefault(options);
+            const created = await this.transport.createSessionForAgent(agentName, requestOptions);
+            await this.placeCreatedSessionInGroup(created, requestOptions.groupId ?? null);
             await this.refreshSessions();
             await this.loadSession(created.sessionId);
             this.setFocus(FOCUS_REGIONS.PROMPT);
@@ -3224,6 +3341,20 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "ui/status", text: error?.message || String(error) || "Failed to create session" });
             return null;
         }
+    }
+
+    /**
+     * Post-create placement follow-up. createSession's groupId only places
+     * when an owner principal reaches the catalog (web mode places
+     * server-side; the local TUI passes no owner), so when a group was
+     * requested, place explicitly — idempotent where the server already did.
+     * Skipped when the create response already reports the placement.
+     */
+    async placeCreatedSessionInGroup(created, groupId) {
+        if (!groupId || !created?.sessionId) return;
+        if (typeof this.transport.placeSessionsInGroup !== "function") return;
+        if ((created.viewerGroupId ?? null) === groupId) return;
+        await this.transport.placeSessionsInGroup([created.sessionId], groupId).catch(() => {});
     }
 
     getMovableGroupSessionSelection() {
@@ -3249,16 +3380,12 @@ export class PilotSwarmUiController {
             return null;
         }
 
+        // The server returns only the viewer's own groups, and placement is
+        // viewer-private — any readable non-system selection is movable, so
+        // mixed-owner selections are allowed and every group is offered.
         const groups = await this.transport.listSessionGroups().catch(() => []);
         const sessionIds = eligible.map((session) => session.sessionId);
         const firstGroupId = eligible.length === 1 ? eligible[0].groupId || null : null;
-        const selectedOwnerKeys = new Set(eligible.map((session) => ownerKeyForPrincipal(session.owner) || ""));
-        const singleOwnerKey = selectedOwnerKeys.size === 1 ? [...selectedOwnerKeys][0] : null;
-        const singleOwner = selectedOwnerKeys.size === 1 ? eligible[0]?.owner ?? null : null;
-        const compatibleGroups = selectedOwnerKeys.size === 1
-            ? (Array.isArray(groups) ? groups : []).filter((group) => (ownerKeyForPrincipal(group.owner) || "") === singleOwnerKey)
-            : [];
-        const canCreateOrAssignGroup = selectedOwnerKeys.size === 1;
         const items = [
             {
                 id: "__no_group__",
@@ -3268,22 +3395,20 @@ export class PilotSwarmUiController {
                 groupId: null,
                 memberCount: 0,
             },
-            ...(canCreateOrAssignGroup ? [{
+            {
                 id: "__new_group__",
                 kind: "newGroup",
                 label: "[New Group]",
-                description: "Create a new group for this owner, then move the selected session(s) into it.",
+                description: "Create a new group, then move the selected session(s) into it.",
                 groupId: null,
                 memberCount: 0,
-                owner: singleOwner,
-            }] : []),
-            ...compatibleGroups.map((group) => ({
+            },
+            ...(Array.isArray(groups) ? groups : []).map((group) => ({
                 id: group.groupId,
                 kind: "group",
                 label: group.title || group.groupId,
                 description: group.description || "Move selected session(s) into this group.",
                 groupId: group.groupId,
-                owner: group.owner ?? null,
                 memberCount: group.memberCount ?? 0,
             })),
         ];
@@ -3305,9 +3430,7 @@ export class PilotSwarmUiController {
         });
         this.dispatch({
             type: "ui/status",
-            text: canCreateOrAssignGroup
-                ? "Choose a group, [New Group], or [No Group]"
-                : "Selected sessions have different owners; only [No Group] is available",
+            text: "Choose a group, [New Group], or [No Group]",
         });
         return items;
     }
@@ -3322,7 +3445,10 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "ui/status", text: "No sessions selected to move" });
             return null;
         }
-        if (typeof this.transport.moveSessionsToGroup === "function") {
+        let placementResults = null;
+        if (typeof this.transport.placeSessionsInGroup === "function") {
+            placementResults = await this.transport.placeSessionsInGroup(ids, groupId ?? null);
+        } else if (typeof this.transport.moveSessionsToGroup === "function") {
             await this.transport.moveSessionsToGroup(groupId ?? null, ids);
         } else if (groupId && typeof this.transport.assignSessionsToGroup === "function") {
             await this.transport.assignSessionsToGroup(groupId, ids);
@@ -3331,17 +3457,28 @@ export class PilotSwarmUiController {
             return null;
         }
 
+        const resultRows = Array.isArray(placementResults) ? placementResults.filter(Boolean) : null;
+        const skippedRows = resultRows ? resultRows.filter((row) => row.placed !== true) : [];
+        const placedCount = resultRows
+            ? resultRows.filter((row) => row.placed === true).length
+            : ids.length;
+
         this.dispatch({ type: "sessions/selectClear" });
         await this.refreshSessions();
-        if (groupId) {
+        if (groupId && placedCount > 0) {
             await this.loadSession(`group:${groupId}`).catch(() => {});
         }
         const target = groupId ? `group ${statusTitle || groupId}` : "No Group";
+        const skippedSummary = skippedRows.length > 0
+            ? ` · skipped ${skippedRows.length} (${summarizePlacementSkips(skippedRows)})`
+            : "";
         this.dispatch({
             type: "ui/status",
-            text: `Moved ${ids.length} session${ids.length === 1 ? "" : "s"} to ${target}`,
+            text: placedCount > 0
+                ? `Moved ${placedCount} session${placedCount === 1 ? "" : "s"} to ${target}${skippedSummary}`
+                : `No sessions moved to ${target}${skippedSummary}`,
         });
-        return true;
+        return placedCount > 0;
     }
 
     async confirmSessionGroupPickerModal() {
@@ -3360,7 +3497,6 @@ export class PilotSwarmUiController {
                     title: "New Group",
                     previousFocus: modal.previousFocus,
                     sessionIds: modal.sessionIds || [],
-                    owner: item.owner ?? null,
                     value: baseTitle,
                     cursorIndex: baseTitle.length,
                     maxLength: 80,
@@ -3440,11 +3576,14 @@ export class PilotSwarmUiController {
         if (previousFocus) this.setFocus(previousFocus);
 
         try {
+            // No owner key: the transport/server stamps the caller's
+            // principal. The UI never infers group ownership from the
+            // selected sessions (owner: null is reserved for the portal
+            // runtime's anonymous path).
             const group = await this.transport.createSessionGroup({
                 title,
                 description: `${(modal.sessionIds || []).length} grouped session${(modal.sessionIds || []).length === 1 ? "" : "s"}`,
                 sessionIds: modal.sessionIds || [],
-                owner: modal.owner ?? null,
             });
             await this.moveSessionsToGroup(group.groupId, modal.sessionIds || [], { statusTitle: group.title || title });
         } catch (error) {

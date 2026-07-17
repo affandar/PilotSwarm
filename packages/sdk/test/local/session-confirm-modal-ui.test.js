@@ -297,7 +297,7 @@ describe("session confirm modal behavior", () => {
         assertEqual(calls[1].sessionIds.length, 3, "bulk move should move every selected session");
     });
 
-    it("moves sessions only to groups with the same owner", async () => {
+    it("offers every transport-returned group regardless of owner and creates groups without a client-side owner", async () => {
         const ownerA = { provider: "test", subject: "owner-a", email: "a@example.com", displayName: "Owner A" };
         const ownerB = { provider: "test", subject: "owner-b", email: "b@example.com", displayName: "Owner B" };
         const { controller, store, calls } = createController({
@@ -305,6 +305,10 @@ describe("session confirm modal behavior", () => {
                 { groupId: "group-a", title: "Owner A Group", owner: ownerA, memberCount: 1 },
                 { groupId: "group-b", title: "Owner B Group", owner: ownerB, memberCount: 1 },
             ],
+            placeSessionsInGroup: async (sessionIds, groupId) => {
+                calls.push({ type: "placeGroup", sessionIds, groupId });
+                return sessionIds.map((id) => ({ rootSessionId: id, placed: true, reason: null }));
+            },
         });
         store.dispatch({
             type: "sessions/loaded",
@@ -323,22 +327,27 @@ describe("session confirm modal behavior", () => {
 
         let modal = store.getState().ui.modal;
         assertNotNull(modal, "move-to-group should open a picker");
-        assertEqual(modal.items.some((item) => item.groupId === "group-a"), true, "same-owner group should be offered");
-        assertEqual(modal.items.some((item) => item.groupId === "group-b"), false, "different-owner group should be hidden");
+        // The server returns only the viewer's own groups, so the picker offers
+        // every group it returns — mixed owners included, no client-side filter.
+        assertEqual(modal.items.some((item) => item.groupId === "group-a"), true, "group-a should be offered");
+        assertEqual(modal.items.some((item) => item.groupId === "group-b"), true, "group-b should also be offered");
 
         const newGroupIndex = modal.items.findIndex((item) => item.kind === "newGroup");
         store.dispatch({ type: "ui/modalSelection", index: newGroupIndex });
         await controller.confirmModal();
         modal = store.getState().ui.modal;
         assertNotNull(modal, "new group option should ask for a name");
-        assertEqual(modal.owner?.subject, ownerA.subject, "new group modal should carry selected owner");
+        assertEqual(modal.owner, undefined, "new group name modal should not carry an owner");
 
-        controller.setSessionGroupNameValue("Owner A New Group");
+        controller.setSessionGroupNameValue("New Group");
         await controller.confirmModal();
 
         assertEqual(calls[0].type, "createGroup", "new group should be created first");
-        assertEqual(calls[0].input.owner.subject, ownerA.subject, "created group should use selected session owner");
-        assertEqual(calls[0].input.sessionIds[0], "session-a", "created group input should include selected session ids for server-side owner derivation");
+        assertEqual(calls[0].input.owner, undefined, "created group should not stamp a client-side owner");
+        assertEqual(calls[0].input.sessionIds[0], "session-a", "created group input should include selected session ids for server-side placement");
+        assertEqual(calls[1].type, "placeGroup", "move should dispatch placeSessionsInGroup");
+        assertEqual(calls[1].sessionIds[0], "session-a", "placeSessionsInGroup receives session ids first");
+        assertEqual(calls[1].groupId, "group-1234", "placeSessionsInGroup receives the created group id second");
     });
 
     it("ungroups the active session through the no-group picker option", async () => {

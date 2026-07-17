@@ -33,6 +33,7 @@ import {
     selectInspector,
     selectLogFilterModal,
     selectModelPickerModal,
+    selectNavigationError,
     selectReasoningEffortPickerModal,
     selectContextTierPickerModal,
     selectRenameSessionModal,
@@ -132,6 +133,46 @@ function supportsLocalFileOpen(controller) {
     return typeof controller?.transport?.openPathInDefaultApp === "function";
 }
 
+const SESSION_LINK_COPIED_STATUS = "Session link copied to clipboard";
+const SESSION_LINK_PRIVATE_WARNING = "Only people with access can open this link.";
+
+function buildSessionLinkUrl(sessionId) {
+    if (!sessionId || typeof window === "undefined" || !window.location) return null;
+    return `${window.location.origin}${window.location.pathname}?session=${encodeURIComponent(sessionId)}`;
+}
+
+function copySessionLinkText(url) {
+    if (navigator?.clipboard?.writeText) navigator.clipboard.writeText(url).catch(() => {});
+}
+
+// Copy a session deep link and report it on the status surface. A private
+// session with no targeted grants yields a link only the owner/admins can
+// open, so the confirmation carries a warning in that case. The access probe
+// is best-effort — failure keeps the plain confirmation.
+async function copySessionLinkWithStatus(controller, sessionId) {
+    const url = buildSessionLinkUrl(sessionId);
+    if (!url) return;
+    copySessionLinkText(url);
+    let text = SESSION_LINK_COPIED_STATUS;
+    try {
+        const transport = controller.transport;
+        if (typeof transport?.getSessionAccess === "function") {
+            const access = await transport.getSessionAccess(sessionId);
+            if ((access?.visibility || "private") === "private") {
+                const shares = typeof transport.listSessionShares === "function"
+                    ? await transport.listSessionShares(sessionId).catch(() => [])
+                    : [];
+                if (!Array.isArray(shares) || shares.length === 0) {
+                    text = `Link copied. ${SESSION_LINK_PRIVATE_WARNING}`;
+                }
+            }
+        }
+    } catch {
+        // Keep the plain confirmation.
+    }
+    controller.dispatch({ type: "ui/status", text });
+}
+
 function clearBrowserPreferenceCache() {
     if (typeof window === "undefined") return;
     try {
@@ -153,7 +194,13 @@ function normalizeProfileSettings(settings) {
         normalized.themeId = candidate.themeId.trim();
     }
     if (hasOwn(candidate, "sessionOwnerFilter") && candidate.sessionOwnerFilter && typeof candidate.sessionOwnerFilter === "object") {
-        normalized.sessionOwnerFilter = candidate.sessionOwnerFilter;
+        const storedFilter = candidate.sessionOwnerFilter;
+        // Profiles saved before the "Shared with me" bucket existed have no
+        // includeShared key; default it on so shared sessions stay visible for
+        // existing users. An explicit false (the user turned it off) is kept.
+        normalized.sessionOwnerFilter = hasOwn(storedFilter, "includeShared")
+            ? storedFilter
+            : { ...storedFilter, includeShared: true };
     }
     if (hasOwn(candidate, "layoutAdjustments")) {
         normalized.layoutAdjustments = normalizeStoredLayoutAdjustments(candidate.layoutAdjustments);
@@ -1894,12 +1941,12 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     const activeSession = viewState.activeSessionId
         ? viewState.sessionsById[viewState.activeSessionId] || null
         : null;
-    // "Modify" combines rename + sharing in one modal (opened from the toolbar
+    // "Share" combines sharing + rename in one modal (opened from the toolbar
     // so the composer chrome stays minimal, esp. on mobile). Rename AND sharing
     // are owner/admin-only (session:manage / session:share), so the button is
     // disabled for anyone else — the server enforces too, but a disabled button
     // is clearer than a 403.
-    const [modifyOpen, setModifyOpen] = React.useState(false);
+    const [shareOpen, setShareOpen] = React.useState(false);
     const authPrincipal = viewState.auth?.principal || null;
     const viewerRole = viewState.auth?.authorization?.role;
     const isAdminViewer = viewerRole === "admin" || viewerRole === "anonymous";
@@ -2009,23 +2056,21 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         }),
         React.createElement(IconButton, {
             className: "ps-mini-button",
-            icon: React.createElement(ShareGlyph),
+            icon: React.createElement(LinkGlyph),
             onClick: () => {
                 const sid = activeSession?.sessionId;
-                if (!sid || typeof window === "undefined" || !window.location) return;
-                const url = `${window.location.origin}${window.location.pathname}?session=${encodeURIComponent(sid)}`;
-                if (navigator?.clipboard?.writeText) navigator.clipboard.writeText(url).catch(() => {});
-                controller.dispatch({ type: "ui/status", text: "Session link copied to clipboard" });
+                if (!sid) return;
+                copySessionLinkWithStatus(controller, sid).catch(() => {});
             },
             disabled: !activeSession || activeSession.isGroup || isBulkSelection,
-            label: "Share — copy a direct link to this session",
+            label: "Copy link — copy a direct link to this session",
         }),
         React.createElement(IconButton, {
             className: "ps-mini-button",
-            icon: "✎",
-            onClick: () => setModifyOpen(true),
+            icon: React.createElement(ShareGlyph),
+            onClick: () => setShareOpen(true),
             disabled: !canModifyActiveSession || isBulkSelection,
-            label: isBulkSelection ? "Disabled while multiple sessions are selected" : "Modify — rename and share access",
+            label: isBulkSelection ? "Disabled while multiple sessions are selected" : "Share — manage access, rename, and copy link",
         }),
         React.createElement(IconButton, {
             className: "ps-mini-button",
@@ -2118,13 +2163,13 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                 React.createElement(SessionRowContent, { row, theme, structured: structuredRows })),
             )),
     )),
-    (modifyOpen && activeSession && !activeSession.isGroup)
+    (shareOpen && activeSession && !activeSession.isGroup)
         ? React.createElement(SessionModifyModal, {
             controller,
             sessionId: activeSession.sessionId,
             initialTitle: activeSession.title || "",
             principal: viewState.auth?.principal || null,
-            onClose: () => setModifyOpen(false),
+            onClose: () => setShareOpen(false),
             onChanged: () => {},
         })
         : null);
@@ -2137,7 +2182,7 @@ const VISIBILITY_META = {
 };
 
 // The standard "share" glyph (three connected nodes). Inherits the button's
-// text color via currentColor. Used for the session deep-link Share button.
+// text color via currentColor. Used for the session Share (access) button.
 function ShareGlyph() {
     return React.createElement("svg", {
         className: "ps-share-glyph", viewBox: "0 0 24 24", fill: "none",
@@ -2149,6 +2194,17 @@ function ShareGlyph() {
     React.createElement("circle", { cx: "18", cy: "19", r: "3" }),
     React.createElement("line", { x1: "8.6", y1: "10.5", x2: "15.4", y2: "6.5" }),
     React.createElement("line", { x1: "8.6", y1: "13.5", x2: "15.4", y2: "17.5" }));
+}
+
+// The standard "link" glyph (two chain segments). Used for the Copy link button.
+function LinkGlyph() {
+    return React.createElement("svg", {
+        className: "ps-share-glyph", viewBox: "0 0 24 24", fill: "none",
+        stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round",
+        "aria-hidden": "true",
+    },
+    React.createElement("path", { d: "M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" }),
+    React.createElement("path", { d: "M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" }));
 }
 
 /**
@@ -2177,9 +2233,10 @@ function useActiveSessionAccess(controller, activeSessionId, isGroup) {
     return { access: state.access, loading: state.loading, reload };
 }
 
-// Combined "Modify" modal opened from the session list toolbar: rename plus
-// (for the owner/admin) sharing — visibility + per-person grants. Fetches its
-// own access snapshot so callers only pass the session id + current title.
+// Combined "Share & settings" modal opened from the session list toolbar:
+// rename, copy link, plus (for the owner/admin) sharing — visibility +
+// per-person grants. Fetches its own access snapshot so callers only pass the
+// session id + current title.
 function SessionModifyModal({ controller, sessionId, initialTitle, principal, onClose, onChanged }) {
     const [access, setAccess] = React.useState(null);
     const [title, setTitle] = React.useState(initialTitle || "");
@@ -2272,11 +2329,26 @@ function SessionModifyModal({ controller, sessionId, initialTitle, principal, on
     });
 
     const canManage = Boolean(access?.canManage);
+    // The modal's own visibility/shares state is fresher than a re-fetch (it
+    // reflects a radio/grant change made moments ago), so the copy-link
+    // warning is computed synchronously from it.
+    const linkNeedsAccessWarning = visibility === "private" && shares.length === 0;
+    const copyLink = () => {
+        const url = buildSessionLinkUrl(sessionId);
+        if (!url) return;
+        copySessionLinkText(url);
+        controller.dispatch({
+            type: "ui/status",
+            text: linkNeedsAccessWarning
+                ? `Link copied. ${SESSION_LINK_PRIVATE_WARNING}`
+                : SESSION_LINK_COPIED_STATUS,
+        });
+    };
     const stop = (e) => e.stopPropagation();
     return React.createElement("div", { className: "ps-share-overlay", onClick: onClose },
         React.createElement("div", { className: "ps-share-modal", onClick: stop },
             React.createElement("div", { className: "ps-share-modal-head" },
-                React.createElement("span", null, "Modify session"),
+                React.createElement("span", null, "Share & settings"),
                 React.createElement("button", { className: "ps-modal-close", onClick: onClose }, "✕")),
 
             // ── Rename ────────────────────────────────────────────────
@@ -2289,6 +2361,14 @@ function SessionModifyModal({ controller, sessionId, initialTitle, principal, on
                     onKeyDown: (e) => { if (e.key === "Enter") saveTitle(); },
                 }),
                 React.createElement("button", { className: "ps-mini-button", disabled: busy || !title.trim(), onClick: saveTitle }, "Save")),
+
+            // ── Link ──────────────────────────────────────────────────
+            React.createElement("div", { className: "ps-share-section-label" }, "Link"),
+            React.createElement("div", { className: "ps-share-link-row" },
+                React.createElement("button", { className: "ps-mini-button", onClick: copyLink }, "Copy link"),
+                React.createElement("span", { className: "ps-share-section-sub" }, linkNeedsAccessWarning
+                    ? SESSION_LINK_PRIVATE_WARNING
+                    : "Anyone with access to this session can open the link.")),
 
             // ── Sharing (owner / admin only) ──────────────────────────
             canManage ? React.createElement(React.Fragment, null,
@@ -2451,6 +2531,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
     const { access } = useActiveSessionAccess(
         controller, viewState.activeSessionId, viewState.activeSessionIsGroup,
     );
+    const navigationError = useControllerSelector(controller, selectNavigationError, shallowEqualObject);
     const composerBase = showComposer && !viewState.activeSessionIsGroup && viewState.chatViewMode !== "summary";
     const readOnly = Boolean(access) && access.canWrite === false;
     const composer = composerBase
@@ -2460,6 +2541,31 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
                     `You have view access to this session. Ask ${access.owner?.displayName || access.owner?.email || "the owner"} for write access to participate.`)
                 : React.createElement(PromptComposer, { controller, mobile, active: true }))
         : null;
+
+    // A failed deep-link intent with nothing else loaded replaces the pane
+    // body with the nav-error empty state (the reducer refuses fallback
+    // selection while the intent exists, so there is no transcript to show).
+    const hasLoadableActiveSession = Boolean(
+        viewState.activeSessionId && viewState.sessionsById[viewState.activeSessionId],
+    );
+    if (navigationError && !hasLoadableActiveSession) {
+        return React.createElement(Panel, {
+            title: chrome.title,
+            color: chrome.color,
+            focused: viewState.focused,
+            theme,
+            className: "ps-chat-panel",
+        },
+        React.createElement("div", { className: "ps-empty-state ps-nav-error-state" },
+            React.createElement("div", { className: "ps-nav-error-message" }, navigationError.message),
+            navigationError.retryable
+                ? React.createElement("button", {
+                    type: "button",
+                    className: "ps-mini-button",
+                    onClick: () => controller.setNavigationIntent(navigationError.sessionId),
+                }, "Retry")
+                : null));
+    }
 
     return React.createElement(ScrollLinesPanel, {
         controller,

@@ -123,11 +123,12 @@ export const OPERATIONS = [
     { name: "listSessionGroups", access: "group:list", method: "GET", path: "/management/session-groups", summary: "List session groups." },
     { name: "createSessionGroup", access: "authed", method: "POST", path: "/management/session-groups", params: { input: body() }, summary: "Create a session group." },
     { name: "updateSessionGroup", access: "group:manage", method: "PATCH", path: "/management/session-groups/:groupId", params: { groupId: path("groupId"), patch: body() }, summary: "Update group title/description." },
-    { name: "deleteSessionGroup", access: "group:manage", method: "DELETE", path: "/management/session-groups/:groupId", params: { groupId: path("groupId") }, summary: "Delete an empty session group." },
-    { name: "assignSessionsToGroup", access: "group:manage", method: "POST", path: "/management/session-groups/:groupId/assign", params: { groupId: path("groupId"), sessionIds: body() }, summary: "Assign sessions to a group." },
-    { name: "cancelSessionGroup", access: "group:manage", method: "POST", path: "/management/session-groups/:groupId/cancel", params: { groupId: path("groupId"), reason: body() }, summary: "Cancel all sessions in a group." },
-    { name: "completeSessionGroup", access: "group:manage", method: "POST", path: "/management/session-groups/:groupId/complete", params: { groupId: path("groupId"), options: body() }, summary: "Complete all sessions in a group." },
-    { name: "moveSessionsToGroup", access: "group:manage", method: "POST", path: "/management/session-groups/move", params: { groupId: body(), sessionIds: body() }, summary: "Move sessions between groups (groupId null = ungroup)." },
+    { name: "deleteSessionGroup", access: "group:manage", method: "DELETE", path: "/management/session-groups/:groupId", params: { groupId: path("groupId") }, summary: "Delete a session group. Clears the owner's placements; sessions are untouched." },
+    { name: "placeSessionsInGroup", access: "authed", method: "POST", path: "/management/session-groups/place", params: { groupId: body(), sessionIds: body() }, summary: "Place session trees into one of the caller's groups (groupId null = ungroup). Requires read access to each session; changes no shared session data." },
+    { name: "assignSessionsToGroup", access: "authed", method: "POST", path: "/management/session-groups/:groupId/assign", params: { groupId: path("groupId"), sessionIds: body() }, summary: "Deprecated alias of placeSessionsInGroup." },
+    { name: "cancelSessionGroup", access: "group:manage", method: "POST", path: "/management/session-groups/:groupId/cancel", params: { groupId: path("groupId"), reason: body() }, summary: "Deprecated: Cancel all sessions in a group." },
+    { name: "completeSessionGroup", access: "group:manage", method: "POST", path: "/management/session-groups/:groupId/complete", params: { groupId: path("groupId"), options: body() }, summary: "Deprecated: Complete all sessions in a group." },
+    { name: "moveSessionsToGroup", access: "authed", method: "POST", path: "/management/session-groups/move", params: { groupId: body(), sessionIds: body() }, summary: "Deprecated alias of placeSessionsInGroup." },
 
     // ── Management: fleet / users / facts / events ──────────────────────
     { name: "getFleetStats", access: "fleet:read", method: "GET", path: "/management/fleet/stats", params: { since: query("string"), includeDeleted: query("boolean") }, summary: "Fleet-wide stats." },

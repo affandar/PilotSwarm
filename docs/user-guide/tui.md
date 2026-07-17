@@ -157,7 +157,9 @@ your pane reflects it within a poll cycle.
 
 - Press `r` at any time to force-refresh the catalog view.
 - Press `f` to filter the session list by owner. Useful once you have
-  many users hitting the same Postgres.
+  many users hitting the same Postgres. The filter includes a
+  **"Shared with me"** bucket for sessions other users have shared with
+  you.
 
 ---
 
@@ -181,7 +183,10 @@ yesterday's experiments. Keep three, kill nine.
    Skip the pinned/renamed keepers.
 6. Press `Ctrl+G` if you want to move the selected sessions into a
    container first. Choose an existing group, `[New Group]`, or
-   `[No Group]` to ungroup them.
+   `[No Group]` to ungroup them. Groups are **your private
+   organization** (only you see them); any session you can read —
+   including sessions shared with you — can be placed, and it never
+   changes what other users see.
 7. Press `c` to cancel the selected sessions. Confirm.
 8. Press `Esc` to leave multi-select. Press `r` to refresh.
 

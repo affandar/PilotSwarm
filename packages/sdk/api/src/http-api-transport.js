@@ -190,6 +190,10 @@ export class HttpApiTransport {
         return this.api.call("moveSessionsToGroup", { groupId: groupId ?? null, sessionIds });
     }
 
+    async placeSessionsInGroup(sessionIds, groupId) {
+        return this.api.call("placeSessionsInGroup", { groupId: groupId ?? null, sessionIds });
+    }
+
     async deleteSessionGroup(groupId) {
         return this.api.call("deleteSessionGroup", { groupId });
     }

@@ -350,6 +350,10 @@ function matchesOwnerFilterDirect(session, ownerFilter = {}, auth = {}, ownerOve
     if (ownerKey === SYSTEM_OWNER_KEY) return ownerFilter.includeSystem === true;
     const currentUserKey = ownerKeyForOwner(auth?.principal);
     if (ownerFilter.includeMe && currentUserKey && ownerKey === currentUserKey) return true;
+    // "Shared with me": any non-system session owned by someone else. The
+    // catalog is viewer-scoped server-side, so a foreign owner implies the
+    // session was shared with (or is otherwise readable by) the viewer.
+    if (ownerFilter.includeShared === true && ownerKey !== currentUserKey) return true;
     return Array.isArray(ownerFilter.ownerKeys) && ownerFilter.ownerKeys.includes(ownerKey);
 }
 
@@ -728,6 +732,31 @@ function matchesSearchQuery(value, query) {
     return String(value || "").toLowerCase().includes(normalizedQuery);
 }
 
+// The transient deep-link filter exception covers the linked session AND its
+// ancestor chain (real parents plus the synthetic group:<id> row) so the
+// linked row renders with its tree context instead of as an orphan.
+function collectFilterExceptionIds(sessions) {
+    const exceptionId = sessions?.filterExceptionId || null;
+    const byId = sessions?.byId || {};
+    if (!exceptionId || !byId[exceptionId]) return null;
+    const ids = new Set([exceptionId]);
+    let current = byId[exceptionId];
+    let hops = 0;
+    while (current && hops < 16) {
+        let parentId = null;
+        if (current.parentSessionId && byId[current.parentSessionId]) {
+            parentId = current.parentSessionId;
+        } else if (!current.isGroup && current.groupId && byId[`group:${current.groupId}`]) {
+            parentId = `group:${current.groupId}`;
+        }
+        if (!parentId || ids.has(parentId)) break;
+        ids.add(parentId);
+        current = byId[parentId];
+        hops += 1;
+    }
+    return ids;
+}
+
 export function selectSessionRows(state) {
     const totalDescendantCounts = getTotalDescendantCounts(state.sessions.byId);
     const visibleDescendantCounts = getVisibleDescendantCounts(state.sessions.flat, state.sessions.byId);
@@ -736,6 +765,7 @@ export function selectSessionRows(state) {
     const auth = state.auth || {};
     const pinnedSet = new Set(Array.isArray(state.sessions?.pinnedIds) ? state.sessions.pinnedIds : []);
     const selectedSet = new Set(Array.isArray(state.sessions?.selectedIds) ? state.sessions.selectedIds : []);
+    const filterExceptionIds = collectFilterExceptionIds(state.sessions);
 
     return state.sessions.flat.map((entry) => {
         const session = state.sessions.byId[entry.sessionId];
@@ -757,6 +787,7 @@ export function selectSessionRows(state) {
             canPin: canPinSessionRow(session),
         };
     }).filter((row) => {
+        if (filterExceptionIds?.has(row.sessionId)) return true;
         const session = state.sessions.byId[row.sessionId];
         if (!matchesOwnerFilter(session, ownerFilter, auth, state.sessions.byId)) return false;
         const effectiveOwner = effectiveSessionOwner(session, state.sessions.byId);
@@ -804,6 +835,39 @@ export function selectVisibleSessionRows(state, maxRows = 8) {
 export function selectActiveSession(state) {
     const sessionId = state.sessions.activeSessionId;
     return sessionId ? state.sessions.byId[sessionId] || null : null;
+}
+
+export function selectNavigationIntent(state) {
+    return state.sessions?.navigationIntent || null;
+}
+
+/**
+ * Deep-link failure state for renderers. `not_found` deliberately covers both
+ * unknown and inaccessible sessions (no existence oracle); network/server
+ * failures keep a retryable flavor.
+ */
+export function selectNavigationError(state) {
+    const intent = state.sessions?.navigationIntent;
+    if (!intent || intent.status !== "failed") return null;
+    const errorKind = intent.errorKind === "not_found" ? "not_found" : "network";
+    return {
+        sessionId: intent.sessionId,
+        errorKind,
+        retryable: errorKind === "network",
+        message: errorKind === "not_found"
+            ? "This session was not found or has not been shared with you."
+            : "Could not load the linked session. Check your connection and try again.",
+    };
+}
+
+/**
+ * Status copy for the transient deep-link filter exception — non-null while a
+ * linked session is being shown despite the current filters excluding it.
+ */
+export function selectSessionFilterExceptionNotice(state) {
+    const exceptionId = state.sessions?.filterExceptionId || null;
+    if (!exceptionId || !state.sessions?.byId?.[exceptionId]) return null;
+    return "Showing linked session outside your current filters.";
 }
 
 /**
@@ -4640,6 +4704,7 @@ function isOwnerFilterItemSelected(item, ownerFilter = {}, auth = {}) {
     if (item.kind === "system") return ownerFilter?.includeSystem === true;
     if (item.kind === "unowned") return ownerFilter?.includeUnowned === true;
     if (item.kind === "me") return ownerFilter?.includeMe === true && Boolean(ownerKeyForOwner(auth?.principal));
+    if (item.kind === "shared") return ownerFilter?.includeShared === true;
     if (item.kind === "owner") return Array.isArray(ownerFilter?.ownerKeys) && ownerFilter.ownerKeys.includes(item.ownerKey);
     return false;
 }

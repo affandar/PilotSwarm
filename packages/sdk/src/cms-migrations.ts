@@ -180,7 +180,916 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "grant_share_create_only_grantee",
             sql: migration_0033_grant_share_create_only_grantee(schema),
         },
+        {
+            version: "0034",
+            name: "user_session_group_placements",
+            sql: migration_0034_user_session_group_placements(schema),
+        },
     ];
+}
+
+// ─── Migration 0034: private per-user session-group placements ──
+
+function migration_0034_user_session_group_placements(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- 0034_user_session_group_placements: session groups become private per-user
+-- organization (docs/proposals/private-session-groups-and-deep-links.md).
+--
+-- A group assignment stops being a property of the session row and becomes a
+-- (viewer, root) placement owned by the viewer: organizing a shared session
+-- changes nothing for anyone else. Placement requires only read access to
+-- the tree; the target group must be owned by the placing viewer — enforced
+-- structurally by a composite FK into session_group_owners, so cross-user
+-- placement is impossible. Children are never placed: ids normalize to their
+-- tree root and only root rows carry a placement-sourced group_id in reads.
+--
+-- After this migration nothing reads or writes sessions.group_id (the column
+-- is dropped in a LATER release). cms_assign_session_group and the zero-arg
+-- cms_list_session_groups stay defined but uncalled for the rolling window;
+-- the zero-arg group list remains the unscoped audit path.
+--
+-- No hot-table DDL: only a unique on the tiny session_group_owners table, a
+-- new table, a backfill INSERT..SELECT, and function swaps — safe as one
+-- plain transactional migration.
+
+DO $usgp$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint c
+        JOIN pg_class t ON t.oid = c.conrelid
+        JOIN pg_namespace n ON n.oid = t.relnamespace
+        WHERE n.nspname = '${schema}'
+          AND t.relname = 'session_group_owners'
+          AND c.conname = 'session_group_owners_group_user_uq'
+    ) THEN
+        ALTER TABLE ${s}.session_group_owners
+            ADD CONSTRAINT session_group_owners_group_user_uq UNIQUE (group_id, user_id);
+    END IF;
+END
+$usgp$;
+
+CREATE TABLE IF NOT EXISTS ${s}.user_session_group_placements (
+    user_id         BIGINT NOT NULL REFERENCES ${s}.users(user_id) ON DELETE CASCADE,
+    root_session_id TEXT   NOT NULL REFERENCES ${s}.sessions(session_id) ON DELETE CASCADE,
+    group_id        TEXT   NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, root_session_id),
+    FOREIGN KEY (group_id, user_id)
+        REFERENCES ${s}.session_group_owners(group_id, user_id)
+        ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_${schema}_usgp_group_user
+    ON ${s}.user_session_group_placements(group_id, user_id);
+
+-- Ownerless-group adoption: a legacy group with no owner row adopts the
+-- owner of its live member ROOTS when every such root is owned and all
+-- resolve to the same user. Groups with zero live member roots or with
+-- conflicting owners stay ownerless (quarantined: absent from viewer-scoped
+-- lists, visible only through the unscoped audit path).
+INSERT INTO ${s}.session_group_owners (group_id, user_id)
+SELECT grp.group_id, grp.owner_user_id
+FROM (
+    SELECT sess.group_id, MIN(so.user_id) AS owner_user_id
+    FROM ${s}.sessions sess
+    LEFT JOIN ${s}.session_owners so ON so.session_id = sess.session_id
+    WHERE sess.group_id IS NOT NULL
+      AND sess.parent_session_id IS NULL
+      AND sess.deleted_at IS NULL
+    GROUP BY sess.group_id
+    HAVING COUNT(*) FILTER (WHERE so.user_id IS NULL) = 0
+       AND COUNT(DISTINCT so.user_id) = 1
+) grp
+JOIN ${s}.session_groups g ON g.group_id = grp.group_id
+WHERE NOT EXISTS (
+    SELECT 1 FROM ${s}.session_group_owners go WHERE go.group_id = grp.group_id
+)
+ON CONFLICT (group_id) DO NOTHING;
+
+-- Placement backfill FROM ROOT ROWS ONLY: each live grouped root becomes its
+-- owner's placement, and only when the group owner IS the root owner —
+-- legacy rows that would cross user boundaries are skipped (diagnosed
+-- below), never silently re-owned.
+DO $usgp$
+DECLARE
+    v_placed         BIGINT;
+    v_owner_mismatch BIGINT;
+    v_unowned        BIGINT;
+    v_ownerless      BIGINT;
+    v_child_mismatch BIGINT;
+BEGIN
+    INSERT INTO ${s}.user_session_group_placements (user_id, root_session_id, group_id)
+    SELECT so.user_id, sess.session_id, sess.group_id
+    FROM ${s}.sessions sess
+    JOIN ${s}.session_owners so ON so.session_id = sess.session_id
+    JOIN ${s}.session_group_owners go ON go.group_id = sess.group_id AND go.user_id = so.user_id
+    WHERE sess.group_id IS NOT NULL
+      AND sess.parent_session_id IS NULL
+      AND sess.deleted_at IS NULL
+    ON CONFLICT (user_id, root_session_id) DO NOTHING;
+    GET DIAGNOSTICS v_placed = ROW_COUNT;
+
+    SELECT COUNT(*) INTO v_owner_mismatch
+    FROM ${s}.sessions sess
+    JOIN ${s}.session_owners so ON so.session_id = sess.session_id
+    JOIN ${s}.session_group_owners go ON go.group_id = sess.group_id
+    WHERE sess.group_id IS NOT NULL
+      AND sess.parent_session_id IS NULL
+      AND sess.deleted_at IS NULL
+      AND go.user_id <> so.user_id;
+
+    SELECT COUNT(*) INTO v_unowned
+    FROM ${s}.sessions sess
+    WHERE sess.group_id IS NOT NULL
+      AND sess.parent_session_id IS NULL
+      AND sess.deleted_at IS NULL
+      AND NOT EXISTS (SELECT 1 FROM ${s}.session_owners so WHERE so.session_id = sess.session_id);
+
+    SELECT COUNT(*) INTO v_ownerless
+    FROM ${s}.sessions sess
+    WHERE sess.group_id IS NOT NULL
+      AND sess.parent_session_id IS NULL
+      AND sess.deleted_at IS NULL
+      AND NOT EXISTS (SELECT 1 FROM ${s}.session_group_owners go WHERE go.group_id = sess.group_id);
+
+    SELECT COUNT(DISTINCT COALESCE(child.root_session_id, child.session_id)) INTO v_child_mismatch
+    FROM ${s}.sessions child
+    JOIN ${s}.sessions root ON root.session_id = COALESCE(child.root_session_id, child.session_id)
+    WHERE child.parent_session_id IS NOT NULL
+      AND child.deleted_at IS NULL
+      AND child.group_id IS DISTINCT FROM root.group_id;
+
+    RAISE NOTICE 'cms 0034: backfilled % session-group placement(s) from legacy root assignments', v_placed;
+    IF v_owner_mismatch > 0 THEN
+        RAISE WARNING 'cms 0034: skipped % grouped root(s) whose owner does not match the group owner', v_owner_mismatch;
+    END IF;
+    IF v_unowned > 0 THEN
+        RAISE WARNING 'cms 0034: skipped % grouped root(s) with no session owner', v_unowned;
+    END IF;
+    IF v_ownerless > 0 THEN
+        RAISE WARNING 'cms 0034: skipped % grouped root(s) in ownerless (quarantined) groups', v_ownerless;
+    END IF;
+    IF v_child_mismatch > 0 THEN
+        RAISE WARNING 'cms 0034: % tree(s) have children whose legacy group_id differs from the root; children are never placed', v_child_mismatch;
+    END IF;
+END
+$usgp$;
+
+-- ── cms_place_sessions_in_group ──────────────────────────────────
+-- The single placement mutation: upsert (or delete, when p_group_id is NULL)
+-- the caller's placement for each distinct resolved live root. The target
+-- group must be owned by the caller (raises; no distinction between missing
+-- and foreign — no existence oracle). Per-root outcomes: unknown/unreadable
+-- ids report placed=false, reason='not_found' with identical shape; system
+-- trees report reason='system'. p_is_admin is the caller's concern — the
+-- runtime passes admin OR NOT enforce, making permissive mode read-all.
+-- Never touches the sessions table (placement is viewer-private state).
+CREATE OR REPLACE FUNCTION ${s}.cms_place_sessions_in_group(
+    p_provider    TEXT,
+    p_subject     TEXT,
+    p_is_admin    BOOLEAN,
+    p_session_ids TEXT[],
+    p_group_id    TEXT
+) RETURNS TABLE (
+    root_session_id TEXT,
+    placed          BOOLEAN,
+    reason          TEXT
+) AS $$
+-- The ON CONFLICT column list would otherwise be ambiguous against the
+-- root_session_id OUT column; every other reference is table-qualified.
+#variable_conflict use_column
+DECLARE
+    v_group_id TEXT := NULLIF(BTRIM(p_group_id), '');
+    v_user BIGINT;
+    v_id TEXT;
+    v_root TEXT;
+    v_is_system BOOLEAN;
+    v_readable BOOLEAN;
+    v_seen TEXT[] := ARRAY[]::TEXT[];
+BEGIN
+    v_user := ${s}.cms_register_user(p_provider, p_subject, NULL, NULL);
+
+    IF v_group_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM ${s}.session_group_owners go
+        WHERE go.group_id = v_group_id AND go.user_id = v_user
+    ) THEN
+        RAISE EXCEPTION 'Session group % was not found or is not owned by the caller', v_group_id;
+    END IF;
+
+    FOREACH v_id IN ARRAY COALESCE(p_session_ids, ARRAY[]::TEXT[]) LOOP
+        v_root := ${s}.cms_resolve_root_session(v_id);
+
+        -- Unknown and unreadable ids must be indistinguishable: echo the INPUT
+        -- id and dedupe on it, never on the resolved root — keying on the
+        -- resolved root would leak the existence, id, and co-membership of a
+        -- private foreign tree the caller cannot read.
+        IF v_root IS NULL THEN
+            IF array_position(v_seen, v_id) IS NOT NULL THEN
+                CONTINUE;
+            END IF;
+            v_seen := v_seen || v_id;
+            root_session_id := v_id; placed := FALSE; reason := 'not_found';
+            RETURN NEXT;
+            CONTINUE;
+        END IF;
+
+        SELECT r.is_system,
+               (p_is_admin
+                OR EXISTS (
+                    SELECT 1 FROM ${s}.session_owners so
+                    WHERE so.session_id = r.session_id AND so.user_id = v_user
+                )
+                OR COALESCE(r.visibility, 'private') IN ('shared_read', 'shared_write')
+                OR EXISTS (
+                    SELECT 1 FROM ${s}.session_shares sh
+                    WHERE sh.session_id = r.session_id AND sh.user_id = v_user
+                ))
+        INTO v_is_system, v_readable
+        FROM ${s}.sessions r
+        WHERE r.session_id = v_root AND r.deleted_at IS NULL;
+
+        IF NOT FOUND THEN
+            IF array_position(v_seen, v_id) IS NOT NULL THEN
+                CONTINUE;
+            END IF;
+            v_seen := v_seen || v_id;
+            root_session_id := v_id; placed := FALSE; reason := 'not_found';
+            RETURN NEXT;
+            CONTINUE;
+        END IF;
+
+        -- System trees are deployment-visible: their root id is not private, so
+        -- reason='system' may key on the resolved root.
+        IF v_is_system THEN
+            IF array_position(v_seen, v_root) IS NOT NULL THEN
+                CONTINUE;
+            END IF;
+            v_seen := v_seen || v_root;
+            root_session_id := v_root; placed := FALSE; reason := 'system';
+            RETURN NEXT;
+            CONTINUE;
+        END IF;
+
+        IF NOT v_readable THEN
+            IF array_position(v_seen, v_id) IS NOT NULL THEN
+                CONTINUE;
+            END IF;
+            v_seen := v_seen || v_id;
+            root_session_id := v_id; placed := FALSE; reason := 'not_found';
+            RETURN NEXT;
+            CONTINUE;
+        END IF;
+
+        IF array_position(v_seen, v_root) IS NOT NULL THEN
+            CONTINUE;
+        END IF;
+        v_seen := v_seen || v_root;
+
+        IF v_group_id IS NULL THEN
+            DELETE FROM ${s}.user_session_group_placements p
+            WHERE p.user_id = v_user AND p.root_session_id = v_root;
+        ELSE
+            INSERT INTO ${s}.user_session_group_placements (user_id, root_session_id, group_id)
+            VALUES (v_user, v_root, v_group_id)
+            ON CONFLICT (user_id, root_session_id) DO UPDATE
+            SET group_id = EXCLUDED.group_id,
+                updated_at = now();
+        END IF;
+        root_session_id := v_root; placed := TRUE; reason := NULL;
+        RETURN NEXT;
+    END LOOP;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── cms_list_session_groups (viewer-scoped overload) ─────────────
+-- Only groups OWNED by the viewer, with counts/activity computed from the
+-- viewer's OWN placements whose root is live and still readable to them
+-- (a revoked share retains the placement but drops it from counts). Foreign
+-- groups are never returned — admins included; the zero-arg legacy overload
+-- remains the unscoped audit path. No parameter defaults: defaults would
+-- make zero-arg calls ambiguous against the legacy overload.
+CREATE OR REPLACE FUNCTION ${s}.cms_list_session_groups(
+    p_provider TEXT,
+    p_subject  TEXT,
+    p_is_admin BOOLEAN
+) RETURNS TABLE (
+    group_id                  TEXT,
+    title                     TEXT,
+    description               TEXT,
+    owner                     JSONB,
+    metadata                  JSONB,
+    member_count              INT,
+    running_count             INT,
+    waiting_count             INT,
+    completed_count           INT,
+    failed_count              INT,
+    cancelled_count           INT,
+    latest_activity_at        TIMESTAMPTZ,
+    latest_summary_updated_at TIMESTAMPTZ,
+    created_at                TIMESTAMPTZ,
+    updated_at                TIMESTAMPTZ
+) AS $$
+DECLARE
+    v_user BIGINT;
+BEGIN
+    SELECT u.user_id INTO v_user
+    FROM ${s}.users u
+    WHERE u.provider = BTRIM(p_provider) AND u.subject = BTRIM(p_subject);
+    IF v_user IS NULL THEN
+        RETURN;
+    END IF;
+
+    RETURN QUERY
+    SELECT
+        g.group_id,
+        g.title,
+        g.description,
+        jsonb_build_object(
+            'provider', u.provider,
+            'subject', u.subject,
+            'email', u.email,
+            'displayName', u.display_name
+        ) AS owner,
+        g.metadata,
+        COUNT(sess.session_id)::INT AS member_count,
+        COUNT(sess.session_id) FILTER (WHERE sess.state IN ('running', 'idle', 'pending'))::INT AS running_count,
+        COUNT(sess.session_id) FILTER (WHERE sess.state IN ('waiting', 'input_required'))::INT AS waiting_count,
+        COUNT(sess.session_id) FILTER (WHERE sess.state = 'completed')::INT AS completed_count,
+        COUNT(sess.session_id) FILTER (WHERE sess.state IN ('failed', 'error'))::INT AS failed_count,
+        COUNT(sess.session_id) FILTER (WHERE sess.state = 'cancelled')::INT AS cancelled_count,
+        MAX(COALESCE(sess.last_active_at, sess.updated_at)) AS latest_activity_at,
+        MAX(sess.summary_updated_at) AS latest_summary_updated_at,
+        g.created_at,
+        g.updated_at
+    FROM ${s}.session_groups g
+    JOIN ${s}.session_group_owners go ON go.group_id = g.group_id AND go.user_id = v_user
+    JOIN ${s}.users u ON u.user_id = go.user_id
+    LEFT JOIN ${s}.user_session_group_placements usgp
+        ON usgp.group_id = g.group_id AND usgp.user_id = v_user
+    LEFT JOIN ${s}.sessions sess
+        ON sess.session_id = usgp.root_session_id
+       AND sess.deleted_at IS NULL
+       AND (
+            p_is_admin
+            OR EXISTS (
+                SELECT 1 FROM ${s}.session_owners so
+                WHERE so.session_id = sess.session_id AND so.user_id = v_user
+            )
+            OR COALESCE(sess.visibility, 'private') IN ('shared_read', 'shared_write')
+            OR EXISTS (
+                SELECT 1 FROM ${s}.session_shares sh
+                WHERE sh.session_id = sess.session_id AND sh.user_id = v_user
+            )
+       )
+    GROUP BY g.group_id, g.title, g.description, u.provider, u.subject, u.email, u.display_name, g.metadata, g.created_at, g.updated_at
+    ORDER BY MAX(sess.summary_updated_at) DESC NULLS LAST, g.updated_at DESC, g.group_id DESC;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── cms_delete_session_group ─────────────────────────────────────
+-- Groups are private per-user organization now: deleting one deletes the
+-- owner row and (via the composite FK) that owner's placements — never
+-- sessions — so non-empty groups delete cleanly. FALSE = group not found.
+CREATE OR REPLACE FUNCTION ${s}.cms_delete_session_group(
+    p_group_id TEXT
+) RETURNS BOOLEAN AS $$
+BEGIN
+    DELETE FROM ${s}.session_groups WHERE group_id = p_group_id;
+    RETURN FOUND;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── cms_create_session (placement-era body swap) ─────────────────
+-- Same 10-arg signature (CREATE OR REPLACE, rolling-deploy safe). Deletes
+-- the parent group inheritance and never writes sessions.group_id;
+-- p_group_id is retained for arity compatibility and ignored — the caller
+-- places the root for the creator via cms_place_sessions_in_group.
+CREATE OR REPLACE FUNCTION ${s}.cms_create_session(
+    p_session_id        TEXT,
+    p_model             TEXT,
+    p_reasoning_effort  TEXT,
+    p_parent_session_id TEXT,
+    p_is_system         BOOLEAN,
+    p_agent_id          TEXT,
+    p_splash            TEXT,
+    p_group_id          TEXT,
+    p_splash_mobile     TEXT,
+    p_visibility        TEXT
+) RETURNS VOID AS $$
+DECLARE
+    v_reasoning_effort TEXT := NULLIF(BTRIM(p_reasoning_effort), '');
+    v_root TEXT;
+    v_visibility TEXT := CASE
+        WHEN p_visibility IN ('private', 'shared_read', 'shared_write') THEN p_visibility
+        ELSE 'private'
+    END;
+BEGIN
+    IF p_parent_session_id IS NOT NULL THEN
+        SELECT COALESCE(parent.root_session_id, parent.session_id)
+        INTO v_root
+        FROM ${s}.sessions parent
+        WHERE parent.session_id = p_parent_session_id;
+    END IF;
+    v_root := COALESCE(v_root, p_session_id);
+
+    INSERT INTO ${s}.sessions
+        (session_id, model, reasoning_effort, parent_session_id, is_system, agent_id, splash, splash_mobile, root_session_id, visibility)
+    VALUES
+        (p_session_id, p_model, v_reasoning_effort, p_parent_session_id, p_is_system, p_agent_id, p_splash, p_splash_mobile, v_root, v_visibility)
+    ON CONFLICT (session_id) DO UPDATE
+    SET model             = EXCLUDED.model,
+        reasoning_effort  = EXCLUDED.reasoning_effort,
+        parent_session_id = EXCLUDED.parent_session_id,
+        is_system         = EXCLUDED.is_system,
+        agent_id          = EXCLUDED.agent_id,
+        splash            = EXCLUDED.splash,
+        splash_mobile     = EXCLUDED.splash_mobile,
+        root_session_id   = EXCLUDED.root_session_id,
+        visibility        = EXCLUDED.visibility,
+        deleted_at        = NULL,
+        updated_at        = now(),
+        state             = 'pending',
+        orchestration_id  = NULL,
+        last_error        = NULL,
+        last_active_at    = NULL,
+        current_iteration = 0,
+        wait_reason       = NULL,
+        title_locked      = FALSE
+    WHERE ${s}.sessions.deleted_at IS NOT NULL;
+
+    INSERT INTO ${s}.session_metric_summaries
+        (session_id, agent_id, model, reasoning_effort, parent_session_id)
+    VALUES
+        (p_session_id, p_agent_id, p_model, v_reasoning_effort, p_parent_session_id)
+    ON CONFLICT (session_id) DO UPDATE
+    SET agent_id          = COALESCE(${s}.session_metric_summaries.agent_id, EXCLUDED.agent_id),
+        model             = COALESCE(${s}.session_metric_summaries.model, EXCLUDED.model),
+        reasoning_effort  = COALESCE(${s}.session_metric_summaries.reasoning_effort, EXCLUDED.reasoning_effort),
+        parent_session_id = COALESCE(${s}.session_metric_summaries.parent_session_id, EXCLUDED.parent_session_id),
+        updated_at        = now();
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── cms_update_session (placement-era body swap) ─────────────────
+-- Same 2-arg signature. Drops the 'groupId' patch handling — group changes
+-- route through cms_place_sessions_in_group now, and sessions.group_id is
+-- never written.
+CREATE OR REPLACE FUNCTION ${s}.cms_update_session(
+    p_session_id TEXT,
+    p_updates    JSONB
+) RETURNS VOID AS $$
+BEGIN
+    UPDATE ${s}.sessions SET
+        orchestration_id  = CASE WHEN p_updates ? 'orchestrationId'  THEN (p_updates->>'orchestrationId')                         ELSE orchestration_id  END,
+        title             = CASE WHEN p_updates ? 'title'            THEN (p_updates->>'title')                                    ELSE title             END,
+        title_locked      = CASE WHEN p_updates ? 'titleLocked'     THEN (p_updates->>'titleLocked')::BOOLEAN                     ELSE title_locked      END,
+        state             = CASE WHEN p_updates ? 'state'           THEN (p_updates->>'state')                                     ELSE state             END,
+        model             = CASE WHEN p_updates ? 'model'           THEN (p_updates->>'model')                                     ELSE model             END,
+        reasoning_effort  = CASE WHEN p_updates ? 'reasoningEffort' THEN NULLIF(BTRIM(p_updates->>'reasoningEffort'), '')          ELSE reasoning_effort  END,
+        last_active_at    = CASE WHEN p_updates ? 'lastActiveAt'    THEN (p_updates->>'lastActiveAt')::TIMESTAMPTZ                 ELSE last_active_at    END,
+        current_iteration = CASE WHEN p_updates ? 'currentIteration' THEN (p_updates->>'currentIteration')::INT                   ELSE current_iteration END,
+        last_error        = CASE WHEN p_updates ? 'lastError'       THEN (p_updates->>'lastError')                                 ELSE last_error        END,
+        wait_reason       = CASE WHEN p_updates ? 'waitReason'      THEN (p_updates->>'waitReason')                                ELSE wait_reason       END,
+        is_system         = CASE WHEN p_updates ? 'isSystem'        THEN (p_updates->>'isSystem')::BOOLEAN                         ELSE is_system         END,
+        agent_id          = CASE WHEN p_updates ? 'agentId'         THEN (p_updates->>'agentId')                                   ELSE agent_id          END,
+        splash            = CASE WHEN p_updates ? 'splash'          THEN (p_updates->>'splash')                                    ELSE splash            END,
+        splash_mobile     = CASE WHEN p_updates ? 'splashMobile'    THEN (p_updates->>'splashMobile')                              ELSE splash_mobile     END,
+        active_turn_index = CASE WHEN (p_updates ? 'state') AND (p_updates->>'state') <> 'running' THEN NULL                       ELSE active_turn_index END,
+        updated_at        = now()
+    WHERE session_id = p_session_id;
+
+    UPDATE ${s}.session_metrics
+    SET model = CASE WHEN p_updates ? 'model' THEN (p_updates->>'model') ELSE model END,
+        reasoning_effort = CASE WHEN p_updates ? 'reasoningEffort' THEN NULLIF(BTRIM(p_updates->>'reasoningEffort'), '') ELSE reasoning_effort END,
+        updated_at = CASE WHEN p_updates ? 'model' OR p_updates ? 'reasoningEffort' THEN now() ELSE updated_at END
+    WHERE session_id = p_session_id
+      AND (p_updates ? 'model' OR p_updates ? 'reasoningEffort');
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── Read procs: placement-sourced group_id ───────────────────────
+-- The whole 0029 list/get family gains two trailing placement-viewer params
+-- and sources the returned group_id column from that viewer's placements
+-- (root rows only; children report NULL; sessions.group_id is never read).
+-- Signature changes require drop-then-create with the exact old arg lists;
+-- CREATE OR REPLACE keeps re-runs idempotent. cms_list_sessions and
+-- cms_list_group_sessions must keep byte-identical column lists.
+
+-- cms_get_session
+DROP FUNCTION IF EXISTS ${s}.cms_get_session(TEXT);
+CREATE OR REPLACE FUNCTION ${s}.cms_get_session(
+    p_session_id         TEXT,
+    p_placement_provider TEXT DEFAULT NULL,
+    p_placement_subject  TEXT DEFAULT NULL
+) RETURNS TABLE (
+    session_id         TEXT,
+    orchestration_id   TEXT,
+    title              TEXT,
+    title_locked       BOOLEAN,
+    state              TEXT,
+    model              TEXT,
+    reasoning_effort   TEXT,
+    group_id           TEXT,
+    short_summary      TEXT,
+    summary_state      JSONB,
+    summary_updated_at TIMESTAMPTZ,
+    created_at         TIMESTAMPTZ,
+    updated_at         TIMESTAMPTZ,
+    last_active_at     TIMESTAMPTZ,
+    deleted_at         TIMESTAMPTZ,
+    current_iteration  INTEGER,
+    last_error         TEXT,
+    parent_session_id  TEXT,
+    wait_reason        TEXT,
+    is_system          BOOLEAN,
+    agent_id           TEXT,
+    splash             TEXT,
+    owner_provider     TEXT,
+    owner_subject      TEXT,
+    owner_email        TEXT,
+    owner_display_name TEXT,
+    active_turn_index  INTEGER,
+    splash_mobile      TEXT,
+    visibility         TEXT,
+    root_session_id    TEXT
+) AS $$
+DECLARE
+    v_placement_user BIGINT;
+BEGIN
+    IF p_placement_provider IS NOT NULL AND p_placement_subject IS NOT NULL THEN
+        SELECT u.user_id INTO v_placement_user
+        FROM ${s}.users u
+        WHERE u.provider = BTRIM(p_placement_provider) AND u.subject = BTRIM(p_placement_subject);
+    END IF;
+    RETURN QUERY
+    SELECT
+        sess.session_id,
+        sess.orchestration_id,
+        sess.title,
+        sess.title_locked,
+        sess.state,
+        sess.model,
+        sess.reasoning_effort,
+        usgp.group_id,
+        sess.short_summary,
+        sess.summary_state,
+        sess.summary_updated_at,
+        sess.created_at,
+        sess.updated_at,
+        sess.last_active_at,
+        sess.deleted_at,
+        sess.current_iteration,
+        sess.last_error,
+        sess.parent_session_id,
+        sess.wait_reason,
+        sess.is_system,
+        sess.agent_id,
+        sess.splash,
+        u.provider AS owner_provider,
+        u.subject AS owner_subject,
+        u.email AS owner_email,
+        u.display_name AS owner_display_name,
+        sess.active_turn_index,
+        sess.splash_mobile,
+        sess.visibility,
+        sess.root_session_id
+    FROM ${s}.sessions sess
+    LEFT JOIN ${s}.session_owners so ON so.session_id = sess.session_id
+    LEFT JOIN ${s}.users u ON u.user_id = so.user_id
+    LEFT JOIN ${s}.user_session_group_placements usgp
+        ON usgp.user_id = v_placement_user AND usgp.root_session_id = sess.session_id
+    WHERE sess.session_id = p_session_id AND sess.deleted_at IS NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+-- cms_list_sessions / cms_list_group_sessions (shapes must stay identical)
+DROP FUNCTION IF EXISTS ${s}.cms_list_group_sessions(TEXT);
+DROP FUNCTION IF EXISTS ${s}.cms_list_sessions();
+CREATE OR REPLACE FUNCTION ${s}.cms_list_sessions(
+    p_placement_provider TEXT DEFAULT NULL,
+    p_placement_subject  TEXT DEFAULT NULL
+) RETURNS TABLE (
+    session_id         TEXT,
+    orchestration_id   TEXT,
+    title              TEXT,
+    title_locked       BOOLEAN,
+    state              TEXT,
+    model              TEXT,
+    reasoning_effort   TEXT,
+    group_id           TEXT,
+    short_summary      TEXT,
+    summary_state      JSONB,
+    summary_updated_at TIMESTAMPTZ,
+    created_at         TIMESTAMPTZ,
+    updated_at         TIMESTAMPTZ,
+    last_active_at     TIMESTAMPTZ,
+    deleted_at         TIMESTAMPTZ,
+    current_iteration  INTEGER,
+    last_error         TEXT,
+    parent_session_id  TEXT,
+    wait_reason        TEXT,
+    is_system          BOOLEAN,
+    agent_id           TEXT,
+    splash             TEXT,
+    owner_provider     TEXT,
+    owner_subject      TEXT,
+    owner_email        TEXT,
+    owner_display_name TEXT,
+    splash_mobile      TEXT,
+    visibility         TEXT,
+    root_session_id    TEXT
+) AS $$
+DECLARE
+    v_placement_user BIGINT;
+BEGIN
+    IF p_placement_provider IS NOT NULL AND p_placement_subject IS NOT NULL THEN
+        SELECT u.user_id INTO v_placement_user
+        FROM ${s}.users u
+        WHERE u.provider = BTRIM(p_placement_provider) AND u.subject = BTRIM(p_placement_subject);
+    END IF;
+    RETURN QUERY
+    SELECT
+        sess.session_id,
+        sess.orchestration_id,
+        sess.title,
+        sess.title_locked,
+        sess.state,
+        sess.model,
+        sess.reasoning_effort,
+        usgp.group_id,
+        sess.short_summary,
+        sess.summary_state,
+        sess.summary_updated_at,
+        sess.created_at,
+        sess.updated_at,
+        sess.last_active_at,
+        sess.deleted_at,
+        sess.current_iteration,
+        sess.last_error,
+        sess.parent_session_id,
+        sess.wait_reason,
+        sess.is_system,
+        sess.agent_id,
+        sess.splash,
+        u.provider AS owner_provider,
+        u.subject AS owner_subject,
+        u.email AS owner_email,
+        u.display_name AS owner_display_name,
+        sess.splash_mobile,
+        sess.visibility,
+        sess.root_session_id
+    FROM ${s}.sessions sess
+    LEFT JOIN ${s}.session_owners so ON so.session_id = sess.session_id
+    LEFT JOIN ${s}.users u ON u.user_id = so.user_id
+    LEFT JOIN ${s}.user_session_group_placements usgp
+        ON usgp.user_id = v_placement_user AND usgp.root_session_id = sess.session_id
+    WHERE sess.deleted_at IS NULL
+    ORDER BY sess.updated_at DESC, sess.session_id DESC;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Viewer-scoped group membership: sessions whose ROOT the placement viewer
+-- placed in the group (children ride along; their group_id column is NULL).
+CREATE OR REPLACE FUNCTION ${s}.cms_list_group_sessions(
+    p_group_id           TEXT,
+    p_placement_provider TEXT DEFAULT NULL,
+    p_placement_subject  TEXT DEFAULT NULL
+) RETURNS TABLE (
+    session_id         TEXT,
+    orchestration_id   TEXT,
+    title              TEXT,
+    title_locked       BOOLEAN,
+    state              TEXT,
+    model              TEXT,
+    reasoning_effort   TEXT,
+    group_id           TEXT,
+    short_summary      TEXT,
+    summary_state      JSONB,
+    summary_updated_at TIMESTAMPTZ,
+    created_at         TIMESTAMPTZ,
+    updated_at         TIMESTAMPTZ,
+    last_active_at     TIMESTAMPTZ,
+    deleted_at         TIMESTAMPTZ,
+    current_iteration  INTEGER,
+    last_error         TEXT,
+    parent_session_id  TEXT,
+    wait_reason        TEXT,
+    is_system          BOOLEAN,
+    agent_id           TEXT,
+    splash             TEXT,
+    owner_provider     TEXT,
+    owner_subject      TEXT,
+    owner_email        TEXT,
+    owner_display_name TEXT,
+    splash_mobile      TEXT,
+    visibility         TEXT,
+    root_session_id    TEXT
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT * FROM ${s}.cms_list_sessions(p_placement_provider, p_placement_subject) sess
+    WHERE EXISTS (
+        SELECT 1
+        FROM ${s}.user_session_group_placements usgp
+        JOIN ${s}.users pu ON pu.user_id = usgp.user_id
+        WHERE usgp.root_session_id = COALESCE(sess.root_session_id, sess.session_id)
+          AND usgp.group_id = p_group_id
+          AND pu.provider = BTRIM(p_placement_provider)
+          AND pu.subject = BTRIM(p_placement_subject)
+    )
+    ORDER BY sess.updated_at DESC, sess.session_id DESC;
+END;
+$$ LANGUAGE plpgsql;
+
+-- cms_list_sessions_page
+DROP FUNCTION IF EXISTS ${s}.cms_list_sessions_page(INT, TIMESTAMPTZ, TEXT, BOOL, TEXT, TEXT, BOOL);
+CREATE OR REPLACE FUNCTION ${s}.cms_list_sessions_page(
+    p_limit                 INT         DEFAULT 51,
+    p_cursor_updated_at     TIMESTAMPTZ DEFAULT NULL,
+    p_cursor_session_id     TEXT        DEFAULT NULL,
+    p_include_deleted       BOOL        DEFAULT FALSE,
+    p_viewer_provider       TEXT        DEFAULT NULL,
+    p_viewer_subject        TEXT        DEFAULT NULL,
+    p_viewer_system_visible BOOL        DEFAULT TRUE,
+    p_placement_provider    TEXT        DEFAULT NULL,
+    p_placement_subject     TEXT        DEFAULT NULL
+) RETURNS TABLE (
+    session_id         TEXT,
+    orchestration_id   TEXT,
+    title              TEXT,
+    title_locked       BOOLEAN,
+    state              TEXT,
+    model              TEXT,
+    reasoning_effort   TEXT,
+    group_id           TEXT,
+    short_summary      TEXT,
+    summary_state      JSONB,
+    summary_updated_at TIMESTAMPTZ,
+    created_at         TIMESTAMPTZ,
+    updated_at         TIMESTAMPTZ,
+    last_active_at     TIMESTAMPTZ,
+    deleted_at         TIMESTAMPTZ,
+    current_iteration  INTEGER,
+    last_error         TEXT,
+    parent_session_id  TEXT,
+    wait_reason        TEXT,
+    is_system          BOOLEAN,
+    agent_id           TEXT,
+    splash             TEXT,
+    owner_provider     TEXT,
+    owner_subject      TEXT,
+    owner_email        TEXT,
+    owner_display_name TEXT,
+    splash_mobile      TEXT,
+    visibility         TEXT,
+    root_session_id    TEXT
+) AS $$
+DECLARE
+    v_limit INT := GREATEST(1, LEAST(COALESCE(p_limit, 51), 201));
+    v_placement_user BIGINT;
+BEGIN
+    IF p_placement_provider IS NOT NULL AND p_placement_subject IS NOT NULL THEN
+        SELECT u.user_id INTO v_placement_user
+        FROM ${s}.users u
+        WHERE u.provider = BTRIM(p_placement_provider) AND u.subject = BTRIM(p_placement_subject);
+    END IF;
+    RETURN QUERY
+    SELECT
+        sess.session_id,
+        sess.orchestration_id,
+        sess.title,
+        sess.title_locked,
+        sess.state,
+        sess.model,
+        sess.reasoning_effort,
+        usgp.group_id,
+        sess.short_summary,
+        sess.summary_state,
+        sess.summary_updated_at,
+        sess.created_at,
+        sess.updated_at,
+        sess.last_active_at,
+        sess.deleted_at,
+        sess.current_iteration,
+        sess.last_error,
+        sess.parent_session_id,
+        sess.wait_reason,
+        sess.is_system,
+        sess.agent_id,
+        sess.splash,
+        u.provider     AS owner_provider,
+        u.subject      AS owner_subject,
+        u.email        AS owner_email,
+        u.display_name AS owner_display_name,
+        sess.splash_mobile,
+        sess.visibility,
+        sess.root_session_id
+    FROM ${s}.sessions sess
+    LEFT JOIN ${s}.session_owners so ON so.session_id = sess.session_id
+    LEFT JOIN ${s}.users u ON u.user_id = so.user_id
+    LEFT JOIN ${s}.user_session_group_placements usgp
+        ON usgp.user_id = v_placement_user AND usgp.root_session_id = sess.session_id
+    WHERE
+        (p_include_deleted OR sess.deleted_at IS NULL)
+        AND (
+            p_cursor_updated_at IS NULL
+            OR sess.updated_at < p_cursor_updated_at
+            OR (sess.updated_at = p_cursor_updated_at AND sess.session_id < p_cursor_session_id)
+        )
+        AND (
+            p_viewer_provider IS NULL
+            OR EXISTS (
+                SELECT 1
+                FROM ${s}.sessions r
+                LEFT JOIN ${s}.session_owners rso ON rso.session_id = r.session_id
+                LEFT JOIN ${s}.users ru ON ru.user_id = rso.user_id
+                WHERE r.session_id = COALESCE(sess.root_session_id, sess.session_id)
+                  AND (
+                    (r.is_system AND p_viewer_system_visible)
+                    OR (ru.provider = BTRIM(p_viewer_provider) AND ru.subject = BTRIM(p_viewer_subject))
+                    OR COALESCE(r.visibility, 'private') IN ('shared_read', 'shared_write')
+                    OR EXISTS (
+                        SELECT 1 FROM ${s}.session_shares sh
+                        JOIN ${s}.users vu ON vu.user_id = sh.user_id
+                        WHERE sh.session_id = r.session_id
+                          AND vu.provider = BTRIM(p_viewer_provider)
+                          AND vu.subject = BTRIM(p_viewer_subject)
+                    )
+                  )
+            )
+        )
+    ORDER BY sess.updated_at DESC, sess.session_id DESC
+    LIMIT v_limit;
+END;
+$$ LANGUAGE plpgsql;
+
+-- cms_list_sessions_visible
+DROP FUNCTION IF EXISTS ${s}.cms_list_sessions_visible(TEXT, TEXT, BOOL);
+CREATE OR REPLACE FUNCTION ${s}.cms_list_sessions_visible(
+    p_viewer_provider       TEXT,
+    p_viewer_subject        TEXT,
+    p_viewer_system_visible BOOL,
+    p_placement_provider    TEXT DEFAULT NULL,
+    p_placement_subject     TEXT DEFAULT NULL
+) RETURNS TABLE (
+    session_id         TEXT,
+    orchestration_id   TEXT,
+    title              TEXT,
+    title_locked       BOOLEAN,
+    state              TEXT,
+    model              TEXT,
+    reasoning_effort   TEXT,
+    group_id           TEXT,
+    short_summary      TEXT,
+    summary_state      JSONB,
+    summary_updated_at TIMESTAMPTZ,
+    created_at         TIMESTAMPTZ,
+    updated_at         TIMESTAMPTZ,
+    last_active_at     TIMESTAMPTZ,
+    deleted_at         TIMESTAMPTZ,
+    current_iteration  INTEGER,
+    last_error         TEXT,
+    parent_session_id  TEXT,
+    wait_reason        TEXT,
+    is_system          BOOLEAN,
+    agent_id           TEXT,
+    splash             TEXT,
+    owner_provider     TEXT,
+    owner_subject      TEXT,
+    owner_email        TEXT,
+    owner_display_name TEXT,
+    splash_mobile      TEXT,
+    visibility         TEXT,
+    root_session_id    TEXT
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT * FROM ${s}.cms_list_sessions(p_placement_provider, p_placement_subject) sess
+    WHERE EXISTS (
+        SELECT 1
+        FROM ${s}.sessions r
+        LEFT JOIN ${s}.session_owners rso ON rso.session_id = r.session_id
+        LEFT JOIN ${s}.users ru ON ru.user_id = rso.user_id
+        WHERE r.session_id = COALESCE(sess.root_session_id, sess.session_id)
+          AND (
+            (r.is_system AND p_viewer_system_visible)
+            OR (ru.provider = BTRIM(p_viewer_provider) AND ru.subject = BTRIM(p_viewer_subject))
+            OR COALESCE(r.visibility, 'private') IN ('shared_read', 'shared_write')
+            OR EXISTS (
+                SELECT 1 FROM ${s}.session_shares sh
+                JOIN ${s}.users vu ON vu.user_id = sh.user_id
+                WHERE sh.session_id = r.session_id
+                  AND vu.provider = BTRIM(p_viewer_provider)
+                  AND vu.subject = BTRIM(p_viewer_subject)
+            )
+          )
+    )
+    ORDER BY sess.updated_at DESC, sess.session_id DESC;
+END;
+$$ LANGUAGE plpgsql;
+`;
 }
 
 // ─── Migration 0033: grant path never overwrites directory identity ──

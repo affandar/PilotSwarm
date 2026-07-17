@@ -85,8 +85,8 @@ sessions return not-found to avoid an existence oracle.
 | Operation | Route | Parameters | Summary |
 |---|---|---|---|
 | listSessions | `GET /api/v1/sessions` | — | List session summaries. |
-| createSession | `POST /api/v1/sessions` | model (body), reasoningEffort (body), contextTier (body), groupId (body), visibility (body) | Create a session. Owner is the authenticated principal; visibility defaults to the deployment default. |
-| createSessionForAgent | `POST /api/v1/sessions/for-agent` | agentName (body), model (body), reasoningEffort (body), contextTier (body), title (body), splash (body), initialPrompt (body), groupId (body), visibility (body) | Create a session bound to a named agent. |
+| createSession | `POST /api/v1/sessions` | model (body), reasoningEffort (body), contextTier (body), groupId (body), visibility (body) | Create a session. Owner is the authenticated principal; visibility defaults to the deployment default. `groupId` is an initial placement into one of **your** groups — `403` if the group is missing or not yours. |
+| createSessionForAgent | `POST /api/v1/sessions/for-agent` | agentName (body), model (body), reasoningEffort (body), contextTier (body), title (body), splash (body), initialPrompt (body), groupId (body), visibility (body) | Create a session bound to a named agent. Same `groupId` placement rule as createSession. |
 | getSession | `GET /api/v1/sessions/:sessionId` | sessionId (path) | Get one session view (live orchestration status). |
 | deleteSession | `DELETE /api/v1/sessions/:sessionId` | sessionId (path) | Cancel and soft-delete a session. |
 | sendMessage | `POST /api/v1/sessions/:sessionId/messages` | sessionId (path), prompt (body), options (body) | Send a prompt (options: { enqueueOnly?, clientMessageIds? }). |
@@ -94,11 +94,18 @@ sessions return not-found to avoid an existence oracle.
 | sendSessionEvent | `POST /api/v1/sessions/:sessionId/events` | sessionId (path), eventName (body), data (body) | Send a custom event into the session. |
 | cancelPendingMessage | `POST /api/v1/sessions/:sessionId/cancel-pending` | sessionId (path), clientMessageIds (body) | Cancel queued messages by client message ids. |
 
+Session DTOs (`listSessions`, `getSession`, paged management listings) carry
+**`viewerGroupId`** — the *caller's own* private group placement for the
+session's tree root (`null`/absent on child rows and when the caller has not
+placed the tree). The former `groupId` field is **gone** from session DTOs:
+group membership is per-viewer state, not a property of the session. See
+[Management: session groups](#management-session-groups).
+
 ### Session sharing
 
 | Operation | Route | Access | Summary |
 |---|---|---|---|
-| getSessionAccess | `GET /api/v1/sessions/:sessionId/access` | readable session | Effective visibility, relation, owner, and write/manage flags. |
+| getSessionAccess | `GET /api/v1/sessions/:sessionId/access` | readable session | Effective visibility, relation, owner, write/manage flags, and `viewerGroupId` (the caller's own placement of the tree root — never another viewer's). |
 | setSessionVisibility | `PUT /api/v1/sessions/:sessionId/visibility` | owner/admin | Set `private`, `shared_read`, or `shared_write` on the whole session tree. |
 | grantSessionShare | `POST /api/v1/sessions/:sessionId/shares` | owner/admin | Grant one principal targeted `read` or `write` access. |
 | revokeSessionShare | `POST /api/v1/sessions/:sessionId/shares/revoke` | owner/admin | Revoke one targeted grant. |
@@ -154,16 +161,51 @@ sessions return not-found to avoid an existence oracle.
 
 ### Management: session groups
 
+Session groups are **private per-user organization**. A group belongs to the
+caller who created it; placing a session in a group records a
+(viewer, tree-root) *placement* that only changes how the catalog looks **to
+that viewer**. Placement requires only **read** access to the session — owners,
+collaborators, and recipients of shared sessions all organize the same session
+into their *own* groups independently, and none of it changes shared session
+data or reveals anyone else's grouping.
+
 | Operation | Route | Parameters | Summary |
 |---|---|---|---|
-| listSessionGroups | `GET /api/v1/management/session-groups` | — | List session groups. |
-| createSessionGroup | `POST /api/v1/management/session-groups` | input (body) | Create a session group. |
+| listSessionGroups | `GET /api/v1/management/session-groups` | — | List **your** session groups. Viewer-scoped for every caller — **admins included**: other users' groups are never returned, and member counts/activity reflect only your own placements. |
+| createSessionGroup | `POST /api/v1/management/session-groups` | input (body) | Create a session group owned by the caller. |
 | updateSessionGroup | `PATCH /api/v1/management/session-groups/:groupId` | groupId (path), patch (body) | Update group title/description. |
-| deleteSessionGroup | `DELETE /api/v1/management/session-groups/:groupId` | groupId (path) | Delete an empty session group. |
-| assignSessionsToGroup | `POST /api/v1/management/session-groups/:groupId/assign` | groupId (path), sessionIds (body) | Assign sessions to a group. |
-| cancelSessionGroup | `POST /api/v1/management/session-groups/:groupId/cancel` | groupId (path), reason (body) | Cancel all sessions in a group. |
-| completeSessionGroup | `POST /api/v1/management/session-groups/:groupId/complete` | groupId (path), options (body) | Complete all sessions in a group. |
-| moveSessionsToGroup | `POST /api/v1/management/session-groups/move` | groupId (body), sessionIds (body) | Move sessions between groups (groupId null = ungroup). |
+| deleteSessionGroup | `DELETE /api/v1/management/session-groups/:groupId` | groupId (path) | Delete a session group. Its placements are cleared; the sessions themselves are untouched (a non-empty group deletes cleanly). |
+| placeSessionsInGroup | `POST /api/v1/management/session-groups/place` | groupId (body), sessionIds (body) | Place session trees into one of the caller's groups (`groupId` null = ungroup). Requires read access to each session; changes no shared session data. |
+| assignSessionsToGroup | `POST /api/v1/management/session-groups/:groupId/assign` | groupId (path), sessionIds (body) | **Deprecated** alias of placeSessionsInGroup. |
+| moveSessionsToGroup | `POST /api/v1/management/session-groups/move` | groupId (body), sessionIds (body) | **Deprecated** alias of placeSessionsInGroup (groupId null = ungroup). |
+| cancelSessionGroup | `POST /api/v1/management/session-groups/:groupId/cancel` | groupId (path), reason (body) | **Deprecated.** Cancel all sessions in a group. |
+| completeSessionGroup | `POST /api/v1/management/session-groups/:groupId/complete` | groupId (path), options (body) | **Deprecated.** Complete all sessions in a group. |
+
+**placeSessionsInGroup** request/response:
+
+```jsonc
+// POST /api/v1/management/session-groups/place
+{ "groupId": "grp-123", "sessionIds": ["sess-a", "sess-b"] }   // groupId: null → ungroup
+
+// result: one row per distinct resolved tree root
+[
+  { "rootSessionId": "sess-a", "placed": true,  "reason": null },
+  { "rootSessionId": "sess-b", "placed": false, "reason": "not_found" }
+]
+```
+
+- Session ids resolve to their **tree root** before placing (children are never
+  placed; duplicates collapse to one row).
+- Per-row `reason` on `placed: false`: **`not_found`** — the id is unknown *or*
+  the caller cannot read it (identical shape by design; no existence oracle) —
+  or **`system`** — system trees cannot be placed.
+- The target group must be **owned by the caller**: a missing *or* foreign
+  `groupId` fails the whole call with **`403`**
+  (`"Session group not found or not owned by you."`) — deliberately not
+  distinguishing the two. Cross-user placement is structurally impossible.
+- The deprecated aliases (`assignSessionsToGroup`, `moveSessionsToGroup`)
+  execute the same viewer-private placement and return the same per-row result
+  array.
 
 ### Management: fleet, users, facts, events
 

@@ -164,6 +164,30 @@ async function main() {
             } catch (err) { fail("queue control", err); }
         }
 
+        // ── G5b: viewer-private placement round-trip ─────────────────────
+        if (sessionId && groupId) {
+            try {
+                const placed = parse(await client.callTool({
+                    name: "manage_session_group",
+                    arguments: { action: "place", group_id: groupId, session_ids: [sessionId] },
+                }));
+                const placedRoot = (placed?.results ?? []).find((r) => r.rootSessionId === sessionId);
+                record("group place → placed root result", placed?.placed === true && placedRoot?.placed === true ? "PASS" : "FAIL", JSON.stringify(placed?.results ?? null));
+
+                const listed = parse(await client.callTool({ name: "list_sessions", arguments: {} }));
+                const row = (listed?.sessions ?? []).find((s) => s.session_id === sessionId);
+                record("list_sessions carries viewer_group_id", row?.viewer_group_id === groupId ? "PASS" : "FAIL", `viewer_group_id=${row?.viewer_group_id}`);
+                record("list_sessions has no legacy group field", row && !("group_id" in row) && !("groupId" in row) ? "PASS" : "FAIL");
+
+                const ungrouped = parse(await client.callTool({
+                    name: "manage_session_group",
+                    arguments: { action: "place", session_ids: [sessionId] },
+                }));
+                const ungroupedRoot = (ungrouped?.results ?? []).find((r) => r.rootSessionId === sessionId);
+                record("group place (null) → ungrouped", ungrouped?.placed === true && ungroupedRoot?.placed === true ? "PASS" : "FAIL");
+            } catch (err) { fail("viewer placement", err); }
+        }
+
         // ── G4: artifacts round-trip ─────────────────────────────────────
         if (sessionId) {
             try {

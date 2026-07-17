@@ -154,7 +154,7 @@ Typical `createSession()` fields:
 - `systemMessage` — optional per-session overlay
 - `workingDirectory` — where the worker should operate
 
-In web mode (`{ apiUrl }`), `createSession()` takes only `model`, `reasoningEffort`, and `groupId`; worker-side fields such as `toolNames`, `systemMessage`, and `workingDirectory` are direct-mode only. To bind a session to a specific agent (and the tools it declares), use `createSessionForAgent(name, opts)`.
+In web mode (`{ apiUrl }`), `createSession()` takes only `model`, `reasoningEffort`, and `groupId` (an initial placement into one of *your* session groups — groups are private per-user organization, and a foreign/unknown group id is rejected with 403); worker-side fields such as `toolNames`, `systemMessage`, and `workingDirectory` are direct-mode only. To bind a session to a specific agent (and the tools it declares), use `createSessionForAgent(name, opts)`.
 
 Your worker can also contribute defaults to every session through:
 

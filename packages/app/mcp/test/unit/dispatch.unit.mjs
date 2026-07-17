@@ -34,6 +34,7 @@ function recordingMgmt(calls) {
         updateSessionGroup: track("updateSessionGroup", { groupId: "g1" }),
         assignSessionsToGroup: track("assignSessionsToGroup", undefined),
         moveSessionsToGroup: track("moveSessionsToGroup", undefined),
+        placeSessionsInGroup: track("placeSessionsInGroup", [{ rootSessionId: "a", placed: true, reason: null }]),
         cancelSessionGroup: track("cancelSessionGroup", undefined),
         completeSessionGroup: track("completeSessionGroup", undefined),
         deleteSessionGroup: track("deleteSessionGroup", undefined),
@@ -110,16 +111,92 @@ async function main() {
         record("group create without title → isError", res.isError === true);
 
         res = await client.callTool({ name: "manage_session_group", arguments: { action: "assign", group_id: "g1", session_ids: ["a", "b"] } });
-        record("group assign → assignSessionsToGroup(g1,[a,b])",
-            !res.isError && calls.some(([n, g, ids]) => n === "assignSessionsToGroup" && g === "g1" && ids.length === 2));
+        record("group assign (direct) → owner-adopting alias moveSessionsToGroup(g1,[a,b])",
+            !res.isError && calls.some(([n, g, ids]) => n === "moveSessionsToGroup" && g === "g1" && ids?.length === 2));
 
         res = await client.callTool({ name: "manage_session_group", arguments: { action: "move", session_ids: ["a"] } });
         record("group move without group_id → moveSessionsToGroup(null)",
             !res.isError && calls.some(([n, g]) => n === "moveSessionsToGroup" && g === null));
 
+        calls.length = 0;
+        res = await client.callTool({ name: "manage_session_group", arguments: { action: "place", group_id: "g1", session_ids: ["a"] } });
+        record("group place (direct) → owner-adopting alias moveSessionsToGroup(g1,[a])",
+            !res.isError && calls.some(([n, g, ids]) => n === "moveSessionsToGroup" && g === "g1" && ids?.length === 1));
+
+        res = await client.callTool({ name: "manage_session_group", arguments: { action: "place" } });
+        record("group place without session_ids → isError", res.isError === true);
+
         res = await client.callTool({ name: "manage_session_group", arguments: { action: "explode", group_id: "g1" } });
         record("group unknown action → rejected by schema", res.isError === true);
 
+        await client.close();
+    }
+
+    // ── 1b. manage_session_group place — web mode (viewer-private) ──────
+    {
+        const calls = [];
+        const client = await connect(makeCtx(calls, { webMode: true }));
+
+        let res = await client.callTool({ name: "manage_session_group", arguments: { action: "place", group_id: "g1", session_ids: ["a", "b"] } });
+        let body = parse(res);
+        record("group place (web) → placeSessionsInGroup([a,b],g1)",
+            !res.isError && calls.some(([n, ids, g]) => n === "placeSessionsInGroup" && ids?.length === 2 && g === "g1"));
+        record("group place (web) → per-root results surfaced",
+            !res.isError && body.placed === true && body.results?.[0]?.rootSessionId === "a" && body.results[0].placed === true);
+
+        calls.length = 0;
+        res = await client.callTool({ name: "manage_session_group", arguments: { action: "place", session_ids: ["a"] } });
+        record("group place (web) without group_id → placeSessionsInGroup([a],null)",
+            !res.isError && calls.some(([n, ids, g]) => n === "placeSessionsInGroup" && ids?.length === 1 && g === null));
+
+        calls.length = 0;
+        res = await client.callTool({ name: "manage_session_group", arguments: { action: "move", group_id: "g1", session_ids: ["a"] } });
+        record("group move (web) → delegates to placeSessionsInGroup",
+            !res.isError && calls.some(([n]) => n === "placeSessionsInGroup") && !calls.some(([n]) => n === "moveSessionsToGroup"));
+
+        calls.length = 0;
+        res = await client.callTool({ name: "manage_session_group", arguments: { action: "assign", group_id: "g1", session_ids: ["a"] } });
+        record("group assign (web) → delegates to placeSessionsInGroup",
+            !res.isError && calls.some(([n]) => n === "placeSessionsInGroup") && !calls.some(([n]) => n === "assignSessionsToGroup"));
+
+        await client.close();
+    }
+
+    // ── 1c. list_sessions projection — viewer_group_id, no legacy field ─
+    {
+        const calls = [];
+        const ctx = makeCtx(calls);
+        ctx.mgmt.listSessions = async () => [
+            { sessionId: "s1", status: "running", viewerGroupId: "g9" },
+            { sessionId: "s2", status: "idle" },
+        ];
+        const client = await connect(ctx);
+        const res = await client.callTool({ name: "list_sessions", arguments: {} });
+        const body = parse(res);
+        const s1 = body.sessions?.find((s) => s.session_id === "s1");
+        const s2 = body.sessions?.find((s) => s.session_id === "s2");
+        record("list_sessions → viewer_group_id from viewerGroupId",
+            !res.isError && s1?.viewer_group_id === "g9" && s2?.viewer_group_id === null);
+        record("list_sessions → no legacy group_id/groupId keys",
+            !res.isError && s1 && !("group_id" in s1) && !("groupId" in s1));
+        await client.close();
+    }
+
+    // ── 1d. list_session_groups membership derives from viewerGroupId ───
+    {
+        const calls = [];
+        const ctx = makeCtx(calls);
+        ctx.mgmt.listSessionGroups = async () => [{ groupId: "g9", title: "mine" }];
+        ctx.mgmt.listSessions = async () => [
+            { sessionId: "s1", status: "running", viewerGroupId: "g9" },
+            { sessionId: "s2", status: "idle", groupId: "g9" }, // legacy field must be ignored
+        ];
+        const client = await connect(ctx);
+        const res = await client.callTool({ name: "list_session_groups", arguments: { include_sessions: true } });
+        const body = parse(res);
+        const members = body.groups?.[0]?.sessions ?? [];
+        record("group membership → viewerGroupId placements only",
+            !res.isError && members.length === 1 && members[0].session_id === "s1");
         await client.close();
     }
 

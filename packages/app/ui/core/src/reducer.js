@@ -324,6 +324,12 @@ function resolveVisibleActiveSessionId(state, fallbackSessions = []) {
     if (currentSessionId && visibleRows.some((row) => row.sessionId === currentSessionId)) {
         return currentSessionId;
     }
+    // A navigation intent (deep link) owns selection until it is cleared by
+    // manual navigation or a filter change. While one exists — pending target
+    // still loading, or failed — never fall back to a default selection.
+    if (state.sessions?.navigationIntent) {
+        return currentSessionId;
+    }
     if (currentSessionId && state.sessions?.byId?.[currentSessionId] && !hasSessionVisibilityFilter(state.sessions)) {
         return currentSessionId;
     }
@@ -361,20 +367,67 @@ function updateUiForSessionSelection(state, nextActiveSessionId) {
 }
 
 function applyVisibleSessionSelection(state, nextSessions) {
+    let sessions = nextSessions;
+
+    // Navigation intent (deep link) outranks in-memory selection and profile
+    // activeSessionId: once its target session is present, latch the selection
+    // onto it and mark the intent resolved.
+    const intent = sessions.navigationIntent || null;
+    const intentTargetId = intent && intent.status !== "failed" && sessions.byId?.[intent.sessionId]
+        ? intent.sessionId
+        : null;
+    if (intentTargetId) {
+        sessions = {
+            ...sessions,
+            activeSessionId: intentTargetId,
+            navigationIntent: intent.status === "resolved"
+                ? intent
+                : { sessionId: intent.sessionId, status: "resolved" },
+        };
+    }
+
+    // Expand ancestors BEFORE resolving visibility: a selected session inside
+    // a collapsed group/parent is absent from the flat tree, so resolving
+    // first would drop the selection instead of revealing it.
+    const selectionCandidateId = sessions.activeSessionId || null;
+    if (selectionCandidateId && sessions.byId?.[selectionCandidateId]) {
+        const expandedCollapsedIds = reconcileCollapsedIdsForActiveSession(sessions.collapsedIds, sessions.byId, selectionCandidateId);
+        if (!setsEqual(expandedCollapsedIds, sessions.collapsedIds)) {
+            sessions = {
+                ...sessions,
+                collapsedIds: expandedCollapsedIds,
+                flat: buildSessionTree(Object.values(sessions.byId || {}), expandedCollapsedIds, sessions.orderById, sessions.pinnedIds),
+            };
+        }
+    }
+
+    // A resolved intent target excluded by the current filters gets a
+    // transient exception so the linked session is shown anyway. Never
+    // persisted; cleared on manual navigation or filter change.
+    if (intentTargetId && sessions.filterExceptionId !== intentTargetId) {
+        const probeRows = selectSessionRows({ ...state, sessions });
+        if (!probeRows.some((row) => row.sessionId === intentTargetId)) {
+            sessions = {
+                ...sessions,
+                filterExceptionId: intentTargetId,
+            };
+        }
+    }
+
     const nextState = {
         ...state,
-        sessions: nextSessions,
+        sessions,
     };
-    const nextActiveSessionId = resolveVisibleActiveSessionId(nextState, Object.values(nextSessions.byId || {}));
-    const nextCollapsedIds = reconcileCollapsedIdsForActiveSession(nextSessions.collapsedIds, nextSessions.byId, nextActiveSessionId);
-    const collapsedChanged = !setsEqual(nextCollapsedIds, nextSessions.collapsedIds);
+    const nextActiveSessionId = resolveVisibleActiveSessionId(nextState, Object.values(sessions.byId || {}));
+    const nextCollapsedIds = reconcileCollapsedIdsForActiveSession(sessions.collapsedIds, sessions.byId, nextActiveSessionId);
+    const collapsedChanged = !setsEqual(nextCollapsedIds, sessions.collapsedIds);
     const reconciledSessions = collapsedChanged
         ? {
-            ...nextSessions,
+            ...sessions,
             collapsedIds: nextCollapsedIds,
-            flat: buildSessionTree(Object.values(nextSessions.byId || {}), nextCollapsedIds, nextSessions.orderById, nextSessions.pinnedIds),
+            flat: buildSessionTree(Object.values(sessions.byId || {}), nextCollapsedIds, sessions.orderById, sessions.pinnedIds),
         }
-        : nextSessions;
+        : sessions;
     return {
         sessions: {
             ...reconciledSessions,
@@ -515,7 +568,15 @@ export function appReducer(state, action) {
                 && (settings.chatViewMode === "summary" || settings.chatViewMode === "transcript");
             const hasPins = Object.prototype.hasOwnProperty.call(settings, "pinnedSessionIds");
             const hasCollapsed = Object.prototype.hasOwnProperty.call(settings, "collapsedSessionIds");
-            const hasActive = Object.prototype.hasOwnProperty.call(settings, "activeSessionId");
+            // A pending/resolved deep-link intent outranks the profile's
+            // persisted activeSessionId — a remote profile poll must not
+            // yank selection away from the linked session.
+            const navigationIntentLatched = Boolean(
+                state.sessions.navigationIntent
+                && state.sessions.navigationIntent.status !== "failed",
+            );
+            const hasActive = Object.prototype.hasOwnProperty.call(settings, "activeSessionId")
+                && !navigationIntentLatched;
             const hasLoadedSessions = Object.keys(state.sessions.byId || {}).length > 0;
             const nextLayout = hasLayout
                 ? {
@@ -693,6 +754,10 @@ export function appReducer(state, action) {
                 const nextSessions = {
                     ...state.sessions,
                     filterQuery: typeof action.query === "string" ? action.query : "",
+                    // A filter change is an explicit user action: it releases
+                    // the deep-link latch and its transient filter exception.
+                    navigationIntent: null,
+                    filterExceptionId: null,
                 };
                 const selection = applyVisibleSessionSelection(state, nextSessions);
                 return {
@@ -708,6 +773,8 @@ export function appReducer(state, action) {
                     ...state.sessions,
                     ownerFilterExplicit: true,
                     ownerFilter: normalizeSessionOwnerFilter(action.filter),
+                    navigationIntent: null,
+                    filterExceptionId: null,
                 };
                 const selection = applyVisibleSessionSelection(state, nextSessions);
                 return {
@@ -716,6 +783,39 @@ export function appReducer(state, action) {
                     ui: selection.ui,
                 };
             }
+
+        case "sessions/navigationIntent": {
+            const sessionId = String(action.sessionId || "").trim();
+            if (!sessionId) return state;
+            const nextSessions = {
+                ...state.sessions,
+                navigationIntent: { sessionId, status: "pending" },
+                filterExceptionId: null,
+            };
+            const selection = applyVisibleSessionSelection(state, nextSessions);
+            return {
+                ...state,
+                sessions: selection.sessions,
+                ui: selection.ui,
+            };
+        }
+
+        case "sessions/navigationIntentFailed": {
+            const intent = state.sessions.navigationIntent;
+            const sessionId = String(action.sessionId || "").trim();
+            if (!intent || (sessionId && intent.sessionId !== sessionId)) return state;
+            return {
+                ...state,
+                sessions: {
+                    ...state.sessions,
+                    navigationIntent: {
+                        sessionId: intent.sessionId,
+                        status: "failed",
+                        errorKind: action.errorKind === "not_found" ? "not_found" : "network",
+                    },
+                },
+            };
+        }
 
         case "ui/modalSelection": {
             const modal = state.ui.modal;
@@ -991,11 +1091,20 @@ export function appReducer(state, action) {
             if (previousActiveId && previousActiveId !== action.sessionId) {
                 savedChatScroll[previousActiveId] = Number(state.ui.scroll?.chat) || 0;
             }
+            // Manual navigation to a different session releases the deep-link
+            // latch and its transient filter exception.
+            const releasesNavigationLatch = Boolean(
+                state.sessions.navigationIntent
+                && state.sessions.navigationIntent.sessionId !== action.sessionId,
+            );
             return {
                 ...state,
                 sessions: {
                     ...state.sessions,
                     activeSessionId: action.sessionId,
+                    ...(releasesNavigationLatch
+                        ? { navigationIntent: null, filterExceptionId: null }
+                        : {}),
                 },
                 ui: {
                     ...state.ui,

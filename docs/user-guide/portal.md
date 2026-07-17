@@ -148,7 +148,11 @@ between them quickly.
    System sessions are skipped automatically.
 6. **Group** one or more non-system sessions from the Sessions pane
    header. Selecting the `🗂` row opens a read-only details view with
-   metric and member tables; it is not a chat transcript.
+   metric and member tables; it is not a chat transcript. Groups are
+   **your private organization** — like mail folders. Only you see your
+   groups, any session you can read (including ones shared with you) can
+   be placed in them, and grouping or ungrouping never changes what
+   anyone else sees.
 
 **What just happened:**
 
@@ -161,10 +165,26 @@ changes anywhere, your browser reflects it within a poll cycle.
 
 - Use the **owner filter** in the Sessions pane header to narrow to
   just your sessions when there are many users on the same Postgres.
-- To share a session with teammates (or open it deployment-wide), use the
-  session's share controls — visibility (private / shared read / shared
-  write) plus per-person grants. Who can see and act on what is covered in
+  It includes a **"Shared with me"** bucket that shows sessions other
+  users have shared with you.
+- To share a session with teammates (or open it deployment-wide), open
+  the **Share** button in the Sessions pane toolbar — the "Share &
+  settings" modal combines rename, **Copy link**, visibility (private /
+  shared read / shared write), and per-person grants. The toolbar also
+  has a standalone **Copy link** button. A link is a *locator, not a
+  grant*: if the session is private with no grants, the copy
+  confirmation warns "Only people with access can open this link." Who
+  can see and act on what is covered in
   [Access, sharing & security](./security-and-sharing.md).
+- Deep links are explicit about failure: opening `?session=<id>` for a
+  session that doesn't exist **or isn't shared with you** shows a clear
+  "This session was not found or has not been shared with you" error
+  (the two cases are deliberately indistinguishable) instead of silently
+  falling back to another session; transient network failures show a
+  retryable error.
+  If the linked session is outside your current filters, it is shown
+  anyway with a "Showing linked session outside your current filters"
+  notice until you navigate or change filters.
 
 ---
 
@@ -510,7 +530,9 @@ as your app's portal.
 | Cycle inspector tabs | Click the tab; on mobile, swipe |
 | Rename session | Row menu → Rename |
 | Pin session | Row menu → Pin |
-| Group sessions | Select one or more non-system sessions, then click **Group** / **Group (n)** in the Sessions pane header |
+| Group sessions | Select one or more non-system sessions, then click **Group** / **Group (n)** in the Sessions pane header (groups are private to you; any session you can read can be placed) |
+| Copy session link | **Copy link** button in the Sessions pane toolbar (also inside Share & settings). The link locates the session; it does not grant access |
+| Share / manage access | **Share** button in the Sessions pane toolbar → Share & settings (rename, copy link, visibility, per-person grants) |
 | Cancel session | Row menu → Cancel |
 | Multi-select | Toolbar toggle, click rows, then **Cancel selected** |
 | Filter sessions | Filter input in Sessions pane header |

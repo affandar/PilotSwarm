@@ -113,12 +113,15 @@ Session groups are loaded through the management client alongside sessions and
 adapted into synthetic shared UI rows with IDs shaped like `group:<groupId>`.
 The shared tree nests top-level grouped sessions under these `🗂` rows while
 keeping real parent/child lineage intact. Selecting a group opens a group detail
-view instead of a transcript. Groups are pure containers: sessions are moved in
-or out through the move-to-group picker, and group deletion only succeeds after
-all member sessions have been moved out. Groups use the same normalized owner
-model as sessions (`users` plus a group-owner link), owner filters apply to
-group rows, legacy ownerless groups can derive filter/display ownership from
-their member sessions, and sessions can only move into groups with a matching owner. Root
+view instead of a transcript. Groups are each viewer's **private per-user
+organization**: the catalog returns only the viewer's own groups, session rows
+carry the viewer's own placement (`viewerGroupId` on the wire, normalized to the
+local `groupId` field the tree keys off), and placing or ungrouping a session
+changes nothing for any other viewer. Sessions are placed in or out through the
+move-to-group picker (`placeSessionsInGroup`); any readable non-system session
+can be placed — mixed-owner selections are allowed and every one of the
+viewer's groups is offered. Group deletion clears the viewer's placements and
+never touches sessions, so non-empty groups delete cleanly. Root
 session ordering keeps system
 sessions first, then pinned groups, pinned single sessions, unpinned groups, and
 then unpinned sessions. A fresh page/app load seeds the stable order inside each

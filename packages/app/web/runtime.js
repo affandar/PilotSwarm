@@ -75,10 +75,13 @@ function normalizeOwnerPrincipal(principal) {
     };
 }
 
-function ownerKey(owner) {
-    const provider = String(owner?.provider || "").trim();
-    const subject = String(owner?.subject || "").trim();
-    return provider && subject ? `${provider}\u0001${subject}` : null;
+// Placement identity: group placements are keyed off the same principal as
+// owner stamping. No-auth deployments fall back to a shared anonymous user
+// (lazily registered by the placement proc) so grouping keeps working there.
+function placementPrincipal(authContext) {
+    const principal = normalizeSessionOwner(authContext);
+    if (principal) return { provider: principal.provider, subject: principal.subject };
+    return { provider: "anonymous", subject: "anonymous" };
 }
 
 function requireUserPrincipal(authContext, methodName) {
@@ -348,6 +351,79 @@ export class PortalRuntime {
     }
 
     /**
+     * Placement viewer for the CMS placement procs. canRead inside the procs
+     * is permissive when ownership enforcement is off (admin OR NOT enforce);
+     * the target-group ownership check is always enforced regardless.
+     */
+    _placementViewer(authContext, isAdmin) {
+        return { ...placementPrincipal(authContext), isAdmin: isAdmin || !this.authz.enforce };
+    }
+
+    /**
+     * Viewer-private placement: upsert (or clear, when groupId is null) the
+     * caller's own group placement for each session tree root. Requires read
+     * access per session; the target group must be owned by the caller —
+     * cross-user placement is structurally impossible.
+     */
+    async _placeSessionsInGroup(method, safeParams, authContext, { isAdmin }) {
+        const groupId = safeParams.groupId == null ? null : String(safeParams.groupId).trim() || null;
+        const sessionIds = Array.isArray(safeParams.sessionIds) ? safeParams.sessionIds : [];
+        try {
+            return await this.transport.mgmt.placeSessionsInGroup(
+                this._placementViewer(authContext, isAdmin),
+                sessionIds,
+                groupId,
+            );
+        } catch (error) {
+            if (/was not found or is not owned by the caller/i.test(String(error?.message || ""))) {
+                this._recordAudit({
+                    actor: this._auditActor(authContext),
+                    action: method,
+                    target: `group:${groupId}`,
+                    decision: "deny",
+                    reason: "group not found or not owned by the caller",
+                });
+                throw forbiddenError("Session group not found or not owned by you.");
+            }
+            throw error;
+        }
+    }
+
+    /** A creator-supplied groupId is an initial placement: it must be one of the caller's groups. */
+    async _assertPlacementGroupOwned(groupId, authContext, { isAdmin }) {
+        const normalized = groupId == null ? null : String(groupId).trim() || null;
+        if (!normalized) return;
+        const groups = await this.transport.mgmt.listSessionGroups(this._placementViewer(authContext, isAdmin));
+        if (!(groups || []).some((group) => group.groupId === normalized)) {
+            throw forbiddenError("Session group not found or not owned by you.");
+        }
+    }
+
+    /**
+     * Guarantee a created session lands in the requested group under the
+     * placement principal, not the session owner. CMS places in-transaction
+     * only when an owner principal reaches it, so no-auth deployments (owner
+     * null, placement viewer anonymous) would otherwise drop the group
+     * silently. The upsert is idempotent, so the authenticated path (already
+     * placed) is skipped via the viewerGroupId check; ownership was verified
+     * before create, so a placement failure is unexpected and best-effort.
+     */
+    async _ensureCreatedPlacement(view, groupId, authContext, isAdmin) {
+        const normalized = groupId == null ? null : String(groupId).trim() || null;
+        if (!normalized || !view?.sessionId || view.viewerGroupId === normalized) return view;
+        try {
+            await this.transport.mgmt.placeSessionsInGroup(
+                this._placementViewer(authContext, isAdmin),
+                [view.sessionId],
+                normalized,
+            );
+            return { ...view, viewerGroupId: normalized };
+        } catch {
+            return view;
+        }
+    }
+
+    /**
      * Viewer descriptor for viewer-scoped listing, or null for unfiltered.
      * A non-admin without a resolvable identity in enforce mode gets a viewer
      * that matches no owner and no targeted share, so they see only
@@ -391,26 +467,14 @@ export class PortalRuntime {
     }
 
     async resolveSessionGroupOwner(input = {}, authOwner = null) {
+        // Groups belong to the authenticated creator. Ownership is never
+        // inferred from selected sessions, and never null: no-auth
+        // deployments use the same anonymous principal as placement so
+        // every group can receive placements.
+        if (authOwner) return authOwner;
         const inputOwner = normalizeOwnerPrincipal(input?.owner);
         if (inputOwner) return inputOwner;
-
-        const sessionIds = Array.isArray(input?.sessionIds)
-            ? Array.from(new Set(input.sessionIds.map((id) => String(id || "").trim()).filter(Boolean)))
-            : [];
-        if (sessionIds.length > 0 && typeof this.transport.getSession === "function") {
-            const owners = [];
-            for (const sessionId of sessionIds) {
-                const session = await this.transport.getSession(sessionId).catch(() => null);
-                if (!session || session.isSystem || session.isGroup || session.parentSessionId) continue;
-                owners.push(normalizeOwnerPrincipal(session.owner));
-            }
-            const ownerKeys = new Set(owners.map((owner) => ownerKey(owner) || ""));
-            if (owners.length > 0 && ownerKeys.size === 1) {
-                return owners[0] ?? null;
-            }
-        }
-
-        return authOwner;
+        return { provider: "anonymous", subject: "anonymous" };
     }
 
     async getBootstrap() {
@@ -461,18 +525,13 @@ export class PortalRuntime {
         const listViewer = this._listViewer(owner, isAdmin);
         switch (method) {
             case "listSessions":
-                return listViewer && typeof this.transport.listSessionsVisible === "function"
-                    ? this.transport.listSessionsVisible(listViewer)
-                    : this.transport.listSessions();
-            case "listSessionGroups": {
-                const groups = await this.transport.listSessionGroups();
-                if (!listViewer) return groups;
-                // Non-admin group listing: own groups plus ownerless ones.
-                return (groups || []).filter((group) => {
-                    const groupOwner = normalizeOwnerPrincipal(group?.owner);
-                    return !groupOwner || (groupOwner.provider === owner.provider && groupOwner.subject === owner.subject);
-                });
-            }
+                return listViewer
+                    ? this.transport.mgmt.listSessionsVisible(listViewer, placementPrincipal(authContext))
+                    : this.transport.mgmt.listSessions(placementPrincipal(authContext));
+            case "listSessionGroups":
+                // Viewer-scoped: everyone (admins included) sees only their
+                // own groups — a group is a user's private organization.
+                return this.transport.mgmt.listSessionGroups(this._placementViewer(authContext, isAdmin));
             case "createSessionGroup":
                 return this.transport.createSessionGroup({
                     ...(safeParams.input || {}),
@@ -480,21 +539,22 @@ export class PortalRuntime {
                 });
             case "updateSessionGroup":
                 return this.transport.updateSessionGroup(safeParams.groupId, safeParams.patch || {});
+            case "placeSessionsInGroup":
             case "assignSessionsToGroup":
-                return this.transport.assignSessionsToGroup(safeParams.groupId, safeParams.sessionIds || []);
             case "moveSessionsToGroup":
-                return this.transport.moveSessionsToGroup(safeParams.groupId ?? null, safeParams.sessionIds || []);
+                return this._placeSessionsInGroup(method, safeParams, authContext, { isAdmin });
             case "getChildOutcome":
                 return this.transport.getChildOutcome(safeParams.childSessionId);
             case "listChildOutcomes":
                 return this.transport.listChildOutcomes(safeParams.parentSessionId);
             case "listSessionsPage":
-                return this.transport.listSessionsPage({
+                return this.transport.mgmt.listSessionsPage({
                     ...normalizeSessionPageOptions(safeParams),
                     ...(listViewer ? { viewer: listViewer } : {}),
+                    placement: placementPrincipal(authContext),
                 });
             case "getSession":
-                return this.transport.getSession(safeParams.sessionId);
+                return this.transport.mgmt.getSession(safeParams.sessionId, placementPrincipal(authContext));
             case "getOrchestrationStats":
                 return this.transport.getOrchestrationStats(safeParams.sessionId);
             case "getSessionMetricSummary":
@@ -656,8 +716,9 @@ export class PortalRuntime {
                 return this.transport.pruneDeletedSummaries(new Date(safeParams.olderThan));
             case "getExecutionHistory":
                 return this.transport.getExecutionHistory(safeParams.sessionId, safeParams.executionId);
-            case "createSession":
-                return this.transport.createSession({
+            case "createSession": {
+                await this._assertPlacementGroupOwned(safeParams.groupId, authContext, { isAdmin });
+                const created = await this.transport.createSession({
                     model: safeParams.model,
                     reasoningEffort: safeParams.reasoningEffort,
                     contextTier: safeParams.contextTier,
@@ -665,8 +726,11 @@ export class PortalRuntime {
                     owner,
                     visibility: normalizeVisibility(safeParams.visibility, this.authz.defaultVisibility),
                 });
-            case "createSessionForAgent":
-                return this.transport.createSessionForAgent(safeParams.agentName, {
+                return this._ensureCreatedPlacement(created, safeParams.groupId, authContext, isAdmin);
+            }
+            case "createSessionForAgent": {
+                await this._assertPlacementGroupOwned(safeParams.groupId, authContext, { isAdmin });
+                const created = await this.transport.createSessionForAgent(safeParams.agentName, {
                     model: safeParams.model,
                     reasoningEffort: safeParams.reasoningEffort,
                     contextTier: safeParams.contextTier,
@@ -678,6 +742,8 @@ export class PortalRuntime {
                     owner,
                     visibility: normalizeVisibility(safeParams.visibility, this.authz.defaultVisibility),
                 });
+                return this._ensureCreatedPlacement(created, safeParams.groupId, authContext, isAdmin);
+            }
             case "listCreatableAgents":
                 return this.transport.listCreatableAgents();
             case "getSessionCreationPolicy":
@@ -704,6 +770,11 @@ export class PortalRuntime {
                 const relation = snapshot.viewerIsOwner ? "owner" : (isAdmin ? "admin" : (snapshot.viewerShareAccess ? "collaborator" : "none"));
                 const canWrite = isAdmin || snapshot.viewerIsOwner || snapshot.visibility === "shared_write" || snapshot.viewerShareAccess === "write";
                 const canManage = isAdmin || snapshot.viewerIsOwner;
+                // The caller's private placement of this tree (placements
+                // live on the root), never another viewer's.
+                const rootView = snapshot.rootSessionId
+                    ? await this.transport.mgmt.getSession(snapshot.rootSessionId, placementPrincipal(authContext)).catch(() => null)
+                    : null;
                 return {
                     sessionId: safeParams.sessionId,
                     rootSessionId: snapshot.rootSessionId,
@@ -713,6 +784,7 @@ export class PortalRuntime {
                     relation,
                     canWrite: snapshot.isSystem ? isAdmin : canWrite,
                     canManage: snapshot.isSystem ? isAdmin : canManage,
+                    viewerGroupId: rootView?.viewerGroupId ?? null,
                     enforced: this.authz.enforce,
                 };
             }

@@ -88,6 +88,16 @@ test("moveSessionsToGroup carries nullable groupId in body", () => {
     assert.deepEqual(body, { groupId: null, sessionIds: ["a"] });
 });
 
+test("placeSessionsInGroup posts nullable groupId + sessionIds to the place route", () => {
+    const { method, path, body } = buildOperationRequest("placeSessionsInGroup", { groupId: null, sessionIds: ["a", "b"] });
+    assert.equal(method, "POST");
+    assert.equal(path, `${API_PREFIX}/management/session-groups/place`);
+    assert.deepEqual(body, { groupId: null, sessionIds: ["a", "b"] });
+
+    const grouped = buildOperationRequest("placeSessionsInGroup", { groupId: "g1", sessionIds: ["a"] });
+    assert.deepEqual(grouped.body, { groupId: "g1", sessionIds: ["a"] });
+});
+
 test("coerceQueryValue rejects malformed json", () => {
     assert.throws(() => coerceQueryValue("{nope", "json"), /Malformed JSON/);
 });

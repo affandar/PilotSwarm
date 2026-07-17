@@ -137,7 +137,11 @@ export interface SessionRow {
     splash: string | null;
     /** Narrow-viewport splash variant, used when the main splash art is wider than the pane. */
     splashMobile: string | null;
-    /** Optional visual session group assignment. */
+    /**
+     * The placement viewer's private group for this ROOT session, when the
+     * read supplied a placement viewer. NULL on child rows and whenever no
+     * placement viewer was passed. Surfaced to DTOs as `viewerGroupId`.
+     */
     groupId: string | null;
     /** Short live summary for discovery/session lists. */
     shortSummary: string | null;
@@ -223,7 +227,22 @@ export interface SessionRowUpdates {
     agentId?: string | null;
     splash?: string | null;
     splashMobile?: string | null;
-    groupId?: string | null;
+}
+
+/** Identity used to scope group placements (a user's private organization). */
+export interface PlacementViewer {
+    provider: string;
+    subject: string;
+    /** Treat every live session as readable (the runtime passes admin OR NOT enforce). */
+    isAdmin?: boolean;
+}
+
+/** Per-root outcome of a placement request. */
+export interface SessionPlacementResult {
+    rootSessionId: string;
+    placed: boolean;
+    /** 'not_found' (unknown or unreadable — same shape) or 'system'. Null on success. */
+    reason: string | null;
 }
 
 export interface SessionGroupRow {
@@ -689,7 +708,7 @@ export interface SessionCatalog {
     // ── Reads (called from client) ───────────────────────────
 
     /** List all non-deleted sessions, newest first. */
-    listSessions(): Promise<SessionRow[]>;
+    listSessions(placement?: { provider: string; subject: string } | null): Promise<SessionRow[]>;
 
     /** List one bounded page of sessions, newest first. */
     listSessionsPage(opts?: {
@@ -699,16 +718,21 @@ export interface SessionCatalog {
         includeDeleted?: boolean;
         /** When set, restrict rows to what this principal can read (viewer-scoped listing). */
         viewer?: { provider: string; subject: string; systemVisible?: boolean } | null;
+        /** When set, root rows carry this principal's private group placement as groupId. */
+        placement?: { provider: string; subject: string } | null;
     }): Promise<SessionRow[]>;
 
     /** List sessions visible to a principal (non-paged viewer-scoped listing). */
-    listSessionsVisible(viewer: { provider: string; subject: string; systemVisible?: boolean }): Promise<SessionRow[]>;
+    listSessionsVisible(
+        viewer: { provider: string; subject: string; systemVisible?: boolean },
+        placement?: { provider: string; subject: string } | null,
+    ): Promise<SessionRow[]>;
 
     /** Member directory (for share autocomplete); excludes synthetic principals. */
     listKnownUsers(opts?: { limit?: number }): Promise<KnownUserInfo[]>;
 
     /** Get a single session by ID (null if not found or deleted). */
-    getSession(sessionId: string): Promise<SessionRow | null>;
+    getSession(sessionId: string, placement?: { provider: string; subject: string } | null): Promise<SessionRow | null>;
 
     // ── Visibility / sharing / audit (security model) ─────────
 
@@ -756,14 +780,25 @@ export interface SessionCatalog {
     /** Update title/description/owner/metadata for a session group. */
     updateSessionGroup(groupId: string, patch: { title?: string; description?: string | null; owner?: SessionOwnerInfo | null; metadataPatch?: Record<string, unknown> }): Promise<void>;
 
-    /** List session groups with aggregate member status. */
-    listSessionGroups(): Promise<SessionGroupRow[]>;
+    /**
+     * List session groups with aggregate member status. With a viewer, only
+     * that viewer's OWN groups with placement-scoped counts; without one,
+     * the unscoped legacy listing (audit path, counts frozen at 0034).
+     */
+    listSessionGroups(viewer?: PlacementViewer | null): Promise<SessionGroupRow[]>;
 
-    /** List non-deleted sessions assigned to a group. */
-    listGroupSessions(groupId: string): Promise<SessionRow[]>;
+    /** List non-deleted sessions whose root the placement viewer placed in the group. */
+    listGroupSessions(groupId: string, placement?: { provider: string; subject: string } | null): Promise<SessionRow[]>;
 
-    /** Delete an empty session group. Returns false while non-deleted members remain. */
+    /** Delete a session group (placements cascade; sessions untouched). Returns false when missing. */
     deleteSessionGroup(groupId: string): Promise<boolean>;
+
+    /**
+     * Upsert (or delete, when groupId is null) the viewer's private placement
+     * for each distinct resolved live root. The target group must be owned by
+     * the viewer (throws otherwise). Never touches shared session data.
+     */
+    placeSessionsInGroup(viewer: PlacementViewer, sessionIds: string[], groupId: string | null): Promise<SessionPlacementResult[]>;
 
     /** Upsert current child contract/result outcome state. */
     upsertChildOutcome(input: {
@@ -939,6 +974,7 @@ function sqlForSchema(schema: string) {
             getLastSessionId:           `${s}.cms_get_last_session_id`,
             updateSessionSummary:       `${s}.cms_update_session_summary`,
             assignSessionGroup:         `${s}.cms_assign_session_group`,
+            placeSessionsInGroup:       `${s}.cms_place_sessions_in_group`,
             createSessionGroup:         `${s}.cms_create_session_group`,
             updateSessionGroup:         `${s}.cms_update_session_group`,
             listSessionGroups:          `${s}.cms_list_session_groups`,
@@ -1058,7 +1094,6 @@ export class PgSessionCatalog implements SessionCatalog {
         const explicitGroupId = typeof opts?.groupId === "string" && opts.groupId.trim()
             ? opts.groupId.trim()
             : null;
-        const createGroupId = explicitGroupId ? null : opts?.groupId ?? null;
         // A 42883 mid-transaction aborts it, so probe the newer overloads'
         // existence up front (once) instead of catch-and-retry inside BEGIN.
         const useVisibilityCreate = await this.supportsVisibilityCreate();
@@ -1066,7 +1101,7 @@ export class PgSessionCatalog implements SessionCatalog {
         const client = await this.pool.connect();
         try {
             await client.query("BEGIN");
-            const baseArgs = [sessionId, opts?.model ?? null, opts?.reasoningEffort ?? null, opts?.parentSessionId ?? null, opts?.isSystem ?? false, opts?.agentId ?? null, opts?.splash ?? null, createGroupId];
+            const baseArgs = [sessionId, opts?.model ?? null, opts?.reasoningEffort ?? null, opts?.parentSessionId ?? null, opts?.isSystem ?? false, opts?.agentId ?? null, opts?.splash ?? null, null];
             if (useVisibilityCreate) {
                 await client.query(
                     `SELECT ${this.sql.fn.createSession}($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
@@ -1103,10 +1138,13 @@ export class PgSessionCatalog implements SessionCatalog {
                     );
                 }
 
-                if (explicitGroupId) {
+                // Initial placement for the CREATOR: private per-user state, so
+                // it needs a principal — without an owner there is no creator to
+                // place for, and the runtime places post-create instead.
+                if (explicitGroupId && opts?.owner?.provider && opts?.owner?.subject) {
                     await client.query(
-                        `SELECT ${this.sql.fn.assignSessionGroup}($1, $2)`,
-                        [sessionId, explicitGroupId],
+                        `SELECT * FROM ${this.sql.fn.placeSessionsInGroup}($1, $2, $3, $4, $5)`,
+                        [opts.owner.provider, opts.owner.subject, false, [sessionId], explicitGroupId],
                     );
                 }
             }
@@ -1162,7 +1200,6 @@ export class PgSessionCatalog implements SessionCatalog {
         if (updates.agentId !== undefined) jsonUpdates.agentId = updates.agentId;
         if (updates.splash !== undefined) jsonUpdates.splash = updates.splash;
         if (updates.splashMobile !== undefined) jsonUpdates.splashMobile = updates.splashMobile;
-        if (updates.groupId !== undefined) jsonUpdates.groupId = updates.groupId;
 
         if (Object.keys(jsonUpdates).length === 0) return;
 
@@ -1206,9 +1243,10 @@ export class PgSessionCatalog implements SessionCatalog {
 
     // ── Reads ────────────────────────────────────────────────
 
-    async listSessions(): Promise<SessionRow[]> {
+    async listSessions(placement?: { provider: string; subject: string } | null): Promise<SessionRow[]> {
         const { rows } = await this.pool.query(
-            `SELECT * FROM ${this.sql.fn.listSessions}()`,
+            `SELECT * FROM ${this.sql.fn.listSessions}($1, $2)`,
+            [placement?.provider ?? null, placement?.subject ?? null],
         );
         return rows.map(rowToSessionRow);
     }
@@ -1219,9 +1257,10 @@ export class PgSessionCatalog implements SessionCatalog {
         cursorSessionId?: string | null;
         includeDeleted?: boolean;
         viewer?: { provider: string; subject: string; systemVisible?: boolean } | null;
+        placement?: { provider: string; subject: string } | null;
     }): Promise<SessionRow[]> {
         const { rows } = await this.pool.query(
-            `SELECT * FROM ${this.sql.fn.listSessionsPage}($1, $2, $3, $4, $5, $6, $7)`,
+            `SELECT * FROM ${this.sql.fn.listSessionsPage}($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
             [
                 opts?.limit ?? null,
                 opts?.cursorUpdatedAt ?? null,
@@ -1230,15 +1269,20 @@ export class PgSessionCatalog implements SessionCatalog {
                 opts?.viewer?.provider ?? null,
                 opts?.viewer?.subject ?? null,
                 opts?.viewer?.systemVisible ?? true,
+                opts?.placement?.provider ?? null,
+                opts?.placement?.subject ?? null,
             ],
         );
         return rows.map(rowToSessionRow);
     }
 
-    async listSessionsVisible(viewer: { provider: string; subject: string; systemVisible?: boolean }): Promise<SessionRow[]> {
+    async listSessionsVisible(
+        viewer: { provider: string; subject: string; systemVisible?: boolean },
+        placement?: { provider: string; subject: string } | null,
+    ): Promise<SessionRow[]> {
         const { rows } = await this.pool.query(
-            `SELECT * FROM ${this.sql.fn.listSessionsVisible}($1, $2, $3)`,
-            [viewer.provider, viewer.subject, viewer.systemVisible ?? true],
+            `SELECT * FROM ${this.sql.fn.listSessionsVisible}($1, $2, $3, $4, $5)`,
+            [viewer.provider, viewer.subject, viewer.systemVisible ?? true, placement?.provider ?? null, placement?.subject ?? null],
         );
         return rows.map(rowToSessionRow);
     }
@@ -1256,10 +1300,10 @@ export class PgSessionCatalog implements SessionCatalog {
         }));
     }
 
-    async getSession(sessionId: string): Promise<SessionRow | null> {
+    async getSession(sessionId: string, placement?: { provider: string; subject: string } | null): Promise<SessionRow | null> {
         const { rows } = await this.pool.query(
-            `SELECT * FROM ${this.sql.fn.getSession}($1)`,
-            [sessionId],
+            `SELECT * FROM ${this.sql.fn.getSession}($1, $2, $3)`,
+            [sessionId, placement?.provider ?? null, placement?.subject ?? null],
         );
         return rows.length > 0 ? rowToSessionRow(rows[0]) : null;
     }
@@ -1430,17 +1474,24 @@ export class PgSessionCatalog implements SessionCatalog {
         );
     }
 
-    async listSessionGroups(): Promise<SessionGroupRow[]> {
+    async listSessionGroups(viewer?: PlacementViewer | null): Promise<SessionGroupRow[]> {
+        if (viewer) {
+            const { rows } = await this.pool.query(
+                `SELECT * FROM ${this.sql.fn.listSessionGroups}($1, $2, $3)`,
+                [viewer.provider, viewer.subject, viewer.isAdmin ?? false],
+            );
+            return rows.map(rowToSessionGroupRow);
+        }
         const { rows } = await this.pool.query(
             `SELECT * FROM ${this.sql.fn.listSessionGroups}()`,
         );
         return rows.map(rowToSessionGroupRow);
     }
 
-    async listGroupSessions(groupId: string): Promise<SessionRow[]> {
+    async listGroupSessions(groupId: string, placement?: { provider: string; subject: string } | null): Promise<SessionRow[]> {
         const { rows } = await this.pool.query(
-            `SELECT * FROM ${this.sql.fn.listGroupSessions}($1)`,
-            [groupId],
+            `SELECT * FROM ${this.sql.fn.listGroupSessions}($1, $2, $3)`,
+            [groupId, placement?.provider ?? null, placement?.subject ?? null],
         );
         return rows.map(rowToSessionRow);
     }
@@ -1451,6 +1502,22 @@ export class PgSessionCatalog implements SessionCatalog {
             [groupId],
         );
         return rows[0]?.deleted === true;
+    }
+
+    async placeSessionsInGroup(
+        viewer: PlacementViewer,
+        sessionIds: string[],
+        groupId: string | null,
+    ): Promise<SessionPlacementResult[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.placeSessionsInGroup}($1, $2, $3, $4, $5)`,
+            [viewer.provider, viewer.subject, viewer.isAdmin ?? false, sessionIds, groupId],
+        );
+        return rows.map((row: any) => ({
+            rootSessionId: row.root_session_id,
+            placed: row.placed === true,
+            reason: row.reason ?? null,
+        }));
     }
 
     async upsertChildOutcome(input: {

@@ -1,5 +1,85 @@
 # Changelog
 
+## 0.5.15 — 2026-07-16
+
+### Session groups become private per-user organization; reliable deep links
+
+Session groups stop being a shared property of a session and become each
+user's **private organization** of the sessions they can see — sharing a
+session never reveals the owner's grouping, and recipients organize shared
+sessions into their own groups. Design:
+`docs/proposals/private-session-groups-and-deep-links.md`.
+
+> **Note for API consumers — wire-contract change.** Session DTOs
+> (`listSessions`, `getSession`, paged management listings, `getSessionAccess`)
+> now emit **`viewerGroupId`** — the caller's own placement of the session's
+> tree root — and the former `groupId` field is **gone**. Clients that read
+> `groupId` from session views must switch. Requires **migration 0034**
+> (`user_session_group_placements`), which backfills legacy root assignments
+> as owner placements; `sessions.group_id` is no longer read or written.
+
+### SDK
+
+- **Migration 0034 — `user_session_group_placements`.** Group membership is a
+  `(viewer, tree-root) → group` placement owned by the viewer, with a composite
+  FK into `session_group_owners` that makes cross-user placement structurally
+  impossible. Legacy grouped roots backfill as their owner's placements;
+  ownerless legacy groups adopt an owner only when all live member roots agree,
+  otherwise they are quarantined to the unscoped audit listing.
+- **New operation `placeSessionsInGroup`**
+  (`POST /management/session-groups/place`): place session trees into one of
+  the caller's groups (`groupId` null = ungroup). Requires only **read** access
+  to each session and changes no shared session data. Returns one row per
+  resolved tree root: `{ rootSessionId, placed, reason }` with `reason`
+  `not_found` (unknown and unreadable are deliberately identical) or `system`.
+  A missing or foreign target group fails with a single `403`
+  ("Session group not found or not owned by you.").
+- **Deprecations:** `moveSessionsToGroup` and `assignSessionsToGroup` are now
+  deprecated aliases of `placeSessionsInGroup` (same behavior and result
+  shape); `cancelSessionGroup` and `completeSessionGroup` are deprecated.
+- **`listSessionGroups` is viewer-scoped for every caller — admins included:**
+  only the caller's own groups are returned, with counts computed from the
+  caller's own readable placements. `deleteSessionGroup` clears the owner's
+  placements and never touches sessions, so non-empty groups delete cleanly.
+- `createSession`'s `groupId` is an initial placement into one of the caller's
+  groups (`403` otherwise); groups are owned by their authenticated creator and
+  ownership is never inferred from member sessions.
+
+### Portal / TUI
+
+- **"Shared with me"** bucket in the session owner filter — sessions other
+  users have shared with you.
+- The move-to-group picker offers all of *your* groups for any readable
+  non-system selection; mixed-owner selections are allowed, and per-root
+  placement skips (`system`, `not found`) are summarized in the status bar.
+- **Share / Copy-link split:** a dedicated **Copy link** toolbar button, and
+  the former "Modify" modal is now **Share & settings** (rename, copy link,
+  visibility, per-person grants). Copying a link to a private session with no
+  grants warns "Only people with access can open this link." — a link is a
+  locator, not a grant.
+- **Reliable `?session=` deep links.** A deep link latches selection until it
+  resolves — no more silent fallback to another session. Unknown and
+  inaccessible ids show the same explicit "not found or has not been shared
+  with you" error (no existence oracle); network failures show a retryable
+  error; a linked session outside your current filters is shown anyway with a
+  notice; the link survives redirect-based sign-in.
+
+### MCP
+
+- `manage_session_group` gains the **`place`** action (per-root results;
+  `assign`/`move` are deprecated aliases, `cancel`/`complete` deprecated;
+  `delete` clears only your grouping).
+- `list_sessions` projects the caller's placement as `viewer_group_id`
+  (`list_session_groups`' `include_sessions` membership derives from it);
+  `get_capabilities` reports `viewerScopedGroups: true`.
+
+### Tests
+
+- New coverage for the 0034 placement migration and backfill, placement
+  authorization (read-suffices, foreign-group 403, system/not-found rows),
+  viewer-scoped group catalogs, the "Shared with me" filter, deep-link intent
+  latching and error states, and a group-leak regression over session events.
+
 ## 0.5.14 — 2026-07-15
 
 ### Security model — per-user ownership, visibility, and sharing

@@ -70,8 +70,11 @@ one (`/…/pilotswarm/packages/app/mcp/dist/bin/pilotswarm-mcp.js`).
 - **Sub-agents (read-only)**: `list_agents`, `get_agent_tree`,
   `get_session_tree_stats`, `list_child_outcomes` — spawning stays inside the
   parent session's reasoning loop by design.
-- **Groups**: `list_session_groups`, `manage_session_group`
-  (create/assign/move/cancel/complete/delete) for fleet batching.
+- **Groups**: `list_session_groups` (your groups only — groups are private
+  per-user organization), `manage_session_group`
+  (create/update/**place**/delete; assign/move are deprecated aliases of
+  place, cancel/complete are deprecated). `place` puts sessions you can read
+  into your own groups without changing what anyone else sees.
 - **Artifacts**: list/get/upload/delete session files.
 - **Knowledge**: facts CRUD, hybrid `search_facts`, `similar_facts`,
   graph search/neighbourhood/upserts, namespaces, embedder lifecycle.

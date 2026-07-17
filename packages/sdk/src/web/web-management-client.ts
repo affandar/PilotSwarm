@@ -107,12 +107,23 @@ export class WebPilotSwarmManagementClient {
         return this._api.call("updateSessionGroup", { groupId, patch });
     }
 
-    async assignSessionsToGroup(groupId: string, sessionIds: string[]): Promise<void> {
-        await this._api.call("assignSessionsToGroup", { groupId, sessionIds });
+    /** Deprecated alias of placeSessionsInGroup; returns the same per-root result array. */
+    async assignSessionsToGroup(groupId: string, sessionIds: string[]): Promise<any[]> {
+        return this._api.call("assignSessionsToGroup", { groupId, sessionIds });
     }
 
-    async moveSessionsToGroup(groupId: string | null, sessionIds: string[]): Promise<void> {
-        await this._api.call("moveSessionsToGroup", { groupId, sessionIds });
+    /** Deprecated alias of placeSessionsInGroup; returns the same per-root result array. */
+    async moveSessionsToGroup(groupId: string | null, sessionIds: string[]): Promise<any[]> {
+        return this._api.call("moveSessionsToGroup", { groupId, sessionIds });
+    }
+
+    /**
+     * Viewer-private placement over the Web API: the server derives the
+     * placing viewer from the request's auth context. groupId null = ungroup.
+     * Returns one { rootSessionId, placed, reason } entry per session root.
+     */
+    async placeSessionsInGroup(sessionIds: string[], groupId: string | null): Promise<any[]> {
+        return this._api.call("placeSessionsInGroup", { groupId, sessionIds });
     }
 
     async deleteSessionGroup(groupId: string): Promise<void> {
@@ -128,7 +139,7 @@ export class WebPilotSwarmManagementClient {
     }
 
     listGroupSessions(): never {
-        throw webModeUnsupported("listGroupSessions", "filter listSessions/listSessionsPage by groupId instead");
+        throw webModeUnsupported("listGroupSessions", "filter listSessions/listSessionsPage by viewerGroupId instead");
     }
 
     // ── Child contracts ─────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 import React from "react";
 import { createWebPilotSwarmController, PilotSwarmWebApp } from "pilotswarm/ui-react";
-import { selectStatusBar } from "pilotswarm/ui-core";
+import { selectSessionFilterExceptionNotice, selectStatusBar } from "pilotswarm/ui-core";
 import { BrowserPortalTransport } from "./browser-transport.js";
 import { usePortalAuth } from "./auth-client.js";
 import { PILOTSWARM_PORTAL_VERSION_LABEL } from "./version.js";
@@ -24,6 +24,47 @@ const DEFAULT_PORTAL_LOGO_SVG = `
 
 const DEFAULT_PORTAL_FAVICON_URL = `data:image/svg+xml,${encodeURIComponent(DEFAULT_PORTAL_LOGO_SVG)}`;
 const GENERIC_SIGN_IN_MESSAGE = "Use your organization's identity provider to open the browser-native PilotSwarm workspace.";
+// Deep links stash ?session= in sessionStorage before sign-in because the
+// redirect-based sign-in path (mobile Entra loginRedirect) returns to the bare
+// redirectUri and drops the query string; popup/dev sign-ins never navigate,
+// so the URL param survives those on its own.
+const DEEP_LINK_SESSION_STORAGE_KEY = "pilotswarm.portal.deepLinkSession";
+
+function readDeepLinkSessionIdFromUrl() {
+    if (typeof window === "undefined" || !window.location) return null;
+    const sessionId = new URLSearchParams(window.location.search).get("session");
+    const trimmed = sessionId ? sessionId.trim() : "";
+    return trimmed || null;
+}
+
+function stashDeepLinkSessionId() {
+    const sessionId = readDeepLinkSessionIdFromUrl();
+    if (!sessionId) return;
+    try {
+        window.sessionStorage.setItem(DEEP_LINK_SESSION_STORAGE_KEY, sessionId);
+    } catch {
+        // Session storage unavailable; the URL param still covers non-redirect sign-ins.
+    }
+}
+
+// Consumed at most once per page load (StrictMode double-invokes render-phase
+// callers, and clearing the stash twice would lose a redirect-restored id).
+let consumedDeepLinkSessionId = null;
+let deepLinkConsumed = false;
+
+function consumeDeepLinkSessionId() {
+    if (deepLinkConsumed) return consumedDeepLinkSessionId;
+    deepLinkConsumed = true;
+    let stashed = null;
+    try {
+        stashed = window.sessionStorage.getItem(DEEP_LINK_SESSION_STORAGE_KEY);
+        window.sessionStorage.removeItem(DEEP_LINK_SESSION_STORAGE_KEY);
+    } catch {
+        // ignore
+    }
+    consumedDeepLinkSessionId = readDeepLinkSessionIdFromUrl() || stashed || null;
+    return consumedDeepLinkSessionId;
+}
 
 const DEFAULT_PORTAL_CONFIG = {
     portal: {
@@ -178,11 +219,20 @@ function useVisualViewportHeight() {
     return height;
 }
 
+function derivePortalStatusText(state) {
+    // The transient deep-link filter-exception notice shares the header status
+    // surface — unobtrusive, ahead of the regular status text when both exist.
+    const notice = selectSessionFilterExceptionNotice(state);
+    const left = selectStatusBar(state).left || "";
+    if (!notice) return left;
+    return left ? `${notice} · ${left}` : notice;
+}
+
 function usePortalControllerStatusText(controller) {
-    const [statusText, setStatusText] = React.useState(() => selectStatusBar(controller.getState()).left || "");
+    const [statusText, setStatusText] = React.useState(() => derivePortalStatusText(controller.getState()));
 
     React.useEffect(() => controller.subscribe((nextState) => {
-        const nextStatusText = selectStatusBar(nextState).left || "";
+        const nextStatusText = derivePortalStatusText(nextState);
         setStatusText((current) => current === nextStatusText ? current : nextStatusText);
     }), [controller]);
 
@@ -359,20 +409,11 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
         },
     }), [portal?.branding?.splash, portal?.branding?.splashMobile, portal?.branding?.title, transport]);
     const statusText = usePortalControllerStatusText(controller);
+    const initialSessionId = React.useMemo(() => consumeDeepLinkSessionId(), []);
 
     React.useEffect(() => {
         let active = true;
-        controller.start()
-            .then(() => {
-                if (!active) return;
-                // Deep link: ?session=<id> selects that session on load and the
-                // reducer auto-expands its parent/group chain. Access is
-                // enforced server-side — an inaccessible id simply doesn't open.
-                const deepLinkSessionId = new URLSearchParams(window.location.search).get("session");
-                if (deepLinkSessionId && typeof controller.loadSession === "function") {
-                    controller.loadSession(deepLinkSessionId).catch(() => {});
-                }
-            })
+        controller.start({ initialSessionId })
             .catch((error) => {
                 if (!active) return;
                 controller.dispatch({
@@ -386,7 +427,7 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
             controller.stop().catch(() => {});
             transport.stop().catch(() => {});
         };
-    }, [controller, transport]);
+    }, [controller, initialSessionId, transport]);
 
     return React.createElement("div", { className: "portal-app-shell", style: shellStyle },
         auth.provider === "dev"
@@ -411,6 +452,13 @@ export default function App() {
     const publicConfig = usePortalPublicConfig();
     const auth = usePortalAuth(publicConfig.config?.auth || null);
     const appHeight = useVisualViewportHeight();
+
+    // Stash only while the sign-in gate is up — a signed-in load consumes the
+    // URL param directly, and stashing then would leave a stale id behind.
+    const showSignInGate = !publicConfig.loading && !auth.loading && !auth.signedIn;
+    React.useEffect(() => {
+        if (showSignInGate) stashDeepLinkSessionId();
+    }, [showSignInGate]);
     const shellStyle = appHeight
         ? { "--ps-app-height": `${appHeight}px` }
         : undefined;

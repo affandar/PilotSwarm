@@ -24,7 +24,7 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                 prompt: z.string().optional().describe("Initial message to send immediately after session creation (fire-and-forget)"),
                 reasoning_effort: z.string().optional().describe("Reasoning effort for the session's model (e.g. low, medium, high)"),
                 context_tier: z.string().optional().describe("Context-window tier for the session's model: 'default' (smaller window) or 'long_context'"),
-                group_id: z.string().optional().describe("Session group to create the session in"),
+                group_id: z.string().optional().describe("One of YOUR session groups to place the new session in (groups are private per-user organization; fails if the group is not yours)"),
                 splash: z.string().optional().describe("Splash text shown in the portal UI (agent-bound sessions only)"),
             },
         },
@@ -502,7 +502,8 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
             title: "List Sessions",
             description:
                 "List all PilotSwarm sessions with their current status, model, agent info, and parent/child relationships. " +
-                "Use status_filter to narrow results (e.g. 'running', 'idle', 'waiting', 'completed', 'failed').",
+                "Use status_filter to narrow results (e.g. 'running', 'idle', 'waiting', 'completed', 'failed'). " +
+                "viewer_group_id is YOUR private group placement for the session's tree (groups are per-user organization).",
             inputSchema: {
                 status_filter: z
                     .string()
@@ -568,6 +569,7 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                     agent_id: s.agentId ?? null,
                     is_system: s.isSystem ?? false,
                     parent_session_id: s.parentSessionId ?? null,
+                    viewer_group_id: s.viewerGroupId ?? null,
                     iterations: s.iterations ?? 0,
                     wait_reason: s.waitReason ?? null,
                     error: s.error ?? null,

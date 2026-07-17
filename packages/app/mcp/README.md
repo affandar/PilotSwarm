@@ -400,8 +400,8 @@ with `get_capabilities` to see the shape of this server.
 
 | Tool | Description |
 |------|-------------|
-| `list_session_groups` | List groups; `include_sessions` adds member sessions |
-| `manage_session_group` | `action: create \| update \| assign \| move \| cancel \| complete \| delete` — fleet batching |
+| `list_session_groups` | List YOUR groups (private per-user organization); `include_sessions` adds the sessions you placed in each |
+| `manage_session_group` | `action: create \| update \| place \| assign \| move \| cancel \| complete \| delete` — `place` puts sessions you can read into your own groups (assign/move are deprecated aliases; cancel/complete are deprecated) |
 
 ### Artifacts *(web)*
 

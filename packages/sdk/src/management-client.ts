@@ -28,6 +28,7 @@ import type {
 } from "./types.js";
 import type { SessionCatalog, SessionRow, TopEventEmitterRow } from "./cms.js";
 import { SYSTEM_USER_PRINCIPAL } from "./cms.js";
+import { LOCAL_DEFAULT_USER_PRINCIPAL } from "./session-owner-utils.js";
 import type { MessageSender } from "./message-sender.js";
 import { normalizeMessageSender } from "./message-sender.js";
 import type {
@@ -49,6 +50,8 @@ import type {
     UserProfile,
     UserPrincipal,
     SessionGroupRow,
+    PlacementViewer,
+    SessionPlacementResult,
     ChildOutcomeRow,
     SessionVisibility,
     SessionShareInfo,
@@ -191,16 +194,6 @@ function buildLifecycleCommandId(prefix: string): string {
     return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function ownerKeyForOwner(owner: SessionOwnerInfo | null | undefined): string | null {
-    const provider = String(owner?.provider || "").trim();
-    const subject = String(owner?.subject || "").trim();
-    return provider && subject ? `${provider}\u0001${subject}` : null;
-}
-
-function ownerLabel(owner: SessionOwnerInfo | null | undefined): string {
-    return String(owner?.displayName || owner?.email || "").trim() || "unowned";
-}
-
 export type SystemSessionRestartDisposition = "complete" | "terminate" | "hard_delete" | "hardDelete";
 
 /** Status view of the SYSTEM user's GitHub Copilot key (never the key itself). */
@@ -250,7 +243,7 @@ function sessionViewFromCmsRow(row: SessionRow): PilotSwarmSessionView {
         updatedAt: row.updatedAt?.getTime(),
         iterations: row.currentIteration ?? 0,
         parentSessionId: row.parentSessionId ?? undefined,
-        groupId: row.groupId ?? undefined,
+        viewerGroupId: row.groupId ?? undefined,
         isSystem: row.isSystem || undefined,
         model: row.model ?? undefined,
         reasoningEffort: row.reasoningEffort ?? undefined,
@@ -286,7 +279,8 @@ export interface PilotSwarmSessionView {
     updatedAt?: number;
     iterations?: number;
     parentSessionId?: string;
-    groupId?: string;
+    /** The requesting viewer's private group placement for this session's root. */
+    viewerGroupId?: string;
     isSystem?: boolean;
     model?: string;
     reasoningEffort?: string;
@@ -327,6 +321,8 @@ export interface ListSessionsPageOptions {
     includeDeleted?: boolean;
     /** When set, restrict rows to what this principal can read (viewer-scoped listing). */
     viewer?: { provider: string; subject: string; systemVisible?: boolean } | null;
+    /** When set, root rows carry this principal's private group placement as viewerGroupId. */
+    placement?: { provider: string; subject: string } | null;
 }
 
 /** One bounded page of management session views. */
@@ -677,11 +673,11 @@ export class PilotSwarmManagementClient {
      * the runTurn activity (session-proxy). For real-time status of a
      * single session, use getSession() which still hits duroxide.
      */
-    async listSessions(): Promise<PilotSwarmSessionView[]> {
+    async listSessions(placement?: { provider: string; subject: string } | null): Promise<PilotSwarmSessionView[]> {
         this._ensureStarted();
 
         // Single CMS query — no duroxide fan-out
-        const cmsSessions = await this._catalog!.listSessions();
+        const cmsSessions = await this._catalog!.listSessions(placement ?? null);
 
         return cmsSessions.map(sessionViewFromCmsRow);
     }
@@ -713,6 +709,7 @@ export class PilotSwarmManagementClient {
             cursorSessionId,
             includeDeleted: opts.includeDeleted,
             viewer: opts.viewer ?? null,
+            placement: opts.placement ?? null,
         });
         const visibleRows = rows.slice(0, limit);
         const hasMore = rows.length > limit;
@@ -728,9 +725,12 @@ export class PilotSwarmManagementClient {
     }
 
     /** List sessions visible to a principal (non-paged viewer-scoped listing). */
-    async listSessionsVisible(viewer: { provider: string; subject: string; systemVisible?: boolean }): Promise<PilotSwarmSessionView[]> {
+    async listSessionsVisible(
+        viewer: { provider: string; subject: string; systemVisible?: boolean },
+        placement?: { provider: string; subject: string } | null,
+    ): Promise<PilotSwarmSessionView[]> {
         this._ensureStarted();
-        const rows = await this._catalog!.listSessionsVisible(viewer);
+        const rows = await this._catalog!.listSessionsVisible(viewer, placement ?? null);
         return rows.map(sessionViewFromCmsRow);
     }
 
@@ -810,9 +810,9 @@ export class PilotSwarmManagementClient {
     /**
      * Get a single session view by ID.
      */
-    async getSession(sessionId: string): Promise<PilotSwarmSessionView | null> {
+    async getSession(sessionId: string, placement?: { provider: string; subject: string } | null): Promise<PilotSwarmSessionView | null> {
         this._ensureStarted();
-        const row = await this._catalog!.getSession(sessionId);
+        const row = await this._catalog!.getSession(sessionId, placement ?? null);
         if (!row) return null;
 
         const orchId = `session-${sessionId}`;
@@ -960,7 +960,7 @@ export class PilotSwarmManagementClient {
             updatedAt: row.updatedAt?.getTime(),
             iterations: customStatus.iteration ?? row.currentIteration ?? 0,
             parentSessionId: row.parentSessionId ?? undefined,
-            groupId: row.groupId ?? undefined,
+            viewerGroupId: row.groupId ?? undefined,
             isSystem: row.isSystem || undefined,
             model: row.model ?? undefined,
             reasoningEffort: row.reasoningEffort ?? undefined,
@@ -1025,11 +1025,15 @@ export class PilotSwarmManagementClient {
     }): Promise<SessionGroupRow> {
         this._ensureStarted();
         const groupId = input.groupId ?? crypto.randomUUID();
+        // Direct-mode callers (MCP direct, tests) carry no auth principal, so
+        // default the owner to the local principal — an ownerless group can
+        // never receive placements (the composite FK rejects them), which
+        // would make create-then-place fail. Web callers always pass owner.
         await this._catalog!.createSessionGroup({
             groupId,
             title: input.title,
             description: input.description ?? null,
-            owner: input.owner ?? null,
+            owner: input.owner ?? { ...LOCAL_DEFAULT_USER_PRINCIPAL },
             metadata: input.metadata ?? {},
         });
         const created = (await this._catalog!.listSessionGroups()).find((group) => group.groupId === groupId);
@@ -1037,14 +1041,14 @@ export class PilotSwarmManagementClient {
         return created;
     }
 
-    async listSessionGroups(): Promise<SessionGroupRow[]> {
+    async listSessionGroups(viewer?: PlacementViewer | null): Promise<SessionGroupRow[]> {
         this._ensureStarted();
-        return this._catalog!.listSessionGroups();
+        return this._catalog!.listSessionGroups(viewer ?? null);
     }
 
-    async listGroupSessions(groupId: string): Promise<PilotSwarmSessionView[]> {
+    async listGroupSessions(groupId: string, placement?: { provider: string; subject: string } | null): Promise<PilotSwarmSessionView[]> {
         this._ensureStarted();
-        const rows = await this._catalog!.listGroupSessions(groupId);
+        const rows = await this._catalog!.listGroupSessions(groupId, placement ?? null);
         return rows.map(sessionViewFromCmsRow);
     }
 
@@ -1056,49 +1060,56 @@ export class PilotSwarmManagementClient {
         return updated;
     }
 
+    /**
+     * Upsert (or delete, when groupId is null) the viewer's private placement
+     * for each distinct session tree root. Requires read access per session;
+     * the target group must be owned by the viewer. Never touches shared
+     * session data.
+     */
+    async placeSessionsInGroup(
+        viewer: PlacementViewer,
+        sessionIds: string[],
+        groupId: string | null,
+    ): Promise<SessionPlacementResult[]> {
+        this._ensureStarted();
+        const uniqueIds = Array.from(new Set((Array.isArray(sessionIds) ? sessionIds : []).map((id) => String(id || "").trim()).filter(Boolean)));
+        const normalizedGroupId = groupId == null ? null : String(groupId || "").trim() || null;
+        return this._catalog!.placeSessionsInGroup(viewer, uniqueIds, normalizedGroupId);
+    }
+
+    /**
+     * Deprecated alias of placeSessionsInGroup for direct-mode callers that
+     * carry no viewer: places for the target group's owner, or (when
+     * ungrouping) clears each session owner's own placement.
+     */
     async moveSessionsToGroup(groupId: string | null, sessionIds: string[]): Promise<void> {
         this._ensureStarted();
         const normalizedGroupId = groupId == null ? null : String(groupId || "").trim();
-        let targetGroup: SessionGroupRow | null = null;
+        const uniqueIds = Array.from(new Set((Array.isArray(sessionIds) ? sessionIds : []).map((id) => String(id || "").trim()).filter(Boolean)));
+
         if (normalizedGroupId) {
-            targetGroup = (await this._catalog!.listSessionGroups()).find((candidate) => candidate.groupId === normalizedGroupId) ?? null;
+            const targetGroup = (await this._catalog!.listSessionGroups()).find((candidate) => candidate.groupId === normalizedGroupId) ?? null;
             if (!targetGroup) throw new Error(`Session group ${normalizedGroupId} was not found.`);
+            if (!targetGroup.owner?.provider || !targetGroup.owner?.subject) {
+                throw new Error(`Session group ${normalizedGroupId} has no owner to place sessions for.`);
+            }
+            await this.placeSessionsInGroup(
+                { provider: targetGroup.owner.provider, subject: targetGroup.owner.subject, isAdmin: true },
+                uniqueIds,
+                normalizedGroupId,
+            );
+            return;
         }
 
-        const uniqueIds = Array.from(new Set((Array.isArray(sessionIds) ? sessionIds : []).map((id) => String(id || "").trim()).filter(Boolean)));
-        const movableSessions: SessionRow[] = [];
         for (const sessionId of uniqueIds) {
             const session = await this._catalog!.getSession(sessionId);
             if (!session || session.isSystem) continue;
-            movableSessions.push(session);
-        }
-
-        if (targetGroup) {
-            const groupOwnerKey = ownerKeyForOwner(targetGroup.owner);
-            const sessionOwnerKeys = new Set(movableSessions.map((session) => ownerKeyForOwner(session.owner) || ""));
-            const canAdoptOwner = !groupOwnerKey
-                && (targetGroup.memberCount ?? 0) === 0
-                && sessionOwnerKeys.size === 1
-                && Boolean(sessionOwnerKeys.values().next().value);
-            const mismatch = canAdoptOwner
-                ? null
-                : movableSessions.find((session) => ownerKeyForOwner(session.owner) !== groupOwnerKey);
-            if (mismatch) {
-                throw new Error(
-                    `Cannot move session ${mismatch.sessionId.slice(0, 8)} owned by ${ownerLabel(mismatch.owner)} ` +
-                    `into group ${targetGroup.title || targetGroup.groupId} owned by ${ownerLabel(targetGroup.owner)}.`,
-                );
-            }
-            if (canAdoptOwner) {
-                const ownerToAdopt = movableSessions.find((session) => session.owner)?.owner ?? null;
-                if (ownerToAdopt) {
-                    await this._catalog!.updateSessionGroup(targetGroup.groupId, { owner: ownerToAdopt });
-                }
-            }
-        }
-
-        for (const session of movableSessions) {
-            await this._catalog!.updateSession(session.sessionId, { groupId: normalizedGroupId || null });
+            if (!session.owner?.provider || !session.owner?.subject) continue;
+            await this.placeSessionsInGroup(
+                { provider: session.owner.provider, subject: session.owner.subject, isAdmin: true },
+                [sessionId],
+                null,
+            );
         }
     }
 
@@ -1122,14 +1133,10 @@ export class PilotSwarmManagementClient {
 
     async deleteSessionGroup(groupId: string, reason?: string): Promise<void> {
         this._ensureStarted();
-        const members = await this._catalog!.listGroupSessions(groupId);
         void reason;
-        if (members.length > 0) {
-            throw new Error(`Cannot delete session group ${groupId}; move ${members.length} member session(s) out first.`);
-        }
         const deleted = await this._catalog!.deleteSessionGroup(groupId);
         if (!deleted) {
-            throw new Error(`Cannot delete session group ${groupId}; member sessions remain.`);
+            throw new Error(`Session group ${groupId} was not found.`);
         }
     }
 

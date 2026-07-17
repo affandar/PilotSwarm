@@ -1593,7 +1593,7 @@ describe("session refresh UI recovery", () => {
         assertIncludes(status.right, "D hard delete", "select-mode status hint should advertise bulk hard delete");
     });
 
-    it("defaults session owner filtering to system plus me and exposes unowned as a separate entry", async () => {
+    it("defaults session owner filtering to system, me, and shared and exposes unowned as a separate entry", async () => {
         const owner = {
             provider: "test",
             subject: "me",
@@ -1652,7 +1652,7 @@ describe("session refresh UI recovery", () => {
             const defaultRows = selectSessionRows(store.getState()).map((row) => row.sessionId);
             assert(defaultRows.includes("system-session"), "default filter should include system sessions");
             assert(defaultRows.includes("mine-session"), "default filter should include current user's sessions");
-            assert(!defaultRows.includes("other-session"), "default filter should exclude other users");
+            assert(defaultRows.includes("other-session"), "default filter should include foreign shared sessions");
             assert(!defaultRows.includes("unowned-session"), "default filter should exclude unowned sessions");
 
             controller.openSessionOwnerFilter();
@@ -1698,7 +1698,7 @@ describe("session refresh UI recovery", () => {
                     sessionId: "legacy-member",
                     title: "Legacy Member",
                     status: "idle",
-                    groupId: "legacy-group",
+                    viewerGroupId: "legacy-group",
                     owner,
                     createdAt: 7,
                     updatedAt: 8,
@@ -1718,7 +1718,7 @@ describe("session refresh UI recovery", () => {
             const rows = selectSessionRows(store.getState()).map((row) => row.sessionId);
             assert(rows.includes("group:mine-group"), "default owner filter should include current user's groups");
             assert(rows.includes("group:legacy-group"), "default owner filter should include groups with current-user members");
-            assert(!rows.includes("group:other-group"), "default owner filter should exclude other users' groups");
+            assert(rows.includes("group:other-group"), "default owner filter now surfaces foreign-owned groups via includeShared");
             assert(!rows.includes("group:unowned-group"), "default owner filter should exclude unowned groups");
 
             const rowText = selectSessionRows(store.getState())

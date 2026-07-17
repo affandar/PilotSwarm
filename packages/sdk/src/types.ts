@@ -353,8 +353,12 @@ export interface PilotSwarmSessionInfo {
     splash?: string;
     /** Narrow-viewport splash variant, used when the main splash art is wider than the pane. */
     splashMobile?: string;
-    /** Optional visual session group assignment. */
-    groupId?: string;
+    /**
+     * The viewer's private group placement for this session's tree root.
+     * Placement is viewer-scoped, so this is only populated when the listing
+     * carries a placement viewer (worker-side listings have none).
+     */
+    viewerGroupId?: string;
     /** Short live summary for discovery/session lists. */
     shortSummary?: string;
     /** Structured live summary state. */

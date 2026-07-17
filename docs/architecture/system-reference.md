@@ -193,19 +193,19 @@ Related session-view fields exposed through `PilotSwarmSessionInfo`, `PilotSwarm
 
 - `cronActive` / `cronInterval` / `cronReason`
 - `contextUsage` (token limit, current tokens, utilization, and latest compaction snapshot)
-- `groupId` (session group membership, when assigned or moved through management APIs)
+- `viewerGroupId` (the requesting viewer's private group placement for the session's tree root; replaces the former `groupId` field — group membership is per-viewer state, not a session property)
 - `shortSummary` / `summaryState` / `summaryUpdatedAt` (agent-maintained live summary state)
 
 ### Base Coordination State
 
 PilotSwarm stores base coordination metadata in CMS without changing existing session lifecycle states:
 
-- `sessions.group_id` links a session to one visual management group; child sessions inherit the nearest ancestor group.
-- `session_groups` stores group title, owner, metadata, and aggregate list counts. Groups are pure containers, not orchestrations or bulk-action sessions.
+- `user_session_group_placements` stores session-group membership as private per-user (viewer, tree-root) placements (migration 0034); each viewer's grouping is invisible to everyone else, and reads surface the requesting viewer's placement as `viewerGroupId` on root rows. The legacy `sessions.group_id` column is no longer read or written (dropped in a later release).
+- `session_groups` stores group title, owner, metadata, and (per-viewer) aggregate list counts. Groups are pure containers — each user's private organization, not orchestrations or bulk-action sessions.
 - `sessions.short_summary`, `sessions.summary_state`, and `sessions.summary_updated_at` hold the agent-maintained live summary state.
 - `session_child_outcomes` stores the current child contract/result row plus JSON revision history for parent/child coordination.
 
-Management APIs include `createSessionGroup`, `updateSessionGroup`, `listSessionGroups`, `listGroupSessions`, `moveSessionsToGroup`, `deleteSessionGroup`, `updateSessionSummary`, `sendSessionMessage`, and `replySessionMessage`. Group deletion only succeeds after all member sessions have been moved out.
+Management APIs include `createSessionGroup`, `updateSessionGroup`, `listSessionGroups` (viewer-scoped: only the caller's own groups, admins included), `listGroupSessions`, `placeSessionsInGroup` (viewer-private placement; requires only read access to each session; `moveSessionsToGroup`/`assignSessionsToGroup` are deprecated aliases), `deleteSessionGroup`, `updateSessionSummary`, `sendSessionMessage`, and `replySessionMessage`. Deleting a group clears the owner's placements and never touches sessions, so non-empty groups delete cleanly.
 
 ### PilotSwarmSessionStatus — Session State Machine
 

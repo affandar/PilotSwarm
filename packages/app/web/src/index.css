@@ -1642,6 +1642,15 @@ body.is-resizing-pane-y * {
   padding: 6px 0;
 }
 
+.ps-nav-error-state {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 18px 12px;
+}
+.ps-nav-error-message { max-width: 42em; line-height: 1.5; }
+
 .ps-tab-row {
   display: flex;
   flex-wrap: wrap;
@@ -2723,12 +2732,14 @@ body.is-resizing-pane-y * {
 .ps-share-radio-hint { color: var(--ps-muted); font-size: 11px; margin-left: auto; }
 
 .ps-share-grant-row,
-.ps-share-add-row {
+.ps-share-add-row,
+.ps-share-link-row {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 5px 0;
 }
+.ps-share-link-row .ps-share-section-sub { margin: 0; }
 .ps-share-grant-name { flex: 1; font-size: 13px; }
 .ps-share-grant-access {
   font-size: 11px;
