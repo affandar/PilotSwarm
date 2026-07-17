@@ -393,6 +393,23 @@ function PortalHeader({ account, authEnabled, isAdmin = false, branding, onSignO
     );
 }
 
+// On narrow screens the header can't fit the identity, version, and a
+// transient status message on one line, so the status is lifted into its own
+// dismissible row between the header and the toolbar (CSS hides this on
+// desktop, where the header placement is fine).
+function PortalMobileStatus({ statusText, onDismiss }) {
+    if (!statusText) return null;
+    return React.createElement("div", { className: "portal-mobile-status" },
+        React.createElement("span", { className: "portal-mobile-status-text" }, statusText),
+        React.createElement("button", {
+            type: "button",
+            className: "portal-mobile-status-dismiss",
+            "aria-label": "Dismiss message",
+            title: "Dismiss",
+            onClick: onDismiss,
+        }, "✕"));
+}
+
 function PortalWorkspace({ auth, portal, shellStyle }) {
     const transport = React.useMemo(() => new BrowserPortalTransport({
         getAccessToken: auth.getAccessToken,
@@ -409,6 +426,10 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
         },
     }), [portal?.branding?.splash, portal?.branding?.splashMobile, portal?.branding?.title, transport]);
     const statusText = usePortalControllerStatusText(controller);
+    // Dismissing hides the mobile status row until a *different* message
+    // arrives (a repeat of the same text stays dismissed).
+    const [dismissedStatus, setDismissedStatus] = React.useState("");
+    const mobileStatusText = statusText && statusText !== dismissedStatus ? statusText : "";
     const initialSessionId = React.useMemo(() => consumeDeepLinkSessionId(), []);
 
     React.useEffect(() => {
@@ -442,6 +463,10 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
             onSignOut: auth.signOut,
             versionLabel: PILOTSWARM_PORTAL_VERSION_LABEL,
             statusText,
+        }),
+        React.createElement(PortalMobileStatus, {
+            statusText: mobileStatusText,
+            onDismiss: () => setDismissedStatus(statusText),
         }),
         React.createElement("main", { className: "portal-main" },
             React.createElement(PilotSwarmWebApp, { controller })),

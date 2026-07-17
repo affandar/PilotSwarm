@@ -316,7 +316,9 @@ button {
 }
 
 .portal-header-status {
-  max-width: 14rem;
+  /* Generous on wide screens (tied to viewport so it stays proportional on
+     smaller desktops); still ellipsizes rather than pushing Sign Out. */
+  max-width: min(44rem, 42vw);
   color: var(--ps-muted);
   font-size: 0.72rem;
   line-height: 1;
@@ -324,6 +326,39 @@ button {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Mobile-only status row: hidden on desktop, where the header placement is
+   fine. Shown between the header and the toolbar at small widths (below). */
+.portal-mobile-status {
+  display: none;
+}
+
+.portal-mobile-status-text {
+  flex: 1;
+  min-width: 0;
+  color: var(--ps-foreground);
+  font-size: 0.9rem;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.portal-mobile-status-dismiss {
+  flex: none;
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--ps-muted);
+  font-size: 0.9rem;
+  line-height: 1;
+  padding: 4px 6px;
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+.portal-mobile-status-dismiss:hover {
+  color: var(--ps-foreground);
+  background: color-mix(in srgb, var(--ps-surface) 80%, transparent);
 }
 
 .portal-header-identity,
@@ -1009,6 +1044,18 @@ body.is-resizing-pane-y * {
   }
   .ps-chat-preserve-block.is-splash-mobile {
     display: block;
+  }
+  /* Reclaim the header line: the status moves to its own dismissible row. */
+  .portal-header-status {
+    display: none;
+  }
+  .portal-mobile-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--ps-border);
+    background: var(--ps-surface);
   }
 }
 
@@ -2691,7 +2738,11 @@ body.is-resizing-pane-y * {
 
 .ps-share-modal {
   width: min(440px, 100%);
-  max-height: 80vh;
+  /* Fixed height so switching General/Access never resizes the dialog; the
+     shorter tab pads, the taller one scrolls within. */
+  height: min(540px, 85vh);
+  display: flex;
+  flex-direction: column;
   overflow-y: auto;
   background: var(--ps-modal-background, var(--ps-surface));
   border: 1px solid var(--ps-modal-border);
@@ -2710,12 +2761,123 @@ body.is-resizing-pane-y * {
   margin-bottom: 12px;
 }
 
+/* Compact copy-link confirmation dialog (auto height, unlike the fixed-size
+   Manage modal). */
+.ps-link-modal {
+  width: min(480px, 100%);
+  max-height: 80vh;
+  overflow-y: auto;
+  background: var(--ps-modal-background, var(--ps-surface));
+  border: 1px solid var(--ps-modal-border);
+  border-radius: var(--ps-radius-md);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.4);
+  padding: 18px;
+  color: var(--ps-foreground);
+}
+
+.ps-link-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.ps-link-input {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--ps-mono, monospace);
+  font-size: 12px;
+  padding: 8px 10px;
+  color: var(--ps-foreground);
+  background: var(--ps-background);
+  border: 1px solid var(--ps-border);
+  border-radius: var(--ps-radius-sm);
+}
+
+.ps-link-warn {
+  margin-top: 12px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--ps-foreground);
+  background: color-mix(in srgb, var(--ps-warning, #d0a215) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ps-warning, #d0a215) 45%, transparent);
+  border-radius: var(--ps-radius-sm);
+}
+
 .ps-share-section-label {
   font-size: 11px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--ps-muted);
   margin: 14px 0 6px;
+}
+
+.ps-manage-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.ps-manage-tab {
+  /* Equal-width tabs so switching never shifts their size or the ones beside
+     them. A transparent border reserves the active border's space so nothing
+     moves when a tab becomes active. */
+  flex: 1 1 0;
+  text-align: center;
+  appearance: none;
+  background: transparent;
+  color: var(--ps-muted);
+  font: inherit;
+  font-size: 13px;
+  padding: 8px 14px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  border-radius: 8px;
+}
+
+.ps-manage-tab:hover { color: var(--ps-foreground); }
+
+/* The active tab is a bordered box (not an underline); no focus outline on
+   click, so switching is not jarring. Keyboard focus gets a subtle border. */
+.ps-manage-tab:focus { outline: none; }
+.ps-manage-tab:focus-visible {
+  outline: none;
+  color: var(--ps-foreground);
+  border-color: color-mix(in srgb, var(--ps-highlight-background) 45%, transparent);
+}
+
+.ps-manage-tab.is-active {
+  color: var(--ps-foreground);
+  font-weight: 600;
+  border-color: var(--ps-highlight-background);
+  background: color-mix(in srgb, var(--ps-highlight-background) 14%, transparent);
+}
+
+.ps-manage-model-current {
+  flex: 1;
+  font-family: var(--ps-mono, monospace);
+  font-size: 13px;
+  color: var(--ps-foreground);
+  overflow-wrap: anywhere;
+}
+
+.ps-manage-apply-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--ps-border);
+}
+
+/* Enabled = the normal button look (pressable). Disabled (no changes) = clearly
+   greyed out and not clickable. */
+.ps-mini-button.ps-manage-apply:disabled {
+  background: transparent;
+  color: var(--ps-muted);
+  border-color: color-mix(in srgb, var(--ps-border) 60%, transparent);
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .ps-share-radio {

@@ -145,15 +145,10 @@ function copySessionLinkText(url) {
     if (navigator?.clipboard?.writeText) navigator.clipboard.writeText(url).catch(() => {});
 }
 
-// Copy a session deep link and report it on the status surface. A private
-// session with no targeted grants yields a link only the owner/admins can
-// open, so the confirmation carries a warning in that case. The access probe
-// is best-effort — failure keeps the plain confirmation.
-async function copySessionLinkWithStatus(controller, sessionId) {
-    const url = buildSessionLinkUrl(sessionId);
-    if (!url) return;
-    copySessionLinkText(url);
-    let text = SESSION_LINK_COPIED_STATUS;
+// Best-effort probe: is this session's deep link openable only by the owner/
+// admins right now (private, with no targeted grants)? Used to warn in the
+// copy-link dialog. Failure resolves false (no warning).
+async function resolveSessionLinkWarn(controller, sessionId) {
     try {
         const transport = controller.transport;
         if (typeof transport?.getSessionAccess === "function") {
@@ -162,15 +157,13 @@ async function copySessionLinkWithStatus(controller, sessionId) {
                 const shares = typeof transport.listSessionShares === "function"
                     ? await transport.listSessionShares(sessionId).catch(() => [])
                     : [];
-                if (!Array.isArray(shares) || shares.length === 0) {
-                    text = `Link copied. ${SESSION_LINK_PRIVATE_WARNING}`;
-                }
+                return !Array.isArray(shares) || shares.length === 0;
             }
         }
     } catch {
-        // Keep the plain confirmation.
+        // Fall through to no warning.
     }
-    controller.dispatch({ type: "ui/status", text });
+    return false;
 }
 
 function clearBrowserPreferenceCache() {
@@ -1941,12 +1934,48 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     const activeSession = viewState.activeSessionId
         ? viewState.sessionsById[viewState.activeSessionId] || null
         : null;
-    // "Share" combines sharing + rename in one modal (opened from the toolbar
-    // so the composer chrome stays minimal, esp. on mobile). Rename AND sharing
-    // are owner/admin-only (session:manage / session:share), so the button is
-    // disabled for anyone else — the server enforces too, but a disabled button
-    // is clearer than a 403.
-    const [shareOpen, setShareOpen] = React.useState(false);
+    // "Manage session" combines rename, model, and sharing in one tabbed modal
+    // (opened from the toolbar so the composer chrome stays minimal, esp. on
+    // mobile). Rename and sharing are owner/admin-only (session:manage /
+    // session:share), so the button is disabled for anyone else — the server
+    // enforces too, but a disabled button is clearer than a 403.
+    const [manageOpen, setManageOpen] = React.useState(false);
+    const [linkModal, setLinkModal] = React.useState(null); // { url, warn } | null
+    // The model picker is a separate (controller-owned) modal that would render
+    // behind the Manage modal, so we close Manage while it is open and reopen
+    // it when the picker closes — cancelling returns the user to Manage.
+    const reopenManageRef = React.useRef(false);
+    // The switch-model flow is multi-step (model → reasoning effort → context
+    // tier); watch every step so Manage doesn't reopen between them. It reopens
+    // only when the whole flow ends, and only if the switch was NOT applied
+    // (cancel returns to Manage; confirm closes everything).
+    const MODEL_FLOW_MODALS = ["modelPicker", "reasoningEffortPicker", "contextTierPicker"];
+    const modelFlowOpen = useControllerSelector(controller, (state) => MODEL_FLOW_MODALS.includes(state.ui.modal?.type));
+    React.useEffect(() => {
+        if (!modelFlowOpen && reopenManageRef.current) {
+            reopenManageRef.current = false;
+            setManageOpen(true);
+        }
+    }, [modelFlowOpen]);
+    const requestSwitchModel = () => {
+        reopenManageRef.current = true;
+        setManageOpen(false);
+        controller.openSwitchModelPicker(() => {
+            // Applied (not cancelled): close everything, don't reopen Manage.
+            reopenManageRef.current = false;
+        }).then(() => {
+            // If the picker never actually opened (e.g. unsupported transport),
+            // don't strand the Manage modal closed with no way back.
+            if (!MODEL_FLOW_MODALS.includes(controller.getState().ui.modal?.type) && reopenManageRef.current) {
+                reopenManageRef.current = false;
+                setManageOpen(true);
+            }
+        }).catch((err) => {
+            reopenManageRef.current = false;
+            setManageOpen(true);
+            controller.dispatch({ type: "ui/status", text: err?.message || String(err) || "Failed to switch model" });
+        });
+    };
     const authPrincipal = viewState.auth?.principal || null;
     const viewerRole = viewState.auth?.authorization?.role;
     const isAdminViewer = viewerRole === "admin" || viewerRole === "anonymous";
@@ -2056,21 +2085,27 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         }),
         React.createElement(IconButton, {
             className: "ps-mini-button",
+            icon: React.createElement(ManageGlyph),
+            onClick: () => setManageOpen(true),
+            disabled: !canModifyActiveSession || isBulkSelection,
+            label: isBulkSelection ? "Disabled while multiple sessions are selected" : "Manage session — rename, switch model, and sharing",
+        }),
+        React.createElement(IconButton, {
+            className: "ps-mini-button",
             icon: React.createElement(LinkGlyph),
             onClick: () => {
                 const sid = activeSession?.sessionId;
                 if (!sid) return;
-                copySessionLinkWithStatus(controller, sid).catch(() => {});
+                const url = buildSessionLinkUrl(sid);
+                if (!url) return;
+                copySessionLinkText(url);
+                setLinkModal({ url, warn: false });
+                resolveSessionLinkWarn(controller, sid).then((warn) => {
+                    setLinkModal((cur) => (cur && cur.url === url ? { ...cur, warn } : cur));
+                }).catch(() => {});
             },
             disabled: !activeSession || activeSession.isGroup || isBulkSelection,
             label: "Copy link — copy a direct link to this session",
-        }),
-        React.createElement(IconButton, {
-            className: "ps-mini-button",
-            icon: React.createElement(ShareGlyph),
-            onClick: () => setShareOpen(true),
-            disabled: !canModifyActiveSession || isBulkSelection,
-            label: isBulkSelection ? "Disabled while multiple sessions are selected" : "Share — manage access, rename, and copy link",
         }),
         React.createElement(IconButton, {
             className: "ps-mini-button",
@@ -2163,16 +2198,58 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                 React.createElement(SessionRowContent, { row, theme, structured: structuredRows })),
             )),
     )),
-    (shareOpen && activeSession && !activeSession.isGroup)
+    (manageOpen && activeSession && !activeSession.isGroup)
         ? React.createElement(SessionModifyModal, {
             controller,
             sessionId: activeSession.sessionId,
             initialTitle: activeSession.title || "",
+            currentModel: activeSession.model || "",
+            currentReasoningEffort: activeSession.reasoningEffort || "",
             principal: viewState.auth?.principal || null,
-            onClose: () => setShareOpen(false),
+            onClose: () => setManageOpen(false),
+            onSwitchModel: requestSwitchModel,
             onChanged: () => {},
         })
+        : null,
+    linkModal
+        ? React.createElement(SessionLinkModal, {
+            url: linkModal.url,
+            warn: linkModal.warn,
+            onCopyAgain: () => {
+                copySessionLinkText(linkModal.url);
+                controller.dispatch({ type: "ui/status", text: SESSION_LINK_COPIED_STATUS });
+            },
+            onClose: () => setLinkModal(null),
+        })
         : null);
+}
+
+// Compact confirmation dialog for the Copy link button: shows the copied URL
+// (selectable), confirms the copy, and warns when the link points at a private
+// session no one else can open yet.
+function SessionLinkModal({ url, warn, onCopyAgain, onClose }) {
+    const inputRef = React.useRef(null);
+    React.useEffect(() => {
+        const node = inputRef.current;
+        if (node) { node.focus(); node.select(); }
+    }, []);
+    const stop = (e) => e.stopPropagation();
+    return React.createElement("div", { className: "ps-share-overlay", onClick: onClose },
+        React.createElement("div", { className: "ps-link-modal", onClick: stop },
+            React.createElement("div", { className: "ps-share-modal-head" },
+                React.createElement("span", null, "Link copied"),
+                React.createElement("button", { className: "ps-modal-close", onClick: onClose }, "✕")),
+            React.createElement("div", { className: "ps-share-section-sub" },
+                "Copied to your clipboard — anyone with access can open the session from this link."),
+            React.createElement("div", { className: "ps-link-row" },
+                React.createElement("input", {
+                    ref: inputRef, className: "ps-link-input", readOnly: true, value: url,
+                    onFocus: () => inputRef.current?.select(),
+                }),
+                React.createElement("button", { className: "ps-mini-button", onClick: onCopyAgain }, "Copy")),
+            warn
+                ? React.createElement("div", { className: "ps-link-warn" }, SESSION_LINK_PRIVATE_WARNING)
+                : null));
 }
 
 const VISIBILITY_META = {
@@ -2181,19 +2258,20 @@ const VISIBILITY_META = {
     shared_write: { glyph: "✎", label: "Shared · write" },
 };
 
-// The standard "share" glyph (three connected nodes). Inherits the button's
-// text color via currentColor. Used for the session Share (access) button.
-function ShareGlyph() {
+// The "manage" glyph (sliders) for the Manage session button — reads as
+// settings/controls rather than the narrower share-nodes glyph.
+function ManageGlyph() {
     return React.createElement("svg", {
         className: "ps-share-glyph", viewBox: "0 0 24 24", fill: "none",
         stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round",
         "aria-hidden": "true",
     },
-    React.createElement("circle", { cx: "18", cy: "5", r: "3" }),
-    React.createElement("circle", { cx: "6", cy: "12", r: "3" }),
-    React.createElement("circle", { cx: "18", cy: "19", r: "3" }),
-    React.createElement("line", { x1: "8.6", y1: "10.5", x2: "15.4", y2: "6.5" }),
-    React.createElement("line", { x1: "8.6", y1: "13.5", x2: "15.4", y2: "17.5" }));
+    React.createElement("line", { x1: "4", y1: "6", x2: "20", y2: "6" }),
+    React.createElement("line", { x1: "4", y1: "12", x2: "20", y2: "12" }),
+    React.createElement("line", { x1: "4", y1: "18", x2: "20", y2: "18" }),
+    React.createElement("circle", { cx: "9", cy: "6", r: "2", fill: "currentColor" }),
+    React.createElement("circle", { cx: "15", cy: "12", r: "2", fill: "currentColor" }),
+    React.createElement("circle", { cx: "8", cy: "18", r: "2", fill: "currentColor" }));
 }
 
 // The standard "link" glyph (two chain segments). Used for the Copy link button.
@@ -2237,10 +2315,12 @@ function useActiveSessionAccess(controller, activeSessionId, isGroup) {
 // rename, copy link, plus (for the owner/admin) sharing — visibility +
 // per-person grants. Fetches its own access snapshot so callers only pass the
 // session id + current title.
-function SessionModifyModal({ controller, sessionId, initialTitle, principal, onClose, onChanged }) {
+function SessionModifyModal({ controller, sessionId, initialTitle, currentModel, currentReasoningEffort, principal, onClose, onSwitchModel, onChanged }) {
+    const [tab, setTab] = React.useState("general");
     const [access, setAccess] = React.useState(null);
     const [title, setTitle] = React.useState(initialTitle || "");
-    const [shares, setShares] = React.useState([]);
+    const [shares, setShares] = React.useState([]);          // committed baseline
+    const [draftShares, setDraftShares] = React.useState([]); // staged, applied on Apply
     const [visibility, setVisibility] = React.useState("private");
     const [granteeQuery, setGranteeQuery] = React.useState("");
     const [granteeAccess, setGranteeAccess] = React.useState("write");
@@ -2264,8 +2344,8 @@ function SessionModifyModal({ controller, sessionId, initialTitle, principal, on
 
     const loadShares = React.useCallback(() => {
         controller.transport.listSessionShares(sessionId)
-            .then((rows) => setShares(Array.isArray(rows) ? rows : []))
-            .catch(() => setShares([]));
+            .then((rows) => { const list = Array.isArray(rows) ? rows : []; setShares(list); setDraftShares(list); })
+            .catch(() => { setShares([]); setDraftShares([]); });
     }, [controller, sessionId]);
     React.useEffect(() => { loadShares(); }, [loadShares]);
 
@@ -2279,10 +2359,6 @@ function SessionModifyModal({ controller, sessionId, initialTitle, principal, on
     const saveTitle = () => run(async () => {
         await controller.transport.renameSession(sessionId, title.trim());
     });
-    const applyVisibility = (value) => run(async () => {
-        await controller.transport.setSessionVisibility(sessionId, value);
-        setVisibility(value);
-    });
     // Resolve the typed text to a directory member (by name, email, or id).
     // Falls back to treating the text as a raw subject for a not-yet-seen user.
     const resolveGrantee = (text) => {
@@ -2295,90 +2371,136 @@ function SessionModifyModal({ controller, sessionId, initialTitle, principal, on
         if (match) return match;
         return { provider: principal?.provider || "dev", subject: text.trim(), email: null, displayName: null };
     };
-    const grantTo = (grantee) => run(async () => {
-        await controller.transport.grantSessionShare(
-            sessionId,
-            { provider: grantee.provider, subject: grantee.subject, email: grantee.email ?? null, displayName: grantee.displayName ?? null },
-            granteeAccess,
-        );
+    const shareKey = (r) => `${r.provider}${r.subject}`;
+    // Access edits are staged into draftShares/visibility and committed only
+    // on Apply, so the button is a deliberate, satisfying confirmation.
+    const stageGrant = (grantee) => {
+        const key = shareKey(grantee);
+        setDraftShares((cur) => [
+            ...cur.filter((r) => shareKey(r) !== key),
+            { provider: grantee.provider, subject: grantee.subject, email: grantee.email ?? null, displayName: grantee.displayName ?? null, access: granteeAccess },
+        ]);
         setGranteeQuery("");
-        loadShares();
-    });
+    };
     const addGrant = () => {
         const grantee = resolveGrantee(granteeQuery);
-        if (grantee) grantTo(grantee);
+        if (grantee) stageGrant(grantee);
+    };
+    const stageRevoke = (row) => {
+        const key = shareKey(row);
+        setDraftShares((cur) => cur.filter((r) => shareKey(r) !== key));
     };
 
     // Autocomplete suggestions: directory members matching the query, minus
     // the owner and anyone already granted.
-    const grantedKeys = new Set(shares.map((r) => `${r.provider}${r.subject}`));
+    const grantedKeys = new Set(draftShares.map(shareKey));
     const ownerKey = access?.owner ? `${access.owner.provider}${access.owner.subject}` : null;
     const q = granteeQuery.trim().toLowerCase();
     const suggestions = q
         ? directory.filter((u) => {
-            const key = `${u.provider}${u.subject}`;
+            const key = shareKey(u);
             if (key === ownerKey || grantedKeys.has(key)) return false;
             return (u.displayName && u.displayName.toLowerCase().includes(q))
                 || (u.email && u.email.toLowerCase().includes(q))
                 || (u.subject && u.subject.toLowerCase().includes(q));
         }).slice(0, 25)
         : [];
-    const revoke = (row) => run(async () => {
-        await controller.transport.revokeSessionShare(sessionId, { provider: row.provider, subject: row.subject });
-        loadShares();
-    });
-
     const canManage = Boolean(access?.canManage);
-    // The modal's own visibility/shares state is fresher than a re-fetch (it
-    // reflects a radio/grant change made moments ago), so the copy-link
-    // warning is computed synchronously from it.
-    const linkNeedsAccessWarning = visibility === "private" && shares.length === 0;
-    const copyLink = () => {
-        const url = buildSessionLinkUrl(sessionId);
-        if (!url) return;
-        copySessionLinkText(url);
-        controller.dispatch({
-            type: "ui/status",
-            text: linkNeedsAccessWarning
-                ? `Link copied. ${SESSION_LINK_PRIVATE_WARNING}`
-                : SESSION_LINK_COPIED_STATUS,
+    // Dirty = staged access differs from the committed baseline (the `:level`
+    // suffix catches a grant whose access level changed).
+    const baselineVisibility = access?.visibility || "private";
+    const draftSig = new Set(draftShares.map((r) => `${shareKey(r)}:${r.access}`));
+    const baseSig = new Set(shares.map((r) => `${shareKey(r)}:${r.access}`));
+    const sharesChanged = draftSig.size !== baseSig.size || [...draftSig].some((k) => !baseSig.has(k));
+    const accessDirty = canManage && (visibility !== baselineVisibility || sharesChanged);
+    const applyAccess = () => run(async () => {
+        if (visibility !== baselineVisibility) {
+            await controller.transport.setSessionVisibility(sessionId, visibility);
+        }
+        const baseByKey = new Map(shares.map((r) => [shareKey(r), r]));
+        const draftByKey = new Map(draftShares.map((r) => [shareKey(r), r]));
+        for (const [key, r] of draftByKey) {
+            const b = baseByKey.get(key);
+            if (!b || b.access !== r.access) {
+                await controller.transport.grantSessionShare(
+                    sessionId,
+                    { provider: r.provider, subject: r.subject, email: r.email ?? null, displayName: r.displayName ?? null },
+                    r.access,
+                );
+            }
+        }
+        for (const [key, r] of baseByKey) {
+            if (!draftByKey.has(key)) {
+                await controller.transport.revokeSessionShare(sessionId, { provider: r.provider, subject: r.subject });
+            }
+        }
+        const rows = await controller.transport.listSessionShares(sessionId).catch(() => null);
+        if (Array.isArray(rows)) { setShares(rows); setDraftShares(rows); }
+        const a = await controller.transport.getSessionAccess(sessionId).catch(() => null);
+        if (a) { setAccess(a); setVisibility(a.visibility || "private"); }
+        controller.dispatch({ type: "ui/status", text: "Access updated." });
+    });
+    const switchModel = onSwitchModel || (() => {
+        onClose();
+        controller.openSwitchModelPicker().catch((err) => {
+            controller.dispatch({ type: "ui/status", text: err?.message || String(err) || "Failed to switch model" });
         });
-    };
+    });
+    const modelLabel = currentModel
+        ? (currentReasoningEffort ? `${currentModel}:${currentReasoningEffort}` : currentModel)
+        : "—";
+    // Access is owner/admin-only; hide the tab entirely for viewers who can
+    // only rename/switch model on their own session.
+    const tabs = [
+        { id: "general", label: "General" },
+        ...(canManage ? [{ id: "access", label: "Access" }] : []),
+    ];
+    const activeTab = tabs.some((t) => t.id === tab) ? tab : "general";
     const stop = (e) => e.stopPropagation();
     return React.createElement("div", { className: "ps-share-overlay", onClick: onClose },
         React.createElement("div", { className: "ps-share-modal", onClick: stop },
             React.createElement("div", { className: "ps-share-modal-head" },
-                React.createElement("span", null, "Share & settings"),
+                React.createElement("span", null, "Manage session"),
                 React.createElement("button", { className: "ps-modal-close", onClick: onClose }, "✕")),
 
-            // ── Rename ────────────────────────────────────────────────
-            React.createElement("div", { className: "ps-share-section-label" }, "Name"),
-            React.createElement("div", { className: "ps-share-add-row" },
-                React.createElement("input", {
-                    className: "ps-share-add-input", placeholder: "Session title",
-                    value: title, disabled: busy,
-                    onChange: (e) => setTitle(e.target.value),
-                    onKeyDown: (e) => { if (e.key === "Enter") saveTitle(); },
-                }),
-                React.createElement("button", { className: "ps-mini-button", disabled: busy || !title.trim(), onClick: saveTitle }, "Save")),
+            // ── Tab bar ───────────────────────────────────────────────
+            React.createElement("div", { className: "ps-manage-tabs", role: "tablist" },
+                tabs.map((t) => React.createElement("button", {
+                    key: t.id,
+                    type: "button",
+                    role: "tab",
+                    "aria-selected": activeTab === t.id ? "true" : "false",
+                    className: `ps-manage-tab${activeTab === t.id ? " is-active" : ""}`,
+                    onClick: () => setTab(t.id),
+                }, t.label))),
 
-            // ── Link ──────────────────────────────────────────────────
-            React.createElement("div", { className: "ps-share-section-label" }, "Link"),
-            React.createElement("div", { className: "ps-share-link-row" },
-                React.createElement("button", { className: "ps-mini-button", onClick: copyLink }, "Copy link"),
-                React.createElement("span", { className: "ps-share-section-sub" }, linkNeedsAccessWarning
-                    ? SESSION_LINK_PRIVATE_WARNING
-                    : "Anyone with access to this session can open the link.")),
+            // ── General: rename + model ───────────────────────────────
+            activeTab === "general" ? React.createElement(React.Fragment, null,
+                React.createElement("div", { className: "ps-share-section-label" }, "Name"),
+                React.createElement("div", { className: "ps-share-add-row" },
+                    React.createElement("input", {
+                        className: "ps-share-add-input", placeholder: "Session title",
+                        value: title, disabled: busy,
+                        onChange: (e) => setTitle(e.target.value),
+                        onKeyDown: (e) => { if (e.key === "Enter") saveTitle(); },
+                    }),
+                    React.createElement("button", { className: "ps-mini-button", disabled: busy || !title.trim(), onClick: saveTitle }, "Save")),
+                React.createElement("div", { className: "ps-share-section-label" }, "Model"),
+                React.createElement("div", { className: "ps-share-section-sub" }, "The model this session uses on its next turn."),
+                React.createElement("div", { className: "ps-share-add-row" },
+                    React.createElement("span", { className: "ps-manage-model-current" }, modelLabel),
+                    React.createElement("button", { className: "ps-mini-button", disabled: busy, onClick: switchModel }, "Switch model…")))
+                : null,
 
-            // ── Sharing (owner / admin only) ──────────────────────────
-            canManage ? React.createElement(React.Fragment, null,
+            // ── Access (owner / admin only) ───────────────────────────
+            (activeTab === "access" && canManage) ? React.createElement(React.Fragment, null,
                 React.createElement("div", { className: "ps-share-section-label" }, "General access"),
                 React.createElement("div", { className: "ps-share-section-sub" }, "The baseline level for everyone signed in to this workspace."),
                 ["private", "shared_read", "shared_write"].map((value) =>
                     React.createElement("label", { key: value, className: `ps-share-radio${visibility === value ? " is-active" : ""}` },
                         React.createElement("input", {
                             type: "radio", name: "visibility", checked: visibility === value,
-                            disabled: busy, onChange: () => applyVisibility(value),
+                            disabled: busy, onChange: () => setVisibility(value),
                         }),
                         React.createElement("span", { className: "ps-share-radio-glyph" }, VISIBILITY_META[value].glyph),
                         React.createElement("span", null, VISIBILITY_META[value].label),
@@ -2388,12 +2510,12 @@ function SessionModifyModal({ controller, sessionId, initialTitle, principal, on
                                     : "everyone here can view and send"))),
                 React.createElement("div", { className: "ps-share-section-label" }, "Special access"),
                 React.createElement("div", { className: "ps-share-section-sub" }, "Give specific people more than the general level. A person's grant wins over general access."),
-                shares.length === 0
+                draftShares.length === 0
                     ? React.createElement("div", { className: "ps-share-empty" }, "No individual grants — everyone has the general access above.")
-                    : shares.map((row) => React.createElement("div", { key: `${row.provider}/${row.subject}`, className: "ps-share-grant-row" },
+                    : draftShares.map((row) => React.createElement("div", { key: `${row.provider}/${row.subject}`, className: "ps-share-grant-row" },
                         React.createElement("span", { className: "ps-share-grant-name" }, row.displayName || row.subject),
                         React.createElement("span", { className: "ps-share-grant-access" }, `can ${row.access}`),
-                        React.createElement("button", { className: "ps-mini-button", disabled: busy, onClick: () => revoke(row) }, "Revoke"))),
+                        React.createElement("button", { className: "ps-mini-button", disabled: busy, onClick: () => stageRevoke(row) }, "Remove"))),
                 React.createElement("div", { className: "ps-share-add-wrap" },
                     React.createElement("div", { className: "ps-share-add-row" },
                         React.createElement("input", {
@@ -2414,7 +2536,7 @@ function SessionModifyModal({ controller, sessionId, initialTitle, principal, on
                             suggestions.map((u) => React.createElement("button", {
                                 key: `${u.provider}/${u.subject}`,
                                 type: "button", className: "ps-share-suggestion", disabled: busy,
-                                onClick: () => grantTo(u),
+                                onClick: () => stageGrant(u),
                             },
                             React.createElement("span", { className: "ps-share-suggestion-name" }, u.displayName || u.subject),
                             u.email ? React.createElement("span", { className: "ps-share-suggestion-email" }, u.email) : null)))
@@ -2422,7 +2544,15 @@ function SessionModifyModal({ controller, sessionId, initialTitle, principal, on
                 React.createElement("div", { className: "ps-share-foot-hint" },
                     "Sharing applies to this session and its sub-agents. Suggestions are people who have "
                     + "signed in before — you can also grant by email to someone who hasn't; it takes effect "
-                    + "when they first sign in."))
+                    + "when they first sign in."),
+                React.createElement("div", { className: "ps-manage-apply-bar" },
+                    React.createElement("span", { className: "ps-share-section-sub" },
+                        accessDirty ? "Unsaved access changes." : "No changes to apply."),
+                    React.createElement("button", {
+                        className: "ps-mini-button ps-manage-apply",
+                        disabled: busy || !accessDirty,
+                        onClick: applyAccess,
+                    }, "Apply")))
                 : null,
             error ? React.createElement("div", { className: "ps-share-error" }, error) : null));
 }
@@ -2588,31 +2718,14 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
     });
 }
 
-function MobileWorkspace({ controller, sessionsCollapsed, setSessionsCollapsed }) {
-    const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
-    const theme = getTheme(themeId);
-    const sessionToggle = React.createElement("button", {
-        type: "button",
-        className: "ps-mini-button",
-        onClick: () => setSessionsCollapsed((current) => !current),
-    }, sessionsCollapsed ? "Show" : "Hide");
-
+function MobileWorkspace({ controller }) {
+    // The session list is always shown; use the toolbar Focus button to give
+    // the chat the full screen (the old Show/Hide toggle was redundant with it).
     return React.createElement("div", { className: "ps-mobile-workspace" },
-        sessionsCollapsed
-            ? React.createElement(Panel, {
-                title: [{ text: "Sessions", color: "yellow", bold: true }],
-                color: "yellow",
-                focused: false,
-                theme,
-                actions: sessionToggle,
-                className: "ps-mobile-session-collapsed",
-            },
-            React.createElement("div", { className: "ps-mobile-session-summary" }, "Session list collapsed."))
-            : React.createElement(SessionPane, {
-                controller,
-                actions: sessionToggle,
-                panelClassName: "ps-mobile-session-pane",
-            }),
+        React.createElement(SessionPane, {
+            controller,
+            panelClassName: "ps-mobile-session-pane",
+        }),
         React.createElement("div", { className: "ps-mobile-chat-pane" },
             React.createElement(ChatPane, { controller, mobile: true, fullWidth: true })));
 }
@@ -3479,9 +3592,7 @@ function Toolbar({ controller, mobile, chatFocusMode = false, onToggleChatFocus 
     const chatView = useControllerSelector(controller, (state) => ({
         mode: state.ui.chatViewMode || "transcript",
         activeSessionIsGroup: Boolean(state.sessions.activeSessionId && state.sessions.byId[state.sessions.activeSessionId]?.isGroup),
-        hasActiveSession: Boolean(state.sessions.activeSessionId && state.sessions.byId[state.sessions.activeSessionId]),
     }), shallowEqualObject);
-    const switchModelDisabled = !chatView.hasActiveSession || chatView.activeSessionIsGroup;
 
     // Icon-first toolbar: the glyph is the affordance, the label rides a
     // tooltip (desktop hover via title; mobile long-press via IconButton).
@@ -3497,15 +3608,6 @@ function Toolbar({ controller, mobile, chatFocusMode = false, onToggleChatFocus 
             icon: "＋⚙",
             label: "New session + choose model",
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_MODEL_PICKER).catch(() => {}),
-        },
-        {
-            key: "switch-model",
-            icon: "⇄",
-            label: switchModelDisabled ? "Select a session to switch its model" : "Switch the selected session's model",
-            onClick: () => controller.openSwitchModelPicker().catch((err) => {
-                controller.dispatch({ type: "ui/status", text: err?.message || String(err) || "Failed to switch model" });
-            }),
-            disabled: switchModelDisabled,
         },
         {
             key: "filter",
@@ -4841,7 +4943,6 @@ export function PilotSwarmWebApp({ controller }) {
     const appliedProfileSettingsJsonRef = React.useRef(null);
     const defaultProfileSettingsRef = React.useRef(null);
     const [mobilePane, setMobilePane] = React.useState("workspace");
-    const [mobileSessionsCollapsed, setMobileSessionsCollapsed] = React.useState(false);
     const mobile = (viewport.width || window.innerWidth || 0) < MOBILE_BREAKPOINT;
     const readOnlyChatPane = state.activeSessionIsGroup || state.chatViewMode === "summary";
     const effectivePromptRows = readOnlyChatPane ? 0 : state.promptRows;
@@ -5091,11 +5192,7 @@ export function PilotSwarmWebApp({ controller }) {
         React.createElement(InspectorPane, { controller, mobile: true }));
     else if (mobilePane === "activity") mobileContent = React.createElement("div", { className: "ps-mobile-pane-fill" },
         React.createElement(ActivityPane, { controller }));
-    else mobileContent = React.createElement(MobileWorkspace, {
-        controller,
-        sessionsCollapsed: mobileSessionsCollapsed,
-        setSessionsCollapsed: setMobileSessionsCollapsed,
-    });
+    else mobileContent = React.createElement(MobileWorkspace, { controller });
 
     return React.createElement("div", { ref: viewportRef, className: "ps-web-shell" },
         // Hide the top toolbar on mobile inspector/activity panes (and in

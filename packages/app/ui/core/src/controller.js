@@ -3843,15 +3843,21 @@ export class PilotSwarmUiController {
         this.dispatch({ type: "ui/status", text: "Select a model and press Enter" });
     }
 
-    async openSwitchModelPicker() {
+    async openSwitchModelPicker(onApplied = null) {
+        // Callers (e.g. the portal Manage modal) can be notified when a switch
+        // is actually applied — distinct from cancelling the picker — so they
+        // can close/reopen their own chrome accordingly.
+        this._onSwitchModelApplied = typeof onApplied === "function" ? onApplied : null;
         const state = this.getState();
         const sessionId = state.sessions.activeSessionId;
         const session = sessionId ? state.sessions.byId[sessionId] || null : null;
         if (!session || session.isGroup) {
+            this._onSwitchModelApplied = null;
             this.dispatch({ type: "ui/status", text: "Select a session before switching model" });
             return;
         }
         if (typeof this.transport.setSessionModel !== "function") {
+            this._onSwitchModelApplied = null;
             this.dispatch({ type: "ui/status", text: "Model switching is not supported by this transport" });
             return;
         }
@@ -3884,6 +3890,11 @@ export class PilotSwarmUiController {
         const tierSuffix = options.contextTier ? ` · ${CONTEXT_TIER_LABELS[options.contextTier] || options.contextTier}` : "";
         this.dispatch({ type: "ui/status", text: `Next turn will use ${modelLabel}${tierSuffix}` });
         await this.refreshSessions();
+        // Notify a Manage-modal-style caller that the switch was applied (vs
+        // cancelled), so it can close rather than reopen.
+        const onApplied = this._onSwitchModelApplied;
+        this._onSwitchModelApplied = null;
+        if (typeof onApplied === "function") onApplied();
     }
 
     openHelpModal() {
