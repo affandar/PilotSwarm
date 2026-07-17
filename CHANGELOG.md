@@ -80,6 +80,16 @@ sessions into their own groups. Design:
   viewer-scoped group catalogs, the "Shared with me" filter, deep-link intent
   latching and error states, and a group-leak regression over session events.
 
+### Fixes
+
+- **`pilotswarm-horizon-store`: AGE graph bootstrap works on upgraded Azure
+  HorizonDB (AGE 1.7.x).** Newer AGE builds resolve the `graphid_ops` index
+  opclass through the caller's `search_path` inside `create_graph()`, so the
+  `0003_age_bootstrap` migration now pins
+  `SET LOCAL search_path = ag_catalog, "$user", public` for its transaction.
+  Without this, graph-store initialization fails with
+  `operator class "graphid_ops" does not exist for access method "btree"`.
+
 ## 0.5.14 — 2026-07-15
 
 ### Security model — per-user ownership, visibility, and sharing

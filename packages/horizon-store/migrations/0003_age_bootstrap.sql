@@ -5,6 +5,14 @@
 
 CREATE EXTENSION IF NOT EXISTS age;
 
+-- create_graph() resolves graphid_ops (label-table index opclass) through the
+-- caller's search_path on newer AGE builds (Azure HorizonDB ships 1.7.x), so
+-- ag_catalog must be visible or bootstrap fails with:
+--   operator class "graphid_ops" does not exist for access method "btree"
+-- SET LOCAL is safe here: this migration is graph-owned and always runs inside
+-- the graph store's bootstrap transaction, so the setting dies at COMMIT.
+SET LOCAL search_path = ag_catalog, "$user", public;
+
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM ag_catalog.ag_graph WHERE name = '{{GRAPH_NAME}}') THEN
