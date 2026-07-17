@@ -26,34 +26,42 @@ describe("portal browser contracts", () => {
         assert(!isScrollViewportAtBottom({ scrollHeight: 1000, clientHeight: 200, scrollTop: 799 }), "scrolling up by a visible pixel should disable bottom-pinning");
     });
 
-    it("derives group owners from selected session rows when browser payloads are incomplete", async () => {
-        const selectedOwner = {
-            provider: "entra",
-            subject: "selected-user",
-            email: "selected@example.com",
-            displayName: "Selected User",
-        };
+    it("stamps the authenticated creator as group owner, never inferring it from selected sessions", async () => {
         const authOwner = {
             provider: "entra",
             subject: "auth-user",
             email: "auth@example.com",
             displayName: "Auth User",
         };
+        const inputOwner = {
+            provider: "entra",
+            subject: "input-user",
+            email: "input@example.com",
+            displayName: "Input User",
+        };
         const runtime = new PortalRuntime({ mode: "remote" });
+        // Groups are private per-user organization: ownership comes from the
+        // authenticated principal, never from the owner of a selected session
+        // (security model). The transport is never consulted for owner.
         runtime.transport = {
-            getSession: async () => ({
-                sessionId: "session-a",
-                owner: selectedOwner,
-            }),
+            getSession: async () => { throw new Error("resolveSessionGroupOwner must not read sessions"); },
         };
 
-        const resolved = await runtime.resolveSessionGroupOwner({
-            owner: { displayName: "Selected User" },
-            sessionIds: ["session-a"],
-        }, authOwner);
+        const withAuth = await runtime.resolveSessionGroupOwner(
+            { owner: inputOwner, sessionIds: ["session-a"] },
+            authOwner,
+        );
+        assertEqual(withAuth.provider, authOwner.provider, "authenticated creator provider should own the group");
+        assertEqual(withAuth.subject, authOwner.subject, "authenticated creator subject should own the group");
 
-        assertEqual(resolved.provider, selectedOwner.provider, "selected session owner provider should win");
-        assertEqual(resolved.subject, selectedOwner.subject, "selected session owner subject should win");
+        // No auth principal (e.g. no-auth deployment): fall back to the input
+        // owner when present, else the shared anonymous principal.
+        const withInput = await runtime.resolveSessionGroupOwner({ owner: inputOwner }, null);
+        assertEqual(withInput.subject, inputOwner.subject, "input owner is used when there is no auth principal");
+
+        const anon = await runtime.resolveSessionGroupOwner({}, null);
+        assertEqual(anon.provider, "anonymous", "no-auth deployments own groups as the anonymous principal");
+        assertEqual(anon.subject, "anonymous", "no-auth deployments own groups as the anonymous principal");
     });
 
     it("supports browser-native artifact uploads through the portal transport", () => {
@@ -92,7 +100,7 @@ describe("portal browser contracts", () => {
         assertIncludes(runtime, "normalizeTopEventEmitterOptions(safeParams)", "portal runtime should guard top emitter diagnostic params");
         assertIncludes(runtime, "params.since == null", "portal runtime should require a since value for top emitter diagnostics");
         assertIncludes(nodeTransport, "async listSessionsPage(opts)", "node transport should expose bounded session paging");
-        assertIncludes(nodeTransport, "return this.mgmt.listSessionsPage(opts);", "node transport should delegate bounded session paging to management");
+        assertIncludes(nodeTransport, "this.mgmt.listSessionsPage({ ...safeOpts", "node transport should delegate bounded session paging to management (threading the placement viewer)");
         assertIncludes(nodeTransport, "async getTopEventEmitters(opts)", "node transport should expose top event emitter diagnostics");
         assertIncludes(nodeTransport, "return this.mgmt.getTopEventEmitters(opts);", "node transport should delegate top emitter diagnostics to management");
         assertIncludes(controller, "loadSessionCatalogPageWindow(this.transport)", "shared controller should consume bounded session pages when available");
