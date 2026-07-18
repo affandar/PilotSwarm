@@ -153,11 +153,11 @@ name: plainagent
     return pluginDir;
 }
 
-function buildWorker(pluginDir) {
+function buildWorker(pluginDirs) {
     const stateDir = makeTmpDir("ps-mcp-state-");
     return new PilotSwarmWorker({
         sessionStateDir: path.join(stateDir, "session-state"),
-        pluginDirs: [pluginDir],
+        pluginDirs: Array.isArray(pluginDirs) ? pluginDirs : [pluginDirs],
         workerNodeId: "test-agent-mcp",
     });
 }
@@ -195,4 +195,69 @@ test("loadedAgents (customAgents surface) carries resolved maps, not name lists"
     assert.equal("inheritDefaultMcpServers" in byName.inheriting, false, "inherit flag never reaches the SDK surface");
     assert.equal(byName.plainagent.mcpServers, undefined);
     assert.equal(byName.badref.mcpServers, undefined);
+});
+
+// ─── Review-driven regressions ──────────────────────────────────
+
+test("a later same-name definition with no MCP declarations clears shadowed grants", () => {
+    const pluginA = buildFixturePlugin();
+    const pluginB = makeTmpDir("ps-mcp-plugin-b-");
+    fs.mkdirSync(path.join(pluginB, "agents"));
+    // Later tier redefines `withref` (which granted jira in plugin A) with
+    // NO MCP declarations — the lockdown override must win, like prompts do.
+    writeAgent(path.join(pluginB, "agents"), "withref.agent.md", `
+schemaVersion: 2
+version: 2.0.0
+name: withref
+`, "Locked-down override.");
+    const worker = buildWorker([pluginA, pluginB]);
+    assert.equal(worker.agentMcpServers.withref, undefined, "override cleared the shadowed grant");
+    for (const entry of worker.loadedAgents.filter((a) => a.name === "withref")) {
+        assert.equal(entry.mcpServers, undefined, "no composed entry retains the shadowed map");
+    }
+});
+
+test("comments between mcpServers: and its list items do not orphan the refs", () => {
+    const dir = makeTmpDir("ps-agent-mcp-");
+    writeAgent(dir, "commented.agent.md", `
+schemaVersion: 2
+version: 1.0.0
+name: commented
+mcpServers:
+  # note: github is needed for issue sync
+  - "github"
+  - 'jira'
+`);
+    const [agent] = loadAgentFiles(dir);
+    assert.deepEqual(agent.mcpServers, ["github", "jira"], "comment skipped, quoted items unquoted");
+});
+
+test("an app base (default) agent's opt-in resolves into the every-session base map", () => {
+    const pluginDir = buildFixturePlugin();
+    fs.writeFileSync(path.join(pluginDir, "agents", "default.agent.md"), `---
+schemaVersion: 2
+version: 1.0.0
+name: default
+inheritDefaultMcpServers: true
+mcpServers:
+  - jira
+---
+
+App base overlay.
+`);
+    const worker = buildWorker(pluginDir);
+    assert.deepEqual(Object.keys(worker.baseMcpServers).sort(), ["github", "jira"]);
+});
+
+test("direct worker-config mcpServers keep every-session semantics via the base map", () => {
+    const stateDir = makeTmpDir("ps-mcp-state-");
+    const worker = new PilotSwarmWorker({
+        sessionStateDir: path.join(stateDir, "session-state"),
+        workerNodeId: "test-direct-mcp",
+        mcpServers: {
+            inline: { type: "http", url: "https://mcp.example.com/inline", tools: ["*"] },
+        },
+    });
+    assert.deepEqual(Object.keys(worker.baseMcpServers), ["inline"]);
+    assert.ok(worker.loadedMcpServers.inline, "direct servers also join the catalog");
 });

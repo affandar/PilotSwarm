@@ -145,6 +145,12 @@ export class PilotSwarmWorker {
     private _agentMcpServers: Record<string, Record<string, any>> = {};
     /** Names of catalog servers tagged `"default": true` — the deployment default MCP set. */
     private _defaultMcpServerNames: string[] = [];
+    /** MCP declarations gathered from base (default) agents — resolved into the base map. */
+    private _baseAgentMcpDecl: { refs: string[]; inherit: boolean } = { refs: [], inherit: false };
+    /** Server names from direct worker-config `mcpServers` — legacy every-session semantics. */
+    private _directConfigMcpNames: string[] = [];
+    /** Resolved base MCP map applied to EVERY session (base-agent opt-ins + direct config). */
+    private _baseMcpServers: Record<string, any> = {};
     /** Model provider registry — multi-provider LLM config. */
     private _modelProviders: ModelProviderRegistry | null = null;
     /** Mtime watcher that re-loads model_providers.json on file change. */
@@ -231,6 +237,7 @@ export class PilotSwarmWorker {
                 customAgents: this._loadedAgents,
                 mcpServers: this._loadedMcpServers,
                 agentMcpServers: this._agentMcpServers,
+                baseMcpServers: this._baseMcpServers,
                 provider: options.provider,
                 modelProviders: this._modelProviders ?? undefined,
                 turnTimeoutMs: options.turnTimeoutMs,
@@ -310,8 +317,13 @@ export class PilotSwarmWorker {
         return this._loadedSkillDirs;
     }
 
-    /** Loaded agent configs. */
-    get loadedAgents(): Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; skills?: string[]; namespace?: string }> {
+    /**
+     * Loaded agent configs. Entries may carry `mcpServers` — the agent's
+     * RESOLVED server map, which can contain expanded credentials
+     * (env-substituted headers). Never serialize these entries wholesale to
+     * client-facing surfaces.
+     */
+    get loadedAgents(): Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; skills?: string[]; mcpServers?: Record<string, any>; namespace?: string }> {
         return this._loadedAgents;
     }
 
@@ -323,6 +335,11 @@ export class PilotSwarmWorker {
     /** Resolved per-agent MCP server maps, keyed by agent name. */
     get agentMcpServers(): Record<string, Record<string, any>> {
         return this._agentMcpServers;
+    }
+
+    /** Resolved base MCP map applied to every session (base-agent opt-ins + direct config). */
+    get baseMcpServers(): Record<string, any> {
+        return this._baseMcpServers;
     }
 
     /** Names of catalog servers in the deployment default MCP set (`"default": true`). */
@@ -845,6 +862,9 @@ export class PilotSwarmWorker {
         }
         if (this.config.mcpServers) {
             Object.assign(this._loadedMcpServers, this.config.mcpServers);
+            // Direct worker-config servers keep their documented every-session
+            // semantics (legacy): they join the catalog AND the base map.
+            this._directConfigMcpNames = Object.keys(this.config.mcpServers);
         }
         this._appDefaultPrompt = mergePromptSections([
             this._appDefaultPrompt,
@@ -945,22 +965,49 @@ export class PilotSwarmWorker {
         }
         this._defaultMcpServerNames = Object.keys(defaults);
 
+        const resolveRefs = (owner: string, refs: string[] | undefined, into: Record<string, any>) => {
+            for (const ref of refs ?? []) {
+                if (typeof ref !== "string" || !ref) continue;
+                const server = this._loadedMcpServers[ref];
+                if (server) {
+                    into[ref] = server;
+                } else {
+                    console.warn(`[PilotSwarmWorker] ${owner}: MCP server "${ref}" is not in the deployment catalog; reference dropped.`);
+                }
+            }
+        };
+
+        // Base map — applied to EVERY session: base (default) agents that
+        // opted in, plus direct worker-config servers (their documented
+        // every-session semantics predate per-agent resolution).
+        const base: Record<string, any> = {};
+        if (this._baseAgentMcpDecl.inherit) Object.assign(base, defaults);
+        resolveRefs("Base (default) agent", this._baseAgentMcpDecl.refs, base);
+        for (const name of this._directConfigMcpNames) {
+            if (this._loadedMcpServers[name]) base[name] = this._loadedMcpServers[name];
+        }
+        this._baseMcpServers = base;
+        if (this._directConfigMcpNames.length > 0) {
+            console.warn(
+                `[PilotSwarmWorker] Direct worker-config mcpServers (${this._directConfigMcpNames.join(", ")}) ` +
+                `apply to every session (legacy). Prefer per-agent frontmatter declarations or tagging catalog servers "default": true.`,
+            );
+        }
+
+        // Per-agent maps. Agents merge by name with later definitions
+        // overriding earlier ones (same contract as prompt resolution), so
+        // ALWAYS assign: a later definition with no MCP declarations must
+        // clear a shadowed definition's grants, never inherit them.
         for (const agent of [...this._rawLoadedAgents, ...this._loadedSystemAgents]) {
             const resolved: Record<string, any> = {};
             if (agent.inheritDefaultMcpServers === true) {
                 Object.assign(resolved, defaults);
             }
-            for (const ref of agent.mcpServers ?? []) {
-                if (typeof ref !== "string" || !ref) continue;
-                const server = this._loadedMcpServers[ref];
-                if (server) {
-                    resolved[ref] = server;
-                } else {
-                    console.warn(`[PilotSwarmWorker] Agent "${agent.name}": MCP server "${ref}" is not in the deployment catalog; reference dropped.`);
-                }
-            }
+            resolveRefs(`Agent "${agent.name}"`, agent.mcpServers, resolved);
             if (Object.keys(resolved).length > 0) {
                 this._agentMcpServers[agent.name] = resolved;
+            } else {
+                delete this._agentMcpServers[agent.name];
             }
         }
     }
@@ -1079,6 +1126,16 @@ export class PilotSwarmWorker {
                         this._appDefaultPrompt = agent.prompt;
                         this._appDefaultToolNames = agent.tools ?? [];
                         this._appDefaultDescriptor = descriptor;
+                    }
+                    // Base (default) agents may opt sessions into MCP: their
+                    // declarations resolve into the base map applied to
+                    // every session (the pilotswarm base agent declares
+                    // none, so this is inert unless an app opts in).
+                    if (agent.mcpServers?.length) {
+                        this._baseAgentMcpDecl.refs.push(...agent.mcpServers);
+                    }
+                    if (agent.inheritDefaultMcpServers === true) {
+                        this._baseAgentMcpDecl.inherit = true;
                     }
                 } else if (agent.system) {
                     agent.promptLayerKind = layer === "management" ? "pilotswarm-system-agent" : "app-system-agent";

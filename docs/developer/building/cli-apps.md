@@ -90,7 +90,7 @@ The module is loaded in local mode and can export:
 - `systemMessage`
 - `skillDirectories`
 - `customAgents`
-- `mcpServers`
+- `mcpServers` — inline configs apply to every session (legacy); plugin `.mcp.json` servers form a catalog that agents opt into via frontmatter (see the plugins guide, §6)
 
 The most common use is exporting `tools`.
 

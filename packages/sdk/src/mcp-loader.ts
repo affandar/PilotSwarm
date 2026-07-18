@@ -13,12 +13,19 @@
  *       "type": "http",
  *       "url": "https://api.example.com/mcp",
  *       "tools": ["query"],
- *       "headers": { "Authorization": "Bearer ${MCP_TOKEN}" }
+ *       "headers": { "Authorization": "Bearer ${MCP_TOKEN}" },
+ *       "default": true
  *     }
  *   }
  *
  * Environment variable references like `${VAR}` in string values
  * are expanded at load time.
+ *
+ * Servers are a deployment CATALOG, not an automatic every-session grant:
+ * agents receive a server by naming it in their `.agent.md` `mcpServers:`
+ * frontmatter, or — for servers tagged `"default": true` (the deployment
+ * default set; a PilotSwarm-only tag stripped before the config reaches the
+ * Copilot CLI) — via `inheritDefaultMcpServers: true`.
  *
  * @module
  */
@@ -39,6 +46,13 @@ export interface MCPLocalServerConfig {
     env?: Record<string, string>;
     cwd?: string;
     timeout?: number;
+    /**
+     * PilotSwarm-only deployment tag (not a Copilot SDK field): marks this
+     * server as part of the deployment default MCP set, granted to agents
+     * with `inheritDefaultMcpServers: true`. Stripped by the worker before
+     * configs reach the Copilot CLI.
+     */
+    default?: boolean;
 }
 
 export interface MCPRemoteServerConfig {
@@ -47,6 +61,13 @@ export interface MCPRemoteServerConfig {
     tools: string[];
     headers?: Record<string, string>;
     timeout?: number;
+    /**
+     * PilotSwarm-only deployment tag (not a Copilot SDK field): marks this
+     * server as part of the deployment default MCP set, granted to agents
+     * with `inheritDefaultMcpServers: true`. Stripped by the worker before
+     * configs reach the Copilot CLI.
+     */
+    default?: boolean;
 }
 
 // ─── Env Expansion ──────────────────────────────────────────────
