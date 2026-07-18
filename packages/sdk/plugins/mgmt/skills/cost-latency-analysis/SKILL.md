@@ -1,5 +1,6 @@
 ---
 name: cost-latency-analysis
+group: Diagnostics
 description: |
   How to compute model latency and estimated $ cost from PilotSwarm
   observability data. Read this before reporting that a model is

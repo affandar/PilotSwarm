@@ -4854,6 +4854,16 @@ export function selectCapabilityPickerModal(state, maxWidth = 88) {
         toolGroup: "Tools",
         tool: "Tools",
     };
+    // Skills render under per-group sub-headings ("Skills · <group>", "Other"
+    // when ungrouped); everything else keys its heading off the item kind.
+    const sectionInfo = (item) => {
+        if (item.kind === "skill") {
+            const group = item.group || "Other";
+            return { key: `skill:${group}`, label: `Skills · ${group}` };
+        }
+        const label = SECTION_LABELS[item.kind] || "Capabilities";
+        return { key: label, label };
+    };
     const pushHeading = (label) => {
         rows.push(fitRuns([{ text: label, color: "cyan", bold: true }], contentWidth));
         rowItemIndexes.push(null);
@@ -4861,10 +4871,10 @@ export function selectCapabilityPickerModal(state, maxWidth = 88) {
     };
 
     items.forEach((item, index) => {
-        const section = SECTION_LABELS[item.kind] || "Capabilities";
-        if (section !== currentSection) {
-            currentSection = section;
-            pushHeading(section);
+        const { key: sectionKey, label: sectionLabel } = sectionInfo(item);
+        if (sectionKey !== currentSection) {
+            currentSection = sectionKey;
+            pushHeading(sectionLabel);
         }
         let runs;
         let nonInteractive = false;
@@ -4881,6 +4891,8 @@ export function selectCapabilityPickerModal(state, maxWidth = 88) {
                 { text: item.name, color: allForced ? "gray" : "white", bold: !allForced && checkedCount > 0 },
                 { text: ` (${checkedCount}/${memberNames.length})`, color: "gray" },
                 ...(allForced ? [{ text: " · locked", color: "gray" }] : []),
+                // Extended groups are opt-in (off by default) — hint so it's clear.
+                ...(!allForced && item.tier === "extended" ? [{ text: " · off by default", color: "gray" }] : []),
             ], contentWidth);
         } else {
             const forcedEntry = item.kind === "tool" ? forced[item.name] : null;
@@ -4904,6 +4916,8 @@ export function selectCapabilityPickerModal(state, maxWidth = 88) {
                     { text: isChecked ? "[x] " : "[ ] ", color: isChecked ? "cyan" : "gray", bold: isChecked },
                     { text: item.name, color: "white", bold: isChecked },
                     ...(item.kind === "mcpServer" && item.isDefault ? [{ text: " · default", color: "gray" }] : []),
+                    // Extended skills are opt-in (off by default) — hint so it's clear.
+                    ...(item.kind === "skill" && item.tier === "extended" ? [{ text: " · off by default", color: "gray" }] : []),
                 ], contentWidth);
             }
         }

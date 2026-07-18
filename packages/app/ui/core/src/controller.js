@@ -691,30 +691,71 @@ export function isCapabilityCatalogEmpty(catalog) {
     return mcpServers.length === 0 && skills.length === 0 && tools.length === 0;
 }
 
+/** Resolve a catalog tool's tier (base floor via legacy `locked`, else `tier`). */
+function capabilityToolTier(tool) {
+    return tool?.tier || (tool?.locked ? "base" : "default");
+}
+
 /**
  * Group the catalog's tools by their `group` tag, preserving catalog order.
- * Returns ordered `groups` ([{ name, tools }]), the `ungrouped` tail, and a
- * `members` lookup (group name → member tool names) for override expansion.
+ * Returns ordered `groups` ([{ name, tools, tier }]), the `ungrouped` tail, and
+ * a `members` lookup (group name → member tool names) for override expansion.
+ *
+ * `system`-tier tools are HIDDEN from normal (non-system-agent) pickers:
+ * they are dropped here so a group whose members are all system (e.g.
+ * observability, maintenance) never surfaces at all — and, being off-by-default
+ * and never rendered, they can never enter an override delta. A group's `tier`
+ * is "extended" when every visible member is extended (opt-in), else "default".
  */
 export function buildCapabilityToolGroups(catalog) {
     const grouped = new Map();
+    const groupTiers = new Map();
     const ungrouped = [];
     for (const tool of Array.isArray(catalog?.tools) ? catalog.tools : []) {
         const name = String(tool?.name || "").trim();
         if (!name) continue;
+        if (capabilityToolTier(tool) === "system") continue;
+        const tier = capabilityToolTier(tool);
         const group = typeof tool?.group === "string" && tool.group.trim() ? tool.group.trim() : null;
         if (group) {
             if (!grouped.has(group)) grouped.set(group, []);
             grouped.get(group).push(name);
+            // A group is "extended" only when EVERY visible member is extended.
+            const prior = groupTiers.get(group);
+            groupTiers.set(group, prior === undefined ? tier : (prior === "extended" && tier === "extended" ? "extended" : "default"));
         } else {
             ungrouped.push(name);
         }
     }
     return {
-        groups: [...grouped.entries()].map(([name, tools]) => ({ name, tools })),
+        groups: [...grouped.entries()].map(([name, tools]) => ({
+            name,
+            tools,
+            tier: groupTiers.get(name) === "extended" ? "extended" : "default",
+        })),
         ungrouped,
         members: Object.fromEntries(grouped.entries()),
     };
+}
+
+/**
+ * Group the catalog's skills by their `group` tag ("Other" when absent),
+ * preserving first-appearance order. `system`-tier skills are HIDDEN (dropped)
+ * from normal pickers. Returns ordered `[{ group, skills: [{ name,
+ * description, tier }] }]`.
+ */
+export function buildCapabilitySkillGroups(catalog) {
+    const grouped = new Map();
+    for (const skill of Array.isArray(catalog?.skills) ? catalog.skills : []) {
+        const name = String(skill?.name || "").trim();
+        if (!name) continue;
+        const tier = skill?.tier || "default";
+        if (tier === "system") continue;
+        const group = typeof skill?.group === "string" && skill.group.trim() ? skill.group.trim() : "Other";
+        if (!grouped.has(group)) grouped.set(group, []);
+        grouped.get(group).push({ name, description: String(skill?.description || "").trim(), tier });
+    }
+    return [...grouped.entries()].map(([group, skills]) => ({ group, skills }));
 }
 
 /**
@@ -725,47 +766,62 @@ export function buildCapabilityToolGroups(catalog) {
  */
 export function buildCapabilityBaseline(catalog, agentName = null) {
     const defaults = agentName ? catalog?.agentDefaults?.[agentName] || null : null;
-    // A generic (no-agent) session — OR an agent whose profile is not in the
-    // catalog — runs UNRESTRICTED at the worker: all tools default-on, all
-    // skills available, the deployment's base (default) MCP servers attached.
-    // The baseline MUST reflect that true runtime default. (A previous
-    // "everything-off when no agent profile" baseline made every uncheck a
-    // no-op — disabling a skill on a generic session silently did nothing,
-    // because the skill was already unchecked in the baseline while the
-    // runtime kept it on.)
+    // Baseline = what the worker gives this session with NO override, and it
+    // MUST match the worker's tier-based default-off (session-manager):
+    //   base       always on
+    //   default    on (unless the agent's toolPolicy/allowedSkills restricts)
+    //   extended   OFF unless the agent explicitly grants it
+    //   system     OFF unless the agent explicitly grants it
+    // A generic (no-agent) session is "unrestricted" — default-on tiers on,
+    // extended/system off. (A prior everything-on baseline made unchecking a
+    // no-op AND disagreed with the worker's default-off.)
     const unrestricted = !defaults;
+    const DEFAULT_ON = new Set(["base", "default"]);
+
     const mcpServers = {};
     const grantedServers = new Set(Array.isArray(defaults?.mcpServers) ? defaults.mcpServers : []);
     for (const server of Array.isArray(catalog?.mcpServers) ? catalog.mcpServers : []) {
         const name = String(server?.name || "").trim();
         if (!name) continue;
-        // Generic: the deployment's base/default MCP set. Agent: its grants.
+        // Agent: its grants. Generic: the default set (isDefault) — non-default
+        // servers are "extended" and start off.
         mcpServers[name] = unrestricted ? Boolean(server?.isDefault) : grantedServers.has(name);
     }
+
     const skills = {};
     const allowedSkills = Array.isArray(defaults?.skills) ? new Set(defaults.skills) : null;
     for (const skill of Array.isArray(catalog?.skills) ? catalog.skills : []) {
         const name = String(skill?.name || "").trim();
         if (!name) continue;
-        // Unrestricted: all skills on. Agent: all unless its `skills` array restricts.
-        skills[name] = unrestricted ? true : (allowedSkills ? allowedSkills.has(name) : true);
+        const tier = skill?.tier || "default";
+        // An agent's allowedSkills is an explicit grant (any tier). Otherwise a
+        // skill is on only when its tier is default-on.
+        skills[name] = allowedSkills ? allowedSkills.has(name) : DEFAULT_ON.has(tier);
     }
+
     const tools = {};
-    // Allow-list agents get allow ∪ additive `tools` (+ report_cycle, which
-    // the worker always retains); deny-list agents get everything minus deny.
     const allowList = Array.isArray(defaults?.toolPolicy?.allow) && defaults.toolPolicy.allow.length > 0
         ? new Set([...defaults.toolPolicy.allow, ...(Array.isArray(defaults.tools) ? defaults.tools : []), "report_cycle"])
         : null;
     const denyList = new Set(Array.isArray(defaults?.toolPolicy?.deny) ? defaults.toolPolicy.deny : []);
+    // Tools the agent explicitly grants (additive `tools:` or allow-list) are
+    // on regardless of tier — an explicit grant opts into extended/system.
+    const agentToolGrants = new Set([
+        ...(Array.isArray(defaults?.tools) ? defaults.tools : []),
+        ...(Array.isArray(defaults?.toolPolicy?.allow) ? defaults.toolPolicy.allow : []),
+    ]);
     for (const tool of Array.isArray(catalog?.tools) ? catalog.tools : []) {
         const name = String(tool?.name || "").trim();
         if (!name) continue;
-        // Locked protocol-floor tools are always on — no agent policy or
-        // session override can strip them. Baseline true so they render
-        // checked and never generate a delta of their own.
-        if (tool?.locked) { tools[name] = true; continue; }
-        // Unrestricted: all tools default-on. Agent: allow-list ∪ additive, or all minus deny.
-        tools[name] = unrestricted ? true : (allowList ? allowList.has(name) : !denyList.has(name));
+        const tier = tool?.tier || (tool?.locked ? "base" : "default");
+        // Base floor: always on, never a delta.
+        if (tier === "base") { tools[name] = true; continue; }
+        // Allow-list agent: only what it allows.
+        if (allowList) { tools[name] = allowList.has(name); continue; }
+        // Explicit agent grant opts into any tier.
+        if (agentToolGrants.has(name)) { tools[name] = true; continue; }
+        // Default-on tiers: on unless denied. Extended/system: off by default.
+        tools[name] = DEFAULT_ON.has(tier) && !denyList.has(name);
     }
     return { mcpServers, skills, tools };
 }
@@ -891,23 +947,31 @@ export function buildCapabilityPickerItems(catalog, expandedGroups = {}) {
     for (const server of Array.isArray(catalog?.mcpServers) ? catalog.mcpServers : []) {
         const name = String(server?.name || "").trim();
         if (!name) continue;
-        items.push({ id: `mcp:${name}`, kind: "mcpServer", axis: "mcpServers", name, isDefault: Boolean(server.isDefault) });
+        // MCP tier: "default" when in the deployment default set, else "extended".
+        const tier = server?.tier || (server?.isDefault ? "default" : "extended");
+        if (tier === "system") continue;
+        items.push({ id: `mcp:${name}`, kind: "mcpServer", axis: "mcpServers", name, isDefault: Boolean(server.isDefault), tier });
     }
-    for (const skill of Array.isArray(catalog?.skills) ? catalog.skills : []) {
-        const name = String(skill?.name || "").trim();
-        if (!name) continue;
-        items.push({
-            id: `skill:${name}`,
-            kind: "skill",
-            axis: "skills",
-            name,
-            description: String(skill?.description || "").trim(),
-        });
+    // Skills render grouped under their `group` ("Other" fallback); system-tier
+    // skills are hidden. `group` drives the selector's skill sub-headings and
+    // `tier` the "off by default" hint on extended skills.
+    for (const skillGroup of buildCapabilitySkillGroups(catalog)) {
+        for (const skill of skillGroup.skills) {
+            items.push({
+                id: `skill:${skill.name}`,
+                kind: "skill",
+                axis: "skills",
+                name: skill.name,
+                description: skill.description,
+                group: skillGroup.group,
+                tier: skill.tier,
+            });
+        }
     }
     const { groups, ungrouped } = buildCapabilityToolGroups(catalog);
     for (const group of groups) {
         const expanded = Boolean(expandedGroups[group.name]);
-        items.push({ id: `group:${group.name}`, kind: "toolGroup", axis: "tools", name: group.name, tools: group.tools, expanded });
+        items.push({ id: `group:${group.name}`, kind: "toolGroup", axis: "tools", name: group.name, tools: group.tools, tier: group.tier, expanded });
         if (expanded) {
             for (const toolName of group.tools) {
                 items.push({ id: `tool:${toolName}`, kind: "tool", axis: "tools", name: toolName, group: group.name });

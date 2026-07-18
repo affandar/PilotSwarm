@@ -24,6 +24,9 @@ import path from "node:path";
 import os from "node:os";
 
 const DEFAULT_SESSION_STATE_DIR = path.join(os.homedir(), ".copilot", "session-state");
+// System-agent identities exempt from tier-based default-off exclusion: they
+// receive whatever their profile/identity grants (mirrors session-proxy.ts).
+const SYSTEM_AGENT_IDS = new Set(["pilotswarm", "sweeper", "resourcemgr", "facts-manager", "agent-tuner"]);
 const DEHYDRATE_STORE_MAX_RETRIES = 1;
 const DEHYDRATE_STORE_RETRY_BASE_DELAY_MS = 0;
 const SESSION_LOCK_BACKOFF_MS = [5_000, 10_000, 20_000] as const;
@@ -143,6 +146,18 @@ export interface WorkerDefaults {
      * force-available and non-removable (a skill cannot run without them).
      */
     skillRequiredTools?: Record<string, string[]>;
+    /**
+     * Tool GROUP → capability tier. Groups at an "extended"/"system" tier are
+     * DEFAULT-OFF: their tools are physically dropped from a session's tool
+     * array unless the session opts in (via the tree override) or the bound
+     * agent grants them — so their definitions never load (context savings).
+     */
+    toolGroupTiers?: Record<string, string>;
+    /**
+     * Skill name → capability tier. "extended"/"system" skills are DEFAULT-OFF
+     * (added to disabledSkills unless opted in). System sessions are exempt.
+     */
+    skillTiers?: Record<string, string>;
     /**
      * @deprecated Use `modelProviders` instead. Kept for backwards compatibility.
      * Custom LLM provider config (BYOK). Passed to every session.
@@ -1060,13 +1075,13 @@ export class SessionManager {
         const SYSTEM_TOOL_NAMES = new Set([
             ...systemTools, ...subAgentTools, ...factTools, ...inspectTools, ...graphTools,
         ].map((t: any) => t.name));
-        const persistentSessionTools = [
+        let persistentSessionTools = [
             ...userTools.filter((t: any) => !SYSTEM_TOOL_NAMES.has(t.name)),
             ...factTools,
             ...inspectTools,
             ...graphTools,
         ];
-        const allTools = [
+        let allTools = [
             ...persistentSessionTools.filter((t: any) => !SYSTEM_TOOL_NAMES.has(t.name)),
             ...systemTools,
             ...subAgentTools,
@@ -1167,6 +1182,28 @@ export class SessionManager {
             for (const name of skillDisable) disabledSkillSet.add(name);
         }
 
+        // Tier-based DEFAULT-OFF (context reduction). Extended/system-tier
+        // capabilities are withheld unless the session opts in or the bound
+        // agent grants them; system SESSIONS are exempt (they get what their
+        // profile/identity grants). Opt-in signals per axis are the tree
+        // override's enable lists and the agent's own profile.
+        const DEFAULT_OFF = new Set(["extended", "system"]);
+        const isSystemSession = SYSTEM_AGENT_IDS.has(effectiveSerializableConfig.agentIdentity || "");
+        const groupMembers = this.workerDefaults.toolGroupMembers ?? {};
+
+        // Skills axis: extended/system skills are off unless opted in (override
+        // enable) or the agent explicitly allows them via allowedSkills.
+        const skillTiers = this.workerDefaults.skillTiers ?? {};
+        const skillOptIn = new Set<string>([
+            ...(treeOverride?.skills?.enable ?? []),
+            ...(agentAllowedSkills ?? []),
+        ]);
+        if (!isSystemSession) {
+            for (const [skillName, tier] of Object.entries(skillTiers)) {
+                if (DEFAULT_OFF.has(tier) && !skillOptIn.has(skillName)) disabledSkillSet.add(skillName);
+            }
+        }
+
         const finalDisabledSkills = [...disabledSkillSet];
 
         // A skill cannot run without its declared tools, so any skill that is
@@ -1176,6 +1213,44 @@ export class SessionManager {
         const activeSkillTools: string[] = [];
         for (const [skillName, tools] of Object.entries(skillRequiredTools)) {
             if (!disabledSkillSet.has(skillName)) activeSkillTools.push(...tools);
+        }
+
+        // Tools axis: default-off tools (extended/system group tiers) that the
+        // session did not opt into are physically dropped from the tool array
+        // below, so their definitions never load. Opt-in = the tree override's
+        // tool/group enables, the agent's additive tools / allow-list, or an
+        // active skill that requires the tool.
+        const toolGroupTiers = this.workerDefaults.toolGroupTiers ?? {};
+        const toolOptIn = new Set<string>([
+            ...(agentToolPolicy?.allow ?? []),
+            // The bound agent's additive `tools:` are merged into config.toolNames
+            // by the orchestration — an explicit grant, so never default-dropped.
+            ...(Array.isArray(config.toolNames) ? config.toolNames : []),
+            ...activeSkillTools,
+        ]);
+        // Expand the override's tool enables (group names → members).
+        for (const entry of treeOverride?.tools?.enable ?? []) {
+            if (groupMembers[entry]) for (const m of groupMembers[entry]) toolOptIn.add(m);
+            else toolOptIn.add(entry);
+        }
+        const defaultOffToolDrop = new Set<string>();
+        if (!isSystemSession) {
+            for (const [group, tier] of Object.entries(toolGroupTiers)) {
+                if (!DEFAULT_OFF.has(tier)) continue;
+                for (const member of groupMembers[group] ?? []) {
+                    if (!toolOptIn.has(member)) defaultOffToolDrop.add(member);
+                }
+            }
+        }
+        // Physically remove default-off tools from the session's tool arrays so
+        // their definitions never reach the model (the actual context savings).
+        // Base floor is never dropped.
+        if (defaultOffToolDrop.size > 0) {
+            for (const floor of PROTOCOL_FLOOR_TOOLS) defaultOffToolDrop.delete(floor);
+            const keep = (t: any) => !defaultOffToolDrop.has(t.name);
+            persistentSessionTools = persistentSessionTools.filter(keep);
+            allTools = allTools.filter(keep);
+            config.tools = persistentSessionTools;
         }
 
         // Tools axis: group entries expand to members (individual entries

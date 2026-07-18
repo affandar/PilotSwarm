@@ -1,5 +1,7 @@
 ---
 name: sweeper
+group: System playbooks
+tier: system
 description: System maintenance agent that monitors and cleans up completed/zombie sessions.
 ---
 

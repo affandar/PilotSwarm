@@ -9,7 +9,7 @@ import {
 import { PgSessionCatalog } from "./cms.js";
 import type { SessionCatalog } from "./cms.js";
 import { loadAgentFiles } from "./agent-loader.js";
-import { resolveToolGroups, PROTOCOL_FLOOR_TOOLS, type CapabilityCatalog, type CapabilityCatalogAgentDefaults } from "./capability-catalog.js";
+import { resolveToolGroups, toolTier, GROUP_TIERS, type CapabilityTier, type CapabilityCatalog, type CapabilityCatalogAgentDefaults } from "./capability-catalog.js";
 import { composeDeclaredSkillsPrompt, loadSkillsSync, type Skill } from "./skills.js";
 import { startSystemAgents } from "./system-agents.js";
 import { loadMcpConfig } from "./mcp-loader.js";
@@ -250,6 +250,8 @@ export class PilotSwarmWorker {
                 agentToolPolicy: this._agentToolPolicy,
                 toolGroupMembers: this._buildToolGroupMembers(),
                 skillRequiredTools: this._buildSkillRequiredTools(),
+                toolGroupTiers: this._buildGroupTiers(),
+                skillTiers: this._buildSkillTiers(),
                 provider: options.provider,
                 modelProviders: this._modelProviders ?? undefined,
                 turnTimeoutMs: options.turnTimeoutMs,
@@ -1146,25 +1148,47 @@ export class PilotSwarmWorker {
             };
         }
 
+        const groupTiers = this._buildGroupTiers();
         return {
-            mcpServers: Object.keys(this._loadedMcpServers).map((name) => ({
-                name,
-                isDefault: this._defaultMcpServerNames.includes(name),
-            })),
+            mcpServers: Object.keys(this._loadedMcpServers).map((name) => {
+                const isDefault = this._defaultMcpServerNames.includes(name);
+                // MCP tiering reuses the default-set signal: default servers are
+                // attached-but-removable, the rest are opt-in.
+                return { name, isDefault, tier: (isDefault ? "default" : "extended") as CapabilityTier };
+            }),
             skills: [...this._loadedSkills.values()].map((skill) => ({
                 name: skill.name,
                 ...(skill.description ? { description: skill.description } : {}),
+                ...(skill.group ? { group: skill.group } : {}),
+                ...(skill.tier && skill.tier !== "default" ? { tier: skill.tier } : {}),
                 ...(skill.toolNames?.length ? { requiredTools: [...skill.toolNames] } : {}),
             })),
-            tools: [...toolNames].sort().map((name) => ({
-                name,
-                ...(toolGroups[name] ? { group: toolGroups[name] } : {}),
-                // LOCKED base tools: the durable-session protocol floor.
-                // Non-removable and enforced un-excludable at assembly.
-                ...(PROTOCOL_FLOOR_TOOLS.includes(name as any) ? { locked: true } : {}),
-            })),
+            tools: [...toolNames].sort().map((name) => {
+                const group = toolGroups[name];
+                const tier = toolTier(name, group, groupTiers);
+                return {
+                    name,
+                    ...(group ? { group } : {}),
+                    tier,
+                    ...(tier === "base" ? { locked: true } : {}),
+                };
+            }),
             agentDefaults,
         };
+    }
+
+    /** Group → tier, the built-in GROUP_TIERS merged with a session-policy override. */
+    private _buildGroupTiers(): Record<string, CapabilityTier> {
+        const merged: Record<string, CapabilityTier> = { ...GROUP_TIERS };
+        const override = (this._sessionPolicy as any)?.toolGroupTiers;
+        if (override && typeof override === "object") {
+            for (const [group, tier] of Object.entries(override)) {
+                if (typeof tier === "string" && ["base", "default", "extended", "system"].includes(tier)) {
+                    merged[group] = tier as CapabilityTier;
+                }
+            }
+        }
+        return merged;
     }
 
     /** Skill name → the tools it requires (from tools.json), for override resolution. */
@@ -1172,6 +1196,15 @@ export class PilotSwarmWorker {
         const map: Record<string, string[]> = {};
         for (const skill of this._loadedSkills.values()) {
             if (skill.toolNames?.length) map[skill.name] = [...skill.toolNames];
+        }
+        return map;
+    }
+
+    /** Skill name → tier (only non-default tiers), for default-off enforcement. */
+    private _buildSkillTiers(): Record<string, string> {
+        const map: Record<string, string> = {};
+        for (const skill of this._loadedSkills.values()) {
+            if (skill.tier && skill.tier !== "default") map[skill.name] = skill.tier;
         }
         return map;
     }

@@ -1,5 +1,6 @@
 ---
 name: deploy-runbook
+group: Runbooks
 description: Steps for a safe production rollout — build, canary, verify, roll back.
 ---
 

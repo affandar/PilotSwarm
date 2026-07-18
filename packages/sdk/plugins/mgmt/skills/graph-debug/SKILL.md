@@ -1,5 +1,6 @@
 ---
 name: graph-debug
+group: Diagnostics
 description: |
   How to inspect, render, and reason about the shared knowledge GRAPH —
   for the facts-manager (report graph size/health, render the graph as

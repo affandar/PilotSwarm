@@ -20,6 +20,7 @@ import {
     applyCapabilityOverrideToChecked,
     buildCapabilityBaseline,
     buildCapabilityOverrideDelta,
+    buildCapabilitySkillGroups,
     buildCapabilityToolGroups,
     computeForcedTools,
     isCapabilityCatalogEmpty,
@@ -2400,6 +2401,7 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
             .then(({ catalog, override }) => {
                 if (cancelled || isCapabilityCatalogEmpty(catalog)) return;
                 const { groups, ungrouped, members } = buildCapabilityToolGroups(catalog);
+                const skillGroups = buildCapabilitySkillGroups(catalog);
                 const baseline = buildCapabilityBaseline(catalog, agentName || null);
                 const effective = applyCapabilityOverrideToChecked(baseline, override, members);
                 setCaps({
@@ -2407,6 +2409,7 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
                     baseline,
                     groups,
                     ungrouped,
+                    skillGroups,
                     members,
                     effective,
                     checked: {
@@ -2689,18 +2692,23 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
                     React.createElement("span", { className: "ps-cap-name" }, server.name),
                     server.isDefault ? React.createElement("span", { className: "ps-cap-hint" }, "default") : null)),
                 React.createElement("div", { className: "ps-share-section-label" }, "Skills"),
-                caps.catalog.skills.length === 0
+                caps.skillGroups.length === 0
                     ? React.createElement("div", { className: "ps-share-empty" }, "No skills in this deployment.")
-                    : caps.catalog.skills.map((skill) => React.createElement("button", {
-                        key: `skill:${skill.name}`,
-                        type: "button",
-                        className: `ps-cap-row${caps.checked.skills[skill.name] ? " is-checked" : ""}`,
-                        disabled: busy,
-                        onClick: () => toggleCapEntry("skills", skill.name),
-                    },
-                    React.createElement("span", { className: "ps-cap-check" }, caps.checked.skills[skill.name] ? "[x]" : "[ ]"),
-                    React.createElement("span", { className: "ps-cap-name" }, skill.name),
-                    skill.description ? React.createElement("span", { className: "ps-cap-hint" }, skill.description) : null)),
+                    // Skills render grouped under their group sub-heading ("Other"
+                    // when ungrouped); system-tier skills are hidden upstream.
+                    : caps.skillGroups.map((sg) => React.createElement(React.Fragment, { key: `skillgroup:${sg.group}` },
+                        React.createElement("div", { className: "ps-cap-subgroup-label" }, sg.group),
+                        sg.skills.map((skill) => React.createElement("button", {
+                            key: `skill:${skill.name}`,
+                            type: "button",
+                            className: `ps-cap-row${caps.checked.skills[skill.name] ? " is-checked" : ""}`,
+                            disabled: busy,
+                            onClick: () => toggleCapEntry("skills", skill.name),
+                        },
+                        React.createElement("span", { className: "ps-cap-check" }, caps.checked.skills[skill.name] ? "[x]" : "[ ]"),
+                        React.createElement("span", { className: "ps-cap-name" }, skill.name),
+                        skill.tier === "extended" ? React.createElement("span", { className: "ps-cap-hint" }, "off by default") : null,
+                        skill.description ? React.createElement("span", { className: "ps-cap-hint" }, skill.description) : null)))),
                 React.createElement("div", { className: "ps-share-section-label" }, "Tools"),
                 caps.groups.map((group) => {
                     // Forced (locked / skill-required) members count as on and
@@ -2727,7 +2735,11 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
                             React.createElement("span", { className: "ps-cap-check" }, glyph),
                             React.createElement("span", { className: "ps-cap-name" }, group.name),
                             React.createElement("span", { className: "ps-cap-hint" },
-                                allForced ? `locked · ${checkedCount}/${group.tools.length}` : `${checkedCount}/${group.tools.length}`))),
+                                allForced
+                                    ? `locked · ${checkedCount}/${group.tools.length}`
+                                    : group.tier === "extended"
+                                        ? `off by default · ${checkedCount}/${group.tools.length}`
+                                        : `${checkedCount}/${group.tools.length}`))),
                         expanded ? group.tools.map((toolName) => {
                             const f = capForced[toolName];
                             const isOn = Boolean(f) || Boolean(caps.checked.tools[toolName]);

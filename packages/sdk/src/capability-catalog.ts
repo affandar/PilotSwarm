@@ -21,11 +21,53 @@ export interface CapabilityCatalogMcpServer {
     name: string;
     /** Member of the deployment default MCP set (`"default": true` in .mcp.json). */
     isDefault: boolean;
+    /** Capability tier: isDefault → "default" (attached, removable), else "extended" (opt-in). */
+    tier?: CapabilityTier;
+}
+
+/**
+ * Capability tier — one model across all three axes (tools, skills, MCP):
+ *
+ *  - "base"     always on, non-removable (durable-session floor).
+ *  - "default"  on by default, removable.
+ *  - "extended" OFF by default, shown in the picker; opt in to add. The
+ *               worker withholds extended capabilities from a session unless
+ *               opted in, so their definitions never load (context savings).
+ *  - "system"   OFF by default AND hidden from normal (non-system) pickers;
+ *               only system/admin agents receive them.
+ */
+export type CapabilityTier = "base" | "default" | "extended" | "system";
+
+/** Tiers whose capabilities are withheld from a session unless opted in. */
+export const DEFAULT_OFF_TIERS: readonly CapabilityTier[] = ["extended", "system"];
+/** Tiers hidden from a normal (non-system-agent) session's picker. */
+export const HIDDEN_TIERS: readonly CapabilityTier[] = ["system"];
+
+/**
+ * Tool GROUP → tier. Groups not listed are "default". Base is per-tool (the
+ * locked protocol floor), independent of group. Deployments can override a
+ * group's tier via `toolGroupTiers` in session-policy.json.
+ */
+export const GROUP_TIERS: Record<string, CapabilityTier> = {
+    graph: "extended",
+    observability: "system",
+    maintenance: "system",
+};
+
+/** Resolve a tool's tier from its name (base floor) and group. */
+export function toolTier(name: string, group: string | undefined, groupTiers: Record<string, CapabilityTier> = GROUP_TIERS): CapabilityTier {
+    if (PROTOCOL_FLOOR_TOOLS.includes(name as any)) return "base";
+    if (group && groupTiers[group]) return groupTiers[group];
+    return "default";
 }
 
 export interface CapabilityCatalogSkill {
     name: string;
     description?: string;
+    /** Skill group (from SKILL.md frontmatter `group:`). Absent = "Other". */
+    group?: string;
+    /** Capability tier (from frontmatter `tier:`). Absent = "default". */
+    tier?: CapabilityTier;
     /**
      * Tools this skill requires to function (from the skill's tools.json).
      * When a session enables the skill, these tools are force-enabled and
@@ -38,15 +80,15 @@ export interface CapabilityCatalogTool {
     name: string;
     /** Tool group (facts, graph, artifacts, …). Absent = ungrouped. */
     group?: string;
+    /** Capability tier — base | default | extended | system. */
+    tier: CapabilityTier;
     /**
-     * LOCKED base tool: part of the durable-session protocol floor that
-     * attaches a Copilot session to PilotSwarm's durable infrastructure
-     * (wait, report_cycle, ask_user, …). Always present, shown in the
-     * picker, but non-removable — a restriction can never strip it. Absent
-     * or false = a normal default-on, removable tool.
+     * Convenience alias for `tier === "base"`: a locked durable-floor tool,
+     * always present and non-removable. Retained for pickers that key off it.
      */
     locked?: boolean;
 }
+
 
 export interface CapabilityCatalogAgentDefaults {
     /** Names of the agent's resolved MCP grants (never the server configs). */

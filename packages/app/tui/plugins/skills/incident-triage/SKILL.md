@@ -1,5 +1,6 @@
 ---
 name: incident-triage
+group: Runbooks
 description: Triage an incident — assess blast radius, mitigate, then find root cause.
 ---
 

@@ -1,5 +1,6 @@
 ---
 name: orchestration-session-lifecycle
+group: Durable execution
 description: |
   How a PilotSwarm session maps to a duroxide orchestration. Read this
   before concluding that an "idle" session means its orchestration is

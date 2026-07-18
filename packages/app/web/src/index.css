@@ -2992,6 +2992,16 @@ body.is-resizing-pane-y * {
 
 .ps-cap-group-row .ps-cap-row { flex: 1; min-width: 0; }
 
+/* Per-group sub-heading inside the Skills section (e.g. "Other"). */
+.ps-cap-subgroup-label {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ps-muted);
+  margin: 8px 0 2px;
+  padding-inline-start: 2px;
+}
+
 .ps-share-radio {
   display: flex;
   align-items: center;

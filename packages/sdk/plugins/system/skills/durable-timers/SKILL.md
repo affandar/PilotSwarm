@@ -1,5 +1,6 @@
 ---
 name: durable-timers
+group: Durable execution
 description: Expert knowledge on durable timer patterns for recurring tasks, polling, and scheduled actions.
 ---
 

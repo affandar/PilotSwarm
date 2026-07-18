@@ -25,7 +25,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadAgentFiles } from "../../dist/agent-loader.js";
 import { PilotSwarmWorker } from "../../dist/worker.js";
-import { DEFAULT_TOOL_GROUPS, resolveToolGroups } from "../../dist/capability-catalog.js";
+import { DEFAULT_TOOL_GROUPS, resolveToolGroups, toolTier } from "../../dist/capability-catalog.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -243,7 +243,7 @@ test("buildCapabilityCatalog reports names and metadata only — no credentials"
     const worker = buildWorker(buildFixturePlugin());
     const catalog = worker.buildCapabilityCatalog();
 
-    assert.deepEqual(catalog.mcpServers, [{ name: "github", isDefault: true }]);
+    assert.deepEqual(catalog.mcpServers, [{ name: "github", isDefault: true, tier: "default" }]);
     const skillNames = catalog.skills.map((s) => s.name);
     for (const name of ["audit", "deploy", "review"]) {
         assert.ok(skillNames.includes(name), `catalog lists fixture skill ${name}`);
@@ -288,6 +288,41 @@ test("catalog marks durable-floor tools locked and carries skill requiredTools",
         "sweeper skill carries its required tools");
     const deploy = catalog.skills.find((s) => s.name === "deploy");
     assert.equal(deploy?.requiredTools, undefined, "a skill with no tools.json omits requiredTools");
+});
+
+test("toolTier: floor→base, graph→extended, observability/maintenance→system, rest→default", () => {
+    assert.equal(toolTier("wait", "session"), "base", "floor tool is base regardless of group");
+    assert.equal(toolTier("graph_stats", "graph"), "extended");
+    assert.equal(toolTier("read_fleet_stats", "observability"), "system");
+    assert.equal(toolTier("compact_database", "maintenance"), "system");
+    assert.equal(toolTier("store_fact", "facts"), "default");
+    assert.equal(toolTier("bash", "session"), "default", "non-floor session tool is default");
+    assert.equal(toolTier("unknown_tool", undefined), "default");
+});
+
+test("buildCapabilityCatalog assigns a tier to every tool, MCP server, and tiered skill", () => {
+    const worker = buildWorker(buildFixturePlugin());
+    const catalog = worker.buildCapabilityCatalog();
+
+    const tools = Object.fromEntries(catalog.tools.map((t) => [t.name, t]));
+    assert.equal(tools.wait.tier, "base");
+    assert.equal(tools.wait.locked, true, "base tools keep the locked alias");
+    assert.equal(tools.store_fact.tier, "default");
+    assert.equal(tools.graph_stats.tier, "extended");
+    assert.equal(tools.read_fleet_stats.tier, "system");
+    assert.equal(tools.compact_database.tier, "system");
+
+    // MCP: the fixture's github server is default:true → "default" tier.
+    const github = catalog.mcpServers.find((s) => s.name === "github");
+    assert.equal(github.tier, "default");
+
+    // Skills carry frontmatter group + tier; sweeper/resourcemgr are system.
+    const sweeper = catalog.skills.find((s) => s.name === "sweeper");
+    assert.equal(sweeper?.tier, "system");
+    assert.equal(sweeper?.group, "System playbooks");
+    const durable = catalog.skills.find((s) => s.name === "durable-timers");
+    assert.equal(durable?.group, "Durable execution");
+    assert.equal(durable?.tier, undefined, "default-tier skills omit the tier field");
 });
 
 test("session-policy toolGroups extends and overrides the SDK manifest", () => {

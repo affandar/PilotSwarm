@@ -15,6 +15,8 @@ import {
     applyCapabilityOverrideToChecked,
     buildCapabilityBaseline,
     buildCapabilityOverrideDelta,
+    buildCapabilityPickerItems,
+    buildCapabilitySkillGroups,
     buildCapabilityToolGroups,
     computeForcedTools,
     createInitialState,
@@ -28,10 +30,17 @@ const CATALOG = {
         { name: "jira", isDefault: false },
     ],
     skills: [
+        // Ungrouped skills fall under the "Other" sub-heading.
         { name: "deploy", description: "Deploy the service" },
+        // Extended skill (off by default) in a named group; interleaved to prove
+        // grouping regroups rather than assuming catalog order.
+        { name: "analyze", description: "Analyze telemetry", group: "research", tier: "extended" },
         { name: "review" },
+        { name: "triage", description: "Triage issues", group: "research" },
         // Skill → tool dependency: enabling `publish` force-holds write_artifact.
         { name: "publish", description: "Publish artifacts", requiredTools: ["write_artifact"] },
+        // System skill — hidden from a normal picker entirely.
+        { name: "sweeper", group: "maintenance", tier: "system" },
     ],
     tools: [
         { name: "store_fact", group: "facts" },
@@ -39,6 +48,13 @@ const CATALOG = {
         { name: "write_artifact", group: "artifacts" },
         { name: "read_artifact", group: "artifacts" },
         { name: "lonely_tool" },
+        // Extended tool group (off by default, opt-in); two members so a single
+        // toggle stays an individual (non-collapsed) delta.
+        { name: "graph_stats", group: "graph", tier: "extended" },
+        { name: "graph_search", group: "graph", tier: "extended" },
+        // System tool — hidden; its group (observability) has no other members,
+        // so the group must not render at all.
+        { name: "read_fleet_stats", group: "observability", tier: "system" },
         // Durable-session protocol floor: locked (always-on, non-removable).
         { name: "wait", group: "session", locked: true },
         { name: "cron", group: "session" },
@@ -437,4 +453,124 @@ test("a tool that is BOTH locked and would-be-disabled stays out of the delta", 
     // locked tool would leak into the disable list.
     const unfiltered = buildCapabilityOverrideDelta(baseline, checked, members, null);
     assert.ok(unfiltered.tools.disable.includes("wait"), "unfiltered delta would violate the invariant");
+});
+
+// ─── 4-tier capability model: system HIDDEN, extended off-by-default + hint,
+//     skills grouped ──────────────────────────────────────────────────────
+
+// All row text the selector renders for the current modal (headings + rows).
+function allPickerRowText(store) {
+    const presentation = selectCapabilityPickerModal(store.getState());
+    return (presentation.rows || []).map((row) =>
+        (Array.isArray(row) ? row : [row]).map((run) => run?.text || "").join(""));
+}
+
+test("system-tier tools and skills never appear in the picker items or rows", async () => {
+    const { controller, store } = makeController();
+    await confirmAgentPickerFor(controller, store, "alpha");
+    const modal = store.getState().ui.modal;
+
+    // Item list: no system tool, no system skill, no all-system group.
+    assert.ok(!modal.items.some((item) => item.id === "tool:read_fleet_stats"), "system tool hidden");
+    assert.ok(!modal.items.some((item) => item.id === "skill:sweeper"), "system skill hidden");
+    assert.ok(!modal.items.some((item) => item.id === "group:observability"), "all-system group hidden");
+    // Even expanded, the system tool cannot be reached.
+    assert.ok(!modal.items.some((item) => item.id === "tool:read_fleet_stats"));
+
+    // Rendered rows (including headings) never mention the system entries.
+    const text = allPickerRowText(store).join("\n");
+    assert.doesNotMatch(text, /read_fleet_stats/, "system tool absent from rows");
+    assert.doesNotMatch(text, /sweeper/, "system skill absent from rows");
+    assert.doesNotMatch(text, /observability/, "empty-after-filter group heading absent");
+
+    // buildCapabilityToolGroups/SkillGroups drop system entries at the source.
+    const { groups } = buildCapabilityToolGroups(CATALOG);
+    assert.ok(!groups.some((g) => g.name === "observability"), "no observability tool group");
+    const skillGroups = buildCapabilitySkillGroups(CATALOG);
+    assert.ok(!skillGroups.some((g) => g.group === "maintenance"), "no maintenance skill group");
+    assert.ok(!skillGroups.some((g) => g.skills.some((s) => s.name === "sweeper")), "sweeper filtered");
+});
+
+test("empty-after-filter groups do not render (observability was all system)", async () => {
+    const { controller, store } = makeController();
+    await confirmAgentPickerFor(controller, store, "__generic__");
+    // The graph group (extended, has visible members) survives; observability
+    // (all system) does not.
+    assert.ok(store.getState().ui.modal.items.some((item) => item.id === "group:graph"), "extended group renders");
+    assert.ok(!store.getState().ui.modal.items.some((item) => item.id === "group:observability"), "empty group gone");
+    assert.doesNotMatch(allPickerRowText(store).join("\n"), /observability/);
+});
+
+test("an extended tool starts unchecked and produces an ENABLE delta when checked", async () => {
+    const { controller, store, calls } = makeController();
+    await confirmAgentPickerFor(controller, store, "__generic__");
+
+    // Extended tools baseline OFF even for an unrestricted (generic) session.
+    assert.equal(store.getState().ui.modal.checked.tools.graph_stats, false, "extended tool starts off");
+    assert.equal(store.getState().ui.modal.checked.tools.graph_search, false, "extended tool starts off");
+
+    // Opt one member in (leaving the other off keeps it an individual delta,
+    // not a whole-group collapse) → an ENABLE, never a disable.
+    controller.setCapabilityPickerGroupExpanded(true, modalItemIndex(store, "group:graph"));
+    controller.toggleCapabilityPickerItem(modalItemIndex(store, "tool:graph_stats"));
+    await controller.confirmModal();
+
+    assert.equal(calls.createSession.length, 1);
+    assert.deepEqual(calls.createSession[0].capabilities, { tools: { enable: ["graph_stats"] } });
+});
+
+test("checking a whole extended group collapses to a group ENABLE delta", async () => {
+    const { controller, store, calls } = makeController();
+    await confirmAgentPickerFor(controller, store, "__generic__");
+    // Group toggle turns every member on → collapses to the group NAME, enable.
+    controller.toggleCapabilityPickerItem(modalItemIndex(store, "group:graph"));
+    await controller.confirmModal();
+    assert.deepEqual(calls.createSession[0].capabilities, { tools: { enable: ["graph"] } });
+});
+
+test("extended tool groups and extended skills render an 'off by default' hint", async () => {
+    const { controller, store } = makeController();
+    await confirmAgentPickerFor(controller, store, "alpha");
+
+    assert.match(pickerRow(store, "group:graph").text, /off by default/, "extended group hint");
+    assert.match(pickerRow(store, "skill:analyze").text, /off by default/, "extended skill hint");
+    // Default-tier peers carry no such hint.
+    assert.doesNotMatch(pickerRow(store, "group:facts").text, /off by default/, "default group has no hint");
+    assert.doesNotMatch(pickerRow(store, "skill:deploy").text, /off by default/, "default skill has no hint");
+});
+
+test("skills render grouped by their group with an 'Other' fallback", async () => {
+    const { controller, store } = makeController();
+    await confirmAgentPickerFor(controller, store, "alpha");
+    const modal = store.getState().ui.modal;
+
+    // Picker items carry the resolved group ("Other" when absent).
+    const groupOf = (id) => modal.items.find((item) => item.id === id)?.group;
+    assert.equal(groupOf("skill:deploy"), "Other");
+    assert.equal(groupOf("skill:review"), "Other");
+    assert.equal(groupOf("skill:analyze"), "research");
+    assert.equal(groupOf("skill:triage"), "research");
+
+    // The selector emits a per-group sub-heading for each skill group.
+    const text = allPickerRowText(store).join("\n");
+    assert.match(text, /Skills · Other/, "Other sub-heading rendered");
+    assert.match(text, /Skills · research/, "named-group sub-heading rendered");
+
+    // buildCapabilitySkillGroups buckets by first appearance; no split groups.
+    const skillGroups = buildCapabilitySkillGroups(CATALOG);
+    const other = skillGroups.find((g) => g.group === "Other");
+    const research = skillGroups.find((g) => g.group === "research");
+    assert.deepEqual(other.skills.map((s) => s.name), ["deploy", "review", "publish"]);
+    assert.deepEqual(research.skills.map((s) => s.name), ["analyze", "triage"]);
+});
+
+test("buildCapabilityPickerItems tags tiers and hides system entries", () => {
+    const items = buildCapabilityPickerItems(CATALOG, {});
+    const byId = Object.fromEntries(items.map((item) => [item.id, item]));
+    assert.equal(byId["group:graph"].tier, "extended", "all-extended group is extended");
+    assert.equal(byId["group:facts"].tier, "default", "default group tier");
+    assert.equal(byId["skill:analyze"].tier, "extended");
+    assert.equal(byId["skill:deploy"].tier, "default");
+    assert.ok(!("group:observability" in byId), "system tool group omitted");
+    assert.ok(!("skill:sweeper" in byId), "system skill omitted");
 });

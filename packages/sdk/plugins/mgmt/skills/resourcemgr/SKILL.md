@@ -1,5 +1,7 @@
 ---
 name: resourcemgr
+group: System playbooks
+tier: system
 description: Infrastructure and resource monitoring agent. Tracks compute, storage, database, and runtime footprint.
 ---
 
