@@ -1,8 +1,11 @@
 ---
 schemaVersion: 1
-version: 1.6.0
+version: 1.6.1
 name: default
 description: Base agent — always-on system instructions for all PilotSwarm sessions.
+# By intent, the base agent pulls no MCP servers: a session only receives MCP
+# through its bound agent's own declarations (capability-profiles Phase 1).
+inheritDefaultMcpServers: false
 tools:
   - wait
   - wait_on_worker

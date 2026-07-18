@@ -96,9 +96,15 @@ export interface WorkerDefaults {
     /** Skill directories to pass to the Copilot SDK. */
     skillDirectories?: string[];
     /** Custom agents to pass to the Copilot SDK. */
-    customAgents?: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; skills?: string[] }>;
-    /** MCP server configs to pass to the Copilot SDK. */
+    customAgents?: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; skills?: string[]; mcpServers?: Record<string, any> }>;
+    /**
+     * Deployment MCP catalog (merged `.mcp.json` map). NOT applied to
+     * sessions wholesale — a session receives exactly its bound agent's
+     * resolved map from `agentMcpServers` (capability-profiles Phase 1).
+     */
     mcpServers?: Record<string, any>;
+    /** Resolved per-agent MCP server maps, keyed by bound agent name. */
+    agentMcpServers?: Record<string, Record<string, any>>;
     /**
      * @deprecated Use `modelProviders` instead. Kept for backwards compatibility.
      * Custom LLM provider config (BYOK). Passed to every session.
@@ -1015,6 +1021,15 @@ export class SessionManager {
         // Build system message: worker base + client override
         const systemMessage = this._buildSystemMessage(sessionId, config);
 
+        // Per-agent MCP (capability-profiles Phase 1): a session gets exactly
+        // its bound agent's resolved server map — resolved worker-side at the
+        // same chokepoint as the agent prompt. Sessions with no bound agent
+        // (generic / base-agent sessions) get none; the deployment catalog is
+        // never applied wholesale.
+        const boundAgentMcpServers = effectiveSerializableConfig.boundAgentName
+            ? this.workerDefaults.agentMcpServers?.[effectiveSerializableConfig.boundAgentName]
+            : undefined;
+
         const sessionConfig: any = {
             sessionId,
             tools: allTools,
@@ -1048,10 +1063,11 @@ export class SessionManager {
             excludedTools: ["task"],
             // Custom LLM provider — resolve from registry or legacy single provider
             ...resolvedProviderConfig,
-            // Pass loaded skills, agents, and MCP from worker defaults
+            // Pass loaded skills and agents from worker defaults; MCP servers
+            // are the bound agent's own resolved map (see above).
             ...(this.workerDefaults.skillDirectories?.length && { skillDirectories: this.workerDefaults.skillDirectories }),
             ...(this.workerDefaults.customAgents?.length && { customAgents: this.workerDefaults.customAgents }),
-            ...(this.workerDefaults.mcpServers && Object.keys(this.workerDefaults.mcpServers).length > 0 && { mcpServers: this.workerDefaults.mcpServers }),
+            ...(boundAgentMcpServers && Object.keys(boundAgentMcpServers).length > 0 && { mcpServers: boundAgentMcpServers }),
         };
 
         let copilotSession: CopilotSession;

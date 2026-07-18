@@ -73,6 +73,24 @@ export interface AgentConfig {
     tools?: string[] | null;
     /** Skill names to preload from the session's configured skill directories. */
     skills?: string[];
+    /**
+     * Named references to deployment-catalog MCP servers (entries in the
+     * merged `.mcp.json` map) this agent's sessions should receive. Inline
+     * server definitions are not accepted in frontmatter — define the server
+     * in the plugin's `.mcp.json` (which puts it in the catalog) and
+     * reference it here by name. Declared refs that miss the catalog are
+     * dropped with a warning at load time. Agents using this field should
+     * declare `schemaVersion: 2` so older loaders skip the file instead of
+     * silently dropping its MCP servers.
+     */
+    mcpServers?: string[];
+    /**
+     * When true, the agent also receives the deployment's default MCP set
+     * (catalog servers tagged `"default": true` in `.mcp.json`). Defaults to
+     * false — an agent gets no MCP servers unless it declares or inherits
+     * them.
+     */
+    inheritDefaultMcpServers?: boolean;
     /** If true, this is a system agent started automatically by workers. */
     system?: boolean;
     /** Deterministic ID slug for system agents (e.g. "sweeper"). Used to derive a fixed session UUID. */
@@ -123,10 +141,10 @@ export interface AgentConfig {
  * Handles simple `key: value` pairs and YAML list syntax for `tools` and `skills`.
  */
 function parseAgentFrontmatter(content: string): {
-    meta: { name?: string; description?: string; tools?: string[]; skills?: string[]; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; splashMobile?: string; initialPrompt?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string };
+    meta: { name?: string; description?: string; tools?: string[]; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; splashMobile?: string; initialPrompt?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string };
     body: string;
 } {
-    const meta: { name?: string; description?: string; tools?: string[]; skills?: string[]; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; splashMobile?: string; initialPrompt?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string } = {};
+    const meta: { name?: string; description?: string; tools?: string[]; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; splashMobile?: string; initialPrompt?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string } = {};
 
     if (!content.startsWith("---")) {
         return { meta, body: content };
@@ -174,14 +192,17 @@ function parseAgentFrontmatter(content: string): {
         }
 
         // YAML list item (e.g. "  - view")
-        if (trimmed.startsWith("- ") && (currentKey === "tools" || currentKey === "skills")) {
+        if (trimmed.startsWith("- ") && (currentKey === "tools" || currentKey === "skills" || currentKey === "mcpServers")) {
             const item = trimmed.slice(2).trim();
             if (currentKey === "tools") {
                 if (!meta.tools) meta.tools = [];
                 meta.tools.push(item);
-            } else {
+            } else if (currentKey === "skills") {
                 if (!meta.skills) meta.skills = [];
                 meta.skills.push(item);
+            } else {
+                if (!meta.mcpServers) meta.mcpServers = [];
+                meta.mcpServers.push(item);
             }
             continue;
         }
@@ -224,6 +245,13 @@ function parseAgentFrontmatter(content: string): {
             meta.skills = value.replace(/[\[\]]/g, "").split(",").map(s => s.trim()).filter(Boolean);
         } else if (key === "skills" && !value) {
             meta.skills = [];
+        } else if (key === "mcpServers" && value) {
+            // Inline array: mcpServers: [github, jira]
+            meta.mcpServers = value.replace(/[\[\]]/g, "").split(",").map(s => s.trim()).filter(Boolean);
+        } else if (key === "mcpServers" && !value) {
+            meta.mcpServers = [];
+        } else if (key === "inheritDefaultMcpServers") {
+            meta.inheritDefaultMcpServers = value === "true";
         } else if ((key === "splash" || key === "splashMobile" || key === "initialPrompt") && (value === "|" || value === ">")) {
             // YAML block scalar (| literal, > folded)
             currentBlockStyle = value;
@@ -280,9 +308,18 @@ export function loadAgentFiles(agentsDir: string): AgentConfig[] {
                 continue;
             }
 
-            if (meta.schemaVersion !== undefined && meta.schemaVersion !== 1) {
-                console.warn(`[agent-loader] Skipping ${entry.name}: unsupported schemaVersion ${meta.schemaVersion}; expected schemaVersion: 1`);
+            if (meta.schemaVersion !== undefined && meta.schemaVersion !== 1 && meta.schemaVersion !== 2) {
+                console.warn(`[agent-loader] Skipping ${entry.name}: unsupported schemaVersion ${meta.schemaVersion}; expected schemaVersion 1 or 2`);
                 continue;
+            }
+
+            // MCP-bearing frontmatter is a schemaVersion-2 shape: version-1
+            // loaders load the file but silently drop the MCP fields, which
+            // for an MCP-dependent agent is worse than not loading at all.
+            // (`inheritDefaultMcpServers: false` is inert everywhere, so it
+            // does not trigger this.)
+            if ((meta.mcpServers?.length || meta.inheritDefaultMcpServers === true) && (meta.schemaVersion ?? 1) < 2) {
+                console.warn(`[agent-loader] ${entry.name}: declares MCP servers but schemaVersion ${meta.schemaVersion ?? 1}; declare 'schemaVersion: 2' so older loaders skip this agent instead of silently dropping its MCP configuration.`);
             }
 
             const crawler = meta.crawler === true || meta.harvester === true;
@@ -292,6 +329,8 @@ export function loadAgentFiles(agentsDir: string): AgentConfig[] {
                 prompt: body,
                 tools: meta.tools && meta.tools.length > 0 ? meta.tools : null,
                 skills: meta.skills && meta.skills.length > 0 ? meta.skills : undefined,
+                mcpServers: meta.mcpServers && meta.mcpServers.length > 0 ? meta.mcpServers : undefined,
+                inheritDefaultMcpServers: meta.inheritDefaultMcpServers,
                 system: meta.system,
                 id: meta.id,
                 title: meta.title,

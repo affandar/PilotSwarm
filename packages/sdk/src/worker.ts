@@ -134,13 +134,17 @@ export class PilotSwarmWorker {
     /** Loaded skills by name for agent-declared eager prompt injection. */
     private _loadedSkills = new Map<string, Skill>();
     /** Raw loaded user-creatable agent configs from plugins + direct config. */
-    private _rawLoadedAgents: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; skills?: string[]; namespace?: string; crawler?: boolean; harvester?: boolean; promptLayerKind?: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" }> = [];
+    private _rawLoadedAgents: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; namespace?: string; crawler?: boolean; harvester?: boolean; promptLayerKind?: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" }> = [];
     /** Optional PilotSwarm-bundled user agents, loaded only when session policy opts in. */
     private _availableBundledAgents = new Map<string, AgentConfig>();
     /** Loaded agent configs from plugins + direct config, composed for SDK customAgents. */
-    private _loadedAgents: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; skills?: string[]; namespace?: string }> = [];
-    /** Loaded MCP server configs from plugins + direct config. */
+    private _loadedAgents: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; skills?: string[]; mcpServers?: Record<string, any>; namespace?: string }> = [];
+    /** Loaded MCP server configs from plugins + direct config (the deployment catalog). */
     private _loadedMcpServers: Record<string, any> = {};
+    /** Resolved per-agent MCP server maps, keyed by agent name (raw + system agents). */
+    private _agentMcpServers: Record<string, Record<string, any>> = {};
+    /** Names of catalog servers tagged `"default": true` — the deployment default MCP set. */
+    private _defaultMcpServerNames: string[] = [];
     /** Model provider registry — multi-provider LLM config. */
     private _modelProviders: ModelProviderRegistry | null = null;
     /** Mtime watcher that re-loads model_providers.json on file change. */
@@ -226,6 +230,7 @@ export class PilotSwarmWorker {
                 skillDirectories: this._loadedSkillDirs,
                 customAgents: this._loadedAgents,
                 mcpServers: this._loadedMcpServers,
+                agentMcpServers: this._agentMcpServers,
                 provider: options.provider,
                 modelProviders: this._modelProviders ?? undefined,
                 turnTimeoutMs: options.turnTimeoutMs,
@@ -310,9 +315,19 @@ export class PilotSwarmWorker {
         return this._loadedAgents;
     }
 
-    /** Loaded MCP server configs. */
+    /** Loaded MCP server configs (the deployment catalog). */
     get loadedMcpServers(): Record<string, any> {
         return this._loadedMcpServers;
+    }
+
+    /** Resolved per-agent MCP server maps, keyed by agent name. */
+    get agentMcpServers(): Record<string, Record<string, any>> {
+        return this._agentMcpServers;
+    }
+
+    /** Names of catalog servers in the deployment default MCP set (`"default": true`). */
+    get defaultMcpServerNames(): string[] {
+        return this._defaultMcpServerNames;
     }
 
     /** Model provider registry (null if no providers configured). */
@@ -836,14 +851,22 @@ export class PilotSwarmWorker {
             this.config.systemMessage,
         ]) ?? null;
         this._applyDeclaredAgentSkills();
-        this._loadedAgents = this._rawLoadedAgents.map((agent) => ({
-            ...agent,
-            prompt: composeSystemPrompt({
-                frameworkBase: this._frameworkBasePrompt,
-                appDefault: this._appDefaultPrompt,
-                activeAgentPrompt: this._agentPromptLookup[agent.name]?.prompt ?? agent.prompt,
-            }) ?? agent.prompt,
-        }));
+        this._resolveAgentMcpServers();
+        this._loadedAgents = this._rawLoadedAgents.map((agent) => {
+            // Replace the frontmatter's named MCP references with the
+            // resolved server map (and drop the inherit flag) so the SDK's
+            // CustomAgentConfig.mcpServers receives real server configs.
+            const { mcpServers: _refs, inheritDefaultMcpServers: _inherit, ...rest } = agent;
+            return {
+                ...rest,
+                prompt: composeSystemPrompt({
+                    frameworkBase: this._frameworkBasePrompt,
+                    appDefault: this._appDefaultPrompt,
+                    activeAgentPrompt: this._agentPromptLookup[agent.name]?.prompt ?? agent.prompt,
+                }) ?? agent.prompt,
+                ...(this._agentMcpServers[agent.name] ? { mcpServers: this._agentMcpServers[agent.name] } : {}),
+            };
+        });
 
         // ── Log summary ──────────────────────────────────────────────
         const parts: string[] = [];
@@ -899,6 +922,47 @@ export class PilotSwarmWorker {
             type: isSystemAuthored ? "system" : "app",
             ...(agent.sourcePath ? { source: agent.sourcePath } : {}),
         };
+    }
+
+    /**
+     * Resolve each loaded agent's MCP server references against the merged
+     * deployment catalog (capability-profiles Phase 1).
+     *
+     * The catalog is the union of all plugin `.mcp.json` files (plus direct
+     * config). Servers tagged `"default": true` form the deployment default
+     * MCP set, granted only to agents with `inheritDefaultMcpServers: true`;
+     * the tag is stripped from the config objects afterwards so the Copilot
+     * CLI never sees it. Named references that miss the catalog are dropped
+     * with a warning. Runs after every plugin dir (and direct config) has
+     * merged, so the catalog is complete.
+     */
+    private _resolveAgentMcpServers(): void {
+        const defaults: Record<string, any> = {};
+        for (const [name, cfg] of Object.entries(this._loadedMcpServers)) {
+            if (!cfg || typeof cfg !== "object") continue;
+            if (cfg.default === true) defaults[name] = cfg;
+            if ("default" in cfg) delete cfg.default;
+        }
+        this._defaultMcpServerNames = Object.keys(defaults);
+
+        for (const agent of [...this._rawLoadedAgents, ...this._loadedSystemAgents]) {
+            const resolved: Record<string, any> = {};
+            if (agent.inheritDefaultMcpServers === true) {
+                Object.assign(resolved, defaults);
+            }
+            for (const ref of agent.mcpServers ?? []) {
+                if (typeof ref !== "string" || !ref) continue;
+                const server = this._loadedMcpServers[ref];
+                if (server) {
+                    resolved[ref] = server;
+                } else {
+                    console.warn(`[PilotSwarmWorker] Agent "${agent.name}": MCP server "${ref}" is not in the deployment catalog; reference dropped.`);
+                }
+            }
+            if (Object.keys(resolved).length > 0) {
+                this._agentMcpServers[agent.name] = resolved;
+            }
+        }
     }
 
     private _applyDeclaredAgentSkills(): void {
