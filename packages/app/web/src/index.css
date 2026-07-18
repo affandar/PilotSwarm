@@ -2888,6 +2888,95 @@ body.is-resizing-pane-y * {
   cursor: not-allowed;
 }
 
+/* ── Session capabilities (create-flow picker + Manage tab) ────────────── */
+
+/* Create-flow capability picker: tool-group rows pair a chevron
+   expand/collapse button with the regular list-row toggle button. */
+.ps-capability-group-row {
+  display: flex;
+  align-items: stretch;
+}
+
+.ps-capability-group-row .ps-list-button {
+  flex: 1;
+  min-width: 0;
+}
+
+.ps-capability-chevron,
+.ps-cap-chevron {
+  appearance: none;
+  background: transparent;
+  border: none;
+  color: var(--ps-muted);
+  font: inherit;
+  font-family: var(--ps-mono, monospace);
+  padding: 0 6px;
+  cursor: pointer;
+}
+
+.ps-capability-chevron:hover,
+.ps-cap-chevron:hover {
+  color: var(--ps-foreground);
+}
+
+/* Manage-session Capabilities tab: text-glyph checkbox rows ('[x]'/'[ ]',
+   tri-state '[~]' on group rows) following the ps-share-suggestion look. */
+.ps-cap-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: var(--ps-radius-sm);
+  background: transparent;
+  color: var(--ps-muted);
+  cursor: pointer;
+  text-align: left;
+  font-size: 13px;
+}
+
+.ps-cap-row.is-checked { color: var(--ps-foreground); }
+
+.ps-cap-row:hover {
+  background: var(--ps-highlight-background);
+  color: var(--ps-highlight-foreground);
+}
+
+.ps-cap-row:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.ps-cap-row.is-child { padding-inline-start: 34px; }
+
+.ps-cap-check {
+  font-family: var(--ps-mono, monospace);
+  flex: none;
+}
+
+.ps-cap-row.is-checked .ps-cap-check { color: var(--ps-accent, #4a9eff); font-weight: 600; }
+
+.ps-cap-name { font-weight: 600; overflow-wrap: anywhere; }
+
+.ps-cap-hint {
+  color: var(--ps-muted);
+  font-size: 11px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ps-cap-row:hover .ps-cap-hint { color: inherit; }
+
+.ps-cap-group-row {
+  display: flex;
+  align-items: center;
+}
+
+.ps-cap-group-row .ps-cap-row { flex: 1; min-width: 0; }
+
 .ps-share-radio {
   display: flex;
   align-items: center;

@@ -135,6 +135,16 @@ export class HttpApiTransport {
         return this.api.call("deleteSession", { sessionId });
     }
 
+    /** Reconfigure the session TREE's capability override (applies next turn; null clears). */
+    async configureSession(sessionId, capabilities) {
+        return this.api.call("configureSession", { sessionId, capabilities });
+    }
+
+    /** The tree-root capability override governing a session, or null. */
+    async getSessionCapabilities(sessionId) {
+        return this.api.call("getSessionCapabilities", { sessionId });
+    }
+
     async renameSession(sessionId, title) {
         return this.api.call("renameSession", { sessionId, title });
     }

@@ -730,6 +730,7 @@ export class PortalRuntime {
                     groupId: safeParams.groupId,
                     owner,
                     visibility: normalizeVisibility(safeParams.visibility, this.authz.defaultVisibility),
+                    capabilities: safeParams.capabilities ?? null,
                 });
                 return this._ensureCreatedPlacement(created, safeParams.groupId, authContext, isAdmin);
             }
@@ -746,6 +747,7 @@ export class PortalRuntime {
                     groupId: safeParams.groupId,
                     owner,
                     visibility: normalizeVisibility(safeParams.visibility, this.authz.defaultVisibility),
+                    capabilities: safeParams.capabilities ?? null,
                 });
                 return this._ensureCreatedPlacement(created, safeParams.groupId, authContext, isAdmin);
             }
@@ -892,6 +894,10 @@ export class PortalRuntime {
                 return this.transport.restartSystemSession(safeParams.agentIdOrSessionId, safeParams.options || {});
             case "setSessionModel":
                 return this.transport.setSessionModel(safeParams.sessionId, safeParams.options || {});
+            case "configureSession":
+                return this.transport.configureSession(safeParams.sessionId, safeParams.capabilities ?? null);
+            case "getSessionCapabilities":
+                return this.transport.getSessionCapabilities(safeParams.sessionId);
             case "stopSessionTurn":
                 return this.transport.stopSessionTurn(safeParams.sessionId, safeParams.options || {});
             case "deleteSessionGroup":

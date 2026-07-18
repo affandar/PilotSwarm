@@ -582,36 +582,6 @@ export function* handleCommand(
             }));
             return;
         }
-        case "set_capabilities": {
-            // Capability-profiles Phase 4 (v1.0.62). The CMS tree-root row is
-            // the single authority for the override, and the management op
-            // has ALREADY written it before this command arrives — this
-            // handler is trigger + audit only: record the event, answer the
-            // KV channel, and continue-as-new so the next turn's session
-            // assembly rebinds under the new capability fingerprint. It
-            // deliberately does NOT touch state.config — capabilities never
-            // ride the durable config (review addendum 1).
-            yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
-                eventType: "session.capabilities_changed",
-                data: {
-                    override: (cmdMsg.args as any)?.override ?? null,
-                    source: (cmdMsg.args as any)?.source ?? "user",
-                },
-            }]);
-            const resp: CommandResponse = {
-                id: cmdMsg.id,
-                cmd: cmdMsg.cmd,
-                result: { ok: true, appliesOn: "next_turn" },
-            };
-            yield* writeCommandResponse(runtime, resp);
-            publishStatus(runtime, "idle");
-            yield* versionedContinueAsNew(runtime, continueInputWithPrompt(
-                runtime,
-                "Session capabilities were reconfigured; the new capability set applies from this turn onward.",
-                { bootstrapPrompt: true },
-            ));
-            return;
-        }
         case "list_models": {
             publishStatus(runtime, "idle", { cmdProcessing: cmdMsg.id });
             let models: unknown;

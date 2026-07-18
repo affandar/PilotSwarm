@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { sessionIdShape } from "../session-id.js";
+import { capabilityOverrideShape } from "../capability-override.js";
 import type { PilotSwarmSession } from "pilotswarm-sdk";
 import type { ServerContext } from "../context.js";
 
@@ -15,7 +16,11 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
         "create_session",
         {
             title: "Create Session",
-            description: "Create a new PilotSwarm session, optionally bound to a named agent",
+            description:
+                "Create a new PilotSwarm session, optionally bound to a named agent. capabilities applies a per-tree "
+                + "enable/disable override (MCP servers, skills, tools) on top of the agent's profile — discover valid "
+                + "names via get_capabilities (capability_catalog) or get_system_status (include: ['capabilities']); "
+                + "reconfigure later with configure_session.",
             inputSchema: {
                 model: z.string().optional().describe("Model to use for the session"),
                 agent: z.string().optional().describe("Agent name to bind the session to"),
@@ -26,9 +31,17 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                 context_tier: z.string().optional().describe("Context-window tier for the session's model: 'default' (smaller window) or 'long_context'"),
                 group_id: z.string().optional().describe("One of YOUR session groups to place the new session in (groups are private per-user organization; fails if the group is not yours)"),
                 splash: z.string().optional().describe("Splash text shown in the portal UI (agent-bound sessions only)"),
+                capabilities: capabilityOverrideShape()
+                    .optional()
+                    .describe(
+                        "Per-tree capability override: { mcpServers?, skills?, tools? }, each { enable?: [names], disable?: [names] } "
+                        + "over the agent's profile. tools entries may be tool names or tool-GROUP names (groups expand to members; "
+                        + "an individual entry overrides its group; disable wins over enable). Names must come from the deployment "
+                        + "capability catalog (see get_capabilities).",
+                    ),
             },
         },
-        async ({ model, agent, system_message, title, prompt, reasoning_effort, context_tier, group_id, splash }) => {
+        async ({ model, agent, system_message, title, prompt, reasoning_effort, context_tier, group_id, splash, capabilities }) => {
             try {
                 // system_message is a worker-side option with no Web API
                 // carrier: the web client silently DROPS it (it is not sent
@@ -38,7 +51,32 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                 const systemMessageDropped = system_message !== undefined && ctx.webMode;
 
                 let session;
-                if (agent) {
+                if (capabilities && ctx.api) {
+                    // Web mode with a capability override: the web client's
+                    // createSession/createSessionForAgent do not carry the
+                    // capabilities param, so dispatch the create op directly
+                    // (both protocol ops accept it) and resume a handle for
+                    // the session cache.
+                    const view: any = agent
+                        ? await ctx.api.call("createSessionForAgent", {
+                              agentName: agent,
+                              model,
+                              title,
+                              reasoningEffort: reasoning_effort,
+                              contextTier: context_tier,
+                              groupId: group_id,
+                              splash,
+                              capabilities,
+                          })
+                        : await ctx.api.call("createSession", {
+                              model,
+                              reasoningEffort: reasoning_effort,
+                              contextTier: context_tier,
+                              groupId: group_id,
+                              capabilities,
+                          });
+                    session = await ctx.client.resumeSession(view.sessionId);
+                } else if (agent) {
                     if (system_message !== undefined && !ctx.webMode) {
                         // createSessionForAgent does not forward systemMessage,
                         // so route through createSession directly when the
@@ -50,6 +88,7 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                             boundAgentName: agent,
                             model,
                             systemMessage: system_message,
+                            capabilities,
                         });
                     } else {
                         session = await ctx.client.createSessionForAgent(agent, {
@@ -59,6 +98,7 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                             contextTier: context_tier,
                             groupId: group_id,
                             splash,
+                            capabilities,
                         } as any);
                     }
                 } else {
@@ -68,6 +108,7 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                         reasoningEffort: reasoning_effort,
                         contextTier: context_tier,
                         groupId: group_id,
+                        capabilities,
                     } as any);
                 }
 
@@ -611,7 +652,8 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
             title: "Get Session Detail",
             description:
                 "Get detailed information for a specific PilotSwarm session including status, context usage, cron state, and pending questions. " +
-                "Use 'include' to fetch additional data: 'status' for live orchestration status, 'response' for latest LLM response, 'dump' for full Markdown dump.",
+                "Use 'include' to fetch additional data: 'status' for live orchestration status, 'response' for latest LLM response, 'dump' for full Markdown dump. " +
+                "Web mode also returns capability_override — the stored per-tree capability override set at create time or via configure_session (null = none).",
             inputSchema: {
                 session_id: sessionIdShape().describe("The session ID to inspect"),
                 include: z
@@ -632,6 +674,17 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
 
                 const result: Record<string, unknown> = { session };
                 const includes = new Set(include ?? []);
+
+                // Stored per-tree capability override (web mode only — the op
+                // is a Web API surface). Cheap single GET, so always fetched;
+                // omitted when the deployment predates capability overrides.
+                if (ctx.api) {
+                    try {
+                        result.capability_override = await ctx.api.call("getSessionCapabilities", { sessionId: session_id });
+                    } catch {
+                        // omit — deployment may not support capability overrides
+                    }
+                }
 
                 if (includes.has("status")) {
                     try {

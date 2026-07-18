@@ -72,6 +72,7 @@ export class WebPilotSwarmClient {
             reasoningEffort: config?.reasoningEffort,
             contextTier: config?.contextTier,
             groupId: config?.groupId,
+            capabilities: (config as any)?.capabilities ?? undefined,
         });
         return new WebPilotSwarmSession(view.sessionId, this._api, config?.onUserInputRequest);
     }
@@ -97,6 +98,7 @@ export class WebPilotSwarmClient {
             splashMobile: opts?.splashMobile,
             initialPrompt: opts?.initialPrompt,
             groupId: opts?.groupId,
+            capabilities: (opts as any)?.capabilities ?? undefined,
         });
         return new WebPilotSwarmSession(view.sessionId, this._api, opts?.onUserInputRequest);
     }

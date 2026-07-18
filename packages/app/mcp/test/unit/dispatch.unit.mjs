@@ -76,6 +76,7 @@ function makeCtx(calls, overrides = {}) {
         api: null,
         admin: true,
         webMode: false,
+        capabilityCatalog: null,
         models: null,
         skills: [],
         registeredAgents: [],
@@ -304,6 +305,144 @@ async function main() {
 
         const res3 = await client.callTool({ name: "facts_admin", arguments: { action: "purge", cutoff: "not-a-date" } });
         record("facts_admin invalid cutoff → isError", res3.isError === true);
+        await client.close();
+    }
+
+    // ── 7. create_session capabilities forwarding ────────────────────────
+    {
+        // Web mode: the web client cannot carry the capabilities param — the
+        // tool must dispatch the create op directly with the override attached.
+        const calls = [];
+        const api = {
+            async call(op, params) { calls.push(["api.call", op, params]); return { sessionId: UUID }; },
+            async getAuthContext() { return { authorization: { role: "admin" } }; },
+        };
+        const webClient = {
+            async createSession(cfg) { calls.push(["client.createSession", cfg]); return { sessionId: UUID, async send() {} }; },
+            async createSessionForAgent(name, opts) { calls.push(["client.createSessionForAgent", name, opts]); return { sessionId: UUID, async send() {} }; },
+            async resumeSession(id) { calls.push(["client.resumeSession", id]); return { sessionId: id, async send() {} }; },
+        };
+        const client = await connect(makeCtx(calls, { webMode: true, api, client: webClient }));
+
+        const caps = { mcpServers: { enable: ["github"] }, tools: { disable: ["graph"] } };
+        let res = await client.callTool({ name: "create_session", arguments: { agent: "researcher", capabilities: caps } });
+        const agentCreate = calls.find(([n, op]) => n === "api.call" && op === "createSessionForAgent");
+        record("create_session (web) agent+capabilities → createSessionForAgent op carries capabilities",
+            !res.isError && agentCreate?.[2]?.agentName === "researcher" && agentCreate[2].capabilities?.tools?.disable?.[0] === "graph");
+        record("create_session (web) capabilities → session handle resumed for the cache",
+            !res.isError && calls.some(([n, id]) => n === "client.resumeSession" && id === UUID));
+
+        calls.length = 0;
+        res = await client.callTool({ name: "create_session", arguments: { capabilities: caps } });
+        const genericCreate = calls.find(([n, op]) => n === "api.call" && op === "createSession");
+        record("create_session (web) generic+capabilities → createSession op carries capabilities",
+            !res.isError && genericCreate?.[2]?.capabilities?.mcpServers?.enable?.[0] === "github");
+
+        calls.length = 0;
+        res = await client.callTool({ name: "create_session", arguments: { agent: "researcher" } });
+        record("create_session (web) without capabilities → web client path unchanged",
+            !res.isError && calls.some(([n]) => n === "client.createSessionForAgent")
+            && !calls.some(([n, op]) => n === "api.call" && (op === "createSession" || op === "createSessionForAgent")));
+
+        res = await client.callTool({ name: "create_session", arguments: { capabilities: { bogus: { enable: ["x"] } } } });
+        record("create_session unknown capability axis → rejected by schema", res.isError === true);
+
+        await client.close();
+    }
+    {
+        // Direct mode: capabilities pass through the SDK client's options.
+        const calls = [];
+        const directClient = {
+            async createSession(cfg) { calls.push(["client.createSession", cfg]); return { sessionId: UUID, async send() {} }; },
+            async createSessionForAgent(name, opts) { calls.push(["client.createSessionForAgent", name, opts]); return { sessionId: UUID, async send() {} }; },
+        };
+        const client = await connect(makeCtx(calls, { client: directClient }));
+        const res = await client.callTool({ name: "create_session", arguments: { agent: "researcher", capabilities: { skills: { disable: ["deploy"] } } } });
+        const call = calls.find(([n]) => n === "client.createSessionForAgent");
+        record("create_session (direct) capabilities → client opts carry capabilities",
+            !res.isError && call?.[2]?.capabilities?.skills?.disable?.[0] === "deploy");
+        await client.close();
+    }
+
+    // ── 8. configure_session ─────────────────────────────────────────────
+    {
+        const calls = [];
+        const api = {
+            async call(op, params) {
+                calls.push(["api.call", op, params]);
+                if (op === "configureSession") return { appliesOn: "next_turn", commandDelivered: true };
+                return {};
+            },
+            async getAuthContext() { return { authorization: { role: "admin" } }; },
+        };
+        const client = await connect(makeCtx(calls, { webMode: true, api }));
+
+        let res = await client.callTool({ name: "configure_session", arguments: { session_id: UUID, capabilities: { tools: { disable: ["graph"] } } } });
+        let body = parse(res);
+        const call = calls.find(([n, op]) => n === "api.call" && op === "configureSession");
+        record("configure_session (web) → configureSession op {sessionId, capabilities}",
+            !res.isError && call?.[2]?.sessionId === UUID && call[2].capabilities?.tools?.disable?.[0] === "graph");
+        record("configure_session (web) → op result verbatim + next-turn note",
+            !res.isError && body.appliesOn === "next_turn" && body.commandDelivered === true && /next turn/i.test(body.note ?? ""));
+
+        calls.length = 0;
+        res = await client.callTool({ name: "configure_session", arguments: { session_id: UUID, capabilities: null } });
+        const clear = calls.find(([n, op]) => n === "api.call" && op === "configureSession");
+        record("configure_session (web) capabilities:null → clears the override",
+            !res.isError && clear && clear[2].capabilities === null);
+
+        res = await client.callTool({ name: "configure_session", arguments: { session_id: "not-a-uuid", capabilities: null } });
+        record("configure_session invalid session_id shape → rejected", res.isError === true);
+
+        res = await client.callTool({ name: "configure_session", arguments: { session_id: UUID, capabilities: { bogus: {} } } });
+        record("configure_session unknown capability axis → rejected by schema", res.isError === true);
+
+        await client.close();
+    }
+    {
+        // Direct mode: the capability-override op is a Web API surface only.
+        const calls = [];
+        const client = await connect(makeCtx(calls));
+        const res = await client.callTool({ name: "configure_session", arguments: { session_id: UUID, capabilities: null } });
+        record("configure_session (direct) → clear web-mode-only error",
+            res.isError === true && /web api mode/i.test(res.content[0].text));
+        await client.close();
+    }
+
+    // ── 9. get_session_detail capability override ────────────────────────
+    {
+        const calls = [];
+        const api = {
+            async call(op, params) {
+                calls.push(["api.call", op, params]);
+                if (op === "getSessionCapabilities") return { tools: { disable: ["graph"] } };
+                return {};
+            },
+            async getAuthContext() { return { authorization: { role: "admin" } }; },
+        };
+        const client = await connect(makeCtx(calls, { webMode: true, api }));
+
+        let res = await client.callTool({ name: "get_session_detail", arguments: { session_id: UUID } });
+        let body = parse(res);
+        record("session detail (web) → capability_override from getSessionCapabilities",
+            !res.isError && body.capability_override?.tools?.disable?.[0] === "graph"
+            && calls.some(([n, op, p]) => n === "api.call" && op === "getSessionCapabilities" && p?.sessionId === UUID));
+
+        api.call = async (op) => { calls.push(["api.call", op]); throw new Error("op not supported"); };
+        res = await client.callTool({ name: "get_session_detail", arguments: { session_id: UUID } });
+        body = parse(res);
+        record("session detail (web) → override omitted on op error, detail intact",
+            !res.isError && body.session && !("capability_override" in body));
+        await client.close();
+    }
+    {
+        // Direct mode: no capability_override key at all.
+        const calls = [];
+        const client = await connect(makeCtx(calls));
+        const res = await client.callTool({ name: "get_session_detail", arguments: { session_id: UUID } });
+        const body = parse(res);
+        record("session detail (direct) → no capability_override key",
+            !res.isError && body.session && !("capability_override" in body));
         await client.close();
     }
 

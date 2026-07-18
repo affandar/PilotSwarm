@@ -17,10 +17,16 @@ import {
     parseTerminalMarkupRuns,
     PilotSwarmUiController,
     tokenizeInlineMarkdown,
+    applyCapabilityOverrideToChecked,
+    buildCapabilityBaseline,
+    buildCapabilityOverrideDelta,
+    buildCapabilityToolGroups,
+    isCapabilityCatalogEmpty,
     selectActivityPane,
     selectAdminConsole,
     selectArtifactPickerModal,
     selectArtifactUploadModal,
+    selectCapabilityPickerModal,
     selectLiveActivityLines,
     selectChatLines,
     selectChatPaneChrome,
@@ -2238,6 +2244,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             initialTitle: activeSession.title || "",
             currentModel: activeSession.model || "",
             currentReasoningEffort: activeSession.reasoningEffort || "",
+            agentName: activeSession.agentId || null,
             principal: viewState.auth?.principal || null,
             onClose: () => setManageOpen(false),
             onSwitchModel: requestSwitchModel,
@@ -2348,7 +2355,7 @@ function useActiveSessionAccess(controller, activeSessionId, isGroup) {
 // rename, copy link, plus (for the owner/admin) sharing — visibility +
 // per-person grants. Fetches its own access snapshot so callers only pass the
 // session id + current title.
-function SessionModifyModal({ controller, sessionId, initialTitle, currentModel, currentReasoningEffort, principal, onClose, onSwitchModel, onChanged }) {
+function SessionModifyModal({ controller, sessionId, initialTitle, currentModel, currentReasoningEffort, agentName, principal, onClose, onSwitchModel, onChanged }) {
     const [tab, setTab] = React.useState("general");
     const [access, setAccess] = React.useState(null);
     const [title, setTitle] = React.useState(initialTitle || "");
@@ -2358,6 +2365,10 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
     const [granteeQuery, setGranteeQuery] = React.useState("");
     const [granteeAccess, setGranteeAccess] = React.useState("write");
     const [directory, setDirectory] = React.useState([]);
+    // Capabilities tab (capability-profiles Phase 4): effective = agent
+    // defaults + stored override; toggles stage into `checked` and Apply
+    // commits the delta vs the agent baseline via configureSession.
+    const [caps, setCaps] = React.useState(null);
     const [busy, setBusy] = React.useState(false);
     const [error, setError] = React.useState(null);
 
@@ -2381,6 +2392,33 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
             .catch(() => { setShares([]); setDraftShares([]); });
     }, [controller, sessionId]);
     React.useEffect(() => { loadShares(); }, [loadShares]);
+
+    React.useEffect(() => {
+        let cancelled = false;
+        controller.loadSessionCapabilities(sessionId)
+            .then(({ catalog, override }) => {
+                if (cancelled || isCapabilityCatalogEmpty(catalog)) return;
+                const { groups, ungrouped, members } = buildCapabilityToolGroups(catalog);
+                const baseline = buildCapabilityBaseline(catalog, agentName || null);
+                const effective = applyCapabilityOverrideToChecked(baseline, override, members);
+                setCaps({
+                    catalog,
+                    baseline,
+                    groups,
+                    ungrouped,
+                    members,
+                    effective,
+                    checked: {
+                        mcpServers: { ...effective.mcpServers },
+                        skills: { ...effective.skills },
+                        tools: { ...effective.tools },
+                    },
+                    expanded: {},
+                });
+            })
+            .catch(() => {});
+        return () => { cancelled = true; };
+    }, [controller, sessionId, agentName]);
 
     const run = async (fn) => {
         setBusy(true); setError(null);
@@ -2473,6 +2511,39 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
         if (a) { setAccess(a); setVisibility(a.visibility || "private"); }
         controller.dispatch({ type: "ui/status", text: "Access updated." });
     });
+    // Capabilities staging: toggles mutate the checked maps locally; dirty =
+    // checked differs from the loaded effective state; Apply commits the
+    // delta vs the AGENT baseline (no delta → null, clearing the override).
+    const toggleCapEntry = (axis, name) => setCaps((cur) => (cur ? {
+        ...cur,
+        checked: { ...cur.checked, [axis]: { ...cur.checked[axis], [name]: !cur.checked[axis][name] } },
+    } : cur));
+    const toggleCapGroup = (group) => setCaps((cur) => {
+        if (!cur) return cur;
+        const members = cur.members[group] || [];
+        const allChecked = members.every((name) => cur.checked.tools[name]);
+        const tools = { ...cur.checked.tools };
+        for (const name of members) tools[name] = !allChecked;
+        return { ...cur, checked: { ...cur.checked, tools } };
+    });
+    const toggleCapExpanded = (group) => setCaps((cur) => (cur ? {
+        ...cur,
+        expanded: { ...cur.expanded, [group]: !cur.expanded[group] },
+    } : cur));
+    const capsDirty = Boolean(caps) && ["mcpServers", "skills", "tools"].some((axis) =>
+        Object.keys(caps.effective[axis]).some((name) => Boolean(caps.effective[axis][name]) !== Boolean(caps.checked[axis][name])));
+    const applyCapabilities = () => run(async () => {
+        const override = buildCapabilityOverrideDelta(caps.baseline, caps.checked, caps.members);
+        await controller.configureSessionCapabilities(sessionId, override);
+        setCaps((cur) => (cur ? {
+            ...cur,
+            effective: {
+                mcpServers: { ...cur.checked.mcpServers },
+                skills: { ...cur.checked.skills },
+                tools: { ...cur.checked.tools },
+            },
+        } : cur));
+    });
     const switchModel = onSwitchModel || (() => {
         onClose();
         controller.openSwitchModelPicker().catch((err) => {
@@ -2487,6 +2558,7 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
     const tabs = [
         { id: "general", label: "General" },
         ...(canManage ? [{ id: "access", label: "Access" }] : []),
+        ...(canManage && caps ? [{ id: "capabilities", label: "Capabilities" }] : []),
     ];
     const activeTab = tabs.some((t) => t.id === tab) ? tab : "general";
     const stop = (e) => e.stopPropagation();
@@ -2585,6 +2657,90 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
                         className: "ps-mini-button ps-manage-apply",
                         disabled: busy || !accessDirty,
                         onClick: applyAccess,
+                    }, "Apply")))
+                : null,
+
+            // ── Capabilities (owner / admin only) ─────────────────────
+            (activeTab === "capabilities" && canManage && caps) ? React.createElement(React.Fragment, null,
+                React.createElement("div", { className: "ps-share-section-sub" },
+                    "What this session (and its sub-agents) may use. Checks show the current effective state — agent profile plus any session override."),
+                React.createElement("div", { className: "ps-share-section-label" }, "MCP servers"),
+                caps.catalog.mcpServers.length === 0
+                    ? React.createElement("div", { className: "ps-share-empty" }, "No MCP servers in this deployment.")
+                    : caps.catalog.mcpServers.map((server) => React.createElement("button", {
+                        key: `mcp:${server.name}`,
+                        type: "button",
+                        className: `ps-cap-row${caps.checked.mcpServers[server.name] ? " is-checked" : ""}`,
+                        disabled: busy,
+                        onClick: () => toggleCapEntry("mcpServers", server.name),
+                    },
+                    React.createElement("span", { className: "ps-cap-check" }, caps.checked.mcpServers[server.name] ? "[x]" : "[ ]"),
+                    React.createElement("span", { className: "ps-cap-name" }, server.name),
+                    server.isDefault ? React.createElement("span", { className: "ps-cap-hint" }, "default") : null)),
+                React.createElement("div", { className: "ps-share-section-label" }, "Skills"),
+                caps.catalog.skills.length === 0
+                    ? React.createElement("div", { className: "ps-share-empty" }, "No skills in this deployment.")
+                    : caps.catalog.skills.map((skill) => React.createElement("button", {
+                        key: `skill:${skill.name}`,
+                        type: "button",
+                        className: `ps-cap-row${caps.checked.skills[skill.name] ? " is-checked" : ""}`,
+                        disabled: busy,
+                        onClick: () => toggleCapEntry("skills", skill.name),
+                    },
+                    React.createElement("span", { className: "ps-cap-check" }, caps.checked.skills[skill.name] ? "[x]" : "[ ]"),
+                    React.createElement("span", { className: "ps-cap-name" }, skill.name),
+                    skill.description ? React.createElement("span", { className: "ps-cap-hint" }, skill.description) : null)),
+                React.createElement("div", { className: "ps-share-section-label" }, "Tools"),
+                caps.groups.map((group) => {
+                    const checkedCount = group.tools.filter((name) => caps.checked.tools[name]).length;
+                    const glyph = checkedCount === 0 ? "[ ]" : checkedCount === group.tools.length ? "[x]" : "[~]";
+                    const expanded = Boolean(caps.expanded[group.name]);
+                    return React.createElement(React.Fragment, { key: `group:${group.name}` },
+                        React.createElement("div", { className: "ps-cap-group-row" },
+                            React.createElement("button", {
+                                type: "button",
+                                className: "ps-cap-chevron",
+                                disabled: busy,
+                                "aria-label": expanded ? `Collapse ${group.name}` : `Expand ${group.name}`,
+                                onClick: () => toggleCapExpanded(group.name),
+                            }, expanded ? "▾" : "▸"),
+                            React.createElement("button", {
+                                type: "button",
+                                className: `ps-cap-row${checkedCount > 0 ? " is-checked" : ""}`,
+                                disabled: busy,
+                                onClick: () => toggleCapGroup(group.name),
+                            },
+                            React.createElement("span", { className: "ps-cap-check" }, glyph),
+                            React.createElement("span", { className: "ps-cap-name" }, group.name),
+                            React.createElement("span", { className: "ps-cap-hint" }, `${checkedCount}/${group.tools.length}`))),
+                        expanded ? group.tools.map((toolName) => React.createElement("button", {
+                            key: `tool:${toolName}`,
+                            type: "button",
+                            className: `ps-cap-row is-child${caps.checked.tools[toolName] ? " is-checked" : ""}`,
+                            disabled: busy,
+                            onClick: () => toggleCapEntry("tools", toolName),
+                        },
+                        React.createElement("span", { className: "ps-cap-check" }, caps.checked.tools[toolName] ? "[x]" : "[ ]"),
+                        React.createElement("span", { className: "ps-cap-name" }, toolName))) : null);
+                }),
+                caps.ungrouped.map((toolName) => React.createElement("button", {
+                    key: `tool:${toolName}`,
+                    type: "button",
+                    className: `ps-cap-row${caps.checked.tools[toolName] ? " is-checked" : ""}`,
+                    disabled: busy,
+                    onClick: () => toggleCapEntry("tools", toolName),
+                },
+                React.createElement("span", { className: "ps-cap-check" }, caps.checked.tools[toolName] ? "[x]" : "[ ]"),
+                React.createElement("span", { className: "ps-cap-name" }, toolName))),
+                React.createElement("div", { className: "ps-share-foot-hint" },
+                    "Changes apply to the whole session tree on its next turn. Matching the agent profile exactly clears the override."),
+                React.createElement("div", { className: "ps-manage-apply-bar" },
+                    React.createElement("span", { className: "ps-share-section-sub" },
+                        capsDirty ? "Unsaved capability changes — apply on the next turn." : "No changes to apply."),
+                    React.createElement("button", {
+                        className: "ps-mini-button ps-manage-apply",
+                        disabled: busy || !capsDirty,
+                        onClick: applyCapabilities,
                     }, "Apply")))
                 : null,
             error ? React.createElement("div", { className: "ps-share-error" }, error) : null));
@@ -4041,6 +4197,7 @@ function ModalLayer({ controller }) {
         reasoningEffortPicker: selectReasoningEffortPickerModal(state),
         contextTierPicker: selectContextTierPickerModal(state),
         sessionAgentPicker: selectSessionAgentPickerModal(state),
+        capabilityPicker: selectCapabilityPickerModal(state),
         sessionGroupPicker: selectSessionGroupPickerModal(state),
         sessionGroupName: selectSessionGroupNameModal(state),
         artifactPicker: selectArtifactPickerModal(state),
@@ -4096,6 +4253,7 @@ function ModalLayer({ controller }) {
             "reasoningEffortPicker",
             "contextTierPicker",
             "sessionAgentPicker",
+            "capabilityPicker",
             "sessionGroupPicker",
             "artifactPicker",
             "sessionOwnerFilter",
@@ -4120,6 +4278,7 @@ function ModalLayer({ controller }) {
         modalState.reasoningEffortPicker?.selectedRowIndex,
         modalState.contextTierPicker?.selectedRowIndex,
         modalState.sessionAgentPicker?.selectedRowIndex,
+        modalState.capabilityPicker?.selectedRowIndex,
         modalState.sessionGroupPicker?.selectedRowIndex,
         modalState.artifactPicker?.selectedRowIndex,
         modalState.sessionOwnerFilter?.selectedRowIndex,
@@ -4235,6 +4394,71 @@ function ModalLayer({ controller }) {
     }
     if (modal.type === "sessionAgentPicker" && modalState.sessionAgentPicker) {
         return renderListModal(modalState.sessionAgentPicker, "Create Session");
+    }
+    if (modal.type === "capabilityPicker" && modalState.capabilityPicker) {
+        // Capabilities step of the create flow: checkbox rows toggle in place
+        // (owner-filter pattern), tool groups expand/collapse via the chevron,
+        // and Create Session commits — with no changes that is the Skip
+        // affordance (the agent profile applies unchanged).
+        const presentation = modalState.capabilityPicker;
+        const rows = Array.isArray(presentation.rows) ? presentation.rows : [];
+        const rowItemIndexes = Array.isArray(presentation.rowItemIndexes) ? presentation.rowItemIndexes : [];
+        return React.createElement("div", { className: "ps-modal-backdrop", onClick: close },
+            React.createElement("div", { className: "ps-modal", onClick: (event) => event.stopPropagation() },
+                React.createElement("div", { className: "ps-modal-header" },
+                    React.createElement("div", { className: "ps-modal-title" }, presentation.title),
+                    React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close }, "Close"),
+                ),
+                React.createElement("div", { className: "ps-modal-grid" },
+                    React.createElement("div", { ref: listModalRef, className: "ps-modal-list" },
+                        rows.map((row, rowIndex) => {
+                            const itemIndex = rowItemIndexes[rowIndex];
+                            const runs = Array.isArray(row)
+                                ? row
+                                : normalizeLines([row])[0]?.runs || [{ text: row?.text || "", color: row?.color }];
+                            if (itemIndex == null || itemIndex < 0) {
+                                return React.createElement("div", {
+                                    key: `row:${rowIndex}`,
+                                    className: "ps-line ps-modal-list-heading-line",
+                                }, React.createElement(Runs, { runs, theme }));
+                            }
+                            const item = modal.items?.[itemIndex];
+                            const isGroup = item?.kind === "toolGroup";
+                            // Group rows carry their chevron as the first run;
+                            // render it as a separate expand/collapse button so
+                            // the row button stays a pure toggle.
+                            const rowButton = React.createElement("button", {
+                                key: item?.id || `row:${rowIndex}`,
+                                type: "button",
+                                className: `ps-list-button ps-modal-list-button${itemIndex === modal.selectedIndex ? " is-selected" : ""}`,
+                                onClick: () => controller.toggleCapabilityPickerItem(itemIndex),
+                            },
+                            React.createElement("div", { className: "ps-line ps-modal-list-line" },
+                                React.createElement(Runs, { runs: isGroup ? runs.slice(1) : runs, theme })));
+                            if (!isGroup) return rowButton;
+                            return React.createElement("div", { key: item.id, className: "ps-capability-group-row" },
+                                React.createElement("button", {
+                                    type: "button",
+                                    className: "ps-capability-chevron",
+                                    "aria-label": item.expanded ? `Collapse ${item.name}` : `Expand ${item.name}`,
+                                    onClick: () => controller.setCapabilityPickerGroupExpanded(!item.expanded, itemIndex),
+                                }, item.expanded ? "▾" : "▸"),
+                                rowButton);
+                        }),
+                    ),
+                    React.createElement("div", { className: "ps-modal-details" },
+                        React.createElement("div", { className: "ps-modal-details-title" }, presentation.detailsTitle || "Capabilities"),
+                        normalizeLines(presentation.detailsLines || []).map((line, index) => React.createElement(Line, { key: `detail:${index}`, line, theme, className: "ps-modal-detail-line" })),
+                    ),
+                ),
+                React.createElement("div", { className: "ps-modal-footer" },
+                    React.createElement("button", { type: "button", className: "ps-modal-button", onClick: close }, "Cancel"),
+                    React.createElement("button", {
+                        type: "button",
+                        className: "ps-modal-button is-primary",
+                        onClick: () => controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM).catch(() => {}),
+                    }, presentation.changeCount > 0 ? "Create Session" : "Skip & Create")),
+            ));
     }
     if (modal.type === "sessionGroupPicker" && modalState.sessionGroupPicker) {
         return renderListModal(modalState.sessionGroupPicker, "Move");

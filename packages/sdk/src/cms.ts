@@ -944,6 +944,22 @@ export interface SessionCatalog {
     /** Read the worker-published deployment capability catalog, or null. */
     getCapabilityCatalog(): Promise<{ catalog: any; publishedBy: string | null; publishedAt: Date | null } | null>;
 
+    /**
+     * Store a session-TREE capability override on the tree root's row (any
+     * tree member id resolves to the root; null clears). Returns false when
+     * the session does not exist or the schema predates migration 0036.
+     */
+    setCapabilityOverride(sessionId: string, override: unknown | null): Promise<boolean>;
+
+    /**
+     * Read the tree-root capability override governing a session (the id may
+     * be any tree member). Null = no override / unknown session / pre-0036
+     * schema. THROWS on transient database errors — callers on the session
+     * assembly path must fail closed, never fall back to the unrestricted
+     * agent profile.
+     */
+    getCapabilityOverride(sessionId: string): Promise<any | null>;
+
     /** Cleanup / close connections. */
     close(): Promise<void>;
 }
@@ -1026,6 +1042,8 @@ function sqlForSchema(schema: string) {
             getSessionGraphEdgeSearchUsage: `${s}.cms_get_session_graph_edge_search_usage`,
             setCapabilityCatalog:       `${s}.cms_set_capability_catalog`,
             getCapabilityCatalog:       `${s}.cms_get_capability_catalog`,
+            setCapabilityOverride:      `${s}.cms_set_capability_override`,
+            getCapabilityOverride:      `${s}.cms_get_capability_override`,
         },
     };
 }
@@ -1236,6 +1254,41 @@ export class PgSessionCatalog implements SessionCatalog {
             publishedBy: rows[0].published_by ?? null,
             publishedAt: rows[0].published_at ?? null,
         };
+    }
+
+    private _capabilityOverrideSupported: boolean | null = null;
+
+    /** Whether the DB has migration 0036's capability-override functions. Cached per catalog instance. */
+    private async supportsCapabilityOverride(): Promise<boolean> {
+        if (this._capabilityOverrideSupported !== null) return this._capabilityOverrideSupported;
+        const { rows } = await this.pool.query(
+            `SELECT to_regprocedure($1) IS NOT NULL AS supported`,
+            [`${this.sql.fn.getCapabilityOverride}(text)`],
+        );
+        this._capabilityOverrideSupported = Boolean(rows[0]?.supported);
+        return this._capabilityOverrideSupported;
+    }
+
+    async setCapabilityOverride(sessionId: string, override: unknown | null): Promise<boolean> {
+        if (!(await this.supportsCapabilityOverride())) return false;
+        const { rows } = await this.pool.query(
+            `SELECT ${this.sql.fn.setCapabilityOverride}($1, $2::jsonb) AS updated`,
+            [sessionId, override == null ? null : JSON.stringify(override)],
+        );
+        return Boolean(rows[0]?.updated);
+    }
+
+    async getCapabilityOverride(sessionId: string): Promise<any | null> {
+        // The probe itself is cached; a false result is a schema fact (safe
+        // null), while QUERY errors below intentionally propagate — session
+        // assembly must fail closed on transient DB errors, never silently
+        // run unrestricted (review addendum 3).
+        if (!(await this.supportsCapabilityOverride())) return null;
+        const { rows } = await this.pool.query(
+            `SELECT ${this.sql.fn.getCapabilityOverride}($1) AS override`,
+            [sessionId],
+        );
+        return rows[0]?.override ?? null;
     }
 
     async updateSession(sessionId: string, updates: SessionRowUpdates): Promise<void> {

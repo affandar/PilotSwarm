@@ -117,6 +117,18 @@ export const DEFAULT_TOOL_GROUPS: Record<string, string> = Object.fromEntries(
 );
 
 /**
+ * Tools implicitly retained when a toolPolicy switches a session to
+ * allow-list mode: the durable-session protocol tools whose absence breaks
+ * session mechanics rather than merely narrowing capability — the
+ * recurring-watcher reporter, durable waits, the ask_user input flow, and
+ * summary upkeep. An allow-list can narrow WHAT an agent does, not whether
+ * the durable session protocol functions.
+ */
+export const ALLOW_MODE_RETAINED_TOOLS = [
+    "report_cycle", "wait", "wait_on_worker", "ask_user", "update_session_summary",
+] as const;
+
+/**
  * Merge the built-in grouping with a deployment's session-policy
  * `toolGroups` override ({ group: [toolName, ...] }; policy wins per tool).
  */

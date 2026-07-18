@@ -23,17 +23,20 @@ export function registerSystemTools(server: McpServer, ctx: ServerContext) {
                 title: "Get System Status",
                 description:
                     "Deployment status: embedded-worker count (workers running inside the portal process — dedicated "
-                    + "worker pods report 0 here and that is normal), session-creation policy, creatable agents, and "
-                    + "log-tail availability. include narrows the fetch (default all).",
+                    + "worker pods report 0 here and that is normal), session-creation policy, creatable agents, "
+                    + "log-tail availability, and the FULL deployment capability catalog (include: ['capabilities'] — "
+                    + "every MCP server, skill, and tool with its group, plus per-agent defaults; null = no worker has "
+                    + "published one; use with configure_session or create_session capabilities). include narrows the "
+                    + "fetch (default all).",
                 inputSchema: {
                     include: z
-                        .array(z.enum(["workers", "policy", "agents", "log_config"]))
+                        .array(z.enum(["workers", "policy", "agents", "log_config", "capabilities"]))
                         .optional()
                         .describe("Axes to fetch (default all)"),
                 },
             },
             withToolErrors(async ({ include }) => {
-                const wants = new Set(include ?? ["workers", "policy", "agents", "log_config"]);
+                const wants = new Set(include ?? ["workers", "policy", "agents", "log_config", "capabilities"]);
                 const result: Record<string, unknown> = {};
                 const errors: Record<string, string> = {};
 
@@ -58,6 +61,14 @@ export function registerSystemTools(server: McpServer, ctx: ServerContext) {
                 if (wants.has("policy")) await grab("policy", () => ctx.api!.call("getSessionCreationPolicy"));
                 if (wants.has("agents")) await grab("agents", () => ctx.api!.call("listCreatableAgents"));
                 if (wants.has("log_config")) await grab("log_config", () => ctx.api!.call("getLogConfig"));
+                if (wants.has("capabilities")) {
+                    await grab("capabilities", async () => {
+                        // Live re-fetch (not the boot-frozen ctx copy) so a
+                        // worker publishing after MCP boot is visible.
+                        const boot: any = await ctx.api!.getBootstrap();
+                        return boot?.capabilityCatalog ?? null;
+                    });
+                }
 
                 if (Object.keys(errors).length > 0) result.errors = errors;
                 return jsonResult(result);

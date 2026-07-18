@@ -56,7 +56,7 @@ engine's reason.
 | `GET /api/v1/health` | public | `{ ok, started, mode, apiVersion }` — readiness probe target |
 | `GET /api/v1/auth/config` | public | Auth provider discovery (see above) |
 | `GET /api/v1/auth/me` | authed | `{ principal, authorization }` for the caller |
-| `GET /api/v1/bootstrap` | authed | Mode, worker count, log config, models, creatable agents, session policy, auth context |
+| `GET /api/v1/bootstrap` | authed | Mode, worker count, log config, models, creatable agents, session policy, auth context, capability catalog (`capabilityCatalog`: MCP servers, skills, tools with groups, per-agent defaults; `null` until a worker publishes it) |
 | `GET /api/v1/sessions/:sessionId/artifacts/:filename/download` | authed | Binary artifact stream (`Content-Disposition: attachment`) |
 
 ## Streaming: `WS /api/v1/ws`
@@ -85,8 +85,8 @@ sessions return not-found to avoid an existence oracle.
 | Operation | Route | Parameters | Summary |
 |---|---|---|---|
 | listSessions | `GET /api/v1/sessions` | — | List session summaries. |
-| createSession | `POST /api/v1/sessions` | model (body), reasoningEffort (body), contextTier (body), groupId (body), visibility (body) | Create a session. Owner is the authenticated principal; visibility defaults to the deployment default. `groupId` is an initial placement into one of **your** groups — `403` if the group is missing or not yours. |
-| createSessionForAgent | `POST /api/v1/sessions/for-agent` | agentName (body), model (body), reasoningEffort (body), contextTier (body), title (body), splash (body), initialPrompt (body), groupId (body), visibility (body) | Create a session bound to a named agent. Same `groupId` placement rule as createSession. |
+| createSession | `POST /api/v1/sessions` | model (body), reasoningEffort (body), contextTier (body), groupId (body), visibility (body), capabilities (body) | Create a session. Owner is the authenticated principal; visibility defaults to the deployment default. `groupId` is an initial placement into one of **your** groups — `403` if the group is missing or not yours. `capabilities` is a per-tree `SessionCapabilityOverride` (`{ mcpServers?, skills?, tools? }`, each `{ enable?, disable? }`; tools entries may be tool or tool-group names). |
+| createSessionForAgent | `POST /api/v1/sessions/for-agent` | agentName (body), model (body), reasoningEffort (body), contextTier (body), title (body), splash (body), initialPrompt (body), groupId (body), visibility (body), capabilities (body) | Create a session bound to a named agent. Same `groupId` placement and `capabilities` shape as createSession. |
 | getSession | `GET /api/v1/sessions/:sessionId` | sessionId (path) | Get one session view (live orchestration status). |
 | deleteSession | `DELETE /api/v1/sessions/:sessionId` | sessionId (path) | Cancel and soft-delete a session. |
 | sendMessage | `POST /api/v1/sessions/:sessionId/messages` | sessionId (path), prompt (body), options (body) | Send a prompt (options: { enqueueOnly?, clientMessageIds? }). |
@@ -135,6 +135,8 @@ group membership is per-viewer state, not a property of the session. See
 | completeSession | `POST /api/v1/management/sessions/:sessionId/complete` | sessionId (path), reason (body) | Mark a session completed. |
 | stopSessionTurn | `POST /api/v1/management/sessions/:sessionId/stop-turn` | sessionId (path), options (body) | Abort the in-flight turn. |
 | setSessionModel | `POST /api/v1/management/sessions/:sessionId/model` | sessionId (path), options (body) | Switch the session model ({ model, reasoningEffort? }). |
+| configureSession | `POST /api/v1/management/sessions/:sessionId/capabilities` | sessionId (path), capabilities (body) | Reconfigure the session TREE's capability override (any tree member id; stored on the tree root; applies next turn; `null` clears). |
+| getSessionCapabilities | `GET /api/v1/management/sessions/:sessionId/capabilities` | sessionId (path) | The tree-root capability override governing this session (`null` = none). |
 | restartSystemSession | `POST /api/v1/management/sessions/:agentIdOrSessionId/restart-system` | agentIdOrSessionId (path), options (body) | Restart a system session (complete \| terminate \| hard_delete). |
 | exportExecutionHistory | `POST /api/v1/management/sessions/:sessionId/export-execution-history` | sessionId (path) | Export execution history to an artifact; returns artifact meta. |
 | getSessionStatus | `GET /api/v1/management/sessions/:sessionId/status` | sessionId (path) | Live custom status + orchestration status. |

@@ -14,6 +14,7 @@ import {
     type FactStore,
     type EnhancedFactStore,
     type GraphStore,
+    type CapabilityCatalog,
 } from "pilotswarm-sdk";
 import { ApiClient } from "pilotswarm-sdk/api";
 import { createApiTokenProvider } from "./auth.js";
@@ -64,6 +65,15 @@ export interface ServerContext {
     authz: { ownershipEnforced: boolean; defaultVisibility: string; systemVisibility: string };
     /** True when running over the Web API (`--api-url`); false in direct mode. */
     webMode: boolean;
+    /**
+     * The deployment's capability catalog (MCP server names, skills, tools
+     * with groups, per-agent defaults) from /bootstrap — the valid-name
+     * universe for create_session/configure_session capability overrides.
+     * Null when the deployment has not published one (no worker yet, or a
+     * schema predating the catalog) and in direct mode. Frozen at boot like
+     * the other bootstrap-derived fields.
+     */
+    capabilityCatalog: CapabilityCatalog | null;
     models: ModelProviderRegistry | null;
     skills: Array<{ name: string; description: string; prompt: string }>;
     /**
@@ -108,6 +118,7 @@ export async function createContext(opts: CreateContextOptions): Promise<ServerC
     let admin = false;
     let ctxRole: string | null = null;
     let ctxAuthz = { ownershipEnforced: false, defaultVisibility: "private", systemVisibility: "read" };
+    let ctxCapabilityCatalog: CapabilityCatalog | null = null;
     let webAgents: AgentConfig[] | null = null;
 
     if (opts.apiUrl) {
@@ -150,6 +161,11 @@ export async function createContext(opts: CreateContextOptions): Promise<ServerC
                     defaultVisibility: String(boot.authz.defaultVisibility || "private"),
                     systemVisibility: String(boot.authz.systemVisibility || "read"),
                 };
+            }
+            // Deployment capability catalog (capability-profiles): null when
+            // no worker has published one.
+            if (boot?.capabilityCatalog && typeof boot.capabilityCatalog === "object") {
+                ctxCapabilityCatalog = boot.capabilityCatalog as CapabilityCatalog;
             }
         } catch {
             // leave defaults
@@ -286,6 +302,7 @@ export async function createContext(opts: CreateContextOptions): Promise<ServerC
         role: ctxRole,
         authz: ctxAuthz,
         webMode: Boolean(opts.apiUrl),
+        capabilityCatalog: ctxCapabilityCatalog,
         models,
         skills,
         registeredAgents,

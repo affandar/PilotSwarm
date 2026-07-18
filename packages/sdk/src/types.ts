@@ -148,6 +148,14 @@ export interface SerializableSessionConfig {
     waitThreshold?: number;
     /** Internal: name of the bound agent definition whose prompt should be layered into this session. */
     boundAgentName?: string;
+    /**
+     * Internal: for FREEFORM (agent-less) sub-agents, the ancestor agent
+     * whose capability profile (MCP grants, allowedSkills, toolPolicy)
+     * governs this session. Never affects prompt layering — capability
+     * resolution only. Prevents a restricted agent from spawning an
+     * unrestricted child by omitting agent_name.
+     */
+    capabilityProfileAgent?: string;
     /** Internal: selects how framework, app, and agent prompts compose for this session. */
     promptLayering?: {
         kind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent";

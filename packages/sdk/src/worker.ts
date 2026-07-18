@@ -246,7 +246,9 @@ export class PilotSwarmWorker {
                 agentMcpServers: this._agentMcpServers,
                 baseMcpServers: this._baseMcpServers,
                 agentDisabledSkills: this._agentDisabledSkills,
+                agentAllowedSkills: this._agentAllowedSkills,
                 agentToolPolicy: this._agentToolPolicy,
+                toolGroupMembers: this._buildToolGroupMembers(),
                 provider: options.provider,
                 modelProviders: this._modelProviders ?? undefined,
                 turnTimeoutMs: options.turnTimeoutMs,
@@ -1089,10 +1091,25 @@ export class PilotSwarmWorker {
             }
 
             const policy = agent.toolPolicy;
-            if (policy && (policy.allow?.length || policy.deny?.length)) {
+            // A bare "*" would make the Copilot SDK's tool-filter validation
+            // throw at session creation, bricking every session bound to the
+            // agent — drop it with a warning. An explicitly EMPTY allow list
+            // is a valid "floor tools only" restriction (kept), matching
+            // allowedSkills semantics.
+            const scrub = (names: string[] | undefined, side: string): string[] | undefined => {
+                if (names === undefined) return undefined;
+                const kept = names.filter((n) => n !== "*");
+                if (kept.length !== names.length) {
+                    console.warn(`[PilotSwarmWorker] Agent "${agent.name}": toolPolicy.${side} entry "*" is not valid (the SDK rejects bare wildcards); entry dropped.`);
+                }
+                return kept;
+            };
+            const allow = scrub(policy?.allow, "allow");
+            const deny = scrub(policy?.deny, "deny");
+            if (policy && (allow !== undefined || deny?.length)) {
                 this._agentToolPolicy[agent.name] = {
-                    ...(policy.allow?.length ? { allow: [...policy.allow] } : {}),
-                    ...(policy.deny?.length ? { deny: [...policy.deny] } : {}),
+                    ...(allow !== undefined ? { allow } : {}),
+                    ...(deny?.length ? { deny } : {}),
                 };
             } else {
                 delete this._agentToolPolicy[agent.name];
@@ -1143,6 +1160,16 @@ export class PilotSwarmWorker {
             })),
             agentDefaults,
         };
+    }
+
+    /** Invert the tool-group lookup into group → member names (for override expansion). */
+    private _buildToolGroupMembers(): Record<string, string[]> {
+        const toolGroups = resolveToolGroups((this._sessionPolicy as any)?.toolGroups);
+        const members: Record<string, string[]> = {};
+        for (const [name, group] of Object.entries(toolGroups)) {
+            (members[group] ??= []).push(name);
+        }
+        return members;
     }
 
     private _applyDeclaredAgentSkills(): void {

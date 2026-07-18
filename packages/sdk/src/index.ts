@@ -68,6 +68,10 @@ export type { RuntimeStorageProvider, DuroxideStorageProvider } from "./storage-
 export { migrateLegacyDuroxideSchema } from "./duroxide-schema-migration.js";
 export type { DuroxideSchemaMigrationOptions, DuroxideSchemaMigrationResult } from "./duroxide-schema-migration.js";
 export { PgSessionCatalog, PgSessionCatalogProvider, computeCacheHitRatio } from "./cms.js";
+export { normalizeCapabilityOverride, fingerprintCapabilityOverride, resolveToolAxis, expandToolNames } from "./capability-override.js";
+export type { SessionCapabilityOverride, SessionCapabilityAxisOverride } from "./capability-override.js";
+export { DEFAULT_TOOL_GROUPS, resolveToolGroups } from "./capability-catalog.js";
+export type { CapabilityCatalog, CapabilityCatalogAgentDefaults, CapabilityCatalogMcpServer, CapabilityCatalogSkill, CapabilityCatalogTool } from "./capability-catalog.js";
 export type { SessionCatalog, SessionCatalogProvider, SessionRow, SessionRowUpdates, SessionEvent, PlacementViewer, SessionPlacementResult, TopEventEmitterRow, InsertTurnMetricInput, CompleteTurnWritebackInput, TurnMetricRow, HourlyTokenBucketRow, TokensByModelRow, SessionMetricSummary, SessionMetricSummaryUpsert, FleetStats, UserStats, UserStatsBucket, UserStatsModelBucket, UserStatsOwnerKind, SessionTreeStats, SkillKind, SkillUsageRow, SessionTreeSkillUsage, FleetSkillUsageRow, FleetSkillUsage, RetrievalSurface, RetrievalOperation, RetrievalUsageRow, SessionTreeRetrievalUsage, FleetRetrievalUsageRow, FleetRetrievalUsage, GraphNodeUsageKind, GraphNodeUsageRow, FleetGraphNodeUsageRow, FleetGraphNodeUsage, GraphEdgeSearchUsageRow, UserProfile, UserPrincipal } from "./cms.js";
 export type {
     FactStore,

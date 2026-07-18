@@ -2121,8 +2121,51 @@ export class PilotSwarmManagementClient {
      * worker has published one (fresh deployment, pre-0035 schema).
      */
     async getCapabilityCatalog(): Promise<any | null> {
+        this._ensureStarted();
         const row = await this._catalog!.getCapabilityCatalog();
         return row?.catalog ?? null;
+    }
+
+    /** The tree-root capability override governing a session (any tree member id), or null. */
+    async getSessionCapabilityOverride(sessionId: string): Promise<any | null> {
+        this._ensureStarted();
+        return this._catalog!.getCapabilityOverride(sessionId);
+    }
+
+    /**
+     * Reconfigure a session TREE's capabilities (capability-profiles
+     * Phase 4). The id may be any tree member — the override is stored on
+     * the tree ROOT's row, the single authority (review addendum 1), and
+     * every member converges at its next assembly via the capability
+     * fingerprint. The durable `set_capabilities` command is a best-effort
+     * trigger on the root orchestration (audit event + warm-session nudge);
+     * executions pinned on frozen versions that predate it reject it
+     * harmlessly (review addendum 2) — the CMS write above has already
+     * taken effect.
+     */
+    async configureSessionCapabilities(
+        sessionId: string,
+        override: import("./capability-override.js").SessionCapabilityOverride | null,
+    ): Promise<{ appliesOn: "next_turn"; commandDelivered: boolean }> {
+        this._ensureStarted();
+        const row = await this._catalog!.getSession(sessionId).catch(() => null);
+        if (!row || row.deletedAt) throw new Error(`Session ${sessionId.slice(0, 8)} was not found`);
+        const rootId = row.rootSessionId || sessionId;
+        const stored = await this._catalog!.setCapabilityOverride(rootId, override);
+        if (!stored) throw new Error("Deployment database predates capability overrides (migration 0036).");
+        let commandDelivered = false;
+        try {
+            await this.sendCommand(rootId, {
+                cmd: "set_capabilities",
+                id: buildLifecycleCommandId("set-capabilities"),
+                args: { override: override ?? null, source: "user" },
+            });
+            commandDelivered = true;
+        } catch {
+            // Orchestration not live (idle/completed) — nothing to nudge;
+            // the stored override applies when the next turn assembles.
+        }
+        return { appliesOn: "next_turn", commandDelivered };
     }
 
     async pruneDeletedSummaries(olderThan: Date): Promise<number> {

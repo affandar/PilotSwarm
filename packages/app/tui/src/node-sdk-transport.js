@@ -8,6 +8,7 @@ import { createRequire } from "node:module";
 import {
     FilesystemArtifactStore,
     loadAgentFiles,
+    normalizeCapabilityOverride,
     PilotSwarmClient,
     PilotSwarmManagementClient,
     createSessionBlobStore,
@@ -643,6 +644,40 @@ export class NodeSdkTransport {
     }
 
     /**
+     * Normalize an untrusted capabilities payload against the deployment
+     * catalog when one is available (unknown names dropped with a warning);
+     * without a catalog the sanitized override passes through — assembly
+     * ignores unknown names harmlessly.
+     */
+    async _normalizeCapabilitiesInput(capabilities) {
+        if (!capabilities || typeof capabilities !== "object") return null;
+        const catalog = await this.getCapabilityCatalog().catch(() => null);
+        const validators = catalog
+            ? {
+                mcpServers: (name) => (catalog.mcpServers ?? []).some((s) => s?.name === name),
+                skills: (name) => (catalog.skills ?? []).some((s) => s?.name === name),
+                tools: (name) => (catalog.tools ?? []).some((t) => t?.name === name || t?.group === name),
+            }
+            : undefined;
+        const { override, dropped } = normalizeCapabilityOverride(capabilities, validators);
+        for (const [axis, names] of Object.entries(dropped)) {
+            console.warn(`[NodeSdkTransport] capability override: dropped unknown ${axis} entries: ${names.join(", ")}`);
+        }
+        return override;
+    }
+
+    /** Reconfigure a session TREE's capability override (applies next turn). */
+    async configureSession(sessionId, capabilities) {
+        const override = await this._normalizeCapabilitiesInput(capabilities);
+        return this.mgmt.configureSessionCapabilities(sessionId, override);
+    }
+
+    /** The tree-root capability override governing a session, or null. */
+    async getSessionCapabilities(sessionId) {
+        return this.mgmt.getSessionCapabilityOverride(sessionId);
+    }
+
+    /**
      * Deployment capability catalog. Embedded mode builds it from the live
      * worker; remote mode reads the worker-published CMS row (null when no
      * worker has published one or the schema predates migration 0035).
@@ -1096,8 +1131,9 @@ export class NodeSdkTransport {
         );
     }
 
-    async createSession({ model, reasoningEffort, contextTier, owner, groupId, visibility } = {}) {
+    async createSession({ model, reasoningEffort, contextTier, owner, groupId, visibility, capabilities } = {}) {
         const effectiveModel = await this.assertSessionModelCreatable({ model, owner });
+        const normalizedCapabilities = await this._normalizeCapabilitiesInput(capabilities);
         const session = await this.client.createSession({
             ...(effectiveModel ? { model: effectiveModel } : {}),
             ...(reasoningEffort ? { reasoningEffort } : {}),
@@ -1105,13 +1141,15 @@ export class NodeSdkTransport {
             ...(owner ? { owner } : {}),
             ...(groupId ? { groupId } : {}),
             ...(visibility ? { visibility } : {}),
+            ...(normalizedCapabilities ? { capabilities: normalizedCapabilities } : {}),
         });
         this.sessionHandles.set(session.sessionId, session);
         return { sessionId: session.sessionId, model: effectiveModel, reasoningEffort: reasoningEffort || undefined, contextTier: contextTier || undefined };
     }
 
-    async createSessionForAgent(agentName, { model, reasoningEffort, contextTier, title, splash, splashMobile, initialPrompt, owner, groupId, visibility } = {}) {
+    async createSessionForAgent(agentName, { model, reasoningEffort, contextTier, title, splash, splashMobile, initialPrompt, owner, groupId, visibility, capabilities } = {}) {
         const effectiveModel = await this.assertSessionModelCreatable({ model, owner });
+        const normalizedCapabilities = await this._normalizeCapabilitiesInput(capabilities);
         const session = await this.client.createSessionForAgent(agentName, {
             ...(effectiveModel ? { model: effectiveModel } : {}),
             ...(reasoningEffort ? { reasoningEffort } : {}),
@@ -1123,6 +1161,7 @@ export class NodeSdkTransport {
             ...(owner ? { owner } : {}),
             ...(groupId ? { groupId } : {}),
             ...(visibility ? { visibility } : {}),
+            ...(normalizedCapabilities ? { capabilities: normalizedCapabilities } : {}),
         });
         this.sessionHandles.set(session.sessionId, session);
         return {

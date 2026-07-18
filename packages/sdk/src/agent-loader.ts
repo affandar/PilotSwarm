@@ -94,9 +94,15 @@ export interface AgentConfig {
     /**
      * Restriction: when present, sessions bound to this agent may load ONLY
      * these SKILL.md skills from the deployment catalog (mapped to the CLI
-     * as disabledSkills = catalog − allowedSkills). Absent means all catalog
-     * skills — today's behavior. Distinct from `skills:`, which eagerly
-     * preloads skill bodies into the agent prompt. A schemaVersion-2 shape.
+     * as disabledSkills = catalog − allowedSkills; the complement is
+     * recomputed against the live skill directories at session assembly so
+     * skills added after worker boot stay governed). Absent means all
+     * catalog skills — today's behavior. Distinct from `skills:`, which
+     * eagerly preloads skill bodies into the agent prompt. A
+     * schemaVersion-2 shape.
+     *
+     * Limitation: the Copilot CLI's own BUILTIN skills are outside the
+     * deployment catalog and are not governed by this restriction.
      */
     allowedSkills?: string[];
     /**
@@ -194,6 +200,29 @@ function parseInlineList(value: string): string[] {
         .filter(Boolean);
 }
 
+/**
+ * Parse the YAML flow-map spelling `{ allow: [a, b], deny: [c] }` for
+ * toolPolicy. Returns null when the value is not a recognizable flow map —
+ * callers must warn loudly rather than silently dropping a RESTRICTION.
+ */
+function parseToolPolicyFlowMap(value: string): { allow?: string[]; deny?: string[] } | null {
+    const trimmed = value.trim();
+    if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) return null;
+    const inner = trimmed.slice(1, -1);
+    const result: { allow?: string[]; deny?: string[] } = {};
+    const re = /(allow|deny)\s*:\s*\[([^\]]*)\]/g;
+    let match: RegExpExecArray | null;
+    let found = false;
+    while ((match = re.exec(inner)) !== null) {
+        found = true;
+        result[match[1] as "allow" | "deny"] = match[2]
+            .split(",")
+            .map((s) => stripSurroundingQuotes(s.trim()))
+            .filter(Boolean);
+    }
+    return found ? result : null;
+}
+
 function parseAgentFrontmatter(content: string): {
     meta: ParsedAgentMeta;
     body: string;
@@ -287,10 +316,24 @@ function parseAgentFrontmatter(content: string): {
         const key = line.slice(0, colonIdx).trim();
         let value = line.slice(colonIdx + 1).trim();
 
-        // Strip surrounding quotes
+        // Strip surrounding quotes; for UNQUOTED scalars strip trailing YAML
+        // comments (a bare `#...` value IS a comment; " #" ends the scalar).
+        // Without this, `toolPolicy: # restrict` reads as a non-empty value
+        // and the whole nested restriction silently fails OPEN.
         if ((value.startsWith('"') && value.endsWith('"')) ||
             (value.startsWith("'") && value.endsWith("'"))) {
             value = value.slice(1, -1);
+        } else if (value.startsWith("#")) {
+            value = "";
+        } else {
+            const commentIdx = value.search(/\s#/);
+            if (commentIdx !== -1) value = value.slice(0, commentIdx).trim();
+        }
+
+        // An indented allow:/deny: OUTSIDE a toolPolicy block means the
+        // block entry failed to parse — never silently ignore a restriction.
+        if (!inToolPolicy && indented && (key === "allow" || key === "deny")) {
+            console.warn(`[agent-loader] Indented "${key}:" found outside a toolPolicy block — the restriction was NOT applied. Check the toolPolicy line's formatting.`);
         }
 
         // toolPolicy sub-keys (indented allow:/deny: inside the block)
@@ -341,6 +384,15 @@ function parseAgentFrontmatter(content: string): {
             meta.allowedSkills = parseInlineList(value);
         } else if (key === "allowedSkills" && !value) {
             meta.allowedSkills = [];
+        } else if (key === "toolPolicy" && value) {
+            // Inline flow-map spelling: toolPolicy: { allow: [a], deny: [b] }
+            const flowPolicy = parseToolPolicyFlowMap(value);
+            if (flowPolicy) {
+                meta.toolPolicy = flowPolicy;
+            } else {
+                console.warn(`[agent-loader] Unrecognized inline toolPolicy value ${JSON.stringify(value)} — the restriction was NOT applied. Use the nested block form or { allow: [...], deny: [...] }.`);
+            }
+            currentKey = null;
         } else if (key === "toolPolicy" && !value) {
             inToolPolicy = true;
             currentKey = null;
@@ -431,9 +483,11 @@ export function loadAgentFiles(agentsDir: string): AgentConfig[] {
                 mcpServers: meta.mcpServers && meta.mcpServers.length > 0 ? meta.mcpServers : undefined,
                 inheritDefaultMcpServers: meta.inheritDefaultMcpServers,
                 // An explicitly empty allowedSkills is a valid "no skills"
-                // restriction, so undefined-ness (not length) gates it.
+                // restriction, so undefined-ness (not length) gates it —
+                // and likewise an explicitly empty toolPolicy.allow is a
+                // valid "floor tools only" restriction.
                 allowedSkills: meta.allowedSkills,
-                toolPolicy: meta.toolPolicy && (meta.toolPolicy.allow?.length || meta.toolPolicy.deny?.length)
+                toolPolicy: meta.toolPolicy && (meta.toolPolicy.allow !== undefined || meta.toolPolicy.deny?.length)
                     ? meta.toolPolicy
                     : undefined,
                 system: meta.system,

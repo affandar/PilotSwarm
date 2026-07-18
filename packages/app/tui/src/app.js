@@ -434,6 +434,22 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                     return;
                 }
             }
+            if (modal.type === "capabilityPicker") {
+                // Space toggles in place (modal stays open); Enter falls
+                // through to MODAL_CONFIRM which creates the session.
+                if (input === " ") {
+                    controller.toggleCapabilityPickerItem();
+                    return;
+                }
+                if (key.rightArrow) {
+                    controller.setCapabilityPickerGroupExpanded(true);
+                    return;
+                }
+                if (key.leftArrow) {
+                    controller.setCapabilityPickerGroupExpanded(false);
+                    return;
+                }
+            }
             if (key.return) {
                 controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM).catch(() => {});
                 return;

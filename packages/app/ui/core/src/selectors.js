@@ -4798,6 +4798,148 @@ export function selectSessionOwnerFilterModal(state, maxWidth = 88) {
     };
 }
 
+export function selectCapabilityPickerModal(state, maxWidth = 88) {
+    const modal = state.ui.modal;
+    if (!modal || modal.type !== "capabilityPicker") return null;
+    const items = Array.isArray(modal.items) ? modal.items : [];
+    const checked = modal.checked || { mcpServers: {}, skills: {}, tools: {} };
+    const baseline = modal.baseline || { mcpServers: {}, skills: {}, tools: {} };
+    const selectedIndex = Math.max(0, Math.min(Number(modal.selectedIndex) || 0, Math.max(0, items.length - 1)));
+    const selectedItem = items[selectedIndex] || null;
+    const contentWidth = Math.max(24, maxWidth - 4);
+
+    const rows = [];
+    const rowItemIndexes = [];
+    let selectedRowIndex = 0;
+    let currentSection = null;
+    const SECTION_LABELS = {
+        mcpServer: "MCP Servers",
+        skill: "Skills",
+        toolGroup: "Tools",
+        tool: "Tools",
+    };
+    const pushHeading = (label) => {
+        rows.push(fitRuns([{ text: label, color: "cyan", bold: true }], contentWidth));
+        rowItemIndexes.push(null);
+    };
+
+    items.forEach((item, index) => {
+        const section = SECTION_LABELS[item.kind] || "Capabilities";
+        if (section !== currentSection) {
+            currentSection = section;
+            pushHeading(section);
+        }
+        let runs;
+        if (item.kind === "toolGroup") {
+            const memberNames = Array.isArray(item.tools) ? item.tools : [];
+            const checkedCount = memberNames.filter((name) => checked.tools?.[name]).length;
+            const glyph = checkedCount === 0 ? "[ ] " : checkedCount === memberNames.length ? "[x] " : "[~] ";
+            runs = fitRuns([
+                { text: item.expanded ? "▾ " : "▸ ", color: "gray" },
+                { text: glyph, color: checkedCount > 0 ? "cyan" : "gray", bold: checkedCount > 0 },
+                { text: item.name, color: "white", bold: checkedCount > 0 },
+                { text: ` (${checkedCount}/${memberNames.length})`, color: "gray" },
+            ], contentWidth);
+        } else {
+            const isChecked = Boolean(checked[item.axis]?.[item.name]);
+            runs = fitRuns([
+                // Expanded member tools indent under their group row.
+                ...(item.kind === "tool" && item.group ? [{ text: "    ", color: "gray" }] : []),
+                { text: isChecked ? "[x] " : "[ ] ", color: isChecked ? "cyan" : "gray", bold: isChecked },
+                { text: item.name, color: "white", bold: isChecked },
+                ...(item.kind === "mcpServer" && item.isDefault ? [{ text: " · default", color: "gray" }] : []),
+            ], contentWidth);
+        }
+        if (index === selectedIndex) {
+            selectedRowIndex = rows.length;
+            runs = applyActiveHighlightRuns(runs, { preserveColors: true });
+        }
+        rows.push(runs);
+        rowItemIndexes.push(index);
+    });
+
+    // Pending-change count across the three axes (baseline vs checked).
+    let changeCount = 0;
+    for (const axis of ["mcpServers", "skills", "tools"]) {
+        for (const name of Object.keys(baseline[axis] || {})) {
+            if (Boolean(baseline[axis][name]) !== Boolean(checked[axis]?.[name])) changeCount += 1;
+        }
+    }
+
+    const selectedDescription = selectedItem?.kind === "skill" && selectedItem.description
+        ? selectedItem.description
+        : selectedItem?.kind === "mcpServer"
+            ? `MCP server${selectedItem.isDefault ? " · deployment default set" : ""}.`
+            : selectedItem?.kind === "toolGroup"
+                ? `Tool group · ${selectedItem.tools?.length || 0} tools. Toggling stores the group name; expand for per-tool control.`
+                : selectedItem?.kind === "tool"
+                    ? selectedItem.group ? `Tool in the ${selectedItem.group} group.` : "Ungrouped tool."
+                    : "Toggle the capabilities this session may use.";
+    const detailsLines = [
+        [{
+            text: selectedItem?.name || "Capabilities",
+            color: "white",
+            bold: true,
+        }],
+        [{ text: "", color: "gray" }],
+        [{ text: selectedDescription, color: "white" }],
+        [{ text: "", color: "gray" }],
+        [{
+            text: changeCount === 0
+                ? "No changes — the agent profile applies unchanged."
+                : `${changeCount} change${changeCount === 1 ? "" : "s"} will be saved as a session override.`,
+            color: changeCount === 0 ? "gray" : "yellow",
+        }],
+        [{ text: "", color: "gray" }],
+        [{
+            text: "Space",
+            color: "cyan",
+            bold: true,
+        }, {
+            text: " toggle  ",
+            color: "gray",
+        }, {
+            text: "←/→",
+            color: "cyan",
+            bold: true,
+        }, {
+            text: " group  ",
+            color: "gray",
+        }, {
+            text: "Enter",
+            color: "cyan",
+            bold: true,
+        }, {
+            text: " create  ",
+            color: "gray",
+        }, {
+            text: "Esc",
+            color: "cyan",
+            bold: true,
+        }, {
+            text: " cancel",
+            color: "gray",
+        }],
+    ];
+
+    return {
+        title: modal.title || "Session Capabilities",
+        rows: rows.length > 0 ? rows : [{ text: "No capabilities available.", color: "gray" }],
+        rowItemIndexes,
+        selectedRowIndex,
+        detailsTitle: selectedItem?.name || "Capabilities",
+        detailsLines,
+        changeCount,
+        idealWidth: Math.min(
+            Math.max(
+                52,
+                rows.reduce((max, row) => Math.max(max, Array.isArray(row) ? flattenRunsLength(row) : displayLength(row?.text || "")), 0) + 8,
+            ),
+            maxWidth,
+        ),
+    };
+}
+
 export function selectLogFilterModal(state, maxWidth = 96) {
     const modal = state.ui.modal;
     if (!modal || modal.type !== "logFilter") return null;

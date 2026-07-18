@@ -13,8 +13,11 @@ import { isEnhancedFactStore } from "./facts-store.js";
 import type { GraphStore } from "./graph-store.js";
 import { buildKnowledgePromptBlocks, loadKnowledgeIndexFromFactStore, buildEnhancedRetrievalPromptBlock, buildGraphReaderPromptBlock } from "./knowledge-index.js";
 import { composeStructuredSystemMessage, extractPromptContent, mergePromptSections } from "./prompt-layering.js";
+import { loadSkillsSync } from "./skills.js";
 import { buildPromptLayersEventPayload, type PromptLayerDescriptor } from "./prompt-layers.js";
 import { approvePermissionForSession } from "./permissions.js";
+import { fingerprintCapabilityOverride, resolveToolAxis } from "./capability-override.js";
+import { ALLOW_MODE_RETAINED_TOOLS } from "./capability-catalog.js";
 import { readSnapshotMarker, supportsVersionedSnapshots } from "./snapshot-protocol.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -112,16 +115,28 @@ export interface WorkerDefaults {
     baseMcpServers?: Record<string, any>;
     /**
      * Per-agent skill restriction, keyed by bound agent name: the skill
-     * names to DISABLE for that agent's sessions (already complemented
-     * against the deployment skill catalog from `allowedSkills`).
+     * names to DISABLE for that agent's sessions (complemented against the
+     * boot-time deployment skill catalog from `allowedSkills`).
      */
     agentDisabledSkills?: Record<string, string[]>;
+    /**
+     * Per-agent allowedSkills as declared, keyed by bound agent name. Used
+     * at assembly to RE-complement against the live skill directories (the
+     * CLI re-scans them per session create, so skills added after worker
+     * boot must still be denied for restricted agents).
+     */
+    agentAllowedSkills?: Record<string, string[]>;
     /**
      * Per-agent tool policy, keyed by bound agent name. `deny` merges into
      * the session's excludedTools (which always win); `allow` switches the
      * session to allow-list mode via availableTools.
      */
     agentToolPolicy?: Record<string, { allow?: string[]; deny?: string[] }>;
+    /**
+     * Tool-group membership (group → member tool names) for expanding
+     * group entries in session capability overrides.
+     */
+    toolGroupMembers?: Record<string, string[]>;
     /**
      * @deprecated Use `modelProviders` instead. Kept for backwards compatibility.
      * Custom LLM provider config (BYOK). Passed to every session.
@@ -138,6 +153,26 @@ export interface WorkerDefaults {
     turnTimeoutMs?: number;
     /** Turn inactivity watchdog in ms. 0 = disabled; undefined = 5-minute default. */
     turnInactivityTimeoutMs?: number;
+}
+
+// Live skill-name scan for allowedSkills re-complementing at assembly.
+// TTL-cached: assembly happens per session create/rebind, and a 30s window
+// is far fresher than the CLI's own view while avoiding fs storms.
+let _skillNamesCache: { names: string[]; at: number; key: string } | null = null;
+function currentSkillNames(skillDirs: string[]): string[] {
+    const key = skillDirs.join("|");
+    const now = Date.now();
+    if (_skillNamesCache && _skillNamesCache.key === key && now - _skillNamesCache.at < 30_000) {
+        return _skillNamesCache.names;
+    }
+    const names = new Set<string>();
+    for (const dir of skillDirs) {
+        try {
+            for (const skill of loadSkillsSync(dir)) names.add(skill.name);
+        } catch { /* unreadable dir — the boot-time complement still applies */ }
+    }
+    _skillNamesCache = { names: [...names], at: now, key };
+    return _skillNamesCache.names;
 }
 
 function buildEffectivePromptLayers(workerDefaults: WorkerDefaults, config: SerializableSessionConfig): PromptLayerDescriptor[] {
@@ -1058,17 +1093,97 @@ export class SessionManager {
         // always win in the CLI, so a policy can narrow but never widen.
         // Allow-list mode implicitly retains report_cycle — the turn-cycling
         // tool sessions cannot function without.
-        const boundAgentName = effectiveSerializableConfig.boundAgentName;
+        // Capability-profile key: the bound agent, or — for FREEFORM
+        // sub-agents spawned without an agent — the profile agent inherited
+        // from the parent, so a restricted agent cannot mint an unrestricted
+        // child by omitting agent_name (review finding, Phase 2).
+        const boundAgentName = effectiveSerializableConfig.boundAgentName
+            ?? effectiveSerializableConfig.capabilityProfileAgent;
         const agentDisabledSkills = boundAgentName
             ? this.workerDefaults.agentDisabledSkills?.[boundAgentName]
             : undefined;
         const agentToolPolicy = boundAgentName
             ? this.workerDefaults.agentToolPolicy?.[boundAgentName]
             : undefined;
-        const sessionExcludedTools = ["task", ...(agentToolPolicy?.deny ?? [])];
-        const sessionAvailableTools = agentToolPolicy?.allow?.length
-            ? Array.from(new Set([...agentToolPolicy.allow, "report_cycle"]))
+
+        // Session-TREE capability override (capability-profiles Phase 3):
+        // stored once on the tree root's row and applied by every tree
+        // member on top of its own agent profile. FAIL CLOSED on a read
+        // error — running a turn on the unrestricted agent profile would
+        // silently re-enable everything a user disabled; a thrown error
+        // fails the turn retryably instead (review addendum 3).
+        let treeOverride: import("./capability-override.js").SessionCapabilityOverride | null = null;
+        if (this.sessionCatalog) {
+            try {
+                treeOverride = await this.sessionCatalog.getCapabilityOverride(sessionId);
+            } catch (error: unknown) {
+                throw new Error(
+                    `Capability override read failed for ${sessionId}: ${normalizeError(error).message} ` +
+                    `(failing closed; the turn will retry)`,
+                );
+            }
+        }
+        const capabilityFingerprint = fingerprintCapabilityOverride(treeOverride);
+
+        // MCP axis: enable pulls catalog servers in; disable removes; the
+        // agent profile is the baseline and disable wins.
+        if (treeOverride?.mcpServers) {
+            for (const name of treeOverride.mcpServers.enable ?? []) {
+                const server = this.workerDefaults.mcpServers?.[name];
+                if (server) effectiveMcpServers[name] = server;
+            }
+            for (const name of treeOverride.mcpServers.disable ?? []) {
+                delete effectiveMcpServers[name];
+            }
+        }
+
+        // Skills axis: final disabled = (agent-disabled ∪ override-disable)
+        // − (override-enable − override-disable). For restricted agents the
+        // complement is recomputed against the LIVE skill directories, not
+        // just the worker's boot snapshot — the CLI re-scans the dirs at
+        // session create, so an out-of-snapshot skill must still be denied.
+        const agentAllowedSkills = boundAgentName
+            ? this.workerDefaults.agentAllowedSkills?.[boundAgentName]
             : undefined;
+        const disabledSkillSet = new Set(agentDisabledSkills ?? []);
+        if (agentAllowedSkills !== undefined && this.workerDefaults.skillDirectories?.length) {
+            for (const name of currentSkillNames(this.workerDefaults.skillDirectories)) {
+                if (!agentAllowedSkills.includes(name)) disabledSkillSet.add(name);
+            }
+        }
+        if (treeOverride?.skills) {
+            const skillDisable = new Set(treeOverride.skills.disable ?? []);
+            for (const name of treeOverride.skills.enable ?? []) {
+                if (!skillDisable.has(name)) disabledSkillSet.delete(name);
+            }
+            for (const name of skillDisable) disabledSkillSet.add(name);
+        }
+
+        // Tools axis: group entries expand to members (individual entries
+        // override their group; disable wins). Override-enable can lift an
+        // agent-policy deny, but never the "task" floor.
+        const toolAxis = resolveToolAxis(treeOverride?.tools, this.workerDefaults.toolGroupMembers ?? {});
+        const finalToolDeny = new Set([...(agentToolPolicy?.deny ?? []), ...toolAxis.disabled]);
+        for (const name of toolAxis.enabled) finalToolDeny.delete(name);
+        finalToolDeny.delete("task");
+        finalToolDeny.delete("*");
+        const sessionExcludedTools = ["task", ...finalToolDeny];
+        // Allow-list mode is active when `allow` is DEFINED — an explicitly
+        // empty list means "protocol floor only", matching allowedSkills
+        // semantics. availableTools filters across ALL tool sources in the
+        // CLI, so allow-mode must also retain the session's granted MCP
+        // servers' tools ("mcp:*" — only granted servers exist in this
+        // session's config) or Phase-1 MCP grants silently die.
+        const allowMode = agentToolPolicy?.allow !== undefined;
+        const sessionAvailableTools = allowMode
+            ? Array.from(new Set([
+                ...(agentToolPolicy?.allow ?? []),
+                ...toolAxis.enabled,
+                ...ALLOW_MODE_RETAINED_TOOLS,
+                ...(Object.keys(effectiveMcpServers).length > 0 ? ["mcp:*"] : []),
+            ])).filter((name) => name !== "*")
+            : undefined;
+        const finalDisabledSkills = [...disabledSkillSet];
 
         const sessionConfig: any = {
             sessionId,
@@ -1104,7 +1219,7 @@ export class SessionManager {
             // win over availableTools in the CLI.
             excludedTools: sessionExcludedTools,
             ...(sessionAvailableTools ? { availableTools: sessionAvailableTools } : {}),
-            ...(agentDisabledSkills?.length ? { disabledSkills: agentDisabledSkills } : {}),
+            ...(finalDisabledSkills.length ? { disabledSkills: finalDisabledSkills } : {}),
             // Custom LLM provider — resolve from registry or legacy single provider
             ...resolvedProviderConfig,
             // Pass loaded skills and agents from worker defaults; MCP servers
@@ -1130,6 +1245,16 @@ export class SessionManager {
                 console.warn(
                     `[SessionManager] model config changed for ${sessionId}; ` +
                     `disconnecting warm Copilot session so it can resume with the new model config.`,
+                );
+                await existing.destroy();
+                this.sessions.delete(sessionId);
+            } else if (existing.appliedCapabilityFingerprint !== capabilityFingerprint) {
+                // MCP servers and skills are fixed at session build, so a
+                // changed tree override requires a rebind — same cost as a
+                // model switch (capability-profiles Phase 4).
+                console.warn(
+                    `[SessionManager] capability override changed for ${sessionId}; ` +
+                    `disconnecting warm Copilot session so it can rebind with the new capability set.`,
                 );
                 await existing.destroy();
                 this.sessions.delete(sessionId);
@@ -1224,6 +1349,7 @@ export class SessionManager {
         }
 
         const managed = new ManagedSession(sessionId, copilotSession, config);
+        managed.appliedCapabilityFingerprint = capabilityFingerprint;
         this.sessions.set(sessionId, managed);
         const promptLayers = buildEffectivePromptLayers(this.workerDefaults, config);
         if (promptLayers.length > 0 && this.sessionCatalog) {
@@ -1348,6 +1474,10 @@ export class SessionManager {
                                 tools: [...ManagedSession.systemToolDefs(), ...ManagedSession.subAgentToolDefs()],
                                 onPermissionRequest: approvePermissionForSession,
                             });
+                            // Transient dehydration-retry session: leave the
+                            // capability fingerprint empty — a later
+                            // getOrCreate under a non-empty override sees a
+                            // mismatch and rebinds, which is the safe side.
                             const managed = new ManagedSession(sessionId, copilotSession, config);
                             this.sessions.set(sessionId, managed);
                             // Brief pause before retry

@@ -675,6 +675,228 @@ function formatAgentDisplayTitle(agentName, title) {
         : "Agent";
 }
 
+// ─── Session capabilities (capability-profiles Phases 3/4) ──────────────
+//
+// The deployment capability catalog (names + metadata only) drives the
+// create-flow Capabilities picker and the Manage-session Capabilities tab.
+// The user's CHANGES relative to the chosen agent's profile become an
+// enable/disable override delta; an untouched picker yields NO override.
+
+export function isCapabilityCatalogEmpty(catalog) {
+    if (!catalog || typeof catalog !== "object") return true;
+    const mcpServers = Array.isArray(catalog.mcpServers) ? catalog.mcpServers : [];
+    const skills = Array.isArray(catalog.skills) ? catalog.skills : [];
+    const tools = Array.isArray(catalog.tools) ? catalog.tools : [];
+    return mcpServers.length === 0 && skills.length === 0 && tools.length === 0;
+}
+
+/**
+ * Group the catalog's tools by their `group` tag, preserving catalog order.
+ * Returns ordered `groups` ([{ name, tools }]), the `ungrouped` tail, and a
+ * `members` lookup (group name → member tool names) for override expansion.
+ */
+export function buildCapabilityToolGroups(catalog) {
+    const grouped = new Map();
+    const ungrouped = [];
+    for (const tool of Array.isArray(catalog?.tools) ? catalog.tools : []) {
+        const name = String(tool?.name || "").trim();
+        if (!name) continue;
+        const group = typeof tool?.group === "string" && tool.group.trim() ? tool.group.trim() : null;
+        if (group) {
+            if (!grouped.has(group)) grouped.set(group, []);
+            grouped.get(group).push(name);
+        } else {
+            ungrouped.push(name);
+        }
+    }
+    return {
+        groups: [...grouped.entries()].map(([name, tools]) => ({ name, tools })),
+        ungrouped,
+        members: Object.fromEntries(grouped.entries()),
+    };
+}
+
+/**
+ * Pre-check baseline for the three capability axes. Agent sessions start
+ * from the agent's catalog profile (`agentDefaults`); generic sessions (or
+ * agents the catalog does not know) show everything the deployment offers
+ * unchecked-neutral — unchecked there is "no opinion", not a disable.
+ */
+export function buildCapabilityBaseline(catalog, agentName = null) {
+    const defaults = agentName ? catalog?.agentDefaults?.[agentName] || null : null;
+    const mcpServers = {};
+    const grantedServers = new Set(Array.isArray(defaults?.mcpServers) ? defaults.mcpServers : []);
+    for (const server of Array.isArray(catalog?.mcpServers) ? catalog.mcpServers : []) {
+        const name = String(server?.name || "").trim();
+        if (!name) continue;
+        mcpServers[name] = Boolean(defaults) && grantedServers.has(name);
+    }
+    const skills = {};
+    const allowedSkills = Array.isArray(defaults?.skills) ? new Set(defaults.skills) : null;
+    for (const skill of Array.isArray(catalog?.skills) ? catalog.skills : []) {
+        const name = String(skill?.name || "").trim();
+        if (!name) continue;
+        // Agent profile: all skills unless restricted by the `skills` array.
+        skills[name] = Boolean(defaults) && (allowedSkills ? allowedSkills.has(name) : true);
+    }
+    const tools = {};
+    // Allow-list agents get allow ∪ additive `tools` (+ report_cycle, which
+    // the worker always retains); deny-list agents get everything minus deny.
+    const allowList = Array.isArray(defaults?.toolPolicy?.allow) && defaults.toolPolicy.allow.length > 0
+        ? new Set([...defaults.toolPolicy.allow, ...(Array.isArray(defaults.tools) ? defaults.tools : []), "report_cycle"])
+        : null;
+    const denyList = new Set(Array.isArray(defaults?.toolPolicy?.deny) ? defaults.toolPolicy.deny : []);
+    for (const tool of Array.isArray(catalog?.tools) ? catalog.tools : []) {
+        const name = String(tool?.name || "").trim();
+        if (!name) continue;
+        tools[name] = Boolean(defaults) && (allowList ? allowList.has(name) : !denyList.has(name));
+    }
+    return { mcpServers, skills, tools };
+}
+
+/**
+ * Apply a stored override to a baseline's checked maps (the Manage tab's
+ * "current effective checks"). Mirrors the SDK's resolution: group entries
+ * expand to members, individual entries refine their group, disable wins at
+ * equal specificity.
+ */
+export function applyCapabilityOverrideToChecked(baseline, override, groupMembers = {}) {
+    const next = {
+        mcpServers: { ...(baseline?.mcpServers || {}) },
+        skills: { ...(baseline?.skills || {}) },
+        tools: { ...(baseline?.tools || {}) },
+    };
+    if (!override || typeof override !== "object") return next;
+    for (const axis of ["mcpServers", "skills"]) {
+        const axisOverride = override[axis];
+        if (!axisOverride || typeof axisOverride !== "object") continue;
+        for (const name of Array.isArray(axisOverride.enable) ? axisOverride.enable : []) {
+            if (name in next[axis]) next[axis][name] = true;
+        }
+        for (const name of Array.isArray(axisOverride.disable) ? axisOverride.disable : []) {
+            if (name in next[axis]) next[axis][name] = false;
+        }
+    }
+    const toolsOverride = override.tools;
+    if (toolsOverride && typeof toolsOverride === "object") {
+        const enable = Array.isArray(toolsOverride.enable) ? toolsOverride.enable : [];
+        const disable = Array.isArray(toolsOverride.disable) ? toolsOverride.disable : [];
+        const setMembers = (names, value) => {
+            for (const name of names) {
+                for (const member of groupMembers[name] || []) {
+                    if (member in next.tools) next.tools[member] = value;
+                }
+            }
+        };
+        const setIndividual = (names, value) => {
+            for (const name of names) {
+                if (!groupMembers[name] && name in next.tools) next.tools[name] = value;
+            }
+        };
+        setMembers(enable.filter((name) => groupMembers[name]), true);
+        setMembers(disable.filter((name) => groupMembers[name]), false);
+        setIndividual(enable, true);
+        setIndividual(disable, false);
+    }
+    return next;
+}
+
+/**
+ * The enable/disable delta between a baseline and the user's checked state,
+ * or null when nothing changed (untouched picker → no override). Tool
+ * changes that cover a WHOLE group collapse to the group name (the group
+ * toggle); partial-group changes stay individual tool names.
+ */
+export function buildCapabilityOverrideDelta(baseline, checked, groupMembers = {}) {
+    const axisDelta = (base = {}, current = {}) => {
+        const enable = [];
+        const disable = [];
+        for (const name of Object.keys(base)) {
+            const was = Boolean(base[name]);
+            const is = Boolean(current[name]);
+            if (was === is) continue;
+            (is ? enable : disable).push(name);
+        }
+        return { enable, disable };
+    };
+    const mcpServers = axisDelta(baseline?.mcpServers, checked?.mcpServers);
+    const skills = axisDelta(baseline?.skills, checked?.skills);
+    const rawTools = axisDelta(baseline?.tools, checked?.tools);
+    const enableSet = new Set(rawTools.enable);
+    const disableSet = new Set(rawTools.disable);
+    const claimed = new Set();
+    const toolEnable = [];
+    const toolDisable = [];
+    for (const [group, members] of Object.entries(groupMembers)) {
+        if (!Array.isArray(members) || members.length === 0) continue;
+        if (members.every((name) => enableSet.has(name))) {
+            toolEnable.push(group);
+            for (const name of members) claimed.add(name);
+        } else if (members.every((name) => disableSet.has(name))) {
+            toolDisable.push(group);
+            for (const name of members) claimed.add(name);
+        }
+    }
+    for (const name of rawTools.enable) {
+        if (!claimed.has(name)) toolEnable.push(name);
+    }
+    for (const name of rawTools.disable) {
+        if (!claimed.has(name)) toolDisable.push(name);
+    }
+    const axisValue = (enable, disable) => (enable.length > 0 || disable.length > 0
+        ? { ...(enable.length > 0 ? { enable } : {}), ...(disable.length > 0 ? { disable } : {}) }
+        : null);
+    const mcpValue = axisValue(mcpServers.enable, mcpServers.disable);
+    const skillValue = axisValue(skills.enable, skills.disable);
+    const toolValue = axisValue(toolEnable, toolDisable);
+    const override = {
+        ...(mcpValue ? { mcpServers: mcpValue } : {}),
+        ...(skillValue ? { skills: skillValue } : {}),
+        ...(toolValue ? { tools: toolValue } : {}),
+    };
+    return Object.keys(override).length > 0 ? override : null;
+}
+
+/**
+ * Flat selectable item list for the capability picker modal: MCP servers,
+ * skills, then tool groups (expandable to member tool rows) and ungrouped
+ * tools. Section headings are rendered by the selector, not stored here —
+ * the shared keyboard-nav handler indexes into this list.
+ */
+export function buildCapabilityPickerItems(catalog, expandedGroups = {}) {
+    const items = [];
+    for (const server of Array.isArray(catalog?.mcpServers) ? catalog.mcpServers : []) {
+        const name = String(server?.name || "").trim();
+        if (!name) continue;
+        items.push({ id: `mcp:${name}`, kind: "mcpServer", axis: "mcpServers", name, isDefault: Boolean(server.isDefault) });
+    }
+    for (const skill of Array.isArray(catalog?.skills) ? catalog.skills : []) {
+        const name = String(skill?.name || "").trim();
+        if (!name) continue;
+        items.push({
+            id: `skill:${name}`,
+            kind: "skill",
+            axis: "skills",
+            name,
+            description: String(skill?.description || "").trim(),
+        });
+    }
+    const { groups, ungrouped } = buildCapabilityToolGroups(catalog);
+    for (const group of groups) {
+        const expanded = Boolean(expandedGroups[group.name]);
+        items.push({ id: `group:${group.name}`, kind: "toolGroup", axis: "tools", name: group.name, tools: group.tools, expanded });
+        if (expanded) {
+            for (const toolName of group.tools) {
+                items.push({ id: `tool:${toolName}`, kind: "tool", axis: "tools", name: toolName, group: group.name });
+            }
+        }
+    }
+    for (const toolName of ungrouped) {
+        items.push({ id: `tool:${toolName}`, kind: "tool", axis: "tools", name: toolName, group: null });
+    }
+    return items;
+}
+
 function buildPromptAttachmentToken(filename) {
     return `📎 ${String(filename || "").trim()}`;
 }
@@ -3644,7 +3866,9 @@ export class PilotSwarmUiController {
                 });
                 return;
             }
-            await this.createSession(options);
+            // Still part of the deliberate create chain — offer the
+            // capability step (a no-op passthrough without a catalog).
+            await this.openCapabilityPicker(options, null);
             return;
         }
 
@@ -3690,6 +3914,140 @@ export class PilotSwarmUiController {
             },
         });
         this.dispatch({ type: "ui/status", text: "Select an agent and press Enter" });
+    }
+
+    /**
+     * Optional Capabilities step of the create chain (after the agent
+     * picker, before the final create). Skipped entirely — the session is
+     * created immediately, current behavior — when the deployment publishes
+     * no capability catalog. Enter/Confirm creates the session with the
+     * user's changes as an override delta (no changes → no override); Esc
+     * cancels the whole flow like the other pickers.
+     */
+    async openCapabilityPicker(sessionOptions = {}, agentName = null) {
+        // HttpApiTransport answers synchronously from bootstrap; the direct
+        // node-sdk transport is async — accept either shape.
+        let catalog = typeof this.transport.getCapabilityCatalog === "function"
+            ? this.transport.getCapabilityCatalog()
+            : null;
+        if (catalog && typeof catalog.then === "function") {
+            catalog = await catalog.catch(() => null);
+        }
+        if (isCapabilityCatalogEmpty(catalog)) {
+            await this._createSessionFromCapabilityFlow(sessionOptions, agentName);
+            return;
+        }
+        const baseline = buildCapabilityBaseline(catalog, agentName);
+        const expandedGroups = {};
+        this.dispatch({
+            type: "ui/modal",
+            modal: {
+                type: "capabilityPicker",
+                title: agentName ? `Capabilities for ${agentName}` : "Capabilities for new session",
+                items: buildCapabilityPickerItems(catalog, expandedGroups),
+                selectedIndex: 0,
+                previousFocus: this.getState().ui.focusRegion,
+                sessionOptions,
+                agentName: agentName || null,
+                catalog,
+                baseline,
+                checked: {
+                    mcpServers: { ...baseline.mcpServers },
+                    skills: { ...baseline.skills },
+                    tools: { ...baseline.tools },
+                },
+                expandedGroups,
+            },
+        });
+        this.dispatch({ type: "ui/status", text: "Space toggle · ←/→ collapse/expand group · Enter create · Esc cancel" });
+    }
+
+    async _createSessionFromCapabilityFlow(sessionOptions = {}, agentName = null) {
+        if (agentName) {
+            await this.createSessionForAgent(agentName, sessionOptions);
+            return;
+        }
+        await this.createSession(sessionOptions);
+    }
+
+    toggleCapabilityPickerItem(index = null) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "capabilityPicker") return;
+        const selectedIndex = index == null
+            ? Math.max(0, Number(modal.selectedIndex) || 0)
+            : Math.max(0, Number(index) || 0);
+        const item = modal.items?.[selectedIndex];
+        if (!item) return;
+        const checked = {
+            mcpServers: { ...modal.checked?.mcpServers },
+            skills: { ...modal.checked?.skills },
+            tools: { ...modal.checked?.tools },
+        };
+        if (item.kind === "toolGroup") {
+            // Tri-state group toggle: partial/unchecked → check all members;
+            // fully checked → uncheck all.
+            const allChecked = (item.tools || []).every((name) => checked.tools[name]);
+            for (const name of item.tools || []) checked.tools[name] = !allChecked;
+        } else {
+            checked[item.axis][item.name] = !checked[item.axis][item.name];
+        }
+        this.dispatch({ type: "ui/modal", modal: { ...modal, checked, selectedIndex } });
+    }
+
+    setCapabilityPickerGroupExpanded(expanded, index = null) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "capabilityPicker") return;
+        const selectedIndex = index == null
+            ? Math.max(0, Number(modal.selectedIndex) || 0)
+            : Math.max(0, Number(index) || 0);
+        const item = modal.items?.[selectedIndex];
+        // Collapsing from an expanded member row targets the row's group.
+        const groupName = item?.kind === "toolGroup" ? item.name : item?.kind === "tool" && item.group ? item.group : null;
+        if (!groupName) return;
+        const expandedGroups = { ...modal.expandedGroups, [groupName]: Boolean(expanded) };
+        const items = buildCapabilityPickerItems(modal.catalog, expandedGroups);
+        const groupIndex = items.findIndex((entry) => entry.id === `group:${groupName}`);
+        this.dispatch({
+            type: "ui/modal",
+            modal: {
+                ...modal,
+                items,
+                expandedGroups,
+                selectedIndex: groupIndex >= 0 ? groupIndex : 0,
+            },
+        });
+    }
+
+    /** The capability catalog + a session's stored tree override (Manage tab load). */
+    async loadSessionCapabilities(sessionId) {
+        let catalog = typeof this.transport.getCapabilityCatalog === "function"
+            ? this.transport.getCapabilityCatalog()
+            : null;
+        if (catalog && typeof catalog.then === "function") {
+            catalog = await catalog.catch(() => null);
+        }
+        const override = sessionId && typeof this.transport.getSessionCapabilities === "function"
+            ? await this.transport.getSessionCapabilities(sessionId)
+            : null;
+        return { catalog, override: override || null };
+    }
+
+    /**
+     * Persist a session TREE's capability override (null clears). Applies on
+     * the next turn — same silent turn-boundary contract as switching model.
+     */
+    async configureSessionCapabilities(sessionId, capabilities = null) {
+        if (!sessionId) {
+            this.dispatch({ type: "ui/status", text: "Select a session before configuring capabilities" });
+            return null;
+        }
+        if (typeof this.transport.configureSession !== "function") {
+            this.dispatch({ type: "ui/status", text: "Capability configuration is not supported by this transport" });
+            return null;
+        }
+        const result = await this.transport.configureSession(sessionId, capabilities ?? null);
+        this.dispatch({ type: "ui/status", text: "Capabilities apply on the next turn" });
+        return result;
     }
 
     async openNewSessionFlow(options = {}) {
@@ -5023,17 +5381,37 @@ export class PilotSwarmUiController {
             if (previousFocus) {
                 this.setFocus(previousFocus);
             }
+            // The optional Capabilities step sits between the agent picker
+            // and the final create; without a published catalog it falls
+            // straight through to the create.
             if (!item || item.kind === "generic") {
-                await this.createSession(sessionOptions);
+                await this.openCapabilityPicker(sessionOptions, null);
                 return;
             }
-            await this.createSessionForAgent(item.agentName, {
+            await this.openCapabilityPicker({
                 ...sessionOptions,
                 ...(item.title ? { title: item.title } : {}),
                 ...(item.splash ? { splash: item.splash } : {}),
                 ...(item.splashMobile ? { splashMobile: item.splashMobile } : {}),
                 ...(item.initialPrompt ? { initialPrompt: item.initialPrompt } : {}),
-            });
+            }, item.agentName);
+            return;
+        }
+        if (modal.type === "capabilityPicker") {
+            const previousFocus = modal.previousFocus;
+            const sessionOptions = modal.sessionOptions || {};
+            const { members } = buildCapabilityToolGroups(modal.catalog);
+            // Confirming with no changes is the Skip affordance: no delta →
+            // no override, the agent profile applies unchanged.
+            const capabilities = buildCapabilityOverrideDelta(modal.baseline, modal.checked, members);
+            this.dispatch({ type: "ui/modal", modal: null });
+            if (previousFocus) {
+                this.setFocus(previousFocus);
+            }
+            await this._createSessionFromCapabilityFlow(
+                capabilities ? { ...sessionOptions, capabilities } : sessionOptions,
+                modal.agentName || null,
+            );
             return;
         }
         if (modal.type === "logFilter") {

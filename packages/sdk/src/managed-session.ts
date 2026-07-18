@@ -319,6 +319,13 @@ export class ManagedSession {
     readonly sessionId: string;
     private copilotSession: CopilotSession;
     private config: ManagedSessionConfig;
+    /**
+     * Fingerprint of the session-tree capability override this warm session
+     * was assembled under. SessionManager compares it at getOrCreate and
+     * destroys/rebinds when the tree override changes (MCP servers and
+     * skills are fixed at session build). Stamped after construction.
+     */
+    appliedCapabilityFingerprint = "";
     /** Set for the duration of runTurn(); read by the lock-bypassing stop path. */
     private activeTurn: { turnIndex: number; startedAt: number } | null = null;
     /** Set only by requestStop(); classifies the turn unwind as "stopped". */

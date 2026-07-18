@@ -14,6 +14,7 @@ import {
     selectActivityPane,
     selectArtifactUploadModal,
     selectArtifactPickerModal,
+    selectCapabilityPickerModal,
     selectFilesFilterModal,
     selectFilesView,
     selectHistoryFormatModal,
@@ -1336,6 +1337,60 @@ function SessionGroupNameModalContainer({ controller }) {
     return React.createElement(SessionGroupNameModal, { state });
 }
 
+function CapabilityPickerModal({ state }) {
+    const platform = useUiPlatform();
+    const modal = selectCapabilityPickerModal(state);
+    if (!modal) return null;
+
+    const viewport = typeof platform.getViewport === "function"
+        ? platform.getViewport()
+        : { width: 120, height: 40 };
+    const width = Math.max(54, Math.min(modal.idealWidth || 76, (viewport.width || 120) - 16));
+    const listHeight = Math.max(8, Math.min(modal.rows.length + 2, 16, (viewport.height || 40) - 16));
+    const detailsHeight = Math.max(7, Math.min(10, (viewport.height || 40) - listHeight - 10));
+    const lines = modal.rows.length > 0
+        ? modal.rows
+        : [{ text: "No capabilities available.", color: "gray" }];
+    const contentRows = Math.max(1, listHeight - 2);
+    const scrollOffset = Math.max(0, modal.selectedRowIndex - Math.floor(contentRows / 2));
+
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Column, { width },
+            React.createElement(platform.Panel, {
+                title: modal.title,
+                color: "cyan",
+                focused: false,
+                width,
+                height: listHeight,
+                lines,
+                scrollOffset,
+                scrollMode: "top",
+                marginBottom: 1,
+                fillColor: "surface",
+            }),
+            React.createElement(platform.Panel, {
+                title: modal.detailsTitle || "Capabilities",
+                color: "cyan",
+                focused: false,
+                width,
+                height: detailsHeight,
+                lines: modal.detailsLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                fillColor: "surface",
+            }),
+        ));
+}
+
+function CapabilityPickerModalContainer({ controller }) {
+    const state = useControllerSelector(controller, (rootState) => ({
+        ui: {
+            modal: rootState.ui.modal,
+        },
+    }), shallowEqualObject);
+    return React.createElement(CapabilityPickerModal, { state });
+}
+
 function SessionOwnerFilterModal({ state }) {
     const platform = useUiPlatform();
     const modal = selectSessionOwnerFilterModal(state);
@@ -2203,6 +2258,7 @@ export function SharedPilotSwarmApp({ controller, versionLabel = null }) {
         React.createElement(ContextTierPickerModalContainer, { controller }),
         React.createElement(ThemePickerModalContainer, { controller }),
         React.createElement(SessionAgentPickerModalContainer, { controller }),
+        React.createElement(CapabilityPickerModalContainer, { controller }),
         React.createElement(SessionGroupPickerModalContainer, { controller }),
         React.createElement(SessionGroupNameModalContainer, { controller }),
         React.createElement(SessionOwnerFilterModalContainer, { controller }),

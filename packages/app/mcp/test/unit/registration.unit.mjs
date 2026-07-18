@@ -82,6 +82,7 @@ function makeCtx({ enhanced = false, graph = false, admin = false, web = false }
         api: web ? mockApi() : null,
         admin,
         webMode: web,
+        capabilityCatalog: null,
         models: null,
         skills: [],
         registeredAgents: [],
@@ -114,7 +115,7 @@ const WEB_TOOLS = ["list_artifacts", "get_artifact", "upload_artifact", "copy_ar
 const ADMIN_TOOLS = ["restart_system_session", "facts_admin"];
 const ALWAYS_TOOLS = [
     "create_session", "send_message", "send_and_wait", "list_sessions", "get_session_detail",
-    "get_capabilities", "stop_turn", "complete_session", "cancel_pending_messages",
+    "get_capabilities", "configure_session", "stop_turn", "complete_session", "cancel_pending_messages",
     "list_session_groups", "manage_session_group", "get_session_metrics", "get_fleet_overview",
     "list_child_outcomes", "get_execution_history", "list_agents", "get_agent_tree",
     "debug_session",
@@ -171,6 +172,19 @@ async function main() {
     // 5. get_capabilities descriptor mirrors ctx truth.
     {
         const ctx = makeCtx({ enhanced: true, graph: true, admin: true, web: true });
+        // Deployment capability catalog stashed from /bootstrap at boot —
+        // get_capabilities summarizes it (names + counts, tool GROUPS not
+        // the full tool list).
+        ctx.capabilityCatalog = {
+            mcpServers: [{ name: "github", isDefault: true }, { name: "grafana", isDefault: false }],
+            skills: [{ name: "deploy", description: "d" }],
+            tools: [
+                { name: "store_fact", group: "facts" },
+                { name: "read_facts", group: "facts" },
+                { name: "bash" },
+            ],
+            agentDefaults: { researcher: { mcpServers: ["github"], skills: null, tools: [] } },
+        };
         const server = createMcpServer(ctx);
         const [ct, st] = InMemoryTransport.createLinkedPair();
         const client = new Client({ name: "cap-test", version: "1.0.0" }, { capabilities: {} });
@@ -181,6 +195,14 @@ async function main() {
         record("capabilities: admin=true", caps.admin === true);
         record("capabilities: facts.search=true", caps.facts?.search === true);
         record("capabilities: graph=true", caps.graph === true);
+        const cat = caps.capability_catalog;
+        record("capabilities: catalog mcp servers w/ default flags",
+            cat?.mcp_servers?.length === 2 && cat.mcp_servers[0].name === "github" && cat.mcp_servers[0].is_default === true);
+        record("capabilities: catalog skill names", Array.isArray(cat?.skills) && cat.skills[0] === "deploy");
+        record("capabilities: catalog tool groups w/ member counts (not full tool list)",
+            cat?.tool_count === 3 && cat.tool_groups?.facts === 2 && cat.ungrouped_tools === 1 && !("tools" in (cat ?? {})));
+        record("capabilities: catalog agents_with_defaults",
+            Array.isArray(cat?.agents_with_defaults) && cat.agents_with_defaults[0] === "researcher");
         await client.close();
 
         const bare = makeCtx();
@@ -193,6 +215,7 @@ async function main() {
         record("capabilities: bare mode=direct", caps2.mode === "direct");
         record("capabilities: bare graph=false", caps2.graph === false);
         record("capabilities: bare facts.search=false", caps2.facts?.search === false);
+        record("capabilities: bare capability_catalog=null (unpublished)", caps2.capability_catalog === null);
         await client2.close();
     }
 

@@ -190,7 +190,68 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "deployment_capability_catalog",
             sql: migration_0035_deployment_capability_catalog(schema),
         },
+        {
+            version: "0036",
+            name: "session_capability_override",
+            sql: migration_0036_session_capability_override(schema),
+        },
     ];
+}
+
+// ─── Migration 0036: per-tree session capability overrides ──────
+
+function migration_0036_session_capability_override(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- 0036_session_capability_override: per-TREE capability override storage
+-- (capability-profiles Phases 3/4).
+--
+-- The override (SessionCapabilityOverride JSON: per-axis enable/disable
+-- deltas) lives ONLY on the tree root's row — the single authority (review
+-- addendum 1). Children carry nothing; every tree member resolves the root
+-- override at session assembly via cms_get_capability_override, which
+-- normalizes any session id to its root through the denormalized
+-- root_session_id column. The setter refuses non-root ids so a child row
+-- can never accidentally carry an override.
+--
+-- No hot-table DDL concerns: ADD COLUMN with NULL default is metadata-only
+-- on this Postgres version; no backfill — safe as one plain transactional
+-- migration.
+
+ALTER TABLE ${s}.sessions
+    ADD COLUMN IF NOT EXISTS capability_override JSONB;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_set_capability_override(p_session_id TEXT, p_override JSONB)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+AS $fn$
+DECLARE
+    v_root TEXT;
+BEGIN
+    SELECT COALESCE(root_session_id, session_id) INTO v_root
+    FROM ${s}.sessions WHERE session_id = p_session_id;
+    IF v_root IS NULL THEN
+        RETURN FALSE;
+    END IF;
+    UPDATE ${s}.sessions
+    SET capability_override = p_override
+    WHERE session_id = v_root;
+    RETURN FOUND;
+END;
+$fn$;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_get_capability_override(p_session_id TEXT)
+RETURNS JSONB
+LANGUAGE sql
+STABLE
+AS $fn$
+    SELECT root.capability_override
+    FROM ${s}.sessions me
+    JOIN ${s}.sessions root
+      ON root.session_id = COALESCE(me.root_session_id, me.session_id)
+    WHERE me.session_id = p_session_id;
+$fn$;
+`;
 }
 
 // ─── Migration 0035: worker-published deployment capability catalog ──

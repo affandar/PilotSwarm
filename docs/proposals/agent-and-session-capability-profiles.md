@@ -1,7 +1,11 @@
 # Per-Agent MCP Servers and Session Capability Selection
 
-**Status:** Draft / RFC — open questions resolved
-**Date:** 2026-07-16 (updated 2026-07-17: decisions recorded, see Decisions)
+**Status:** Accepted — implementation on `feat/capability-profiles-phase1`
+**Date:** 2026-07-16 (updated 2026-07-17: decisions recorded; 2026-07-18:
+Phases 1-2 landed — per-agent MCP via frontmatter + catalog publication
+[migrations 0035]; Phases 3-4 in progress — `capability_override` root-row
+storage [migration 0036], create-time `capabilities`, `configureSession`
+under frozen orchestration v1.0.62)
 **Scope:** agent-definition capability declarations (MCP servers, skills, tools),
 a deployment capability catalog, per-session capability overrides at create and
 at turn boundaries, and the API / MCP / portal / TUI surfaces for all of it

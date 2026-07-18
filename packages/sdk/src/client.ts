@@ -121,6 +121,13 @@ export class PilotSwarmClient {
         groupId?: string | null;
         /** Sharing level for a new ROOT session (children resolve through their root). */
         visibility?: SessionVisibility | null;
+        /**
+         * Normalized per-tree capability override (capability-profiles
+         * Phase 3). Stored on the new ROOT session's row before the first
+         * turn can assemble; ignored for sub-agent creates (children resolve
+         * their tree root's override).
+         */
+        capabilities?: import("./capability-override.js").SessionCapabilityOverride | null;
     }): Promise<PilotSwarmSession> {
         // ── Policy enforcement (client-side) ─────────────────
         const policy = this._sessionPolicy;
@@ -177,6 +184,17 @@ export class PilotSwarmClient {
             visibility: config?.visibility ?? null,
         });
 
+        // Persist the create-time capability override on the ROOT row before
+        // any turn can assemble (no orchestration exists yet, so there is no
+        // race). Children never carry an override — they resolve their tree
+        // root's at assembly.
+        if (config?.capabilities && !config?.parentSessionId) {
+            const stored = await this._catalog.setCapabilityOverride(sessionId, config.capabilities);
+            if (!stored) {
+                console.warn(`[PilotSwarmClient] capability override for ${sessionId} not stored (schema predates migration 0036).`);
+            }
+        }
+
         // Track parentSessionId for sub-agent orchestration input
         if (config?.parentSessionId) {
             this.parentSessionIds.set(sessionId, config.parentSessionId);
@@ -215,6 +233,7 @@ export class PilotSwarmClient {
         owner?: SessionOwnerInfo | null;
         groupId?: string | null;
         visibility?: SessionVisibility | null;
+        capabilities?: import("./capability-override.js").SessionCapabilityOverride | null;
     }): Promise<PilotSwarmSession> {
         // Validate the agent exists and is non-system
         const allowed = this._allowedAgentNames;
@@ -236,6 +255,7 @@ export class PilotSwarmClient {
             owner: opts?.owner ?? null,
             groupId: opts?.groupId ?? null,
             visibility: opts?.visibility ?? null,
+            capabilities: opts?.capabilities ?? null,
         });
 
         // Set agent metadata in CMS (agentId + prefixed title)

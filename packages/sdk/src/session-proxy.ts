@@ -1344,12 +1344,19 @@ export function registerActivities(
                         isHarvester: _parentIsHarvester,
                         ...parentConfig
                     } = input.config;
+                    // Freeform (agent-less) children run under the PARENT'S
+                    // capability profile: a restricted agent must not be able
+                    // to mint an unrestricted child by omitting agent_name.
+                    // Named children resolve their own agent's profile.
+                    const parentProfileAgent = _parentBoundAgentName
+                        ?? input.config.capabilityProfileAgent;
                     const childConfig: SerializableSessionConfig = {
                         ...parentConfig,
                         ...(agentModel ? { model: agentModel } : {}),
                         ...(agentReasoningEffort ? { reasoningEffort: agentReasoningEffort } : {}),
                         ...(agentSystemMessage ? { systemMessage: agentSystemMessage } : {}),
                         ...(boundAgentName ? { boundAgentName } : {}),
+                        ...(!boundAgentName && parentProfileAgent ? { capabilityProfileAgent: parentProfileAgent } : {}),
                         ...(promptLayeringKind ? { promptLayering: { kind: promptLayeringKind } } : {}),
                         ...(agentToolNames ? { toolNames: agentToolNames } : {}),
                         ...(args.contract ? { childContract: args.contract } : {}),

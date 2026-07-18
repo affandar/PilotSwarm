@@ -107,6 +107,35 @@ title: After Block
     assert.equal(byName.afteragent.title, "After Block", "top-level key after the nested block still parses");
 });
 
+test("toolPolicy survives trailing comments, flow-map form, and empty allow (review regressions)", () => {
+    const dir = makeTmpDir("ps-cap-");
+    writeAgent(dir, "trailing.agent.md", `
+schemaVersion: 2
+version: 1.0.0
+name: trailing
+toolPolicy: # keep this agent read-only
+  deny:
+    - bash
+`);
+    writeAgent(dir, "flowmap.agent.md", `
+schemaVersion: 2
+version: 1.0.0
+name: flowmap
+toolPolicy: { allow: [view, "grep"], deny: [bash] }
+`);
+    writeAgent(dir, "emptyallow.agent.md", `
+schemaVersion: 2
+version: 1.0.0
+name: emptyallow
+toolPolicy:
+  allow: []
+`);
+    const byName = Object.fromEntries(loadAgentFiles(dir).map((a) => [a.name, a]));
+    assert.deepEqual(byName.trailing.toolPolicy, { deny: ["bash"] }, "trailing comment must not fail the restriction open");
+    assert.deepEqual(byName.flowmap.toolPolicy, { allow: ["view", "grep"], deny: ["bash"] }, "flow-map spelling parses");
+    assert.deepEqual(byName.emptyallow.toolPolicy, { allow: [] }, "explicit empty allow = floor-only restriction, kept");
+});
+
 // ─── 2. Worker-side resolution ──────────────────────────────────
 
 function buildFixturePlugin() {
@@ -170,6 +199,28 @@ test("allowedSkills complements into per-agent disabled lists", () => {
     assert.equal(worker.agentDisabledSkills.open, undefined, "unrestricted agent has no disabled list");
     assert.deepEqual(worker.agentToolPolicy.restricted, { deny: ["bash"] });
     assert.equal(worker.agentToolPolicy.open, undefined);
+});
+
+test("worker scrubs bare-wildcard toolPolicy entries and keeps empty allow", () => {
+    const pluginDir = makeTmpDir("ps-cap-plugin-w-");
+    fs.mkdirSync(path.join(pluginDir, "agents"));
+    writeAgent(path.join(pluginDir, "agents"), "wild.agent.md", `
+schemaVersion: 2
+version: 1.0.0
+name: wild
+toolPolicy:
+  deny: ["*", bash]
+`);
+    writeAgent(path.join(pluginDir, "agents"), "flooronly.agent.md", `
+schemaVersion: 2
+version: 1.0.0
+name: flooronly
+toolPolicy:
+  allow: []
+`);
+    const worker = buildWorker(pluginDir);
+    assert.deepEqual(worker.agentToolPolicy.wild, { deny: ["bash"] }, "bare * dropped (SDK rejects it), rest kept");
+    assert.deepEqual(worker.agentToolPolicy.flooronly, { allow: [] }, "empty allow survives resolution");
 });
 
 test("a later same-name definition without restrictions clears shadowed ones", () => {

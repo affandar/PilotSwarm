@@ -363,14 +363,15 @@ with `get_capabilities` to see the shape of this server.
 
 | Tool | Description |
 |------|-------------|
-| `get_capabilities` | Mode (web/direct), admin role, facts search/embedder flags, graph availability, embedded-worker count, default model |
-| `get_system_status` | Embedded-worker count (0 is normal with dedicated worker pods), session-creation policy, creatable agents, log config *(web)* |
+| `get_capabilities` | Mode (web/direct), admin role, facts search/embedder flags, graph availability, embedded-worker count, default model, and `capability_catalog` — a summary of the deployment's session-capability catalog (MCP server names + default flags, skill names, tool groups with member counts; `null` = not published) |
+| `get_system_status` | Embedded-worker count (0 is normal with dedicated worker pods), session-creation policy, creatable agents, log config, full capability catalog (`include: ['capabilities']`) *(web)* |
 
 ### Session Management
 
 | Tool | Description |
 |------|-------------|
-| `create_session` | Create a new PilotSwarm session, optionally bound to a named agent |
+| `create_session` | Create a new PilotSwarm session, optionally bound to a named agent; optional `capabilities` applies a per-tree enable/disable override (MCP servers, skills, tools — tool entries may be group names) over the agent's profile |
+| `configure_session` | Reconfigure a running session tree's capability override (same axis shape as `create_session` capabilities; `null` clears; applies on the next turn and cascades to the whole tree). Web API mode only — registered in both modes, but direct mode returns an error |
 | `send_message` | Send a fire-and-forget message to a session |
 | `send_and_wait` | Send a message and wait for the response (default timeout: 120 s) |
 | `send_answer` | Answer a pending `input_required` question in a session |
@@ -378,7 +379,7 @@ with `get_capabilities` to see the shape of this server.
 | `rename_session` | Rename a session title |
 | `delete_session` | Soft-delete a session |
 | `list_sessions` | Discovery — list all sessions with status, model, agent info, and parent/child relationships; keyset pagination via `limit`/`cursor`/`include_deleted` |
-| `get_session_detail` | Discovery — get detailed info for a session including status, context usage, cron state, and pending questions |
+| `get_session_detail` | Discovery — get detailed info for a session including status, context usage, cron state, and pending questions; web mode adds `capability_override` (the stored per-tree capability override, `null` = none) |
 | `get_session_events` | Discovery — CMS event stream with `after_seq` forward paging, `before_seq` history paging, `event_types` server-side filter, and long-poll support |
 | `get_session_access` | Effective caller access, visibility, relation, and owner for one session tree |
 | `set_session_visibility` | Set `private`, `shared_read`, or `shared_write` on an owned session tree |
