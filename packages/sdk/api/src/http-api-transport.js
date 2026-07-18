@@ -71,6 +71,11 @@ export class HttpApiTransport {
         return this.bootstrap?.sessionCreationPolicy || null;
     }
 
+    /** Deployment capability catalog from bootstrap (names + metadata only; null = unpublished). */
+    getCapabilityCatalog() {
+        return this.bootstrap?.capabilityCatalog || null;
+    }
+
     // ── Sessions ────────────────────────────────────────────────────────
 
     async listSessions() {

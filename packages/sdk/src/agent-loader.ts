@@ -91,6 +91,23 @@ export interface AgentConfig {
      * them.
      */
     inheritDefaultMcpServers?: boolean;
+    /**
+     * Restriction: when present, sessions bound to this agent may load ONLY
+     * these SKILL.md skills from the deployment catalog (mapped to the CLI
+     * as disabledSkills = catalog − allowedSkills). Absent means all catalog
+     * skills — today's behavior. Distinct from `skills:`, which eagerly
+     * preloads skill bodies into the agent prompt. A schemaVersion-2 shape.
+     */
+    allowedSkills?: string[];
+    /**
+     * Restriction on the agent's tool surface, mapped onto the CLI's
+     * availableTools / excludedTools. `deny` removes the named tools;
+     * `allow` switches to allow-list mode (everything not named is denied).
+     * Composes with the built-in floor (e.g. the excluded native `task`
+     * tool and identity gates): a policy can further restrict but never
+     * widen past the floor. A schemaVersion-2 shape.
+     */
+    toolPolicy?: { allow?: string[]; deny?: string[] };
     /** If true, this is a system agent started automatically by workers. */
     system?: boolean;
     /** Deterministic ID slug for system agents (e.g. "sweeper"). Used to derive a fixed session UUID. */
@@ -140,11 +157,48 @@ export interface AgentConfig {
  * Parse YAML frontmatter from an .agent.md file.
  * Handles simple `key: value` pairs and YAML list syntax for `tools` and `skills`.
  */
+interface ParsedAgentMeta {
+    name?: string;
+    description?: string;
+    tools?: string[];
+    skills?: string[];
+    mcpServers?: string[];
+    inheritDefaultMcpServers?: boolean;
+    allowedSkills?: string[];
+    toolPolicy?: { allow?: string[]; deny?: string[] };
+    system?: boolean;
+    id?: string;
+    title?: string;
+    parent?: string;
+    splash?: string;
+    splashMobile?: string;
+    initialPrompt?: string;
+    crawler?: boolean;
+    harvester?: boolean;
+    schemaVersion?: number;
+    version?: string;
+}
+
+function stripSurroundingQuotes(value: string): string {
+    if ((value.startsWith('"') && value.endsWith('"') && value.length >= 2) ||
+        (value.startsWith("'") && value.endsWith("'") && value.length >= 2)) {
+        return value.slice(1, -1);
+    }
+    return value;
+}
+
+function parseInlineList(value: string): string[] {
+    return value.replace(/[\[\]]/g, "")
+        .split(",")
+        .map((s) => stripSurroundingQuotes(s.trim()))
+        .filter(Boolean);
+}
+
 function parseAgentFrontmatter(content: string): {
-    meta: { name?: string; description?: string; tools?: string[]; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; splashMobile?: string; initialPrompt?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string };
+    meta: ParsedAgentMeta;
     body: string;
 } {
-    const meta: { name?: string; description?: string; tools?: string[]; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; splashMobile?: string; initialPrompt?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string } = {};
+    const meta: ParsedAgentMeta = {};
 
     if (!content.startsWith("---")) {
         return { meta, body: content };
@@ -175,6 +229,13 @@ function parseAgentFrontmatter(content: string): {
         }
     };
 
+    // Tracks whether we are inside a `toolPolicy:` nested block: its
+    // indented `allow:` / `deny:` sub-keys are the only two-level shape the
+    // parser supports. Any non-indented key exits the block.
+    let inToolPolicy = false;
+
+    const LIST_KEYS = new Set(["tools", "skills", "mcpServers", "allowedSkills", "toolPolicy.allow", "toolPolicy.deny"]);
+
     for (const line of lines) {
         const trimmed = line.trim();
 
@@ -198,21 +259,20 @@ function parseAgentFrontmatter(content: string): {
         if (trimmed.startsWith("#")) continue;
 
         // YAML list item (e.g. "  - view")
-        if (trimmed.startsWith("- ") && (currentKey === "tools" || currentKey === "skills" || currentKey === "mcpServers")) {
-            let item = trimmed.slice(2).trim();
-            if ((item.startsWith('"') && item.endsWith('"') && item.length >= 2) ||
-                (item.startsWith("'") && item.endsWith("'") && item.length >= 2)) {
-                item = item.slice(1, -1);
-            }
+        if (trimmed.startsWith("- ") && currentKey && LIST_KEYS.has(currentKey)) {
+            const item = stripSurroundingQuotes(trimmed.slice(2).trim());
             if (currentKey === "tools") {
-                if (!meta.tools) meta.tools = [];
-                meta.tools.push(item);
+                (meta.tools ??= []).push(item);
             } else if (currentKey === "skills") {
-                if (!meta.skills) meta.skills = [];
-                meta.skills.push(item);
-            } else {
-                if (!meta.mcpServers) meta.mcpServers = [];
-                meta.mcpServers.push(item);
+                (meta.skills ??= []).push(item);
+            } else if (currentKey === "mcpServers") {
+                (meta.mcpServers ??= []).push(item);
+            } else if (currentKey === "allowedSkills") {
+                (meta.allowedSkills ??= []).push(item);
+            } else if (currentKey === "toolPolicy.allow") {
+                ((meta.toolPolicy ??= {}).allow ??= []).push(item);
+            } else if (currentKey === "toolPolicy.deny") {
+                ((meta.toolPolicy ??= {}).deny ??= []).push(item);
             }
             continue;
         }
@@ -221,6 +281,9 @@ function parseAgentFrontmatter(content: string): {
         const colonIdx = line.indexOf(":");
         if (colonIdx === -1) continue;
 
+        const indented = /^\s/.test(line);
+        if (inToolPolicy && !indented) inToolPolicy = false;
+
         const key = line.slice(0, colonIdx).trim();
         let value = line.slice(colonIdx + 1).trim();
 
@@ -228,6 +291,18 @@ function parseAgentFrontmatter(content: string): {
         if ((value.startsWith('"') && value.endsWith('"')) ||
             (value.startsWith("'") && value.endsWith("'"))) {
             value = value.slice(1, -1);
+        }
+
+        // toolPolicy sub-keys (indented allow:/deny: inside the block)
+        if (inToolPolicy && indented && (key === "allow" || key === "deny")) {
+            if (value) {
+                (meta.toolPolicy ??= {})[key] = parseInlineList(value);
+                currentKey = null;
+            } else {
+                (meta.toolPolicy ??= {})[key] = [];
+                currentKey = `toolPolicy.${key}`;
+            }
+            continue;
         }
 
         currentKey = key;
@@ -257,11 +332,18 @@ function parseAgentFrontmatter(content: string): {
             meta.skills = [];
         } else if (key === "mcpServers" && value) {
             // Inline array: mcpServers: [github, jira]
-            meta.mcpServers = value.replace(/[\[\]]/g, "").split(",").map(s => s.trim()).filter(Boolean);
+            meta.mcpServers = parseInlineList(value);
         } else if (key === "mcpServers" && !value) {
             meta.mcpServers = [];
         } else if (key === "inheritDefaultMcpServers") {
             meta.inheritDefaultMcpServers = value === "true";
+        } else if (key === "allowedSkills" && value) {
+            meta.allowedSkills = parseInlineList(value);
+        } else if (key === "allowedSkills" && !value) {
+            meta.allowedSkills = [];
+        } else if (key === "toolPolicy" && !value) {
+            inToolPolicy = true;
+            currentKey = null;
         } else if ((key === "splash" || key === "splashMobile" || key === "initialPrompt") && (value === "|" || value === ">")) {
             // YAML block scalar (| literal, > folded)
             currentBlockStyle = value;
@@ -323,13 +405,20 @@ export function loadAgentFiles(agentsDir: string): AgentConfig[] {
                 continue;
             }
 
-            // MCP-bearing frontmatter is a schemaVersion-2 shape: version-1
-            // loaders load the file but silently drop the MCP fields, which
-            // for an MCP-dependent agent is worse than not loading at all.
+            // Capability frontmatter (MCP servers, allowedSkills, toolPolicy)
+            // is a schemaVersion-2 shape: version-1 loaders load the file but
+            // silently drop these fields, which for a capability-dependent
+            // agent is worse than not loading at all.
             // (`inheritDefaultMcpServers: false` is inert everywhere, so it
             // does not trigger this.)
-            if ((meta.mcpServers?.length || meta.inheritDefaultMcpServers === true) && (meta.schemaVersion ?? 1) < 2) {
-                console.warn(`[agent-loader] ${entry.name}: declares MCP servers but schemaVersion ${meta.schemaVersion ?? 1}; declare 'schemaVersion: 2' so older loaders skip this agent instead of silently dropping its MCP configuration.`);
+            const hasCapabilityFrontmatter = Boolean(
+                meta.mcpServers?.length
+                || meta.inheritDefaultMcpServers === true
+                || meta.allowedSkills !== undefined
+                || meta.toolPolicy !== undefined,
+            );
+            if (hasCapabilityFrontmatter && (meta.schemaVersion ?? 1) < 2) {
+                console.warn(`[agent-loader] ${entry.name}: declares capability frontmatter (mcpServers/allowedSkills/toolPolicy) but schemaVersion ${meta.schemaVersion ?? 1}; declare 'schemaVersion: 2' so older loaders skip this agent instead of silently dropping its capability configuration.`);
             }
 
             const crawler = meta.crawler === true || meta.harvester === true;
@@ -341,6 +430,12 @@ export function loadAgentFiles(agentsDir: string): AgentConfig[] {
                 skills: meta.skills && meta.skills.length > 0 ? meta.skills : undefined,
                 mcpServers: meta.mcpServers && meta.mcpServers.length > 0 ? meta.mcpServers : undefined,
                 inheritDefaultMcpServers: meta.inheritDefaultMcpServers,
+                // An explicitly empty allowedSkills is a valid "no skills"
+                // restriction, so undefined-ness (not length) gates it.
+                allowedSkills: meta.allowedSkills,
+                toolPolicy: meta.toolPolicy && (meta.toolPolicy.allow?.length || meta.toolPolicy.deny?.length)
+                    ? meta.toolPolicy
+                    : undefined,
                 system: meta.system,
                 id: meta.id,
                 title: meta.title,

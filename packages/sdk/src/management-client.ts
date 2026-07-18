@@ -2115,6 +2115,16 @@ export class PilotSwarmManagementClient {
         return { supported: true, running: st.running, instanceId: st.instanceId, status: st.status };
     }
 
+    /**
+     * The worker-published deployment capability catalog (MCP server names,
+     * skill names, tool names + groups, per-agent defaults). Null when no
+     * worker has published one (fresh deployment, pre-0035 schema).
+     */
+    async getCapabilityCatalog(): Promise<any | null> {
+        const row = await this._catalog!.getCapabilityCatalog();
+        return row?.catalog ?? null;
+    }
+
     async pruneDeletedSummaries(olderThan: Date): Promise<number> {
         this._ensureStarted();
         return this._catalog!.pruneDeletedSummaries(olderThan);

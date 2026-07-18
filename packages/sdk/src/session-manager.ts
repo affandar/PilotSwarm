@@ -111,6 +111,18 @@ export interface WorkerDefaults {
      */
     baseMcpServers?: Record<string, any>;
     /**
+     * Per-agent skill restriction, keyed by bound agent name: the skill
+     * names to DISABLE for that agent's sessions (already complemented
+     * against the deployment skill catalog from `allowedSkills`).
+     */
+    agentDisabledSkills?: Record<string, string[]>;
+    /**
+     * Per-agent tool policy, keyed by bound agent name. `deny` merges into
+     * the session's excludedTools (which always win); `allow` switches the
+     * session to allow-list mode via availableTools.
+     */
+    agentToolPolicy?: Record<string, { allow?: string[]; deny?: string[] }>;
+    /**
      * @deprecated Use `modelProviders` instead. Kept for backwards compatibility.
      * Custom LLM provider config (BYOK). Passed to every session.
      */
@@ -1039,6 +1051,25 @@ export class SessionManager {
             ...(boundAgentMcpServers ?? {}),
         };
 
+        // Per-agent skill/tool restrictions (capability-profiles Phase 2),
+        // resolved worker-side from the bound agent's allowedSkills /
+        // toolPolicy frontmatter. Deny composes ON TOP of the built-in floor
+        // (the excluded native "task" tool, identity gates): excludedTools
+        // always win in the CLI, so a policy can narrow but never widen.
+        // Allow-list mode implicitly retains report_cycle — the turn-cycling
+        // tool sessions cannot function without.
+        const boundAgentName = effectiveSerializableConfig.boundAgentName;
+        const agentDisabledSkills = boundAgentName
+            ? this.workerDefaults.agentDisabledSkills?.[boundAgentName]
+            : undefined;
+        const agentToolPolicy = boundAgentName
+            ? this.workerDefaults.agentToolPolicy?.[boundAgentName]
+            : undefined;
+        const sessionExcludedTools = ["task", ...(agentToolPolicy?.deny ?? [])];
+        const sessionAvailableTools = agentToolPolicy?.allow?.length
+            ? Array.from(new Set([...agentToolPolicy.allow, "report_cycle"]))
+            : undefined;
+
         const sessionConfig: any = {
             sessionId,
             tools: allTools,
@@ -1065,11 +1096,15 @@ export class SessionManager {
             // Suppress sub-agent streaming events — we never want the parent
             // session's event log polluted with grandchild deltas.
             includeSubAgentStreamingEvents: false,
-            // Exclude the Copilot SDK's built-in "task" tool — PilotSwarm provides
-            // its own durable sub-agent mechanism via spawn_agent / check_agents.
-            // The native "task" tool spawns in-process sub-agents that bypass the
-            // durable orchestration layer, causing the LLM to use the wrong mechanism.
-            excludedTools: ["task"],
+            // Excluded tools: the Copilot SDK's built-in "task" tool is the
+            // permanent floor — PilotSwarm provides its own durable sub-agent
+            // mechanism via spawn_agent / check_agents, and the native "task"
+            // tool would bypass the durable orchestration layer. The bound
+            // agent's toolPolicy.deny composes on top; excludedTools always
+            // win over availableTools in the CLI.
+            excludedTools: sessionExcludedTools,
+            ...(sessionAvailableTools ? { availableTools: sessionAvailableTools } : {}),
+            ...(agentDisabledSkills?.length ? { disabledSkills: agentDisabledSkills } : {}),
             // Custom LLM provider — resolve from registry or legacy single provider
             ...resolvedProviderConfig,
             // Pass loaded skills and agents from worker defaults; MCP servers

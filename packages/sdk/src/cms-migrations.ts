@@ -185,7 +185,62 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "user_session_group_placements",
             sql: migration_0034_user_session_group_placements(schema),
         },
+        {
+            version: "0035",
+            name: "deployment_capability_catalog",
+            sql: migration_0035_deployment_capability_catalog(schema),
+        },
     ];
+}
+
+// ─── Migration 0035: worker-published deployment capability catalog ──
+
+function migration_0035_deployment_capability_catalog(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- 0035_deployment_capability_catalog: worker-published capability catalog
+-- (capability-profiles Phase 2, review addendum 7).
+--
+-- In the remote topology the web runtime has no embedded worker, and its own
+-- plugin-dir load reads only session-policy.json and agent files — so the
+-- worker publishes its loaded capability catalog (MCP server names, skill
+-- names, tool names + groups, per-agent defaults; NAMES ONLY, never resolved
+-- server configs which can carry expanded credentials) at boot, and
+-- getBootstrap reads it here. Single row; concurrent workers upsert
+-- idempotently (last write wins — same image implies the same catalog).
+--
+-- No hot-table DDL: one new tiny table + two functions — safe as a plain
+-- transactional migration.
+
+CREATE TABLE IF NOT EXISTS ${s}.deployment_capability_catalog (
+    id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    catalog JSONB NOT NULL,
+    published_by TEXT,
+    published_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE OR REPLACE FUNCTION ${s}.cms_set_capability_catalog(p_catalog JSONB, p_published_by TEXT)
+RETURNS VOID
+LANGUAGE sql
+AS $fn$
+    INSERT INTO ${s}.deployment_capability_catalog (id, catalog, published_by, published_at)
+    VALUES (1, p_catalog, p_published_by, now())
+    ON CONFLICT (id) DO UPDATE
+        SET catalog = EXCLUDED.catalog,
+            published_by = EXCLUDED.published_by,
+            published_at = EXCLUDED.published_at;
+$fn$;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_get_capability_catalog()
+RETURNS TABLE (catalog JSONB, published_by TEXT, published_at TIMESTAMPTZ)
+LANGUAGE sql
+STABLE
+AS $fn$
+    SELECT catalog, published_by, published_at
+    FROM ${s}.deployment_capability_catalog
+    WHERE id = 1;
+$fn$;
+`;
 }
 
 // ─── Migration 0034: private per-user session-group placements ──

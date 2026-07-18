@@ -93,3 +93,48 @@ test("creatable agents carry BOTH splash and splashMobile", () => {
     assert.match(agent.splash, /DESKTOP-ART-WIDE/);
     assert.match(agent.splashMobile, /MOBILE-ART/, "splashMobile must survive normalizeCreatableAgent");
 });
+test("creatable agents carry capability metadata (skills, MCP names, restrictions)", () => {
+    // Regression (capability-profiles Phase 2): normalizeCreatableAgent
+    // forwarded `tools` but silently dropped `skills` — and needs to expose
+    // the new capability fields as NAMES ONLY (never resolved MCP configs,
+    // which can carry expanded credentials).
+    const dir = makePluginDir({
+        version: 1,
+        creation: { mode: "open", allowGeneric: true },
+    });
+    fs.mkdirSync(path.join(dir, "agents"), { recursive: true });
+    fs.writeFileSync(
+        path.join(dir, "agents", "capable.agent.md"),
+        [
+            "---",
+            "schemaVersion: 2",
+            "version: 1.0.0",
+            "name: capable",
+            "description: capability fixture",
+            "skills:",
+            "  - deploy-runbook",
+            "mcpServers:",
+            "  - github",
+            "allowedSkills:",
+            "  - deploy-runbook",
+            "toolPolicy:",
+            "  deny:",
+            "    - bash",
+            "---",
+            "You are a fixture agent.",
+            "",
+        ].join("\n"),
+    );
+
+    const metadata = loadSessionCreationMetadataFromPluginDirs([dir]);
+    const agent = metadata.creatableAgents.find((a) => a.name === "capable");
+    assert.ok(agent, "fixture agent should be creatable");
+    assert.deepEqual(agent.skills, ["deploy-runbook"], "skills must survive normalizeCreatableAgent");
+    assert.deepEqual(agent.mcpServers, ["github"], "MCP servers surface as names");
+    assert.deepEqual(agent.allowedSkills, ["deploy-runbook"]);
+    assert.deepEqual(agent.toolPolicy, { deny: ["bash"] });
+
+    // A resolved-map shape (embedded-mode agents) must flatten to names.
+    const serialized = JSON.stringify(agent);
+    assert.ok(!serialized.includes("url"), "no server config fields on the client surface");
+});

@@ -366,6 +366,21 @@ function normalizeCreatableAgent(agent) {
         splashMobile: typeof agent?.splashMobile === "string" && agent.splashMobile.trim() ? agent.splashMobile : null,
         initialPrompt: typeof agent?.initialPrompt === "string" && agent.initialPrompt.trim() ? agent.initialPrompt : null,
         tools: Array.isArray(agent?.tools) ? agent.tools.filter(Boolean) : [],
+        skills: Array.isArray(agent?.skills) ? agent.skills.filter(Boolean) : [],
+        // MCP servers as NAMES ONLY. Embedded-mode agents carry the RESOLVED
+        // server map (Record<name, config> — configs can hold expanded
+        // credentials and must never reach clients); file-loaded agents
+        // carry the frontmatter's name list. Normalize both to names.
+        mcpServers: Array.isArray(agent?.mcpServers)
+            ? agent.mcpServers.filter((entry) => typeof entry === "string" && entry)
+            : (agent?.mcpServers && typeof agent.mcpServers === "object" ? Object.keys(agent.mcpServers) : []),
+        allowedSkills: Array.isArray(agent?.allowedSkills) ? agent.allowedSkills.filter(Boolean) : null,
+        toolPolicy: agent?.toolPolicy && typeof agent.toolPolicy === "object"
+            ? {
+                ...(Array.isArray(agent.toolPolicy.allow) && agent.toolPolicy.allow.length ? { allow: agent.toolPolicy.allow.filter(Boolean) } : {}),
+                ...(Array.isArray(agent.toolPolicy.deny) && agent.toolPolicy.deny.length ? { deny: agent.toolPolicy.deny.filter(Boolean) } : {}),
+            }
+            : null,
     };
 }
 
@@ -608,7 +623,15 @@ export class NodeSdkTransport {
         if (this.workers.length > 0) {
             const firstWorker = this.workers[0];
             const creatableAgents = Array.isArray(firstWorker?.loadedAgents)
-                ? firstWorker.loadedAgents.map((agent) => normalizeCreatableAgent(agent)).filter(Boolean)
+                ? firstWorker.loadedAgents.map((agent) => normalizeCreatableAgent({
+                    ...agent,
+                    // Restriction fields are stripped from the composed
+                    // customAgents surface — re-attach them from the
+                    // worker's resolution maps so embedded mode reports the
+                    // same capability metadata as the file-loading path.
+                    allowedSkills: firstWorker.agentAllowedSkills?.[agent.name],
+                    toolPolicy: firstWorker.agentToolPolicy?.[agent.name],
+                })).filter(Boolean)
                 : [];
             return {
                 sessionPolicy: firstWorker?.sessionPolicy || null,
@@ -617,6 +640,25 @@ export class NodeSdkTransport {
             };
         }
         return loadSessionCreationMetadataFromPluginDirs(getPluginDirsFromEnv());
+    }
+
+    /**
+     * Deployment capability catalog. Embedded mode builds it from the live
+     * worker; remote mode reads the worker-published CMS row (null when no
+     * worker has published one or the schema predates migration 0035).
+     */
+    async getCapabilityCatalog() {
+        if (this.workers.length > 0 && typeof this.workers[0]?.buildCapabilityCatalog === "function") {
+            return this.workers[0].buildCapabilityCatalog();
+        }
+        if (this.mgmt && typeof this.mgmt.getCapabilityCatalog === "function") {
+            try {
+                return await this.mgmt.getCapabilityCatalog();
+            } catch {
+                return null;
+            }
+        }
+        return null;
     }
 
     getWorkerCount() {

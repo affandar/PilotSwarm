@@ -935,6 +935,15 @@ export interface SessionCatalog {
     /** Hard-delete summary rows for sessions deleted before the cutoff. Returns count removed. */
     pruneDeletedSummaries(olderThan: Date): Promise<number>;
 
+    /**
+     * Publish the worker's deployment capability catalog (names only — never
+     * resolved MCP configs). Returns false on pre-0035 schemas (no-op).
+     */
+    setCapabilityCatalog(catalog: unknown, publishedBy?: string | null): Promise<boolean>;
+
+    /** Read the worker-published deployment capability catalog, or null. */
+    getCapabilityCatalog(): Promise<{ catalog: any; publishedBy: string | null; publishedAt: Date | null } | null>;
+
     /** Cleanup / close connections. */
     close(): Promise<void>;
 }
@@ -1015,6 +1024,8 @@ function sqlForSchema(schema: string) {
             getSessionGraphNodeUsage:   `${s}.cms_get_session_graph_node_usage`,
             getFleetGraphNodeUsage:     `${s}.cms_get_fleet_graph_node_usage`,
             getSessionGraphEdgeSearchUsage: `${s}.cms_get_session_graph_edge_search_usage`,
+            setCapabilityCatalog:       `${s}.cms_set_capability_catalog`,
+            getCapabilityCatalog:       `${s}.cms_get_capability_catalog`,
         },
     };
 }
@@ -1182,6 +1193,49 @@ export class PgSessionCatalog implements SessionCatalog {
         );
         this._visibilityCreateSupported = Boolean(rows[0]?.supported);
         return this._visibilityCreateSupported;
+    }
+
+    private _capabilityCatalogSupported: boolean | null = null;
+
+    /** Whether the DB has migration 0035's capability-catalog functions. Cached per catalog instance. */
+    private async supportsCapabilityCatalog(): Promise<boolean> {
+        if (this._capabilityCatalogSupported !== null) return this._capabilityCatalogSupported;
+        const { rows } = await this.pool.query(
+            `SELECT to_regprocedure($1) IS NOT NULL AS supported`,
+            [`${this.sql.fn.getCapabilityCatalog}()`],
+        );
+        this._capabilityCatalogSupported = Boolean(rows[0]?.supported);
+        return this._capabilityCatalogSupported;
+    }
+
+    /**
+     * Publish the worker's deployment capability catalog (names and metadata
+     * only — never resolved MCP configs, which can carry expanded
+     * credentials). Returns false (no-op) on databases that predate
+     * migration 0035, so a new worker degrades gracefully against an old
+     * schema during a rolling deploy.
+     */
+    async setCapabilityCatalog(catalog: unknown, publishedBy?: string | null): Promise<boolean> {
+        if (!(await this.supportsCapabilityCatalog())) return false;
+        await this.pool.query(
+            `SELECT ${this.sql.fn.setCapabilityCatalog}($1::jsonb, $2)`,
+            [JSON.stringify(catalog), publishedBy ?? null],
+        );
+        return true;
+    }
+
+    /** Read the worker-published deployment capability catalog, or null if never published / pre-0035 schema. */
+    async getCapabilityCatalog(): Promise<{ catalog: any; publishedBy: string | null; publishedAt: Date | null } | null> {
+        if (!(await this.supportsCapabilityCatalog())) return null;
+        const { rows } = await this.pool.query(
+            `SELECT catalog, published_by, published_at FROM ${this.sql.fn.getCapabilityCatalog}()`,
+        );
+        if (!rows[0]?.catalog) return null;
+        return {
+            catalog: rows[0].catalog,
+            publishedBy: rows[0].published_by ?? null,
+            publishedAt: rows[0].published_at ?? null,
+        };
     }
 
     async updateSession(sessionId: string, updates: SessionRowUpdates): Promise<void> {

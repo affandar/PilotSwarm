@@ -499,6 +499,11 @@ export class PortalRuntime {
             sessionCreationPolicy: typeof this.transport.getSessionCreationPolicy === "function"
                 ? this.transport.getSessionCreationPolicy()
                 : null,
+            // Deployment capability catalog (capability-profiles Phase 2):
+            // names + metadata only; null = no worker has published one.
+            capabilityCatalog: typeof this.transport.getCapabilityCatalog === "function"
+                ? await this.transport.getCapabilityCatalog().catch(() => null)
+                : null,
             // Ownership/visibility posture (security model) so clients (portal,
             // MCP, TUI) can explain why a session isn't listed or a send was
             // refused, and default the share UI correctly.

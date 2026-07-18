@@ -9,6 +9,7 @@ import {
 import { PgSessionCatalog } from "./cms.js";
 import type { SessionCatalog } from "./cms.js";
 import { loadAgentFiles } from "./agent-loader.js";
+import { resolveToolGroups, type CapabilityCatalog, type CapabilityCatalogAgentDefaults } from "./capability-catalog.js";
 import { composeDeclaredSkillsPrompt, loadSkillsSync, type Skill } from "./skills.js";
 import { startSystemAgents } from "./system-agents.js";
 import { loadMcpConfig } from "./mcp-loader.js";
@@ -134,7 +135,7 @@ export class PilotSwarmWorker {
     /** Loaded skills by name for agent-declared eager prompt injection. */
     private _loadedSkills = new Map<string, Skill>();
     /** Raw loaded user-creatable agent configs from plugins + direct config. */
-    private _rawLoadedAgents: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; namespace?: string; crawler?: boolean; harvester?: boolean; promptLayerKind?: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" }> = [];
+    private _rawLoadedAgents: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; allowedSkills?: string[]; toolPolicy?: { allow?: string[]; deny?: string[] }; namespace?: string; crawler?: boolean; harvester?: boolean; promptLayerKind?: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" }> = [];
     /** Optional PilotSwarm-bundled user agents, loaded only when session policy opts in. */
     private _availableBundledAgents = new Map<string, AgentConfig>();
     /** Loaded agent configs from plugins + direct config, composed for SDK customAgents. */
@@ -151,6 +152,12 @@ export class PilotSwarmWorker {
     private _directConfigMcpNames: string[] = [];
     /** Resolved base MCP map applied to EVERY session (base-agent opt-ins + direct config). */
     private _baseMcpServers: Record<string, any> = {};
+    /** Per-agent allowedSkills restriction (as declared), keyed by agent name. */
+    private _agentAllowedSkills: Record<string, string[]> = {};
+    /** Per-agent DISABLED skill names (catalog − allowedSkills), keyed by agent name. */
+    private _agentDisabledSkills: Record<string, string[]> = {};
+    /** Per-agent tool policy, keyed by agent name. */
+    private _agentToolPolicy: Record<string, { allow?: string[]; deny?: string[] }> = {};
     /** Model provider registry — multi-provider LLM config. */
     private _modelProviders: ModelProviderRegistry | null = null;
     /** Mtime watcher that re-loads model_providers.json on file change. */
@@ -238,6 +245,8 @@ export class PilotSwarmWorker {
                 mcpServers: this._loadedMcpServers,
                 agentMcpServers: this._agentMcpServers,
                 baseMcpServers: this._baseMcpServers,
+                agentDisabledSkills: this._agentDisabledSkills,
+                agentToolPolicy: this._agentToolPolicy,
                 provider: options.provider,
                 modelProviders: this._modelProviders ?? undefined,
                 turnTimeoutMs: options.turnTimeoutMs,
@@ -345,6 +354,21 @@ export class PilotSwarmWorker {
     /** Names of catalog servers in the deployment default MCP set (`"default": true`). */
     get defaultMcpServerNames(): string[] {
         return this._defaultMcpServerNames;
+    }
+
+    /** Per-agent DISABLED skill names (catalog − allowedSkills), keyed by agent name. */
+    get agentDisabledSkills(): Record<string, string[]> {
+        return this._agentDisabledSkills;
+    }
+
+    /** Per-agent allowedSkills restriction as declared, keyed by agent name. */
+    get agentAllowedSkills(): Record<string, string[]> {
+        return this._agentAllowedSkills;
+    }
+
+    /** Per-agent tool policies, keyed by agent name. */
+    get agentToolPolicy(): Record<string, { allow?: string[]; deny?: string[] }> {
+        return this._agentToolPolicy;
     }
 
     /** Model provider registry (null if no providers configured). */
@@ -708,6 +732,22 @@ export class PilotSwarmWorker {
         void this._startSystemAgents().catch((err: any) => {
             console.warn(`[PilotSwarmWorker] background system agent startup failed: ${err?.message ?? err}`);
         });
+
+        // Publish the deployment capability catalog to CMS (idempotent
+        // single-row upsert; concurrent workers race benignly). Non-blocking
+        // and best-effort: the web runtime treats a missing catalog as
+        // "unknown", never as an error.
+        if (this._catalog) {
+            void this._catalog.setCapabilityCatalog(this.buildCapabilityCatalog(), this.config.workerNodeId ?? null)
+                .then((published) => {
+                    if (!published) {
+                        console.warn("[PilotSwarmWorker] CMS predates migration 0035; capability catalog not published.");
+                    }
+                })
+                .catch((err: any) => {
+                    console.warn(`[PilotSwarmWorker] Failed to publish capability catalog: ${err?.message ?? err}`);
+                });
+        }
     }
 
     async stop(): Promise<void> {
@@ -872,11 +912,14 @@ export class PilotSwarmWorker {
         ]) ?? null;
         this._applyDeclaredAgentSkills();
         this._resolveAgentMcpServers();
+        this._resolveAgentSkillAndToolRestrictions();
         this._loadedAgents = this._rawLoadedAgents.map((agent) => {
             // Replace the frontmatter's named MCP references with the
             // resolved server map (and drop the inherit flag) so the SDK's
             // CustomAgentConfig.mcpServers receives real server configs.
-            const { mcpServers: _refs, inheritDefaultMcpServers: _inherit, ...rest } = agent;
+            // allowedSkills/toolPolicy are worker-side resolution inputs
+            // applied at session assembly, not SDK CustomAgentConfig fields.
+            const { mcpServers: _refs, inheritDefaultMcpServers: _inherit, allowedSkills: _allowed, toolPolicy: _policy, ...rest } = agent;
             return {
                 ...rest,
                 prompt: composeSystemPrompt({
@@ -1012,6 +1055,96 @@ export class PilotSwarmWorker {
         }
     }
 
+    /**
+     * Resolve each agent's `allowedSkills` / `toolPolicy` restrictions
+     * (capability-profiles Phase 2).
+     *
+     * allowedSkills complements against the loaded skill catalog into the
+     * per-agent DISABLED list the CLI consumes (`disabledSkills`); unknown
+     * allowed names warn (typo detection) but stay harmless. Agents merge
+     * by name with later definitions overriding earlier ones — always
+     * assign or delete, mirroring MCP resolution, so a later definition
+     * without restrictions clears a shadowed definition's.
+     *
+     * Base (default) agents cannot carry restrictions in Phase 2 — warn
+     * loudly instead of silently dropping (declarations on default agents
+     * never reach _rawLoadedAgents).
+     */
+    private _resolveAgentSkillAndToolRestrictions(): void {
+        const catalogSkillNames = [...this._loadedSkills.keys()];
+
+        for (const agent of [...this._rawLoadedAgents, ...this._loadedSystemAgents]) {
+            if (agent.allowedSkills !== undefined) {
+                const allowed = agent.allowedSkills.filter((name) => typeof name === "string" && name);
+                for (const name of allowed) {
+                    if (!this._loadedSkills.has(name)) {
+                        console.warn(`[PilotSwarmWorker] Agent "${agent.name}": allowedSkills entry "${name}" is not a loaded skill.`);
+                    }
+                }
+                this._agentAllowedSkills[agent.name] = allowed;
+                this._agentDisabledSkills[agent.name] = catalogSkillNames.filter((name) => !allowed.includes(name));
+            } else {
+                delete this._agentAllowedSkills[agent.name];
+                delete this._agentDisabledSkills[agent.name];
+            }
+
+            const policy = agent.toolPolicy;
+            if (policy && (policy.allow?.length || policy.deny?.length)) {
+                this._agentToolPolicy[agent.name] = {
+                    ...(policy.allow?.length ? { allow: [...policy.allow] } : {}),
+                    ...(policy.deny?.length ? { deny: [...policy.deny] } : {}),
+                };
+            } else {
+                delete this._agentToolPolicy[agent.name];
+            }
+        }
+    }
+
+    /**
+     * Build the deployment capability catalog (names and metadata only —
+     * never resolved MCP configs, which can carry expanded credentials).
+     * Published to CMS at boot so the remote-topology web runtime can serve
+     * it on bootstrap; embedded transports may call it directly.
+     */
+    buildCapabilityCatalog(): CapabilityCatalog {
+        const toolGroups = resolveToolGroups((this._sessionPolicy as any)?.toolGroups);
+        const toolNames = new Set<string>([
+            ...this._frameworkBaseToolNames,
+            ...this._appDefaultToolNames,
+            ...this.toolRegistry.keys(),
+            ...Object.keys(toolGroups),
+        ]);
+        for (const agent of [...this._rawLoadedAgents, ...this._loadedSystemAgents]) {
+            for (const tool of agent.tools ?? []) toolNames.add(tool);
+        }
+
+        const agentDefaults: Record<string, CapabilityCatalogAgentDefaults> = {};
+        for (const agent of [...this._rawLoadedAgents, ...this._loadedSystemAgents]) {
+            agentDefaults[agent.name] = {
+                mcpServers: Object.keys(this._agentMcpServers[agent.name] ?? {}),
+                skills: this._agentAllowedSkills[agent.name] ?? null,
+                tools: [...(agent.tools ?? [])],
+                ...(this._agentToolPolicy[agent.name] ? { toolPolicy: this._agentToolPolicy[agent.name] } : {}),
+            };
+        }
+
+        return {
+            mcpServers: Object.keys(this._loadedMcpServers).map((name) => ({
+                name,
+                isDefault: this._defaultMcpServerNames.includes(name),
+            })),
+            skills: [...this._loadedSkills.values()].map((skill) => ({
+                name: skill.name,
+                ...(skill.description ? { description: skill.description } : {}),
+            })),
+            tools: [...toolNames].sort().map((name) => ({
+                name,
+                ...(toolGroups[name] ? { group: toolGroups[name] } : {}),
+            })),
+            agentDefaults,
+        };
+    }
+
     private _applyDeclaredAgentSkills(): void {
         const skills = [...this._loadedSkills.values()];
         for (const agent of [...this._rawLoadedAgents, ...this._loadedSystemAgents]) {
@@ -1136,6 +1269,12 @@ export class PilotSwarmWorker {
                     }
                     if (agent.inheritDefaultMcpServers === true) {
                         this._baseAgentMcpDecl.inherit = true;
+                    }
+                    // Skill/tool RESTRICTIONS on base agents are not
+                    // supported in Phase 2 — warn instead of silently
+                    // dropping the declaration.
+                    if (agent.allowedSkills !== undefined || agent.toolPolicy !== undefined) {
+                        console.warn(`[PilotSwarmWorker] ${layer} default agent: allowedSkills/toolPolicy on base agents is not supported; declaration ignored. Declare restrictions on named agents.`);
                     }
                 } else if (agent.system) {
                     agent.promptLayerKind = layer === "management" ? "pilotswarm-system-agent" : "app-system-agent";
