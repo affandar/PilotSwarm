@@ -211,8 +211,11 @@ function migration_0036_session_capability_override(schema: string): string {
 -- addendum 1). Children carry nothing; every tree member resolves the root
 -- override at session assembly via cms_get_capability_override, which
 -- normalizes any session id to its root through the denormalized
--- root_session_id column. The setter refuses non-root ids so a child row
--- can never accidentally carry an override.
+-- root_session_id column. The setter likewise ROOT-RESOLVES its argument
+-- (COALESCE(root_session_id, session_id)) and always writes to the root, so
+-- calling it with a child id updates the tree root, never the child row —
+-- a child row can never carry its own override. Returns FALSE only when the
+-- session id is unknown.
 --
 -- No hot-table DDL concerns: ADD COLUMN with NULL default is metadata-only
 -- on this Postgres version; no backfill — safe as one plain transactional

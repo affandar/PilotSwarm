@@ -130,6 +130,50 @@ export function resolveToolAxis(
 }
 
 /**
+ * Compose the CLI tool-filter (`excludedTools` / `availableTools`) from the
+ * bound agent's tool policy and the session-tree override, enforcing the
+ * durable-session protocol floor in BOTH directions:
+ *
+ *  - `excludedTools` always starts with the native "task" tool (permanently
+ *    removed) and adds the agent deny ∪ override-disable, MINUS anything the
+ *    override re-enables, MINUS the protocol floor and any bare "*". A
+ *    restriction narrows capability; it can never brick the session protocol.
+ *  - `availableTools` is set only in allow-list mode (agent policy `allow`
+ *    DEFINED — an empty list means "floor only"); it unions the allow list,
+ *    override-enabled tools, the protocol floor, and `mcp:*` when the session
+ *    has any granted MCP servers (availableTools filters across all sources,
+ *    so omitting it would silently kill Phase-1 MCP grants).
+ */
+export function composeToolFilters(opts: {
+    agentPolicy?: { allow?: string[]; deny?: string[] };
+    override?: SessionCapabilityAxisOverride;
+    groupMembers: Record<string, string[]>;
+    protocolFloor: readonly string[];
+    hasMcpServers: boolean;
+}): { excludedTools: string[]; availableTools: string[] | undefined } {
+    const { agentPolicy, override, groupMembers, protocolFloor, hasMcpServers } = opts;
+    const toolAxis = resolveToolAxis(override, groupMembers);
+
+    const deny = new Set([...(agentPolicy?.deny ?? []), ...toolAxis.disabled]);
+    for (const name of toolAxis.enabled) deny.delete(name);
+    deny.delete("*");
+    for (const name of protocolFloor) deny.delete(name);
+    const excludedTools = ["task", ...deny];
+
+    const allowMode = agentPolicy?.allow !== undefined;
+    const availableTools = allowMode
+        ? Array.from(new Set([
+            ...(agentPolicy?.allow ?? []),
+            ...toolAxis.enabled,
+            ...protocolFloor,
+            ...(hasMcpServers ? ["mcp:*"] : []),
+        ])).filter((name) => name !== "*")
+        : undefined;
+
+    return { excludedTools, availableTools };
+}
+
+/**
  * Stable fingerprint for rebind detection: a warm Copilot session built
  * under one override must be destroyed and rebuilt when the effective
  * override changes (MCP servers and skills are fixed at session build).

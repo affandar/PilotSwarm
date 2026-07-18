@@ -666,9 +666,24 @@ export class NodeSdkTransport {
         return override;
     }
 
-    /** Reconfigure a session TREE's capability override (applies next turn). */
+    /**
+     * Reconfigure a session TREE's capability override (applies next turn).
+     * Passing `null` explicitly CLEARS the override. Passing a non-null
+     * object whose entries all fail catalog validation is a caller error
+     * (likely a typo) — reject it rather than silently clearing an existing
+     * restriction, which would fail open.
+     */
     async configureSession(sessionId, capabilities) {
+        if (capabilities === null) {
+            return this.mgmt.configureSessionCapabilities(sessionId, null);
+        }
         const override = await this._normalizeCapabilitiesInput(capabilities);
+        if (capabilities && typeof capabilities === "object" && override === null) {
+            throw new Error(
+                "configureSession: none of the requested capability names are in the deployment catalog. " +
+                "To CLEAR the override, pass null explicitly.",
+            );
+        }
         return this.mgmt.configureSessionCapabilities(sessionId, override);
     }
 

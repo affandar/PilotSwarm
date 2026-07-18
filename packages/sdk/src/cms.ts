@@ -945,9 +945,11 @@ export interface SessionCatalog {
     getCapabilityCatalog(): Promise<{ catalog: any; publishedBy: string | null; publishedAt: Date | null } | null>;
 
     /**
-     * Store a session-TREE capability override on the tree root's row (any
-     * tree member id resolves to the root; null clears). Returns false when
-     * the session does not exist or the schema predates migration 0036.
+     * Store a session-TREE capability override on the tree root's row. The
+     * id may be ANY tree member — it is root-resolved and the write always
+     * lands on the root, so a child row never carries its own override
+     * (null clears). Returns false when the session id is unknown or the
+     * schema predates migration 0036.
      */
     setCapabilityOverride(sessionId: string, override: unknown | null): Promise<boolean>;
 

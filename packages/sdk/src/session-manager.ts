@@ -16,8 +16,8 @@ import { composeStructuredSystemMessage, extractPromptContent, mergePromptSectio
 import { loadSkillsSync } from "./skills.js";
 import { buildPromptLayersEventPayload, type PromptLayerDescriptor } from "./prompt-layers.js";
 import { approvePermissionForSession } from "./permissions.js";
-import { fingerprintCapabilityOverride, resolveToolAxis } from "./capability-override.js";
-import { ALLOW_MODE_RETAINED_TOOLS } from "./capability-catalog.js";
+import { fingerprintCapabilityOverride, composeToolFilters } from "./capability-override.js";
+import { PROTOCOL_FLOOR_TOOLS } from "./capability-catalog.js";
 import { readSnapshotMarker, supportsVersionedSnapshots } from "./snapshot-protocol.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -1078,8 +1078,15 @@ export class SessionManager {
         // its bound agent's resolved server map — resolved worker-side at the
         // same chokepoint as the agent prompt. The deployment catalog is
         // never applied wholesale.
-        const boundAgentMcpServers = effectiveSerializableConfig.boundAgentName
-            ? this.workerDefaults.agentMcpServers?.[effectiveSerializableConfig.boundAgentName]
+        // Capability-profile key: the bound agent, or — for FREEFORM
+        // sub-agents spawned without an agent — the profile agent inherited
+        // from the parent, so a restricted agent cannot mint an unrestricted
+        // child by omitting agent_name. Applied uniformly across all three
+        // axes (MCP, skills, tools) so a freeform child is consistent.
+        const profileAgentName = effectiveSerializableConfig.boundAgentName
+            ?? effectiveSerializableConfig.capabilityProfileAgent;
+        const boundAgentMcpServers = profileAgentName
+            ? this.workerDefaults.agentMcpServers?.[profileAgentName]
             : undefined;
         const effectiveMcpServers = {
             ...(this.workerDefaults.baseMcpServers ?? {}),
@@ -1093,12 +1100,7 @@ export class SessionManager {
         // always win in the CLI, so a policy can narrow but never widen.
         // Allow-list mode implicitly retains report_cycle — the turn-cycling
         // tool sessions cannot function without.
-        // Capability-profile key: the bound agent, or — for FREEFORM
-        // sub-agents spawned without an agent — the profile agent inherited
-        // from the parent, so a restricted agent cannot mint an unrestricted
-        // child by omitting agent_name (review finding, Phase 2).
-        const boundAgentName = effectiveSerializableConfig.boundAgentName
-            ?? effectiveSerializableConfig.capabilityProfileAgent;
+        const boundAgentName = profileAgentName;
         const agentDisabledSkills = boundAgentName
             ? this.workerDefaults.agentDisabledSkills?.[boundAgentName]
             : undefined;
@@ -1160,29 +1162,16 @@ export class SessionManager {
         }
 
         // Tools axis: group entries expand to members (individual entries
-        // override their group; disable wins). Override-enable can lift an
-        // agent-policy deny, but never the "task" floor.
-        const toolAxis = resolveToolAxis(treeOverride?.tools, this.workerDefaults.toolGroupMembers ?? {});
-        const finalToolDeny = new Set([...(agentToolPolicy?.deny ?? []), ...toolAxis.disabled]);
-        for (const name of toolAxis.enabled) finalToolDeny.delete(name);
-        finalToolDeny.delete("task");
-        finalToolDeny.delete("*");
-        const sessionExcludedTools = ["task", ...finalToolDeny];
-        // Allow-list mode is active when `allow` is DEFINED — an explicitly
-        // empty list means "protocol floor only", matching allowedSkills
-        // semantics. availableTools filters across ALL tool sources in the
-        // CLI, so allow-mode must also retain the session's granted MCP
-        // servers' tools ("mcp:*" — only granted servers exist in this
-        // session's config) or Phase-1 MCP grants silently die.
-        const allowMode = agentToolPolicy?.allow !== undefined;
-        const sessionAvailableTools = allowMode
-            ? Array.from(new Set([
-                ...(agentToolPolicy?.allow ?? []),
-                ...toolAxis.enabled,
-                ...ALLOW_MODE_RETAINED_TOOLS,
-                ...(Object.keys(effectiveMcpServers).length > 0 ? ["mcp:*"] : []),
-            ])).filter((name) => name !== "*")
-            : undefined;
+        // override their group; disable wins), the protocol floor is enforced
+        // in both directions, and allow-mode retains granted MCP servers.
+        // Pure logic lives in composeToolFilters (unit-tested).
+        const { excludedTools: sessionExcludedTools, availableTools: sessionAvailableTools } = composeToolFilters({
+            agentPolicy: agentToolPolicy,
+            override: treeOverride?.tools,
+            groupMembers: this.workerDefaults.toolGroupMembers ?? {},
+            protocolFloor: PROTOCOL_FLOOR_TOOLS,
+            hasMcpServers: Object.keys(effectiveMcpServers).length > 0,
+        });
         const finalDisabledSkills = [...disabledSkillSet];
 
         const sessionConfig: any = {

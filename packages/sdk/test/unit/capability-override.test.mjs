@@ -16,7 +16,9 @@ import {
     resolveToolAxis,
     expandToolNames,
     fingerprintCapabilityOverride,
+    composeToolFilters,
 } from "../../dist/capability-override.js";
+import { PROTOCOL_FLOOR_TOOLS } from "../../dist/capability-catalog.js";
 
 const GROUPS = {
     facts: ["store_fact", "read_facts", "delete_fact"],
@@ -87,6 +89,72 @@ test("resolveToolAxis: disable wins at equal specificity", () => {
 
     const groups = resolveToolAxis({ enable: ["facts"], disable: ["facts"] }, GROUPS);
     assert.ok(groups.disabled.has("store_fact") && !groups.enabled.has("store_fact"), "group vs group: disable wins");
+});
+
+const FLOOR = [...PROTOCOL_FLOOR_TOOLS];
+
+test("composeToolFilters: no policy/override yields only the task floor", () => {
+    const { excludedTools, availableTools } = composeToolFilters({
+        groupMembers: GROUPS, protocolFloor: FLOOR, hasMcpServers: false,
+    });
+    assert.deepEqual(excludedTools, ["task"]);
+    assert.equal(availableTools, undefined);
+});
+
+test("composeToolFilters: protocol floor is NEVER excludable (brick guard)", () => {
+    // Directly naming a floor tool, and disabling the group that contains it.
+    for (const attempt of [
+        { tools: { disable: ["report_cycle", "wait", "ask_user"] } },
+        { tools: { disable: ["session"] } }, // a group that expands to floor tools
+    ]) {
+        const { excludedTools } = composeToolFilters({
+            agentPolicy: { deny: ["report_cycle"] },
+            override: attempt.tools,
+            groupMembers: { ...GROUPS, session: ["wait", "ask_user", "report_cycle", "bash"] },
+            protocolFloor: FLOOR,
+            hasMcpServers: false,
+        });
+        for (const floorTool of FLOOR) {
+            assert.ok(!excludedTools.includes(floorTool), `${floorTool} must never be excluded (attempt ${JSON.stringify(attempt)})`);
+        }
+    }
+});
+
+test("composeToolFilters: bare '*' is never emitted into either list", () => {
+    const { excludedTools, availableTools } = composeToolFilters({
+        agentPolicy: { allow: ["read_facts"], deny: ["*"] },
+        override: { enable: ["*"], disable: ["*"] },
+        groupMembers: GROUPS, protocolFloor: FLOOR, hasMcpServers: true,
+    });
+    assert.ok(!excludedTools.includes("*"));
+    assert.ok(!availableTools.includes("*"));
+});
+
+test("composeToolFilters: allow-mode retains floor + mcp:* and honors empty allow", () => {
+    const empty = composeToolFilters({
+        agentPolicy: { allow: [] }, groupMembers: GROUPS, protocolFloor: FLOOR, hasMcpServers: true,
+    });
+    // Empty allow = "floor only", but still usable: floor + mcp:* present.
+    for (const f of FLOOR) assert.ok(empty.availableTools.includes(f), `floor tool ${f} retained in allow-mode`);
+    assert.ok(empty.availableTools.includes("mcp:*"), "granted MCP servers retained in allow-mode");
+
+    const noMcp = composeToolFilters({
+        agentPolicy: { allow: ["read_facts"] }, groupMembers: GROUPS, protocolFloor: FLOOR, hasMcpServers: false,
+    });
+    assert.ok(!noMcp.availableTools.includes("mcp:*"), "no mcp:* when no servers granted");
+    assert.ok(noMcp.availableTools.includes("read_facts"));
+});
+
+test("composeToolFilters: deny-mode excludes non-floor tools, override-enable lifts agent deny", () => {
+    const { excludedTools, availableTools } = composeToolFilters({
+        agentPolicy: { deny: ["bash", "graph_stats"] },
+        override: { enable: ["bash"] },
+        groupMembers: GROUPS, protocolFloor: FLOOR, hasMcpServers: false,
+    });
+    assert.equal(availableTools, undefined, "deny-only stays in deny-mode");
+    assert.ok(excludedTools.includes("graph_stats"), "un-lifted agent deny stays excluded");
+    assert.ok(!excludedTools.includes("bash"), "override-enable lifts the agent deny");
+    assert.ok(excludedTools.includes("task"), "task floor always excluded");
 });
 
 test("fingerprint is order-insensitive and empty for no override", () => {
