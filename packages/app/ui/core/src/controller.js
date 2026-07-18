@@ -3800,18 +3800,28 @@ export class PilotSwarmUiController {
         const groupedModels = typeof this.transport.getModelsByProvider === "function"
             ? this.transport.getModelsByProvider()
             : groupModelsByProvider(models);
+        // Whether the current user has a per-user GitHub Copilot key:
+        // true/false when known, null when the transport can't tell (then
+        // no model gets disabled — never lock models out on a guess).
+        const ghcpUserKeySet = await this._resolveGhcpUserKeySet();
         const items = [];
         const groups = groupedModels
             .map((group) => ({
                 providerId: group.providerId,
                 providerType: group.type || group.providerType,
                 models: (group.models || []).map((model) => {
+                    const providerType = model.providerType || group.type || group.providerType;
+                    // Copilot models with no worker-level token are unusable
+                    // for users who haven't stored their own GitHub key.
+                    const ghcpKeyMissing = providerType === "github"
+                        && model.credentialAvailable === false
+                        && ghcpUserKeySet === false;
                     const item = {
                         id: model.qualifiedName,
                         qualifiedName: model.qualifiedName,
                         modelName: model.modelName || model.qualifiedName,
                         providerId: model.providerId || group.providerId,
-                        providerType: model.providerType || group.type || group.providerType,
+                        providerType,
                         description: model.description || "",
                         cost: model.cost || null,
                         supportedReasoningEfforts: normalizeReasoningEfforts(model.supportedReasoningEfforts),
@@ -3819,6 +3829,8 @@ export class PilotSwarmUiController {
                         supportedContextTiers: normalizeContextTiers(model.supportedContextTiers),
                         defaultContextTier: model.defaultContextTier || null,
                         isDefault: defaultModel === model.qualifiedName,
+                        ghcpKeyMissing,
+                        disabled: ghcpKeyMissing,
                     };
                     items.push(item);
                     return item;
@@ -3827,7 +3839,12 @@ export class PilotSwarmUiController {
             .filter((group) => group.models.length > 0);
 
         const preferredModel = sessionOptions?.model || defaultModel;
-        const selectedIndex = Math.max(0, items.findIndex((model) => model.qualifiedName === preferredModel));
+        // Never preselect a key-blocked Copilot model: when the preferred
+        // model (often the catalog default) is unusable, land on the first
+        // usable model instead.
+        let selectedIndex = items.findIndex((model) => model.qualifiedName === preferredModel && !model.disabled);
+        if (selectedIndex < 0) selectedIndex = items.findIndex((model) => !model.disabled);
+        if (selectedIndex < 0) selectedIndex = 0;
         this.dispatch({
             type: "ui/modal",
             modal: {
@@ -3841,6 +3858,27 @@ export class PilotSwarmUiController {
             },
         });
         this.dispatch({ type: "ui/status", text: "Select a model and press Enter" });
+    }
+
+    async _resolveGhcpUserKeySet() {
+        // Freshest signal first: the profile the Admin console loaded in this
+        // session (updates immediately after the user saves a key there).
+        const adminProfile = this.getState().admin?.profile;
+        if (typeof adminProfile?.githubCopilotKeySet === "boolean") {
+            return adminProfile.githubCopilotKeySet;
+        }
+        if (typeof this.transport.getCurrentUserProfile !== "function") return null;
+        try {
+            const profile = await this.transport.getCurrentUserProfile();
+            if (profile && typeof profile.githubCopilotKeySet === "boolean") {
+                return profile.githubCopilotKeySet;
+            }
+            // Profile fetch succeeded but no stored flag — a user with no
+            // profile row has no key.
+            return false;
+        } catch {
+            return null;
+        }
     }
 
     async openSwitchModelPicker(onApplied = null) {
@@ -4903,6 +4941,16 @@ export class PilotSwarmUiController {
         }
         if (modal.type === "modelPicker") {
             const item = modal.items?.[modal.selectedIndex || 0];
+            if (item?.disabled) {
+                // Keep the picker open — the selection is unusable, not wrong.
+                this.dispatch({
+                    type: "ui/status",
+                    text: item.ghcpKeyMissing
+                        ? "This model needs a GitHub Copilot key — add yours in the Admin console first"
+                        : "This model is not available",
+                });
+                return;
+            }
             const previousFocus = modal.previousFocus;
             this.dispatch({ type: "ui/modal", modal: null });
             if (previousFocus) {

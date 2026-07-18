@@ -18,6 +18,8 @@ import { getPublicAuthContext } from "../auth/authz/engine.js";
 
 const ERROR_STATUS_BY_CODE = {
     INVALID_REQUEST: 400,
+    // GitHub Copilot model requested without a worker or per-user key.
+    GHCP_KEY_MISSING: 400,
     PORTAL_AUTH_REQUIRED: 401,
     UNAUTHORIZED: 401,
     FORBIDDEN: 403,
@@ -32,7 +34,7 @@ const ERROR_STATUS_BY_CODE = {
 // messages. These are client errors (their message is the whole value), so
 // they keep their text; everything else that reaches 500 is treated as an
 // unexpected fault and gets a generic message.
-const CLIENT_ERROR_MESSAGE = /must be|is required|cannot be|Unsupported|is not started|terminal orchestration|cannot accept new messages|not found|already|Unknown model|does not support reasoning effort/i;
+const CLIENT_ERROR_MESSAGE = /must be|is required|cannot be|Unsupported|is not started|terminal orchestration|cannot accept new messages|not found|already|Unknown model|does not support reasoning effort|GitHub Copilot key/i;
 
 function statusForError(error) {
     const byCode = ERROR_STATUS_BY_CODE[error?.code];

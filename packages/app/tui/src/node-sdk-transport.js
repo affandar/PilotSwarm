@@ -1037,8 +1037,20 @@ export class NodeSdkTransport {
             : null;
         if (profile?.githubCopilotKeySet === true) return effectiveModel;
 
-        throw new Error(
-            "GitHub Copilot key not configured. Set GITHUB_TOKEN on the worker or set your per-user GitHub Copilot key in Admin before creating GitHub Copilot model sessions.",
+        // The caller never picked this Copilot model — it came from the
+        // catalog default. Fall back to the first non-Copilot model instead
+        // of failing a session the user has no key for.
+        if (!model && typeof this.mgmt.listModels === "function") {
+            const fallback = (this.mgmt.listModels() || [])
+                .find((entry) => entry?.providerType !== "github" && entry?.qualifiedName);
+            if (fallback) return fallback.qualifiedName;
+        }
+
+        throw Object.assign(
+            new Error(
+                "GitHub Copilot key missing or invalid. Set GITHUB_TOKEN on the worker or configure your per-user GitHub Copilot key in Admin before using GitHub Copilot models.",
+            ),
+            { code: "GHCP_KEY_MISSING", status: 400 },
         );
     }
 

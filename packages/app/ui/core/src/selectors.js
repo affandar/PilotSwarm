@@ -1923,6 +1923,7 @@ function buildChatMessageLines(message, maxWidth, options = {}) {
                     width: Math.max(20, maxWidth),
                     titleColor: USER_CHAT_COLOR,
                     borderColor: USER_CHAT_COLOR,
+                    tableMode: options.tableMode,
                 }),
                 ...buildChatMessageLines({
                     ...message,
@@ -2000,6 +2001,7 @@ function buildChatMessageLines(message, maxWidth, options = {}) {
             width: Math.max(20, maxWidth),
             titleColor: message?.cardTitleColor || (message?.role === "system" ? "yellow" : "cyan"),
             borderColor: message?.cardBorderColor || "gray",
+            tableMode: options.tableMode,
             ...(isSystemCard ? { bodyColor: "gray", fitToContent: true } : {}),
         });
     }
@@ -4086,10 +4088,12 @@ export function selectModelPickerModal(state, maxWidth = 72) {
                 ? modal.items.findIndex((item) => item.id === model.id)
                 : -1;
             const isSelected = itemIndex === selectedIndex;
+            const isDisabled = Boolean(model.disabled);
             const labelRuns = fitRuns([
                 { text: "· ", color: "gray" },
-                { text: model.modelName || model.qualifiedName || model.id, color: "white", bold: Boolean(model.isDefault) },
+                { text: model.modelName || model.qualifiedName || model.id, color: isDisabled ? "gray" : "white", bold: Boolean(model.isDefault) && !isDisabled },
                 ...(model.cost ? [{ text: ` [${model.cost}]`, color: "gray" }] : []),
+                ...(isDisabled ? [{ text: " ⊘ needs GitHub key", color: "yellow" }] : []),
                 ...(model.isDefault ? [{ text: " ← current default", color: "gray" }] : []),
             ], contentWidth);
 
@@ -4126,6 +4130,9 @@ export function selectModelPickerModal(state, maxWidth = 72) {
                 ? [[{ text: `Reasoning: ${supportedReasoning.join(", ")}`, color: "gray" }]]
                 : []),
             ...(defaultReasoning ? [[{ text: `Default reasoning: ${defaultReasoning}`, color: "gray" }]] : []),
+            ...(selectedItem.disabled
+                ? [[{ text: "Unavailable: requires a GitHub Copilot key. Add yours in the Admin console, then reopen this picker.", color: "yellow" }]]
+                : []),
             [{ text: "", color: "gray" }],
             [{
                 text: selectedItem.description || "No description available for this model.",

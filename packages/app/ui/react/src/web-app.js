@@ -422,8 +422,9 @@ function normalizeLines(lines) {
             continue;
         }
         // Sentinel kinds preserved as-is so parseStructuredChatBlocks can
-        // recognize and render them (e.g. markdownTable → HTML <table>).
-        if (line?.kind === "markdownTable") {
+        // recognize and render them (e.g. markdownTable → HTML <table>,
+        // cardStart/cardEnd → styled card with structured body).
+        if (line?.kind === "markdownTable" || line?.kind === "cardStart" || line?.kind === "cardEnd") {
             normalized.push(line);
             continue;
         }
@@ -1415,6 +1416,30 @@ function parseStructuredChatBlocks(lines = []) {
             continue;
         }
 
+        // Sentinel card bounds emitted by buildMessageCardLines in sentinel
+        // mode. The body lines between the bounds are UNWRAPPED, so parse
+        // them recursively — box-drawn/markdown tables inside the card
+        // become real HTML tables instead of hard-wrapped box art.
+        if (currentLine?.kind === "cardStart") {
+            const innerLines = [];
+            index += 1;
+            while (index < lines.length && lines[index]?.kind !== "cardEnd") {
+                innerLines.push(lines[index]);
+                index += 1;
+            }
+            if (index < lines.length) index += 1;
+            if (index < lines.length && lineText(lines[index]).trim().length === 0) {
+                index += 1;
+            }
+            blocks.push({
+                type: "card",
+                headerRuns: Array.isArray(currentLine.runs) ? currentLine.runs : [],
+                borderColor: currentLine.borderColor || "gray",
+                blocks: parseStructuredChatBlocks(innerLines),
+            });
+            continue;
+        }
+
         // Sentinel markdown-table line emitted by parseMarkdownLines when
         // tableMode === "sentinel". Carries the raw header + rows so the
         // portal renders a real HTML table with markdown cell content (so
@@ -1563,9 +1588,15 @@ function parseStructuredChatBlocks(lines = []) {
 
 function StructuredChatBlocks({ lines, theme }) {
     const blocks = React.useMemo(() => parseStructuredChatBlocks(lines), [lines]);
+    return React.createElement(StructuredBlockList, { blocks, theme });
+}
 
+// Renders parsed chat blocks; sentinel card blocks recurse through this list
+// so structured content (box/markdown tables, code fences) inside a card
+// renders exactly the same as it does at top level.
+function StructuredBlockList({ blocks, theme }) {
     return React.createElement(React.Fragment, null,
-        blocks.map((block, index) => {
+        (blocks || []).map((block, index) => {
             if (block.type === "preserve") {
                 const variantClass = block.splashVariant ? ` is-splash-${block.splashVariant}` : "";
                 return React.createElement("div", { key: `preserve:${index}`, className: `ps-chat-preserve-block${variantClass}` },
@@ -1593,10 +1624,12 @@ function StructuredChatBlocks({ lines, theme }) {
                 React.createElement("header", { className: "ps-chat-card-header" },
                     React.createElement(Runs, { runs: block.headerRuns, theme })),
                 React.createElement("div", { className: "ps-chat-card-body" },
-                    (block.bodyLines || []).map((bodyRuns, bodyIndex) => React.createElement("div", {
-                        key: `card:${index}:line:${bodyIndex}`,
-                        className: "ps-chat-card-line",
-                    }, React.createElement(Runs, { runs: bodyRuns, theme })) )));
+                    Array.isArray(block.blocks)
+                        ? React.createElement(StructuredBlockList, { blocks: block.blocks, theme })
+                        : (block.bodyLines || []).map((bodyRuns, bodyIndex) => React.createElement("div", {
+                            key: `card:${index}:line:${bodyIndex}`,
+                            className: "ps-chat-card-line",
+                        }, React.createElement(Runs, { runs: bodyRuns, theme })) )));
             }
 
             if (block.type === "table") {
@@ -2193,7 +2226,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             },
             React.createElement("div", {
                 className: "ps-line ps-session-row-content",
-                style: { paddingInlineStart: `${Math.max(0, row.depth) * 18}px` },
+                style: { paddingInlineStart: `${Math.max(0, row.depth) * 4}px` },
             },
                 React.createElement(SessionRowContent, { row, theme, structured: structuredRows })),
             )),
@@ -4119,7 +4152,7 @@ function ModalLayer({ controller }) {
                 return React.createElement("button", {
                     key: item?.id || `row:${rowIndex}`,
                     type: "button",
-                    className: `ps-list-button ps-modal-list-button${itemIndex === modal.selectedIndex ? " is-selected" : ""}${usesHangingIndent ? " is-hanging" : ""}`,
+                    className: `ps-list-button ps-modal-list-button${itemIndex === modal.selectedIndex ? " is-selected" : ""}${usesHangingIndent ? " is-hanging" : ""}${item?.disabled ? " is-disabled" : ""}`,
                     onClick: () => controller.dispatch({ type: "ui/modalSelection", index: itemIndex }),
                 },
                 React.createElement("div", { className: "ps-line ps-modal-list-line" },
@@ -4128,7 +4161,7 @@ function ModalLayer({ controller }) {
             : (modal.items || []).map((item, index) => React.createElement("button", {
                 key: item.id || index,
                 type: "button",
-                className: `ps-list-button ps-modal-list-button${index === modal.selectedIndex ? " is-selected" : ""}${usesHangingIndent ? " is-hanging" : ""}`,
+                className: `ps-list-button ps-modal-list-button${index === modal.selectedIndex ? " is-selected" : ""}${usesHangingIndent ? " is-hanging" : ""}${item?.disabled ? " is-disabled" : ""}`,
                 onClick: () => controller.dispatch({ type: "ui/modalSelection", index }),
             },
             React.createElement("div", { className: "ps-line ps-modal-list-line" },

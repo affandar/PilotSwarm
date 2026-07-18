@@ -344,6 +344,13 @@ export interface ModelSummary {
     defaultReasoningEffort?: ReasoningEffort;
     supportedContextTiers?: import("./model-providers.js").ContextTier[];
     defaultContextTier?: import("./model-providers.js").ContextTier;
+    /**
+     * Whether the provider has a process/env credential. For GitHub
+     * providers this excludes per-user CMS keys (see
+     * getModelCredentialStatus) — a `false` here means the model is only
+     * usable by users who configured their own GitHub Copilot key.
+     */
+    credentialAvailable?: boolean;
 }
 
 /** Credential availability for a configured model provider. */
@@ -2368,6 +2375,7 @@ export class PilotSwarmManagementClient {
             ...(m.defaultReasoningEffort ? { defaultReasoningEffort: m.defaultReasoningEffort } : {}),
             ...(m.supportedContextTiers?.length ? { supportedContextTiers: m.supportedContextTiers } : {}),
             ...(m.defaultContextTier ? { defaultContextTier: m.defaultContextTier } : {}),
+            credentialAvailable: this.getModelCredentialStatus(m.qualifiedName).credentialAvailable,
         }));
     }
 
@@ -2390,6 +2398,7 @@ export class PilotSwarmManagementClient {
                 ...(m.defaultReasoningEffort ? { defaultReasoningEffort: m.defaultReasoningEffort } : {}),
                 ...(m.supportedContextTiers?.length ? { supportedContextTiers: m.supportedContextTiers } : {}),
                 ...(m.defaultContextTier ? { defaultContextTier: m.defaultContextTier } : {}),
+                credentialAvailable: this.getModelCredentialStatus(m.qualifiedName).credentialAvailable,
             })),
         }));
     }

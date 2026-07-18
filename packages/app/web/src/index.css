@@ -2241,6 +2241,14 @@ body.is-resizing-pane-y * {
   text-indent: -1.15rem;
 }
 
+/* Unusable entries (e.g. Copilot models without a GitHub key): still
+   clickable so the details pane can explain why, but visibly inert —
+   the controller blocks confirming them. */
+.ps-modal-list-button.is-disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .ps-filter-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));

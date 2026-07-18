@@ -858,8 +858,11 @@ export class SessionManager {
             ? await this._resolveSessionGitHubToken(sessionId, config, effectiveModel, catalogRow)
             : undefined;
         if (resolvedProvider?.type === "github" && !userGithubToken && !this.githubToken && !resolvedProvider.githubToken) {
-            throw new Error(
-                "GitHub Copilot key not configured. Set GITHUB_TOKEN on the worker, set your per-user GitHub Copilot key in Admin, or (for system sessions) have an admin store a System key in the Admin Console before creating GitHub Copilot model sessions.",
+            throw Object.assign(
+                new Error(
+                    "GitHub Copilot key missing or invalid. Set GITHUB_TOKEN on the worker, set your per-user GitHub Copilot key in Admin, or (for system sessions) have an admin store a System key in the Admin Console before using GitHub Copilot models.",
+                ),
+                { code: "GHCP_KEY_MISSING", status: 400 },
             );
         }
         const desiredClientKey = userGithubToken || "";

@@ -992,6 +992,7 @@ export function buildMessageCardLines({
     borderColor = "gray",
     bodyColor = null,
     fitToContent = false,
+    tableMode = null,
 } = {}) {
     const maxWidth = Math.max(fitToContent ? 12 : 20, Number(width) || (fitToContent ? 12 : 20));
     const maxContentWidth = Math.max(1, maxWidth - 4);
@@ -999,6 +1000,30 @@ export function buildMessageCardLines({
         { text: ` ${String(title || "SYSTEM").toUpperCase()} `, color: titleColor, bold: true },
         ...(timestamp ? [{ text: ` ${String(timestamp)} `, color: "gray" }] : []),
     ];
+
+    // Sentinel mode (browser portal): the card is laid out with CSS, so
+    // emit cardStart/cardEnd bounds around the UNWRAPPED markdown body
+    // instead of drawing box art. Hard-wrapping here would mangle
+    // preformatted content (box-drawn tables, ASCII art) that the browser
+    // renders as real HTML tables or scrollable lines.
+    if (tableMode === "sentinel") {
+        const sentinelBodyLines = parseMarkdownLines(String(body || ""), {
+            width: maxContentWidth,
+            tableMode,
+        });
+        const sentinelTinted = bodyColor
+            ? sentinelBodyLines.map((lineRuns) => (Array.isArray(lineRuns)
+                ? recolorRuns(lineRuns, bodyColor)
+                : lineRuns))
+            : sentinelBodyLines;
+        return [
+            { kind: "cardStart", runs: titleRuns, borderColor },
+            ...sentinelTinted,
+            { kind: "cardEnd" },
+            [{ text: "", color: null }],
+        ];
+    }
+
     const bodyLines = parseMarkdownLines(String(body || ""), { width: maxContentWidth });
     const normalizedBodyLines = bodyLines.length > 0
         ? bodyLines.flatMap((lineRuns) => wrapRunsToDisplayWidth(lineRuns, maxContentWidth))
