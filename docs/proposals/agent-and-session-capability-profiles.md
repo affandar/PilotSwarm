@@ -1,7 +1,7 @@
 # Per-Agent MCP Servers and Session Capability Selection
 
-**Status:** Draft / RFC
-**Date:** 2026-07-16
+**Status:** Draft / RFC — open questions resolved
+**Date:** 2026-07-16 (updated 2026-07-17: decisions recorded, see Decisions)
 **Scope:** agent-definition capability declarations (MCP servers, skills, tools),
 a deployment capability catalog, per-session capability overrides at create and
 at turn boundaries, and the API / MCP / portal / TUI surfaces for all of it
@@ -51,7 +51,7 @@ session agent.
 **MCP servers are worker-global.** Each plugin dir's `.mcp.json` is merged by
 server name into one worker-global `_loadedMcpServers` map
 (`worker.ts` `_loadPluginDir` ~1040) and spread into **every** Copilot session's
-config unconditionally (`session-manager.ts:1049-1051`). The flagship
+config unconditionally (`session-manager.ts:1051-1054`). The flagship
 deployment's `.mcp.json` is literally `{}` — zero MCP servers configured in
 production today. PilotSwarm never opens an MCP connection itself; it hands the
 map to the GitHub Copilot CLI runtime, which spawns/connects the servers inside
@@ -66,20 +66,24 @@ skill-materialization-to-filesystem proposal is **not shipped**.
 
 **Tool assembly is purely additive.** The LLM tool array is a union
 (`frameworkBaseToolNames ∪ appDefaultToolNames ∪ session toolNames ∪ agent
-frontmatter tools`) built in `SessionManager._getOrCreateUnlocked` and rebuilt
-per turn in `ManagedSession.registerTools`. There is **no deny mechanism** except
+frontmatter tools`) built in `SessionManager._getOrCreateUnlocked`; each turn
+`ManagedSession._runTurnInner` re-registers handlers via the SDK session's
+`registerTools` (a client-side handler refresh — the tool declarations the LLM
+sees are fixed at session create via `sessionConfig.tools`). There is **no deny
+mechanism** except
 hardcoded identity gates (agent-tuner read-only, facts-manager, crawler role) and
 a single `excludedTools: ["task"]`.
 
-**Session options are an explicit field whitelist.** `createSession` /
-`createSessionForAgent` accept only `model / reasoningEffort / contextTier /
-title / groupId / visibility` (`protocol.js`); the web client explicitly
+**Session options are an explicit field whitelist.** `createSession` accepts
+only `model / reasoningEffort / contextTier / groupId / visibility`;
+`createSessionForAgent` adds `title / splash / splashMobile / initialPrompt`
+(`protocol.js`); the web client explicitly
 **rejects** `toolNames` (`WEB_MODE_UNSUPPORTED`). Options flow protocol →
 `runtime.call` → transport → `PilotSwarmClient.createSession` → the 10-arg
 `cms_create_session` (columns only) → `OrchestrationInput.config`
 (`SerializableSessionConfig`, the durable runtime carrier, re-emitted wholesale
 on every continue-as-new) → `runTurn` → `SessionManager.getOrCreate`
-(session-manager.ts:1049-1051, the assembly join point).
+(session-manager.ts:1051-1054, the assembly join point).
 
 **The turn-boundary precedent is `setSessionModel`.** `mgmt.setSessionModel`
 validates against the model registry, enqueues a durable
@@ -135,7 +139,11 @@ effective(S)   = applyOverride(sessionOverride, resolveAgent(agentProfile, catal
 ```
 
 `effective(S)` is computed at the session-assembly join point and mapped onto the
-Copilot session config:
+Copilot session config. The override is stored once, at the **session-tree
+root**, and **cascades**: every session in the tree applies the root's override
+on top of its *own* resolved agent profile — the same resolve-at-the-root shape
+sharing/visibility already use. One toggle therefore governs the whole tree;
+children pick the change up at their next assembly/rebind.
 
 | Axis | Catalog source | Agent declares | Copilot config target |
 |---|---|---|---|
@@ -153,10 +161,13 @@ interface SessionCapabilityOverride {
 }
 ```
 
-`enable`/`disable` name catalog entries. `disable` wins over `enable`. An empty
-override means "use the agent profile as-is." Unknown names are ignored and
-reported (not an error), so a catalog that shrinks between deployments does not
-break a stored override.
+`enable`/`disable` name catalog entries. For the **tools** axis an entry may
+name an individual tool *or a tool group* (facts, graph, artifacts,
+sub-agents, …): a group expands to its member tools, and an individual-tool
+entry overrides its group. `disable` wins over `enable` at equal specificity.
+An empty override means "use the agent profile as-is." Unknown names are
+ignored and reported (not an error), so a catalog that shrinks between
+deployments does not break a stored override.
 
 ## Part 1 — Per-agent MCP servers
 
@@ -295,11 +306,20 @@ handler behavior, it ships under a **new frozen orchestration version** (registr
 is at 1.0.61); replay stays safe because the override enters only via input or the
 replayed durable command.
 
+**Cascade mechanics.** `configureSession` targets the tree root (calling it with
+a child session id resolves to the root, mirroring how sharing operates on the
+tree). The durable command lands on the root orchestration and updates the
+root's stored override; every tree member reads the root override at its own
+session-assembly join point, so children converge at their next turn/rebind
+without a per-child command fan-out. Reconfiguration applies silently on the
+next turn — the model-switch precedent (`appliesOn: "next_turn"` status text,
+no interruption warning) is the deliberate UX bar.
+
 ## Data model
 
 `sessions` has typed columns and no free JSONB on the create path. Add one
-nullable JSONB column via an additive migration (the 0029/0034 steps-migration
-shape if it needs backfill; here it does not — a plain `ADD COLUMN`):
+nullable JSONB column via an additive migration (the 0029 steps-migration
+shape if it needed backfill; here it does not — a plain `ADD COLUMN`):
 
 ```sql
 ALTER TABLE ${s}.sessions
@@ -319,8 +339,10 @@ session rows.
 
 - **`configureSession`** — `POST /management/sessions/:sessionId/capabilities`,
   access **`session:manage`** (beside `setSessionModel` at `protocol.js:96`),
-  body `{ capabilities: SessionCapabilityOverride }`. Gets its Express route,
-  `ApiClient` method, and authz enforcement from the generated router for free.
+  body `{ capabilities: SessionCapabilityOverride }`. The Express route comes
+  from the generated router for free; `session:manage` is enforced at the shared
+  `runtime.call()` chokepoint like every session-class op, and clients reach the
+  op via the generic `ApiClient.call`.
 - **`createSession` / `createSessionForAgent`** — add `capabilities` body param.
 - **`getSession` / `getSessionAccess`** — expose the session's `capabilityOverride`
   and its resolved `effectiveCapabilities` so a client can render current state.
@@ -342,7 +364,7 @@ Update `docs/api/reference.md` and the MCP tool descriptions accordingly.
 
 The multi-select checkbox precedent already exists — the session owner-filter
 modal (`[x]` rows, space-to-toggle, modal stays open;
-`controller.js:1599-1670`, `selectors.js:4720`, `web-app.js:4212`, TUI
+`controller.js:1599-1670`, `selectors.js:4727`, `web-app.js:4245`, TUI
 `app.js:428`). Reuse it for capability toggles.
 
 - **New+Model flow** — the create chain is a controller-owned sequence of list
@@ -351,6 +373,9 @@ modal (`[x]` rows, space-to-toggle, modal stays open;
   **Capabilities** step after the agent picker: three grouped checkbox sections
   (MCP servers, skills, tools) pre-checked to the chosen agent's profile from the
   catalog; toggling produces the override on `sessionOptions.capabilities`.
+  The tools section renders **tool groups as tri-state checkboxes, expandable to
+  per-tool checkboxes** — both levels toggle (a group toggle stores the group
+  name; an individual toggle stores the tool name, which refines its group).
   Skippable — Enter-through keeps the agent defaults.
 - **Manage session modal** (`SessionModifyModal`, tabbed General/Access with the
   staged-draft + Apply pattern) — add a **Capabilities** tab: the same three
@@ -369,14 +394,18 @@ modal (`[x]` rows, space-to-toggle, modal stays open;
 - A session override may only reference catalog entries; it cannot introduce MCP
   servers, tools, or skills the deployment does not offer.
 - Enabling an MCP server uses the deployment's configured server and its
-  credentials. **No per-user MCP credentials in v1** — a shared server is shared
-  infrastructure, like the Copilot key. (Per-user MCP auth is a future item,
-  aligned with the multitenant proposal.)
+  credentials — **the same authentication for every user and session**. Per-user
+  MCP credentials are explicitly out of scope for this proposal (decided, not
+  deferred); if that ever changes it is a separate proposal aligned with
+  multitenant §3, because it turns capability selection into an authorization
+  surface.
 - Capabilities are behavioral scoping, not authorization: they never widen who can
   read/write/manage a session, and the security model's predicates are unchanged.
-- Sub-agents resolve their own agent profile; a session override applies to the
-  bound session. Whether overrides cascade to spawned children is an open question
-  (below); v1 keeps them non-cascading for a predictable blast radius.
+- Sub-agents resolve their own agent profile, then the tree-root override applies
+  on top — a session override **cascades to the entire subtree** (decided; see
+  Decisions). The wider blast radius of a single toggle is accepted: it matches
+  the tree-root resolution users already have for sharing/visibility, and
+  `session:manage` on the root gates who can flip it.
 
 ## Phased rollout
 
@@ -401,8 +430,13 @@ Each phase is independently shippable; order minimizes durable-contract churn.
 
 - **Agent resolution:** an agent's declared/ inherited MCP set, `allowedSkills`,
   and `toolPolicy` produce the expected effective sets; the pilotswarm base agent
-  resolves to zero MCP servers; a sub-agent resolves its own profile independent
-  of its parent.
+  resolves to zero MCP servers; a sub-agent resolves its own profile, then the
+  tree-root override applies on top.
+- **Cascade:** a root `configureSession` reaches every tree member on its next
+  turn/rebind; calling it with a child session id resolves to the root; a child
+  never carries an override of its own.
+- **Tool groups:** a group entry expands to its member tools; an individual-tool
+  entry overrides its group; `disable` beats `enable` at equal specificity.
 - **Catalog:** bootstrap reports live MCP/skill/tool sets and per-agent defaults;
   unknown override names are dropped and reported, not fatal.
 - **Create override:** create with `capabilities` yields the effective set on turn
@@ -416,23 +450,84 @@ Each phase is independently shippable; order minimizes durable-contract churn.
 - **UX:** the New+Model Capabilities step pre-checks the agent profile and is
   skippable; the Manage-session Capabilities tab stages and Applies; TUI parity.
 
-## Open questions
+## Decisions (open questions resolved 2026-07-17)
 
-1. **Override cascade to sub-agents.** v1 applies overrides to the bound session
-   only. Should a session-tree override cascade to spawned children (matching how
-   sharing/visibility resolve at the tree root), or stay non-cascading? Cascading
-   is more powerful but widens the blast radius of a single toggle.
-2. **Tool granularity.** Toggle individual tools, or tool *groups* (facts, graph,
-   artifacts, sub-agents)? Groups are a friendlier UX and a smaller catalog;
-   individual tools are more precise. Likely groups in the UI, individual names in
-   the API.
-3. **Per-user MCP credentials.** Deferred. When it lands it becomes an
-   authorization surface (a user enabling a server with *their* creds), which
-   changes the security posture — align with multitenant §3.
-4. **Rebind cost visibility.** A capability change destroys the warm session
-   (like a model switch). Should the UI warn when a reconfigure will interrupt an
-   in-flight/warm session, or is the model-switch precedent's silent next-turn
-   application enough?
-5. **Learned-skill axis.** This proposal governs static `SKILL.md` skills. Should
-   the facts-backed learned/curated skills (`skills/%`) be a fourth toggle, or
-   stay always-on as deployment memory?
+1. **Override cascade to sub-agents — cascade to the whole subtree.** The
+   override is stored at the tree root and every tree member applies it on top
+   of its own agent profile. This matches the tree-root resolution users already
+   know from sharing/visibility; the wider blast radius is accepted and gated by
+   `session:manage` on the root. (Design updated throughout: Capability model,
+   Part 4 cascade mechanics, Security, Testing.)
+2. **Tool granularity — groups *and* individual tools.** The catalog carries
+   both; the UI renders tool groups as tri-state checkboxes expandable to
+   per-tool checkboxes; the API accepts group names and tool names in the same
+   `enable`/`disable` lists (groups expand to members, individual entries
+   override their group).
+3. **Per-user MCP credentials — no; same authentication for all.** Enabling an
+   MCP server always uses the deployment's configured server and credentials.
+   This is a decision, not a deferral — any future per-user MCP auth is a
+   separate proposal (multitenant §3) because it changes the security posture.
+4. **Rebind cost visibility — keep it simple.** No interruption warning; the
+   model-switch precedent (silent next-turn application with the
+   `appliesOn: "next_turn"` status note) is the deliberate UX bar.
+5. **Learned-skill axis — keep the default.** Facts-backed learned/curated
+   skills (`skills/%`) stay always-on deployment memory and are not a fourth
+   toggle. This proposal governs static `SKILL.md` skills only.
+
+## Review addenda (2026-07-17)
+
+Findings from an adversarially-verified design review; each amends the design
+above and should be treated as part of the proposal.
+
+1. **Single authority for the override (high).** As drafted, the root applies
+   its orchestration-state copy (`state.config.capabilities`, mutated by the
+   durable command) while children read the CMS `capability_override` column —
+   two authorities that can drift (out-of-band CMS edit, overload-probe
+   fallback dropping the param during a rolling deploy). Resolution: the CMS
+   root-row JSONB is authoritative for **every** tree member including the
+   root; the durable `set_capabilities` command's job is trigger + audit event
+   + KV answer + forcing the root's rebind. `capabilities` then never needs to
+   live in `SerializableSessionConfig` at all, which also keeps the spawn path
+   clean by construction.
+2. **Frozen-version transition (medium).** Sessions pinned on versions
+   ≤ 1.0.61 answer `set_capabilities` with "Unknown command" *without*
+   continuing-as-new, so the first `configureSession` against a pre-deploy
+   session fails visibly and retries never converge on their own. The mgmt op
+   must write the CMS column first (capabilities being CMS-authoritative makes
+   the command best-effort) and/or nudge a CAN and retry once on an
+   unknown-command response. Standard no-rollback-past-a-frozen-version
+   applies once any session has CAN'd onto the new version.
+3. **Fail closed at assembly (medium).** The model-catalog read at assembly
+   fails *open* (falls back to the configured model) — copying that pattern
+   for capabilities would silently re-enable every user-disabled MCP server,
+   skill, and tool for the turn. On a failed root-row read: fail the turn
+   retryably (CMS-blip retries are already the norm) or reuse the
+   last-applied effective set cached on the warm session — never the
+   unrestricted agent profile — and emit
+   `session.capabilities_resolve_failed`.
+4. **Root resolution mechanics (low).** Children resolve the root override via
+   the denormalized `rootSessionId` every session row already carries (O(1),
+   no parent-chain walk); child rows and child orchestration inputs carry
+   nothing. `_getOrCreateUnlocked` today reads only the session's own row, so
+   assembly gains one extra (or joined) root-row read.
+5. **What the frozen version does and does not gate (low).** The assembly-side
+   cascade is *unversioned worker code* — it takes effect for every in-flight
+   session the moment the worker deploys (inert until an override row exists).
+   The new frozen orchestration version gates only the durable command
+   handler. The phased rollout should say so explicitly.
+6. **Tool groups need a source (high).** Nothing defines tool groups today:
+   the Copilot SDK's tool type has no group field and the worker's registry is
+   a flat name-keyed map — groups exist only implicitly as `create*Tools`
+   factory families. Phase 2 must add the grouping source: a group tag at tool
+   registration (threaded through each factory) or a static group manifest in
+   `session-policy.json` validated against the registry at boot; and define
+   how ungrouped tools render in the tri-state UI.
+7. **Catalog transport in the remote topology (high).** In production the
+   portal runs mode `remote` with zero embedded workers; its bootstrap
+   metadata comes from the web pod's *own* plugin-dir load, which reads only
+   `session-policy.json` and agent files — not `.mcp.json`, skill dirs, or
+   the tool registry. "Reported through the bootstrap" therefore has no
+   channel today. Spec it: the worker publishes its loaded capability catalog
+   (MCP server names, skill names, tool names + groups, per-agent resolved
+   defaults) to a CMS row/heartbeat the web runtime reads for bootstrap,
+   validation, and effective-capability rendering.
