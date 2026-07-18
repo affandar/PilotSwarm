@@ -138,6 +138,12 @@ export interface WorkerDefaults {
      */
     toolGroupMembers?: Record<string, string[]>;
     /**
+     * Skill name → tools that skill requires (from its tools.json). When a
+     * skill is effectively enabled for a session, its required tools are
+     * force-available and non-removable (a skill cannot run without them).
+     */
+    skillRequiredTools?: Record<string, string[]>;
+    /**
      * @deprecated Use `modelProviders` instead. Kept for backwards compatibility.
      * Custom LLM provider config (BYOK). Passed to every session.
      */
@@ -1161,18 +1167,29 @@ export class SessionManager {
             for (const name of skillDisable) disabledSkillSet.add(name);
         }
 
+        const finalDisabledSkills = [...disabledSkillSet];
+
+        // A skill cannot run without its declared tools, so any skill that is
+        // effectively ENABLED for this session force-protects its required
+        // tools — they become non-removable, exactly like the protocol floor.
+        const skillRequiredTools = this.workerDefaults.skillRequiredTools ?? {};
+        const activeSkillTools: string[] = [];
+        for (const [skillName, tools] of Object.entries(skillRequiredTools)) {
+            if (!disabledSkillSet.has(skillName)) activeSkillTools.push(...tools);
+        }
+
         // Tools axis: group entries expand to members (individual entries
-        // override their group; disable wins), the protocol floor is enforced
-        // in both directions, and allow-mode retains granted MCP servers.
-        // Pure logic lives in composeToolFilters (unit-tested).
+        // override their group; disable wins), the protocol floor AND active
+        // skills' required tools are enforced in both directions, and
+        // allow-mode retains granted MCP servers. Pure logic lives in
+        // composeToolFilters (unit-tested).
         const { excludedTools: sessionExcludedTools, availableTools: sessionAvailableTools } = composeToolFilters({
             agentPolicy: agentToolPolicy,
             override: treeOverride?.tools,
             groupMembers: this.workerDefaults.toolGroupMembers ?? {},
-            protocolFloor: PROTOCOL_FLOOR_TOOLS,
+            protocolFloor: [...PROTOCOL_FLOOR_TOOLS, ...activeSkillTools],
             hasMcpServers: Object.keys(effectiveMcpServers).length > 0,
         });
-        const finalDisabledSkills = [...disabledSkillSet];
 
         const sessionConfig: any = {
             sessionId,

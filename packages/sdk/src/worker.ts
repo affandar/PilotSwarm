@@ -9,7 +9,7 @@ import {
 import { PgSessionCatalog } from "./cms.js";
 import type { SessionCatalog } from "./cms.js";
 import { loadAgentFiles } from "./agent-loader.js";
-import { resolveToolGroups, type CapabilityCatalog, type CapabilityCatalogAgentDefaults } from "./capability-catalog.js";
+import { resolveToolGroups, PROTOCOL_FLOOR_TOOLS, type CapabilityCatalog, type CapabilityCatalogAgentDefaults } from "./capability-catalog.js";
 import { composeDeclaredSkillsPrompt, loadSkillsSync, type Skill } from "./skills.js";
 import { startSystemAgents } from "./system-agents.js";
 import { loadMcpConfig } from "./mcp-loader.js";
@@ -249,6 +249,7 @@ export class PilotSwarmWorker {
                 agentAllowedSkills: this._agentAllowedSkills,
                 agentToolPolicy: this._agentToolPolicy,
                 toolGroupMembers: this._buildToolGroupMembers(),
+                skillRequiredTools: this._buildSkillRequiredTools(),
                 provider: options.provider,
                 modelProviders: this._modelProviders ?? undefined,
                 turnTimeoutMs: options.turnTimeoutMs,
@@ -1153,13 +1154,26 @@ export class PilotSwarmWorker {
             skills: [...this._loadedSkills.values()].map((skill) => ({
                 name: skill.name,
                 ...(skill.description ? { description: skill.description } : {}),
+                ...(skill.toolNames?.length ? { requiredTools: [...skill.toolNames] } : {}),
             })),
             tools: [...toolNames].sort().map((name) => ({
                 name,
                 ...(toolGroups[name] ? { group: toolGroups[name] } : {}),
+                // LOCKED base tools: the durable-session protocol floor.
+                // Non-removable and enforced un-excludable at assembly.
+                ...(PROTOCOL_FLOOR_TOOLS.includes(name as any) ? { locked: true } : {}),
             })),
             agentDefaults,
         };
+    }
+
+    /** Skill name → the tools it requires (from tools.json), for override resolution. */
+    private _buildSkillRequiredTools(): Record<string, string[]> {
+        const map: Record<string, string[]> = {};
+        for (const skill of this._loadedSkills.values()) {
+            if (skill.toolNames?.length) map[skill.name] = [...skill.toolNames];
+        }
+        return map;
     }
 
     /** Invert the tool-group lookup into group → member names (for override expansion). */

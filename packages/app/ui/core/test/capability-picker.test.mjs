@@ -16,8 +16,10 @@ import {
     buildCapabilityBaseline,
     buildCapabilityOverrideDelta,
     buildCapabilityToolGroups,
+    computeForcedTools,
     createInitialState,
     createStore,
+    selectCapabilityPickerModal,
 } from "../src/index.js";
 
 const CATALOG = {
@@ -28,12 +30,18 @@ const CATALOG = {
     skills: [
         { name: "deploy", description: "Deploy the service" },
         { name: "review" },
+        // Skill → tool dependency: enabling `publish` force-holds write_artifact.
+        { name: "publish", description: "Publish artifacts", requiredTools: ["write_artifact"] },
     ],
     tools: [
         { name: "store_fact", group: "facts" },
         { name: "read_facts", group: "facts" },
         { name: "write_artifact", group: "artifacts" },
+        { name: "read_artifact", group: "artifacts" },
         { name: "lonely_tool" },
+        // Durable-session protocol floor: locked (always-on, non-removable).
+        { name: "wait", group: "session", locked: true },
+        { name: "cron", group: "session" },
     ],
     agentDefaults: {
         alpha: { mcpServers: ["github"], skills: null, tools: [] },
@@ -290,4 +298,132 @@ test("effective checks = agent defaults + stored override applied (Manage tab)",
         mcpServers: { enable: ["jira"], disable: ["github"] },
         tools: { disable: ["read_facts"] },
     });
+});
+
+// ─── LOCKED tools + skill→tool dependency locking ──────────────────
+//
+// The catalog carries `tools[].locked` (durable-session protocol floor —
+// always on, non-removable) and `skills[].requiredTools` (force-held while
+// the skill is enabled). Both render checked + disabled with a hint and can
+// NEVER enter a `tools.disable` delta.
+
+// Read the presentation row the selector renders for a picker item id.
+function pickerRow(store, id) {
+    const modal = store.getState().ui.modal;
+    const itemIndex = (modal?.items || []).findIndex((item) => item.id === id);
+    assert.ok(itemIndex >= 0, `picker has item ${id}`);
+    const presentation = selectCapabilityPickerModal(store.getState());
+    const rowIndex = (presentation.rowItemIndexes || []).indexOf(itemIndex);
+    assert.ok(rowIndex >= 0, `presentation renders a row for ${id}`);
+    const runs = presentation.rows[rowIndex];
+    const text = (Array.isArray(runs) ? runs : [runs]).map((run) => run?.text || "").join("");
+    return { itemIndex, rowIndex, text, nonInteractive: Boolean(presentation.rowNonInteractive?.[rowIndex]) };
+}
+
+test("computeForcedTools reports locked tools and enabled-skill required tools", () => {
+    const noSkills = computeForcedTools(CATALOG, { skills: {} });
+    assert.deepEqual(noSkills.wait, { locked: true, requiredBy: [] });
+    assert.ok(!noSkills.write_artifact, "write_artifact is only forced by an enabled skill");
+    const withPublish = computeForcedTools(CATALOG, { skills: { publish: true } });
+    assert.deepEqual(withPublish.write_artifact, { locked: false, requiredBy: ["publish"] });
+    assert.deepEqual(withPublish.wait, { locked: true, requiredBy: [] });
+});
+
+test("a LOCKED base tool renders checked + disabled and toggling it is a no-op with no delta", async () => {
+    const { controller, store, calls } = makeController();
+    await confirmAgentPickerFor(controller, store, "__generic__");
+    controller.setCapabilityPickerGroupExpanded(true, modalItemIndex(store, "group:session"));
+
+    const row = pickerRow(store, "tool:wait");
+    assert.equal(row.nonInteractive, true, "locked tool is non-interactive");
+    assert.match(row.text, /\[x\]/, "locked tool renders checked");
+    assert.match(row.text, /locked/, "locked tool shows the locked hint");
+
+    // A click is a no-op: state unchanged, modal stays open.
+    controller.toggleCapabilityPickerItem(modalItemIndex(store, "tool:wait"));
+    assert.equal(store.getState().ui.modal.checked.tools.wait, true, "still on after a no-op click");
+    assert.equal(store.getState().ui.modal.type, "capabilityPicker", "modal stays open");
+
+    await controller.confirmModal();
+    assert.equal(calls.createSession.length, 1);
+    assert.ok(!("capabilities" in calls.createSession[0]), "a locked-only picker yields no override");
+});
+
+test("enabling a skill force-checks + disables its required tools; they never enter tools.disable", async () => {
+    const { controller, store, calls } = makeController();
+    // alpha is skills-unrestricted, so `publish` is enabled → write_artifact
+    // is force-held.
+    await confirmAgentPickerFor(controller, store, "alpha");
+    controller.setCapabilityPickerGroupExpanded(true, modalItemIndex(store, "group:artifacts"));
+
+    const waRow = pickerRow(store, "tool:write_artifact");
+    assert.equal(waRow.nonInteractive, true, "skill-required tool is non-interactive");
+    assert.match(waRow.text, /\[x\]/, "skill-required tool renders checked");
+    assert.match(waRow.text, /required by publish/, "shows which skill forces it");
+
+    // No-op click on the forced tool leaves it held on.
+    controller.toggleCapabilityPickerItem(modalItemIndex(store, "tool:write_artifact"));
+    assert.equal(store.getState().ui.modal.checked.tools.write_artifact, true, "held on");
+
+    // Disabling the whole artifacts group only drops the removable member —
+    // write_artifact is excluded from the disable delta.
+    controller.toggleCapabilityPickerItem(modalItemIndex(store, "group:artifacts"));
+    await controller.confirmModal();
+    assert.equal(calls.createSessionForAgent.length, 1);
+    assert.deepEqual(calls.createSessionForAgent[0].options.capabilities, {
+        tools: { disable: ["read_artifact"] },
+    });
+});
+
+test("generic: enabling a required-tool skill emits skills.enable and never disables the required tool", async () => {
+    const { controller, store, calls } = makeController();
+    await confirmAgentPickerFor(controller, store, "__generic__");
+    controller.toggleCapabilityPickerItem(modalItemIndex(store, "skill:publish"));
+    await controller.confirmModal();
+
+    assert.equal(calls.createSession.length, 1);
+    const caps = calls.createSession[0].capabilities;
+    assert.deepEqual(caps.skills, { enable: ["publish"] });
+    assert.ok(!caps.tools || !(caps.tools.disable || []).includes("write_artifact"),
+        "the skill's required tool never appears in a disable delta");
+});
+
+test("unchecking the skill releases its required tools back to toggleable", async () => {
+    const { controller, store } = makeController();
+    await confirmAgentPickerFor(controller, store, "alpha");
+    controller.setCapabilityPickerGroupExpanded(true, modalItemIndex(store, "group:artifacts"));
+    assert.equal(pickerRow(store, "tool:write_artifact").nonInteractive, true, "held while publish is on");
+
+    // Turn the skill off → the required tool is released.
+    controller.toggleCapabilityPickerItem(modalItemIndex(store, "skill:publish"));
+    const released = pickerRow(store, "tool:write_artifact");
+    assert.equal(released.nonInteractive, false, "released tool is toggleable again");
+    assert.doesNotMatch(released.text, /required by/, "the required-by hint is gone");
+
+    // And it now actually toggles off.
+    controller.toggleCapabilityPickerItem(modalItemIndex(store, "tool:write_artifact"));
+    assert.equal(store.getState().ui.modal.checked.tools.write_artifact, false, "now removable");
+});
+
+test("a tool that is BOTH locked and would-be-disabled stays out of the delta", () => {
+    const { members } = buildCapabilityToolGroups(CATALOG);
+    const baseline = buildCapabilityBaseline(CATALOG, "alpha");
+    assert.equal(baseline.tools.wait, true, "the locked tool baselines on");
+
+    // A checked map that (wrongly) turns the locked tool off and disables a
+    // normal tool.
+    const checked = {
+        mcpServers: { ...baseline.mcpServers },
+        skills: { ...baseline.skills },
+        tools: { ...baseline.tools, wait: false, read_facts: false },
+    };
+    const forced = computeForcedTools(CATALOG, checked);
+    const delta = buildCapabilityOverrideDelta(baseline, checked, members, forced);
+    assert.ok(delta.tools.disable.includes("read_facts"), "the normal tool is disabled");
+    assert.ok(!delta.tools.disable.includes("wait"), "the locked tool never enters disable");
+
+    // Proof the forced filter is what protects the invariant: without it the
+    // locked tool would leak into the disable list.
+    const unfiltered = buildCapabilityOverrideDelta(baseline, checked, members, null);
+    assert.ok(unfiltered.tools.disable.includes("wait"), "unfiltered delta would violate the invariant");
 });

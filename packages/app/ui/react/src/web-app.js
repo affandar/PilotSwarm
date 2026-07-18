@@ -21,6 +21,7 @@ import {
     buildCapabilityBaseline,
     buildCapabilityOverrideDelta,
     buildCapabilityToolGroups,
+    computeForcedTools,
     isCapabilityCatalogEmpty,
     selectActivityPane,
     selectAdminConsole,
@@ -2514,16 +2515,23 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
     // Capabilities staging: toggles mutate the checked maps locally; dirty =
     // checked differs from the loaded effective state; Apply commits the
     // delta vs the AGENT baseline (no delta → null, clearing the override).
-    const toggleCapEntry = (axis, name) => setCaps((cur) => (cur ? {
-        ...cur,
-        checked: { ...cur.checked, [axis]: { ...cur.checked[axis], [name]: !cur.checked[axis][name] } },
-    } : cur));
+    const toggleCapEntry = (axis, name) => setCaps((cur) => {
+        if (!cur) return cur;
+        // Locked / enabled-skill required tools are non-removable no-ops.
+        if (axis === "tools" && computeForcedTools(cur.catalog, cur.checked)[name]) return cur;
+        return { ...cur, checked: { ...cur.checked, [axis]: { ...cur.checked[axis], [name]: !cur.checked[axis][name] } } };
+    });
     const toggleCapGroup = (group) => setCaps((cur) => {
         if (!cur) return cur;
+        const forced = computeForcedTools(cur.catalog, cur.checked);
         const members = cur.members[group] || [];
-        const allChecked = members.every((name) => cur.checked.tools[name]);
+        // Only the toggleable members flip; forced members stay on. An
+        // all-forced group is a no-op.
+        const toggleable = members.filter((name) => !forced[name]);
+        if (toggleable.length === 0) return cur;
+        const allChecked = toggleable.every((name) => cur.checked.tools[name]);
         const tools = { ...cur.checked.tools };
-        for (const name of members) tools[name] = !allChecked;
+        for (const name of toggleable) tools[name] = !allChecked;
         return { ...cur, checked: { ...cur.checked, tools } };
     });
     const toggleCapExpanded = (group) => setCaps((cur) => (cur ? {
@@ -2533,7 +2541,8 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
     const capsDirty = Boolean(caps) && ["mcpServers", "skills", "tools"].some((axis) =>
         Object.keys(caps.effective[axis]).some((name) => Boolean(caps.effective[axis][name]) !== Boolean(caps.checked[axis][name])));
     const applyCapabilities = () => run(async () => {
-        const override = buildCapabilityOverrideDelta(caps.baseline, caps.checked, caps.members);
+        const forced = computeForcedTools(caps.catalog, caps.checked);
+        const override = buildCapabilityOverrideDelta(caps.baseline, caps.checked, caps.members, forced);
         await controller.configureSessionCapabilities(sessionId, override);
         setCaps((cur) => (cur ? {
             ...cur,
@@ -2544,6 +2553,8 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
             },
         } : cur));
     });
+    // Locked base tools + enabled-skill required tools, for the render below.
+    const capForced = caps ? computeForcedTools(caps.catalog, caps.checked) : {};
     const switchModel = onSwitchModel || (() => {
         onClose();
         controller.openSwitchModelPicker().catch((err) => {
@@ -2692,8 +2703,11 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
                     skill.description ? React.createElement("span", { className: "ps-cap-hint" }, skill.description) : null)),
                 React.createElement("div", { className: "ps-share-section-label" }, "Tools"),
                 caps.groups.map((group) => {
-                    const checkedCount = group.tools.filter((name) => caps.checked.tools[name]).length;
+                    // Forced (locked / skill-required) members count as on and
+                    // are non-removable.
+                    const checkedCount = group.tools.filter((name) => capForced[name] || caps.checked.tools[name]).length;
                     const glyph = checkedCount === 0 ? "[ ]" : checkedCount === group.tools.length ? "[x]" : "[~]";
+                    const allForced = group.tools.length > 0 && group.tools.every((name) => capForced[name]);
                     const expanded = Boolean(caps.expanded[group.name]);
                     return React.createElement(React.Fragment, { key: `group:${group.name}` },
                         React.createElement("div", { className: "ps-cap-group-row" },
@@ -2706,32 +2720,43 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
                             }, expanded ? "▾" : "▸"),
                             React.createElement("button", {
                                 type: "button",
-                                className: `ps-cap-row${checkedCount > 0 ? " is-checked" : ""}`,
-                                disabled: busy,
-                                onClick: () => toggleCapGroup(group.name),
+                                className: `ps-cap-row${checkedCount > 0 ? " is-checked" : ""}${allForced ? " is-locked" : ""}`,
+                                disabled: busy || allForced,
+                                onClick: allForced ? undefined : () => toggleCapGroup(group.name),
                             },
                             React.createElement("span", { className: "ps-cap-check" }, glyph),
                             React.createElement("span", { className: "ps-cap-name" }, group.name),
-                            React.createElement("span", { className: "ps-cap-hint" }, `${checkedCount}/${group.tools.length}`))),
-                        expanded ? group.tools.map((toolName) => React.createElement("button", {
-                            key: `tool:${toolName}`,
-                            type: "button",
-                            className: `ps-cap-row is-child${caps.checked.tools[toolName] ? " is-checked" : ""}`,
-                            disabled: busy,
-                            onClick: () => toggleCapEntry("tools", toolName),
-                        },
-                        React.createElement("span", { className: "ps-cap-check" }, caps.checked.tools[toolName] ? "[x]" : "[ ]"),
-                        React.createElement("span", { className: "ps-cap-name" }, toolName))) : null);
+                            React.createElement("span", { className: "ps-cap-hint" },
+                                allForced ? `locked · ${checkedCount}/${group.tools.length}` : `${checkedCount}/${group.tools.length}`))),
+                        expanded ? group.tools.map((toolName) => {
+                            const f = capForced[toolName];
+                            const isOn = Boolean(f) || Boolean(caps.checked.tools[toolName]);
+                            return React.createElement("button", {
+                                key: `tool:${toolName}`,
+                                type: "button",
+                                className: `ps-cap-row is-child${isOn ? " is-checked" : ""}${f ? " is-locked" : ""}`,
+                                disabled: busy || Boolean(f),
+                                onClick: f ? undefined : () => toggleCapEntry("tools", toolName),
+                            },
+                            React.createElement("span", { className: "ps-cap-check" }, isOn ? "[x]" : "[ ]"),
+                            React.createElement("span", { className: "ps-cap-name" }, toolName),
+                            f ? React.createElement("span", { className: "ps-cap-hint" }, f.locked ? "locked" : `required by ${f.requiredBy.join(", ")}`) : null);
+                        }) : null);
                 }),
-                caps.ungrouped.map((toolName) => React.createElement("button", {
-                    key: `tool:${toolName}`,
-                    type: "button",
-                    className: `ps-cap-row${caps.checked.tools[toolName] ? " is-checked" : ""}`,
-                    disabled: busy,
-                    onClick: () => toggleCapEntry("tools", toolName),
-                },
-                React.createElement("span", { className: "ps-cap-check" }, caps.checked.tools[toolName] ? "[x]" : "[ ]"),
-                React.createElement("span", { className: "ps-cap-name" }, toolName))),
+                caps.ungrouped.map((toolName) => {
+                    const f = capForced[toolName];
+                    const isOn = Boolean(f) || Boolean(caps.checked.tools[toolName]);
+                    return React.createElement("button", {
+                        key: `tool:${toolName}`,
+                        type: "button",
+                        className: `ps-cap-row${isOn ? " is-checked" : ""}${f ? " is-locked" : ""}`,
+                        disabled: busy || Boolean(f),
+                        onClick: f ? undefined : () => toggleCapEntry("tools", toolName),
+                    },
+                    React.createElement("span", { className: "ps-cap-check" }, isOn ? "[x]" : "[ ]"),
+                    React.createElement("span", { className: "ps-cap-name" }, toolName),
+                    f ? React.createElement("span", { className: "ps-cap-hint" }, f.locked ? "locked" : `required by ${f.requiredBy.join(", ")}`) : null);
+                }),
                 React.createElement("div", { className: "ps-share-foot-hint" },
                     "Changes apply to the whole session tree on its next turn. Matching the agent profile exactly clears the override."),
                 React.createElement("div", { className: "ps-manage-apply-bar" },
@@ -4403,6 +4428,9 @@ function ModalLayer({ controller }) {
         const presentation = modalState.capabilityPicker;
         const rows = Array.isArray(presentation.rows) ? presentation.rows : [];
         const rowItemIndexes = Array.isArray(presentation.rowItemIndexes) ? presentation.rowItemIndexes : [];
+        // Locked base tools + enabled-skill required tools render checked but
+        // non-interactive (a click is a no-op).
+        const rowNonInteractive = Array.isArray(presentation.rowNonInteractive) ? presentation.rowNonInteractive : [];
         return React.createElement("div", { className: "ps-modal-backdrop", onClick: close },
             React.createElement("div", { className: "ps-modal", onClick: (event) => event.stopPropagation() },
                 React.createElement("div", { className: "ps-modal-header" },
@@ -4424,14 +4452,18 @@ function ModalLayer({ controller }) {
                             }
                             const item = modal.items?.[itemIndex];
                             const isGroup = item?.kind === "toolGroup";
+                            const locked = Boolean(rowNonInteractive[rowIndex]);
                             // Group rows carry their chevron as the first run;
                             // render it as a separate expand/collapse button so
-                            // the row button stays a pure toggle.
+                            // the row button stays a pure toggle. Locked/forced
+                            // rows disable the toggle (the chevron stays live so
+                            // an all-locked group can still be expanded).
                             const rowButton = React.createElement("button", {
                                 key: item?.id || `row:${rowIndex}`,
                                 type: "button",
-                                className: `ps-list-button ps-modal-list-button${itemIndex === modal.selectedIndex ? " is-selected" : ""}`,
-                                onClick: () => controller.toggleCapabilityPickerItem(itemIndex),
+                                className: `ps-list-button ps-modal-list-button${itemIndex === modal.selectedIndex ? " is-selected" : ""}${locked ? " is-locked" : ""}`,
+                                disabled: locked,
+                                onClick: locked ? undefined : () => controller.toggleCapabilityPickerItem(itemIndex),
                             },
                             React.createElement("div", { className: "ps-line ps-modal-list-line" },
                                 React.createElement(Runs, { runs: isGroup ? runs.slice(1) : runs, theme })));

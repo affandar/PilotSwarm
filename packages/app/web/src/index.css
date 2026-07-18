@@ -2249,6 +2249,15 @@ body.is-resizing-pane-y * {
   cursor: not-allowed;
 }
 
+/* Locked / skill-forced capability rows: checked but non-removable — dimmed
+   and not clickable (the row text carries the "· locked" / "required by …"
+   hint). */
+.ps-modal-list-button.is-locked {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.ps-modal-list-button.is-locked:hover { background: transparent; }
+
 .ps-filter-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -2949,6 +2958,12 @@ body.is-resizing-pane-y * {
 }
 
 .ps-cap-row.is-child { padding-inline-start: 34px; }
+
+/* Locked / skill-forced tool rows: checked but non-removable — dimmed, no
+   hover, and the check stays muted rather than accented. */
+.ps-cap-row.is-locked { opacity: 0.7; cursor: not-allowed; }
+.ps-cap-row.is-locked:hover { background: transparent; color: var(--ps-muted); }
+.ps-cap-row.is-locked .ps-cap-check { color: var(--ps-muted); font-weight: 600; }
 
 .ps-cap-check {
   font-family: var(--ps-mono, monospace);

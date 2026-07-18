@@ -26,6 +26,7 @@ import {
 } from "./layout.js";
 import { parseTerminalMarkupRuns } from "./formatting.js";
 import {
+    computeForcedTools,
     selectActiveArtifactLinks,
     selectActiveHttpLinks,
     selectActivityPane,
@@ -749,6 +750,10 @@ export function buildCapabilityBaseline(catalog, agentName = null) {
     for (const tool of Array.isArray(catalog?.tools) ? catalog.tools : []) {
         const name = String(tool?.name || "").trim();
         if (!name) continue;
+        // Locked protocol-floor tools are always on — no agent policy or
+        // session override can strip them. Baseline true so they render
+        // checked and never generate a delta of their own.
+        if (tool?.locked) { tools[name] = true; continue; }
         tools[name] = Boolean(defaults) && (allowList ? allowList.has(name) : !denyList.has(name));
     }
     return { mcpServers, skills, tools };
@@ -807,7 +812,7 @@ export function applyCapabilityOverrideToChecked(baseline, override, groupMember
  * changes that cover a WHOLE group collapse to the group name (the group
  * toggle); partial-group changes stay individual tool names.
  */
-export function buildCapabilityOverrideDelta(baseline, checked, groupMembers = {}) {
+export function buildCapabilityOverrideDelta(baseline, checked, groupMembers = {}, forcedTools = null) {
     const axisDelta = (base = {}, current = {}) => {
         const enable = [];
         const disable = [];
@@ -819,11 +824,18 @@ export function buildCapabilityOverrideDelta(baseline, checked, groupMembers = {
         }
         return { enable, disable };
     };
+    // KEY INVARIANT: locked base tools and the required tools of an enabled
+    // skill can NEVER be disabled — drop them from the disable side entirely
+    // (including group-collapse), regardless of the checked-map ordering.
+    const forcedSet = forcedTools instanceof Set
+        ? forcedTools
+        : new Set(Object.keys(forcedTools || {}));
     const mcpServers = axisDelta(baseline?.mcpServers, checked?.mcpServers);
     const skills = axisDelta(baseline?.skills, checked?.skills);
     const rawTools = axisDelta(baseline?.tools, checked?.tools);
     const enableSet = new Set(rawTools.enable);
-    const disableSet = new Set(rawTools.disable);
+    const filteredDisable = rawTools.disable.filter((name) => !forcedSet.has(name));
+    const disableSet = new Set(filteredDisable);
     const claimed = new Set();
     const toolEnable = [];
     const toolDisable = [];
@@ -840,7 +852,7 @@ export function buildCapabilityOverrideDelta(baseline, checked, groupMembers = {
     for (const name of rawTools.enable) {
         if (!claimed.has(name)) toolEnable.push(name);
     }
-    for (const name of rawTools.disable) {
+    for (const name of filteredDisable) {
         if (!claimed.has(name)) toolDisable.push(name);
     }
     const axisValue = (enable, disable) => (enable.length > 0 || disable.length > 0
@@ -3978,16 +3990,25 @@ export class PilotSwarmUiController {
             : Math.max(0, Number(index) || 0);
         const item = modal.items?.[selectedIndex];
         if (!item) return;
+        // Locked base tools and tools required by an enabled skill are
+        // non-removable — clicks on them are a no-op that keeps the modal open.
+        const forced = computeForcedTools(modal.catalog, modal.checked);
         const checked = {
             mcpServers: { ...modal.checked?.mcpServers },
             skills: { ...modal.checked?.skills },
             tools: { ...modal.checked?.tools },
         };
         if (item.kind === "toolGroup") {
-            // Tri-state group toggle: partial/unchecked → check all members;
-            // fully checked → uncheck all.
-            const allChecked = (item.tools || []).every((name) => checked.tools[name]);
-            for (const name of item.tools || []) checked.tools[name] = !allChecked;
+            // Tri-state group toggle over the TOGGLEABLE members only; forced
+            // members stay on. An all-forced group is a no-op.
+            const members = item.tools || [];
+            const toggleable = members.filter((name) => !forced[name]);
+            if (toggleable.length === 0) return;
+            const allChecked = toggleable.every((name) => checked.tools[name]);
+            for (const name of toggleable) checked.tools[name] = !allChecked;
+        } else if (item.kind === "tool") {
+            if (forced[item.name]) return;
+            checked.tools[item.name] = !checked.tools[item.name];
         } else {
             checked[item.axis][item.name] = !checked[item.axis][item.name];
         }
@@ -5401,9 +5422,11 @@ export class PilotSwarmUiController {
             const previousFocus = modal.previousFocus;
             const sessionOptions = modal.sessionOptions || {};
             const { members } = buildCapabilityToolGroups(modal.catalog);
+            const forced = computeForcedTools(modal.catalog, modal.checked);
             // Confirming with no changes is the Skip affordance: no delta →
-            // no override, the agent profile applies unchanged.
-            const capabilities = buildCapabilityOverrideDelta(modal.baseline, modal.checked, members);
+            // no override, the agent profile applies unchanged. Locked tools
+            // and enabled-skill required tools can never enter a disable delta.
+            const capabilities = buildCapabilityOverrideDelta(modal.baseline, modal.checked, members, forced);
             this.dispatch({ type: "ui/modal", modal: null });
             if (previousFocus) {
                 this.setFocus(previousFocus);

@@ -4798,6 +4798,37 @@ export function selectSessionOwnerFilterModal(state, maxWidth = 88) {
     };
 }
 
+/**
+ * Tools the capability picker must FORCE on and render non-removable, with
+ * the reason. A tool is forced when it is a locked protocol-floor tool
+ * (`catalog.tools[].locked`) OR required by a currently-enabled skill
+ * (`catalog.skills[].requiredTools`, while `checked.skills[name]`). Returns a
+ * map toolName → { locked, requiredBy: [skillName, ...] }; only forced tools
+ * appear. Recomputed from the live `checked` state so unchecking a skill
+ * releases its tools — unless the locked floor or another enabled skill still
+ * holds them.
+ */
+export function computeForcedTools(catalog, checked = {}) {
+    const forced = {};
+    const ensure = (name) => (forced[name] || (forced[name] = { locked: false, requiredBy: [] }));
+    for (const tool of Array.isArray(catalog?.tools) ? catalog.tools : []) {
+        const name = String(tool?.name || "").trim();
+        if (name && tool?.locked) ensure(name).locked = true;
+    }
+    const checkedSkills = checked?.skills || {};
+    for (const skill of Array.isArray(catalog?.skills) ? catalog.skills : []) {
+        const skillName = String(skill?.name || "").trim();
+        if (!skillName || !checkedSkills[skillName]) continue;
+        for (const req of Array.isArray(skill?.requiredTools) ? skill.requiredTools : []) {
+            const toolName = String(req || "").trim();
+            if (!toolName) continue;
+            const entry = ensure(toolName);
+            if (!entry.requiredBy.includes(skillName)) entry.requiredBy.push(skillName);
+        }
+    }
+    return forced;
+}
+
 export function selectCapabilityPickerModal(state, maxWidth = 88) {
     const modal = state.ui.modal;
     if (!modal || modal.type !== "capabilityPicker") return null;
@@ -4807,9 +4838,14 @@ export function selectCapabilityPickerModal(state, maxWidth = 88) {
     const selectedIndex = Math.max(0, Math.min(Number(modal.selectedIndex) || 0, Math.max(0, items.length - 1)));
     const selectedItem = items[selectedIndex] || null;
     const contentWidth = Math.max(24, maxWidth - 4);
+    // Locked base tools + tools required by an enabled skill render checked,
+    // dimmed and non-interactive (`rowNonInteractive`) for as long as they are
+    // held on.
+    const forced = computeForcedTools(modal.catalog, checked);
 
     const rows = [];
     const rowItemIndexes = [];
+    const rowNonInteractive = [];
     let selectedRowIndex = 0;
     let currentSection = null;
     const SECTION_LABELS = {
@@ -4821,6 +4857,7 @@ export function selectCapabilityPickerModal(state, maxWidth = 88) {
     const pushHeading = (label) => {
         rows.push(fitRuns([{ text: label, color: "cyan", bold: true }], contentWidth));
         rowItemIndexes.push(null);
+        rowNonInteractive.push(true);
     };
 
     items.forEach((item, index) => {
@@ -4830,25 +4867,45 @@ export function selectCapabilityPickerModal(state, maxWidth = 88) {
             pushHeading(section);
         }
         let runs;
+        let nonInteractive = false;
         if (item.kind === "toolGroup") {
             const memberNames = Array.isArray(item.tools) ? item.tools : [];
-            const checkedCount = memberNames.filter((name) => checked.tools?.[name]).length;
+            // Forced members count as on (they cannot be turned off).
+            const checkedCount = memberNames.filter((name) => forced[name] || checked.tools?.[name]).length;
+            const allForced = memberNames.length > 0 && memberNames.every((name) => forced[name]);
             const glyph = checkedCount === 0 ? "[ ] " : checkedCount === memberNames.length ? "[x] " : "[~] ";
+            nonInteractive = allForced;
             runs = fitRuns([
                 { text: item.expanded ? "▾ " : "▸ ", color: "gray" },
-                { text: glyph, color: checkedCount > 0 ? "cyan" : "gray", bold: checkedCount > 0 },
-                { text: item.name, color: "white", bold: checkedCount > 0 },
+                { text: glyph, color: allForced ? "gray" : (checkedCount > 0 ? "cyan" : "gray"), bold: !allForced && checkedCount > 0 },
+                { text: item.name, color: allForced ? "gray" : "white", bold: !allForced && checkedCount > 0 },
                 { text: ` (${checkedCount}/${memberNames.length})`, color: "gray" },
+                ...(allForced ? [{ text: " · locked", color: "gray" }] : []),
             ], contentWidth);
         } else {
-            const isChecked = Boolean(checked[item.axis]?.[item.name]);
-            runs = fitRuns([
-                // Expanded member tools indent under their group row.
-                ...(item.kind === "tool" && item.group ? [{ text: "    ", color: "gray" }] : []),
-                { text: isChecked ? "[x] " : "[ ] ", color: isChecked ? "cyan" : "gray", bold: isChecked },
-                { text: item.name, color: "white", bold: isChecked },
-                ...(item.kind === "mcpServer" && item.isDefault ? [{ text: " · default", color: "gray" }] : []),
-            ], contentWidth);
+            const forcedEntry = item.kind === "tool" ? forced[item.name] : null;
+            // Expanded member tools indent under their group row.
+            const indent = item.kind === "tool" && item.group ? [{ text: "    ", color: "gray" }] : [];
+            if (forcedEntry) {
+                nonInteractive = true;
+                const hint = forcedEntry.locked
+                    ? " · locked"
+                    : ` · required by ${forcedEntry.requiredBy.join(", ")}`;
+                runs = fitRuns([
+                    ...indent,
+                    { text: "[x] ", color: "gray" },
+                    { text: item.name, color: "gray" },
+                    { text: hint, color: "gray" },
+                ], contentWidth);
+            } else {
+                const isChecked = Boolean(checked[item.axis]?.[item.name]);
+                runs = fitRuns([
+                    ...indent,
+                    { text: isChecked ? "[x] " : "[ ] ", color: isChecked ? "cyan" : "gray", bold: isChecked },
+                    { text: item.name, color: "white", bold: isChecked },
+                    ...(item.kind === "mcpServer" && item.isDefault ? [{ text: " · default", color: "gray" }] : []),
+                ], contentWidth);
+            }
         }
         if (index === selectedIndex) {
             selectedRowIndex = rows.length;
@@ -4856,6 +4913,7 @@ export function selectCapabilityPickerModal(state, maxWidth = 88) {
         }
         rows.push(runs);
         rowItemIndexes.push(index);
+        rowNonInteractive.push(nonInteractive);
     });
 
     // Pending-change count across the three axes (baseline vs checked).
@@ -4873,7 +4931,11 @@ export function selectCapabilityPickerModal(state, maxWidth = 88) {
             : selectedItem?.kind === "toolGroup"
                 ? `Tool group · ${selectedItem.tools?.length || 0} tools. Toggling stores the group name; expand for per-tool control.`
                 : selectedItem?.kind === "tool"
-                    ? selectedItem.group ? `Tool in the ${selectedItem.group} group.` : "Ungrouped tool."
+                    ? (forced[selectedItem.name]
+                        ? (forced[selectedItem.name].locked
+                            ? "Locked base tool — always on and non-removable."
+                            : `Required by ${forced[selectedItem.name].requiredBy.join(", ")} — non-removable while that skill is enabled.`)
+                        : selectedItem.group ? `Tool in the ${selectedItem.group} group.` : "Ungrouped tool.")
                     : "Toggle the capabilities this session may use.";
     const detailsLines = [
         [{
@@ -4926,6 +4988,7 @@ export function selectCapabilityPickerModal(state, maxWidth = 88) {
         title: modal.title || "Session Capabilities",
         rows: rows.length > 0 ? rows : [{ text: "No capabilities available.", color: "gray" }],
         rowItemIndexes,
+        rowNonInteractive,
         selectedRowIndex,
         detailsTitle: selectedItem?.name || "Capabilities",
         detailsLines,

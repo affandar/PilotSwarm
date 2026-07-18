@@ -268,6 +268,28 @@ test("buildCapabilityCatalog reports names and metadata only — no credentials"
     assert.equal(catalog.agentDefaults.open.skills, null, "unrestricted agent reports null (all skills)");
 });
 
+test("catalog marks durable-floor tools locked and carries skill requiredTools", () => {
+    // Bundled system skills declare tools.json (sweeper/resourcemgr); the
+    // worker also loads the fixture skills. Assert the shape rather than a
+    // fixed set.
+    const worker = buildWorker(buildFixturePlugin());
+    const catalog = worker.buildCapabilityCatalog();
+    const toolsByName = Object.fromEntries(catalog.tools.map((t) => [t.name, t]));
+
+    for (const floor of ["wait", "wait_on_worker", "report_cycle", "ask_user", "update_session_summary"]) {
+        assert.equal(toolsByName[floor]?.locked, true, `${floor} must be a locked base tool`);
+    }
+    assert.ok(!toolsByName.bash?.locked, "bash is a normal removable tool, not locked");
+    assert.ok(!toolsByName.spawn_agent?.locked, "sub-agent tools are default-on but removable, not locked");
+
+    // A skill with a tools.json exposes requiredTools; one without omits it.
+    const sweeper = catalog.skills.find((s) => s.name === "sweeper");
+    assert.ok(Array.isArray(sweeper?.requiredTools) && sweeper.requiredTools.includes("scan_completed_sessions"),
+        "sweeper skill carries its required tools");
+    const deploy = catalog.skills.find((s) => s.name === "deploy");
+    assert.equal(deploy?.requiredTools, undefined, "a skill with no tools.json omits requiredTools");
+});
+
 test("session-policy toolGroups extends and overrides the SDK manifest", () => {
     const pluginDir = buildFixturePlugin();
     fs.writeFileSync(path.join(pluginDir, "session-policy.json"), JSON.stringify({

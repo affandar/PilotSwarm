@@ -26,12 +26,26 @@ export interface CapabilityCatalogMcpServer {
 export interface CapabilityCatalogSkill {
     name: string;
     description?: string;
+    /**
+     * Tools this skill requires to function (from the skill's tools.json).
+     * When a session enables the skill, these tools are force-enabled and
+     * non-removable — a skill cannot run without them.
+     */
+    requiredTools?: string[];
 }
 
 export interface CapabilityCatalogTool {
     name: string;
     /** Tool group (facts, graph, artifacts, …). Absent = ungrouped. */
     group?: string;
+    /**
+     * LOCKED base tool: part of the durable-session protocol floor that
+     * attaches a Copilot session to PilotSwarm's durable infrastructure
+     * (wait, report_cycle, ask_user, …). Always present, shown in the
+     * picker, but non-removable — a restriction can never strip it. Absent
+     * or false = a normal default-on, removable tool.
+     */
+    locked?: boolean;
 }
 
 export interface CapabilityCatalogAgentDefaults {
