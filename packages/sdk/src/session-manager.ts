@@ -106,6 +106,11 @@ export interface WorkerDefaults {
     /** Resolved per-agent MCP server maps, keyed by bound agent name. */
     agentMcpServers?: Record<string, Record<string, any>>;
     /**
+     * Resolved base MCP map applied to EVERY session: base (default) agent
+     * opt-ins plus direct worker-config servers (legacy semantics).
+     */
+    baseMcpServers?: Record<string, any>;
+    /**
      * @deprecated Use `modelProviders` instead. Kept for backwards compatibility.
      * Custom LLM provider config (BYOK). Passed to every session.
      */
@@ -1021,14 +1026,18 @@ export class SessionManager {
         // Build system message: worker base + client override
         const systemMessage = this._buildSystemMessage(sessionId, config);
 
-        // Per-agent MCP (capability-profiles Phase 1): a session gets exactly
+        // Per-agent MCP (capability-profiles Phase 1): a session gets the
+        // base map (base-agent opt-ins + direct worker-config servers) plus
         // its bound agent's resolved server map — resolved worker-side at the
-        // same chokepoint as the agent prompt. Sessions with no bound agent
-        // (generic / base-agent sessions) get none; the deployment catalog is
+        // same chokepoint as the agent prompt. The deployment catalog is
         // never applied wholesale.
         const boundAgentMcpServers = effectiveSerializableConfig.boundAgentName
             ? this.workerDefaults.agentMcpServers?.[effectiveSerializableConfig.boundAgentName]
             : undefined;
+        const effectiveMcpServers = {
+            ...(this.workerDefaults.baseMcpServers ?? {}),
+            ...(boundAgentMcpServers ?? {}),
+        };
 
         const sessionConfig: any = {
             sessionId,
@@ -1067,7 +1076,7 @@ export class SessionManager {
             // are the bound agent's own resolved map (see above).
             ...(this.workerDefaults.skillDirectories?.length && { skillDirectories: this.workerDefaults.skillDirectories }),
             ...(this.workerDefaults.customAgents?.length && { customAgents: this.workerDefaults.customAgents }),
-            ...(boundAgentMcpServers && Object.keys(boundAgentMcpServers).length > 0 && { mcpServers: boundAgentMcpServers }),
+            ...(Object.keys(effectiveMcpServers).length > 0 && { mcpServers: effectiveMcpServers }),
         };
 
         let copilotSession: CopilotSession;

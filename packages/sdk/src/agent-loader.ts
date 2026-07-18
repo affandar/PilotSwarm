@@ -191,9 +191,19 @@ function parseAgentFrontmatter(content: string): {
             }
         }
 
+        // YAML comment — never a key or a list item. Skipped before the
+        // key-value branch so a comment containing a colon cannot clobber
+        // currentKey and orphan the list items that follow it. (Comments
+        // inside splash/initialPrompt block scalars are preserved above.)
+        if (trimmed.startsWith("#")) continue;
+
         // YAML list item (e.g. "  - view")
         if (trimmed.startsWith("- ") && (currentKey === "tools" || currentKey === "skills" || currentKey === "mcpServers")) {
-            const item = trimmed.slice(2).trim();
+            let item = trimmed.slice(2).trim();
+            if ((item.startsWith('"') && item.endsWith('"') && item.length >= 2) ||
+                (item.startsWith("'") && item.endsWith("'") && item.length >= 2)) {
+                item = item.slice(1, -1);
+            }
             if (currentKey === "tools") {
                 if (!meta.tools) meta.tools = [];
                 meta.tools.push(item);

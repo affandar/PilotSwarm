@@ -161,7 +161,7 @@ Your worker can also contribute defaults to every session through:
 - `pluginDirs`
 - `skillDirectories`
 - `customAgents`
-- `mcpServers`
+- `mcpServers` — inline configs apply to every session (legacy); plugin `.mcp.json` servers instead form a catalog that agents opt into via `mcpServers:` / `inheritDefaultMcpServers:` frontmatter
 - `systemMessage`
 
 `default.agent.md` in your app plugin is layered underneath the embedded PilotSwarm framework base prompt. It extends the app-wide instructions for your sessions; it does not replace PilotSwarm's framework rules.
