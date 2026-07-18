@@ -176,16 +176,22 @@ test("tri-state group toggle checks all members from a partial state", async () 
     assert.ok(!("capabilities" in calls.createSessionForAgent[0].options));
 });
 
-test("generic sessions start unchecked-neutral and emit enable deltas only", async () => {
+test("generic sessions start fully-enabled and emit disable deltas when unchecking", async () => {
+    // Regression: a generic (no-agent) session runs UNRESTRICTED at the
+    // worker — all tools/skills default-on, base MCP set attached. The
+    // baseline must reflect that so unchecking produces a real disable delta.
+    // (Previously the generic baseline was "everything off", so disabling a
+    // skill was a silent no-op and the skill stayed live.)
     const { controller, store, calls } = makeController();
     await confirmAgentPickerFor(controller, store, "__generic__");
 
     const modal = store.getState().ui.modal;
     assert.equal(modal?.type, "capabilityPicker");
     assert.equal(modal.agentName, null);
-    assert.equal(modal.checked.mcpServers.github, false);
-    assert.equal(modal.checked.skills.deploy, false);
-    assert.equal(modal.checked.tools.store_fact, false);
+    assert.equal(modal.checked.mcpServers.github, true, "base/default MCP server on");
+    assert.equal(modal.checked.mcpServers.jira, false, "non-default MCP server off");
+    assert.equal(modal.checked.skills.deploy, true, "all skills on for a generic session");
+    assert.equal(modal.checked.tools.store_fact, true, "all tools on for a generic session");
 
     controller.toggleCapabilityPickerItem(modalItemIndex(store, "skill:review"));
     controller.toggleCapabilityPickerItem(modalItemIndex(store, "group:facts"));
@@ -193,8 +199,8 @@ test("generic sessions start unchecked-neutral and emit enable deltas only", asy
 
     assert.equal(calls.createSession.length, 1);
     assert.deepEqual(calls.createSession[0].capabilities, {
-        skills: { enable: ["review"] },
-        tools: { enable: ["facts"] },
+        skills: { disable: ["review"] },
+        tools: { disable: ["facts"] },
     });
 });
 
@@ -375,16 +381,21 @@ test("enabling a skill force-checks + disables its required tools; they never en
     });
 });
 
-test("generic: enabling a required-tool skill emits skills.enable and never disables the required tool", async () => {
+test("generic: a required-tool skill (on by default) force-holds its tool out of any disable delta", async () => {
     const { controller, store, calls } = makeController();
     await confirmAgentPickerFor(controller, store, "__generic__");
-    controller.toggleCapabilityPickerItem(modalItemIndex(store, "skill:publish"));
+    // publish is on (generic = all skills on) → write_artifact is force-held.
+    controller.setCapabilityPickerGroupExpanded(true, modalItemIndex(store, "group:artifacts"));
+    assert.equal(pickerRow(store, "tool:write_artifact").nonInteractive, true, "held while publish is on");
+
+    // Disabling the artifacts group drops only the removable member.
+    controller.toggleCapabilityPickerItem(modalItemIndex(store, "group:artifacts"));
     await controller.confirmModal();
 
     assert.equal(calls.createSession.length, 1);
     const caps = calls.createSession[0].capabilities;
-    assert.deepEqual(caps.skills, { enable: ["publish"] });
-    assert.ok(!caps.tools || !(caps.tools.disable || []).includes("write_artifact"),
+    assert.deepEqual(caps.tools, { disable: ["read_artifact"] });
+    assert.ok(!(caps.tools.disable || []).includes("write_artifact"),
         "the skill's required tool never appears in a disable delta");
 });
 

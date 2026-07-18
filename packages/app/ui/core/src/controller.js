@@ -725,20 +725,30 @@ export function buildCapabilityToolGroups(catalog) {
  */
 export function buildCapabilityBaseline(catalog, agentName = null) {
     const defaults = agentName ? catalog?.agentDefaults?.[agentName] || null : null;
+    // A generic (no-agent) session — OR an agent whose profile is not in the
+    // catalog — runs UNRESTRICTED at the worker: all tools default-on, all
+    // skills available, the deployment's base (default) MCP servers attached.
+    // The baseline MUST reflect that true runtime default. (A previous
+    // "everything-off when no agent profile" baseline made every uncheck a
+    // no-op — disabling a skill on a generic session silently did nothing,
+    // because the skill was already unchecked in the baseline while the
+    // runtime kept it on.)
+    const unrestricted = !defaults;
     const mcpServers = {};
     const grantedServers = new Set(Array.isArray(defaults?.mcpServers) ? defaults.mcpServers : []);
     for (const server of Array.isArray(catalog?.mcpServers) ? catalog.mcpServers : []) {
         const name = String(server?.name || "").trim();
         if (!name) continue;
-        mcpServers[name] = Boolean(defaults) && grantedServers.has(name);
+        // Generic: the deployment's base/default MCP set. Agent: its grants.
+        mcpServers[name] = unrestricted ? Boolean(server?.isDefault) : grantedServers.has(name);
     }
     const skills = {};
     const allowedSkills = Array.isArray(defaults?.skills) ? new Set(defaults.skills) : null;
     for (const skill of Array.isArray(catalog?.skills) ? catalog.skills : []) {
         const name = String(skill?.name || "").trim();
         if (!name) continue;
-        // Agent profile: all skills unless restricted by the `skills` array.
-        skills[name] = Boolean(defaults) && (allowedSkills ? allowedSkills.has(name) : true);
+        // Unrestricted: all skills on. Agent: all unless its `skills` array restricts.
+        skills[name] = unrestricted ? true : (allowedSkills ? allowedSkills.has(name) : true);
     }
     const tools = {};
     // Allow-list agents get allow ∪ additive `tools` (+ report_cycle, which
@@ -754,7 +764,8 @@ export function buildCapabilityBaseline(catalog, agentName = null) {
         // session override can strip them. Baseline true so they render
         // checked and never generate a delta of their own.
         if (tool?.locked) { tools[name] = true; continue; }
-        tools[name] = Boolean(defaults) && (allowList ? allowList.has(name) : !denyList.has(name));
+        // Unrestricted: all tools default-on. Agent: allow-list ∪ additive, or all minus deny.
+        tools[name] = unrestricted ? true : (allowList ? allowList.has(name) : !denyList.has(name));
     }
     return { mcpServers, skills, tools };
 }
