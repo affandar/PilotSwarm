@@ -290,7 +290,8 @@ function failureToolResult(error: unknown) {
 
 function normalizeReasoningEffort(value: unknown): ReasoningEffort | undefined {
     const effort = String(value || "").trim().toLowerCase();
-    return effort === "low" || effort === "medium" || effort === "high" || effort === "xhigh"
+    return effort === "none" || effort === "minimal" || effort === "low" || effort === "medium"
+        || effort === "high" || effort === "xhigh" || effort === "max"
         ? effort
         : undefined;
 }
@@ -388,7 +389,8 @@ export class ManagedSession {
         const cronTool = defineTool("cron", {
             description:
                 "Declare a recurring durable schedule owned by the orchestration. " +
-                "Use this for periodic monitoring, polling loops, and scheduled digests so you do NOT need to call wait() at the end of every turn. " +
+                "Use this for independent periodic monitoring, external polling, and scheduled digests so you do NOT need to call wait() at the end of every turn. " +
+                "Do not use cron solely to poll sub-agent status; qualifying child updates wake the parent according to contract.wakeOn. " +
                 "Use this when you should keep pursuing a goal autonomously until it is done. " +
                 "If it is genuinely ambiguous whether the task should become an ongoing recurring workflow, clarify that intent before setting cron. " +
                 "Set or update the schedule with seconds + reason. Cancel it with action='cancel'. " +
@@ -512,7 +514,7 @@ export class ManagedSession {
                 type: "object",
                 properties: {
                     model: { type: "string", description: "Exact provider:model value from list_available_models." },
-                    reasoning_effort: { type: "string", enum: ["low", "medium", "high", "xhigh"], description: "Optional reasoning effort supported by the selected model." },
+                    reasoning_effort: { type: "string", enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"], description: "Optional reasoning effort supported by the selected model." },
                 },
                 required: ["model"],
             },
@@ -623,7 +625,7 @@ export class ManagedSession {
                     },
                     reasoning_effort: {
                         type: "string",
-                        enum: ["low", "medium", "high", "xhigh"],
+                        enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
                         description: "Optional reasoning effort override for the sub-agent. Call list_available_models first and use only a reasoning value listed for the selected model. If omitted, inherits the parent's reasoning effort.",
                     },
                     system_message: {
@@ -641,7 +643,7 @@ export class ManagedSession {
                     },
                     contract: {
                         type: "object",
-                        description: "Optional named argument on spawn_agent; no separate contract tool exists. Example: contract={purpose:'Market scan',successCriteria:['answer with source-backed summary'],expectedFacts:[{key:'result/market-scan',required:true}],expectedArtifacts:[],validationMode:'warn',wakeOn:'material_change'}. Set wakeOn to 'any' for every update, 'material_change' (default) to suppress no-op heartbeats, or 'completion' for terminal updates only.",
+                        description: "Optional named argument on spawn_agent; no separate contract tool exists. Example: contract={purpose:'Market scan',successCriteria:['answer with source-backed summary'],expectedFacts:[{key:'result/market-scan',required:true}],expectedArtifacts:[],validationMode:'warn',wakeOn:'material_change'}. Set wakeOn to 'any' for every update, 'material_change' (default) to suppress no-op heartbeats, or 'completion' for terminal updates only. Qualifying updates wake the parent automatically; no parent polling timer is required.",
                     },
                 },
             },
@@ -668,6 +670,7 @@ export class ManagedSession {
             description:
                 "Check the current status and latest output of your RUNNING sub-agents (spawned with spawn_agent). " +
                 "Returns each sub-agent's ID, task, status (running/completed/failed), and result. " +
+                "This is an on-demand snapshot, not a scheduling primitive; do not schedule wait or cron solely to call check_agents. " +
                 "This is NOT the same as ps_list_agents — ps_list_agents shows available agent blueprints, check_agents shows your live sub-agent instances.",
             parameters: {
                 type: "object",
@@ -1018,7 +1021,8 @@ export class ManagedSession {
         const cronTool = defineTool("cron", {
             description:
                 "Declare a recurring durable schedule owned by the orchestration. " +
-                "Use this for periodic monitoring, polling loops, and scheduled digests so you do NOT need to call wait() at the end of every turn. " +
+                "Use this for independent periodic monitoring, external polling, and scheduled digests so you do NOT need to call wait() at the end of every turn. " +
+                "Do not use cron solely to poll sub-agent status; qualifying child updates wake the parent according to contract.wakeOn. " +
                 "Use this when you should keep pursuing a goal autonomously until it is done. " +
                 "If it is genuinely ambiguous whether the task should become an ongoing recurring workflow, clarify that intent before setting cron. " +
                 "Set or update the schedule with seconds + reason. Cancel it with action='cancel'. " +
@@ -1230,7 +1234,7 @@ export class ManagedSession {
                 type: "object",
                 properties: {
                     model: { type: "string", description: "Exact provider:model value from list_available_models." },
-                    reasoning_effort: { type: "string", enum: ["low", "medium", "high", "xhigh"], description: "Optional reasoning effort supported by the selected model." },
+                    reasoning_effort: { type: "string", enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"], description: "Optional reasoning effort supported by the selected model." },
                 },
                 required: ["model"],
             },
@@ -1240,7 +1244,7 @@ export class ManagedSession {
                 if (!model) return "Error: model is required.";
                 const reasoningEffort = args.reasoning_effort ? normalizeReasoningEffort(args.reasoning_effort) : undefined;
                 if (args.reasoning_effort && !reasoningEffort) {
-                    return "Error: reasoning_effort must be one of low, medium, high, xhigh.";
+                    return "Error: reasoning_effort must be one of none, minimal, low, medium, high, xhigh, max.";
                 }
                 if (!controlBridge) return "Error: set_session_model is unavailable in this session.";
                 const result = await controlBridge.setSessionModel({ model, ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}) });
@@ -1366,7 +1370,7 @@ export class ManagedSession {
                     },
                     reasoning_effort: {
                         type: "string",
-                        enum: ["low", "medium", "high", "xhigh"],
+                        enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
                         description: "Optional reasoning effort override from list_available_models for the selected model. If omitted, inherits the parent's reasoning effort.",
                     },
                     system_message: {
@@ -1384,7 +1388,7 @@ export class ManagedSession {
                     },
                     contract: {
                         type: "object",
-                        description: "Optional named argument on spawn_agent; no separate contract tool exists. Example: contract={purpose:'Market scan',successCriteria:['answer with source-backed summary'],expectedFacts:[{key:'result/market-scan',required:true}],expectedArtifacts:[],validationMode:'warn',wakeOn:'material_change'}. Set wakeOn to 'any' for every update, 'material_change' (default) to suppress no-op heartbeats, or 'completion' for terminal updates only.",
+                        description: "Optional named argument on spawn_agent; no separate contract tool exists. Example: contract={purpose:'Market scan',successCriteria:['answer with source-backed summary'],expectedFacts:[{key:'result/market-scan',required:true}],expectedArtifacts:[],validationMode:'warn',wakeOn:'material_change'}. Set wakeOn to 'any' for every update, 'material_change' (default) to suppress no-op heartbeats, or 'completion' for terminal updates only. Qualifying updates wake the parent automatically; no parent polling timer is required.",
                     },
                 },
             },
@@ -1395,7 +1399,7 @@ export class ManagedSession {
                 }
                 const reasoningEffort = args.reasoning_effort ? normalizeReasoningEffort(args.reasoning_effort) : undefined;
                 if (args.reasoning_effort && !reasoningEffort) {
-                    return "Error: reasoning_effort must be one of low, medium, high, xhigh.";
+                    return "Error: reasoning_effort must be one of none, minimal, low, medium, high, xhigh, max.";
                 }
                 if (controlBridge) {
                     return await controlBridge.spawnAgent({ ...args, ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}) });
@@ -1448,6 +1452,7 @@ export class ManagedSession {
             description:
                 "Check the current status and latest output of your RUNNING sub-agents (spawned with spawn_agent). " +
                 "Returns each sub-agent's ID, task, status (running/completed/failed), and result. " +
+                "This is an on-demand snapshot, not a scheduling primitive; do not schedule wait or cron solely to call check_agents. " +
                 "This is NOT the same as ps_list_agents — ps_list_agents shows available agent blueprints, check_agents shows your live sub-agent instances.",
             parameters: {
                 type: "object",

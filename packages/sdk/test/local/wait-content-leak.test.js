@@ -37,7 +37,8 @@ const SCENARIOS = [
     },
     {
         id: "work-then-joke",
-        prompt: `First tell me ${WORK}. Then wait ${WAIT_SECONDS} seconds. Then tell me a joke using exactly the single token ${JOKE}.`,
+        setupPrompt: `Reply with exactly ${WORK}.`,
+        prompt: `Wait ${WAIT_SECONDS} seconds. After the wait resumes, reply with exactly the single token ${JOKE}.`,
         expectPre: [WORK],
         expectPost: [JOKE],
     },
@@ -90,6 +91,14 @@ async function runScenario(env, scenario) {
         });
 
         try {
+            if (scenario.setupPrompt) {
+                const setupResponse = await session.sendAndWait(scenario.setupPrompt, TIMEOUT);
+                events.push({
+                    label: "sendAndWait.response",
+                    t: Date.now() - promptStart,
+                    text: setupResponse ?? "",
+                });
+            }
             const response = await session.sendAndWait(scenario.prompt, TIMEOUT);
             events.push({
                 label: "sendAndWait.response",

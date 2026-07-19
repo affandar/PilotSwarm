@@ -440,6 +440,8 @@ export interface OrchestrationInput {
     cronAtSchedule?: import("./cron-at.js").CronAtSchedule;
     /** Latest known context-window usage snapshot captured from session events. */
     contextUsage?: SessionContextUsage;
+    /** Most recently accepted client message ids, oldest to newest (max 20). */
+    recentClientMessageIds?: string[];
 
     // ─── Multi-writer attribution (security model) ───────────
     /** Distinct sender identity keys observed on sender-carrying messages. */

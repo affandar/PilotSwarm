@@ -910,6 +910,22 @@ export function* handleTurnResult(
                 }
             }
 
+            // Forgotten-timer safety net
+            {
+                const runningAgents = state.subAgents.filter(a => a.status === "running");
+                if (runningAgents.length > 0 && !runtime.input.forgottenTimerNudged && !state.cronSchedule && !state.cronAtSchedule) {
+                    const names = runningAgents.map(a => a.task?.slice(0, 40) || a.orchId).join(", ");
+                    ctx.traceInfo(`[orch] forgotten-timer safety: ${runningAgents.length} agents still running, nudging LLM`);
+                    yield* versionedContinueAsNew(runtime, continueInputWithPrompt(runtime,
+                        `[SYSTEM: You ended your turn without calling wait(), but you have ${runningAgents.length} sub-agent(s) still running: ${names}. ` +
+                        `Without a wait() call, your monitoring/polling loop is DEAD — the orchestration will NOT wake you up automatically. ` +
+                        `You MUST call wait() now to schedule your next check-in. Call wait() with an appropriate interval to continue your loop.]`,
+                        { forgottenTimerNudged: true },
+                    ));
+                    return;
+                }
+            }
+
             yield* schedulePostTurnContinuation(runtime);
             return;
         }

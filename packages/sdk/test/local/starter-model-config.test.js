@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it, expect } from "vitest";
+import { ModelProviderRegistry } from "../../src/model-providers.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -48,6 +49,13 @@ describe("starter docker model config", () => {
             expect(model.supportedContextTiers).toEqual(["default", "long_context"]);
             expect(model.defaultContextTier).toBe("default");
         }
+
+        const opus = provider.models.find((model) => model.name === "claude-opus-4.8");
+        expect(opus.supportedReasoningEfforts).toEqual(["low", "medium", "high", "xhigh", "max"]);
+        expect(opus.contextWindowSizes).toEqual({ default: 200_000, long_context: 936_000 });
+
+        const descriptor = new ModelProviderRegistry(config).getDescriptor("github-copilot:claude-opus-4.8");
+        expect(descriptor.supportedReasoningEfforts).toEqual(["low", "medium", "high", "xhigh", "max"]);
     });
 
     it("persists starter SSH host keys in the data volume", () => {

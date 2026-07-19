@@ -425,7 +425,6 @@ export function buildContinueInput(
         ...(state.cronSchedule ? { cronSchedule: state.cronSchedule } : {}),
         ...(state.cronAtSchedule ? { cronAtSchedule: state.cronAtSchedule } : {}),
         ...(state.contextUsage ? { contextUsage: state.contextUsage } : {}),
-        ...(state.recentClientMessageIds?.length ? { recentClientMessageIds: [...state.recentClientMessageIds] } : {}),
         ...(carriedSystemPrompt ? { systemPrompt: carriedSystemPrompt } : {}),
         ...(state.runtimeModelNotice ? { runtimeModelNotice: state.runtimeModelNotice } : {}),
         ...(promptForInput ? { prompt: promptForInput } : {}),

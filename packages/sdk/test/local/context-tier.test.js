@@ -26,10 +26,12 @@ describe("context tier config parsing", () => {
             name: "m1",
             supportedContextTiers: ["default", "long_context"],
             defaultContextTier: "long_context",
+            contextWindowSizes: { default: 200_000, long_context: 936_000 },
         }]));
         const desc = registry.getDescriptor("github-copilot:m1");
         assertEqual(JSON.stringify(desc.supportedContextTiers), JSON.stringify(["default", "long_context"]));
         assertEqual(desc.defaultContextTier, "long_context", "explicit valid default preserved");
+        assertEqual(JSON.stringify(desc.contextWindowSizes), JSON.stringify({ default: 200_000, long_context: 936_000 }));
     });
 
     it("falls back to the smaller window when the default is missing or invalid", () => {
@@ -77,10 +79,11 @@ const TIERED_MODEL = {
     providerId: "github-copilot",
     providerType: "github",
     modelName: "claude-opus-4.8",
-    supportedReasoningEfforts: ["medium"],
+    supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
     defaultReasoningEffort: "medium",
     supportedContextTiers: ["default", "long_context"],
     defaultContextTier: "default",
+    contextWindowSizes: { default: 200_000, long_context: 936_000 },
 };
 
 describe("context tier new-session flow", () => {
@@ -114,7 +117,9 @@ describe("context tier new-session flow", () => {
 
             const tierModal = selectContextTierPickerModal(store.getState());
             assert(tierModal, "tier picker modal renders through its selector");
-            assertIncludes(JSON.stringify(tierModal.rows), "Long context", "long-context option offered");
+            assertIncludes(JSON.stringify(tierModal.rows), "Default (200K tokens)", "default window size shown");
+            assertIncludes(JSON.stringify(tierModal.rows), "Long context (936K tokens", "long-context window size shown");
+            assertIncludes(JSON.stringify(tierModal.detailsLines), "200K tokens", "selected window description includes its size");
             const preselected = store.getState().ui.modal.items[store.getState().ui.modal.selectedIndex];
             assertEqual(preselected.id, "default", "smaller window preselected by default");
 

@@ -128,24 +128,30 @@ function createRestartHarness() {
     mgmt._catalog = catalog;
     mgmt._duroxideClient = duroxide;
     mgmt._factStore = facts;
+    const modelDescriptors = [
+        {
+            qualifiedName: "test:model",
+            providerId: "test",
+            providerType: "test-provider",
+            modelName: "model",
+        },
+        {
+            qualifiedName: "test:sonnet-4.6",
+            providerId: "test",
+            providerType: "test-provider",
+            modelName: "sonnet-4.6",
+            supportedReasoningEfforts: ["low", "medium", "high"],
+            defaultReasoningEffort: "medium",
+        },
+    ];
     mgmt._modelProviders = {
         defaultModel: "test:model",
-        allModels: [
-            {
-                qualifiedName: "test:model",
-                providerId: "test",
-                providerType: "test-provider",
-                modelName: "model",
-            },
-            {
-                qualifiedName: "test:sonnet-4.6",
-                providerId: "test",
-                providerType: "test-provider",
-                modelName: "sonnet-4.6",
-                supportedReasoningEfforts: ["low", "medium", "high"],
-                defaultReasoningEffort: "medium",
-            },
-        ],
+        allModels: modelDescriptors,
+        normalize: (ref) => modelDescriptors.some((model) => model.qualifiedName === ref) ? ref : undefined,
+        getDescriptor: (ref) => modelDescriptors.find((model) => model.qualifiedName === ref),
+        resolve: (ref) => modelDescriptors.some((model) => model.qualifiedName === ref)
+            ? { providerId: "test", type: "openai", modelName: ref.slice("test:".length), sdkProvider: {} }
+            : undefined,
     };
     mgmt._systemAgents = [agent];
 

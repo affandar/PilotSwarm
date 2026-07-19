@@ -1002,6 +1002,66 @@ describe("session refresh UI recovery", () => {
         assertIncludes(overlayText, "second request", "outbox overlay should show the second queued prompt");
     });
 
+    it("retries an attempted envelope without merging a fresh message into it", async () => {
+        const sent = [];
+        let failFirst = true;
+        const { controller, store } = createController({
+            sendMessage: async (_sessionId, prompt, options) => {
+                sent.push({ prompt, ids: [...(options?.clientMessageIds || [])] });
+                if (failFirst) {
+                    failFirst = false;
+                    throw new Error("ambiguous transport failure");
+                }
+            },
+        });
+
+        store.dispatch({
+            type: "sessions/loaded",
+            sessions: [{
+                sessionId: "retry-isolation-session",
+                title: "Retry Isolation",
+                status: "running",
+                createdAt: 1,
+                updatedAt: 2,
+            }],
+        });
+        store.dispatch({ type: "sessions/selected", sessionId: "retry-isolation-session" });
+
+        // Drive dispatches explicitly so the test can inspect each envelope.
+        controller.scheduleOutboxDispatch = () => {};
+        const first = controller.buildOutboxItem("message A", "pending");
+        controller.setSessionOutboxItems("retry-isolation-session", [first]);
+        try {
+            await controller.dispatchPendingOutbox("retry-isolation-session");
+        } catch {}
+
+        const afterFailure = controller.getSessionOutbox("retry-isolation-session");
+        assertEqual(afterFailure.length, 1, "ambiguous failure should retain one attempted envelope");
+        assertEqual(afterFailure[0]?.attempted, true, "failed envelope should be marked attempted");
+        assertEqual(afterFailure[0]?.text, "message A", "failed envelope text should remain immutable");
+        controller.enterPendingPromptEdit("retry-isolation-session", afterFailure[0].id);
+        controller.setPrompt("edited message A", 16);
+        assertEqual(
+            controller.getSessionOutbox("retry-isolation-session")[0]?.text,
+            "message A",
+            "attempted envelope should not be editable with the same client message ID",
+        );
+        controller.exitPendingPromptEdit({ restoreDraft: false });
+
+        const fresh = controller.buildOutboxItem("message B", "pending");
+        controller.setSessionOutboxItems("retry-isolation-session", [...afterFailure, fresh]);
+
+        await controller.dispatchPendingOutbox("retry-isolation-session");
+        await controller.dispatchPendingOutbox("retry-isolation-session");
+
+        assertEqual(sent.length, 3, "one failed attempt, one exact retry, and one fresh send expected");
+        assertEqual(sent[0].prompt, "message A", "first attempt should contain A");
+        assertEqual(sent[1].prompt, "message A", "retry should contain only A");
+        assertEqual(JSON.stringify(sent[1].ids), JSON.stringify(sent[0].ids), "retry should preserve the exact ID set");
+        assertEqual(sent[2].prompt, "message B", "fresh message should send separately after the retry");
+        assertEqual(sent[2].ids.includes(sent[0].ids[0]), false, "fresh envelope should not inherit the retried ID");
+    });
+
     it("sequential awaited sends each produce their own durable enqueue", async () => {
         const sentPrompts = [];
         const { controller, store } = createController({
@@ -2114,7 +2174,7 @@ describe("session refresh UI recovery", () => {
 
         await assertThrows(
             () => NodeSdkTransport.prototype.assertSessionModelCreatable.call(fakeTransport, { model: "github-copilot:gpt-5.5", owner }),
-            /GitHub Copilot key not configured/,
+            /GitHub Copilot key missing or invalid/,
             "GitHub model without env or user key should fail at create time",
         );
 

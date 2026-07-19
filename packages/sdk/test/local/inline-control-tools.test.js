@@ -547,7 +547,7 @@ describe("inline control tool execution", () => {
     it("advertises and forwards an optional spawn_agent reasoning_effort", async () => {
         const fakeSession = new FakeCopilotSession();
         fakeSession.scriptedToolCalls = [
-            { name: "spawn_agent", args: { task: "reason deeply", model: "github-copilot:gpt-5.5", reasoning_effort: "xhigh" } },
+            { name: "spawn_agent", args: { task: "reason deeply", model: "github-copilot:claude-opus-4.8", reasoning_effort: "max" } },
         ];
         fakeSession.assistantContent = "Spawned reasoning child.";
 
@@ -566,11 +566,11 @@ describe("inline control tool execution", () => {
         const result = await managed.runTurn("spawn a high reasoning child", { controlToolBridge });
 
         const spawnTool = fakeSession.registeredTools.find((tool) => tool.name === "spawn_agent");
-        expect(spawnTool?.parameters?.properties?.reasoning_effort?.enum).toEqual(["low", "medium", "high", "xhigh"]);
+        expect(spawnTool?.parameters?.properties?.reasoning_effort?.enum).toEqual(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
         expect(controlToolBridge.spawnAgent).toHaveBeenCalledWith(expect.objectContaining({
             task: "reason deeply",
-            model: "github-copilot:gpt-5.5",
-            reasoning_effort: "xhigh",
+            model: "github-copilot:claude-opus-4.8",
+            reasoning_effort: "max",
         }));
         expect(result.type).toBe("completed");
         expect(result.content).toBe("Spawned reasoning child.");

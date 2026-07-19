@@ -19,8 +19,8 @@ import path from "node:path";
 
 // ─── Types ───────────────────────────────────────────────────────
 
-/** Reasoning effort levels accepted by the Copilot SDK. */
-export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
+/** Reasoning effort levels accepted by the Copilot CLI. */
+export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 /**
  * Context-window tier accepted by the Copilot SDK (CLI 1.0.6x+).
@@ -45,6 +45,8 @@ export interface ModelEntry {
     supportedContextTiers?: ContextTier[];
     /** Optional default context tier when creating sessions (prefer "default", the smaller window). */
     defaultContextTier?: ContextTier;
+    /** Optional token capacity for each supported context-window tier. */
+    contextWindowSizes?: Partial<Record<ContextTier, number>>;
 }
 
 /** A single provider entry in model_providers.json. */
@@ -102,6 +104,8 @@ export interface ModelDescriptor {
     supportedContextTiers?: ContextTier[];
     /** Optional default context tier when creating sessions. */
     defaultContextTier?: ContextTier;
+    /** Optional token capacity for each supported context-window tier. */
+    contextWindowSizes?: Partial<Record<ContextTier, number>>;
 }
 
 /** Resolved provider info for a specific model — ready to use. */
@@ -175,6 +179,7 @@ export class ModelProviderRegistry {
                         ? entry.defaultContextTier
                         : "default")
                     : undefined;
+                const contextWindowSizes = normalizeContextWindowSizes(entry.contextWindowSizes, supportedContextTiers);
                 const qualified = `${p.id}:${entry.name}`;
                 const desc: ModelDescriptor = {
                     qualifiedName: qualified,
@@ -187,6 +192,7 @@ export class ModelProviderRegistry {
                     ...(defaultReasoningEffort ? { defaultReasoningEffort } : {}),
                     ...(supportedContextTiers.length > 0 ? { supportedContextTiers } : {}),
                     ...(defaultContextTier ? { defaultContextTier } : {}),
+                    ...(Object.keys(contextWindowSizes).length > 0 ? { contextWindowSizes } : {}),
                 };
                 this.descriptors.set(qualified, desc);
                 this.qualifiedToProvider.set(qualified, p);
@@ -452,7 +458,7 @@ function buildFromEnv(): ModelProviderRegistry | null {
 
 // ─── Helpers ─────────────────────────────────────────────────────
 
-const REASONING_EFFORTS = new Set(["low", "medium", "high", "xhigh"]);
+const REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
 function normalizeReasoningEfforts(values?: ReasoningEffort[]): ReasoningEffort[] {
     if (!Array.isArray(values)) return [];
@@ -476,6 +482,21 @@ function normalizeContextTiers(values?: ContextTier[]): ContextTier[] {
         if (!CONTEXT_TIERS.has(value)) continue;
         if (out.includes(value as ContextTier)) continue;
         out.push(value as ContextTier);
+    }
+    return out;
+}
+
+function normalizeContextWindowSizes(
+    values: Partial<Record<ContextTier, number>> | undefined,
+    supportedTiers: ContextTier[],
+): Partial<Record<ContextTier, number>> {
+    if (!values || typeof values !== "object") return {};
+    const out: Partial<Record<ContextTier, number>> = {};
+    for (const tier of supportedTiers) {
+        const size = values[tier];
+        if (typeof size === "number" && Number.isSafeInteger(size) && size > 0) {
+            out[tier] = size;
+        }
     }
     return out;
 }

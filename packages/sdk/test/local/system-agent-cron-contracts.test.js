@@ -49,7 +49,10 @@ describe("system agent cron contracts", () => {
 
     it("hardens ambiguous long-running work guidance for parent and sub-agents", () => {
         const defaultAgent = readRepoFile("packages/sdk/plugins/system/agents/default.agent.md");
+        const subAgentSkill = readRepoFile("packages/sdk/plugins/system/skills/sub-agents/SKILL.md");
         const orchestration = readRepoFile("packages/sdk/src/orchestration.ts");
+        const orchestrationAgents = readRepoFile("packages/sdk/src/orchestration/agents.ts");
+        const orchestrationTurn = readRepoFile("packages/sdk/src/orchestration/turn.ts");
         const sessionProxy = readRepoFile("packages/sdk/src/session-proxy.ts");
 
         assertIncludes(defaultAgent, "ask the user a brief clarifying question", "default agent should ask when long-running intent is ambiguous");
@@ -61,12 +64,37 @@ describe("system agent cron contracts", () => {
         assertIncludes(defaultAgent, "Keep your `update_session_summary` state concise, scannable, and useful", "default agent should keep summaries concise and scannable");
         assertIncludes(defaultAgent, "short Markdown tables", "default agent should prefer tables for structured summary details");
         assertIncludes(defaultAgent, "Do not paste long transcripts, raw logs, or bulky JSON into summary fields", "default agent should avoid oversized summary payloads");
+        assertIncludes(defaultAgent, "Qualifying child updates wake you automatically", "default agent should explain reactive child coordination");
+        assertIncludes(defaultAgent, "Do not create a `wait` or `cron` schedule whose only purpose is calling `check_agents`", "default agent should forbid timer-only child polling");
+        assertIncludes(defaultAgent, "version: 1.7.0", "default agent should version the reactive coordination contract");
+        assert(!defaultAgent.includes("Continue your poll/summarize loop"), "default agent should not require a polling loop for child coordination");
+        assert(!defaultAgent.includes("Preferred**: Poll with `wait` + `check_agents`"), "default agent should not prefer wait-based child polling");
+
+        assertIncludes(subAgentSkill, "Parent coordination is reactive", "sub-agent skill should teach reactive parent coordination");
+        assertIncludes(subAgentSkill, "Do not schedule `wait` or `cron` solely to poll `check_agents`", "sub-agent skill should forbid redundant polling timers");
+        assert(!subAgentSkill.includes("Periodically check_agents() to see updates"), "sub-agent skill should not teach periodic status polling");
 
         assertIncludes(orchestration, "use the \\`wait\\`, \\`wait_on_worker\\`, \\`cron\\`, or \\`cron_at\\` tools", "sub-agent preamble should allow cron and cron_at for recurring work");
         assertIncludes(orchestration, "report that ambiguity back to the parent", "sub-agent preamble should route long-running ambiguity to the parent");
         assertIncludes(orchestration, "Prefer using \\`store_fact\\` for larger structured context handoffs", "sub-agent preamble should push large context handoffs into facts");
         assertIncludes(orchestration, "pass fact keys or \\`read_facts\\` pointers in messages/prompts", "sub-agent preamble should tell children to send pointers instead of blobs");
         assert(!orchestration.includes("NEVER use setTimeout, sleep, setInterval, cron, or any other timing mechanism."), "latest orchestration should not forbid cron for sub-agents");
+        assert(!orchestrationTurn.includes("forgotten-timer safety"), "orchestration should not force an extra turn when reactive children remain running");
+        assert(!orchestrationTurn.includes("forgottenTimerNudged"), "orchestration should not carry a one-shot polling nudge");
+        assert(!orchestrationTurn.includes("your monitoring/polling loop is DEAD"), "orchestration should not falsely claim child updates cannot wake the parent");
+        assertIncludes(orchestrationAgents, "finish the turn normally and let qualifying child updates wake you", "durable nested-agent preamble should coordinate reactively");
+        assertIncludes(orchestrationAgents, "Do not schedule wait or cron solely to poll check_agents", "durable nested-agent preamble should forbid polling timers");
+        assertIncludes(sessionProxy, "finish the turn normally and let qualifying child updates wake you", "inline nested-agent preamble should coordinate reactively");
+        assertIncludes(sessionProxy, "Do not schedule wait or cron solely to poll check_agents", "inline nested-agent preamble should forbid polling timers");
+
+        const systemTools = ManagedSession.systemToolDefs();
+        const cronTool = systemTools.find((tool) => tool.name === "cron");
+        const subAgentTools = ManagedSession.subAgentToolDefs();
+        const spawnTool = subAgentTools.find((tool) => tool.name === "spawn_agent");
+        const checkTool = subAgentTools.find((tool) => tool.name === "check_agents");
+        assertIncludes(cronTool?.description || "", "Do not use cron solely to poll sub-agent status", "cron tool should reject redundant child polling");
+        assertIncludes(spawnTool?.parameters?.properties?.contract?.description || "", "Qualifying updates wake the parent automatically", "spawn contract should explain reactive wakeups");
+        assertIncludes(checkTool?.description || "", "on-demand snapshot, not a scheduling primitive", "check_agents should not invite scheduled polling");
 
         assertIncludes(sessionProxy, "use the \\`wait\\`, \\`wait_on_worker\\`, \\`cron\\`, or \\`cron_at\\` tools", "session-proxy sub-agent preamble should allow cron and cron_at for recurring work");
         assertIncludes(sessionProxy, "report that ambiguity back to the parent", "session-proxy sub-agent preamble should route long-running ambiguity to the parent");
