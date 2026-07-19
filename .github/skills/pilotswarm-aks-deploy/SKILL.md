@@ -13,17 +13,17 @@ This skill deploys `pilotswarm` only. Do not roll the same change into downstrea
 
 ## Canonical Targets
 
-- Kubernetes context: `waldemort-aks`
-- Namespace: `copilot-runtime`
+- Kubernetes context: resolve `K8S_CONTEXT` from `.env.remote`
+- Namespace: resolve `K8S_NAMESPACE` from `.env.remote`
 - Worker deployment: `copilot-runtime-worker`
 - Portal deployment: `pilotswarm-portal`
-- Worker image: `pilotswarmacr.azurecr.io/copilot-runtime-worker:latest`
-- Portal image: `pilotswarmacr.azurecr.io/pilotswarm-portal:latest`
-- ACR: `pilotswarmacr`
-- Resource group: `waldemort-rg`
-- Portal DNS: `pilotswarm-portal.westus3.cloudapp.azure.com` (verify against `deploy/k8s/portal-ingress.yaml`)
+- Worker image: `${ACR_NAME}.azurecr.io/copilot-runtime-worker:latest`
+- Portal image: `${ACR_NAME}.azurecr.io/pilotswarm-portal:latest`
+- ACR: resolve `ACR_NAME` from `.env.remote`
+- Azure subscription/resource ownership: prove from the active account, ingress IP, and ACR resource rather than assuming a resource group
+- Portal DNS: resolve from live `pilotswarm-portal-ingress` and verify against public DNS
 - Postgres server: `pilotswarm-pg.postgres.database.azure.com` (verify against `.env.remote` `DATABASE_URL`)
-- Location: `westus2` (AKS); portal DNS label uses `westus3` — keep in sync with the ingress manifest
+- Location: derive from the proven AKS/public-IP resources
 
 Do not hard-code `ACR_NAME` on the deploy command line — `scripts/deploy-aks.sh` sources `.env.remote` after parsing the environment, so the `.env.remote` value wins. Set `ACR_NAME` in `.env.remote` if you need to override the default.
 
@@ -58,6 +58,7 @@ Do not hard-code `ACR_NAME` on the deploy command line — `scripts/deploy-aks.s
 - The deploy target is the AKS cluster, not the local namespace. Use `copilot-runtime`, not the local `pilotswarm` namespace.
 - The deploy script prefers `.env.remote`, then `.env`, and pushes env-backed provider keys into the Kubernetes secret.
 - `.model_providers.example.json` is the checked-in shareable model-catalog template. The real `.model_providers.json` is local and gitignored so personal service URLs can stay out of source control.
+- The legacy Dockerfiles copy `.model_providers.json*` from the build context, so a stale private catalog can override correct released metadata. Never overwrite the private file to prepare a release image. Build from an explicit checked-in deploy catalog and verify `/app/.model_providers.json` plus `listModels()` after rollout.
 - Provider visibility is still controlled by env-backed keys at worker startup, not by which providers appear in the template.
 - Secret updates matter for model selectors. Workers load provider availability at startup, so removed keys do not take effect until the secret is refreshed and the pods restart.
 - The AKS rollout needs a valid `acr-pull` registry secret wired into the worker deployment. Refresh that pull secret as part of deployment, not only the env secret.
@@ -88,6 +89,7 @@ Do not hard-code `ACR_NAME` on the deploy command line — `scripts/deploy-aks.s
 2. Verify the target env and cluster assumptions.
    - Prefer `.env.remote` for AKS deploys.
    - Confirm the current context/namespace before changing remote state.
+  - Confirm the active Azure subscription before public-IP ownership, ACR, or deploy operations. A blank ownership result often indicates the wrong subscription, not an unowned IP.
    - If the change removes a provider key, plan to verify the live model surface after rollout.
 
 3. Use the canonical deploy script unless there is a concrete reason not to.
@@ -145,11 +147,13 @@ Do not hard-code `ACR_NAME` on the deploy command line — `scripts/deploy-aks.s
      kubectl logs -n copilot-runtime -l app.kubernetes.io/component=worker --prefix --tail=50
      ```
    - If image correctness matters, inspect the running image IDs from the pods.
+  - Wait for old ReplicaSet pods to disappear before choosing a pod for file/catalog checks; rollout completion can overlap with terminating pods.
    - If the rollout stalls in `ErrImagePull` or `ImagePullBackOff`, inspect the pod events first; a stale `acr-pull` secret is a likely cause.
 
 6. Verify model-surface changes when env keys changed.
    - If a provider key was added or removed, do not stop at "pods are Running".
    - Verify the live selector surface in the TUI or through `list_available_models`.
+  - Inspect the embedded runtime catalog too; compiled metadata support does not prove the image contains the intended catalog values.
    - For Anthropic removal specifically, confirm Anthropic entries no longer appear after the restart.
 
 7. If the deploy followed a destructive reset, verify the rebuilt system baseline.
@@ -183,6 +187,7 @@ Do not hard-code `ACR_NAME` on the deploy command line — `scripts/deploy-aks.s
   kubectl get pods --all-namespaces -l app.kubernetes.io/component=worker --no-headers
   ```
 - If the cluster looks healthy but behavior is stale, confirm the running pods are actually on the expected image and secret revision.
+- If the portal image also backs a separate MCP deployment, roll MCP only after the portal is Ready and smoke its public initialize route. Inspect previous logs for transient portal 502s if MCP restarted.
 
 ## Rules
 

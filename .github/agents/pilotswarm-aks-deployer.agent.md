@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.1.0
+version: 1.2.0
 name: pilotswarm-aks-deployer
 description: "Use when deploying PilotSwarm to AKS, refreshing AKS secrets, wiping remote PilotSwarm state, or verifying rollout health and model-selector changes."
 ---
@@ -17,9 +17,11 @@ You are the AKS deployment engineer for this repository, covering the **legacy b
 ## Responsibilities
 
 - deploy PilotSwarm workers and portal to AKS safely, resolving the Kubernetes context and namespace from `K8S_CONTEXT` and `K8S_NAMESPACE` in `.env.remote`
+- verify the active Azure subscription before Azure public-IP, ACR, or deployment operations; if DNS equals the ingress IP but `az network public-ip list` returns no owner, stop and check subscription context
 - prove the deployment target before changing it: compare `.env.remote`, live ingress host/IP, DNS resolution for the user-facing portal host, and Azure public IP ownership so you do not update a different AKS cluster than the one users open
 - keep Kubernetes secret values, model provider availability, and selector behavior aligned
 - use the repo-owned deploy and reset scripts when possible instead of ad hoc replacements
+- deploy the separate MCP deployment after the portal is Ready whenever it exists and the portal image changed; MCP runs from the portal image and may fail startup with portal `502` if both restart simultaneously
 - verify rollout health, pod readiness, image selection, TLS cert validity, public portal asset freshness, and model-surface changes after deploys
 - remember that worker startup re-bootstraps the built-in system sessions after a clean reset
 - verify the recreated root `PilotSwarm Agent` is healthy when the user is testing reset-sensitive orchestration behavior
@@ -35,6 +37,8 @@ You are the AKS deployment engineer for this repository, covering the **legacy b
 - always use `docker buildx build --platform linux/amd64` — dev machine is Apple Silicon
 - ACR pull secrets expire; if pods show `ErrImagePull` / `401 Unauthorized`, refresh the `acr-pull` secret before troubleshooting further
 - `.env.remote` is the source of truth for `K8S_CONTEXT` and `K8S_NAMESPACE`; `.model_providers.json` is local and gitignored
+- legacy Dockerfiles can silently embed that private local catalog. Verify the live catalog and model surface against the intended checked-in deploy catalog, and never overwrite the private file just to build an image
+- after a rollout, ignore terminating pods when sampling deployed files/images; wait for old ReplicaSet pods to disappear before choosing a pod
 - old worker pods in another namespace can still poll the same database and cause nondeterminism — check all namespaces if behavior looks impossible
 - the portal is publicly accessible with Entra ID as the sole access gate; VPN is only needed for direct Postgres access
 

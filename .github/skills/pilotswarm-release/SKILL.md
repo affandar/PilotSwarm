@@ -9,6 +9,16 @@ Use this skill when a user wants to prepare or cut a release of PilotSwarm.
 
 Keep the workflow tight and deterministic. The goal is to verify what will ship, fix release blockers, and only then commit, push, tag, and publish.
 
+## Mandatory Main-Branch Release Invariant
+
+Every **full release** must land as exactly one new squash commit on `main` relative to the pre-release `origin/main` tip. The annotated release tag and GitHub Release must target that pushed main commit.
+
+- A commit or tag on a feature/release-prep branch is not a completed release.
+- Pushing the source branch does not satisfy the main-branch requirement.
+- Never publish the GitHub Release before `origin/main` points at the squash commit.
+- Do not rewrite an already-published tag to repair this after the fact. Prevent the mismatch before publication.
+- Preparation-only requests may stop before the squash commit, but a user request to cut/publish a full release includes the squash-to-main step when commit/push/tag permission is explicit.
+
 Treat this as a `pilotswarm`-repo maintainer workflow only. Do not update downstream consumers, sample app forks outside this repo, or vendored PilotSwarm copies in other repositories unless the user explicitly asks for that separate follow-up.
 
 ## Release Workflow
@@ -20,6 +30,7 @@ Treat this as a `pilotswarm`-repo maintainer workflow only. Do not update downst
    - Check current package names and versions in `packages/sdk/package.json`, `packages/horizon-store/package.json`, and `packages/app/package.json`.
    - Report the current latest tag and the proposed next tag to the user before any tag is created.
    - Check whether each published workspace package has its own `README.md`.
+   - Record the pre-release `origin/main` commit. Determine whether the current work is already on `main` or must be squashed from a source branch.
 
 2. Verify feature-completeness around the change.
    - If behavior changed, confirm the canonical docs in `docs/` were updated.
@@ -65,14 +76,25 @@ Treat this as a `pilotswarm`-repo maintainer workflow only. Do not update downst
    - Ask whether the user wants the GitHub Release to trigger the starter Docker image publish as well.
    - Call out blockers or skipped checks explicitly.
 
-6. Commit and push only with explicit user approval.
+6. Squash the release onto `main` and push only with explicit user approval.
    - Use non-interactive git commands.
    - Do not amend unless the user explicitly asks.
+   - Preserve unrelated working-tree edits before switching branches and restore them afterward.
+   - If the release was prepared on a feature/release branch:
+     1. make the release-ready source tree coherent, including all intended tracked and untracked files;
+     2. fetch `origin/main` and verify there is no unexpected remote-main drift;
+     3. switch to local `main` at `origin/main`;
+     4. run `git merge --squash <source-branch>`;
+     5. verify the staged tree is byte-identical to the reviewed release-ready source tree;
+     6. create one release commit on `main`.
+   - If release preparation happened directly on `main`, ensure all release changes become one commit relative to the recorded pre-release `origin/main` tip. Do not leave multiple release-prep commits on main.
    - Prefer a commit message that describes the release-ready outcome, not just one file.
+   - Push `main`, then verify `git rev-parse main` equals `git ls-remote origin refs/heads/main`.
 
 7. Tag and publish only with explicit user approval.
-   - Create an annotated tag for the release version.
-   - Push the commit and tag.
+   - Confirm the current commit is the pushed `origin/main` tip.
+   - Create the annotated release tag from that exact main commit, then push the tag.
+   - Verify local `main`, remote `origin/main`, and `git rev-parse <tag>^{}` are the same SHA.
    - Create a **GitHub Release** from the tag using `gh release create`. The npm publish workflow (`publish-npm.yml`) triggers on `release: [published]`, **not** on tag push alone. Without a GitHub Release, the publish will not run.
    - If the user opted in, note that the same GitHub Release should also trigger `.github/workflows/publish-starter-docker.yml`.
    - If the user does not want the Docker starter published as part of the release, call that out explicitly and use the manual starter Docker workflow later if needed.
@@ -104,9 +126,12 @@ Treat this as a `pilotswarm`-repo maintainer workflow only. Do not update downst
 - package-local `README.md` files are present for published workspaces
 - provenance metadata (`repository`, `homepage`, `bugs`) is correct
 - latest tag and proposed next tag were reported
+- release delta is exactly one squash commit on `main`
+- pushed `origin/main` is the squash commit
+- dereferenced release tag equals the pushed `origin/main` commit
 - Docker starter publish intent was confirmed with the user
 - release Docker tags were verified directly when applicable
-- commit, push, and tag are complete
+- squash commit on main, main push, and tag push are complete
 - publish workflow ran successfully
 
 ## Current Package Surface

@@ -1,4 +1,6 @@
 ---
+schemaVersion: 1
+version: 1.0.0
 name: pilotswarm-release
 description: "Use when preparing or cutting a PilotSwarm release. Validates build/tests, checks docs/templates/sample updates, verifies npm and starter Docker publish wiring, and handles commit/push/tag/release flow."
 ---
@@ -22,12 +24,16 @@ Your job is to take a set of repo changes through release readiness and, when ex
 - report the current latest git tag and the proposed next release tag before creating a tag
 - ask the user whether the release should also trigger the starter Docker publish workflow
 - use non-interactive git commands only
+- for every full release, assemble the complete release-ready tree as exactly one squash commit on `main`, push `main`, and create the release tag from that exact main commit
+- verify local `main`, `origin/main`, and the dereferenced release tag all resolve to the same commit before publishing the GitHub Release
 - commit, push, tag, and publish only when the user explicitly asks
 
 ## Constraints
 
 - never skip tests or packaging checks silently
 - never publish packages or create tags without reporting what will be released
+- never create or publish a release tag from a feature branch, release-prep branch, or commit that is not already the pushed `origin/main` tip
+- never leave a full release only on its source branch; pushing the source branch is not a substitute for the required squash commit on `main`
 - never assume the Docker starter image should publish on release without asking the user explicitly
 - do not treat proposal docs as a substitute for canonical docs once behavior ships
 - do not assume the repo-root `README.md` is enough for workspace npm packages
