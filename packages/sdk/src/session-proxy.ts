@@ -851,6 +851,12 @@ export function registerActivities(
             toolErrors: 0,
             toolNames: new Set<string>(),
             modelSummary: sessionManager.getModelSummary(),
+            // The model that actually served this turn, observed from the SDK's
+            // own events. `input.config.model` is only set when the session
+            // pinned a model explicitly; a session running on the deployment
+            // default leaves it undefined, which is why turn_completed used to
+            // report model: null and the portal rendered "Mod: unknown".
+            observedModel: null as string | null,
         };
         const turnStartedAt = new Date();
         const turnSpan = otelTrace.getTracer("pilotswarm-turns").startSpan("session.turn", {
@@ -1891,6 +1897,15 @@ export function registerActivities(
                             (msg) => activityCtx.traceInfo(msg),
                         );
                     }
+                    if (event.eventType === "assistant.usage" || event.eventType === "assistant.turn_start") {
+                        // Both carry the bound model; usage is emitted per API
+                        // call, so the last one seen is the model that served
+                        // the turn's final iteration.
+                        const eventModel = (normalizeEventData(event.data as Record<string, unknown> | undefined) ?? {}).model;
+                        if (typeof eventModel === "string" && eventModel) {
+                            turnTelemetry.observedModel = eventModel;
+                        }
+                    }
                     if (event.eventType === "assistant.usage") {
                         const usageUpsert = buildUsageSummaryUpsert(event.data);
                         if (usageUpsert) {
@@ -2227,7 +2242,7 @@ export function registerActivities(
                     () => catalog!.completeTurnWriteback({
                         sessionId: input.sessionId,
                         agentId: null,
-                        model: input.config.model ?? null,
+                        model: turnTelemetry.observedModel ?? input.config.model ?? null,
                         reasoningEffort: input.config.reasoningEffort ?? null,
                         turnIndex: input.turnIndex ?? 0,
                         startedAt: turnStartedAt,
