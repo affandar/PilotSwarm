@@ -186,6 +186,42 @@ function areStructuredValuesEqual(left, right) {
     return true;
 }
 
+// TEMPORARY DIAGNOSTIC (portal ?psdebug=status). Off unless a sink is
+// installed, so the default path is a single null check. Exists to capture the
+// real mechanism behind the "Working" strip / Stop button flicker: which
+// dispatch path writes a non-running status over a live running one, and
+// whether the staleness guard saw it as newer. Remove once the cause is known.
+let sessionStatusDebugSink = null;
+
+export function setSessionStatusDebugSink(sink) {
+    sessionStatusDebugSink = typeof sink === "function" ? sink : null;
+}
+
+function reportStatusMerge(source, previousSession, incoming, merged) {
+    if (!sessionStatusDebugSink) return;
+    const prevStatus = previousSession?.status;
+    const incomingStatus = incoming?.status;
+    const finalStatus = merged?.status;
+    // Only transitions are interesting; steady state would drown the log.
+    if (prevStatus === incomingStatus && prevStatus === finalStatus) return;
+    try {
+        sessionStatusDebugSink({
+            source,
+            sessionId: merged?.sessionId ?? incoming?.sessionId,
+            prevStatus: prevStatus ?? null,
+            incomingStatus: incomingStatus ?? null,
+            finalStatus: finalStatus ?? null,
+            prevUpdatedAt: previousSession?.updatedAt ?? null,
+            incomingUpdatedAt: incoming?.updatedAt ?? null,
+            incomingHasStatusKey: Object.prototype.hasOwnProperty.call(incoming ?? {}, "status"),
+            guardHeldRunning: prevStatus === "running" && incomingStatus !== "running" && finalStatus === "running",
+            lostRunning: prevStatus === "running" && finalStatus !== "running",
+        });
+    } catch {
+        // Diagnostics must never break the reducer.
+    }
+}
+
 function sessionUpdateTimestampMs(session) {
     const value = session?.updatedAt;
     if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -1006,6 +1042,7 @@ export function appReducer(state, action) {
                     mergeDefinedSessionFields(previous, session),
                     nowMs,
                 );
+                reportStatusMerge("sessions/loaded", previous, session, merged);
                 byId[session.sessionId] = merged;
                 if (!anyChanged && merged !== previous) anyChanged = true;
             }
@@ -1090,6 +1127,7 @@ export function appReducer(state, action) {
                 mergeDefinedSessionFields(previousSession, action.session),
                 Date.now(),
             );
+            reportStatusMerge("sessions/merged", previousSession, action.session, mergedSession);
             if (mergedSession === previousSession) return state;
             const byId = {
                 ...state.sessions.byId,
