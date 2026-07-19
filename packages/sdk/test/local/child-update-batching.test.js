@@ -146,7 +146,7 @@ function createHarness({ messages = [], inputOverrides = {} } = {}) {
             case "summarizeSession":
                 return undefined;
             case "listChildSessions":
-                return JSON.stringify(inputOverrides.subAgents ?? []);
+                return JSON.stringify(inputOverrides.listedChildren ?? inputOverrides.subAgents ?? []);
             case "getOrchestrationStats":
                 return inputOverrides.orchestrationStats ?? {
                     historyEventCount: 0,
@@ -929,6 +929,48 @@ describe("orchestration shutdown semantics", () => {
         const response = JSON.parse(result.values.get(commandResponseKey("done-cmd")));
         expect(response.result?.ok).toBe(true);
         expect(response.cmd).toBe("done");
+    });
+
+    it("completes a live idle child even when its tracked task status is already completed", async () => {
+        const harness = createHarness({
+            messages: [
+                {
+                    atMs: 0,
+                    payload: { type: "cmd", cmd: "done", id: "done-stale-task", args: { reason: "Finished" } },
+                },
+                {
+                    atMs: 6_000,
+                    payload: {
+                        prompt: "[CHILD_UPDATE from=child-session-1 type=completed iter=6]\nChild session completed cleanly",
+                    },
+                },
+            ],
+            inputOverrides: {
+                subAgents: [
+                    { orchId: "agent-1", sessionId: "child-session-1", task: "Child work", status: "completed" },
+                ],
+                listedChildren: [
+                    {
+                        orchId: "agent-1",
+                        sessionId: "child-session-1",
+                        title: "Child work",
+                        status: "idle",
+                        isSystem: false,
+                    },
+                ],
+                getSessionStatus: (_sessionId, state) => ({ status: state.nowMs >= 6_000 ? "completed" : "idle" }),
+            },
+        });
+
+        const result = await harness.runUntilDone();
+
+        expect(result.value).toBe("done");
+        expect(result.state.sentCommands).toEqual([
+            expect.objectContaining({
+                sessionId: "child-session-1",
+                command: expect.objectContaining({ cmd: "done" }),
+            }),
+        ]);
     });
 
     it("waits for active children before cancelling the parent", async () => {

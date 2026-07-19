@@ -4,8 +4,8 @@
  * observability event at the turn-result adoption site.
  *
  * Two things must hold and are guarded here:
- *   1. VERSION CEREMONY — 1.0.58 through 1.0.62 are frozen and registered;
- *      latest is 1.0.63.
+ *   1. VERSION CEREMONY — 1.0.58 through 1.0.63 are frozen and registered;
+ *      latest is 1.0.64.
  *   2. FREEZE BOUNDARY — the durable yield exists from 1.0.59 onward, never in
  *      frozen 1.0.58 (in-flight 1.0.58 histories recorded WITHOUT it and would
  *      fail replay against a mutated handler — the beae878 incident class).
@@ -22,19 +22,19 @@ import {
 import * as dispatcher from "../../src/orchestration.ts";
 
 describe("orchestration version registry", () => {
-    it("latest is 1.0.63, registered, and exported from the dispatcher", () => {
-        expect(LATEST).toBe("1.0.63");
+    it("latest is 1.0.64, registered, and exported from the dispatcher", () => {
+        expect(LATEST).toBe("1.0.64");
         const latest = REGISTRY.find((e) => e.version === LATEST);
         expect(latest?.handler).toBeTypeOf("function");
-        expect(latest.handler.name).toBe("durableSessionOrchestration_1_0_63");
-        expect(dispatcher.durableSessionOrchestration_1_0_63).toBeTypeOf("function");
+        expect(latest.handler.name).toBe("durableSessionOrchestration_1_0_64");
+        expect(dispatcher.durableSessionOrchestration_1_0_64).toBeTypeOf("function");
     });
 
-    it("freezes 1.0.62 as a distinct registered handler", () => {
-        const frozen = REGISTRY.find((e) => e.version === "1.0.62");
+    it("freezes 1.0.63 as a distinct registered handler", () => {
+        const frozen = REGISTRY.find((e) => e.version === "1.0.63");
         const latest = REGISTRY.find((e) => e.version === LATEST);
         expect(frozen?.handler).toBeTypeOf("function");
-        expect(frozen.handler.name).toBe("durableSessionOrchestration_1_0_62");
+        expect(frozen.handler.name).toBe("durableSessionOrchestration_1_0_63");
         expect(frozen.handler).not.toBe(latest.handler); // frozen != latest
     });
 

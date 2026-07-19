@@ -1,5 +1,5 @@
 /**
- * Durable session orchestration v1.0.64.
+ * Durable session orchestration v1.0.63.
  *
  * Flat event loop backed by a KV FIFO work buffer:
  *   1. `createRuntime` builds the mutable runtime and runs startup gates.
@@ -23,7 +23,7 @@ import { DURABLE_SESSION_LATEST_VERSION } from "../orchestration-version.js";
 
 export { CURRENT_ORCHESTRATION_VERSION };
 
-export function* durableSessionOrchestration_1_0_64(
+export function* durableSessionOrchestration_1_0_63(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {

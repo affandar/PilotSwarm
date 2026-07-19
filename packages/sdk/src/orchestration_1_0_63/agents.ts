@@ -237,11 +237,7 @@ export function* applyChildUpdate(
     return true;
 }
 
-export function* refreshTrackedSubAgents(
-    runtime: DurableSessionRuntime,
-    options: { preserveTerminalTaskStatus?: boolean } = {},
-): Generator<any, void, any> {
-    const preserveTerminalTaskStatus = options.preserveTerminalTaskStatus !== false;
+export function* refreshTrackedSubAgents(runtime: DurableSessionRuntime): Generator<any, void, any> {
     try {
         const rawChildren: string = yield runtime.manager.listChildSessions(runtime.input.sessionId);
         const directChildren = JSON.parse(rawChildren) as Array<{
@@ -263,7 +259,7 @@ export function* refreshTrackedSubAgents(
                 const existing = runtime.state.subAgents.find(agent => agent.sessionId === child.sessionId || agent.orchId === child.orchId);
                 const contract = (child as any).contract ?? existing?.contract;
                 const localStatus = existing?.status;
-                if (preserveTerminalTaskStatus && localStatus && isSubAgentTerminalStatus(localStatus)) {
+                if (localStatus && isSubAgentTerminalStatus(localStatus)) {
                     return {
                         orchId: child.orchId,
                         sessionId: child.sessionId,
@@ -488,11 +484,7 @@ export function* beginGracefulShutdown(
         return;
     }
 
-    // Task completion does not make a child session terminal: non-system
-    // children stay alive for follow-up messages. During parent shutdown the
-    // CMS session lifecycle is authoritative, so an idle child must still
-    // receive done/cancel even if its last tracked task status was completed.
-    yield* refreshTrackedSubAgents(runtime, { preserveTerminalTaskStatus: false });
+    yield* refreshTrackedSubAgents(runtime);
 
     const shutdownReason = String(cmdMsg.args?.reason || defaultShutdownReason(mode));
     const targetAgents = state.subAgents.filter((agent) => !isSubAgentTerminalStatus(agent.status));

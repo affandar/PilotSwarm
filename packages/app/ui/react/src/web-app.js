@@ -594,6 +594,23 @@ export function isScrollViewportAtBottom(node) {
     return getScrollDistanceToBottom(node) <= SCROLL_BOTTOM_EPSILON_PX;
 }
 
+export function computeAnchoredScrollTop(
+    node,
+    scrollOffset,
+    scrollMode,
+    preservePausedStickyScroll = false,
+) {
+    if (!node) return 0;
+    const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
+    if (preservePausedStickyScroll) {
+        return Math.max(0, Math.min(node.scrollTop, maxScroll));
+    }
+    const offsetPixels = Math.max(0, Number(scrollOffset) || 0) * SCROLL_ROW_HEIGHT;
+    return scrollMode === "bottom"
+        ? Math.max(0, maxScroll - offsetPixels)
+        : Math.min(maxScroll, offsetPixels);
+}
+
 function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller, { stickyBottom = false } = {}) {
     const normalizedLines = React.useMemo(() => normalizeLines(lines), [lines]);
     // Programmatic scrollTop assignments fire a 'scroll' event that would
@@ -613,6 +630,23 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
     // or its momentum is in flight, the DOM is the source of truth and state
     // echoes of our own scroll dispatches must not snap the pane back.
     const userScrollRef = React.useRef({ touching: false, lastUserScrollAt: 0, lastDispatchedOffset: null });
+    const viewportSizeRef = React.useRef({ width: null, height: null });
+    const [viewportRevision, setViewportRevision] = React.useState(0);
+
+    React.useLayoutEffect(() => {
+        const node = ref.current;
+        if (!node || typeof ResizeObserver === "undefined") return;
+        viewportSizeRef.current = { width: node.clientWidth, height: node.clientHeight };
+        const observer = new ResizeObserver(() => {
+            const next = { width: node.clientWidth, height: node.clientHeight };
+            const previous = viewportSizeRef.current;
+            if (next.width === previous.width && next.height === previous.height) return;
+            viewportSizeRef.current = next;
+            setViewportRevision((revision) => revision + 1);
+        });
+        observer.observe(node);
+        return () => observer.disconnect();
+    }, [ref]);
 
     React.useLayoutEffect(() => {
         const node = ref.current;
@@ -632,17 +666,16 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
             previousViewportStateRef.current = { scrollMode, scrollOffset };
             return;
         }
-        const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
         const preservePausedStickyScroll = stickyBottom
             && scrollMode === "top"
             && previousViewportState?.scrollMode === "top"
             && previousViewportState?.scrollOffset === scrollOffset;
-        const offsetPixels = Math.max(0, Number(scrollOffset) || 0) * SCROLL_ROW_HEIGHT;
-        const nextScrollTop = preservePausedStickyScroll
-            ? Math.max(0, Math.min(node.scrollTop, maxScroll))
-            : scrollMode === "bottom"
-                ? Math.max(0, maxScroll - offsetPixels)
-                : Math.min(maxScroll, offsetPixels);
+        const nextScrollTop = computeAnchoredScrollTop(
+            node,
+            scrollOffset,
+            scrollMode,
+            preservePausedStickyScroll,
+        );
         if (Math.abs(node.scrollTop - nextScrollTop) > PROGRAMMATIC_SCROLL_TOLERANCE_PX) {
             const pendingProgrammaticScroll = { target: nextScrollTop };
             programmaticScrollRef.current = pendingProgrammaticScroll;
@@ -659,7 +692,7 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
             scrollMode,
             scrollOffset,
         };
-    }, [normalizedLines, ref, scrollMode, scrollOffset, stickyBottom]);
+    }, [normalizedLines, ref, scrollMode, scrollOffset, stickyBottom, viewportRevision]);
 
     const onScroll = React.useCallback(() => {
         const node = ref.current;

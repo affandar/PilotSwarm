@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PortalRuntime } from "../../../app/web/runtime.js";
-import { isScrollViewportAtBottom, mergeBoxTableCellFragments } from "../../../app/ui/react/src/web-app.js";
+import { computeAnchoredScrollTop, isScrollViewportAtBottom, mergeBoxTableCellFragments } from "../../../app/ui/react/src/web-app.js";
 import { assert, assertEqual, assertIncludes } from "../helpers/assertions.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -24,6 +24,19 @@ describe("portal browser contracts", () => {
         assert(isScrollViewportAtBottom({ scrollHeight: 1000, clientHeight: 200, scrollTop: 800 }), "an exact bottom scroll position should be bottom-pinned");
         assert(isScrollViewportAtBottom({ scrollHeight: 1000, clientHeight: 200, scrollTop: 799.75 }), "fractional browser scroll noise should still count as bottom-pinned");
         assert(!isScrollViewportAtBottom({ scrollHeight: 1000, clientHeight: 200, scrollTop: 799 }), "scrolling up by a visible pixel should disable bottom-pinning");
+    });
+
+    it("re-anchors sticky browser panes when their viewport height changes", () => {
+        const viewport = { scrollHeight: 1000, clientHeight: 200, scrollTop: 800 };
+        assertEqual(computeAnchoredScrollTop(viewport, 0, "bottom"), 800, "bottom mode should anchor to the live tail");
+
+        viewport.clientHeight = 160;
+        assertEqual(computeAnchoredScrollTop(viewport, 0, "bottom"), 840, "a mounted bottom strip should re-anchor the transcript after reducing viewport height");
+        assertEqual(computeAnchoredScrollTop(viewport, 2, "bottom"), 808, "bottom mode should preserve a deliberate row offset after resize");
+        assertEqual(computeAnchoredScrollTop(viewport, 2, "top"), 32, "top mode should preserve its row offset after resize");
+
+        viewport.scrollTop = 315;
+        assertEqual(computeAnchoredScrollTop(viewport, 2, "top", true), 315, "paused sticky panes should preserve the user's real scroll position");
     });
 
     it("stamps the authenticated creator as group owner, never inferring it from selected sessions", async () => {
@@ -183,6 +196,7 @@ describe("portal browser contracts", () => {
         assertIncludes(webApp, 'renderInlineMarkdown(row[cellIndex] || "", theme, `chat-table:${index}:${rowIndex}:${cellIndex}`)', "portal structured chat tables should render inline markdown inside body cells");
         assertIncludes(webApp, 'stickyBottom: inspector.activeTab === "logs"', "portal log pane should use sticky follow-bottom scroll semantics");
         assertIncludes(webApp, "const PROGRAMMATIC_SCROLL_TOLERANCE_PX = SCROLL_BOTTOM_EPSILON_PX", "portal live panes should not ignore visible user scroll movement while auto-scrolling");
+        assertIncludes(webApp, 'const observer = new ResizeObserver(() => {', "portal live panes should reapply their scroll anchor when sticky layout changes the viewport size");
         assertIncludes(webApp, 'className: inspector.activeTab === "history" || inspector.activeTab === "logs" ? "is-wrapped" : "is-preserve"', "portal inspector logs should wrap instead of preserving horizontal overflow");
         assertIncludes(webApp, 'className: "is-wrapped"', "portal activity pane should render wrapped lines");
         assertIncludes(webApp, 'type: "code"', "portal chat renderer should recognize code fence blocks");
