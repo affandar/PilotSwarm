@@ -186,10 +186,50 @@ function areStructuredValuesEqual(left, right) {
     return true;
 }
 
+function sessionUpdateTimestampMs(session) {
+    const value = session?.updatedAt;
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (value instanceof Date) return value.getTime();
+    const parsed = Date.parse(value || "");
+    return Number.isFinite(parsed) ? parsed : 0;
+}
+
+// True when `nextSession` carries no newer information than what we already
+// hold. Both timestamps must be present — an update with no `updatedAt` is
+// treated as newer, because we cannot prove otherwise.
+function isSameOrOlderSessionUpdate(previousSession, nextSession) {
+    const previousAt = sessionUpdateTimestampMs(previousSession);
+    const nextAt = sessionUpdateTimestampMs(nextSession);
+    return previousAt > 0 && nextAt > 0 && nextAt <= previousAt;
+}
+
+function isIdleLikeSessionStatus(status) {
+    return !status || status === "idle" || status === "unknown" || status === "pending";
+}
+
+// Session state is written from several concurrent sources: the session-list
+// poll, live events, and a per-session detail fetch. A detail fetch issued
+// before a turn began can land after it began, still reporting the pre-turn
+// "idle" — which momentarily clobbers a live "running" until the next update
+// corrects it. Consumers gated on status === "running" (the live-activity
+// strip, the composer's Stop button) then flicker for the width of that race.
+//
+// Refuse the downgrade unless the incoming update is genuinely newer. This is
+// the same staleness rule already applied to waitReason, cronActive, error and
+// pendingQuestion elsewhere; it is bounded by the timestamp comparison, so a
+// real turn end (which always carries a newer updatedAt) still lands at once.
+function shouldPreserveRunningStatus(previousSession, nextSession) {
+    return previousSession?.status === "running"
+        && isIdleLikeSessionStatus(nextSession?.status)
+        && isSameOrOlderSessionUpdate(previousSession, nextSession);
+}
+
 function mergeDefinedSessionFields(previousSession = {}, nextSession = {}) {
     let merged = previousSession || {};
+    const preserveRunning = shouldPreserveRunningStatus(previousSession, nextSession);
     for (const [key, value] of Object.entries(nextSession || {})) {
         if (value === undefined) continue;
+        if (key === "status" && preserveRunning) continue;
         if (key === "pendingQuestion" && isAnsweredPendingQuestion(previousSession, value)) {
             if (merged === previousSession) {
                 merged = { ...(previousSession || {}) };

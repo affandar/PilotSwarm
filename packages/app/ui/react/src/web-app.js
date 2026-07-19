@@ -70,14 +70,6 @@ const TOUCH_TOP_PULL_THRESHOLD_PX = 24;
 // momentum-scrolling (native flick glide), during which programmatic scrollTop
 // restores are suppressed so they don't kill the glide.
 const TOUCH_MOMENTUM_GRACE_MS = 700;
-// How long turn-scoped affordances hold their last state after the session
-// stops reporting "running". A session working through a turn dips through
-// "idle" between turn iterations for tens of milliseconds; taken literally
-// those dips make the live-activity strip and the composer's Stop button
-// flicker. Long enough to swallow the dips, short enough that a genuinely
-// finished turn settles promptly. Shared so the strip and the Stop button
-// never disagree about whether a turn is in flight.
-const TURN_ACTIVITY_LINGER_MS = 5000;
 const PROFILE_SETTINGS_POLL_MS = 5000;
 const REASONING_EFFORT_LABELS = new Set(["low", "medium", "high", "xhigh"]);
 const LEGACY_BROWSER_PREFERENCE_STORAGE_KEYS = [
@@ -617,71 +609,6 @@ export function computeAnchoredScrollTop(
     return scrollMode === "bottom"
         ? Math.max(0, maxScroll - offsetPixels)
         : Math.min(maxScroll, offsetPixels);
-}
-
-// Holds the last non-empty `lines` for `lingerMs` after they go empty, so a
-// transient empty (a status dip between turn iterations) does not unmount the
-// consumer. A fresh non-empty value cancels the countdown and takes over
-// immediately, so this only ever delays disappearance — never appearance, and
-// never indefinitely.
-function useLingeringLines(lines, lingerMs) {
-    const [held, setHeld] = React.useState(lines);
-    const timerRef = React.useRef(null);
-    const clearTimer = React.useCallback(() => {
-        if (timerRef.current) {
-            clearTimeout(timerRef.current);
-            timerRef.current = null;
-        }
-    }, []);
-
-    React.useEffect(() => {
-        if (lines.length > 0) {
-            clearTimer();
-            setHeld(lines);
-            return;
-        }
-        // Nothing held to clear, or already counting down from an earlier
-        // empty. Re-arming on every empty render would either hold stale
-        // content forever or, once held is empty, spin a timer indefinitely.
-        if (timerRef.current || held.length === 0) return;
-        timerRef.current = setTimeout(() => {
-            timerRef.current = null;
-            setHeld([]);
-        }, lingerMs);
-    }, [lines, lingerMs, clearTimer, held]);
-
-    React.useEffect(() => clearTimer, [clearTimer]);
-    return held;
-}
-
-// Boolean counterpart of useLingeringLines: holds `true` for `lingerMs` after
-// `active` goes false, so a transient false does not drop the affordance it
-// gates. Turning true again cancels the countdown immediately.
-function useLingeredFlag(active, lingerMs) {
-    const [held, setHeld] = React.useState(active);
-    const timerRef = React.useRef(null);
-    const clearTimer = React.useCallback(() => {
-        if (timerRef.current) {
-            clearTimeout(timerRef.current);
-            timerRef.current = null;
-        }
-    }, []);
-
-    React.useEffect(() => {
-        if (active) {
-            clearTimer();
-            setHeld(true);
-            return;
-        }
-        if (timerRef.current || !held) return;
-        timerRef.current = setTimeout(() => {
-            timerRef.current = null;
-            setHeld(false);
-        }, lingerMs);
-    }, [active, lingerMs, clearTimer, held]);
-
-    React.useEffect(() => clearTimer, [clearTimer]);
-    return held;
 }
 
 function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller, { stickyBottom = false } = {}) {
@@ -2783,16 +2710,8 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
     );
     // The live-activity line is pinned in the bottom-sticky strip (with the
     // outbox overlay), NOT appended to the transcript — it must stay put while
-    // chat content scrolls.
-    //
-    // The selector goes empty the moment status leaves "running", but a session
-    // working through a turn dips through "idle" between turn iterations. Taken
-    // literally that unmounted the whole strip on every dip: the footer flashed
-    // on and off, and because the strip is a flex sibling of the transcript,
-    // each flip resized the scroll pane and left the last chat line clipped
-    // under it. Hold the last non-empty value briefly so those dips are
-    // absorbed; a turn that has genuinely ended still clears within the linger.
-    const pinnedActivityLines = useLingeringLines(liveActivityLines, TURN_ACTIVITY_LINGER_MS);
+    // chat content scrolls, and it drops the instant the turn ends.
+    const pinnedActivityLines = liveActivityLines;
     const outboxLines = React.useMemo(
         () => selectOutboxOverlayLines(selectorState, viewState.contentWidth, { tableMode: "sentinel" }),
         [selectorState, viewState.contentWidth],
@@ -3455,12 +3374,6 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
             });
     }, [controller, onAfterSend]);
 
-    // Same dips that flickered the live-activity strip also dropped the Stop
-    // button for tens of milliseconds at a time. Ride over them: during an
-    // inter-iteration dip the turn really is still in flight, so Stop remains
-    // the correct affordance — and STOP_TURN is a no-op if the turn has in
-    // fact ended, so a late click is harmless.
-    const canStopTurn = useLingeredFlag(promptState.canStopTurn, TURN_ACTIVITY_LINGER_MS);
     const [stoppingTurn, setStoppingTurn] = React.useState(false);
     const stopTurn = React.useCallback(() => {
         setStoppingTurn(true);
@@ -3557,7 +3470,7 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
                     onClick: cancelPending,
                 }, selectedQueued ? "Delete" : "Cancel")
                 : null,
-            canStopTurn || stoppingTurn
+            promptState.canStopTurn || stoppingTurn
                 ? React.createElement("button", {
                     type: "button",
                     className: `ps-stop-button${stoppingTurn ? " is-stopping" : ""}`,
