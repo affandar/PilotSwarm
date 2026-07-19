@@ -183,9 +183,30 @@ export async function validateSessionAfterTurn(env, sessionId, opts = {}) {
         }
 
         // ── 6. Duroxide orchestration status ───────────────────
-        const orchStatus = await mgmt.getSessionStatus(sessionId);
+        let orchStatus = await mgmt.getSessionStatus(sessionId);
         if (!orchStatus) {
             throw new Error(`[Orchestration] No status for session ${sessionId.slice(0, 8)}`);
+        }
+
+        const statusDeadline = Date.now() + 20_000;
+        while (
+            (
+                !expectedCmsStates.includes(orchStatus.customStatus?.status)
+                || (orchStatus.customStatus?.iteration ?? 0) < minIteration
+            )
+            && Date.now() < statusDeadline
+        ) {
+            const remainingMs = statusDeadline - Date.now();
+            try {
+                orchStatus = await mgmt.waitForStatusChange(
+                    sessionId,
+                    orchStatus.customStatusVersion,
+                    250,
+                    remainingMs,
+                );
+            } catch {
+                break;
+            }
         }
 
         // customStatusVersion should have advanced at least once

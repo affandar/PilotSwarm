@@ -216,6 +216,22 @@ const CONTEXT_TIER_LABELS = {
     long_context: "Long context (larger window, higher cost)",
 };
 
+function formatContextWindowSize(value) {
+    const tokens = Number(value);
+    if (!Number.isSafeInteger(tokens) || tokens <= 0) return null;
+    if (tokens % 1_000_000 === 0) return `${tokens / 1_000_000}M`;
+    if (tokens % 1_000 === 0) return `${tokens / 1_000}K`;
+    return tokens.toLocaleString("en-US");
+}
+
+function formatContextTierLabel(tier, tokenLimit) {
+    const size = formatContextWindowSize(tokenLimit);
+    if (!size) return CONTEXT_TIER_LABELS[tier] || tier;
+    return tier === "long_context"
+        ? `Long context (${size} tokens, higher cost)`
+        : `Default (${size} tokens)`;
+}
+
 function extractSessionModelFromEvents(events = []) {
     // Only explicit model-change events may update the session's model.
     // Deriving it from any event that happens to carry a `model` field lets
@@ -1103,6 +1119,7 @@ export class PilotSwarmUiController {
             text: String(prompt || ""),
             createdAt: Date.now(),
             phase: normalizedPhase,
+            attempted: false,
             clientMessageIds: [id],
         };
     }
@@ -1122,9 +1139,9 @@ export class PilotSwarmUiController {
     }
 
     getEditableOutboxItems(sessionId) {
-        // Only pending items are editable/cancelable on the client; queued items
-        // are durable and need a durable cancel API to remove.
-        return this.getPendingOutboxItems(sessionId);
+        // Attempted envelopes are immutable because the server may already
+        // have accepted their IDs even when the client saw a transport error.
+        return this.getPendingOutboxItems(sessionId).filter((item) => item?.attempted !== true);
     }
 
     getPromptEditSessionMatch(sessionId = this.getState().sessions.activeSessionId) {
@@ -1412,7 +1429,11 @@ export class PilotSwarmUiController {
             return false;
         }
 
-        const pendingItems = this.getPendingOutboxItems(sessionId);
+        const allPendingItems = this.getPendingOutboxItems(sessionId);
+        const attemptedItem = allPendingItems.find((item) => item?.attempted === true);
+        const pendingItems = attemptedItem
+            ? [attemptedItem]
+            : allPendingItems.filter((item) => item?.attempted !== true);
         if (pendingItems.length === 0) return false;
 
         // Merge all current pending items into a single durable envelope.
@@ -1430,6 +1451,7 @@ export class PilotSwarmUiController {
             text: mergedText,
             createdAt: pendingItems[0].createdAt || Date.now(),
             phase: "pending",
+            attempted: true,
             clientMessageIds: mergedClientMessageIds,
         };
         const pendingIdSet = new Set(pendingItems.map((item) => item.id));
@@ -1480,10 +1502,11 @@ export class PilotSwarmUiController {
                     }
                 }, 6000);
             } else {
-                // Transient failure: revert the merged envelope back to the
-                // original pending items so the user can edit/retry them.
-                const reverted = items.flatMap((item) => (
-                    item.id === mergedItem.id ? pendingItems : [item]
+                // Transient failure: preserve the exact attempted envelope.
+                // Re-merging it with fresh messages could make server-side
+                // duplicate suppression drop the fresh content too.
+                const reverted = items.map((item) => (
+                    item.id === mergedItem.id ? { ...mergedItem, phase: "pending", attempted: true } : item
                 ));
                 this.setSessionOutboxItems(sessionId, reverted);
             }
@@ -3763,7 +3786,8 @@ export class PilotSwarmUiController {
         const items = supported.map((tier) => ({
             id: tier,
             tier,
-            label: CONTEXT_TIER_LABELS[tier] || tier,
+            tokenLimit: modelItem?.contextWindowSizes?.[tier] || null,
+            label: formatContextTierLabel(tier, modelItem?.contextWindowSizes?.[tier]),
             isDefault: selectedTier === tier,
         }));
         const selectedIndex = Math.max(0, items.findIndex((item) => item.id === selectedTier));
@@ -3828,6 +3852,7 @@ export class PilotSwarmUiController {
                         defaultReasoningEffort: model.defaultReasoningEffort || null,
                         supportedContextTiers: normalizeContextTiers(model.supportedContextTiers),
                         defaultContextTier: model.defaultContextTier || null,
+                        contextWindowSizes: model.contextWindowSizes || null,
                         isDefault: defaultModel === model.qualifiedName,
                         ghcpKeyMissing,
                         disabled: ghcpKeyMissing,
@@ -5291,6 +5316,7 @@ export class PilotSwarmUiController {
             const items = this.getSessionOutbox(currentUi.promptEdit.sessionId);
             const nextItems = items.map((item) => (
                 item.id === currentUi.promptEdit.itemId && item.phase === "pending"
+                    && item.attempted !== true
                     ? { ...item, text: nextPrompt }
                     : item
             ));

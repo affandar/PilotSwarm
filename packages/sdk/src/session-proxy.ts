@@ -1386,7 +1386,9 @@ export function registerActivities(
                         (canSpawnMore
                             ? `- If your parent task explicitly asks you to spawn sub-agents, delegate, fan out, or parallelize work, you SHOULD do so within runtime limits instead of collapsing the task into a direct answer. ` +
                               `If delegation was not explicitly requested, use your judgment and avoid unnecessary fan-out. ` +
-                              `You have ${MAX_NESTING_LEVEL - childNestingLevel} level(s) of nesting remaining. After spawning, call wait_for_agents to block until they finish.\n`
+                              `You have ${MAX_NESTING_LEVEL - childNestingLevel} level(s) of nesting remaining. ` +
+                              `After spawning, finish the turn normally and let qualifying child updates wake you according to contract.wakeOn. ` +
+                              `Do not schedule wait or cron solely to poll check_agents; use wait_for_agents only when you need an explicit synchronization barrier.\n`
                             : `- You CANNOT spawn sub-agents — you are at the maximum nesting depth. Handle everything directly.\n`);
                     childConfig.systemMessage = subAgentPreamble + (parentSystemMsg ? "\n\n" + parentSystemMsg : "");
 

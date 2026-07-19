@@ -33,6 +33,7 @@ Send additional instructions or context to a running sub-agent.
 
 ### `check_agents()`
 Get the current status of ALL sub-agents — running, completed, or failed — with their latest output.
+This is an on-demand snapshot, not a scheduling primitive. Qualifying child updates wake the parent according to `contract.wakeOn`.
 
 ### `wait_for_agents([agent_ids])`
 Block until sub-agents finish. Returns their final results.
@@ -52,9 +53,9 @@ Block until sub-agents finish. Returns their final results.
 
 ### Background Worker
 ```
-1. spawn_agent("Monitor X every 60 seconds")  → agent
+1. spawn_agent("Monitor X every 60 seconds", contract={ "wakeOn": "material_change" }) → agent
 2. Continue handling user requests normally
-3. Periodically check_agents() to see updates
+3. React when the child reports a material change; check status on demand
 ```
 
 ### Durable Recurring Worker
@@ -96,9 +97,11 @@ spawn_agent(
 - Sub-agents are fully durable — they survive crashes and restarts
 - A sub-agent can run an indefinite recurring loop by doing work, then calling `wait`, then repeating on its own
 - Do not say a recurring sub-agent needs another user prompt, a cron job, or a manual nudge for the next cycle
+- Parent coordination is reactive. Qualifying child updates wake you automatically according to `contract.wakeOn`.
+- Do not schedule `wait` or `cron` solely to poll `check_agents`; use a parent timer only for an independent deadline, retry, or external check.
 - You can send a running sub-agent new instructions with `message_agent` at any time
 - Sub-agents can use `wait` for durable timers but cannot spawn their own sub-agents (single level)
-- Always call `check_agents` or `wait_for_agents` to collect results — don't ignore your agents
+- Use `check_agents` after autonomous child wake-ups or explicit status requests; use `wait_for_agents` only for an explicit synchronization barrier
 - Keep task descriptions clear and self-contained — the agent has no access to your conversation history
 - Sub-agents run on potentially different worker nodes — they cannot share in-memory state
 - If the user explicitly asks you to use sub-agents, delegation, fan-out, or parallel processing, do it within runtime limits instead of silently collapsing the task into a single-agent answer

@@ -4,6 +4,24 @@ This version-controlled log records prompt behavior changes that affect shipped
 PilotSwarm agents. Model-specific compatibility measurements remain in
 `docs/models/` when a formal evaluation sweep is run.
 
+## 2026-07-18 — Reactive parent coordination
+
+- **Agent:** framework base agent (`packages/sdk/plugins/system/agents/default.agent.md`)
+- **Version:** `1.6.1` → `1.7.0`
+- **Models:** model-independent prompt contract; no model sweep run
+- **Problem:** the base prompt preferred `wait` + `check_agents` polling, and
+  orchestration `1.0.61` falsely warned that a parent with running children
+  would never wake automatically without a timer. In practice, qualifying
+  child updates already wake the parent according to `contract.wakeOn`, so
+  parents created redundant one-minute cron loops that often did no work.
+- **Change:** parent coordination is now explicitly reactive. Parents finish
+  normally after spawning, inspect status after child wake-ups or explicit
+  requests, and reserve `wait_for_agents` for synchronization barriers. Timers
+  remain valid only for independent deadlines, retries, and external checks.
+  Orchestration `1.0.62` removes the forced forgotten-timer continuation.
+- **Validation:** focused static prompt/tool/orchestration contract passes. No
+  live model compatibility claim is made until an end-to-end delegation trial.
+
 ## 2026-07-15 — Cross-owner session-message trust boundary
 
 - **Agent:** framework base agent (`packages/sdk/plugins/system/agents/default.agent.md`)

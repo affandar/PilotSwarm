@@ -1,4 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { buildContinueInput } from "../../src/orchestration/lifecycle.ts";
+import {
+    createInitialState,
+    normalizeRecentClientMessageIds,
+    touchRecentClientMessageIds,
+} from "../../src/orchestration/state.ts";
 
 let mockSession;
 let mockManager;
@@ -8,7 +14,7 @@ vi.mock("../../src/session-proxy.js", () => ({
     createSessionManagerProxy: () => mockManager,
 }));
 
-function createHarness({ values = new Map(), messages = [] } = {}) {
+function createHarness({ values = new Map(), messages = [], inputOverrides = {} } = {}) {
     const scheduledMessages = [...messages]
         .map((entry) => ({
             atMs: entry.atMs ?? 0,
@@ -106,6 +112,7 @@ function createHarness({ values = new Map(), messages = [] } = {}) {
             iteration: 0,
             isSystem: true,
             blobEnabled: false,
+            ...inputOverrides,
         });
 
         let input;
@@ -237,5 +244,147 @@ describe("cancelPendingMessage orchestration", () => {
                 },
             }],
         );
+    });
+
+    it("suppresses a repeated client message id before FIFO append", async () => {
+        const harness = createHarness({
+            messages: [
+                { atMs: 0, payload: { prompt: "run once", clientMessageIds: ["msg-1"] } },
+                { atMs: 0, payload: { prompt: "run once", clientMessageIds: ["msg-1"] } },
+            ],
+        });
+
+        await harness.runUntilIdle();
+
+        expect(harness.runTurns).toHaveLength(1);
+        expect(harness.runTurns[0].prompt).toBe("run once");
+        expect(mockManager.recordSessionEvent).toHaveBeenCalledWith(
+            "cancel-session",
+            [{
+                eventType: "session.message_duplicate_suppressed",
+                data: {
+                    clientMessageIds: ["msg-1"],
+                    duplicateClientMessageIds: ["msg-1"],
+                    windowSize: 20,
+                    source: "predispatch",
+                },
+            }],
+        );
+    });
+
+    it("suppresses a retry that arrives after the original turn completes", async () => {
+        const harness = createHarness({
+            messages: [
+                { atMs: 0, payload: { prompt: "run once", clientMessageIds: ["msg-late-retry"] } },
+                { atMs: 200, payload: { prompt: "run once", clientMessageIds: ["msg-late-retry"] } },
+            ],
+        });
+
+        await harness.runUntilIdle();
+
+        expect(harness.runTurns.map((turn) => turn.prompt)).toEqual(["run once"]);
+        expect(harness.traces.some((line) => line.includes("suppressing duplicate prompt"))).toBe(true);
+    });
+
+    it("suppresses a merged prompt atomically when any id is recent", async () => {
+        const harness = createHarness({
+            inputOverrides: { recentClientMessageIds: ["msg-seen"] },
+            messages: [{
+                atMs: 0,
+                payload: {
+                    prompt: "seen text\n\nnew text",
+                    clientMessageIds: ["msg-seen", "msg-new"],
+                },
+            }],
+        });
+
+        await harness.runUntilIdle();
+
+        expect(harness.runTurns).toHaveLength(0);
+        expect(harness.traces.some((line) => line.includes("suppressing duplicate prompt"))).toBe(true);
+    });
+
+    it("does not interrupt an active wait when suppressing a duplicate", async () => {
+        const harness = createHarness({
+            inputOverrides: {
+                recentClientMessageIds: ["msg-seen"],
+                activeTimerState: {
+                    remainingMs: 1_000,
+                    originalDurationMs: 1_000,
+                    reason: "external operation",
+                    type: "wait",
+                },
+            },
+            messages: [{
+                atMs: 0,
+                payload: { prompt: "retry", clientMessageIds: ["msg-seen"] },
+            }],
+        });
+
+        await harness.runUntilIdle();
+
+        expect(harness.traces.some((line) => line.includes("user prompt interrupted wait timer"))).toBe(false);
+        expect(harness.runTurns.some((turn) => turn.prompt === "The 1 second wait is now complete. Continue with your task.")).toBe(true);
+    });
+
+    it("keeps prompts without client ids on the legacy path", async () => {
+        const harness = createHarness({
+            messages: [
+                { atMs: 0, payload: { prompt: "legacy one" } },
+                { atMs: 0, payload: { prompt: "legacy two" } },
+            ],
+        });
+
+        await harness.runUntilIdle();
+
+        expect(harness.runTurns.map((turn) => turn.prompt)).toEqual(["legacy one", "legacy two"]);
+    });
+
+    it("maintains a 20-id LRU and carries it through continueAsNew", () => {
+        const initialIds = Array.from({ length: 20 }, (_, index) => `msg-${index + 1}`);
+        const input = {
+            sessionId: "lru-session",
+            config: {},
+            recentClientMessageIds: [...initialIds, "msg-20"],
+        };
+        const options = {
+            idleTimeout: 1_800,
+            inputGracePeriod: 30,
+            isSystem: false,
+            nestingLevel: 0,
+        };
+        const state = createInitialState(input, options);
+
+        expect(normalizeRecentClientMessageIds(input.recentClientMessageIds)).toEqual(initialIds);
+        touchRecentClientMessageIds(state, ["msg-1"]);
+        expect(state.recentClientMessageIds.at(-1)).toBe("msg-1");
+        touchRecentClientMessageIds(state, ["msg-21"]);
+        expect(state.recentClientMessageIds).toHaveLength(20);
+        expect(state.recentClientMessageIds).not.toContain("msg-2");
+        expect(state.recentClientMessageIds.at(-1)).toBe("msg-21");
+
+        const nextInput = buildContinueInput({
+            input,
+            state,
+            options,
+            versions: { currentVersion: "1.0.63", latestVersion: "1.0.63" },
+        });
+        expect(nextInput.recentClientMessageIds).toEqual(state.recentClientMessageIds);
+    });
+
+    it("accepts the evicted oldest id after a 21st unique id is enqueued", async () => {
+        const initialIds = Array.from({ length: 20 }, (_, index) => `msg-${index + 1}`);
+        const harness = createHarness({
+            inputOverrides: { recentClientMessageIds: initialIds },
+            messages: [
+                { atMs: 0, payload: { prompt: "newest", clientMessageIds: ["msg-21"] } },
+                { atMs: 200, payload: { prompt: "oldest after eviction", clientMessageIds: ["msg-1"] } },
+            ],
+        });
+
+        await harness.runUntilIdle();
+
+        expect(harness.runTurns.map((turn) => turn.prompt)).toEqual(["newest", "oldest after eviction"]);
+        expect(harness.traces.some((line) => line.includes("suppressing duplicate prompt"))).toBe(false);
     });
 });

@@ -25,6 +25,7 @@ import {
     MAX_PREDISPATCH_SWEEP,
     NON_BLOCKING_TIMER_MS,
     PREDISPATCH_CANCEL_SWEEP_MS,
+    touchRecentClientMessageIds,
     type ActiveTimer,
     type DurableSessionRuntime,
     type PendingChildDigest,
@@ -124,6 +125,45 @@ function hasFifoItems(runtime: DurableSessionRuntime): boolean {
     return false;
 }
 
+function appendPromptStashToFifo(runtime: DurableSessionRuntime, stash: any[]): void {
+    appendToFifo(runtime, stash);
+    for (const item of stash) {
+        if (item?.kind !== "prompt") continue;
+        const ids = validClientMessageIds(item.clientMessageIds);
+        touchRecentClientMessageIds(runtime.state, ids);
+    }
+}
+
+function duplicateClientMessageIds(
+    runtime: DurableSessionRuntime,
+    ids: string[],
+    pendingIds: Set<string>,
+): string[] {
+    if (ids.length === 0) return [];
+    const recent = new Set(runtime.state.recentClientMessageIds);
+    return ids.filter((id) => recent.has(id) || pendingIds.has(id));
+}
+
+function* recordDuplicatePrompt(
+    runtime: DurableSessionRuntime,
+    ids: string[],
+    duplicateIds: string[],
+    source: string,
+): Generator<any, void, any> {
+    const recent = new Set(runtime.state.recentClientMessageIds);
+    touchRecentClientMessageIds(runtime.state, duplicateIds.filter((id) => recent.has(id)));
+    runtime.ctx.traceInfo(`[${source}] suppressing duplicate prompt (duplicateIds=${duplicateIds.join(",")})`);
+    yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
+        eventType: "session.message_duplicate_suppressed",
+        data: {
+            clientMessageIds: ids,
+            duplicateClientMessageIds: duplicateIds,
+            windowSize: 20,
+            source,
+        },
+    }]);
+}
+
 // ─── Timer race candidate selection ─────────────────────────
 
 function nextTimerCandidate(
@@ -174,6 +214,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
     const stash: any[] = [];
     const seenChildUpdates = new Set<string>();
     const cancelledThisDrain = new Set<string>();
+    const pendingClientMessageIds = new Set<string>();
 
     for (let i = 0; i < MAX_DRAIN_PER_TURN; i++) {
         let msg: any = null;
@@ -268,7 +309,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
         }
 
         if (msg.type === "cmd") {
-            if (stash.length > 0) { appendToFifo(runtime, stash); stash.length = 0; }
+            if (stash.length > 0) { appendPromptStashToFifo(runtime, stash); stash.length = 0; }
             yield* handleCommand(runtime, msg as CommandMessage);
             if (state.orchestrationResult !== null) return;
             continue;
@@ -304,6 +345,19 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
         }
 
         if (msg.prompt) {
+            const incomingClientMessageIds: string[] = validClientMessageIds(msg.clientMessageIds);
+            if (promptIdsIntersectCancellation(runtime, incomingClientMessageIds)) {
+                ctx.traceInfo(`[drain] dropping incoming prompt cancelled by tombstone (ids=${incomingClientMessageIds.join(",")})`);
+                yield* recordCancelledMessageIds(runtime, incomingClientMessageIds, "drain-incoming");
+                continue;
+            }
+
+            const duplicateIds = duplicateClientMessageIds(runtime, incomingClientMessageIds, pendingClientMessageIds);
+            if (duplicateIds.length > 0) {
+                yield* recordDuplicatePrompt(runtime, incomingClientMessageIds, duplicateIds, "drain");
+                continue;
+            }
+
             let userPrompt = msg.prompt;
             state.blockedError = undefined;
 
@@ -394,14 +448,6 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 userPrompt = flushPendingChildDigestIntoPrompt(runtime, userPrompt);
             }
 
-            const incomingClientMessageIds: string[] = validClientMessageIds(msg.clientMessageIds);
-
-            if (promptIdsIntersectCancellation(runtime, incomingClientMessageIds)) {
-                ctx.traceInfo(`[drain] dropping incoming prompt cancelled by tombstone (ids=${incomingClientMessageIds.join(",")})`);
-                yield* recordCancelledMessageIds(runtime, incomingClientMessageIds, "drain-incoming");
-                continue;
-            }
-
             stash.push({
                 kind: "prompt",
                 prompt: userPrompt,
@@ -410,13 +456,14 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 ...(incomingClientMessageIds.length > 0 ? { clientMessageIds: incomingClientMessageIds } : {}),
                 ...(msg.sender && typeof msg.sender === "object" ? { sender: msg.sender } : {}),
             });
+            for (const id of incomingClientMessageIds) pendingClientMessageIds.add(id);
             continue;
         }
 
         ctx.traceInfo(`[drain] skipping unknown: ${JSON.stringify(msg).slice(0, 120)}`);
     }
 
-    if (stash.length > 0) appendToFifo(runtime, stash);
+    if (stash.length > 0) appendPromptStashToFifo(runtime, stash);
 }
 
 // ─── Pre-dispatch sweep: grab any pending cancel tombstone ──
@@ -425,6 +472,7 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
     const { ctx, state } = runtime;
     const stash: any[] = [];
     const seenChildUpdates = new Set<string>();
+    const pendingClientMessageIds = new Set<string>();
 
     for (let i = 0; i < MAX_PREDISPATCH_SWEEP; i++) {
         const msgTask = ctx.dequeueEvent("messages");
@@ -455,7 +503,7 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
         }
 
         if (msg.type === "cmd") {
-            if (stash.length > 0) { appendToFifo(runtime, stash); stash.length = 0; }
+            if (stash.length > 0) { appendPromptStashToFifo(runtime, stash); stash.length = 0; }
             yield* handleCommand(runtime, msg as CommandMessage);
             if (state.orchestrationResult !== null) return;
             continue;
@@ -490,6 +538,11 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
                 yield* recordCancelledMessageIds(runtime, incomingClientMessageIds, "predispatch-incoming");
                 continue;
             }
+            const duplicateIds = duplicateClientMessageIds(runtime, incomingClientMessageIds, pendingClientMessageIds);
+            if (duplicateIds.length > 0) {
+                yield* recordDuplicatePrompt(runtime, incomingClientMessageIds, duplicateIds, "predispatch");
+                continue;
+            }
             stash.push({
                 kind: "prompt",
                 prompt: msg.prompt,
@@ -498,13 +551,14 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
                 ...(incomingClientMessageIds.length > 0 ? { clientMessageIds: incomingClientMessageIds } : {}),
                 ...(msg.sender && typeof msg.sender === "object" ? { sender: msg.sender } : {}),
             });
+            for (const id of incomingClientMessageIds) pendingClientMessageIds.add(id);
             continue;
         }
 
         ctx.traceInfo(`[predispatch] skipping unknown: ${JSON.stringify(msg).slice(0, 120)}`);
     }
 
-    if (stash.length > 0) appendToFifo(runtime, stash);
+    if (stash.length > 0) appendPromptStashToFifo(runtime, stash);
 }
 
 // ─── decide: pop and process one item from FIFO ─────────────

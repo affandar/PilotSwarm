@@ -278,6 +278,17 @@ Tools listed here are made available to sessions that load this skill.
 
 MCP (Model Context Protocol) servers extend agent capabilities with external tools. Configure them in a `.mcp.json` file at the root of any plugin directory.
 
+The merged `.mcp.json` maps form the deployment **catalog** — configuring a server does *not* grant it to every session. An agent receives a server by naming it in its `.agent.md` frontmatter:
+
+```yaml
+schemaVersion: 2
+mcpServers:          # named references into the catalog
+  - code-search
+inheritDefaultMcpServers: true   # also receive the deployment default set
+```
+
+Servers tagged `"default": true` in `.mcp.json` form the deployment default set, granted only to agents with `inheritDefaultMcpServers: true` (the tag is PilotSwarm-only and is stripped before configs reach the Copilot CLI). A base (`default.agent.md`) agent may opt in the same way, which applies its grants to every session. Unknown references are dropped with a load-time warning. Direct worker-config `mcpServers` (inline options, tier 4) keep their legacy every-session semantics.
+
 ### Format
 
 The file is a JSON object where each key is a server name:
@@ -494,6 +505,8 @@ The complete loading pipeline:
 ├─────────────────────────────────────────────────────┤
 │  Tier 4: Direct config (inline options)             │
 │    → skillDirectories, customAgents, mcpServers     │
+│      (inline mcpServers: every session — legacy;    │
+│       plugin .mcp.json: catalog, per-agent opt-in)  │
 ├─────────────────────────────────────────────────────┤
 │  Prompt composition                                 │
 │    → framework base + app default + agent + runtime │

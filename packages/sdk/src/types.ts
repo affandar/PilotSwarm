@@ -440,6 +440,8 @@ export interface OrchestrationInput {
     cronAtSchedule?: import("./cron-at.js").CronAtSchedule;
     /** Latest known context-window usage snapshot captured from session events. */
     contextUsage?: SessionContextUsage;
+    /** Most recently accepted client message ids, oldest to newest (max 20). */
+    recentClientMessageIds?: string[];
 
     // ─── Multi-writer attribution (security model) ───────────
     /** Distinct sender identity keys observed on sender-carrying messages. */
@@ -785,9 +787,12 @@ export interface PilotSwarmWorkerOptions {
      *   - `.mcp.json` file with MCP server configs
      *   - `plugin.json` manifest (optional metadata)
      *
-     * The worker reads these at startup and passes their contents
-     * through the SDK's `skillDirectories`, `customAgents`, and
-     * `mcpServers` session config fields.
+     * The worker reads these at startup. Skills and agents pass through
+     * the SDK's `skillDirectories` / `customAgents` session config fields.
+     * `.mcp.json` servers form the deployment MCP CATALOG: a session
+     * receives a server only via its bound agent's `mcpServers:` /
+     * `inheritDefaultMcpServers:` frontmatter (or a base-agent opt-in) —
+     * the catalog is never applied to every session wholesale.
      */
     pluginDirs?: string[];
 
@@ -811,8 +816,11 @@ export interface PilotSwarmWorkerOptions {
     }>;
 
     /**
-     * Additional MCP server configs (beyond plugins).
-     * Passed directly to the SDK's `mcpServers` config.
+     * Additional MCP server configs (beyond plugins). These keep their
+     * legacy every-session semantics: they join the deployment catalog AND
+     * are applied to every session. Prefer plugin `.mcp.json` entries with
+     * per-agent frontmatter declarations (or the `"default": true` tag) for
+     * scoped grants.
      */
     mcpServers?: Record<string, any>;
 

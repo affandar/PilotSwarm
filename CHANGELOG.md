@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.5.16 — 2026-07-18
+
+### Durable message deduplication and retry isolation
+
+This release hardens durable message delivery, parent/child coordination, and
+model configuration while preserving replay compatibility through frozen
+orchestration versions `1.0.61` and `1.0.62`; new sessions use `1.0.63`.
+
+### SDK
+
+- **Client message ids are deduplicated durably.** Orchestrations retain a
+  bounded 20-id LRU so repeated delivery of the same `clientMessageId` cannot
+  enqueue duplicate user turns, including across replay and worker handoff.
+- **Attempted outbox envelopes are immutable.** Retrying an earlier failed
+  prompt cannot merge its acknowledgement ids into a newer queued prompt;
+  retries and fresh sends resolve independently.
+- **Model configuration metadata is complete.** Reasoning effort and context
+  tier flow through session metadata, management views, child creation, and
+  starter model-provider configuration.
+- **Reactive parent/child prompts are more explicit.** Parent sessions receive
+  hardened guidance for child completion, waiting, and follow-up work without
+  leaking stale turn content.
+
+### Portal / TUI
+
+- Queued-message reconciliation now isolates each attempted outbox envelope,
+  so acknowledgements clear only the matching local prompt after retries.
+- Session selectors expose the expanded model metadata consistently across the
+  shared terminal and portal UI core.
+
+### Docs / Templates
+
+- Agent contracts, builder guidance, CLI/SDK builder skills, and the maintained
+  TUI skill document the new message-id, model-metadata, and parent/child
+  behavior.
+- Added an anonymized duplicate-client-message retry bug report capturing the
+  failure mode and regression contract.
+
+### Tests
+
+- Added regressions for duplicate ids, immutable retry envelopes, session
+  refresh reconciliation, starter model configuration, system cron/restart
+  behavior, context tiers, snapshot lineage, and wait-content isolation.
+- Full-load helpers now wait on status-change events instead of timing sleeps;
+  the unsupported mixed PRE/WAIT/POST single-turn scenario is represented as a
+  supported two-turn sequence without reducing concurrency or weakening
+  assertions.
+
 ## 0.5.15 — 2026-07-16
 
 ### Session groups become private per-user organization; reliable deep links

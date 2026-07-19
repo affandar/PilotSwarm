@@ -344,6 +344,7 @@ export interface ModelSummary {
     defaultReasoningEffort?: ReasoningEffort;
     supportedContextTiers?: import("./model-providers.js").ContextTier[];
     defaultContextTier?: import("./model-providers.js").ContextTier;
+    contextWindowSizes?: Partial<Record<import("./model-providers.js").ContextTier, number>>;
     /**
      * Whether the provider has a process/env credential. For GitHub
      * providers this excludes per-user CMS keys (see
@@ -2375,6 +2376,7 @@ export class PilotSwarmManagementClient {
             ...(m.defaultReasoningEffort ? { defaultReasoningEffort: m.defaultReasoningEffort } : {}),
             ...(m.supportedContextTiers?.length ? { supportedContextTiers: m.supportedContextTiers } : {}),
             ...(m.defaultContextTier ? { defaultContextTier: m.defaultContextTier } : {}),
+            ...(m.contextWindowSizes ? { contextWindowSizes: m.contextWindowSizes } : {}),
             credentialAvailable: this.getModelCredentialStatus(m.qualifiedName).credentialAvailable,
         }));
     }
@@ -2398,6 +2400,7 @@ export class PilotSwarmManagementClient {
                 ...(m.defaultReasoningEffort ? { defaultReasoningEffort: m.defaultReasoningEffort } : {}),
                 ...(m.supportedContextTiers?.length ? { supportedContextTiers: m.supportedContextTiers } : {}),
                 ...(m.defaultContextTier ? { defaultContextTier: m.defaultContextTier } : {}),
+                ...(m.contextWindowSizes ? { contextWindowSizes: m.contextWindowSizes } : {}),
                 credentialAvailable: this.getModelCredentialStatus(m.qualifiedName).credentialAvailable,
             })),
         }));

@@ -96,6 +96,7 @@ export interface DurableSessionState {
 
     cancelledMessageIds: Set<string>;
     emittedCancelledMessageIds: Set<string>;
+    recentClientMessageIds: string[];
 
     legacyPendingMessage: unknown;
 
@@ -160,6 +161,7 @@ export const MAX_HISTORY_SIZE_BEFORE_CONTINUE_AS_NEW_BYTES = 800 * 1024;
 export const HISTORY_SIZE_CHECK_INTERVAL_ITERATIONS = 3;
 export const NON_BLOCKING_TIMER_MS = 10;
 export const PREDISPATCH_CANCEL_SWEEP_MS = 100;
+export const RECENT_CLIENT_MESSAGE_ID_LIMIT = 20;
 
 // ─── Initial state construction ─────────────────────────────
 
@@ -178,6 +180,25 @@ function clonePendingShutdown(input: OrchestrationInput["pendingShutdown"]): Pen
         ...input,
         targetAgentIds: [...(input.targetAgentIds || [])],
     };
+}
+
+export function normalizeRecentClientMessageIds(value: unknown): string[] {
+    if (!Array.isArray(value)) return [];
+    const ids: string[] = [];
+    for (const raw of value) {
+        if (typeof raw !== "string" || !raw || ids.includes(raw)) continue;
+        ids.push(raw);
+    }
+    return ids.slice(-RECENT_CLIENT_MESSAGE_ID_LIMIT);
+}
+
+export function touchRecentClientMessageIds(state: DurableSessionState, ids: string[]): void {
+    const validIds = ids.filter((id, index) => Boolean(id) && ids.indexOf(id) === index);
+    if (validIds.length === 0) return;
+    const touched = new Set(validIds);
+    state.recentClientMessageIds = state.recentClientMessageIds.filter((id) => !touched.has(id));
+    state.recentClientMessageIds.push(...validIds);
+    state.recentClientMessageIds = state.recentClientMessageIds.slice(-RECENT_CLIENT_MESSAGE_ID_LIMIT);
 }
 
 export function createInitialState(input: OrchestrationInput, options: DurableSessionOptions): DurableSessionState {
@@ -241,6 +262,7 @@ export function createInitialState(input: OrchestrationInput, options: DurableSe
 
         cancelledMessageIds: new Set<string>(),
         emittedCancelledMessageIds: new Set<string>(),
+        recentClientMessageIds: normalizeRecentClientMessageIds(input.recentClientMessageIds),
 
         legacyPendingMessage: undefined,
 

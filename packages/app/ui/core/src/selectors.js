@@ -3780,7 +3780,7 @@ function buildNodeMapHeaderLine(nodeLabels, colWidth) {
     return runs;
 }
 
-const SEQ_REASONING_EFFORTS = new Set(["low", "medium", "high", "xhigh", "minimal", "none"]);
+const SEQ_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
 function shortModelForSequence(value) {
     const model = String(value || "").trim();
@@ -4305,11 +4305,12 @@ export function selectContextTierPickerModal(state, maxWidth = 64) {
 
     const selectedItem = items[selectedIndex] || null;
     const modelItem = modal.modelItem || null;
+    const selectedLabel = selectedItem?.label || selectedItem?.id;
     const detailsLines = [
         [{ text: modelItem?.modelName || modelItem?.qualifiedName || "Selected model", color: "white", bold: true }],
         [{ text: `${modelItem?.providerId || "provider"} (${modelItem?.providerType || "provider"})`, color: "gray" }],
         [{ text: "", color: "gray" }],
-        [{ text: selectedItem?.id ? `Using context window: ${selectedItem.id}` : "Choose a context window.", color: "white" }],
+        [{ text: selectedLabel ? `Using context window: ${selectedLabel}` : "Choose a context window.", color: "white" }],
         [{ text: "Long context costs more per token.", color: "gray" }],
     ];
 

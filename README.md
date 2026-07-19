@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.15** — Private per-user session groups and reliable deep links: groups become each user's own organization of the sessions they can see (sharing never reveals the owner's grouping; read access suffices to place), a new `placeSessionsInGroup` op with per-root results, a "Shared with me" filter, Share / Copy-link portal UX, and explicit `?session=` deep-link errors instead of silent fallback. Session DTOs now emit `viewerGroupId` (replacing `groupId`); requires migration `0034`.
+> **Latest release: v0.5.16** — Durable client-message deduplication and retry isolation: a bounded 20-id LRU prevents duplicate turns across replay, attempted outbox envelopes remain immutable when retries overlap fresh sends, model reasoning/context metadata flows through session and child surfaces, and parent/child prompt coordination is hardened. New sessions use orchestration `1.0.63`, with `1.0.61` and `1.0.62` frozen for replay compatibility.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 

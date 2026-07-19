@@ -92,11 +92,14 @@ Contract:
 - missing or invalid `wakeOn` defaults to `material_change`
 - `message_agent(..., contract_patch={ wakeOn: "..." })` can change the policy while a child is running
 - explicit reads such as `check_agents` and `wait_for_agents` still show quiet heartbeat status
+- qualifying updates wake the parent automatically; a parent must not schedule `wait` or `cron` solely to poll `check_agents`
+- parent timers remain appropriate for independent deadlines, retries, or external checks that cannot notify the session
 
 Why it matters:
 
 - watcher children should not spend parent LLM turns for clear no-op heartbeats
 - material changes, terminal states, and unknown updates remain visible conservatively
+- reactive wake-ups avoid no-op parent turns that only rediscover children are still running
 
 ## 8. Prompt-Only Rules Need Runtime Backstops
 
