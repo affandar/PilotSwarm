@@ -70,11 +70,14 @@ const TOUCH_TOP_PULL_THRESHOLD_PX = 24;
 // momentum-scrolling (native flick glide), during which programmatic scrollTop
 // restores are suppressed so they don't kill the glide.
 const TOUCH_MOMENTUM_GRACE_MS = 700;
-// How long the live-activity strip holds its last content after the selector
-// goes empty. Long enough to swallow the "idle" dips between turn iterations
-// (which otherwise unmount the strip and resize the transcript under it),
-// short enough that a finished turn's strip clears promptly.
-const LIVE_ACTIVITY_LINGER_MS = 5000;
+// How long turn-scoped affordances hold their last state after the session
+// stops reporting "running". A session working through a turn dips through
+// "idle" between turn iterations for tens of milliseconds; taken literally
+// those dips make the live-activity strip and the composer's Stop button
+// flicker. Long enough to swallow the dips, short enough that a genuinely
+// finished turn settles promptly. Shared so the strip and the Stop button
+// never disagree about whether a turn is in flight.
+const TURN_ACTIVITY_LINGER_MS = 5000;
 const PROFILE_SETTINGS_POLL_MS = 5000;
 const REASONING_EFFORT_LABELS = new Set(["low", "medium", "high", "xhigh"]);
 const LEGACY_BROWSER_PREFERENCE_STORAGE_KEYS = [
@@ -646,6 +649,36 @@ function useLingeringLines(lines, lingerMs) {
             setHeld([]);
         }, lingerMs);
     }, [lines, lingerMs, clearTimer, held]);
+
+    React.useEffect(() => clearTimer, [clearTimer]);
+    return held;
+}
+
+// Boolean counterpart of useLingeringLines: holds `true` for `lingerMs` after
+// `active` goes false, so a transient false does not drop the affordance it
+// gates. Turning true again cancels the countdown immediately.
+function useLingeredFlag(active, lingerMs) {
+    const [held, setHeld] = React.useState(active);
+    const timerRef = React.useRef(null);
+    const clearTimer = React.useCallback(() => {
+        if (timerRef.current) {
+            clearTimeout(timerRef.current);
+            timerRef.current = null;
+        }
+    }, []);
+
+    React.useEffect(() => {
+        if (active) {
+            clearTimer();
+            setHeld(true);
+            return;
+        }
+        if (timerRef.current || !held) return;
+        timerRef.current = setTimeout(() => {
+            timerRef.current = null;
+            setHeld(false);
+        }, lingerMs);
+    }, [active, lingerMs, clearTimer, held]);
 
     React.useEffect(() => clearTimer, [clearTimer]);
     return held;
@@ -2759,7 +2792,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
     // each flip resized the scroll pane and left the last chat line clipped
     // under it. Hold the last non-empty value briefly so those dips are
     // absorbed; a turn that has genuinely ended still clears within the linger.
-    const pinnedActivityLines = useLingeringLines(liveActivityLines, LIVE_ACTIVITY_LINGER_MS);
+    const pinnedActivityLines = useLingeringLines(liveActivityLines, TURN_ACTIVITY_LINGER_MS);
     const outboxLines = React.useMemo(
         () => selectOutboxOverlayLines(selectorState, viewState.contentWidth, { tableMode: "sentinel" }),
         [selectorState, viewState.contentWidth],
@@ -3422,6 +3455,12 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
             });
     }, [controller, onAfterSend]);
 
+    // Same dips that flickered the live-activity strip also dropped the Stop
+    // button for tens of milliseconds at a time. Ride over them: during an
+    // inter-iteration dip the turn really is still in flight, so Stop remains
+    // the correct affordance — and STOP_TURN is a no-op if the turn has in
+    // fact ended, so a late click is harmless.
+    const canStopTurn = useLingeredFlag(promptState.canStopTurn, TURN_ACTIVITY_LINGER_MS);
     const [stoppingTurn, setStoppingTurn] = React.useState(false);
     const stopTurn = React.useCallback(() => {
         setStoppingTurn(true);
@@ -3518,7 +3557,7 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
                     onClick: cancelPending,
                 }, selectedQueued ? "Delete" : "Cancel")
                 : null,
-            promptState.canStopTurn || stoppingTurn
+            canStopTurn || stoppingTurn
                 ? React.createElement("button", {
                     type: "button",
                     className: `ps-stop-button${stoppingTurn ? " is-stopping" : ""}`,
