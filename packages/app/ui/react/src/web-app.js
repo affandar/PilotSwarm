@@ -21,7 +21,6 @@ import {
     selectAdminConsole,
     selectArtifactPickerModal,
     selectArtifactUploadModal,
-    setSessionStatusDebugSink,
     selectLiveActivityLines,
     selectChatLines,
     selectChatPaneChrome,
@@ -71,37 +70,6 @@ const TOUCH_TOP_PULL_THRESHOLD_PX = 24;
 // momentum-scrolling (native flick glide), during which programmatic scrollTop
 // restores are suppressed so they don't kill the glide.
 const TOUCH_MOMENTUM_GRACE_MS = 700;
-
-// TEMPORARY DIAGNOSTIC — enable with ?psdebug=status on the portal URL.
-// Prints every session status transition (and every flip of the Stop button's
-// gate) so the flicker's real mechanism can be read off a short repro instead
-// of inferred. Installs nothing unless the flag is present. Remove with the
-// reducer-side sink once the cause is confirmed.
-const STATUS_DEBUG_ENABLED = (() => {
-    try {
-        if (typeof window === "undefined") return false;
-        return new URLSearchParams(window.location.search).get("psdebug") === "status";
-    } catch {
-        return false;
-    }
-})();
-
-if (STATUS_DEBUG_ENABLED) {
-    const t0 = Date.now();
-    const stamp = () => `+${String(Date.now() - t0).padStart(6, " ")}ms`;
-    setSessionStatusDebugSink((entry) => {
-        const tag = entry.lostRunning ? "LOST-RUNNING" : entry.guardHeldRunning ? "guard-held  " : "transition  ";
-        // eslint-disable-next-line no-console
-        console.log(
-            `[ps-status] ${stamp()} ${tag} ${entry.source.padEnd(16)} ` +
-            `${String(entry.prevStatus).padEnd(9)} + ${String(entry.incomingStatus).padEnd(9)} -> ${String(entry.finalStatus).padEnd(9)} ` +
-            `prevAt=${entry.prevUpdatedAt} incomingAt=${entry.incomingUpdatedAt} hasStatusKey=${entry.incomingHasStatusKey} ` +
-            `sess=${String(entry.sessionId).slice(0, 8)}`,
-        );
-    });
-    // eslint-disable-next-line no-console
-    console.log("[ps-status] diagnostic enabled — reproduce the flicker, then copy this log");
-}
 const PROFILE_SETTINGS_POLL_MS = 5000;
 const REASONING_EFFORT_LABELS = new Set(["low", "medium", "high", "xhigh"]);
 const LEGACY_BROWSER_PREFERENCE_STORAGE_KEYS = [
@@ -3374,11 +3342,6 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
             modalOpen: Boolean(state.ui.modal),
             answerMode: Boolean(activeSession?.pendingQuestion?.question),
             canStopTurn: canStopSessionTurn(activeSession),
-            // Diagnostic only: distinguishes "status left running" from "the
-            // active session briefly vanished from the store" (e.g. a paginated
-            // sessions/loaded), which would drop the button just the same.
-            debugHasActiveSession: STATUS_DEBUG_ENABLED ? Boolean(activeSession) : false,
-            debugActiveStatus: STATUS_DEBUG_ENABLED ? (activeSession?.status ?? null) : null,
             hasOutbox: outbox.length > 0,
             hasPendingOutbox: outbox.some((item) => item?.phase === "pending"),
             pendingCount: outbox.filter((item) => item?.phase === "pending").length,
@@ -3410,21 +3373,6 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
                 onAfterSend?.();
             });
     }, [controller, onAfterSend]);
-
-    // TEMPORARY DIAGNOSTIC: log every flip of the Stop button's gate, so the
-    // reducer-side [ps-status] lines can be lined up against what the button
-    // actually rendered.
-    const lastStopGateRef = React.useRef(null);
-    React.useEffect(() => {
-        if (!STATUS_DEBUG_ENABLED) return;
-        if (lastStopGateRef.current === promptState.canStopTurn) return;
-        lastStopGateRef.current = promptState.canStopTurn;
-        // eslint-disable-next-line no-console
-        console.log(
-            `[ps-stop-button] canStopTurn=${String(promptState.canStopTurn).padEnd(5)} ` +
-            `status=${String(promptState.debugActiveStatus).padEnd(9)} hasActiveSession=${promptState.debugHasActiveSession}`,
-        );
-    }, [promptState.canStopTurn, promptState.debugActiveStatus, promptState.debugHasActiveSession]);
 
     const [stoppingTurn, setStoppingTurn] = React.useState(false);
     const stopTurn = React.useCallback(() => {
