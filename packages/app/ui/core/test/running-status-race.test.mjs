@@ -66,13 +66,42 @@ test("terminal statuses are never held back, even when stale", () => {
     }
 });
 
-test("waiting (awaiting the user) is never held back either", () => {
+// Captured live on waldemortchk (?psdebug=status). The list poll reported
+// "waiting" for a session the server and orchestration both had at "running",
+// carrying an IDENTICAL updatedAt, and an event merge restored "running" 105ms
+// later. An earlier guard missed this by only rejecting idle-like statuses.
+test("a same-timestamp 'waiting' from the list poll cannot clobber a live run", () => {
+    let state = withSession({ status: "running", updatedAt: 1784505807140 });
+    state = appReducer(state, {
+        type: "sessions/loaded",
+        sessions: [{ sessionId: "s1", title: "T", status: "waiting", updatedAt: 1784505807140 }],
+    });
+    assert.equal(statusOf(state), "running", "equal-timestamp waiting must not win");
+});
+
+test("a genuinely newer 'waiting' (a real durable wait) still lands", () => {
     let state = withSession({ status: "running", updatedAt: T0 + 5_000 });
     state = appReducer(state, {
         type: "sessions/merged",
-        session: { sessionId: "s1", status: "waiting", updatedAt: T0 + 1_000 },
+        session: { sessionId: "s1", status: "waiting", updatedAt: T0 + 9_000 },
     });
     assert.equal(statusOf(state), "waiting");
+});
+
+test("input_required is held back when stale, and lands when newer", () => {
+    let stale = withSession({ status: "running", updatedAt: T0 + 5_000 });
+    stale = appReducer(stale, {
+        type: "sessions/merged",
+        session: { sessionId: "s1", status: "input_required", updatedAt: T0 + 1_000 },
+    });
+    assert.equal(statusOf(stale), "running");
+
+    let fresh = withSession({ status: "running", updatedAt: T0 + 5_000 });
+    fresh = appReducer(fresh, {
+        type: "sessions/merged",
+        session: { sessionId: "s1", status: "input_required", updatedAt: T0 + 9_000 },
+    });
+    assert.equal(statusOf(fresh), "input_required", "a real question must reach the user");
 });
 
 test("an update carrying no timestamp is treated as newer (cannot be proven stale)", () => {

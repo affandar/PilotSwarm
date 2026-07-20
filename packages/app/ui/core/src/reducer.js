@@ -239,24 +239,35 @@ function isSameOrOlderSessionUpdate(previousSession, nextSession) {
     return previousAt > 0 && nextAt > 0 && nextAt <= previousAt;
 }
 
-function isIdleLikeSessionStatus(status) {
-    return !status || status === "idle" || status === "unknown" || status === "pending";
-}
+// A run that has ended for good. These are authoritative and must always land,
+// even from an update that looks stale — stranding a finished session as
+// "running" is far worse than a brief wrong status.
+const TERMINAL_SESSION_STATUSES = new Set(["completed", "failed", "cancelled", "error"]);
 
 // Session state is written from several concurrent sources: the session-list
-// poll, live events, and a per-session detail fetch. A detail fetch issued
-// before a turn began can land after it began, still reporting the pre-turn
-// "idle" — which momentarily clobbers a live "running" until the next update
-// corrects it. Consumers gated on status === "running" (the live-activity
-// strip, the composer's Stop button) then flicker for the width of that race.
+// poll, live events, and a per-session detail fetch. They do not agree
+// instant-to-instant, and the list poll in particular can report a status the
+// orchestration has already moved on from — observed live as:
 //
-// Refuse the downgrade unless the incoming update is genuinely newer. This is
-// the same staleness rule already applied to waitReason, cronActive, error and
-// pendingQuestion elsewhere; it is bounded by the timestamp comparison, so a
-// real turn end (which always carries a newer updatedAt) still lands at once.
+//   sessions/loaded  running + waiting -> waiting   prevAt == incomingAt
+//   sessions/merged  waiting + running -> running   (105ms later)
+//
+// while the server's own session row and orchestration both read "running"
+// throughout. Consumers gated on status === "running" — the live-activity
+// strip, the composer's Stop button — blink off for the width of that gap.
+//
+// Refuse ANY non-terminal downgrade out of "running" unless the incoming
+// update is genuinely newer. Deliberately not restricted to idle-like
+// statuses: the status actually observed clobbering a live run was "waiting",
+// and an earlier version of this guard missed the bug by excluding it.
+// Terminal statuses are exempt so a finished run can never be stranded, and
+// the timestamp test means a real transition (which carries a newer
+// updatedAt) still lands immediately.
 function shouldPreserveRunningStatus(previousSession, nextSession) {
+    const nextStatus = String(nextSession?.status ?? "").toLowerCase();
     return previousSession?.status === "running"
-        && isIdleLikeSessionStatus(nextSession?.status)
+        && nextStatus !== "running"
+        && !TERMINAL_SESSION_STATUSES.has(nextStatus)
         && isSameOrOlderSessionUpdate(previousSession, nextSession);
 }
 
