@@ -90,6 +90,9 @@ Contract:
 - `spawn_agent(..., contract={ wakeOn: "any" | "material_change" | "completion" })` controls autonomous parent wake-ups
 - contracts may also include compact `purpose`, `successCriteria`, `expectedFacts`, `expectedArtifacts`, and `validationMode` fields when required outputs matter
 - missing or invalid `wakeOn` defaults to `material_change`
+- finite delegated work whose result the parent needs uses `material_change`; an ordinary final reply leaves the child alive and idle
+- `completion` is reserved for actual terminal lifecycle outcomes such as explicit completion, cancellation, failure, or a blocked verdict
+- after validating a finite child's required outputs, the parent closes it explicitly with `complete_agent`
 - `message_agent(..., contract_patch={ wakeOn: "..." })` can change the policy while a child is running
 - explicit reads such as `check_agents` and `wait_for_agents` still show quiet heartbeat status
 - qualifying updates wake the parent automatically; a parent must not schedule `wait` or `cron` solely to poll `check_agents`
@@ -98,6 +101,7 @@ Contract:
 Why it matters:
 
 - watcher children should not spend parent LLM turns for clear no-op heartbeats
+- finite task results wake the parent without falsely treating the still-idle child as terminal
 - material changes, terminal states, and unknown updates remain visible conservatively
 - reactive wake-ups avoid no-op parent turns that only rediscover children are still running
 

@@ -665,6 +665,7 @@ export function childModelCreationOptions(config: SerializableSessionConfig) {
         model: config.model,
         reasoningEffort: config.reasoningEffort,
         contextTier: config.contextTier,
+        childContract: config.childContract,
     };
 }
 

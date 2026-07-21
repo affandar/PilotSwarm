@@ -643,7 +643,7 @@ export class ManagedSession {
                     },
                     contract: {
                         type: "object",
-                        description: "Optional named argument on spawn_agent; no separate contract tool exists. Example: contract={purpose:'Market scan',successCriteria:['answer with source-backed summary'],expectedFacts:[{key:'result/market-scan',required:true}],expectedArtifacts:[],validationMode:'warn',wakeOn:'material_change'}. Set wakeOn to 'any' for every update, 'material_change' (default) to suppress no-op heartbeats, or 'completion' for terminal updates only. Qualifying updates wake the parent automatically; no parent polling timer is required.",
+                        description: "Optional named argument on spawn_agent; no separate contract tool exists. Example: contract={purpose:'Market scan',successCriteria:['answer with source-backed summary'],expectedFacts:[{key:'result/market-scan',required:true}],expectedArtifacts:[],validationMode:'warn',wakeOn:'material_change'}. Set wakeOn to 'any' for every update or 'material_change' (default) to suppress no-op heartbeats. For finite delegated work, use 'material_change': an ordinary final reply leaves the child alive and idle, so validate its outputs and then call complete_agent. Reserve 'completion' for actual terminal lifecycle outcomes such as explicit completion, cancellation, failure, or a blocked verdict. Qualifying updates wake the parent automatically; no parent polling timer is required.",
                     },
                 },
             },
@@ -1388,7 +1388,7 @@ export class ManagedSession {
                     },
                     contract: {
                         type: "object",
-                        description: "Optional named argument on spawn_agent; no separate contract tool exists. Example: contract={purpose:'Market scan',successCriteria:['answer with source-backed summary'],expectedFacts:[{key:'result/market-scan',required:true}],expectedArtifacts:[],validationMode:'warn',wakeOn:'material_change'}. Set wakeOn to 'any' for every update, 'material_change' (default) to suppress no-op heartbeats, or 'completion' for terminal updates only. Qualifying updates wake the parent automatically; no parent polling timer is required.",
+                        description: "Optional named argument on spawn_agent; no separate contract tool exists. Example: contract={purpose:'Market scan',successCriteria:['answer with source-backed summary'],expectedFacts:[{key:'result/market-scan',required:true}],expectedArtifacts:[],validationMode:'warn',wakeOn:'material_change'}. Set wakeOn to 'any' for every update or 'material_change' (default) to suppress no-op heartbeats. For finite delegated work, use 'material_change': an ordinary final reply leaves the child alive and idle, so validate its outputs and then call complete_agent. Reserve 'completion' for actual terminal lifecycle outcomes such as explicit completion, cancellation, failure, or a blocked verdict. Qualifying updates wake the parent automatically; no parent polling timer is required.",
                     },
                 },
             },

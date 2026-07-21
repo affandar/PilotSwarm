@@ -260,7 +260,7 @@ spawn_agent(
 )
 ```
 
-Use `contract.wakeOn` when spawning long-running children: `any` for high-signal short-lived work, `material_change` for watchers, and `completion` when only terminal/blocked/error updates should wake the parent. Use `message_agent(..., contract_patch={ wakeOn: "..." })` to adjust the policy later.
+Use `contract.wakeOn` for every delegation: `any` for chatty work where every update matters, and `material_change` for finite task results and watcher changes. A finite child's ordinary final reply leaves it alive and idle, so validate the result and close it explicitly with `complete_agent`. Reserve `completion` for actual terminal lifecycle outcomes such as explicit completion, cancellation, failure, or a blocked verdict. Use `message_agent(..., contract_patch={ wakeOn: "..." })` to adjust the policy later.
 
 ### Cross-session request/response
 

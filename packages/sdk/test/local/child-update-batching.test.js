@@ -769,6 +769,39 @@ describe("orchestration child update batching", () => {
         expect(mockSession.runTurn).toHaveBeenCalledTimes(1);
     });
 
+    it("wakes the parent for the Waldemort finite task result under material_change", async () => {
+        const harness = createHarness({
+            messages: [
+                {
+                    atMs: 0,
+                    payload: {
+                        prompt: "[CHILD_UPDATE from=df018b8e-a512-4fd8-a835-9363d9b3cfe0 type=completed iter=2]\nResolution complete. All 11 customers were processed and the result fact was stored.",
+                    },
+                },
+            ],
+            inputOverrides: {
+                subAgents: [
+                    {
+                        orchId: "session-df018b8e-a512-4fd8-a835-9363d9b3cfe0",
+                        sessionId: "df018b8e-a512-4fd8-a835-9363d9b3cfe0",
+                        task: "Resolve authoritative customer anchors",
+                        status: "running",
+                        contract: { wakeOn: "material_change" },
+                    },
+                ],
+            },
+        });
+
+        const result = await harness.runUntilRunTurn();
+
+        expect(result.runTurnCall.systemPrompt).toContain("Buffered child updates arrived during the last 30 seconds");
+        expect(result.runTurnCall.systemPrompt).toContain("All 11 customers were processed");
+        expect(mockSession.runTurn).toHaveBeenCalledTimes(1);
+        expect(result.state.recordedEvents.some((entry) =>
+            entry.events?.some((event) => event.eventType === "session.child_update_suppressed"),
+        )).toBe(false);
+    });
+
     it("parses legacy and cycle child update headers, rejecting malformed headers", () => {
         expect(parseChildUpdate("[CHILD_UPDATE from=child-session-1 type=completed iter=9 verdict=success]\nDone")).toEqual({
             sessionId: "child-session-1",

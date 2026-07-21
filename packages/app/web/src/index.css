@@ -1151,13 +1151,12 @@ body.is-resizing-pane-y * {
 
 .ps-chat-card {
   margin: 8px 0;
-  margin-right: auto;
   border: 1px solid color-mix(in srgb, var(--ps-chat-card-accent, var(--ps-border)) 78%, transparent);
   border-radius: var(--ps-radius-sm);
   background: color-mix(in srgb, var(--ps-surface) 98%, transparent);
   overflow: hidden;
-  width: fit-content;
-  max-width: min(100%, 82ch);
+  width: auto;
+  max-width: 100%;
 }
 
 .ps-chat-card-header {
@@ -1389,9 +1388,8 @@ body.is-resizing-pane-y * {
 
 .ps-chat-code-block {
   margin: 8px 0;
-  margin-right: auto;
-  width: min(100%, 120ch);
-  max-width: min(100%, 120ch);
+  width: auto;
+  max-width: 100%;
 }
 
 .ps-action-list {
@@ -2363,11 +2361,6 @@ body.is-resizing-pane-y * {
    * wrapping for narrower tables. */
   .ps-chat-focus-shell .ps-chat-table-wrap,
   .ps-chat-focus-shell .ps-md-table-wrap {
-    max-width: 100%;
-  }
-
-  .ps-chat-focus-shell .ps-chat-card,
-  .ps-chat-focus-shell .ps-chat-code-block {
     max-width: 100%;
   }
 

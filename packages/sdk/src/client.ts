@@ -158,6 +158,7 @@ export class PilotSwarmClient {
                 systemMessage: config.systemMessage,
                 boundAgentName: config.boundAgentName,
                 promptLayering: config.promptLayering,
+                childContract: config.childContract,
                 tools: config.tools,
                 workingDirectory: config.workingDirectory,
                 hooks: config.hooks,
@@ -548,6 +549,7 @@ export class PilotSwarmClient {
             waitThreshold: fullConfig?.waitThreshold ?? this.config.waitThreshold,
             boundAgentName: fullConfig?.boundAgentName,
             promptLayering: fullConfig?.promptLayering,
+            childContract: fullConfig?.childContract,
             toolNames: allNames.length ? allNames : undefined,
         };
 

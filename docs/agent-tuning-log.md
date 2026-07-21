@@ -4,6 +4,27 @@ This version-controlled log records prompt behavior changes that affect shipped
 PilotSwarm agents. Model-specific compatibility measurements remain in
 `docs/models/` when a formal evaluation sweep is run.
 
+## 2026-07-20 — Finite delegation wake policy
+
+- **Agent:** framework base agent (`packages/sdk/plugins/system/agents/default.agent.md`)
+- **Version:** `1.7.0` → `1.8.0`
+- **Models:** model-independent prompt contract; no model sweep run
+- **Problem:** a finite Waldemort delegation used `wakeOn: "completion"` for
+  an ordinary child task result. PilotSwarm children remain alive and idle
+  after a final reply, so the update classified as `material` and the parent
+  suppressed it while waiting for an actual terminal lifecycle outcome. The
+  SDK also dropped `childContract` while creating the child orchestration,
+  causing child-side and parent-side policy evaluation to disagree.
+- **Change:** finite delegated work whose result the parent needs now uses
+  `material_change`; after validating outputs, the parent explicitly closes
+  the child with `complete_agent`. `completion` is reserved for explicit
+  terminal lifecycle outcomes. The SDK now preserves `childContract` through
+  child creation and durable orchestration input.
+- **Validation:** the exact CHK `CHILD_UPDATE type=completed` payload wakes the
+  parent under `material_change` with no suppression event. Contract
+  propagation, prompt contracts, classification, parent batching, and SDK
+  build checks passed. No live model compatibility claim is made.
+
 ## 2026-07-18 — Reactive parent coordination
 
 - **Agent:** framework base agent (`packages/sdk/plugins/system/agents/default.agent.md`)

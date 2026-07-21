@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.5.17 — 2026-07-20
+
+### Reliable finite delegation and cleaner shared UI rendering
+
+This release fixes finite child-result wake-ups, keeps child contracts intact
+through durable session creation, and improves Markdown/chat layout in the
+shared portal and terminal UI. New sessions use orchestration `1.0.64`.
+
+### SDK
+
+- **Finite delegated work wakes on substantive results.** The framework base
+  prompt, sub-agent skill, and `spawn_agent` schema now require
+  `wakeOn: "material_change"` when a parent needs a finite child's result. An
+  ordinary final reply leaves the child alive and idle; after validating its
+  outputs, the parent closes it explicitly with `complete_agent`.
+- **Child contracts survive durable creation.** `childContract` now propagates
+  through child creation, client session configuration, and the durable
+  orchestration input, keeping child-side and parent-side wake policy aligned.
+- `wakeOn: "completion"` is documented as an actual terminal lifecycle policy
+  for explicit completion, cancellation, failure, or blocked verdicts rather
+  than a synonym for a child's final assistant reply.
+
+### Portal / TUI
+
+- Chat cards can use the full pane width instead of retaining an unnecessary
+  narrow maximum width in the portal.
+- Markdown tables accept GFM short-form delimiter rows such as `|-|-|`, with
+  regression coverage for compact and aligned table forms.
+
+### Docs / Templates
+
+- Agent contracts, SDK guidance, builder documentation, and CLI/SDK builder
+  skills now teach the finite-result versus terminal-lifecycle distinction.
+- The framework base agent advances from `1.7.0` to `1.8.0`; the tuning log
+  records the model-independent contract correction and validation evidence.
+
+### Tests
+
+- Added regressions for the exact Waldemort finite-child completion payload at
+  classifier and parent batching boundaries, including proof that
+  `material_change` wakes the parent without a suppression event.
+- Added durable-input coverage proving `childContract` reaches the child
+  orchestration, plus static prompt/tool contract assertions.
+
 ## 0.5.16 — 2026-07-18
 
 ### Durable message deduplication and retry isolation

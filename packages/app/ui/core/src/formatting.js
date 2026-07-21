@@ -567,8 +567,11 @@ function splitMarkdownTableCells(line) {
     return cells;
 }
 
+// GFM delimiter cells are `:?-+:?` — one dash is enough, so `--:` and `-` are
+// as valid as `---`. Requiring three dashes silently demoted whole tables to
+// raw pipe text whenever a model emitted the shorter alignment form.
 function isMarkdownTableSeparatorRow(cells) {
-    return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(String(cell || "").replace(/\s+/g, "")));
+    return cells.length > 0 && cells.every((cell) => /^:?-+:?$/.test(String(cell || "").replace(/\s+/g, "")));
 }
 
 function displayWidth(value) {

@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.16** — Durable client-message deduplication and retry isolation: a bounded 20-id LRU prevents duplicate turns across replay, attempted outbox envelopes remain immutable when retries overlap fresh sends, model reasoning/context metadata flows through session and child surfaces, and parent/child prompt coordination is hardened. New sessions use orchestration `1.0.63`, with `1.0.61` and `1.0.62` frozen for replay compatibility.
+> **Latest release: v0.5.17** — Finite delegated work now wakes parents on substantive results, child contracts survive durable session creation, compact GFM table delimiters render correctly, and portal chat cards use the full pane width. New sessions use orchestration `1.0.64`.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 

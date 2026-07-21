@@ -23,7 +23,7 @@ Start a new sub-agent with a task description. Returns an agent ID. `contract` i
 - **model** (optional): Exact `provider:model` override from `list_available_models()`
 - **system_message** (optional): Custom system message for specialization
 - **tool_names** (optional): Specific tools to give the agent; defaults to your tools
-- **contract** (optional): Structured contract for expected outputs and parent wake policy. Use `wakeOn: "any"`, `"material_change"`, or `"completion"` to control autonomous parent wake-ups. A compact shape is `{ "purpose": "...", "successCriteria": ["..."], "expectedFacts": [{ "key": "result/...", "required": true }], "expectedArtifacts": [], "validationMode": "warn", "wakeOn": "material_change" }`.
+- **contract** (optional): Structured contract for expected outputs and parent wake policy. Use `wakeOn: "any"`, `"material_change"`, or `"completion"` to control autonomous parent wake-ups. Every finite delegation whose result the parent needs uses `"material_change"`; `"completion"` is only for actual terminal lifecycle outcomes. A compact shape is `{ "purpose": "...", "successCriteria": ["..."], "expectedFacts": [{ "key": "result/...", "required": true }], "expectedArtifacts": [], "validationMode": "warn", "wakeOn": "material_change" }`.
 
 ### `message_agent(agent_id, message, [contract_patch])`
 Send additional instructions or context to a running sub-agent.
@@ -98,6 +98,7 @@ spawn_agent(
 - A sub-agent can run an indefinite recurring loop by doing work, then calling `wait`, then repeating on its own
 - Do not say a recurring sub-agent needs another user prompt, a cron job, or a manual nudge for the next cycle
 - Parent coordination is reactive. Qualifying child updates wake you automatically according to `contract.wakeOn`.
+- Every finite delegation whose result the parent needs MUST use `contract.wakeOn: "material_change"`. A child's ordinary final reply leaves it alive and idle, so it is a material update rather than terminal completion. Validate its outputs, then close it explicitly with `complete_agent`.
 - Do not schedule `wait` or `cron` solely to poll `check_agents`; use a parent timer only for an independent deadline, retry, or external check.
 - You can send a running sub-agent new instructions with `message_agent` at any time
 - Sub-agents can use `wait` for durable timers but cannot spawn their own sub-agents (single level)
@@ -106,8 +107,9 @@ spawn_agent(
 - Sub-agents run on potentially different worker nodes — they cannot share in-memory state
 - If the user explicitly asks you to use sub-agents, delegation, fan-out, or parallel processing, do it within runtime limits instead of silently collapsing the task into a single-agent answer
 - If the user did not explicitly ask for delegation, you may decide whether sub-agents are actually useful
-- For short-lived investigations where every update matters, set `contract.wakeOn` to `"any"`
+- For chatty work where every update matters, set `contract.wakeOn` to `"any"`
+- For finite delegated work, set `contract.wakeOn` to `"material_change"`, consume and validate the result, then call `complete_agent`
 - For long-running watcher children, use `contract.wakeOn: "material_change"` so no-op heartbeats do not spend parent LLM turns
-- For simple long-running children where only done/blocked/error matters, use `contract.wakeOn: "completion"`
+- Use `contract.wakeOn: "completion"` only when another actor or lifecycle path will explicitly complete, cancel, fail, or block the child; an ordinary final reply does not qualify
 
 ````

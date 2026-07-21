@@ -123,6 +123,30 @@ describe("child-notifications: shouldWakeParentForChildUpdate", () => {
         expect(d.wake).toBe(false);
     });
 
+    it("policy=completion suppresses a finished task reply without a terminal verdict", () => {
+        const d = shouldWakeParentForChildUpdate({
+            update: {
+                kind: "completed",
+                summary: "Resolution complete. All 11 customers were processed and the result fact was stored.",
+            },
+            contract: { wakeOn: "completion" },
+        });
+        expect(d.classification).toBe("material");
+        expect(d.wake).toBe(false);
+    });
+
+    it("policy=material_change wakes for the Waldemort finite task result", () => {
+        const d = shouldWakeParentForChildUpdate({
+            update: {
+                kind: "completed",
+                summary: "Resolution complete. All 11 customers were processed and the result fact was stored.",
+            },
+            contract: { wakeOn: "material_change" },
+        });
+        expect(d.classification).toBe("material");
+        expect(d.wake).toBe(true);
+    });
+
     it("policy=completion wakes on terminal completion", () => {
         const d = shouldWakeParentForChildUpdate({
             update: { kind: "completed", result: { verdict: "success" } },

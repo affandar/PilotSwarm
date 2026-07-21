@@ -65,12 +65,15 @@ describe("system agent cron contracts", () => {
         assertIncludes(defaultAgent, "short Markdown tables", "default agent should prefer tables for structured summary details");
         assertIncludes(defaultAgent, "Do not paste long transcripts, raw logs, or bulky JSON into summary fields", "default agent should avoid oversized summary payloads");
         assertIncludes(defaultAgent, "Qualifying child updates wake you automatically", "default agent should explain reactive child coordination");
+        assertIncludes(defaultAgent, "Every finite delegation", "default agent should require material-change wakes for finite work");
+        assertIncludes(defaultAgent, "ordinary final reply leaves it alive and idle", "default agent should distinguish a task reply from terminal lifecycle completion");
         assertIncludes(defaultAgent, "Do not create a `wait` or `cron` schedule whose only purpose is calling `check_agents`", "default agent should forbid timer-only child polling");
-        assertIncludes(defaultAgent, "version: 1.7.0", "default agent should version the reactive coordination contract");
+        assertIncludes(defaultAgent, "version: 1.8.0", "default agent should version the finite delegation wake contract");
         assert(!defaultAgent.includes("Continue your poll/summarize loop"), "default agent should not require a polling loop for child coordination");
         assert(!defaultAgent.includes("Preferred**: Poll with `wait` + `check_agents`"), "default agent should not prefer wait-based child polling");
 
         assertIncludes(subAgentSkill, "Parent coordination is reactive", "sub-agent skill should teach reactive parent coordination");
+        assertIncludes(subAgentSkill, "Every finite delegation", "sub-agent skill should require material-change wakes for finite work");
         assertIncludes(subAgentSkill, "Do not schedule `wait` or `cron` solely to poll `check_agents`", "sub-agent skill should forbid redundant polling timers");
         assert(!subAgentSkill.includes("Periodically check_agents() to see updates"), "sub-agent skill should not teach periodic status polling");
 
@@ -94,6 +97,7 @@ describe("system agent cron contracts", () => {
         const checkTool = subAgentTools.find((tool) => tool.name === "check_agents");
         assertIncludes(cronTool?.description || "", "Do not use cron solely to poll sub-agent status", "cron tool should reject redundant child polling");
         assertIncludes(spawnTool?.parameters?.properties?.contract?.description || "", "Qualifying updates wake the parent automatically", "spawn contract should explain reactive wakeups");
+        assertIncludes(spawnTool?.parameters?.properties?.contract?.description || "", "For finite delegated work, use 'material_change'", "spawn contract should distinguish finite replies from terminal completion");
         assertIncludes(checkTool?.description || "", "on-demand snapshot, not a scheduling primitive", "check_agents should not invite scheduled polling");
 
         assertIncludes(sessionProxy, "use the \\`wait\\`, \\`wait_on_worker\\`, \\`cron\\`, or \\`cron_at\\` tools", "session-proxy sub-agent preamble should allow cron and cron_at for recurring work");
