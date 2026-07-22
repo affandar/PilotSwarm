@@ -2054,7 +2054,11 @@ export function registerActivities(
                 const droppedAttachments: Array<{ filename: string; contentType: string; reason: string }> = [];
                 let visionInfo: Awaited<ReturnType<SessionManager["getModelVisionInfo"]>> | null = null;
                 try {
-                    visionInfo = await sessionManager.getModelVisionInfo(input.config.model);
+                    // Consult the catalog on the session's OWN client — the
+                    // same token the blobs will ride out on. Deployments that
+                    // run sessions on per-user/system Copilot keys have no
+                    // meaningful default token (it may be a seed sentinel).
+                    visionInfo = await sessionManager.getModelVisionInfo(input.config.model, { sessionId: input.sessionId });
                 } catch (err: any) {
                     activityCtx.traceInfo(`[runTurn] vision-capability lookup failed: ${err?.message ?? err}`);
                 }

@@ -145,7 +145,17 @@ type PromptAttachmentRef = {
 
 ### Vision gating (in `runTurn`)
 
-At send time, resolve the active model's catalog entry:
+At send time, resolve the active model's catalog entry **on the same Copilot
+client (same GitHub token) that will serve the turn**. Client binding is per
+session (per-user / system Copilot keys can override the worker default), and
+capability entitlements are per token — so the gate asks
+`getModelVisionInfo(modelRef, { sessionId })`, which prefers the session's
+recorded client binding and otherwise resolves the per-user/system key exactly
+as `getOrCreate` does. Deployments whose sessions all run on per-user keys may
+have no usable worker-default token at all (e.g. an unset sentinel); the gate
+must never depend on it. Catalog responses are cached per token, 5-minute TTL.
+
+Then gate on the entry:
 
 - `supports.vision === true` → attach blobs; clamp against `limits.vision` (`max_prompt_images`, `max_prompt_image_size`, `supported_media_types`) — over-limit attachments are dropped with a note rather than failing the turn.
 - `supports.vision === false` (or capability unknown) → send text-only, appending to the prompt:

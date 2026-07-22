@@ -164,6 +164,36 @@ describe("SessionManager.getModelVisionInfo (vision gate inputs)", () => {
         const info = await manager.getModelVisionInfo("claude-sonnet-5");
         expect(info).toMatchObject({ known: false, vision: false });
     });
+
+    it("consults the session's bound client, not the default-token client", async () => {
+        // Default client's catalog says NO vision; the session's own client
+        // (per-user key) says vision. The gate must believe the session's
+        // client — that token is the one the blobs ride out on.
+        const noVision = [{ id: "claude-sonnet-5", capabilities: { supports: { vision: false } } }];
+        const manager = managerWithCatalog(noVision);
+        manager.clients.set("user-token", { listModels: async () => CATALOG });
+        manager.sessionClientKeys.set("sess-user", "user-token");
+        const info = await manager.getModelVisionInfo("claude-sonnet-5", { sessionId: "sess-user" });
+        expect(info).toMatchObject({ known: true, vision: true, maxImages: 5 });
+    });
+
+    it("keeps catalog caches per token — no bleed between user and default clients", async () => {
+        const noVision = [{ id: "claude-sonnet-5", capabilities: { supports: { vision: false } } }];
+        const manager = managerWithCatalog(noVision);
+        manager.clients.set("user-token", { listModels: async () => CATALOG });
+        manager.sessionClientKeys.set("sess-user", "user-token");
+        expect((await manager.getModelVisionInfo("claude-sonnet-5", { sessionId: "sess-user" })).vision).toBe(true);
+        // Default-path lookup right after must still see the default catalog…
+        expect((await manager.getModelVisionInfo("claude-sonnet-5")).vision).toBe(false);
+        // …and the session-path cache survives untouched.
+        expect((await manager.getModelVisionInfo("claude-sonnet-5", { sessionId: "sess-user" })).vision).toBe(true);
+    });
+
+    it("falls back to the default client for a session with no binding and no catalog", async () => {
+        const manager = managerWithCatalog();
+        const info = await manager.getModelVisionInfo("claude-sonnet-5", { sessionId: "never-bound" });
+        expect(info).toMatchObject({ known: true, vision: true });
+    });
 });
 
 describe("ManagedSession.runTurn blob pass-through", () => {

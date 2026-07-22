@@ -291,19 +291,30 @@ export class SessionManager {
         };
     }
 
-    /** Cached Copilot model catalog for vision-capability lookups (5 min TTL). */
-    private modelCatalogCache: { fetchedAt: number; models: Array<{ id: string; capabilities?: any }> } | null = null;
+    /**
+     * Cached Copilot model catalogs for vision-capability lookups (5 min TTL),
+     * keyed by client token key — capability entitlements are PER TOKEN
+     * (per-user keys can differ from the deployment default), so one shared
+     * cache would leak one identity's catalog onto another's sessions.
+     */
+    private modelCatalogCaches = new Map<string, { fetchedAt: number; models: Array<{ id: string; capabilities?: any }> }>();
 
     /**
      * Resolve whether a session's model can be shown images, plus the
      * provider's vision limits. `modelRef` is the session-config value
      * (qualified `provider:model`, bare, or undefined → worker default).
      *
-     * `known: false` means the catalog had no entry (BYOK model without a
-     * capabilities override, catalog fetch failure, …) — callers must treat
-     * that as "no vision" and degrade gracefully rather than guessing.
+     * When `opts.sessionId` is given, the catalog is consulted on the SAME
+     * CopilotClient that serves that session's turns (per-user/system key
+     * aware) — the only token whose entitlements matter, because it is the
+     * one the image blobs ride out on. Without a sessionId (tests, generic
+     * callers) the default-token client is used as before.
+     *
+     * `known: false` means the catalog had no entry (BYOK model, catalog
+     * fetch failure, no usable client, …) — callers must treat that as "no
+     * vision" and degrade gracefully rather than guessing.
      */
-    async getModelVisionInfo(modelRef?: string): Promise<{
+    async getModelVisionInfo(modelRef?: string, opts?: { sessionId?: string }): Promise<{
         modelId: string;
         known: boolean;
         vision: boolean;
@@ -323,20 +334,50 @@ export class SessionManager {
         }
         if (!sdkModelName) return { modelId: "", known: false, vision: false };
 
-        const client = this.client;
-        if (!client) return { modelId: sdkModelName, known: false, vision: false };
-        const now = Date.now();
-        if (!this.modelCatalogCache || now - this.modelCatalogCache.fetchedAt > 5 * 60 * 1000) {
+        // Consult the catalog on the client that will serve this session's
+        // turns. Prefer the recorded binding; on a cold worker the gate runs
+        // before getOrCreate records one, so fall through to the same
+        // per-user/system key resolution getOrCreate itself performs. Only a
+        // session with no per-user key lands on the worker-default client.
+        let client: CopilotClient | undefined;
+        let cacheKey = "";
+        if (opts?.sessionId) {
+            let key = this.sessionClientKeys.get(opts.sessionId);
+            if (key == null) {
+                try {
+                    const normalizedRef = this.normalizeModelRef(modelRef || undefined);
+                    key = (await this._resolveSessionGitHubToken(opts.sessionId, {} as ManagedSessionConfig, normalizedRef || "")) || "";
+                } catch {
+                    key = "";
+                }
+            }
+            cacheKey = key;
             try {
-                const models = await client.listModels();
-                this.modelCatalogCache = { fetchedAt: now, models: models as any[] };
+                client = await this.ensureClient(key || undefined);
             } catch {
-                // Keep a stale cache if we have one; otherwise report unknown.
-                if (!this.modelCatalogCache) return { modelId: sdkModelName, known: false, vision: false };
+                client = undefined;
             }
         }
-        const entry = this.modelCatalogCache.models.find((m) => m?.id === sdkModelName)
-            ?? this.modelCatalogCache.models.find((m) => String(m?.id || "").toLowerCase() === sdkModelName.toLowerCase());
+        if (!client) {
+            client = this.client;
+            cacheKey = "";
+        }
+        if (!client) return { modelId: sdkModelName, known: false, vision: false };
+
+        const now = Date.now();
+        let cache = this.modelCatalogCaches.get(cacheKey);
+        if (!cache || now - cache.fetchedAt > 5 * 60 * 1000) {
+            try {
+                const models = await client.listModels();
+                cache = { fetchedAt: now, models: models as any[] };
+                this.modelCatalogCaches.set(cacheKey, cache);
+            } catch {
+                // Keep a stale cache if we have one; otherwise report unknown.
+                if (!cache) return { modelId: sdkModelName, known: false, vision: false };
+            }
+        }
+        const entry = cache.models.find((m) => m?.id === sdkModelName)
+            ?? cache.models.find((m) => String(m?.id || "").toLowerCase() === sdkModelName.toLowerCase());
         if (!entry) return { modelId: sdkModelName, known: false, vision: false };
         const caps = (entry as any).capabilities;
         const visionLimits = caps?.limits?.vision;
