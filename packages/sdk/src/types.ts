@@ -521,6 +521,15 @@ export interface OrchestrationInput {
     // ─── Sub-agent state ─────────────────────────────────────
     /** Tracked sub-agents spawned by this orchestration. Carried across continueAsNew. */
     subAgents?: SubAgentEntry[];
+    /**
+     * Child-side flag: this session has already delivered its first
+     * completion report to its parent. The first final answer of a spawned
+     * child always notifies the parent regardless of the wake policy — a
+     * task child that finishes silently strands the parent (observed live:
+     * a 72-minute hole ended only by a human poke). Carried across
+     * continueAsNew.
+     */
+    reportedFirstCompletionToParent?: boolean;
     /** Durable queue of additional tool actions emitted in the same LLM turn. */
     pendingToolActions?: TurnAction[];
     /** One already-dequeued inbound message to replay first after continueAsNew. */
@@ -550,9 +559,16 @@ export interface SubAgentEntry {
     /** Short description of the task assigned to this sub-agent. */
     task: string;
     /** Last known status of the sub-agent. */
-    status: "running" | "waiting" | "completed" | "failed" | "cancelled";
+    status: "running" | "waiting" | "completed" | "failed" | "cancelled" | "idle" | "input_required";
     /** Final result content (set when status becomes completed). */
     result?: string;
+    /**
+     * True from spawn until the child's first substantive report reaches the
+     * parent (completion update, failure, or observed quiescence). Lets the
+     * orchestration surface "all children went quiet while a report was still
+     * expected" instead of waiting for a human to poke.
+     */
+    expectsReport?: boolean;
     /** Named agent ID (e.g. "sweeper", "resourcemgr") for dedup guards. */
     agentId?: string;
     /** Last known child contract for autonomous parent wake policy decisions. */

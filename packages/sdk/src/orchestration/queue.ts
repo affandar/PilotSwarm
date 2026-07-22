@@ -5,6 +5,7 @@ import {
     applyChildUpdate,
     maybeResolveAgentWaitCompletion,
     parseChildUpdate,
+    isAgentWaitSettledStatus,
 } from "./agents.js";
 import {
     bufferChildUpdate,
@@ -321,10 +322,17 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
             const key = `${childUpdate.sessionId}|${childUpdate.updateType}|${childUpdate.content ?? ""}`;
             if (!seenChildUpdates.has(key)) {
                 seenChildUpdates.add(key);
+                const wasExpectingReport = state.subAgents.find(
+                    (agent) => agent.sessionId === childUpdate.sessionId,
+                )?.expectsReport === true;
                 const tracked = yield* applyChildUpdate(runtime, childUpdate);
                 if (tracked && !state.pendingShutdown) {
                     const childObservedAt: number = yield ctx.utcNow();
                     bufferChildUpdate(runtime, childUpdate, childObservedAt);
+                    // Fast-path only on a FIRST report from a child spawned with
+                    // an outstanding expectation — routine later updates keep
+                    // the normal batch window.
+                    if (wasExpectingReport) markDigestReadyIfAllAgentsSettled(runtime);
                 }
                 if (tracked && state.waitingForAgentIds) {
                     yield* maybeResolveAgentWaitCompletion(runtime);
@@ -517,10 +525,17 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
             const key = `${childUpdate.sessionId}|${childUpdate.updateType}|${childUpdate.content ?? ""}`;
             if (!seenChildUpdates.has(key)) {
                 seenChildUpdates.add(key);
+                const wasExpectingReport = state.subAgents.find(
+                    (agent) => agent.sessionId === childUpdate.sessionId,
+                )?.expectsReport === true;
                 const tracked = yield* applyChildUpdate(runtime, childUpdate);
                 if (tracked && !state.pendingShutdown) {
                     const childObservedAt: number = yield ctx.utcNow();
                     bufferChildUpdate(runtime, childUpdate, childObservedAt);
+                    // Fast-path only on a FIRST report from a child spawned with
+                    // an outstanding expectation — routine later updates keep
+                    // the normal batch window.
+                    if (wasExpectingReport) markDigestReadyIfAllAgentsSettled(runtime);
                 }
                 if (tracked && state.waitingForAgentIds) {
                     yield* maybeResolveAgentWaitCompletion(runtime);
@@ -719,6 +734,23 @@ import {
     buildPendingChildDigestSystemPrompt,
     clearPendingChildDigest,
 } from "./lifecycle.js";
+
+/**
+ * All-quiet fast path: a freshly buffered child update revealed that EVERY
+ * tracked sub-agent is settled (terminal, idle, or blocked on input) — nothing
+ * will ever act again unprompted. Deliver the digest immediately instead of
+ * waiting out the remainder of the batch window so the parent looks at its
+ * children NOW rather than after a human pokes it.
+ */
+function markDigestReadyIfAllAgentsSettled(runtime: DurableSessionRuntime): void {
+    const { state } = runtime;
+    if (state.waitingForAgentIds) return; // wait resolution handles this case
+    if (!state.pendingChildDigest || state.pendingChildDigest.updates.length === 0) return;
+    if (state.subAgents.length === 0) return;
+    if (!state.subAgents.every((agent) => isAgentWaitSettledStatus(agent.status))) return;
+    state.pendingChildDigest.ready = true;
+}
+
 
 function* processPendingChildDigest(runtime: DurableSessionRuntime): Generator<any, void, any> {
     const { ctx, state } = runtime;

@@ -1251,3 +1251,202 @@ describe("snapshot_lineage_jump behaviour (store-wins Layer 2)", () => {
         expect(lineageJumpEvents(res.state)).toHaveLength(0);
     });
 });
+
+// Idle-child wake (observed live on waldemort-chk, 2026-07-22): a spawned
+// ops-analyst answered and parked idle at 18:12; its parent sat in
+// wait_for_agents polling the child every 30s for 72 minutes because the
+// poll had no mapping for "idle", and the child's completion notify was
+// suppressible by the wake contract. Nothing woke the parent until a human
+// asked "are we stuck?". These tests pin the three closures: the poll maps
+// idle/input_required as wait-settling, a first report from an expected
+// child fast-paths the digest when everything has gone quiet, and a child's
+// FIRST completion always reaches the parent regardless of contract.
+describe("idle-child wake", () => {
+    it("agent-poll resolves a wait when the child parks idle", async () => {
+        const harness = createHarness({
+            messages: [],
+            inputOverrides: {
+                cronSchedule: undefined,
+                activeTimerState: {
+                    remainingMs: 30_000,
+                    originalDurationMs: 30_000,
+                    reason: "waiting for 1 agent(s)",
+                    type: "agent-poll",
+                    agentIds: ["agent-1"],
+                },
+                waitingForAgentIds: ["agent-1"],
+                subAgents: [
+                    { orchId: "agent-1", sessionId: "child-session-1", task: "Analyze the incident", status: "running" },
+                ],
+                sessionStatuses: {
+                    "child-session-1": { status: "idle", result: "ANALYSIS: root cause found" },
+                },
+            },
+        });
+
+        const result = await harness.runUntilRunTurn();
+
+        expect(result.runTurnCall.prompt).toContain("went quiet after answering");
+        expect(result.runTurnCall.prompt).toContain("ANALYSIS: root cause found");
+    });
+
+    it("agent-poll surfaces a child blocked on input instead of polling forever", async () => {
+        const harness = createHarness({
+            messages: [],
+            inputOverrides: {
+                cronSchedule: undefined,
+                activeTimerState: {
+                    remainingMs: 30_000,
+                    originalDurationMs: 30_000,
+                    reason: "waiting for 1 agent(s)",
+                    type: "agent-poll",
+                    agentIds: ["agent-1"],
+                },
+                waitingForAgentIds: ["agent-1"],
+                subAgents: [
+                    { orchId: "agent-1", sessionId: "child-session-1", task: "Gather approvals", status: "running" },
+                ],
+                sessionStatuses: {
+                    "child-session-1": { status: "input_required", result: "Which subscription should I use?" },
+                },
+            },
+        });
+
+        const result = await harness.runUntilRunTurn();
+
+        expect(result.runTurnCall.prompt).toContain("blocked waiting for an answer");
+    });
+
+    it("a non-terminal child update whose status probe reports idle settles the wait", async () => {
+        const harness = createHarness({
+            messages: [
+                {
+                    atMs: 0,
+                    payload: { prompt: "[CHILD_UPDATE from=child-session-1 type=progress iter=2]\nstill going" },
+                },
+            ],
+            inputOverrides: {
+                cronSchedule: undefined,
+                activeTimerState: undefined,
+                waitingForAgentIds: ["agent-1"],
+                subAgents: [
+                    { orchId: "agent-1", sessionId: "child-session-1", task: "Analyze the incident", status: "running" },
+                ],
+                sessionStatuses: {
+                    "child-session-1": { status: "idle" },
+                },
+            },
+        });
+
+        const result = await harness.runUntilRunTurn();
+
+        expect(result.runTurnCall.prompt).toContain("went quiet after answering");
+    });
+
+    it("first report from an expected child delivers the digest immediately once all agents settle", async () => {
+        const harness = createHarness({
+            messages: [
+                {
+                    atMs: 1_000,
+                    payload: { prompt: "[CHILD_UPDATE from=child-session-1 type=completed iter=2]\nDone: results stored" },
+                },
+            ],
+            inputOverrides: {
+                cronSchedule: undefined,
+                activeTimerState: undefined,
+                subAgents: [
+                    { orchId: "agent-1", sessionId: "child-session-1", task: "Analyze the incident", status: "running", expectsReport: true },
+                ],
+                sessionStatuses: {
+                    "child-session-1": { status: "idle" },
+                },
+            },
+        });
+
+        const result = await harness.runUntilRunTurn();
+
+        expect(result.runTurnCall.systemPrompt).toContain("Buffered child updates");
+        expect(result.runTurnCall.systemPrompt).toContain("Done: results stored");
+        // Fast path: delivered at the update's arrival time (small harness
+        // ticks aside), not after the 30s batch window.
+        expect(result.state.nowMs).toBeLessThan(5_000);
+    });
+
+    it("without an outstanding expectation the digest keeps the normal batch window", async () => {
+        const harness = createHarness({
+            messages: [
+                {
+                    atMs: 1_000,
+                    payload: { prompt: "[CHILD_UPDATE from=child-session-1 type=completed iter=2]\nDone: results stored" },
+                },
+            ],
+            inputOverrides: {
+                cronSchedule: undefined,
+                activeTimerState: undefined,
+                subAgents: [
+                    { orchId: "agent-1", sessionId: "child-session-1", task: "Analyze the incident", status: "running" },
+                ],
+                sessionStatuses: {
+                    "child-session-1": { status: "idle" },
+                },
+            },
+        });
+
+        const result = await harness.runUntilRunTurn();
+
+        expect(result.runTurnCall.systemPrompt).toContain("Buffered child updates");
+        expect(result.state.nowMs).toBeGreaterThanOrEqual(30_000);
+    });
+
+    it("a spawned child's first final answer notifies the parent despite a completion-only contract", async () => {
+        const harness = createHarness({
+            messages: [
+                { atMs: 0, payload: { prompt: "do the task" } },
+                { atMs: 5_000, payload: { prompt: "follow-up ping" } },
+            ],
+            inputOverrides: {
+                cronSchedule: undefined,
+                activeTimerState: undefined,
+                isSystem: false,
+                parentSessionId: "parent-session-id",
+                nestingLevel: 1,
+                config: { childContract: { wakeOn: "completion" } },
+            },
+        });
+
+        // The harness driver cannot cleanly park a promptless child after its
+        // final turn; the observable contract is the captured notify effect.
+        await harness.runThroughTurn({ type: "completed", content: "TASK DONE: findings attached" }).catch(() => {});
+
+        expect(harness.state.sentToSessions.some((entry) =>
+            entry.sessionId === "parent-session-id"
+            && /\[CHILD_UPDATE from=parent-session type=completed/.test(entry.prompt)
+            && entry.prompt.includes("TASK DONE: findings attached"),
+        )).toBe(true);
+    });
+
+    it("later completions respect the wake contract once the first report landed", async () => {
+        const harness = createHarness({
+            messages: [
+                { atMs: 0, payload: { prompt: "do the task again" } },
+                { atMs: 5_000, payload: { prompt: "follow-up ping" } },
+            ],
+            inputOverrides: {
+                cronSchedule: undefined,
+                activeTimerState: undefined,
+                isSystem: false,
+                parentSessionId: "parent-session-id",
+                nestingLevel: 1,
+                config: { childContract: { wakeOn: "completion" } },
+                reportedFirstCompletionToParent: true,
+            },
+        });
+
+        await harness.runThroughTurn({ type: "completed", content: "routine follow-up answer" }).catch(() => {});
+
+        expect(harness.state.sentToSessions.some((entry) => entry.sessionId === "parent-session-id")).toBe(false);
+        expect(harness.state.recordedEvents.some((entry) =>
+            entry.events?.some((event) => event.eventType === "session.child_update_suppressed"),
+        )).toBe(true);
+    });
+});

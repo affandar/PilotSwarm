@@ -885,7 +885,14 @@ export function* handleTurnResult(
                     },
                     contract: state.config.childContract,
                 });
-                if (wakeDecision.wake) {
+                // A spawned child's FIRST completion always reaches the parent
+                // regardless of the wake policy: suppressing it (e.g. a
+                // wakeOn=completion contract classifying a verdict-less final
+                // answer as merely "material") strands the parent until a
+                // human pokes. Later completions respect the contract.
+                const firstParentReport = !cycleOrigin && !state.reportedFirstCompletionToParent;
+                if (wakeDecision.wake || firstParentReport) {
+                    state.reportedFirstCompletionToParent = true;
                     try {
                         const meta = [
                             `from=${runtime.input.sessionId}`,
@@ -1274,6 +1281,15 @@ export function* processTimer(
                             agent.status = "cancelled";
                         } else if (parsed.status === "waiting") {
                             agent.status = "waiting";
+                        } else if (parsed.status === "idle") {
+                            // Quiescent child: answered and parked with an empty
+                            // queue. It will never speak again unprompted, so
+                            // treating it as still-running polls forever
+                            // (observed live: 70+ min of 30s polls). "idle"
+                            // satisfies the wait via isAgentWaitSettledStatus.
+                            agent.status = "idle";
+                        } else if (parsed.status === "input_required") {
+                            agent.status = "input_required";
                         }
                         if (parsed.result) {
                             agent.result = parsed.result.slice(0, 2000);

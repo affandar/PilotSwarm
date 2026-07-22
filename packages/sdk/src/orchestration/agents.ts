@@ -29,6 +29,18 @@ export function isSubAgentTerminalStatus(status?: string): boolean {
     return status === "completed" || status === "failed" || status === "cancelled";
 }
 
+/**
+ * A status that satisfies a parent's wait: the child either finished
+ * (terminal) or will never speak again on its own — idle after answering, or
+ * blocked asking for input. "running" and "waiting" (child on a timer) stay
+ * pending: those children will still act without help. Without the idle
+ * mapping a wait_for_agents parent polls an idle child forever (observed
+ * live: 70+ minutes of 30s polls until a human poked).
+ */
+export function isAgentWaitSettledStatus(status?: string): boolean {
+    return isSubAgentTerminalStatus(status) || status === "idle" || status === "input_required";
+}
+
 export function parseChildUpdate(promptText?: string): { sessionId: string; updateType: string; content: string; cycleOrigin?: "cron" | "cron_at"; cycleStatus?: "quiet" | "material" | "blocked"; verdict?: ChildSessionVerdict } | null {
     if (typeof promptText !== "string") return null;
     const match = promptText.match(/^\[CHILD_UPDATE\s+([^\]]+)\]/);
@@ -101,13 +113,22 @@ export function getStillRunningAgentIds(subAgents: SubAgentEntry[], agentIds: st
 }
 
 export function buildWaitForAgentsFollowup(subAgents: SubAgentEntry[], targetIds: string[]): string {
+    const describeStatus = (agent: SubAgentEntry): string => {
+        if (agent.status === "idle") {
+            return "idle — went quiet after answering; treat its last message as its result (message_agent to re-task it, complete_agent to finish it)";
+        }
+        if (agent.status === "input_required") {
+            return "input_required — blocked waiting for an answer; relay the question to the user or answer it via message_agent";
+        }
+        return agent.status;
+    };
     const summaries = targetIds
         .map((targetId) => subAgents.find((agent) => agent.orchId === targetId))
         .filter((agent): agent is SubAgentEntry => Boolean(agent))
         .map((agent) =>
             `  - Agent ${agent.orchId}\n` +
             `    Task: "${agent.task.slice(0, 120)}"\n` +
-            `    Status: ${agent.status}\n` +
+            `    Status: ${describeStatus(agent)}\n` +
             `    Result: ${agent.result ?? "(no result)"}`,
         );
 
@@ -200,6 +221,9 @@ export function* applyChildUpdate(
     if (update.content) {
         agent.result = update.content.slice(0, 2000);
     }
+    // Any substantive update from the child satisfies the spawn-time
+    // report expectation.
+    agent.expectsReport = false;
 
     if (update.updateType === "completed") {
         agent.status = "completed";
@@ -228,6 +252,14 @@ export function* applyChildUpdate(
             // Deliberate continuation waits arrive as updateType "wait" and
             // still downgrade here.
             agent.status = "waiting";
+        } else if (parsed.status === "idle" && !isSubAgentTerminalStatus(agent.status) && update.updateType !== "completed") {
+            // Quiescent child: answered and parked. Not terminal (it can be
+            // re-tasked), but it satisfies a parent wait.
+            agent.status = "idle";
+        } else if (parsed.status === "input_required" && !isSubAgentTerminalStatus(agent.status)) {
+            // Blocked asking for input — it will never act unprompted; the
+            // parent must be told so it can answer or re-task.
+            agent.status = "input_required";
         }
         if (parsed.result && parsed.result !== "done") {
             agent.result = parsed.result.slice(0, 2000);
@@ -447,7 +479,11 @@ export function* finalizePendingShutdown(runtime: DurableSessionRuntime): Genera
 
 export function* maybeResolveAgentWaitCompletion(runtime: DurableSessionRuntime): Generator<any, boolean, any> {
     const { state } = runtime;
-    if (!state.waitingForAgentIds || !areTrackedAgentsTerminal(state.subAgents, state.waitingForAgentIds)) {
+    const allSettled = state.waitingForAgentIds?.every((targetId) => {
+        const agent = state.subAgents.find((entry) => entry.orchId === targetId);
+        return agent ? isAgentWaitSettledStatus(agent.status) : true;
+    });
+    if (!state.waitingForAgentIds || !allSettled) {
         return false;
     }
 
@@ -716,6 +752,7 @@ export function* handleSubAgentAction(
                 status: "running",
                 agentId: agentId || undefined,
                 contract: result.contract,
+                expectsReport: true,
             });
 
             queueFollowup(runtime,

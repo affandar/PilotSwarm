@@ -439,6 +439,7 @@ export function buildContinueInput(
         ...(carriedCycleOrigin ? { cycleOrigin: carriedCycleOrigin } : {}),
         ...(promptForInput && bootstrapForInput !== undefined ? { bootstrapPrompt: bootstrapForInput } : {}),
         subAgents: state.subAgents,
+        ...(state.reportedFirstCompletionToParent ? { reportedFirstCompletionToParent: true } : {}),
         ...(state.pendingToolActions.length > 0 ? { pendingToolActions: state.pendingToolActions } : {}),
         parentSessionId: options.parentSessionId,
         nestingLevel: options.nestingLevel,

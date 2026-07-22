@@ -77,6 +77,8 @@ export interface DurableSessionState {
 
     pendingToolActions: TurnAction[];
     subAgents: SubAgentEntry[];
+    /** Child-side: first completion report already sent to the parent. */
+    reportedFirstCompletionToParent: boolean;
 
     taskContext?: string;
     cronSchedule?: CronSchedule;
@@ -244,6 +246,7 @@ export function createInitialState(input: OrchestrationInput, options: DurableSe
 
         pendingToolActions: input.pendingToolActions ? [...input.pendingToolActions] : [],
         subAgents: input.subAgents ? [...input.subAgents] : [],
+        reportedFirstCompletionToParent: Boolean(input.reportedFirstCompletionToParent),
 
         taskContext: input.taskContext,
         cronSchedule: input.cronSchedule ? { ...input.cronSchedule } : undefined,
