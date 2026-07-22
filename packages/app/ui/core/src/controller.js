@@ -127,6 +127,15 @@ function classifyNavigationLoadError(error) {
     return "network";
 }
 
+// A 404/NOT_FOUND on a per-session data loop is TERMINAL: the session was
+// deleted (here or elsewhere) and every retry will 404 forever. 403 stays
+// retryable — a transient auth blip must not evict a live pane.
+function isSessionGoneError(error) {
+    const status = Number(error?.status);
+    const code = String(error?.code || "").toUpperCase();
+    return status === 404 || code === "NOT_FOUND";
+}
+
 async function loadSessionCatalogPageWindow(transport) {
     if (typeof transport.listSessionsPage !== "function") {
         return transport.listSessions();
@@ -1992,6 +2001,25 @@ export class PilotSwarmUiController {
         this.activeSessionSubscriptionId = null;
     }
 
+    /**
+     * A session no longer exists server-side (deleted locally or by another
+     * client; the server answered 404). Unbind everything referencing it so
+     * the detail/events/orchestration-stats loops stop instead of 404-spamming
+     * on every refresh tick until reload.
+     */
+    handleSessionGone(sessionId) {
+        if (!sessionId) return;
+        if (this.activeSessionSubscriptionId === sessionId) {
+            this.detachActiveSession();
+        }
+        if (this.activeSessionDetailSessionId === sessionId && this.activeSessionDetailTimer) {
+            clearTimeout(this.activeSessionDetailTimer);
+            this.activeSessionDetailTimer = null;
+            this.activeSessionDetailSessionId = null;
+        }
+        this.dispatch({ type: "sessions/gone", sessionId });
+    }
+
     detachLogStream() {
         if (this.logUnsubscribe) {
             this.logUnsubscribe();
@@ -2213,7 +2241,10 @@ export class PilotSwarmUiController {
         let newEvents;
         try {
             newEvents = await this.transport.getSessionEvents(sessionId, afterSeq, CATCH_UP_PAGE_LIMIT);
-        } catch {
+        } catch (error) {
+            if (isSessionGoneError(error)) {
+                this.handleSessionGone(sessionId);
+            }
             return null;
         }
         if (!Array.isArray(newEvents) || newEvents.length >= CATCH_UP_PAGE_LIMIT) {
@@ -2280,7 +2311,16 @@ export class PilotSwarmUiController {
         }
 
         const loadPromise = (async () => {
-            const events = await this.transport.getSessionEvents(sessionId, undefined, requestedLimit);
+            let events;
+            try {
+                events = await this.transport.getSessionEvents(sessionId, undefined, requestedLimit);
+            } catch (error) {
+                if (isSessionGoneError(error)) {
+                    this.handleSessionGone(sessionId);
+                    return null;
+                }
+                throw error;
+            }
             const history = {
                 ...buildHistoryModel(events, { requestedLimit }),
                 lastSeq: events[events.length - 1]?.seq || 0,
@@ -2403,6 +2443,10 @@ export class PilotSwarmUiController {
                 });
                 return this.getState().orchestration.bySessionId?.[sessionId] || null;
             } catch (error) {
+                if (isSessionGoneError(error)) {
+                    this.handleSessionGone(sessionId);
+                    return null;
+                }
                 this.dispatch({
                     type: "orchestration/statsError",
                     sessionId,
@@ -3440,7 +3484,16 @@ export class PilotSwarmUiController {
             return;
         }
         const afterSeq = Number(existing.lastSeq || 0);
-        const events = await this.transport.getSessionEvents(sessionId, afterSeq, 200);
+        let events = null;
+        try {
+            events = await this.transport.getSessionEvents(sessionId, afterSeq, 200);
+        } catch (error) {
+            if (isSessionGoneError(error)) {
+                this.handleSessionGone(sessionId);
+                return;
+            }
+            throw error;
+        }
         if (!Array.isArray(events) || events.length === 0) return;
         for (const event of events) {
             this.mergeSessionEvent(sessionId, event);
@@ -3481,7 +3534,16 @@ export class PilotSwarmUiController {
 
     async syncSessionDetail(sessionId) {
         if (typeof this.transport.getSession !== "function" || !sessionId) return;
-        const session = await this.transport.getSession(sessionId);
+        let session = null;
+        try {
+            session = await this.transport.getSession(sessionId);
+        } catch (error) {
+            if (isSessionGoneError(error)) {
+                this.handleSessionGone(sessionId);
+                return;
+            }
+            throw error;
+        }
         if (!session) return;
         const previousSession = this.getState().sessions.byId[sessionId] || null;
         const patch = buildSessionMergePatch(previousSession, session);
@@ -6820,6 +6882,7 @@ export class PilotSwarmUiController {
             for (const session of eligible) {
                 try {
                     await this.transport.deleteSession(session.sessionId);
+                    this.handleSessionGone(session.sessionId);
                     succeeded += 1;
                 } catch (error) {
                     failures.push(`${session.sessionId.slice(0, 8)}: ${error?.message || String(error)}`);
@@ -6925,6 +6988,7 @@ export class PilotSwarmUiController {
             return;
         }
         await this.transport.deleteSession(sessionId);
+        this.handleSessionGone(sessionId);
         this.dispatch({ type: "ui/status", text: `Deleted ${sessionId.slice(0, 8)}` });
         await this.refreshSessions();
     }

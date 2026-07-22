@@ -1027,6 +1027,32 @@ export function appReducer(state, action) {
                 },
             };
 
+        case "sessions/gone": {
+            // Terminal eviction: the server answered 404 for this session (or
+            // we just deleted it). Drop the row and release the active-session
+            // latch so panes unbind and the data loops stop retrying — the
+            // sessions/loaded active-session carve-out below would otherwise
+            // resurrect the row forever.
+            const goneId = action.sessionId;
+            if (!goneId) return state;
+            const hadRow = Boolean(state.sessions.byId[goneId]);
+            const wasActive = state.sessions.activeSessionId === goneId;
+            if (!hadRow && !wasActive) return state;
+            const byId = { ...state.sessions.byId };
+            delete byId[goneId];
+            const selectedIds = Array.isArray(state.sessions.selectedIds)
+                ? state.sessions.selectedIds.filter((id) => id !== goneId)
+                : state.sessions.selectedIds;
+            return {
+                ...state,
+                sessions: {
+                    ...state.sessions,
+                    byId,
+                    selectedIds,
+                    activeSessionId: wasActive ? null : state.sessions.activeSessionId,
+                },
+            };
+        }
         case "sessions/loaded": {
             const byId = {};
             let anyChanged = false;
