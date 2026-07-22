@@ -22,20 +22,22 @@ import {
 import * as dispatcher from "../../src/orchestration.ts";
 
 describe("orchestration version registry", () => {
-    it("latest is 1.0.65, registered, and exported from the dispatcher", () => {
-        expect(LATEST).toBe("1.0.65");
+    it("latest is 1.0.66, registered, and exported from the dispatcher", () => {
+        expect(LATEST).toBe("1.0.66");
         const latest = REGISTRY.find((e) => e.version === LATEST);
         expect(latest?.handler).toBeTypeOf("function");
-        expect(latest.handler.name).toBe("durableSessionOrchestration_1_0_65");
-        expect(dispatcher.durableSessionOrchestration_1_0_65).toBeTypeOf("function");
+        expect(latest.handler.name).toBe("durableSessionOrchestration_1_0_66");
+        expect(dispatcher.durableSessionOrchestration_1_0_66).toBeTypeOf("function");
     });
 
-    it("freezes 1.0.64 as a distinct registered handler", () => {
-        const frozen = REGISTRY.find((e) => e.version === "1.0.64");
+    it("freezes 1.0.64 and 1.0.65 as distinct registered handlers", () => {
         const latest = REGISTRY.find((e) => e.version === LATEST);
-        expect(frozen?.handler).toBeTypeOf("function");
-        expect(frozen.handler.name).toBe("durableSessionOrchestration_1_0_64");
-        expect(frozen.handler).not.toBe(latest.handler); // frozen != latest
+        for (const version of ["1.0.64", "1.0.65"]) {
+            const frozen = REGISTRY.find((e) => e.version === version);
+            expect(frozen?.handler).toBeTypeOf("function");
+            expect(frozen.handler.name).toBe(`durableSessionOrchestration_${version.replaceAll(".", "_")}`);
+            expect(frozen.handler).not.toBe(latest.handler); // frozen != latest
+        }
     });
 
     it("registry versions are unique and strictly monotonic, floor still present", () => {

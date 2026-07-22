@@ -1320,13 +1320,6 @@ export function* processTimer(
                         type: "agent-poll",
                         agentIds: state.waitingForAgentIds,
                     };
-                    // Re-assert "waiting" each poll (mirrors the shutdown
-                    // branch) so a stale "running" from a mid-wait worker
-                    // swap self-heals instead of spinning "Working…".
-                    publishStatus(runtime, "waiting", {
-                        waitReason: `waiting for ${nowRunning.length} agent(s)`,
-                        waitStartedAt: now,
-                    });
                 }
             }
             return;

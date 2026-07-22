@@ -859,17 +859,10 @@ export function* handleSubAgentAction(
             }
 
             ctx.traceInfo(`[orch] wait_for_agents: waiting for ${targetIds.length} agents`);
+            publishStatus(runtime, "running");
             state.waitingForAgentIds = targetIds;
 
             const agentPollNow: number = yield ctx.utcNow();
-            // The turn is over and the session is parked (interruptible — an
-            // interactive prompt preempts the poll), so surface "waiting" with
-            // a reason like every other durable wait. Publishing "running"
-            // here made the UI spin "Working…" for the whole agent wait.
-            publishStatus(runtime, "waiting", {
-                waitReason: `waiting for ${targetIds.length} agent(s)`,
-                waitStartedAt: agentPollNow,
-            });
             state.activeTimer = {
                 deadlineMs: agentPollNow + 30_000,
                 originalDurationMs: 30_000,
