@@ -311,6 +311,13 @@ function deriveChatRole(event, fallbackRole, text) {
     return fallbackRole;
 }
 
+function sharesClientMessageId(left, right) {
+    const leftIds = Array.isArray(left?.clientMessageIds) ? left.clientMessageIds : [];
+    const rightIds = Array.isArray(right?.clientMessageIds) ? right.clientMessageIds : [];
+    if (leftIds.length === 0 || rightIds.length === 0) return null; // unknown
+    return leftIds.some((id) => rightIds.includes(id));
+}
+
 function areMessagesEquivalent(left, right) {
     if (!left || !right) return false;
     if (left.role !== right.role) return false;
@@ -318,6 +325,13 @@ function areMessagesEquivalent(left, right) {
     const leftText = comparableMessageText(left);
     const rightText = comparableMessageText(right);
     if (!leftText || !rightText || leftText !== rightText) return false;
+
+    // clientMessageIds are authoritative when both sides carry them: a
+    // duroxide activity retry re-records the SAME queue message (same ids)
+    // regardless of how many seconds the retry took, while a user deliberately
+    // re-sending identical text mints fresh ids and must stay two bubbles.
+    const sharedId = sharesClientMessageId(left, right);
+    if (sharedId != null) return sharedId;
 
     const leftTime = Number(left.createdAt || 0);
     const rightTime = Number(right.createdAt || 0);
@@ -347,7 +361,24 @@ export function dedupeChatMessages(chat = []) {
 
         const previousTime = Number(previous?.createdAt || 0);
         const currentTime = Number(message?.createdAt || 0);
-        deduped[deduped.length - 1] = currentTime >= previousTime ? message : previous;
+        const winner = currentTime >= previousTime ? message : previous;
+        // Two durable copies of the same user message = the runtime
+        // re-delivered it to the model after a mid-turn worker retry.
+        // Collapse to one bubble stamped with the LATEST delivery time and
+        // mark it so the transcript can show a redelivery glyph.
+        if (winner.role === "user" && !previous?.optimistic && !message?.optimistic) {
+            const firstDeliveredAt = Math.min(
+                Number(previous?.firstDeliveredAt || previousTime || Infinity),
+                Number(message?.firstDeliveredAt || currentTime || Infinity),
+            );
+            deduped[deduped.length - 1] = {
+                ...winner,
+                redelivered: true,
+                ...(Number.isFinite(firstDeliveredAt) ? { firstDeliveredAt } : {}),
+            };
+            continue;
+        }
+        deduped[deduped.length - 1] = winner;
     }
 
     return deduped;

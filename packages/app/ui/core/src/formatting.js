@@ -100,16 +100,25 @@ export function shortModelName(model) {
     return value.includes(":") ? value.split(":").slice(1).join(":") : value;
 }
 
-export function formatTimestamp(value) {
+export function formatTimestamp(value, now = new Date()) {
     if (!value) return "";
     try {
         const date = value instanceof Date ? value : new Date(value);
-        return date.toLocaleTimeString(undefined, {
+        const time = date.toLocaleTimeString(undefined, {
             hour: "2-digit",
             minute: "2-digit",
             second: "2-digit",
             hour12: false,
         });
+        // Same-day messages show time only; anything older carries its date
+        // so a transcript spanning days stays unambiguous.
+        const sameLocalDay = date.getFullYear() === now.getFullYear()
+            && date.getMonth() === now.getMonth()
+            && date.getDate() === now.getDate();
+        if (sameLocalDay) return time;
+        const day = date.toLocaleDateString("en-GB", { month: "short", day: "numeric" });
+        const year = date.getFullYear() === now.getFullYear() ? "" : ` ${date.getFullYear()}`;
+        return `${day}${year} ${time}`;
     } catch {
         return "";
     }

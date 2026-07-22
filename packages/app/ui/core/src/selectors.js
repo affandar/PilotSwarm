@@ -1396,11 +1396,13 @@ function buildChatMessagePrefix(message, options = {}) {
                 : "PilotSwarm";
 
     // Delivery glyph for user messages:
-    //   ○   pending  — client outbox, not yet durable
-    //   ✓   queued   — durably enqueued, waiting for orchestration to drain
-    //   x   cancelling — durable cancel requested, waiting for runtime outcome
-    //   x   rejected — server refused the send (authz); auto-dropped shortly
-    //   ✓✓  sent     — persisted as user.message in CMS, LLM has it
+    //   ○    pending  — client outbox, not yet durable
+    //   ✓    queued   — durably enqueued, waiting for orchestration to drain
+    //   x    cancelling — durable cancel requested, waiting for runtime outcome
+    //   x    rejected — server refused the send (authz); auto-dropped shortly
+    //   ✓✓   sent     — persisted as user.message in CMS, LLM has it
+    //   ✓✓↻  redelivered — the runtime retried the turn and re-delivered this
+    //        message to the model; timestamp shows the LATEST delivery
     let glyph = null;
     let glyphColor = null;
     if (message?.pendingPhase === "pending") {
@@ -1417,6 +1419,11 @@ function buildChatMessagePrefix(message, options = {}) {
             // Delivered, but its turn was user-stopped mid-flight — the model
             // may not have acted on it. Amber prohibition ("no parking") sign.
             glyph = "⊘";
+            glyphColor = "yellow";
+        } else if (message?.redelivered) {
+            // Delivered twice (worker retry replayed the turn). Amber so the
+            // retry is visible without reading as a failure.
+            glyph = "✓✓↻";
             glyphColor = "yellow";
         } else {
             // Real durable user.message in transcript — show the "sent" double-check.
