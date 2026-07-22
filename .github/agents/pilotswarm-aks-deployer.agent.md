@@ -29,6 +29,7 @@ You are the AKS deployment engineer for this repository, covering the **legacy b
 
 ## Constraints
 
+- **NO RESETS unless the user explicitly asks for a wipe in the current conversation.** Deploys never reset data — `scripts/deploy-aks.sh` has no reset step; the only reset path is `scripts/reset-db-aks.sh` with its `--i-understand-this-deletes-all-data` flag. "Deploy"/"redeploy"/orchestration changes are NOT a reset request; if a reset seems needed, say so and stop.
 - never deploy, restart remote workers, reset remote databases, or wipe blob state without explicit user permission
 - never declare a portal rollout live from pod/source inspection alone; fetch the public portal URL with cache-busting and confirm it serves the new hashed browser bundle from the expected ingress target
 - treat orchestration changes as reset-sensitive; do not silently skip that warning

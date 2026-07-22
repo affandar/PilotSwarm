@@ -1,13 +1,15 @@
 #!/bin/bash
 # Deploy pilotswarm workers to AKS.
 #
-# Cleans up ALL existing orchestrations (duroxide + CMS) before deploying.
-# This avoids orchestration versioning issues when changing parameters.
+# This script NEVER touches data. Deploys are always non-destructive:
+# existing sessions, orchestrations, and facts survive every deploy.
+# A database reset is a separate, deliberate operation — see
+# scripts/reset-db-aks.sh, which must be invoked explicitly and only
+# when the user has explicitly asked for a data reset.
 #
 # Usage:
-#   ./scripts/deploy-aks.sh                     # full deploy (test + reset + build + push + apply)
+#   ./scripts/deploy-aks.sh                     # full deploy (test + build + push + apply)
 #   ./scripts/deploy-aks.sh --skip-build        # skip Docker build (re-use existing image)
-#   ./scripts/deploy-aks.sh --skip-reset        # skip DB reset (keep existing sessions)
 #   ./scripts/deploy-aks.sh --skip-tests        # skip local integration tests
 #
 # Prerequisites:
@@ -18,38 +20,20 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-wait_for_worker_scale_down() {
-    local timeout_seconds="${1:-180}"
-    local deployment="copilot-runtime-worker"
-    local selector="app.kubernetes.io/component=worker"
-    local deadline=$((SECONDS + timeout_seconds))
-
-    "${KUBECTL[@]}" rollout status deployment/"$deployment" -n "$NAMESPACE" --timeout="${timeout_seconds}s" >/dev/null 2>&1 || true
-
-    while [ "$SECONDS" -lt "$deadline" ]; do
-        local remaining_pods
-        remaining_pods="$("${KUBECTL[@]}" get pods -n "$NAMESPACE" -l "$selector" --no-headers 2>/dev/null | wc -l | tr -d ' ')"
-        if [ "${remaining_pods:-0}" = "0" ]; then
-            echo "   ✅ Workers fully terminated"
-            return 0
-        fi
-        sleep 2
-    done
-
-    echo "   ❌ Timed out waiting for workers to terminate before DB reset."
-    "${KUBECTL[@]}" get pods -n "$NAMESPACE" -l "$selector" || true
-    return 1
-}
-
 # Parse flags
 SKIP_BUILD=false
-SKIP_RESET=false
 SKIP_TESTS=false
 for arg in "$@"; do
     case "$arg" in
         --skip-build) SKIP_BUILD=true ;;
-        --skip-reset) SKIP_RESET=true ;;
         --skip-tests) SKIP_TESTS=true ;;
+        --skip-reset)
+            # Legacy flag from when deploys reset the DB by default. Deploys
+            # no longer reset anything, so this is a harmless no-op.
+            echo "ℹ️  --skip-reset is obsolete: deploys never reset the database." ;;
+        --reset|--db-reset)
+            echo "❌ Deploys do not reset data. Run scripts/reset-db-aks.sh explicitly if a wipe is truly intended."
+            exit 1 ;;
     esac
 done
 
@@ -160,26 +144,6 @@ if [ "$SKIP_TESTS" = false ]; then
     echo ""
 else
     echo "⏭️  Skipping tests (--skip-tests)"
-fi
-
-# ─── Step 1: Cancel + delete all orchestrations ──────────────────
-
-if [ "$SKIP_RESET" = false ]; then
-    echo ""
-    echo "🗑️  Cleaning up existing orchestrations..."
-
-    # Scale down workers first so nothing picks up work
-    echo "   Scaling workers to 0..."
-    "${KUBECTL[@]}" scale deployment copilot-runtime-worker -n "$NAMESPACE" --replicas=0 2>/dev/null || true
-    wait_for_worker_scale_down 180
-
-    # Reset both duroxide and CMS schemas
-    echo "   Resetting database (duroxide + CMS schemas)..."
-    NODE_TLS_REJECT_UNAUTHORIZED=0 node --env-file="$ENV_FILE" scripts/db-reset.js --yes
-
-    echo "   ✅ Database cleaned"
-else
-    echo "⏭️  Skipping DB reset (--skip-reset)"
 fi
 
 # ─── Step 2: Build TypeScript ─────────────────────────────────────

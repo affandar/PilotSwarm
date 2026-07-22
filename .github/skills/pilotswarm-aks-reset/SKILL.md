@@ -9,6 +9,8 @@ Use this skill when the user explicitly asks to wipe remote PilotSwarm state, re
 
 This is a destructive workflow. Be exact about what will be lost and use the repo-owned reset path.
 
+**NO RESETS unless the user explicitly asks.** Resets are never part of a deploy: `scripts/deploy-aks.sh` never touches data, and there is no reset flag in it. The only reset entry point is `scripts/reset-db-aks.sh`, which requires the literal flag `--i-understand-this-deletes-all-data`. "Deploy", "redeploy", "clean rollout", or an orchestration-version change is NOT a request for a reset — if a reset seems warranted, say so and wait for the user to explicitly ask for a wipe.
+
 ## What The Reset Destroys
 
 The canonical reset script drops the PilotSwarm schemas and may also purge blob-backed dehydrated session state:
@@ -27,8 +29,9 @@ That means:
 
 ## Canonical Files
 
-- Reset script: `scripts/db-reset.js`
-- Deploy script: `scripts/deploy-aks.sh`
+- Reset entry point: `scripts/reset-db-aks.sh` (requires `--i-understand-this-deletes-all-data`; handles scale-down → wipe → scale-up)
+- Underlying reset script: `scripts/db-reset.js` (invoked by the wrapper)
+- Deploy script: `scripts/deploy-aks.sh` (never resets)
 - Orchestration debugging skill/context: `.github/skills/debug-orchestration/SKILL.md`
 - AKS guide: `docs/developer/deploy/aks.md`
 
@@ -87,10 +90,11 @@ That means:
 
 ## Preferred Commands
 
-- Full destructive redeploy:
+- Canonical reset (scale-down → wipe → scale-up, one command):
   ```bash
-  ./scripts/deploy-aks.sh
+  ./scripts/reset-db-aks.sh --i-understand-this-deletes-all-data
   ```
+  Note: `./scripts/deploy-aks.sh` no longer resets anything — a "destructive redeploy" is this reset followed by a normal deploy.
 - Reset with image update (the safe order matters):
   ```bash
   # 1. Scale workers to zero — no pods should be running during reset

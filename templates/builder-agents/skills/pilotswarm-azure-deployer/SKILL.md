@@ -37,7 +37,7 @@ deploy/
 4. Configure database and blob storage explicitly.
   - For hybrid datastore apps, keep `DATABASE_URL` on stock PostgreSQL for runtime state and add HorizonDB only through `HORIZON_DATABASE_URL` / `HORIZON_GRAPH_DATABASE_URL`.
 5. Write manifests, model-catalog/env guidance, and rollout instructions that match the actual app layout.
-6. Call out reset/versioning constraints when orchestration behavior changes.
+6. Call out reset/versioning constraints when orchestration behavior changes — but never bake a reset into a deploy path. Deploy scripts must be non-destructive by default; any database reset belongs in a separate, explicitly-invoked script gated by an unambiguous flag (e.g. `--i-understand-this-deletes-all-data`) and is run only when the user explicitly asks for a wipe.
 7. If deployment work edits `plugin/agents/*.agent.md`, preserve `schemaVersion: 1` and bump the agent `version` according to the app's versioning style. Packaging-only changes should preserve existing agent versions.
 
 ## Environment And Azure Resource Checklist
@@ -209,6 +209,7 @@ orchestration lifecycle events the TUI needs.
 - Do not assume local plugin directories magically exist in deployed portal pods.
 - Prefer explicit packaging and env configuration over vague operational guidance.
 - Call out orchestration determinism and database reset requirements when relevant.
+- **NO RESETS unless the user explicitly asks.** Deploy scripts never reset data; resets live in separate explicitly-invoked scripts behind an unambiguous confirmation flag.
 - Call out that clean AKS restarts will immediately recreate built-in system sessions, so a truly empty session list is transient.
 - Keep deployment docs aligned with the user's actual folder structure and commands.
 - If cluster access crosses AKS boundaries, consult the `pilotswarm-aks-identity` skill.

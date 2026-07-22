@@ -41,7 +41,7 @@ Do not hard-code `ACR_NAME` on the deploy command line — `scripts/deploy-aks.s
   ```bash
   curl -sk https://pilotswarm-portal.westus3.cloudapp.azure.com/ | grep -oE "assets/index-[A-Za-z0-9_-]+\.js"
   ```
-- Remote reset script: `scripts/db-reset.js`
+- Remote reset script: `scripts/reset-db-aks.sh` (wraps `scripts/db-reset.js`) — **never part of a deploy**; see the `pilotswarm-aks-reset` skill and the NO RESETS rule below.
 - Worker manifest: `deploy/k8s/worker-deployment.yaml`
 - Portal manifest: `deploy/k8s/portal-deployment.yaml`
 - Portal ingress: `deploy/k8s/portal-ingress.yaml`
@@ -93,6 +93,8 @@ Do not hard-code `ACR_NAME` on the deploy command line — `scripts/deploy-aks.s
    - If the change removes a provider key, plan to verify the live model surface after rollout.
 
 3. Use the canonical deploy script unless there is a concrete reason not to.
+   Deploys are always non-destructive: sessions, orchestrations, and facts
+   survive every deploy. There is no reset step or reset flag in a deploy.
    - Full deploy:
      ```bash
      ./scripts/deploy-aks.sh
@@ -100,10 +102,6 @@ Do not hard-code `ACR_NAME` on the deploy command line — `scripts/deploy-aks.s
    - Reuse existing image:
      ```bash
      ./scripts/deploy-aks.sh --skip-build
-     ```
-   - Keep existing sessions/state:
-     ```bash
-     ./scripts/deploy-aks.sh --skip-reset
      ```
    - Skip the local test gate only when the user explicitly accepts the risk:
      ```bash
@@ -114,7 +112,7 @@ Do not hard-code `ACR_NAME` on the deploy command line — `scripts/deploy-aks.s
    - Refresh the Kubernetes secret from the current env.
    - Refresh the `acr-pull` image-pull secret from ACR credentials/token.
    - Run the local test gate unless explicitly skipped.
-   - If doing a destructive reset, scale workers to `0` and wait for the pods to be fully terminated before dropping schemas.
+   - Never fold a database reset into a manual deploy sequence — a reset is a separate operation (see the NO RESETS rule).
    - Build the SDK:
      ```bash
      npm run build -w packages/sdk
@@ -191,6 +189,7 @@ Do not hard-code `ACR_NAME` on the deploy command line — `scripts/deploy-aks.s
 
 ## Rules
 
+- **NO RESETS unless the user explicitly asks.** Deploys never reset data. A database reset (`scripts/reset-db-aks.sh`) is a separate, deliberate operation that requires the user to have literally asked for a wipe in the current conversation — "deploy", "redeploy", "update the cluster", or an orchestration-version change is NOT such a request. When an orchestration change would benefit from a reset, say so and stop; do not run one.
 - Never deploy without explicit user permission.
 - Never skip the reset warning when orchestration behavior changed.
 - Never assume a missing local env var means the live cluster already dropped that provider.

@@ -89,6 +89,7 @@ Only proceed after the user confirms.
 
 ## Constraints
 
+- **NO RESETS unless the user explicitly asks for a wipe.** Never generate deploy scripts that reset databases by default or as a side effect: a deploy must always be non-destructive, and any reset must live in a separate script that is only ever invoked explicitly (gate it behind an unambiguous flag such as `--i-understand-this-deletes-all-data`). When an orchestration change would benefit from a reset, say so — do not run or script one implicitly.
 - deployment assets should reflect the user's actual plugin and worker layout
 - do not assume local-only tools or plugin paths magically exist in remote workers
 - do not assume the portal pod can infer app branding or named agents from the worker; package the app plugin into the portal image or mount it, then set `PLUGIN_DIRS`
