@@ -1,5 +1,10 @@
 import { describe, it } from "vitest";
-import { buildSystemAgentBootstrapPayload, PilotSwarmWorker } from "../../src/worker.ts";
+import {
+    buildSystemAgentBootstrapPayload,
+    PilotSwarmWorker,
+    resolveWorkerTurnTimeoutMs,
+} from "../../src/worker.ts";
+import { DEFAULT_TURN_TIMEOUT_MS } from "../../src/managed-session.ts";
 import { assertEqual } from "../helpers/assertions.js";
 
 describe("System agent bootstrap payload", () => {
@@ -34,5 +39,13 @@ describe("System agent bootstrap payload", () => {
         });
 
         assertEqual(worker.blobEnabled, true, "workers should default to durable local session state");
+    });
+
+    it("resolves the deployment turn timeout with explicit option precedence", () => {
+        assertEqual(DEFAULT_TURN_TIMEOUT_MS, 20 * 60_000, "SDK turn timeout should default to 20 minutes");
+        assertEqual(resolveWorkerTurnTimeoutMs(undefined, "1200000"), 1_200_000, "deployment env should configure the timeout");
+        assertEqual(resolveWorkerTurnTimeoutMs(900_000, "1200000"), 900_000, "explicit worker option should win");
+        assertEqual(resolveWorkerTurnTimeoutMs(undefined, "0"), 0, "deployment env should support disabling the cap");
+        assertEqual(resolveWorkerTurnTimeoutMs(undefined, "invalid"), DEFAULT_TURN_TIMEOUT_MS, "invalid env should use the SDK default");
     });
 });

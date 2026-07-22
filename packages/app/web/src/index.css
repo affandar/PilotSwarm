@@ -2061,6 +2061,113 @@ body.is-resizing-pane-y * {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--ps-modal-selected-border) 18%, transparent);
 }
 
+/* ── Image prompt attachments (composer chips) ─────────────────── */
+
+/* The shell is a 3-column grid (label | textarea | actions); the chip strip
+ * must span the full width as its own row or it hijacks the label column and
+ * squishes the textarea into the actions slot. */
+.ps-prompt-attachments {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px 0 2px;
+}
+
+.ps-attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border: 1px solid color-mix(in srgb, var(--ps-border) 60%, transparent);
+  border-radius: var(--ps-radius-sm);
+  background: color-mix(in srgb, var(--ps-surface) 94%, transparent);
+}
+
+.ps-attach-thumb {
+  width: 40px;
+  height: 40px;
+  object-fit: cover;
+  border-radius: 4px;
+  flex: 0 0 auto;
+}
+
+.ps-attach-thumb.is-placeholder {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--ps-border) 30%, transparent);
+}
+
+.ps-attach-size {
+  color: var(--ps-muted);
+  font-size: 11px;
+}
+
+.ps-attach-remove {
+  flex: 0 0 auto;
+  border: none;
+  background: none;
+  color: var(--ps-muted);
+  padding: 2px 4px;
+}
+
+.ps-attach-remove:hover {
+  color: var(--ps-foreground);
+}
+
+.ps-attach-button {
+  min-height: 40px;
+}
+
+/* ── Transcript image attachment thumbnails ────────────────────── */
+
+.ps-chat-image-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 6px 0 10px;
+}
+
+.ps-chat-image-thumb {
+  width: 96px;
+  height: 96px;
+  object-fit: cover;
+  border: 1px solid color-mix(in srgb, var(--ps-border) 60%, transparent);
+  border-radius: var(--ps-radius-sm);
+  cursor: pointer;
+}
+
+.ps-chat-image-thumb:hover {
+  border-color: var(--ps-modal-selected-border);
+}
+
+.ps-chat-image-thumb.is-pending {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--ps-border) 24%, transparent);
+  color: var(--ps-muted);
+  font-size: 24px;
+  cursor: default;
+}
+
+.ps-chat-image-thumb.is-pending.is-error {
+  color: var(--ps-foreground);
+}
+
+/* Files-pane inline image preview */
+
+.ps-binary-preview-image {
+  display: block;
+  max-width: 100%;
+  max-height: 60vh;
+  margin-top: 12px;
+  border: 1px solid color-mix(in srgb, var(--ps-border) 60%, transparent);
+  border-radius: var(--ps-radius-sm);
+  cursor: pointer;
+}
+
 .ps-send-button {
   min-height: 40px;
   padding: 0 12px;

@@ -429,12 +429,6 @@ export function buildContinueInput(
         ...(carriedSystemPrompt ? { systemPrompt: carriedSystemPrompt } : {}),
         ...(state.runtimeModelNotice ? { runtimeModelNotice: state.runtimeModelNotice } : {}),
         ...(promptForInput ? { prompt: promptForInput } : {}),
-        // Attachment refs ride the carried prompt — without this, any prompt
-        // consumed into pendingPrompt across continue-as-new silently became
-        // text-only (the string-only carry predates image attachments).
-        ...(promptForInput && state.pendingAttachments?.length
-            ? { attachments: [...state.pendingAttachments] }
-            : {}),
         ...(carriedRequiredTool ? { requiredTool: carriedRequiredTool } : {}),
         ...(carriedCycleOrigin ? { cycleOrigin: carriedCycleOrigin } : {}),
         ...(promptForInput && bootstrapForInput !== undefined ? { bootstrapPrompt: bootstrapForInput } : {}),

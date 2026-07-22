@@ -148,6 +148,15 @@ export type {
     OrchestrationInput,
     SubAgentEntry,
     SessionPolicy,
+    SendAttachmentInput,
+    PromptAttachmentRef,
+} from "./types.js";
+export {
+    IMAGE_ATTACHMENT_CONTENT_TYPES,
+    ATTACHMENT_MAX_BYTES,
+    ATTACHMENTS_MAX_COUNT,
+    ATTACHMENTS_MAX_TOTAL_BYTES,
+    sanitizePromptAttachmentRefs,
 } from "./types.js";
 
 // Skills loader

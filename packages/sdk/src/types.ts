@@ -92,6 +92,12 @@ export interface TurnOptions {
     requiredTool?: string;
     /** Internal: this turn was started by a recurring cron/cron_at timer fire. */
     cycleOrigin?: "cron" | "cron_at";
+    /**
+     * Ready-to-send image blobs for this turn, resolved from artifact refs by
+     * the runTurn activity host (bytes fetched + vision-gated there). Passed
+     * straight through to the Copilot session as blob attachments.
+     */
+    attachments?: Array<{ data: string; mimeType: string; displayName?: string }>;
     /** Worker-owned inline implementations for non-suspending control tools. */
     controlToolBridge?: {
         spawnAgent(args: {
@@ -183,8 +189,8 @@ export interface ManagedSessionConfig extends SerializableSessionConfig {
     tools?: Tool<any>[];
     hooks?: SessionConfig["hooks"];
     /**
-     * Wall-clock cap on a single turn, in milliseconds. 0 = no cap;
-     * undefined = DEFAULT_TURN_TIMEOUT_MS (10 minutes).
+    * Wall-clock cap on a single turn, in milliseconds. 0 = no cap;
+    * undefined = the worker deployment setting or 20-minute SDK default.
      */
     turnTimeoutMs?: number;
     /**
@@ -397,6 +403,8 @@ export interface OrchestrationInput {
     needsHydration?: boolean;
     blobEnabled?: boolean;
     prompt?: string;
+    /** Image attachment refs riding a carried prompt across continue-as-new (1.0.65+). */
+    attachments?: PromptAttachmentRef[];
     /** Internal: require the next prompt turn to use a specific tool if available. */
     requiredTool?: string;
     /** Internal: system guidance carried alongside the next prompt without becoming user text. */
@@ -642,7 +650,7 @@ export interface PilotSwarmWorkerOptions {
     /**
      * Wall-clock cap on a single LLM turn, in milliseconds. If a turn takes
      * longer than this it is aborted and settled as a retryable error.
-     * 0 = no cap; undefined = 10-minute default.
+    * 0 = no cap; undefined = PILOTSWARM_TURN_TIMEOUT_MS or the 20-minute default.
      */
     turnTimeoutMs?: number;
 
@@ -1070,4 +1078,62 @@ export interface SessionStatusSignal {
     error?: string;
     retriesExhausted?: boolean;
     contextUsage?: SessionContextUsage;
+}
+
+// ─── Image prompt attachments (docs/proposals/image-attachments-in-chat.md) ──
+
+/**
+ * What clients pass to sendMessage/send: a reference to an image artifact
+ * already uploaded to THIS session. Everything else (content type, size) is
+ * resolved server-side from artifact metadata — client declarations are not
+ * trusted.
+ */
+export interface SendAttachmentInput {
+    filename: string;
+}
+
+/**
+ * The server-resolved attachment reference that rides the durable messages
+ * queue and the user.message session event. Bytes never travel here — the
+ * runTurn activity fetches them from the artifact store at turn time.
+ */
+export interface PromptAttachmentRef {
+    filename: string;
+    contentType: string;
+    sizeBytes: number;
+}
+
+/** Raster types a model can be shown. SVG (script surface) is deliberately absent. */
+export const IMAGE_ATTACHMENT_CONTENT_TYPES: ReadonlySet<string> = new Set([
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+]);
+
+/** Per-attachment decoded-bytes cap — below typical provider vision budgets. */
+export const ATTACHMENT_MAX_BYTES = 4 * 1024 * 1024;
+/** Max image attachments per message/turn. */
+export const ATTACHMENTS_MAX_COUNT = 4;
+/** Total decoded-bytes cap across one message/turn. */
+export const ATTACHMENTS_MAX_TOTAL_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Normalize an untrusted attachments array (queue payloads, API bodies) into
+ * well-formed refs. Drops malformed entries rather than throwing — payload
+ * hygiene for replayed histories; hard validation happens at the API edge.
+ */
+export function sanitizePromptAttachmentRefs(raw: unknown): PromptAttachmentRef[] {
+    if (!Array.isArray(raw)) return [];
+    const out: PromptAttachmentRef[] = [];
+    for (const entry of raw) {
+        if (!entry || typeof entry !== "object") continue;
+        const filename = typeof (entry as any).filename === "string" ? (entry as any).filename.trim() : "";
+        const contentType = typeof (entry as any).contentType === "string" ? (entry as any).contentType.trim().toLowerCase() : "";
+        const sizeBytes = Number((entry as any).sizeBytes);
+        if (!filename || !contentType || !Number.isFinite(sizeBytes) || sizeBytes <= 0) continue;
+        out.push({ filename, contentType, sizeBytes });
+        if (out.length >= ATTACHMENTS_MAX_COUNT) break;
+    }
+    return out;
 }

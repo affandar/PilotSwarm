@@ -765,9 +765,20 @@ function stripPromptAttachmentTokens(prompt, attachments = []) {
         .trim();
 }
 
+// Raster types + caps for image prompt attachments. Mirrors the SDK's
+// IMAGE_ATTACHMENT_CONTENT_TYPES / ATTACHMENT_MAX_BYTES — the server is the
+// enforcement point; these exist so the composer rejects early with a clear
+// message instead of a failed send.
+export const IMAGE_PROMPT_ATTACHMENT_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+export const IMAGE_PROMPT_ATTACHMENT_MAX_BYTES = 4 * 1024 * 1024;
+export const IMAGE_PROMPT_ATTACHMENT_MAX_COUNT = 4;
+
 function expandPromptAttachments(prompt, attachments = []) {
     const validAttachments = Array.isArray(attachments)
-        ? attachments.filter((attachment) => attachment?.sessionId && attachment?.filename)
+        // Image attachments are model-visible (sent as blob attachments by the
+        // worker) — they inject NO text ref. Only legacy artifact references
+        // still expand into artifact:// pointers.
+        ? attachments.filter((attachment) => attachment?.sessionId && attachment?.filename && attachment?.kind !== "image")
         : [];
     if (validAttachments.length === 0) return String(prompt || "");
 
@@ -1324,10 +1335,155 @@ export class PilotSwarmUiController {
         return await this.cancelOutboxItem(sessionId, target.id);
     }
 
-    queuePromptInOutbox(sessionId, prompt) {
+    queuePromptInOutbox(sessionId, prompt, extras = null) {
         const item = this.buildOutboxItem(prompt, "pending");
+        if (Array.isArray(extras?.attachments) && extras.attachments.length > 0) {
+            item.attachments = extras.attachments;
+        }
         this.setSessionOutboxItems(sessionId, [...this.getSessionOutbox(sessionId), item]);
         return item;
+    }
+
+    /**
+     * Stage image files (paste / drop / picker) as pending prompt attachments.
+     * Client-side pre-validation only — the API edge re-validates on send.
+     * Returns { accepted, rejected: [{name, reason}] } for UI feedback.
+     */
+    addPendingImageFiles(files) {
+        const incoming = Array.from(files || []).filter(Boolean);
+        const current = this.getPromptAttachments();
+        const existingImages = current.filter((a) => a?.kind === "image");
+        const accepted = [];
+        const rejected = [];
+        for (const file of incoming) {
+            const contentType = String(file.type || "").toLowerCase();
+            if (!IMAGE_PROMPT_ATTACHMENT_TYPES.has(contentType)) {
+                rejected.push({ name: file.name || "image", reason: "unsupported type" });
+                continue;
+            }
+            if ((Number(file.size) || 0) > IMAGE_PROMPT_ATTACHMENT_MAX_BYTES) {
+                rejected.push({ name: file.name || "image", reason: "over 4 MB" });
+                continue;
+            }
+            if (existingImages.length + accepted.length >= IMAGE_PROMPT_ATTACHMENT_MAX_COUNT) {
+                rejected.push({ name: file.name || "image", reason: `max ${IMAGE_PROMPT_ATTACHMENT_MAX_COUNT} images` });
+                continue;
+            }
+            accepted.push({
+                kind: "image",
+                file,
+                filename: String(file.name || "image"),
+                contentType,
+                sizeBytes: Number(file.size) || 0,
+            });
+        }
+        if (accepted.length > 0) {
+            this.setPromptAttachments([...current, ...accepted]);
+        }
+        if (rejected.length > 0) {
+            this.dispatch({
+                type: "ui/status",
+                text: `Skipped ${rejected.map((r) => `${r.name} (${r.reason})`).join(", ")}`,
+            });
+        }
+        return { accepted: accepted.length, rejected };
+    }
+
+    /**
+     * Stage an already-uploaded raster artifact as a prompt image attachment
+     * (uploaded:true entries skip re-upload at send). Returns whether staged.
+     * Shared by the TUI upload modal and clipboard paste.
+     */
+    stageUploadedImageAttachment(result, sessionId) {
+        const contentType = String(result?.contentType || "").toLowerCase();
+        if (!IMAGE_PROMPT_ATTACHMENT_TYPES.has(contentType)) return false;
+        if ((Number(result?.sizeBytes) || 0) > IMAGE_PROMPT_ATTACHMENT_MAX_BYTES) return false;
+        const stagedImages = this.getPromptAttachments().filter((a) => a?.kind === "image");
+        if (stagedImages.length >= IMAGE_PROMPT_ATTACHMENT_MAX_COUNT) return false;
+        this.setPromptAttachments([
+            ...this.getPromptAttachments(),
+            {
+                kind: "image",
+                uploaded: true,
+                sessionId,
+                filename: result.filename,
+                contentType,
+                sizeBytes: Number(result?.sizeBytes) || 0,
+            },
+        ]);
+        return true;
+    }
+
+    /**
+     * TUI Ctrl+V: read an image off the OS clipboard (the transport shells to
+     * the platform clipboard tool — terminals never deliver image bytes),
+     * upload it as a session artifact, and stage it on the next message.
+     */
+    async pasteImageFromClipboard() {
+        if (typeof this.transport.captureClipboardImage !== "function"
+            || typeof this.transport.uploadArtifactFromPath !== "function") {
+            this.dispatch({ type: "ui/status", text: "Clipboard image paste is not supported by this transport" });
+            return false;
+        }
+        let capture = null;
+        try {
+            capture = await this.transport.captureClipboardImage();
+        } catch (error) {
+            this.dispatch({ type: "ui/status", text: `Clipboard read failed: ${error?.message || error}` });
+            return false;
+        }
+        if (!capture?.path) {
+            this.dispatch({ type: "ui/status", text: "No image on the clipboard" });
+            return false;
+        }
+        this.dispatch({ type: "ui/status", text: "Attaching clipboard image..." });
+        try {
+            const sessionId = this.getPromptDraftSessionId() || await this.ensurePromptAttachmentSessionId();
+            const upload = await this.transport.uploadArtifactFromPath(sessionId, capture.path);
+            const result = await this.finalizeArtifactUpload(upload, { sessionId, suppressStatus: true });
+            if (this.stageUploadedImageAttachment(result, sessionId)) {
+                this.dispatch({ type: "ui/status", text: `Clipboard image attached to your next message (${result.filename})` });
+                return true;
+            }
+            this.dispatch({ type: "ui/status", text: `Uploaded ${result.filename} (not attachable: type/size/count limit)` });
+            return false;
+        } catch (error) {
+            this.dispatch({ type: "ui/status", text: `Clipboard image attach failed: ${error?.message || error}` });
+            return false;
+        }
+    }
+
+    removePendingImageAttachment(index) {
+        const current = this.getPromptAttachments();
+        const images = current.filter((a) => a?.kind === "image");
+        const target = images[index];
+        if (!target) return;
+        this.setPromptAttachments(current.filter((a) => a !== target));
+    }
+
+    /**
+     * Upload staged image attachments as session artifacts and return send
+     * refs. Filenames are derived from the outbox client-message id so a
+     * retry overwrites the same artifact instead of duplicating it.
+     * Entries staged from an already-uploaded artifact (TUI attach-by-path,
+     * marked uploaded:true with no File) skip the upload and ref directly.
+     */
+    async uploadPendingImageAttachments(sessionId, images, clientMessageId) {
+        const refs = [];
+        const idStem = String(clientMessageId || Date.now()).replace(/[^a-zA-Z0-9_-]/g, "").slice(-24) || "img";
+        let uploadIndex = 0;
+        for (const image of images) {
+            if (!image.file) {
+                if (image.uploaded && image.filename) refs.push({ filename: image.filename });
+                continue;
+            }
+            uploadIndex += 1;
+            const ext = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp" }[image.contentType] || "png";
+            const filename = `attach-${idStem}-${uploadIndex}.${ext}`;
+            await this.transport.uploadArtifactFromFile(sessionId, image.file, filename);
+            refs.push({ filename });
+        }
+        return refs;
     }
 
     acknowledgeOutboxPrompt(sessionId, promptText, clientMessageId = null) {
@@ -1446,6 +1602,9 @@ export class PilotSwarmUiController {
                 : [item.id]
         ));
         const mergedText = pendingItems.map((item) => String(item.text || "")).join("\n\n");
+        const mergedAttachments = pendingItems.flatMap((item) => (
+            Array.isArray(item.attachments) ? item.attachments : []
+        ));
         const mergedItem = {
             id: pendingItems[0].id,
             text: mergedText,
@@ -1453,6 +1612,7 @@ export class PilotSwarmUiController {
             phase: "pending",
             attempted: true,
             clientMessageIds: mergedClientMessageIds,
+            ...(mergedAttachments.length > 0 ? { attachments: mergedAttachments } : {}),
         };
         const pendingIdSet = new Set(pendingItems.map((item) => item.id));
         const otherItems = this.getSessionOutbox(sessionId).filter((item) => !pendingIdSet.has(item.id));
@@ -1469,6 +1629,9 @@ export class PilotSwarmUiController {
             await this.transport.sendMessage(sessionId, mergedItem.text, {
                 enqueueOnly: true,
                 clientMessageIds: mergedItem.clientMessageIds,
+                ...(Array.isArray(mergedItem.attachments) && mergedItem.attachments.length > 0
+                    ? { attachments: mergedItem.attachments }
+                    : {}),
             });
 
             // Promote pending → queued for the merged item.
@@ -4294,6 +4457,16 @@ export class PilotSwarmUiController {
             const upload = await this.transport.uploadArtifactFromPath(sessionId, filePath);
             const result = await this.finalizeArtifactUpload(upload, { sessionId, suppressStatus: true });
             this.dispatch({ type: "ui/modal", modal: null });
+            // TUI attach-by-path: an uploaded raster image is also staged as a
+            // prompt attachment so the next message shows it to the model —
+            // same send path as the portal's paste/drop chips.
+            if (this.stageUploadedImageAttachment(result, sessionId)) {
+                this.dispatch({
+                    type: "ui/status",
+                    text: `Uploaded ${result.filename} — attached to your next message`,
+                });
+                return;
+            }
             this.dispatch({
                 type: "ui/status",
                 text: `Uploaded ${result.filename}`,
@@ -5208,7 +5381,10 @@ export class PilotSwarmUiController {
 
         // Empty Enter on a session with pending outbox items forces an immediate
         // dispatch of any pending merge group; this is the "send batch" affordance.
-        if (!prompt.trim()) {
+        // Staged image attachments make an empty prompt sendable (a default
+        // caption is filled in below), so they bypass this early return.
+        const hasStagedImages = promptAttachments.some((a) => a?.kind === "image");
+        if (!prompt.trim() && !hasStagedImages) {
             if (sessionId && this.getPendingOutboxItems(sessionId).length > 0) {
                 await this.dispatchPendingOutbox(sessionId).catch(() => {});
             }
@@ -5296,7 +5472,32 @@ export class PilotSwarmUiController {
         // `controller.sendPrompt()` calls without intervening `await`s) still
         // merge because the second call enters before the first dispatcher
         // microtask runs.
-        this.queuePromptInOutbox(sessionId, prompt);
+        //
+        // Image attachments upload FIRST (artifact = source of truth), then the
+        // message references them by filename. A failed upload keeps the prompt
+        // and the staged images — a message never goes out half-attached.
+        const pendingImages = promptAttachments.filter((a) => a?.kind === "image");
+        let attachmentRefs = null;
+        if (pendingImages.length > 0) {
+            const needsUpload = pendingImages.some((a) => a.file);
+            if (needsUpload && typeof this.transport.uploadArtifactFromFile !== "function") {
+                this.dispatch({ type: "ui/status", text: "This transport does not support image attachments." });
+                return;
+            }
+            const uploadItem = this.buildOutboxItem("", "pending");
+            this.dispatch({ type: "ui/status", text: `Uploading ${pendingImages.length} image${pendingImages.length > 1 ? "s" : ""}...` });
+            try {
+                attachmentRefs = await this.uploadPendingImageAttachments(sessionId, pendingImages, uploadItem.id);
+                this.dispatch({ type: "ui/status", text: "" });
+            } catch (error) {
+                this.dispatch({ type: "ui/status", text: `Image upload failed: ${error?.message || error}` });
+                return;
+            }
+        }
+        const outboundPrompt = prompt.trim()
+            ? prompt
+            : (attachmentRefs && attachmentRefs.length > 0 ? "See the attached image(s)." : prompt);
+        this.queuePromptInOutbox(sessionId, outboundPrompt, attachmentRefs ? { attachments: attachmentRefs } : null);
         this.setPrompt("", 0);
         this.setPromptAttachments([]);
         await this.dispatchPendingOutbox(sessionId).catch(() => {});

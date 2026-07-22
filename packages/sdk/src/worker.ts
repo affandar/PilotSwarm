@@ -22,6 +22,7 @@ import { createSweeperTools } from "./sweeper-tools.js";
 import { createResourceManagerTools } from "./resourcemgr-tools.js";
 import { composeSystemPrompt, mergePromptSections } from "./prompt-layering.js";
 import { buildSchemaIdentifier } from "./prompt-layers.js";
+import { DEFAULT_TURN_TIMEOUT_MS } from "./managed-session.js";
 import { defineTool } from "@github/copilot-sdk";
 import type { Tool } from "@github/copilot-sdk";
 import type { PilotSwarmWorkerOptions, ManagedSessionConfig } from "./types.js";
@@ -51,6 +52,23 @@ function parsePositiveInt(raw: unknown): number | undefined {
     const normalized = typeof raw === "string" ? Number.parseInt(raw, 10) : Number(raw);
     if (!Number.isFinite(normalized) || normalized <= 0) return undefined;
     return Math.floor(normalized);
+}
+
+function parseNonNegativeInt(raw: unknown): number | undefined {
+    const normalized = typeof raw === "string" ? Number.parseInt(raw, 10) : Number(raw);
+    if (!Number.isFinite(normalized) || normalized < 0) return undefined;
+    return Math.floor(normalized);
+}
+
+/** @internal Resolve the worker-wide turn cap: explicit option > deployment env > SDK default. */
+export function resolveWorkerTurnTimeoutMs(
+    explicitValue: unknown,
+    envValue: unknown = process.env.PILOTSWARM_TURN_TIMEOUT_MS,
+): number {
+    if (explicitValue !== undefined) {
+        return parseNonNegativeInt(explicitValue) ?? DEFAULT_TURN_TIMEOUT_MS;
+    }
+    return parseNonNegativeInt(envValue) ?? DEFAULT_TURN_TIMEOUT_MS;
 }
 
 export { buildSystemAgentBootstrapPayload } from "./system-agents.js";
@@ -179,6 +197,7 @@ export class PilotSwarmWorker {
         this.config = {
             ...options,
             waitThreshold: options.waitThreshold ?? 30,
+            turnTimeoutMs: resolveWorkerTurnTimeoutMs(options.turnTimeoutMs),
         };
         const effectiveSessionStateDir = options.sessionStateDir ?? DEFAULT_SESSION_STATE_DIR;
 
@@ -240,7 +259,7 @@ export class PilotSwarmWorker {
                 baseMcpServers: this._baseMcpServers,
                 provider: options.provider,
                 modelProviders: this._modelProviders ?? undefined,
-                turnTimeoutMs: options.turnTimeoutMs,
+                turnTimeoutMs: this.config.turnTimeoutMs,
                 turnInactivityTimeoutMs: options.turnInactivityTimeoutMs,
             },
             effectiveSessionStateDir,
@@ -490,7 +509,8 @@ export class PilotSwarmWorker {
         trace(
             `[worker] runtime storage provider=${storage.runtime.provider}, enhancedFacts=${enhancedFactStore ? "on" : "off"}, graph=${this.graphStore ? "on" : "off"}; ` +
             `postgres pools: duroxidePgPoolMax=${process.env.DUROXIDE_PG_POOL_MAX ?? "(unset)"}, ` +
-            `cmsPoolMax=${cmsPoolMax}, factsPoolMax=${factsPoolMax}`,
+            `cmsPoolMax=${cmsPoolMax}, factsPoolMax=${factsPoolMax}; ` +
+            `turnTimeoutMs=${this.config.turnTimeoutMs}`,
         );
         this.sessionManager.setFactStore(this.factStore);
         this.sessionManager.setGraphStore(this.graphStore);
@@ -569,6 +589,7 @@ export class PilotSwarmWorker {
             this._rawLoadedAgents,
             this.factStore,
             this.config.workerNodeId,
+            this.artifactStore,
         );
 
         for (const registration of DURABLE_SESSION_ORCHESTRATION_REGISTRY) {

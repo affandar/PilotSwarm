@@ -242,6 +242,7 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
         const isCtrlG = matchesCtrlKey("g", "\u0007");
         const isCtrlJ = matchesCtrlKey("j", "\n");
         const isCtrlA = matchesCtrlKey("a", "\u0001");
+        const isCtrlV = matchesCtrlKey("v", "\u0016");
         const isShiftN = input === "N" || (key.shift && key.name === "n");
         const isShiftM = !key.ctrl && !key.meta && !key.alt && (input === "M" || (key.shift && key.name === "m"));
         const isShiftD = input === "D" || (key.shift && key.name === "d");
@@ -679,6 +680,15 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             const selectedReadOnlyOutbox = selectedQueuedOutbox || promptEdit?.phase === "cancelling";
             if (isCtrlA) {
                 controller.handleCommand(UI_COMMANDS.OPEN_ARTIFACT_UPLOAD).catch(() => {});
+                return;
+            }
+            // Ctrl+V: the raw 0x16 keystroke reaches us through the terminal;
+            // the image bytes never do — the controller shells to the OS
+            // clipboard and stages the image on the next message (Claude
+            // Code's paste model). Terminal TEXT pastes arrive via bracketed
+            // paste, not as Ctrl+V, so text pasting is unaffected.
+            if (isCtrlV) {
+                controller.pasteImageFromClipboard().catch(() => {});
                 return;
             }
             if (selectedReadOnlyOutbox) {

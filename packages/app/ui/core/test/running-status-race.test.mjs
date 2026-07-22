@@ -146,3 +146,35 @@ test("the same stale-update guard applies on the sessions/loaded poll path", () 
     });
     assert.equal(statusOf(state), "running", "the list poll races the same way and needs the same guard");
 });
+
+// Observed live (2026-07-21, local portal): the turn completed and the server
+// row read idle at statusVersion 5, but client-side event merges had inflated
+// the held session's updatedAt past the idle write's timestamp — every idle
+// poll compared as stale and "Working.." stuck until a terminal status. The
+// server's monotonic statusVersion must outrank the wall-clock heuristic.
+test("a newer statusVersion lands idle even when updatedAt compares as stale", () => {
+    let state = withSession({ status: "running", statusVersion: 4, updatedAt: T0 + 10_000 });
+    state = appReducer(state, {
+        type: "sessions/loaded",
+        sessions: [{ sessionId: "s1", title: "T", status: "idle", statusVersion: 5, updatedAt: T0 + 2_000 }],
+    });
+    assert.equal(statusOf(state), "idle", "higher statusVersion is authoritative");
+});
+
+test("a same-or-lower statusVersion is held regardless of a newer updatedAt", () => {
+    let state = withSession({ status: "running", statusVersion: 5, updatedAt: T0 });
+    state = appReducer(state, {
+        type: "sessions/loaded",
+        sessions: [{ sessionId: "s1", title: "T", status: "waiting", statusVersion: 5, updatedAt: T0 + 60_000 }],
+    });
+    assert.equal(statusOf(state), "running", "equal statusVersion is provably stale");
+});
+
+test("without statusVersions the timestamp fallback still applies", () => {
+    let state = withSession({ status: "running", updatedAt: T0 + 5_000 });
+    state = appReducer(state, {
+        type: "sessions/loaded",
+        sessions: [{ sessionId: "s1", title: "T", status: "idle", updatedAt: T0 + 5_000 }],
+    });
+    assert.equal(statusOf(state), "running", "same-timestamp downgrade held when no versions");
+});

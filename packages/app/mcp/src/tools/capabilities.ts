@@ -40,6 +40,10 @@ export function buildCapabilities(ctx: ServerContext) {
         models_configured: Boolean(ctx.models) || ctx.webMode,
         skills_prompts: ctx.skills.length,
         registered_agents: ctx.registeredAgents.length,
+        // Image attachments on send_message/send_and_wait (web mode only —
+        // refs are validated against the session's artifact store at the API
+        // edge, which direct mode does not run).
+        prompt: { imageAttachments: ctx.webMode },
     };
 }
 

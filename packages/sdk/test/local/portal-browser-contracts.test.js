@@ -91,7 +91,11 @@ describe("portal browser contracts", () => {
         // The browser transport is HttpApiTransport (pilotswarm-sdk/api)
         // plus browser conveniences; the shared method surface lives there.
         assertIncludes(browserTransport, "extends HttpApiTransport", "browser transport should ride the shared Web API transport");
-        assertIncludes(browserTransport, "async uploadArtifactFromFile(sessionId, file)", "browser transport should upload dropped/selected files");
+        // filenameOverride lets image attachments upload under deterministic
+        // attach-<id>-<n>.<ext> names so a retried send overwrites instead of
+        // duplicating (docs/proposals/image-attachments-in-chat.md).
+        assertIncludes(browserTransport, "async uploadArtifactFromFile(sessionId, file, filenameOverride = null)", "browser transport should upload dropped/selected files with an optional filename override");
+        assertIncludes(browserTransport, "supportsPromptImageAttachments()", "browser transport should advertise the composer's image-attachment capability");
         assertIncludes(httpTransport, "async deleteArtifact(sessionId, filename)", "web transport should expose single-artifact deletion for the viewer");
         assertIncludes(browserTransport, "await file.arrayBuffer()", "browser transport should read uploaded files as raw bytes instead of text");
         assertIncludes(browserTransport, '"base64"', "browser transport should tag upload payloads with a binary-safe encoding");

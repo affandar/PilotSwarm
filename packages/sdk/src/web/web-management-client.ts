@@ -200,7 +200,7 @@ export class WebPilotSwarmManagementClient {
 
     // ── Messaging ───────────────────────────────────────────────────────
 
-    async sendMessage(sessionId: string, prompt: string, options: { clientMessageIds?: string[] } = {}): Promise<void> {
+    async sendMessage(sessionId: string, prompt: string, options: { clientMessageIds?: string[]; attachments?: Array<{ filename: string }> } = {}): Promise<void> {
         await this._api.call("sendMessage", { sessionId, prompt, options });
     }
 

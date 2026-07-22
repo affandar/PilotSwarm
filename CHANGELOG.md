@@ -1,5 +1,66 @@
 # Changelog
 
+## 0.5.18 — 2026-07-21
+
+### Model-visible image attachments across every surface
+
+Operators can now show images to the model: paste (Ctrl/Cmd+V), drag-drop,
+or pick images in the portal composer — desktop and mobile — attach from the
+TUI with Ctrl+V (OS clipboard) or Ctrl+A (file path), or send attachment refs
+through the Web API, SDK, and MCP server. Images persist as session binary
+artifacts (upload-first, reference-after); vision-capable models receive them
+as true multimodal blob attachments with per-model capability gating. New
+sessions use orchestration `1.0.65`.
+
+### SDK
+
+- `sendMessage`/`send` accept `attachments: [{filename}]` refs, validated at
+  the API edge against the session's artifact store (png/jpeg/gif/webp, 4 MB
+  per image, 4 images / 8 MB per message) and carried on the durable queue as
+  resolved refs — bytes never enter orchestration history.
+- Orchestration `1.0.65` threads attachment refs through drain, merge, and
+  continue-as-new (`1.0.64` frozen); the runTurn activity fetches bytes from
+  the artifact store, gates on the live model catalog's vision capability
+  (`SessionManager.getModelVisionInfo`), and forwards blob attachments to the
+  Copilot session. Drops are explicit: prompt omission notes plus
+  `runtime.attachment_dropped` events.
+- Attachment refs ride the `user.message` event for transcript rendering.
+
+### Portal
+
+- Composer image intake: clipboard paste, drag-drop (with drop highlight),
+  and a paperclip picker (`accept=image/*` offers camera/photo library on
+  phones); staged images render as thumbnail chips with size and remove.
+- Transcript user messages render authenticated thumbnail strips; the Files
+  pane previews raster image artifacts inline.
+- Stale-status guard now trusts the server's monotonic `statusVersion`,
+  fixing sessions wedged on "Working.." after turn completion.
+- Artifact/attachment validation errors return actionable 4xx codes
+  (`ARTIFACT_CONTENT_TYPE_MISMATCH`, `ARTIFACT_TOO_LARGE`,
+  `INVALID_ATTACHMENT`) instead of generic 500s.
+- Ingress body limit raised to 8 MB for image uploads (deploy manifest).
+
+### TUI
+
+- Ctrl+V pastes an image from the OS clipboard (pngpaste/osascript on macOS,
+  wl-paste/xclip on Linux, PowerShell on Windows) and stages it on the next
+  message; Ctrl+A path uploads auto-stage raster images the same way.
+
+### MCP
+
+- `send_message` and `send_and_wait` accept `attachments` (web mode);
+  `get_capabilities` reports `prompt.imageAttachments`.
+
+### Worker
+
+- Turn timeout is deployment-configurable.
+
+### Docs
+
+- `docs/proposals/image-attachments-in-chat.md` rewritten to match the
+  shipped architecture; new draft proposal
+  `docs/proposals/durable-signals-and-webhooks.md` (`wait_for_signal`).
+
 ## 0.5.17 — 2026-07-20
 
 ### Reliable finite delegation and cleaner shared UI rendering

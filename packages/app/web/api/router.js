@@ -18,6 +18,13 @@ import { getPublicAuthContext } from "../auth/authz/engine.js";
 
 const ERROR_STATUS_BY_CODE = {
     INVALID_REQUEST: 400,
+    // Artifact upload validation: declared content type contradicts the
+    // sniffed bytes, or the body exceeds the artifact size caps.
+    ARTIFACT_CONTENT_TYPE_MISMATCH: 400,
+    ARTIFACT_TOO_LARGE: 413,
+    // Image attachment refs on sendMessage failed validation (missing
+    // artifact, non-image type, size/count caps).
+    INVALID_ATTACHMENT: 400,
     // GitHub Copilot model requested without a worker or per-user key.
     GHCP_KEY_MISSING: 400,
     PORTAL_AUTH_REQUIRED: 401,

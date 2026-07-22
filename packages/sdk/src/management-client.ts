@@ -15,6 +15,7 @@ import {
     RESPONSE_LATEST_KEY,
     commandResponseKey,
     stopTurnQueueName,
+    sanitizePromptAttachmentRefs,
 } from "./types.js";
 import type {
     PilotSwarmSessionStatus,
@@ -25,6 +26,7 @@ import type {
     SessionOwnerInfo,
     SessionSummaryState,
     StopTurnResult,
+    PromptAttachmentRef,
 } from "./types.js";
 import type { SessionCatalog, SessionRow, TopEventEmitterRow } from "./cms.js";
 import { SYSTEM_USER_PRINCIPAL } from "./cms.js";
@@ -2216,7 +2218,7 @@ export class PilotSwarmManagementClient {
     async sendMessage(
         sessionId: string,
         prompt: string,
-        options?: { clientMessageIds?: string[]; sender?: MessageSender },
+        options?: { clientMessageIds?: string[]; sender?: MessageSender; attachments?: PromptAttachmentRef[] },
     ): Promise<void> {
         this._ensureStarted();
         const session = await this.getSession(sessionId);
@@ -2258,6 +2260,8 @@ export class PilotSwarmManagementClient {
         }
         const sender = normalizeMessageSender(options?.sender);
         if (sender) payload.sender = sender;
+        const attachments = sanitizePromptAttachmentRefs(options?.attachments);
+        if (attachments.length > 0) payload.attachments = attachments;
         await this._duroxideClient.enqueueEvent(
             orchId,
             "messages",

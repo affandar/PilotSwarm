@@ -60,6 +60,8 @@ spec:
               value: "4"
             - name: PILOTSWARM_WORKER_CONCURRENCY
               value: "8"
+            - name: PILOTSWARM_TURN_TIMEOUT_MS
+              value: "1200000"
           envFrom:
             - secretRef:
                 name: copilot-runtime-secrets

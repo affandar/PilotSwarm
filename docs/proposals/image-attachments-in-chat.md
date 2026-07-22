@@ -1,566 +1,294 @@
-# Proposal: Image Attachments in Chat (Portal + TUI, Model-Visible)
+# Proposal: Image Attachments in Chat (Portal, TUI, MCP/API — Model-Visible)
 
-**Status:** Draft
-**Date:** 2026-04-19
-**Depends on:** [binary-artifacts.md](./binary-artifacts.md) — Phase 1 + 2 must ship first.
-**Author:** Downstream app team (filed cross-repo per copilot-instructions.md repo-boundary rule)
+**Status:** Accepted
+**Date:** 2026-07-21
 
 ## Problem
 
-Today every prompt that flows from the portal or TUI into PilotSwarm is **plain text**:
+Every prompt that flows into a PilotSwarm session is **plain text**:
 
-- `PilotSwarmClient.send(prompt: string)` ([`packages/sdk/src/client.ts`](../../packages/sdk/src/client.ts) — `send`).
-- `ManagedSession.runTurn(prompt: string)` and the underlying `copilotSession.send({ prompt: effectivePrompt })` ([`packages/sdk/src/managed-session.ts`](../../packages/sdk/src/managed-session.ts) — `runTurn`).
-- The session-proxy enqueues the prompt as `JSON.stringify({ prompt })` ([`packages/sdk/src/session-proxy.ts`](../../packages/sdk/src/session-proxy.ts) — `runTurnWithPrompt`).
-- The portal `InputBar` and the TUI prompt composer both produce a `string` and call `send`.
+- The portal composer produces a string and calls `transport.sendMessage(sessionId, text, …)` ([`packages/app/ui/react/src/web-app.js`](../../packages/app/ui/react/src/web-app.js) — `PromptComposer`; [`packages/app/ui/core/src/controller.js`](../../packages/app/ui/core/src/controller.js) — `sendPrompt`).
+- `PilotSwarmManagementClient.sendMessage` enqueues `JSON.stringify({ prompt })` onto the durable messages queue ([`packages/sdk/src/management-client.ts`](../../packages/sdk/src/management-client.ts)).
+- The orchestration dequeues `msg.prompt` and calls `ManagedSession.runTurn(prompt)` ([`packages/sdk/src/orchestration/queue.ts`](../../packages/sdk/src/orchestration/queue.ts), [`turn.ts`](../../packages/sdk/src/orchestration/turn.ts)).
+- `runTurn` calls `copilotSession.send({ prompt })` ([`packages/sdk/src/managed-session.ts`](../../packages/sdk/src/managed-session.ts)).
 
-Nothing in the pipe carries image bytes, and the model never sees an image even when an operator pastes one into the prompt.
+Nothing in that pipe carries image bytes. An operator who pastes a screenshot of an Azure portal error into the chat gets nothing — the browser throws the clipboard image away, and the model never sees an image even on vision-capable models.
 
-The first concrete demand: an operator wants to paste a phone screenshot of an Azure portal error directly into the chat and ask the agent "what does this error mean and how do I fix it?". On desktop browsers and on iOS Safari/Android Chrome the OS already supports clipboard images; the portal just throws them away.
+The concrete demand: paste a screenshot (desktop **or phone**) into the chat and ask "what does this error mean and how do I fix it?".
 
 ## Goals
 
-1. Let an operator attach **one or more images** to a chat message in the portal **and** the native TUI, with the model receiving them as multimodal content (not as a "here's a path" hack).
-2. Support **clipboard paste** of images in the portal — desktop **and mobile** browsers (iOS Safari, Android Chrome).
-3. Support **drag-and-drop** and an **explicit file picker** (paperclip button) in the portal.
-4. Support attach-by-path in the native TUI through the existing `Ctrl+A` attach dialog.
-5. **Persist** attachments as binary artifacts so they survive session dehydration/hydration and appear in the file inspector.
-6. **Gracefully degrade** when the active model is non-vision: keep the image in the transcript and artifacts, but drop it from the model call with an explicit system-side note instead of silently corrupting the request.
+1. Attach one or more images to a chat message from the **portal** — clipboard paste (Ctrl/Cmd+V), drag-and-drop, and an explicit picker — on desktop and mobile browsers (photo library / camera on phones).
+2. The model receives the images as **true multimodal content**, not a path hack.
+3. Every attached image is persisted as a **session binary artifact** — the artifact is the source of truth; messages carry references.
+4. The same capability is reachable from the **TUI**, the **MCP server**, and the **Web API / SDK** directly.
+5. **Graceful degradation** on non-vision models: image stays in the transcript and artifact store; the model call proceeds text-only with an explicit note.
+6. Safe rollout across a mixed-version fleet (old workers + new portal and vice versa).
 
 ## Non-Goals
 
-- **Agents generating images.** Tools that emit images for the user are tracked separately. v1 only handles user → model.
-- **Tool results carrying images** (e.g. a `read_image_artifact` tool that returns base64 to the model). Today tool results are text-only and we keep it that way for v1.
-- **Inline pixel rendering in the terminal.** TUIs render an `[image: filename · size]` chip; no Sixel / iTerm2 escape-code rendering in v1.
+- **Agents producing images for the user** (tracked separately; this is user → model only).
+- **Tool results carrying images** (tool results stay text-only in v1).
+- **Terminal pixel rendering** (no Sixel/iTerm2 escapes; the TUI renders text chips).
 - **Video, audio, PDF-as-image.** Static raster only: PNG, JPEG, GIF, WebP.
-- **Long-term streaming uploads** beyond the per-message cap (see Limits).
+- **HEIC transcoding** (v1 rejects HEIC; most mobile browsers hand us JPEG/PNG on paste anyway).
 
-## Resolved Decisions
+## How images reach the model
 
-| # | Decision | Notes |
-|---|----------|-------|
-| 1 | Storage model | **Every attached image is also a binary artifact.** No separate "attachment-only" storage. The artifact is the source of truth; the turn record references it by `filename`. |
-| 2 | Wire encoding | **base64**, same contract as binary artifacts. Inline `data` field for transient/small images, `artifactId` reference for already-uploaded. |
-| 3 | Inline → artifact promotion | All inline images are **promoted to artifacts before the turn is persisted**. Inline `data` is a transport convenience, not a storage tier. |
-| 4 | Per-attachment cap | **4 MB decoded.** Lower than the 10 MB binary artifact cap because vision-model image budgets are typically 4–5 MB and we want the SDK boundary to enforce that, not the provider. |
-| 5 | Per-message budget | **Max 4 images, total ≤ 8 MB decoded.** |
-| 6 | Allowed types | `image/png`, `image/jpeg`, `image/gif` (first frame only on the model side, per most providers), `image/webp` (static only). Reject SVG (script surface) and animated WebP. |
-| 7 | EXIF stripping | **On**, server-side, via `sharp`, before the artifact is written. Removes GPS and camera metadata that users typically don't realize is in their screenshots. |
-| 8 | Magic-byte sniff | **Reuse the binary-artifact sniff.** Mismatch → reject. |
-| 9 | Vision-capability source | **Provider-model allowlist** in v1 (hardcoded). Move to a registry once we add a third provider. |
-| 10 | Mobile paste | **Required.** First-class. The product reason this proposal exists is "operator pastes phone screenshot". |
-
-## Design
-
-### End-to-end flow
-
-```
-┌──────────────────────────────┐
-│ User pastes / drops / picks  │
-│ image in portal InputBar     │
-└──────────────┬───────────────┘
-               │ (1) FileReader → ArrayBuffer → base64
-               ▼
-┌──────────────────────────────┐
-│ Portal browser-transport.js  │
-│ POSTs prompt + attachments   │
-│ as base64 over WS/JSON-RPC   │
-└──────────────┬───────────────┘
-               │ (2) sendStructuredPrompt(sessionId, {text, attachments})
-               ▼
-┌──────────────────────────────┐
-│ PortalRuntime → SDK client   │
-│ client.sendStructured(...)   │
-└──────────────┬───────────────┘
-               │ (3) duroxide command:
-               │     "send_user_message"
-               │     payload includes attachments
-               ▼
-┌──────────────────────────────┐
-│ session-proxy.ts             │
-│ • promotes inline data → art │
-│ • writes artifact rows       │
-│ • persists structured turn   │
-│ • dispatches to runTurn      │
-└──────────────┬───────────────┘
-               │ (4) ManagedSession.runTurn(promptInput)
-               ▼
-┌──────────────────────────────┐
-│ Provider translator builds   │
-│ multimodal content[] array   │
-│ { type: image_url|image, ...}│
-└──────────────┬───────────────┘
-               │ (5) copilotSession.send({ prompt: contentParts })
-               ▼
-              LLM
-```
-
-### Data model — `PromptInput`
-
-The string-only prompt becomes a discriminated union. Every layer accepts both shapes; only the lowest layer (`ManagedSession`) cares about the structured form.
+This is the load-bearing fact of the design: **the Copilot SDK already does the multimodal work.** PilotSwarm's agent loop is `@github/copilot-sdk`, and `session.send()` accepts blob attachments alongside the prompt:
 
 ```ts
-// packages/sdk/src/types.ts
-export type PromptInput =
-  | string
-  | StructuredPromptInput;
-
-export type StructuredPromptInput = {
-  text: string;
-  attachments?: PromptAttachment[];
-};
-
-export type PromptAttachment =
-  | InlineImageAttachment
-  | ArtifactRefAttachment;
-
-export type InlineImageAttachment = {
-  kind: "image";
-  filename: string;             // for display + artifact mirror
-  contentType: string;          // image/png | image/jpeg | image/gif | image/webp
-  data: string;                 // base64; promoted to artifact before persistence
-};
-
-export type ArtifactRefAttachment = {
-  kind: "image";
-  filename: string;
-  contentType: string;
-  artifactId: string;           // matches an existing artifact in this session
-};
+await copilotSession.send({
+    prompt: "What does this error mean?",
+    attachments: [
+        { type: "blob", data: "<base64>", mimeType: "image/png", displayName: "screenshot.png" },
+    ],
+});
 ```
 
-`PilotSwarmClient.send`, `PilotSwarmSession.send`, and `ManagedSession.runTurn` all accept `PromptInput`. The `string` overload remains and is the dominant call site — no churn for any non-attachment caller.
+The Copilot CLI runtime packs blob attachments into the provider-specific multimodal content (Anthropic `{type:"image", source:{type:"base64",…}}`, OpenAI `image_url` data-URL, …). **PilotSwarm does not implement any provider translation.**
 
-### SDK — what changes
-
-| File | Change |
-|---|---|
-| [`packages/sdk/src/types.ts`](../../packages/sdk/src/types.ts) | Add `PromptInput`, `PromptAttachment`, `StructuredPromptInput`, `InlineImageAttachment`, `ArtifactRefAttachment`. |
-| [`packages/sdk/src/client.ts`](../../packages/sdk/src/client.ts) | `send(prompt: PromptInput)`. Internal serializer pushes the structured payload through the existing duroxide command channel. |
-| [`packages/sdk/src/session-proxy.ts`](../../packages/sdk/src/session-proxy.ts) | New activity `promoteInlineAttachments(sessionId, attachments)` that uploads inline base64 → artifacts (using the binary-artifacts API) and rewrites them to `ArtifactRefAttachment`. Runs **inside an activity** so it's deterministic on replay (the artifact filenames are deterministic — see "Filenames" below). |
-| [`packages/sdk/src/managed-session.ts`](../../packages/sdk/src/managed-session.ts) | `runTurn(prompt: PromptInput)`. Builds the provider-shaped multimodal payload. Capability check + graceful drop. |
-| [`packages/sdk/src/cms.ts`](../../packages/sdk/src/cms.ts) | Persist the structured user message (text + attachment refs). New CMS column `attachments_json TEXT NULL` on the turns table — see Schema migration. |
-| New: [`packages/sdk/src/multimodal.ts`](../../packages/sdk/src/multimodal.ts) | Provider translators (`buildOpenAIContent`, `buildAnthropicContent`, `buildGeminiContent`) + `providerSupportsVision(model)`. |
-| [`packages/sdk/src/management-client.ts`](../../packages/sdk/src/management-client.ts) | `sendMessage(sessionId, prompt: PromptInput)`. |
-
-### Provider translation
-
-`multimodal.ts` owns the provider-specific shape. The active provider is already known at `runTurn` time (model selector resolves it):
+Vision support is per-model runtime metadata, not a hardcoded allowlist. The model catalog exposes:
 
 ```ts
-// OpenAI / GHCP
-{ role: "user", content: [
-    { type: "text", text: "..." },
-    { type: "image_url", image_url: { url: "data:image/png;base64,...", detail: "auto" }}
-]}
-
-// Anthropic
-{ role: "user", content: [
-    { type: "text", text: "..." },
-    { type: "image", source: { type: "base64", media_type: "image/png", data: "..." }}
-]}
-
-// Gemini
-{ role: "user", parts: [
-    { text: "..." },
-    { inlineData: { mimeType: "image/png", data: "..." }}
-]}
-```
-
-The Copilot session API today only takes `{ prompt: string }`. We extend its surface to accept `{ prompt: string | ContentPart[] }` (passthrough to the underlying provider call). If the SDK upstream blocks that, the translator falls back to a `data:` URL embedded in a single message field — uglier but unblocks shipping.
-
-### Filenames (replay-safe)
-
-Inline attachments need deterministic artifact names so an orchestration replay produces the exact same artifact paths. We **do not** use `Date.now()` or `Math.random()` for the suffix.
-
-```
-attach-{turnIndex}-{messageNumber}-{n}.{ext}
-```
-
-Where:
-
-- `turnIndex` is the durable turn counter the orchestration already maintains.
-- `messageNumber` is the per-turn user-message index (almost always `1`).
-- `n` is the position within the message.
-- `ext` is derived from `contentType`.
-
-Example: `attach-0034-1-2.png`. Replay produces the same name and overwrites the same artifact path idempotently — no duplicates.
-
-### CMS schema migration
-
-New migration in [`packages/sdk/src/migrations/`](../../packages/sdk/src/migrations/):
-
-```
-NNNN_add_turn_attachments.sql
-NNNN_diff.md
-```
-
-```sql
-ALTER TABLE copilot_sessions.turns
-  ADD COLUMN IF NOT EXISTS attachments_json JSONB NULL;
-
-COMMENT ON COLUMN copilot_sessions.turns.attachments_json IS
-  'Structured user-message attachments (image refs to artifacts). NULL for legacy text-only turns.';
-
-CREATE OR REPLACE FUNCTION copilot_sessions.append_turn(
-  ...existing params...,
-  p_attachments_json JSONB DEFAULT NULL
-) RETURNS BIGINT AS $$
-  ...existing body, additionally inserting p_attachments_json...
-$$ LANGUAGE plpgsql;
-```
-
-Per the [`schema-migration` skill](../../.github/skills/schema-migration/SKILL.md): never edit a previous migration; the diff file describes the stored-proc delta; the field is nullable so older rows stay valid.
-
-The selector that builds the transcript (`session-proxy.ts` → `getTurns`) reads `attachments_json` and surfaces it on the turn record. Existing transcript readers ignore unknown fields.
-
-### Capability detection — `providerSupportsVision`
-
-```ts
-const VISION_MODELS = new Set([
-  // OpenAI / GHCP
-  "gpt-4o", "gpt-4o-mini", "gpt-4-turbo",
-  // Anthropic
-  "claude-3-5-sonnet", "claude-3-5-haiku", "claude-3-opus",
-  // Gemini
-  "gemini-1.5-pro", "gemini-1.5-flash", "gemini-2.0-flash",
-]);
-
-export function providerSupportsVision(modelId: string): boolean {
-  // Match by stem so version suffixes don't break detection.
-  const stem = modelId.split(/[-:@]/).slice(0, 3).join("-");
-  return VISION_MODELS.has(stem) || /-vision/i.test(modelId);
+interface ModelCapabilities {
+    supports: { vision: boolean; … };
+    limits: {
+        vision?: {
+            supported_media_types: string[];
+            max_prompt_images: number;
+            max_prompt_image_size: number;
+        };
+    };
 }
 ```
 
-When `providerSupportsVision === false` and the prompt has attachments:
+For BYOK providers (`azure-openai`, `anthropic` entries in `.model_providers.json`), the per-model `capabilities` override declares vision where the synthesized catalog entry doesn't.
 
-1. The image is **kept in the transcript and artifacts** (operator can still see what they sent).
-2. The model call is sent with text only.
-3. A system note is appended *to the prompt text* sent to the model:
-   `[image attachment '{filename}' omitted — current model '{modelId}' does not support vision]`
-4. A new **event** of kind `attachment_dropped` is emitted (see "New event" below) so the TUI/portal can render a small inline notice.
+## Architecture: upload first, reference after
 
-### New event: `attachment_dropped`
+Image **bytes** travel exactly once, over the existing artifact upload path. Everything downstream carries a **reference**.
 
-Per the [`add-event` skill](../../.github/skills/add-event/SKILL.md):
+```
+┌──────────────────────────────────────────────┐
+│ Composer (portal paste/drop/pick, TUI path,  │
+│ MCP upload_artifact, SDK caller)             │
+└──────────────────┬───────────────────────────┘
+                   │ (1) PUT /api/v1/sessions/:id/artifacts/:filename
+                   │     (base64 body; bytes land in Azure Blob / fs store)
+                   ▼
+┌──────────────────────────────────────────────┐
+│ sendMessage(sessionId, prompt,               │
+│   { attachments: [{ filename }] })           │
+└──────────────────┬───────────────────────────┘
+                   │ (2) server resolves + validates refs against the
+                   │     artifact store; enqueues
+                   │     { prompt, attachments: [{filename, contentType,
+                   │       sizeBytes}] } on the durable messages queue
+                   ▼
+┌──────────────────────────────────────────────┐
+│ Orchestration (1.0.65) dequeue + merge       │
+│ threads attachments → runTurn opts           │
+└──────────────────┬───────────────────────────┘
+                   │ (3) runTurn(prompt, { attachments })
+                   ▼
+┌──────────────────────────────────────────────┐
+│ ManagedSession.runTurn                       │
+│ • fetch bytes from artifact store            │
+│ • re-sniff content type                      │
+│ • vision gate (model catalog)                │
+│ • copilotSession.send({ prompt,              │
+│     attachments: [{type:"blob", …}] })       │
+└──────────────────┬───────────────────────────┘
+                   ▼
+                  LLM
+```
 
-- Fired from `ManagedSession.runTurn` via the `onEvent` callback when the capability check trims an attachment.
-- Persisted in CMS via `session-proxy.ts` event capture.
-- Surfaced through `PilotSwarmSession.on("event", ...)` with no special filtering.
-- Payload: `{ filename, contentType, modelId, reason: "no_vision_support" | "size_exceeded" | "type_rejected" }`.
+Why upload-first instead of inline base64 through the message pipe:
 
-### Portal — InputBar
+- The Web API's JSON envelope is capped at 2 MB (`express.json`); a phone screenshot exceeds it after base64.
+- The durable queue payload is recorded in Postgres orchestration history and replayed; megabytes of base64 per message would bloat history and replay traffic permanently.
+- Replay determinism comes free: the recorded queue event carries only the refs; `runTurn` is an activity, so byte-fetching happens inside it and is never re-executed on replay.
+- The image shows up in the Files pane, survives dehydration/hydration, and the agent can re-read it later via `read_artifact` — all existing machinery.
 
-Three input paths, all producing the same `InlineImageAttachment[]`:
-
-#### 1. Clipboard paste (desktop **and mobile**)
+## Wire contract
 
 ```ts
-// Listener on the prompt textarea
-inputEl.addEventListener("paste", async (e) => {
-  const items = e.clipboardData?.items || [];
-  const attachments: InlineImageAttachment[] = [];
-  for (const item of items) {
-    if (!item.type.startsWith("image/")) continue;
-    const blob = item.getAsFile();
-    if (!blob) continue;
-    e.preventDefault();
-    attachments.push(await blobToInlineAttachment(blob));
-  }
-  if (attachments.length) addAttachments(attachments);
-});
+// What clients send (filename only — everything else is server-resolved)
+type SendAttachmentInput = { filename: string };
+
+// What the server enqueues after validating against the artifact store
+type PromptAttachmentRef = {
+    filename: string;
+    contentType: string;   // from artifact metadata, not client-declared
+    sizeBytes: number;
+};
 ```
 
-Mobile specifics:
+- `sendMessage` (Web API op, SDK clients, MCP tool) gains an optional `attachments: SendAttachmentInput[]`.
+- The server (management client) validates each ref: artifact exists in this session, content type is an allowed raster image, size and count within caps. Invalid → the whole send is rejected with a specific error; nothing is enqueued.
+- The durable queue payload gains `attachments: PromptAttachmentRef[]`, included **only when present** — the established rule that keeps the JSON byte-stable for existing callers and frozen orchestration replays.
+- The `user.message` session event carries the same refs in its schemaless JSON `data` — **no CMS migration**. Transcript readers that don't know the field ignore it.
+- The multi-message merge path (batched queue drain) concatenates attachment lists in message order, subject to the per-turn caps.
 
-- **iOS Safari** delivers pasted images via `clipboardData.items` of type `image/png` (screenshots) or `image/jpeg` (camera roll). This works in iOS 13.4+. The portal must call `e.preventDefault()` on paste with image content so iOS does not also insert a placeholder character into the textarea.
-- **Android Chrome** delivers via the same `clipboardData.items` API. No special handling.
-- **iOS Safari long-press → Paste**: same path; the menu calls the underlying paste event.
-- **iOS Share Sheet → "Copy"** then paste in the portal: produces an `image/jpeg` blob in the clipboard. Works.
-- We also wire an `<input type="file" accept="image/*" capture="environment">` fallback (see picker below) for users who can't get the paste menu to surface — this is the most common mobile failure mode.
+## SDK changes
 
-#### 2. Drag and drop (desktop)
+| File | Change |
+|---|---|
+| `packages/sdk/src/types.ts` | `PromptAttachmentRef`, `SendAttachmentInput`, attachment error codes. |
+| `packages/sdk/src/management-client.ts` | `sendMessage(sessionId, prompt, { attachments })` — validate refs against the artifact store, enqueue with refs. |
+| `packages/sdk/src/client.ts` / `session-manager.ts` | `PilotSwarmSession.send(prompt, { attachments })` — same payload through the start-aware path. |
+| `packages/sdk/src/orchestration/` (as **1.0.65**) | `queue.ts`: carry `msg.attachments` through dequeue and merge. `turn.ts`: pass to `runTurn` opts. Record refs on the `user.message` event. |
+| `packages/sdk/src/orchestration_1_0_64/` | Frozen snapshot of the current live dir (mechanical, per the freeze convention; registry + `DURABLE_SESSION_LATEST_VERSION` bump). |
+| `packages/sdk/src/managed-session.ts` | `runTurn(prompt, …, { attachments })` — fetch bytes, re-sniff, vision-gate, build blob attachments, send. |
+| `packages/sdk/src/worker.ts` / capabilities | `getCapabilities()` → `prompt: { imageAttachments: true }`. |
 
-```ts
-promptArea.addEventListener("drop", async (e) => {
-  e.preventDefault();
-  const files = Array.from(e.dataTransfer?.files || []);
-  const attachments = await Promise.all(
-    files.filter(f => f.type.startsWith("image/")).map(blobToInlineAttachment)
-  );
-  if (attachments.length) addAttachments(attachments);
-});
+### Vision gating (in `runTurn`)
+
+At send time, resolve the active model's catalog entry:
+
+- `supports.vision === true` → attach blobs; clamp against `limits.vision` (`max_prompt_images`, `max_prompt_image_size`, `supported_media_types`) — over-limit attachments are dropped with a note rather than failing the turn.
+- `supports.vision === false` (or capability unknown) → send text-only, appending to the prompt:
+
+  `[image attachment 'screenshot.png' omitted — model 'gpt-5.4-nano' does not support image input]`
+
+- Every drop emits a captured diagnostic event `runtime.attachment_dropped` `{ filename, contentType, modelId, reason }` (same pattern as `runtime.tool_call_as_text`), so both UIs can render an inline notice and the tuner can see it.
+- The image remains in the transcript and the artifact store regardless — switching to a vision model and re-asking works without re-uploading.
+
+## Limits & validation
+
+| Limit | Value | Enforced |
+|---|---|---|
+| Per attachment (decoded) | 4 MB | composer (pre-upload) + server (sendMessage validation) |
+| Per message | 4 images, ≤ 8 MB total | composer + server; merge path re-checks per turn |
+| Allowed types | `image/png`, `image/jpeg`, `image/gif`, `image/webp` (static) | server, via the existing `file-type` magic-byte sniff — declared type must match bytes |
+| Rejected | SVG (script surface), animated WebP, HEIC, everything else | server |
+| Provider clamp | model's `limits.vision.*` | `runTurn`, drop-with-note |
+
+Upload envelope: the artifact PUT route gets a **route-specific body limit of 8 MB** (a larger `express.json` parser mounted just for that path), leaving the global 2 MB cap untouched for every other op. A streaming raw-body upload route (mirroring the existing streaming download route) is deliberately deferred — images fit comfortably in 8 MB of base64.
+
+## Portal UI
+
+All three input paths feed the controller's existing (currently dormant) prompt-attachment state — `ui.promptAttachments`, `setPromptAttachments`, `uploadPromptAttachmentFiles` in `packages/app/ui/core/src/controller.js` — which finally gets its UI callers.
+
+1. **Clipboard paste** — `onPaste` on the `ps-prompt-input` textarea reads `event.clipboardData.items`, takes `image/*` items via `getAsFile()`, and calls `event.preventDefault()` for image content so no placeholder text lands in the textarea. This is the identical API on desktop Chrome/Safari/Firefox, iOS Safari 13.4+, and Android Chrome — **mobile paste is the same handler**.
+2. **Drag-and-drop** — `drop`/`dragover` on the prompt shell; activates the already-present-but-unwired `.is-drag-over` CSS ([`packages/app/web/src/index.css`](../../packages/app/web/src/index.css)).
+3. **Picker** — a paperclip `IconButton` + hidden `<input type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple>` (the FilesPane hidden-input pattern, moved into the composer). On phones, `accept="image/*"` makes the browser offer photo library and camera.
+
+**Pending chips**: a horizontal strip above the send row — 64 px thumbnail (`URL.createObjectURL`, revoked on removal), filename, size, `✕`. Send uploads each pending image as a session artifact (deterministic name `attach-<clientMessageId>-<n>.<ext>`), then dispatches the message with `attachments` refs and clears the chips. Upload failure keeps the chip in an error state; the message is not sent half-attached.
+
+**Transcript rendering**: a new `image` block type in `StructuredChatBlocks` ([`packages/app/ui/react/src/web-app.js`](../../packages/app/ui/react/src/web-app.js)) renders a thumbnail strip on user messages that carry attachment refs. Thumbnails **must not** point `<img src>` at the download URL — it requires a Bearer token — so the block fetches bytes through the authenticated transport and renders an object URL (the same pattern `browser-transport.js` uses for downloads), with an in-memory LRU so scrolling doesn't refetch. Click-through opens the artifact preview.
+
+**Files pane**: the "preview intentionally disabled" binary card starts rendering `image/*` artifacts inline (authenticated fetch → object URL). Cheap, and it doubles as the click-through target.
+
+**Capability gating**: paste/drop/picker are active only when the worker reports `prompt.imageAttachments` (and, if known, the selected model reports vision — otherwise the chip row shows a "model can't see images" hint rather than blocking the send).
+
+## TUI
+
+Terminals cannot deliver clipboard image bytes through stdin, so the TUI path is **attach-by-path**, reusing the shared controller state (which makes the send path identical to the portal's):
+
+1. A composer keybinding opens an "Attach image" path input (the TUI's existing overlay/dialog machinery). The path is read from local disk by the node transport, uploaded via `uploadArtifactContent` ([`packages/app/tui/src/node-sdk-transport.js`](../../packages/app/tui/src/node-sdk-transport.js)), and pushed onto `ui.promptAttachments`.
+2. Pending attachments render as text chips in the composer: `[image: build.png · 312 KB] ✕`.
+3. Transcript user messages with refs render `[image: attach-….png · image/png · 312 KB]` chips; `o` on a focused chip opens the downloaded artifact externally (existing open-externally plumbing).
+4. **Best-effort clipboard**: when a helper binary exists, a "paste image from clipboard" action shells out to `pngpaste` (macOS), `wl-paste`/`xclip -t image/png` (Linux), or PowerShell `Get-Clipboard` (Windows), writes a temp file, and joins the same path. Absent helper → the action is hidden. Never a hard dependency.
+
+## MCP server & direct API
+
+The operator surface composes two existing-plus-one-extended primitives — upload the bytes, then reference them:
+
+```jsonc
+// 1. Upload the image as a session artifact (existing tool, base64, 2 MB envelope —
+//    callers with larger images use the Web API PUT route which allows 8 MB)
+upload_artifact {
+  "session_id": "…", "filename": "screenshot.png",
+  "content": "<base64>", "content_type": "image/png", "content_encoding": "base64"
+}
+
+// 2. Send the message referencing it (extended tool)
+send_message {
+  "session_id": "…",
+  "message": "What does this Azure error mean?",
+  "attachments": [{ "filename": "screenshot.png" }]
+}
 ```
 
-`dragover` listener calls `preventDefault()` to enable drop and toggles a CSS class `is-drop-target` on the input shell.
+- `send_message` and `send_and_wait` gain the optional `attachments` parameter, passed through as `options.attachments` on the `sendMessage` op. Validation (existence, type, caps) happens server-side exactly as for the portal; the MCP tool surfaces the specific rejection error.
+- `create_session`'s initial prompt gets the same parameter in a follow-up (v1.1) — it needs the session id to exist before the artifact upload, so the v1 flow is create → upload → send.
+- **Web API**: the `sendMessage` op (`POST /api/v1/sessions/:sessionId/messages`) body becomes `{ prompt, options: { …, attachments?: [{ filename }] } }` in [`packages/sdk/api/src/protocol.js`](../../packages/sdk/api/src/protocol.js).
+- **SDK**: `PilotSwarmSession.send(prompt, { attachments })`, `PilotSwarmManagementClient.sendMessage(sessionId, prompt, { attachments })`, and the web-mode `WebManagementClient` mirror. String-only callers are untouched.
 
-#### 3. Explicit picker — paperclip button
+## Security
 
-```html
-<button type="button" class="ps-attach-button" aria-label="Attach image">📎</button>
-<input type="file" accept="image/png,image/jpeg,image/gif,image/webp"
-       multiple capture="environment" hidden />
-```
+1. **Trust bytes, not declarations.** The existing magic-byte sniff validates content type at artifact upload; `sendMessage` validation and `runTurn` both re-check against artifact metadata.
+2. **No SVG** (script surface), **no animated WebP**, no HEIC.
+3. **DOM hygiene**: thumbnails are object URLs from authenticated fetches, revoked on removal — never `data:` URLs injected into `src`, no new CSP directives.
+4. **Auth**: attachments inherit session auth end-to-end (`session:write` to upload and send; the download/preview path is the already-authenticated artifact API). No new ACL surface.
+5. **EXIF**: v1 does **not** strip metadata. Screenshots — the motivating case — carry no GPS EXIF; phone camera photos do. Server-side EXIF stripping via `sharp` is a fast-follow (it adds a native dep to the worker image and is isolated to the artifact-upload path). Until then, this is a documented caveat.
+6. **Abuse caps**: the per-message limits above; uploads and sends ride the existing per-session auth and rate paths.
 
-The `capture="environment"` attribute is what makes mobile browsers offer the camera or photo library; `accept` filters to images only.
+## Rollout & compatibility
 
-#### Attachment chips (composer UI)
-
-Below the textarea, a horizontal row of chips:
-
-```
-┌────────────┐ ┌────────────┐
-│ [thumb 64] │ │ [thumb 64] │  build.png · 312 KB
-│      ✕     │ │      ✕     │
-└────────────┘ └────────────┘
-```
-
-- Thumbnail uses `URL.createObjectURL(blob)` (no base64 in the DOM).
-- `✕` removes from the pending-attachments array.
-- Sending clears the chips after the structured prompt is enqueued.
-
-### Native TUI — attach by path
-
-The TUI's existing `Ctrl+A` opens an attach-file dialog. Two changes:
-
-1. **Filter**: accept `image/*` extensions when the user is composing a prompt (the existing dialog already handles arbitrary files; we surface only the image-relevant ones in the suggestion list).
-2. **Wire to structured prompt**: read the file via `fs.readFile`, base64-encode, push to the pending-attachment list. Render in the prompt as a textual chip:
-
-   ```
-   [📎 build.png · 312 KB · attached]
-   ```
-
-3. On send, the CLI builds `StructuredPromptInput` and calls `client.send`.
-
-No clipboard paste in the terminal — terminals can't reliably surface clipboard images. The attach dialog is the supported path. (The shared `ui-core` controller knows about attachments; only the portal host wires up the paste/drop listeners.)
-
-### Transcript rendering
-
-#### Portal
-
-The user message bubble renders the text plus a thumbnail strip:
-
-```
-You · 4:42 pm
-Take a look at this screenshot.
-┌──────────┐ ┌──────────┐
-│ 96 × 96  │ │ 96 × 96  │
-└──────────┘ └──────────┘
-```
-
-Click → opens the artifact viewer (binary placeholder card + Download button — image preview is **out of scope for v1** of the binary-artifact viewer; the click-through respects whatever the binary viewer ships).
-
-#### TUI
-
-```
-You · 4:42 pm
-  Take a look at this screenshot.
-  [📎 attach-0012-1-1.png · image/png · 312 KB]
-  [📎 attach-0012-1-2.png · image/png · 287 KB]
-```
-
-Press `o` on a focused chip → opens via `open` / `xdg-open` / `start` (same plumbing as binary-artifact `Open externally`).
-
-### Limits
-
-- **Per attachment**: 4 MB decoded. Reject earlier than provider limits to give a clear error in the UI.
-- **Per message**: max 4 attachments, total decoded ≤ 8 MB.
-- **Allowed MIME**: `image/png`, `image/jpeg`, `image/gif`, `image/webp`. Reject everything else (including `image/svg+xml`, `image/heic` — HEIC needs server-side transcoding which we defer).
-- **Max width / height**: no hard cap, but EXIF strip + JPEG/PNG re-encode pass via `sharp` will pass through dimensions unchanged. Operators with 4096×4096 PNGs may hit the byte cap before any pixel cap.
-
-### Worker capability flag
-
-The portal and TUI feature-gate the attach UI on a worker capability returned at session bootstrap:
-
-```ts
-// management-client.ts → getCapabilities()
-{ artifacts: { binary: true }, prompt: { imageAttachments: true } }
-```
-
-Older workers return `{ prompt: { imageAttachments: false } }`; the portal hides the paperclip button and disables the paste handler in that case. This keeps the rollout safe across mixed worker versions during AKS rollout.
-
-### Security
-
-1. **Type sniffing required.** Reuse the magic-byte sniff from binary artifacts. Trust bytes, not the declared `contentType`.
-2. **EXIF strip.** Server-side via `sharp` before the artifact is written. Round-trips PNG/JPEG/WebP without metadata. Animated GIF: pass through unchanged (re-encoding animated frames is expensive; first-frame extraction happens only on the model-call path, not on storage).
-3. **No SVG, no animated WebP.** SVG is a script surface; animated WebP is a known fuzzing target in older renderers.
-4. **DOM hygiene.** Portal renders thumbnails via `URL.createObjectURL(blob)` (revoked when the chip is removed) — never inject `data:` URLs into `src` attributes.
-5. **CSP.** No new `connect-src` or `img-src` directives needed; thumbnails are blob URLs and full-size renders go through the authenticated artifact download URL.
-6. **Rate limit.** Per session: max 20 image-bearing messages per minute. Per worker: enforced in `ManagedSession` before `copilotSession.send`.
-7. **Auth.** Attachments inherit session auth; no separate ACL surface. The artifact-download endpoint already requires auth.
-
-### Backward compatibility
-
-- All existing `client.send(promptString)` callers behave identically — string overload unchanged.
-- Workers without the new activity reject `attachments` at the duroxide command boundary with a clear error; portal/TUI gate UI on the capability flag (above).
-- Older clients reading turns from CMS that include `attachments_json` ignore the field (additive column, additive output shape).
-- Sessions dehydrated before this feature land hydrate cleanly (the new activity isn't in their history; nothing to replay).
-
-### Operational notes
-
-- **`sharp` is a native dep.** Adds a build step on the worker image. The Dockerfile already installs platform binaries (`linux/amd64` per the AKS build rule); `sharp` ships prebuilt binaries for that triple, no extra work expected.
-- **Worker memory budget.** EXIF strip is bounded — `sharp` streams the image. 4 MB attachment ≈ 25 MB peak working set (decoded raster). At max 4 attachments per message and our typical 8-worker pod allocation, the worst case is ~800 MB transient — fits comfortably.
-- **Token cost surfacing.** `read_session_metric_summary` already tracks tokens. Add `image_input_tokens` to the per-turn metric so the agent-tuner can see which sessions are burning the most vision budget. Per the observability rule in `.github/copilot-instructions.md`, expose this through `PilotSwarmManagementClient.getSessionMetricSummary` and via the `read_session_metric_summary` tuner inspect-tool.
+- **String prompts are untouched** at every layer; `attachments` is optional everywhere and absent-by-default in every serialized payload.
+- **Orchestration versioning**: the live dir ships as **1.0.65** after freezing today's 1.0.64 snapshot (`orchestration_1_0_64/`, registry entry, version bump — the same mechanical freeze as every prior release). In-flight sessions continue-as-new onto 1.0.65 at their next handoff.
+- **Mixed fleet**: an old worker that dequeues a payload with `attachments` ignores the unknown field and runs text-only — degraded, never broken. The portal/TUI hide the attach UI unless `getCapabilities()` reports `prompt.imageAttachments`, so this window only exists for raw API/MCP callers.
+- **Old clients** reading `user.message` events with an `attachments` field ignore it (additive JSON).
+- Sessions dehydrated before this feature hydrate cleanly; nothing new is in their history.
 
 ## Phasing
 
-Phase A — **SDK structured prompt** (one PR):
+**Phase 0 — live probe (half a day).** Script: per provider/model, open a Copilot session, send a tiny PNG blob attachment, ask "what's in this image?", and dump each catalog entry's `supports.vision` / `limits.vision`. Pins down real per-model limits and validates the blob path end-to-end before any product code.
 
-- `PromptInput` types, client/session/management-client `send` overloads.
-- Duroxide command payload extended with `attachments`.
-- `promoteInlineAttachments` activity (deterministic filenames, idempotent overwrite).
-- CMS migration `NNNN_add_turn_attachments`.
-- New event `attachment_dropped`.
-- Capability flag in worker bootstrap.
+**Phase 1 — backend threading.** Freeze 1.0.64 → live dir becomes 1.0.65 with attachment threading; `sendMessage` validation + payload; `runTurn` blob send + vision gate + `runtime.attachment_dropped`; capability flag; artifact PUT body-limit raise. Tests below.
 
-Phase B — **Provider translator** (separate PR, no UI yet):
+**Phase 2 — portal composer.** Paste/drop/picker + chips wired to the dormant controller plumbing; upload-then-send; capability gating; client-side caps.
 
-- `multimodal.ts` with OpenAI / Anthropic / Gemini translators.
-- `providerSupportsVision` + capability-aware drop with system note.
-- `image_input_tokens` metric.
-- Tests with a known-vision model and a known-text-only model.
+**Phase 3 — rendering.** Transcript image blocks (authenticated thumbnails) in portal; Files-pane inline image preview.
 
-Phase C — **Portal InputBar** (separate PR):
+**Phase 4 — TUI + MCP.** Attach-by-path overlay + chips; `send_message`/`send_and_wait` attachments param.
 
-- Paste / drag / picker handlers.
-- Attachment chips below textarea.
-- Thumbnail strip in user message bubbles.
-- Capability-flag gating.
-- Mobile QA on iOS Safari + Android Chrome.
+**Phase 5 — polish.** EXIF strip via `sharp`; HEIC decision from mobile QA; `create_session` attachments; mobile device QA matrix (iOS Safari paste/long-press/picker/camera, Android Chrome all paths, iPad ⌘V).
 
-Phase D — **TUI attach** (separate PR):
+## Testing
 
-- Extend `Ctrl+A` dialog to push to structured prompt.
-- Attachment chip rendering in the prompt and transcript.
-- `o` keybinding on chip → external open.
-- Update [`docs/keybindings.md`](../user-guide/keybindings.md) and [`packages/cli/src/app.js`](../../packages/cli/src/app.js); per the TUI keybinding rule, also update status hints, prompt placeholders, and help dialog.
+New suites live in the existing structure and are registered in the standard local test scripts.
 
-Phase E — **Docs + sample**:
+`packages/sdk/test/local/prompt-attachments.test.js`:
 
-- New "Image attachments" section in [`docs/sdk/`](../developer/building).
-- Add a turn to the DevOps sample that pastes a screenshot and asks the agent to interpret it.
-- Update [`templates/builder-agents/`](../../templates/builder-agents/) docs if they mention prompt shape.
-- Update [`.github/skills/pilotswarm-tui/SKILL.md`](../../.github/skills/pilotswarm-tui/SKILL.md) with the new attach UX.
-
-Phase A unlocks any direct-SDK caller; Phase C unlocks the operator workflow that motivates this proposal.
-
-## Public API surface diff
-
-| Symbol | Before | After |
-|---|---|---|
-| `PilotSwarmClient.send` | `(prompt: string)` | `(prompt: PromptInput)` |
-| `PilotSwarmSession.send` | `(prompt: string, opts?)` | `(prompt: PromptInput, opts?)` |
-| `PilotSwarmManagementClient.sendMessage` | `(sessionId, prompt: string)` | `(sessionId, prompt: PromptInput)` |
-| `ManagedSession.runTurn` | `(prompt: string, opts?)` | `(prompt: PromptInput, opts?)` |
-| New SDK exports | — | `PromptInput`, `PromptAttachment`, `InlineImageAttachment`, `ArtifactRefAttachment`, `providerSupportsVision` |
-| Worker capabilities | `{ artifacts: { binary } }` | `{ artifacts: { binary }, prompt: { imageAttachments } }` |
-| Turn record | `{ ..., text }` | `{ ..., text, attachments?: ArtifactRefAttachment[] }` |
-| New event kind | — | `attachment_dropped` |
-| New CMS column | — | `copilot_sessions.turns.attachments_json JSONB` |
-| New metric | — | `image_input_tokens` on session metric summaries |
-
-## Testing Plan
-
-Tests live in the repo's existing structure (`packages/sdk/test/local/`, `packages/portal/test/`, `packages/cli/test/`). All new suites added to [`scripts/run-tests.sh`](../../scripts/run-tests.sh) and the `test:local` script per `.github/copilot-instructions.md`. **No retries, no hacks, no custom system prompts to compensate for product behavior, raise failures loudly.**
-
-### Phase A — SDK structured prompt
-
-New file `packages/sdk/test/local/prompt-attachments.test.js`:
-
-| ID | What it asserts |
+| ID | Asserts |
 |---|---|
-| PA-1 | `client.send("hello")` (string overload) still works end-to-end (regression). |
-| PA-2 | `client.send({ text, attachments: [<inline png>] })` succeeds; the resulting transcript turn has `attachments` referencing an artifact, not inline base64. |
-| PA-3 | The promoted artifact filename matches `attach-{turnIndex}-1-1.png`. |
-| PA-4 | Idempotency on replay: re-running the orchestration after a crash mid-`promoteInlineAttachments` does **not** create a second artifact (overwrite same path). Lives in `reliability-crash.test.js` as a new case. |
-| PA-5 | `attachment_dropped` event fires when a non-vision model is selected and an attachment is supplied; payload includes `filename`, `modelId`, `reason: "no_vision_support"`. |
-| PA-6 | Per-attachment cap: 5 MB inline image rejected with `ATTACHMENT_TOO_LARGE`, no artifact created. |
-| PA-7 | Per-message cap: 5 attachments → reject with `TOO_MANY_ATTACHMENTS`. 4 attachments totalling 9 MB → reject with `TOTAL_ATTACHMENTS_TOO_LARGE`. |
-| PA-8 | Type allowlist: SVG attachment rejected with `ATTACHMENT_TYPE_REJECTED`. Animated WebP rejected. PNG/JPEG/static WebP/GIF accepted. |
-| PA-9 | Magic-byte mismatch: declared `image/png` but JPEG bytes → `ARTIFACT_CONTENT_TYPE_MISMATCH` (reused from binary artifacts). |
-| PA-10 | EXIF strip: upload a JPEG with embedded GPS EXIF; download the resulting artifact; confirm GPS metadata is gone. |
-| PA-11 | `ArtifactRefAttachment` path: pre-upload an image via `write_artifact`, send a prompt referencing it by `artifactId` — model receives the image, no duplicate artifact created. |
-| PA-12 | CMS migration applied idempotently across two `initialize()` calls (no error, column present once). |
-| PA-13 | Replay safety: dehydrate a session that has an attachment turn, hydrate on a different worker, list turns + artifacts, verify both are intact. Lives in `multi-worker.test.js` as a new case. |
-| PA-14 | Capability flag: `getCapabilities()` returns `prompt.imageAttachments: true` when the new code is loaded. |
+| PA-1 | String-prompt sends are byte-identical on the queue (regression). |
+| PA-2 | `send(prompt, {attachments})` with a valid PNG artifact ref → queue payload carries resolved `{filename, contentType, sizeBytes}`; `user.message` event carries the refs. |
+| PA-3 | Ref to a nonexistent artifact → send rejected, nothing enqueued. |
+| PA-4 | Ref to a non-image artifact (e.g. `text/plain`) → rejected with type error. |
+| PA-5 | Caps: 5 refs rejected; refs totalling > 8 MB rejected; single ref > 4 MB rejected. |
+| PA-6 | `runTurn` passes blob attachments to the Copilot session for a vision model (fake session asserts `attachments[0].type === "blob"`, base64 round-trips to the artifact bytes). |
+| PA-7 | Non-vision model → text-only send, prompt carries the omission note, `runtime.attachment_dropped` captured with `reason: "no_vision_support"`. |
+| PA-8 | Merge path: two queued messages with attachments merge into one turn carrying both, in order. |
+| PA-9 | Replay: crash after enqueue, replay the orchestration — no duplicate artifact fetch side effects, turn completes with the same refs. |
+| PA-10 | `getCapabilities()` reports `prompt.imageAttachments: true`. |
 
-### Phase B — Provider translator
+`packages/app/ui/core/test/` (composer/controller):
 
-New file `packages/sdk/test/local/multimodal-translator.test.js`:
-
-| ID | What it asserts |
+| ID | Asserts |
 |---|---|
-| MT-1 | OpenAI translator builds `content: [{type:"text"}, {type:"image_url", image_url:{url:"data:image/png;base64,..."}}]`. |
-| MT-2 | Anthropic translator builds `content: [{type:"text"}, {type:"image", source:{type:"base64", media_type, data}}]`. |
-| MT-3 | Gemini translator builds `parts: [{text}, {inlineData:{mimeType, data}}]`. |
-| MT-4 | `providerSupportsVision("gpt-4o") === true`. |
-| MT-5 | `providerSupportsVision("gpt-3.5-turbo") === false`. |
-| MT-6 | `providerSupportsVision("claude-3-5-sonnet-20241022") === true` (version suffix tolerated). |
-| MT-7 | Model swap mid-session: send with vision model (image included), switch to text-only model, send again — second turn drops the image and fires `attachment_dropped`. |
-| MT-8 | `image_input_tokens` reflected on the session metric summary after a multimodal turn. Asserted via `getSessionMetricSummary`. |
-| MT-9 | The tuner inspect-tool `read_session_metric_summary` exposes `image_input_tokens` (registered behind the `isTuner` guard). |
+| UC-1 | Adding attachments populates `ui.promptAttachments`; send dispatches upload-then-send in order; chips cleared on success. |
+| UC-2 | Upload failure keeps the pending message unsent and surfaces the error. |
+| UC-3 | Capability flag false → attach affordances report disabled. |
 
-### Phase C — Portal InputBar
+`packages/app/web/test/` (API):
 
-Playwright spec under `packages/portal/test/e2e/image-attachments.spec.ts`:
-
-| ID | What it asserts |
+| ID | Asserts |
 |---|---|
-| PE-1 | Paperclip click → file picker → choosing a PNG renders an attachment chip with the right filename and size. |
-| PE-2 | Drag-and-drop a PNG onto the prompt area renders a chip; non-image files are ignored silently. |
-| PE-3 | Programmatic clipboard paste (using `page.evaluate` to dispatch a `paste` event with a synthetic `DataTransferItem`) produces a chip and prevents default text insertion. |
-| PE-4 | Sending the prompt clears the chips and the user message in the transcript shows a thumbnail strip. |
-| PE-5 | Removing a chip via `✕` removes it from the pending-attachments array; sending without chips sends text-only. |
-| PE-6 | Capability flag `prompt.imageAttachments: false` hides the paperclip and disables the paste handler. |
+| WA-1 | `sendMessage` op accepts `options.attachments` and forwards them; rejects malformed shapes. |
+| WA-2 | Artifact PUT accepts an ~6 MB base64 image body (route-specific limit) while other ops still 413 at 2 MB. |
 
-Mobile-specific manual QA (no Playwright on real devices in CI):
+Portal e2e (existing harness): paste event with a synthetic clipboard image produces a chip; send renders a thumbnail strip in the transcript; non-image files are ignored.
 
-| ID | What |
-|---|---|
-| PM-1 | iPhone Safari (iOS 17+): take a screenshot, paste into prompt, verify chip appears and send works. |
-| PM-2 | iPhone Safari: long-press the prompt → Paste an image from the clipboard. |
-| PM-3 | iPhone Safari: tap the paperclip → camera capture → image attached. |
-| PM-4 | Android Chrome (Pixel + Samsung): paste from clipboard, drag-and-drop, picker — all three paths. |
-| PM-5 | iPad Safari with magic keyboard: ⌘V pastes correctly. |
-| PM-6 | Mobile Safari on a slow 4G link: 3.5 MB JPEG upload completes within reasonable time, no timeout. |
+Fixtures: `packages/sdk/test/fixtures/images/` — `tiny.png`, `tiny.jpg`, `tiny.webp`, `tiny.svg` (rejection), `tiny-animated.webp` (rejection); oversized images synthesized in-process.
 
-### Phase D — TUI
+## Open questions
 
-Tests in `packages/cli/test/local/attach-image.test.js`:
-
-| ID | What it asserts |
-|---|---|
-| TU-1 | `Ctrl+A` opens the attach dialog; selecting a PNG appends a chip to the prompt state. |
-| TU-2 | Sending the structured prompt routes through `client.send({text, attachments})`, base64 reads from disk on the CLI side. |
-| TU-3 | Transcript rendering shows `[📎 filename · contentType · size]` chip on the user message. |
-| TU-4 | Pressing `o` on a focused chip invokes `spawnDetached("open", [<path>])` on macOS, `xdg-open` on Linux, `start` on Windows (mocked). |
-| TU-5 | Status hint, prompt placeholder, and help dialog all reference the new keybindings (per the TUI keybinding rule). |
-
-### Cross-cutting
-
-| ID | What it asserts |
-|---|---|
-| X-1 | Attachment turn round-trips through dehydrate → hydrate on a different worker (artifact bytes intact, turn record intact, model can re-consume on rerun). Lives in `multi-worker.test.js`. |
-| X-2 | Sub-agent inheritance: a sub-agent spawned from a parent that has attachments in its history does **not** automatically receive those images in the prompt (parent images stay with the parent). Asserted in `sub-agents/`. |
-| X-3 | Sweeper does not delete attachment artifacts when sweeping a finished session before the configured TTL. Asserted in `system-agents.test.js`. |
-| X-4 | Pre-deploy gate: all new suites registered in `scripts/run-tests.sh` and `packages/sdk/package.json`'s `test:local`; they run automatically before AKS rollout. |
-
-### Test fixtures
-
-`packages/sdk/test/fixtures/images/`:
-
-- `tiny.png` — 64×64 PNG (~500 B)
-- `tiny.jpg` — 64×64 JPEG (~1 KB)
-- `tiny-with-gps.jpg` — JPEG with an embedded GPS EXIF block (~2 KB) for the EXIF-strip test.
-- `tiny.webp` — 64×64 static WebP (~400 B)
-- `tiny-animated.webp` — animated WebP for the rejection test (~800 B)
-- `tiny.svg` — for the rejection test
-- `four-mb.png` — synthesized in-process via `sharp` to stay close to the cap; not checked in.
-
-## Open Questions
-
-1. **HEIC support.** iPhone photo library default is HEIC, not JPEG. Most iOS browsers transcode to JPEG on paste/upload, but not all. v1 rejects HEIC; we revisit if mobile QA shows operators routinely failing the upload because of this.
-2. **Image preview in the binary-artifact viewer.** Currently the binary viewer (from the binary-artifacts proposal) shows a download placeholder. We could add inline rendering for `image/*` in a follow-up. Out of scope for this proposal.
-3. **Sub-agent prompt forwarding.** When a parent agent calls `spawn_agent`, should the parent's last user attachment be forwarded into the child task? Default in v1: **no** (per X-2 above). The parent can explicitly include `artifactId` in the child's task prompt if they want.
-4. **Prompt-level token estimation.** Vision token costs vary per provider/model. For now we surface actual `image_input_tokens` post-hoc; pre-send estimation is deferred to v2.
+1. **Downscale instead of drop?** When an image exceeds a model's `max_prompt_image_size`, v1 drops it with a note. Client-side canvas downscaling before upload would preserve intent — revisit after Phase 0 reveals the real limits.
+2. **Sub-agent forwarding.** A parent's attachments do **not** flow into spawned children in v1; the parent can reference the artifact by name in the child's task prompt.
+3. **Vision token accounting.** Surface `image_input_tokens` on turn metrics once the Copilot usage payload exposes it distinctly; until then image cost shows up in aggregate input tokens.
+4. **HEIC.** Rejected in v1; revisit if mobile QA shows meaningful paste/pick failures on iOS photo-library JPEG conversion.

@@ -122,7 +122,7 @@ export interface WorkerDefaults {
     };
     /** Multi-provider model registry. Takes precedence over `provider`. */
     modelProviders?: ModelProviderRegistry;
-    /** Wall-clock turn cap in ms. 0 = no cap; undefined = 10-minute default. */
+    /** Wall-clock turn cap in ms. 0 = no cap; undefined = 20-minute default. */
     turnTimeoutMs?: number;
     /** Turn inactivity watchdog in ms. 0 = disabled; undefined = 5-minute default. */
     turnInactivityTimeoutMs?: number;
@@ -288,6 +288,65 @@ export class SessionManager {
         return {
             model: normalized!,
             reasoningEffort: descriptor?.defaultReasoningEffort ?? null,
+        };
+    }
+
+    /** Cached Copilot model catalog for vision-capability lookups (5 min TTL). */
+    private modelCatalogCache: { fetchedAt: number; models: Array<{ id: string; capabilities?: any }> } | null = null;
+
+    /**
+     * Resolve whether a session's model can be shown images, plus the
+     * provider's vision limits. `modelRef` is the session-config value
+     * (qualified `provider:model`, bare, or undefined → worker default).
+     *
+     * `known: false` means the catalog had no entry (BYOK model without a
+     * capabilities override, catalog fetch failure, …) — callers must treat
+     * that as "no vision" and degrade gracefully rather than guessing.
+     */
+    async getModelVisionInfo(modelRef?: string): Promise<{
+        modelId: string;
+        known: boolean;
+        vision: boolean;
+        supportedMediaTypes?: string[];
+        maxImages?: number;
+        maxImageBytes?: number;
+    }> {
+        let sdkModelName = String(modelRef || "").trim();
+        try {
+            const normalized = this.normalizeModelRef(modelRef || undefined);
+            const descriptor = this.workerDefaults.modelProviders?.getDescriptor(normalized);
+            if (descriptor?.modelName) sdkModelName = descriptor.modelName;
+            else if (normalized) sdkModelName = normalized.includes(":") ? normalized.split(":").slice(1).join(":") : normalized;
+        } catch {
+            // Unknown ref — fall through with the raw name; the catalog lookup decides.
+            if (sdkModelName.includes(":")) sdkModelName = sdkModelName.split(":").slice(1).join(":");
+        }
+        if (!sdkModelName) return { modelId: "", known: false, vision: false };
+
+        const client = this.client;
+        if (!client) return { modelId: sdkModelName, known: false, vision: false };
+        const now = Date.now();
+        if (!this.modelCatalogCache || now - this.modelCatalogCache.fetchedAt > 5 * 60 * 1000) {
+            try {
+                const models = await client.listModels();
+                this.modelCatalogCache = { fetchedAt: now, models: models as any[] };
+            } catch {
+                // Keep a stale cache if we have one; otherwise report unknown.
+                if (!this.modelCatalogCache) return { modelId: sdkModelName, known: false, vision: false };
+            }
+        }
+        const entry = this.modelCatalogCache.models.find((m) => m?.id === sdkModelName)
+            ?? this.modelCatalogCache.models.find((m) => String(m?.id || "").toLowerCase() === sdkModelName.toLowerCase());
+        if (!entry) return { modelId: sdkModelName, known: false, vision: false };
+        const caps = (entry as any).capabilities;
+        const visionLimits = caps?.limits?.vision;
+        return {
+            modelId: sdkModelName,
+            known: true,
+            vision: Boolean(caps?.supports?.vision),
+            ...(Array.isArray(visionLimits?.supported_media_types) ? { supportedMediaTypes: visionLimits.supported_media_types } : {}),
+            ...(Number.isFinite(visionLimits?.max_prompt_images) ? { maxImages: Number(visionLimits.max_prompt_images) } : {}),
+            ...(Number.isFinite(visionLimits?.max_prompt_image_size) ? { maxImageBytes: Number(visionLimits.max_prompt_image_size) } : {}),
         };
     }
 

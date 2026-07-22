@@ -2017,13 +2017,16 @@ function buildChatMessageLines(message, maxWidth, options = {}) {
             : message?.role === "user" ? USER_CHAT_COLOR : null,
     );
     const prefix = options.skipPrefix ? [] : buildChatMessagePrefix(message, options);
+    const attachmentChipLines = buildAttachmentChipLines(message, options);
 
     if (tintedMarkdownLines.length === 0) {
-        return prefix.length > 0 ? [prefix] : [];
+        const bare = prefix.length > 0 ? [prefix] : [];
+        return attachmentChipLines.length > 0 ? [...bare, ...attachmentChipLines] : bare;
     }
 
     if (startsWithStructuredBlock(tintedMarkdownLines)) {
-        return prefix.length > 0 ? [prefix, ...tintedMarkdownLines] : tintedMarkdownLines;
+        const structured = prefix.length > 0 ? [prefix, ...tintedMarkdownLines] : tintedMarkdownLines;
+        return attachmentChipLines.length > 0 ? [...structured, ...attachmentChipLines] : structured;
     }
 
     const renderedLines = [];
@@ -2044,7 +2047,33 @@ function buildChatMessageLines(message, maxWidth, options = {}) {
             renderedLines.push(lineRuns);
         }
     }
+    renderedLines.push(...attachmentChipLines);
     return renderedLines;
+}
+
+// Image attachment chips under a message. In sentinel mode (browser portal)
+// a single structured line carries the refs so the web renderer can show
+// authenticated thumbnails; everywhere else (TUI) each file renders as a
+// `[image: name · 312 KB]` text chip.
+function buildAttachmentChipLines(message, options = {}) {
+    const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
+    if (attachments.length === 0) return [];
+    if (options.tableMode === "sentinel") {
+        // message.id is `${sessionId}:${seq}` — the renderer needs the session
+        // to fetch artifact bytes through the authenticated transport.
+        const sessionId = String(message?.id || "").split(":")[0] || null;
+        return [{ kind: "imageAttachments", sessionId, attachments }];
+    }
+    return attachments.map((attachment) => {
+        const size = Number(attachment?.sizeBytes) || 0;
+        const sizeLabel = size >= 1024 * 1024
+            ? `${(size / (1024 * 1024)).toFixed(1)} MB`
+            : size >= 1024 ? `${Math.round(size / 1024)} KB` : `${size} B`;
+        return [
+            { text: "  ", color: null },
+            { text: `[image: ${attachment.filename}${size > 0 ? ` · ${sizeLabel}` : ""}]`, color: "cyan" },
+        ];
+    });
 }
 
 // Activity-log event types that are not surfaced as live "recent action" lines

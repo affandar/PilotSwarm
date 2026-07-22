@@ -423,8 +423,9 @@ function normalizeLines(lines) {
         }
         // Sentinel kinds preserved as-is so parseStructuredChatBlocks can
         // recognize and render them (e.g. markdownTable → HTML <table>,
-        // cardStart/cardEnd → styled card with structured body).
-        if (line?.kind === "markdownTable" || line?.kind === "cardStart" || line?.kind === "cardEnd") {
+        // cardStart/cardEnd → styled card with structured body,
+        // imageAttachments → authenticated thumbnail strip).
+        if (line?.kind === "markdownTable" || line?.kind === "cardStart" || line?.kind === "cardEnd" || line?.kind === "imageAttachments") {
             normalized.push(line);
             continue;
         }
@@ -1291,7 +1292,7 @@ function formatArtifactPreviewBytes(value) {
     return `${mb >= 10 ? Math.round(mb) : mb.toFixed(1)} MB`;
 }
 
-function BinaryArtifactPreviewPanel({ title, color, focused, theme, filename, contentType, sizeBytes, source, uploadedAt }) {
+function BinaryArtifactPreviewPanel({ title, color, focused, theme, filename, contentType, sizeBytes, source, uploadedAt, controller = null, sessionId = null }) {
     const meta = [];
     if (contentType) meta.push(contentType);
     if (sizeBytes != null) meta.push(formatArtifactPreviewBytes(sizeBytes));
@@ -1306,9 +1307,23 @@ function BinaryArtifactPreviewPanel({ title, color, focused, theme, filename, co
         })
         : "";
 
+    // Raster images render inline (authenticated fetch → object URL). Other
+    // binary types keep the download-only card.
+    const isRasterImage = /^image\/(png|jpeg|gif|webp)$/i.test(String(contentType || ""));
+    const [imageUrl, setImageUrl] = React.useState(null);
+    React.useEffect(() => {
+        setImageUrl(null);
+        if (!isRasterImage || !controller || !sessionId || !filename) return undefined;
+        let cancelled = false;
+        fetchArtifactObjectUrl(controller, sessionId, filename)
+            .then((url) => { if (!cancelled) setImageUrl(url); })
+            .catch(() => { if (!cancelled) setImageUrl("error"); });
+        return () => { cancelled = true; };
+    }, [isRasterImage, controller, sessionId, filename]);
+
     return React.createElement(Panel, { title, color, focused, theme },
         React.createElement("div", { className: "ps-binary-preview-card" },
-            React.createElement("div", { className: "ps-binary-preview-kicker" }, "Binary artifact"),
+            React.createElement("div", { className: "ps-binary-preview-kicker" }, isRasterImage ? "Image artifact" : "Binary artifact"),
             React.createElement("h3", { className: "ps-binary-preview-title" }, filename || "Artifact"),
             meta.length > 0
                 ? React.createElement("div", { className: "ps-binary-preview-meta" }, meta.join("  •  "))
@@ -1316,8 +1331,17 @@ function BinaryArtifactPreviewPanel({ title, color, focused, theme, filename, co
             uploadedLabel
                 ? React.createElement("div", { className: "ps-binary-preview-time" }, `Uploaded ${uploadedLabel}`)
                 : null,
-            React.createElement("p", { className: "ps-binary-preview-copy" },
-                "Preview is intentionally disabled for non-text artifacts in the browser workspace. Use Download to save the file and open it in the default app.")));
+            isRasterImage && imageUrl && imageUrl !== "error"
+                ? React.createElement("img", {
+                    className: "ps-binary-preview-image",
+                    src: imageUrl,
+                    alt: filename || "artifact image",
+                    onClick: () => { try { window.open(imageUrl, "_blank", "noopener"); } catch { /* popup blocked */ } },
+                })
+                : React.createElement("p", { className: "ps-binary-preview-copy" },
+                    isRasterImage
+                        ? (imageUrl === "error" ? "Could not load the image preview. Use Download to save the file." : "Loading image preview…")
+                        : "Preview is intentionally disabled for non-text artifacts in the browser workspace. Use Download to save the file and open it in the default app.")));
 }
 
 function isBoxTopLine(text) {
@@ -1473,6 +1497,19 @@ function parseStructuredChatBlocks(lines = []) {
             continue;
         }
 
+        // Sentinel image-attachment line — a user message's image refs. The
+        // block component fetches bytes through the authenticated transport
+        // (a bare <img src=download-url> cannot carry the Bearer token).
+        if (currentLine?.kind === "imageAttachments") {
+            blocks.push({
+                type: "imageAttachments",
+                sessionId: currentLine.sessionId || null,
+                attachments: Array.isArray(currentLine.attachments) ? currentLine.attachments : [],
+            });
+            index += 1;
+            continue;
+        }
+
         // Sentinel markdown-table line emitted by parseMarkdownLines when
         // tableMode === "sentinel". Carries the raw header + rows so the
         // portal renders a real HTML table with markdown cell content (so
@@ -1619,17 +1656,105 @@ function parseStructuredChatBlocks(lines = []) {
     return blocks;
 }
 
-function StructuredChatBlocks({ lines, theme }) {
+function StructuredChatBlocks({ lines, theme, controller = null }) {
     const blocks = React.useMemo(() => parseStructuredChatBlocks(lines), [lines]);
-    return React.createElement(StructuredBlockList, { blocks, theme });
+    return React.createElement(StructuredBlockList, { blocks, theme, controller });
+}
+
+// Authenticated artifact thumbnails: bytes are fetched through the transport
+// (Bearer token) and served to <img> as object URLs. Module-level cache so
+// scrolling the transcript doesn't refetch; oldest entries are revoked at cap.
+const ARTIFACT_THUMB_CACHE = new Map();
+const ARTIFACT_THUMB_CACHE_MAX = 60;
+
+function fetchArtifactObjectUrl(controller, sessionId, filename) {
+    const key = `${sessionId}/${filename}`;
+    const cached = ARTIFACT_THUMB_CACHE.get(key);
+    if (cached) {
+        // Refresh LRU position.
+        ARTIFACT_THUMB_CACHE.delete(key);
+        ARTIFACT_THUMB_CACHE.set(key, cached);
+        return cached;
+    }
+    const downloadResponse = controller?.transport?.api?.downloadArtifactResponse;
+    if (typeof downloadResponse !== "function") {
+        return Promise.reject(new Error("artifact download unavailable"));
+    }
+    const promise = downloadResponse.call(controller.transport.api, sessionId, filename)
+        .then(async (response) => {
+            if (!response?.ok) throw new Error(`download failed (${response?.status})`);
+            const blob = await response.blob();
+            return URL.createObjectURL(blob);
+        })
+        .catch((error) => {
+            // Failed fetches must not be cached — a retry on next render is fine.
+            if (ARTIFACT_THUMB_CACHE.get(key) === promise) ARTIFACT_THUMB_CACHE.delete(key);
+            throw error;
+        });
+    ARTIFACT_THUMB_CACHE.set(key, promise);
+    while (ARTIFACT_THUMB_CACHE.size > ARTIFACT_THUMB_CACHE_MAX) {
+        const [oldestKey, oldest] = ARTIFACT_THUMB_CACHE.entries().next().value;
+        ARTIFACT_THUMB_CACHE.delete(oldestKey);
+        Promise.resolve(oldest).then((url) => URL.revokeObjectURL(url)).catch(() => {});
+    }
+    return promise;
+}
+
+function ArtifactImageStrip({ controller, sessionId, attachments }) {
+    const [urls, setUrls] = React.useState({});
+    React.useEffect(() => {
+        if (!controller || !sessionId) return undefined;
+        let cancelled = false;
+        for (const attachment of attachments) {
+            const filename = attachment?.filename;
+            if (!filename) continue;
+            fetchArtifactObjectUrl(controller, sessionId, filename)
+                .then((url) => {
+                    if (!cancelled) setUrls((prev) => (prev[filename] === url ? prev : { ...prev, [filename]: url }));
+                })
+                .catch(() => {
+                    if (!cancelled) setUrls((prev) => (prev[filename] === "error" ? prev : { ...prev, [filename]: "error" }));
+                });
+        }
+        return () => { cancelled = true; };
+    }, [controller, sessionId, attachments]);
+
+    return React.createElement("div", { className: "ps-chat-image-strip" },
+        attachments.map((attachment, index) => {
+            const filename = attachment?.filename || `image-${index}`;
+            const url = urls[filename];
+            if (url && url !== "error") {
+                return React.createElement("img", {
+                    key: `thumb:${index}:${filename}`,
+                    className: "ps-chat-image-thumb",
+                    src: url,
+                    alt: filename,
+                    title: `${filename} — click to view full size`,
+                    onClick: () => { try { window.open(url, "_blank", "noopener"); } catch { /* popup blocked */ } },
+                });
+            }
+            return React.createElement("div", {
+                key: `thumb:${index}:${filename}`,
+                className: `ps-chat-image-thumb is-pending${url === "error" ? " is-error" : ""}`,
+                title: filename,
+            }, url === "error" ? "⚠" : "🖼");
+        }));
 }
 
 // Renders parsed chat blocks; sentinel card blocks recurse through this list
 // so structured content (box/markdown tables, code fences) inside a card
 // renders exactly the same as it does at top level.
-function StructuredBlockList({ blocks, theme }) {
+function StructuredBlockList({ blocks, theme, controller = null }) {
     return React.createElement(React.Fragment, null,
         (blocks || []).map((block, index) => {
+            if (block.type === "imageAttachments") {
+                return React.createElement(ArtifactImageStrip, {
+                    key: `imageAttachments:${index}`,
+                    controller,
+                    sessionId: block.sessionId,
+                    attachments: block.attachments,
+                });
+            }
             if (block.type === "preserve") {
                 const variantClass = block.splashVariant ? ` is-splash-${block.splashVariant}` : "";
                 return React.createElement("div", { key: `preserve:${index}`, className: `ps-chat-preserve-block${variantClass}` },
@@ -1658,7 +1783,7 @@ function StructuredBlockList({ blocks, theme }) {
                     React.createElement(Runs, { runs: block.headerRuns, theme })),
                 React.createElement("div", { className: "ps-chat-card-body" },
                     Array.isArray(block.blocks)
-                        ? React.createElement(StructuredBlockList, { blocks: block.blocks, theme })
+                        ? React.createElement(StructuredBlockList, { blocks: block.blocks, theme, controller })
                         : (block.bodyLines || []).map((bodyRuns, bodyIndex) => React.createElement("div", {
                             key: `card:${index}:line:${bodyIndex}`,
                             className: "ps-chat-card-line",
@@ -1918,7 +2043,7 @@ function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, l
             typeof renderBody === "function"
                 ? renderBody(normalizedLines, theme)
                 : structuredBlocks
-                ? React.createElement(StructuredChatBlocks, { lines: normalizedLines, theme })
+                ? React.createElement(StructuredChatBlocks, { lines: normalizedLines, theme, controller })
                 : normalizedLines.map((line, index) => React.createElement(Line, { key: `line:${index}`, line, theme })),
         ),
         normalizedBottomSticky.length > 0
@@ -2986,6 +3111,8 @@ function FilesPane({ controller, focused, mobile = false }) {
                 sizeBytes: filesView.previewSizeBytes,
                 source: filesView.previewSource,
                 uploadedAt: filesView.previewUploadedAt,
+                controller,
+                sessionId: filesView.selectedSessionId,
             })
         : React.createElement(ScrollLinesPanel, {
             controller,
@@ -3328,6 +3455,15 @@ function ChatFocusWorkspace({ controller, openPane, onTogglePane, onExitFocus, m
             })));
 }
 
+const EMPTY_ARRAY = Object.freeze([]);
+
+function formatAttachmentSize(sizeBytes) {
+    const bytes = Number(sizeBytes) || 0;
+    if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+    return `${bytes} B`;
+}
+
 function PromptComposer({ controller, mobile, active = true, onAfterSend = null }) {
     const promptState = useControllerSelector(controller, (state) => {
         const activeSessionId = state.sessions.activeSessionId;
@@ -3349,9 +3485,54 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
             selectedOutboxPhase: state.ui.promptEdit?.sessionId === activeSessionId
                 ? state.ui.promptEdit?.phase || null
                 : null,
+            // Raw reference (stable across renders) — image entries are
+            // filtered at render time so the shallow-equal selector holds.
+            promptAttachments: state.ui.promptAttachments || EMPTY_ARRAY,
         };
     }, shallowEqualObject);
     const inputRef = React.useRef(null);
+    const attachInputRef = React.useRef(null);
+    const [dragOver, setDragOver] = React.useState(false);
+
+    const canAttachImages = typeof controller.transport?.supportsPromptImageAttachments === "function"
+        && controller.transport.supportsPromptImageAttachments()
+        && typeof controller.transport?.uploadArtifactFromFile === "function";
+    const imageAttachments = canAttachImages
+        ? promptState.promptAttachments.filter((a) => a?.kind === "image")
+        : EMPTY_ARRAY;
+
+    // Object URLs for chip thumbnails — created per staged File, revoked when
+    // the chip leaves (send/remove) or the composer unmounts.
+    const thumbUrlsRef = React.useRef(new Map());
+    React.useEffect(() => {
+        const urls = thumbUrlsRef.current;
+        const liveFiles = new Set(imageAttachments.map((a) => a.file));
+        for (const [file, url] of urls) {
+            if (!liveFiles.has(file)) {
+                URL.revokeObjectURL(url);
+                urls.delete(file);
+            }
+        }
+        for (const attachment of imageAttachments) {
+            if (attachment.file && !urls.has(attachment.file)) {
+                try {
+                    urls.set(attachment.file, URL.createObjectURL(attachment.file));
+                } catch { /* thumbnail is a nicety — the chip still renders */ }
+            }
+        }
+    }, [imageAttachments]);
+    React.useEffect(() => () => {
+        for (const url of thumbUrlsRef.current.values()) URL.revokeObjectURL(url);
+        thumbUrlsRef.current.clear();
+    }, []);
+
+    const stageImageFiles = React.useCallback((files) => {
+        if (!canAttachImages) return 0;
+        const list = Array.from(files || []).filter((f) => f && typeof f.type === "string" && f.type.startsWith("image/"));
+        if (list.length === 0) return 0;
+        const result = controller.addPendingImageFiles(list);
+        return result?.accepted || 0;
+    }, [controller, canAttachImages]);
 
     React.useEffect(() => {
         const inputNode = inputRef.current;
@@ -3406,8 +3587,52 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
     const selectedReadOnly = selectedQueued || selectedCancelling;
 
     return React.createElement("div", {
-        className: `ps-prompt-shell${mobile ? " is-mobile" : ""}`,
+        className: `ps-prompt-shell${mobile ? " is-mobile" : ""}${dragOver ? " is-drag-over" : ""}`,
+        ...(canAttachImages ? {
+            onDragOver: (event) => {
+                if (event.dataTransfer?.types?.includes?.("Files")) {
+                    event.preventDefault();
+                    setDragOver(true);
+                }
+            },
+            onDragLeave: (event) => {
+                if (!event.currentTarget.contains(event.relatedTarget)) setDragOver(false);
+            },
+            onDrop: (event) => {
+                setDragOver(false);
+                if (event.dataTransfer?.files?.length) {
+                    event.preventDefault();
+                    stageImageFiles(event.dataTransfer.files);
+                }
+            },
+        } : {}),
     },
+        imageAttachments.length > 0
+            ? React.createElement("div", { className: "ps-prompt-attachments" },
+                imageAttachments.map((attachment, index) => {
+                    const thumbUrl = attachment.file ? thumbUrlsRef.current.get(attachment.file) : null;
+                    // No filename in the chip: pasted images all arrive as the
+                    // browser's generic "image.png", and the name is replaced
+                    // by a deterministic artifact name at send anyway. The
+                    // thumbnail IS the identity; the name survives as a tooltip.
+                    return React.createElement("div", {
+                        key: `attach:${index}:${attachment.filename}`,
+                        className: "ps-attach-chip",
+                        title: `${attachment.filename} · ${formatAttachmentSize(attachment.sizeBytes)}`,
+                    },
+                        thumbUrl
+                            ? React.createElement("img", { className: "ps-attach-thumb", src: thumbUrl, alt: attachment.filename })
+                            : React.createElement("div", { className: "ps-attach-thumb is-placeholder" }, "🖼"),
+                        React.createElement("div", { className: "ps-attach-size" }, formatAttachmentSize(attachment.sizeBytes)),
+                        React.createElement("button", {
+                            type: "button",
+                            className: "ps-attach-remove",
+                            title: `Remove ${attachment.filename}`,
+                            "aria-label": `Remove attachment ${attachment.filename}`,
+                            onClick: () => controller.removePendingImageAttachment(index),
+                        }, "✕"));
+                }))
+            : null,
         React.createElement("label", { className: "ps-prompt-label" }, promptState.answerMode ? "answer" : selectedCancelling ? "cancelling" : selectedQueued ? "queued" : promptState.editingPending ? "pending" : "you"),
         React.createElement("textarea", {
             ref: inputRef,
@@ -3430,6 +3655,21 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
             onFocus: () => controller.setFocus("prompt"),
             onSelect: (event) => controller.setPromptCursor(event.currentTarget.selectionStart || 0),
             onChange: (event) => controller.setPrompt(event.currentTarget.value, event.currentTarget.selectionStart || event.currentTarget.value.length),
+            // Ctrl/Cmd+V of a copied image (or iOS/Android long-press → Paste):
+            // clipboardData.items carries the image file(s). preventDefault only
+            // when we actually staged one, so text pastes are untouched.
+            onPaste: canAttachImages
+                ? (event) => {
+                    const items = Array.from(event.clipboardData?.items || []);
+                    const files = items
+                        .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+                        .map((item) => item.getAsFile())
+                        .filter(Boolean);
+                    if (files.length > 0 && stageImageFiles(files) > 0) {
+                        event.preventDefault();
+                    }
+                }
+                : undefined,
             onKeyDown: (event) => {
                 if (event.key === "Tab" && !event.shiftKey && controller.acceptPromptReferenceAutocomplete()) {
                     event.preventDefault();
@@ -3461,6 +3701,32 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
             },
         }),
         React.createElement("div", { className: "ps-prompt-actions" },
+            canAttachImages
+                ? React.createElement(React.Fragment, null,
+                    React.createElement("input", {
+                        ref: attachInputRef,
+                        type: "file",
+                        // image/* (not the exact MIME list) so phones offer the
+                        // photo library and camera; exact types are validated
+                        // on staging and again at the API edge.
+                        accept: "image/*",
+                        multiple: true,
+                        className: "ps-hidden-file-input",
+                        "aria-hidden": true,
+                        tabIndex: -1,
+                        onChange: (event) => {
+                            stageImageFiles(event.currentTarget.files);
+                            event.currentTarget.value = "";
+                        },
+                    }),
+                    React.createElement("button", {
+                        type: "button",
+                        className: "ps-mini-button ps-attach-button",
+                        title: "Attach images (or paste / drop them into the composer)",
+                        "aria-label": "Attach images",
+                        onClick: () => attachInputRef.current?.click(),
+                    }, "📎"))
+                : null,
             promptState.editingPending && !selectedCancelling
                 ? React.createElement("button", {
                     type: "button",

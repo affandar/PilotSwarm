@@ -85,6 +85,11 @@ export async function startServer(opts = {}) {
 
     const app = express();
     app.set("trust proxy", true);
+    // Artifact uploads carry base64 image bodies (image attachments: up to
+    // 4 MB decoded ≈ 5.4 MB base64) — give ONLY that route an 8 MB envelope.
+    // Everything else keeps the 2 MB cap. Mounted first so the path-scoped
+    // parser wins; the global parser skips already-parsed bodies.
+    app.use("/api/v1/sessions/:sessionId/artifacts/:filename", express.json({ limit: "8mb" }));
     app.use(express.json({ limit: "2mb" }));
 
     const { server, protocol } = createPortalServer({ app });

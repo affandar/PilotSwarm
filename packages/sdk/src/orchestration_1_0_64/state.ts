@@ -1,4 +1,3 @@
-import { sanitizePromptAttachmentRefs } from "../types.js";
 import type {
     OrchestrationInput,
     SerializableSessionConfig,
@@ -66,8 +65,6 @@ export interface DurableSessionState {
     pendingRehydrationMessage?: string;
 
     pendingPrompt?: string;
-    /** Attachment refs for the carried pendingPrompt — dropped silently before 1.0.65's carry fix. */
-    pendingAttachments?: import("../types.js").PromptAttachmentRef[];
     pendingRequiredTool?: string;
     pendingSystemPrompt?: string;
     runtimeModelNotice?: string;
@@ -234,7 +231,6 @@ export function createInitialState(input: OrchestrationInput, options: DurableSe
         pendingRehydrationMessage: input.rehydrationMessage,
 
         pendingPrompt: input.prompt,
-        pendingAttachments: sanitizePromptAttachmentRefs(input.attachments),
         pendingRequiredTool: input.requiredTool,
         pendingSystemPrompt: input.systemPrompt,
         runtimeModelNotice: input.runtimeModelNotice,

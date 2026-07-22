@@ -46,6 +46,7 @@ AZURE_STORAGE_CONTAINER=copilot-sessions
 # PILOTSWARM_FACTS_PG_POOL_MAX=3
 # PILOTSWARM_ORCHESTRATION_CONCURRENCY=2
 # PILOTSWARM_WORKER_CONCURRENCY=2
+# PILOTSWARM_TURN_TIMEOUT_MS=1200000
 ```
 
 > **Model providers** are configured in the local `.model_providers.json`, which is usually copied from the checked-in `.model_providers.example.json` template. API keys use `env:VAR_NAME` syntax to reference `.env` variables. Providers whose API key is not set are automatically excluded from the model list.
@@ -150,10 +151,10 @@ remain visible or keep enforcement disabled during the transition. See
 
 ## PostgreSQL Setup
 
-### PostgreSQL Pool Sizing And Runtime Concurrency
+### Worker Runtime Tuning
 
-PilotSwarm uses environment variables only for PostgreSQL pool sizing and
-Duroxide runtime concurrency.
+PilotSwarm deployments use environment variables for PostgreSQL pool sizing,
+Duroxide runtime concurrency, and process-wide worker limits.
 
 - `DUROXIDE_PG_POOL_MAX`
   Sets the `duroxide-pg` provider pool size. Default: `10`.
@@ -165,6 +166,10 @@ Duroxide runtime concurrency.
   Sets Duroxide orchestration concurrency. Default: `2`.
 - `PILOTSWARM_WORKER_CONCURRENCY`
   Sets Duroxide activity/worker concurrency. Default: `2`.
+- `PILOTSWARM_TURN_TIMEOUT_MS`
+  Sets the wall-clock cap for one Copilot turn across the worker deployment.
+  Default: `1200000` (20 minutes). Set `0` to disable the cap. An explicit
+  `PilotSwarmWorker({ turnTimeoutMs })` option takes precedence over the env var.
 
 Example:
 
@@ -174,6 +179,7 @@ PILOTSWARM_CMS_PG_POOL_MAX=3
 PILOTSWARM_FACTS_PG_POOL_MAX=3
 PILOTSWARM_ORCHESTRATION_CONCURRENCY=2
 PILOTSWARM_WORKER_CONCURRENCY=2
+PILOTSWARM_TURN_TIMEOUT_MS=1200000
 ```
 
 ### Local Development
@@ -308,6 +314,7 @@ new PilotSwarmWorker({
     logLevel: "info",        // "none" | "error" | "warning" | "info" | "debug" | "all"
     waitThreshold: 30,       // seconds — waits above this become durable timers
     workerNodeId: "pod-1",   // identifier for this worker (default: hostname)
+    turnTimeoutMs: 1_200_000, // explicit override; 0 disables the cap
 
     // Blob storage for session dehydration
     blobConnectionString: string,   // Azure Storage connection string
@@ -319,8 +326,10 @@ new PilotSwarmWorker({
 });
 ```
 
-  PostgreSQL pool sizing and runtime concurrency are intentionally **not** part of
-  `PilotSwarmWorkerOptions`. Configure them with the env vars above.
+  PostgreSQL pool sizing and Duroxide concurrency are intentionally **not** part
+  of `PilotSwarmWorkerOptions`; configure them with the env vars above. Turn
+  timeout supports both layers: the explicit constructor option wins, then
+  `PILOTSWARM_TURN_TIMEOUT_MS`, then the 20-minute SDK default.
 
 ## Enhanced Facts & Knowledge Graph (optional)
 

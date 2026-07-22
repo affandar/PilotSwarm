@@ -13,6 +13,10 @@ import {
     createSessionBlobStore,
     horizonConfigFromEnv,
     LOCAL_DEFAULT_USER_PRINCIPAL,
+    IMAGE_ATTACHMENT_CONTENT_TYPES,
+    ATTACHMENT_MAX_BYTES,
+    ATTACHMENTS_MAX_COUNT,
+    ATTACHMENTS_MAX_TOTAL_BYTES,
 } from "pilotswarm-sdk";
 import { startEmbeddedWorkers, stopEmbeddedWorkers } from "./embedded-workers.js";
 import { getPluginDirsFromEnv } from "./plugin-config.js";
@@ -1129,6 +1133,14 @@ export class NodeSdkTransport {
             ...(options?.sender && typeof options.sender === "object" ? { sender: options.sender } : {}),
         };
 
+        // Image attachments: clients send bare filenames; every other field is
+        // resolved from artifact metadata here at the API edge. A bad ref
+        // rejects the WHOLE send — a message must never go out half-attached.
+        if (Array.isArray(options?.attachments) && options.attachments.length > 0) {
+            const resolved = await this.resolveImageAttachmentRefs(sessionId, options.attachments);
+            if (resolved.length > 0) sendOptions.attachments = resolved;
+        }
+
         if (options?.enqueueOnly) {
             // enqueueOnly originally routed through mgmt.sendMessage to skip
             // the wait-for-result polling, but PilotSwarmSession.send is
@@ -1308,6 +1320,48 @@ export class NodeSdkTransport {
         return this.artifactStore.downloadArtifact(sessionId, filename);
     }
 
+    /**
+     * Read an image off the OS clipboard into a temp file — the Claude Code
+     * trick: the Ctrl+V KEYSTROKE reaches the TUI through stdin, but image
+     * bytes never do, so we go around the terminal and ask the OS directly.
+     * Returns { path, filename } or null when the clipboard has no image.
+     * Never throws for "no image" — only for unexpected tool failures.
+     */
+    async captureClipboardImage() {
+        const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14);
+        const outPath = path.join(os.tmpdir(), `pilotswarm-paste-${stamp}-${process.pid}.png`);
+        const tryRun = (cmd, args, opts = {}) => {
+            const res = spawnSync(cmd, args, { encoding: "utf8", timeout: 8000, ...opts });
+            return res.status === 0;
+        };
+        let captured = false;
+        if (process.platform === "darwin") {
+            // pngpaste when installed (fast, handles more formats)…
+            captured = tryRun("pngpaste", [outPath]);
+            if (!captured) {
+                // …else zero-dependency AppleScript.
+                const script = [
+                    `set pngData to the clipboard as «class PNGf»`,
+                    `set f to open for access POSIX file "${outPath}" with write permission`,
+                    `write pngData to f`,
+                    `close access f`,
+                ].join("\n");
+                captured = tryRun("osascript", ["-e", script]);
+            }
+        } else if (process.platform === "linux") {
+            captured = tryRun("sh", ["-c", `wl-paste -t image/png > "${outPath}" 2>/dev/null || xclip -selection clipboard -t image/png -o > "${outPath}" 2>/dev/null`]);
+        } else if (process.platform === "win32") {
+            const ps = `$img=Get-Clipboard -Format Image; if ($img -eq $null) { exit 1 }; $img.Save('${outPath.replace(/\\/g, "\\\\")}', [System.Drawing.Imaging.ImageFormat]::Png)`;
+            captured = tryRun("powershell", ["-NoProfile", "-Command", `Add-Type -AssemblyName System.Drawing,System.Windows.Forms; ${ps}`]);
+        }
+        const stat = captured ? await fs.promises.stat(outPath).catch(() => null) : null;
+        if (!stat || !stat.isFile() || stat.size === 0) {
+            await fs.promises.rm(outPath, { force: true }).catch(() => {});
+            return null;
+        }
+        return { path: outPath, filename: path.basename(outPath) };
+    }
+
     async uploadArtifactFromPath(sessionId, filePath) {
         if (!this.artifactStore) {
             throw new Error("Artifact store is not available for this transport.");
@@ -1343,6 +1397,55 @@ export class NodeSdkTransport {
             contentType,
             ...(meta?.sha256 ? { sha256: meta.sha256 } : {}),
         };
+    }
+
+    /**
+     * Resolve client-sent image attachment refs ({filename} only) against the
+     * artifact store: existence, image content type, and size/count caps.
+     * Throws on the first invalid ref — the whole send is rejected rather than
+     * silently trimming what the operator attached.
+     */
+    async resolveImageAttachmentRefs(sessionId, attachments) {
+        const reject = (message) => {
+            const error = new Error(message);
+            error.code = "INVALID_ATTACHMENT";
+            throw error;
+        };
+        if (!this.artifactStore) {
+            reject("Image attachments require an artifact store, which is not available for this transport.");
+        }
+        if (attachments.length > ATTACHMENTS_MAX_COUNT) {
+            reject(`Too many image attachments (${attachments.length}); the limit is ${ATTACHMENTS_MAX_COUNT} per message.`);
+        }
+        const resolved = [];
+        let totalBytes = 0;
+        for (const entry of attachments) {
+            const filename = path.basename(String(entry?.filename || "").trim());
+            if (!filename) {
+                reject("Each attachment must carry a non-empty filename.");
+            }
+            const meta = await this.artifactStore.statArtifact(sessionId, filename);
+            if (!meta) {
+                reject(`Attachment '${filename}' is not an artifact of this session — upload it first.`);
+            }
+            const contentType = String(meta.contentType || "").toLowerCase();
+            if (!IMAGE_ATTACHMENT_CONTENT_TYPES.has(contentType)) {
+                reject(
+                    `Attachment '${filename}' has content type '${contentType || "unknown"}' — `
+                    + `only ${[...IMAGE_ATTACHMENT_CONTENT_TYPES].join(", ")} can be attached to a message.`,
+                );
+            }
+            const sizeBytes = Number(meta.sizeBytes) || 0;
+            if (sizeBytes <= 0 || sizeBytes > ATTACHMENT_MAX_BYTES) {
+                reject(`Attachment '${filename}' is ${sizeBytes} bytes; the per-image limit is ${ATTACHMENT_MAX_BYTES}.`);
+            }
+            totalBytes += sizeBytes;
+            if (totalBytes > ATTACHMENTS_MAX_TOTAL_BYTES) {
+                reject(`Attachments exceed the ${ATTACHMENTS_MAX_TOTAL_BYTES}-byte total limit for one message.`);
+            }
+            resolved.push({ filename, contentType, sizeBytes });
+        }
+        return resolved;
     }
 
     async uploadArtifactContent(sessionId, filename, content, contentType = guessArtifactContentType(filename), contentEncoding = null) {

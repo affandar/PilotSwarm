@@ -224,15 +224,33 @@ const TERMINAL_SESSION_STATUSES = new Set(["completed", "failed", "cancelled", "
 // update is genuinely newer. Deliberately not restricted to idle-like
 // statuses: the status actually observed clobbering a live run was "waiting",
 // and an earlier version of this guard missed the bug by excluding it.
-// Terminal statuses are exempt so a finished run can never be stranded, and
-// the timestamp test means a real transition (which carries a newer
-// updatedAt) still lands immediately.
+// Terminal statuses are exempt so a finished run can never be stranded.
+//
+// "Genuinely newer" is decided by the server's monotonic statusVersion when
+// both sides carry one — wall-clock updatedAt is only the fallback. The
+// timestamp heuristic alone can WEDGE a finished turn as "running" forever:
+// client-side event merges (turn_completed, context usage) inflate the held
+// session's updatedAt past the server row's idle-write timestamp, so every
+// subsequent idle poll compares as stale and only a terminal status could
+// ever land. Observed live (2026-07-21, local portal): server row idle at
+// statusVersion 5 while the client showed "Working.." indefinitely.
 function shouldPreserveRunningStatus(previousSession, nextSession) {
     const nextStatus = String(nextSession?.status ?? "").toLowerCase();
-    return previousSession?.status === "running"
-        && nextStatus !== "running"
-        && !TERMINAL_SESSION_STATUSES.has(nextStatus)
-        && isSameOrOlderSessionUpdate(previousSession, nextSession);
+    if (previousSession?.status !== "running"
+        || nextStatus === "running"
+        || TERMINAL_SESSION_STATUSES.has(nextStatus)) {
+        return false;
+    }
+    const previousVersion = Number(previousSession?.statusVersion);
+    const nextVersion = Number(nextSession?.statusVersion);
+    if (Number.isFinite(previousVersion) && previousVersion > 0
+        && Number.isFinite(nextVersion) && nextVersion > 0) {
+        // Monotonic server counter: a higher version is authoritative and
+        // must land; a same-or-lower version is provably stale and is held
+        // regardless of what the timestamps claim.
+        return nextVersion <= previousVersion;
+    }
+    return isSameOrOlderSessionUpdate(previousSession, nextSession);
 }
 
 function mergeDefinedSessionFields(previousSession = {}, nextSession = {}) {
@@ -543,6 +561,9 @@ function normalizePromptAttachments(prompt, attachments) {
     const safePrompt = String(prompt || "");
     const list = Array.isArray(attachments) ? attachments.filter(Boolean) : [];
     return list.filter((attachment) => {
+        // Image attachments are chip-managed (staged File objects, no inline
+        // token in the prompt) — they live until sent or explicitly removed.
+        if (attachment?.kind === "image") return true;
         const token = String(attachment?.token || "").trim();
         return token && safePrompt.includes(token);
     });

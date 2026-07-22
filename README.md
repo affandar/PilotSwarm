@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.17** — Finite delegated work now wakes parents on substantive results, child contracts survive durable session creation, compact GFM table delimiters render correctly, and portal chat cards use the full pane width. New sessions use orchestration `1.0.64`.
+> **Latest release: v0.5.18** — Model-visible image attachments everywhere: paste, drop, or pick images in the portal (desktop + mobile), Ctrl+V clipboard paste in the TUI, and attachment refs through the Web API, SDK, and MCP server — persisted as session artifacts and vision-gated per model. New sessions use orchestration `1.0.65`.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 

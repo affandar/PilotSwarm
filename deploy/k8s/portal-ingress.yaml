@@ -6,6 +6,10 @@ metadata:
   annotations:
     cert-manager.io/cluster-issuer: "letsencrypt-prod"
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # Image attachment uploads are base64 JSON up to ~5.4 MB (4 MB decoded
+    # cap) on the artifact PUT route; nginx's 1 MB default rejects them with
+    # 413 before the app's own 8 MB route limit can apply.
+    nginx.ingress.kubernetes.io/proxy-body-size: "8m"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-http-version: "1.1"

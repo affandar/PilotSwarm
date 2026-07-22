@@ -160,7 +160,7 @@ export class WebPilotSwarmSession {
         this.onUserInput = onUserInput;
     }
 
-    async send(prompt: string, opts?: { clientMessageIds?: string[] }): Promise<void> {
+    async send(prompt: string, opts?: { clientMessageIds?: string[]; attachments?: Array<{ filename: string }> }): Promise<void> {
         // Seed the turn-tracking cursors from the current live status before
         // the first turn from this handle, so wait() accepts only results
         // produced by our own prompt — not a previous turn's (on a resumed
@@ -170,7 +170,10 @@ export class WebPilotSwarmSession {
         await this.api.call("sendMessage", {
             sessionId: this.sessionId,
             prompt,
-            options: opts?.clientMessageIds ? { clientMessageIds: opts.clientMessageIds } : {},
+            options: {
+                ...(opts?.clientMessageIds ? { clientMessageIds: opts.clientMessageIds } : {}),
+                ...(opts?.attachments && opts.attachments.length > 0 ? { attachments: opts.attachments } : {}),
+            },
         });
         this.pendingTurn = true;
     }

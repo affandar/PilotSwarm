@@ -2,7 +2,8 @@ import { isSessionLockAcquireTimeoutError, type SessionManager } from "./session
 import type { SessionStateStore } from "./session-store.js";
 import { resolveEffectiveSpawnOwner, type SessionCatalog } from "./cms.js";
 import type { StorageConfig } from "./storage-config.js";
-import { SESSION_STATE_MISSING_PREFIX, type AbortTurnResult, type SerializableSessionConfig, type TurnResult, type OrchestrationInput } from "./types.js";
+import { SESSION_STATE_MISSING_PREFIX, sanitizePromptAttachmentRefs, IMAGE_ATTACHMENT_CONTENT_TYPES, ATTACHMENT_MAX_BYTES, ATTACHMENTS_MAX_TOTAL_BYTES, type AbortTurnResult, type PromptAttachmentRef, type SerializableSessionConfig, type TurnResult, type OrchestrationInput } from "./types.js";
+import type { ArtifactStore } from "./session-store.js";
 import type { AgentConfig } from "./agent-loader.js";
 import { systemChildAgentUUID } from "./agent-loader.js";
 import { PilotSwarmClient } from "./client.js";
@@ -504,7 +505,7 @@ export function createSessionProxy(
             prompt: string,
             bootstrap?: boolean,
             turnIndex?: number,
-            turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; cycleOrigin?: "cron" | "cron_at"; retryCount?: number; clientMessageIds?: string[]; sender?: unknown; snapshot?: { expectedVersion?: number; turnKey: string } },
+            turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; cycleOrigin?: "cron" | "cron_at"; retryCount?: number; clientMessageIds?: string[]; sender?: unknown; snapshot?: { expectedVersion?: number; turnKey: string }; attachments?: Array<{ filename: string; contentType: string; sizeBytes: number }> },
         ) {
             return ctx.scheduleActivityOnSession(
                 "runTurn",
@@ -527,6 +528,11 @@ export function createSessionProxy(
                     // event (session-proxy reads input.sender below).
                     ...(turnMeta?.sender ? { sender: turnMeta.sender } : {}),
                     ...(turnMeta?.snapshot ? { snapshot: turnMeta.snapshot } : {}),
+                    // Image attachment REFS only — the worker fetches bytes from
+                    // the artifact store inside the activity (never on the wire).
+                    ...(turnMeta?.attachments && turnMeta.attachments.length > 0
+                        ? { attachments: turnMeta.attachments }
+                        : {}),
                 },
                 affinityKey,
             );
@@ -803,6 +809,8 @@ export function registerActivities(
     factStore?: import("./facts-store.js").FactStore | null,
     /** Worker node identifier — written on every CMS event for worker tracking. */
     workerNodeId?: string,
+    /** Artifact store — resolves image attachment refs to bytes inside runTurn. */
+    artifactStore?: ArtifactStore | null,
 ) {
     // Shared config for every activity-layer internal PilotSwarmClient /
     // PilotSwarmManagementClient. Carries the FULL facts/CMS target (07 P3) so
@@ -839,9 +847,15 @@ export function registerActivities(
             retryCount?: number;
             /** Session lifecycle protocol (orchestration 1.0.57+). Absent → legacy behavior. */
             snapshot?: { expectedVersion?: number; turnKey: string };
+            /** Image attachment refs (1.0.65+) — bytes are fetched from the artifact store below. */
+            attachments?: PromptAttachmentRef[];
         },
     ): Promise<TurnResult> => {
-        activityCtx.traceInfo(`[runTurn] session=${input.sessionId}`);
+        // Attachment count is traced unconditionally: a 2026-07-21 incident
+        // showed turns whose ActivityScheduled input carried refs executing
+        // WITHOUT them (suspected work-item redelivery after eviction/lock
+        // churn). This line makes the executed input's truth visible.
+        activityCtx.traceInfo(`[runTurn] session=${input.sessionId} attachments=${Array.isArray(input.attachments) ? input.attachments.length : "absent"}`);
 
         const turnTelemetry = {
             tokensInput: 0,
@@ -1978,6 +1992,12 @@ export function registerActivities(
                 if ((input as any).sender && typeof (input as any).sender === "object") {
                     eventData.sender = (input as any).sender;
                 }
+                // Image attachment refs ride the durable user.message event so
+                // transcripts can render thumbnails; bytes stay in the store.
+                const eventAttachments = sanitizePromptAttachmentRefs(input.attachments);
+                if (eventAttachments.length > 0) {
+                    eventData.attachments = eventAttachments;
+                }
                 const capturedPromptEventType = promptEventType;
                 trackEventWrite(cmsRetryBestEffort(
                     `runTurn.recordEvent ${capturedPromptEventType} session=${input.sessionId}`,
@@ -2022,6 +2042,87 @@ export function registerActivities(
                 ));
             }
 
+            // ── Image attachments: resolve refs → blobs, vision-gated ────────
+            // Bytes are fetched HERE (inside the activity) so the durable wire
+            // carries only refs. Every drop is explicit: an omission note is
+            // appended to the prompt and a runtime.attachment_dropped event is
+            // recorded — the model is never sent a payload it cannot see, and
+            // the operator is never silently ignored.
+            const requestedAttachments = sanitizePromptAttachmentRefs(input.attachments);
+            const turnAttachmentBlobs: Array<{ data: string; mimeType: string; displayName?: string }> = [];
+            if (requestedAttachments.length > 0) {
+                const droppedAttachments: Array<{ filename: string; contentType: string; reason: string }> = [];
+                let visionInfo: Awaited<ReturnType<SessionManager["getModelVisionInfo"]>> | null = null;
+                try {
+                    visionInfo = await sessionManager.getModelVisionInfo(input.config.model);
+                } catch (err: any) {
+                    activityCtx.traceInfo(`[runTurn] vision-capability lookup failed: ${err?.message ?? err}`);
+                }
+                if (!visionInfo?.vision) {
+                    for (const ref of requestedAttachments) {
+                        droppedAttachments.push({ filename: ref.filename, contentType: ref.contentType, reason: "no_vision_support" });
+                    }
+                } else {
+                    const perImageCap = Math.min(ATTACHMENT_MAX_BYTES, visionInfo.maxImageBytes || Number.POSITIVE_INFINITY);
+                    const maxImages = Math.min(requestedAttachments.length, visionInfo.maxImages || requestedAttachments.length);
+                    let totalBytes = 0;
+                    for (const ref of requestedAttachments) {
+                        if (turnAttachmentBlobs.length >= maxImages) {
+                            droppedAttachments.push({ filename: ref.filename, contentType: ref.contentType, reason: "too_many_images" });
+                            continue;
+                        }
+                        const mediaTypeOk = IMAGE_ATTACHMENT_CONTENT_TYPES.has(ref.contentType)
+                            && (!visionInfo.supportedMediaTypes || visionInfo.supportedMediaTypes.includes(ref.contentType));
+                        if (!mediaTypeOk) {
+                            droppedAttachments.push({ filename: ref.filename, contentType: ref.contentType, reason: "type_rejected" });
+                            continue;
+                        }
+                        if (!artifactStore) {
+                            droppedAttachments.push({ filename: ref.filename, contentType: ref.contentType, reason: "store_unavailable" });
+                            continue;
+                        }
+                        try {
+                            const download = await artifactStore.downloadArtifact(input.sessionId, ref.filename);
+                            const body: Buffer = download.body;
+                            if (body.length > perImageCap || totalBytes + body.length > ATTACHMENTS_MAX_TOTAL_BYTES) {
+                                droppedAttachments.push({ filename: ref.filename, contentType: ref.contentType, reason: "size_exceeded" });
+                                continue;
+                            }
+                            totalBytes += body.length;
+                            turnAttachmentBlobs.push({
+                                data: body.toString("base64"),
+                                mimeType: download.contentType || ref.contentType,
+                                displayName: ref.filename,
+                            });
+                        } catch (err: any) {
+                            activityCtx.traceInfo(`[runTurn] attachment fetch failed for ${ref.filename}: ${err?.message ?? err}`);
+                            droppedAttachments.push({ filename: ref.filename, contentType: ref.contentType, reason: "fetch_failed" });
+                        }
+                    }
+                }
+                if (droppedAttachments.length > 0) {
+                    const modelLabel = visionInfo?.modelId || input.config.model || "current model";
+                    const noteLines = droppedAttachments.map((d) => (d.reason === "no_vision_support"
+                        ? `[image attachment '${d.filename}' omitted — model '${modelLabel}' does not support image input]`
+                        : `[image attachment '${d.filename}' omitted — ${d.reason.replace(/_/g, " ")}]`));
+                    effectivePrompt = `${effectivePrompt}\n\n${noteLines.join("\n")}`;
+                    if (catalog) {
+                        trackEventWrite(cmsRetryBestEffort(
+                            `runTurn.recordEvent attachment_dropped session=${input.sessionId}`,
+                            () => catalog!.recordEvents(input.sessionId, droppedAttachments.map((d) => ({
+                                eventType: "runtime.attachment_dropped",
+                                data: { ...d, modelId: visionInfo?.modelId ?? null },
+                            })), workerNodeId),
+                            (msg) => activityCtx.traceInfo(msg),
+                        ));
+                    }
+                    activityCtx.traceInfo(
+                        `[runTurn] dropped ${droppedAttachments.length}/${requestedAttachments.length} image attachment(s): `
+                        + droppedAttachments.map((d) => `${d.filename}(${d.reason})`).join(", "),
+                    );
+                }
+            }
+
             const runTurnWithPrompt = async (targetSession: any, prompt: string) => {
                 return await targetSession.runTurn(prompt, {
                     onEvent,
@@ -2031,6 +2132,7 @@ export function registerActivities(
                     cycleOrigin: input.cycleOrigin,
                     turnIndex: input.turnIndex,
                     controlToolBridge,
+                    ...(turnAttachmentBlobs.length > 0 ? { attachments: turnAttachmentBlobs } : {}),
                 });
             };
 

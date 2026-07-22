@@ -63,11 +63,21 @@ export class BrowserPortalTransport extends HttpApiTransport {
         });
     }
 
-    async uploadArtifactFromFile(sessionId, file) {
+    async uploadArtifactFromFile(sessionId, file, filenameOverride = null) {
         if (!file || typeof file.name !== "string") {
             throw new Error("A browser File is required for upload");
         }
+        const filename = String(filenameOverride || file.name);
         const content = encodeBytesToBase64(new Uint8Array(await file.arrayBuffer()));
-        return this.uploadArtifactContent(sessionId, file.name, content, file.type || undefined, "base64");
+        return this.uploadArtifactContent(sessionId, filename, content, file.type || undefined, "base64");
+    }
+
+    /**
+     * Capability probe for the composer's attach affordances (paste / drop /
+     * picker). The portal server ships the same build as this bundle, so a
+     * static true is honest — the API edge still validates every send.
+     */
+    supportsPromptImageAttachments() {
+        return true;
     }
 }

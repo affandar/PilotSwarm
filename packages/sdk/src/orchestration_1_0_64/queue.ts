@@ -1,5 +1,4 @@
 import type { CommandMessage, OrchestrationInput, TurnResult } from "../types.js";
-import { sanitizePromptAttachmentRefs, ATTACHMENTS_MAX_COUNT } from "../types.js";
 import { messageSenderKey } from "../message-sender.js";
 import {
     applyChildUpdate,
@@ -449,7 +448,6 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 userPrompt = flushPendingChildDigestIntoPrompt(runtime, userPrompt);
             }
 
-            const incomingAttachments = sanitizePromptAttachmentRefs(msg.attachments);
             stash.push({
                 kind: "prompt",
                 prompt: userPrompt,
@@ -457,7 +455,6 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 ...(msg.requiredTool ? { requiredTool: msg.requiredTool } : {}),
                 ...(incomingClientMessageIds.length > 0 ? { clientMessageIds: incomingClientMessageIds } : {}),
                 ...(msg.sender && typeof msg.sender === "object" ? { sender: msg.sender } : {}),
-                ...(incomingAttachments.length > 0 ? { attachments: incomingAttachments } : {}),
             });
             for (const id of incomingClientMessageIds) pendingClientMessageIds.add(id);
             continue;
@@ -546,7 +543,6 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
                 yield* recordDuplicatePrompt(runtime, incomingClientMessageIds, duplicateIds, "predispatch");
                 continue;
             }
-            const sweepAttachments = sanitizePromptAttachmentRefs(msg.attachments);
             stash.push({
                 kind: "prompt",
                 prompt: msg.prompt,
@@ -554,7 +550,6 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
                 ...(msg.requiredTool ? { requiredTool: msg.requiredTool } : {}),
                 ...(incomingClientMessageIds.length > 0 ? { clientMessageIds: incomingClientMessageIds } : {}),
                 ...(msg.sender && typeof msg.sender === "object" ? { sender: msg.sender } : {}),
-                ...(sweepAttachments.length > 0 ? { attachments: sweepAttachments } : {}),
             });
             for (const id of incomingClientMessageIds) pendingClientMessageIds.add(id);
             continue;
@@ -599,22 +594,11 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
         const isBootstrap = state.bootstrapPrompt;
         const requiredTool = state.pendingRequiredTool;
         const cycleOrigin = state.pendingCycleOrigin;
-        const pendingAttachments = state.pendingAttachments;
         state.pendingPrompt = undefined;
         state.bootstrapPrompt = false;
         state.pendingRequiredTool = undefined;
         state.pendingCycleOrigin = undefined;
-        state.pendingAttachments = undefined;
-        yield* processPrompt(
-            runtime,
-            prompt,
-            isBootstrap,
-            requiredTool,
-            undefined,
-            cycleOrigin,
-            undefined,
-            pendingAttachments && pendingAttachments.length > 0 ? pendingAttachments : undefined,
-        );
+        yield* processPrompt(runtime, prompt, isBootstrap, requiredTool, undefined, cycleOrigin);
         return true;
     }
 
@@ -644,7 +628,6 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
                 let mergedBootstrap = item.bootstrap ?? false;
                 let mergedRequiredTool = item.requiredTool;
                 const mergedClientMessageIds: string[] = [...ids];
-                const mergedAttachments = sanitizePromptAttachmentRefs(item.attachments);
                 let turnSender = firstSender;
                 let mixedSenders = false;
                 while (true) {
@@ -668,13 +651,6 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
                     mergedBootstrap = mergedBootstrap || (peek.bootstrap ?? false);
                     if (!mergedRequiredTool && peek.requiredTool) mergedRequiredTool = peek.requiredTool;
                     for (const id of peekIds) mergedClientMessageIds.push(id);
-                    // Merged messages pool their image attachments in arrival
-                    // order, bounded by the per-turn cap (overflow is dropped
-                    // here deterministically rather than failing the turn).
-                    for (const ref of sanitizePromptAttachmentRefs(peek.attachments)) {
-                        if (mergedAttachments.length >= ATTACHMENTS_MAX_COUNT) break;
-                        mergedAttachments.push(ref);
-                    }
                 }
                 maybeQueueSharedPreamble(runtime);
                 yield* processPrompt(
@@ -685,7 +661,6 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
                     mergedClientMessageIds.length > 0 ? mergedClientMessageIds : undefined,
                     undefined,
                     mixedSenders ? undefined : turnSender,
-                    mergedAttachments.length > 0 ? mergedAttachments : undefined,
                 );
                 break;
             }

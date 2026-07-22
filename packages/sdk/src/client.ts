@@ -1,5 +1,6 @@
 import {
     RESPONSE_LATEST_KEY,
+    sanitizePromptAttachmentRefs,
 } from "./types.js";
 import {
     DURABLE_SESSION_LATEST_VERSION,
@@ -17,6 +18,7 @@ import type {
     CommandResponse,
     SessionResponsePayload,
     SessionOwnerInfo,
+    PromptAttachmentRef,
 } from "./types.js";
 import type { SessionCatalog, SessionEvent, SessionVisibility } from "./cms.js";
 import type { MessageSender } from "./message-sender.js";
@@ -518,7 +520,7 @@ export class PilotSwarmClient {
     private async _ensureOrchestrationAndSend(
         sessionId: string,
         prompt: string,
-        opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[]; sender?: MessageSender },
+        opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[]; sender?: MessageSender; attachments?: PromptAttachmentRef[] },
     ): Promise<string> {
         if (!this.duroxideClient) throw new Error("Not started.");
         const _trace = this.config.traceWriter ?? (() => {});
@@ -646,6 +648,10 @@ export class PilotSwarmClient {
                     const sender = normalizeMessageSender(opts?.sender);
                     return sender ? { sender } : {};
                 })(),
+                ...(() => {
+                    const attachments = sanitizePromptAttachmentRefs(opts?.attachments);
+                    return attachments.length > 0 ? { attachments } : {};
+                })(),
             }),
         );
         trace(`[client] enqueueEvent done (${Date.now() - enqueueAt}ms bootstrap=${opts?.bootstrap === true})`);
@@ -683,7 +689,7 @@ export class PilotSwarmClient {
     async _startTurn(
         sessionId: string,
         prompt: string,
-        opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[]; sender?: MessageSender },
+        opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[]; sender?: MessageSender; attachments?: PromptAttachmentRef[] },
     ): Promise<string> {
         return this._ensureOrchestrationAndSend(sessionId, prompt, opts);
     }
@@ -1140,7 +1146,7 @@ export class PilotSwarmSession {
         );
     }
 
-    async send(prompt: string, opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[]; sender?: MessageSender }): Promise<void> {
+    async send(prompt: string, opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[]; sender?: MessageSender; attachments?: PromptAttachmentRef[] }): Promise<void> {
         this.lastOrchestrationId = await this.client._startTurn(this.sessionId, prompt, opts);
     }
 

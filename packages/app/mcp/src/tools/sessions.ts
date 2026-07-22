@@ -138,20 +138,30 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
             title: "Send Message",
             description:
                 "Send a fire-and-forget message to a PilotSwarm session. Pass client_message_ids to make the "
-                + "message(s) cancellable later via cancel_pending_messages; enqueue_only queues without waking the session.",
+                + "message(s) cancellable later via cancel_pending_messages; enqueue_only queues without waking the session. "
+                + "attachments references IMAGE artifacts already uploaded to this session (via upload_artifact) — "
+                + "vision-capable models receive them as true image input.",
             inputSchema: {
                 session_id: sessionIdShape().describe("The session to send the message to"),
                 message: z.string().describe("The message to send"),
                 client_message_ids: z.array(z.string().min(1)).optional().describe("Caller-chosen ids for this message — required later by cancel_pending_messages"),
                 enqueue_only: z.boolean().optional().describe("Queue the message without triggering processing (web mode only)"),
+                attachments: z.array(z.object({ filename: z.string().min(1) })).max(4).optional()
+                    .describe("Image artifacts of this session to show the model (upload first via upload_artifact; png/jpeg/gif/webp, ≤4 MB each)"),
             },
         },
-        async ({ session_id, message, client_message_ids, enqueue_only }) => {
+        async ({ session_id, message, client_message_ids, enqueue_only, attachments }) => {
             try {
                 const existing = await ctx.mgmt.getSession(session_id);
                 if (!existing) {
                     return {
                         content: [{ type: "text" as const, text: JSON.stringify({ error: "session not found", session_id }) }],
+                        isError: true,
+                    };
+                }
+                if (attachments && attachments.length > 0 && !ctx.api) {
+                    return {
+                        content: [{ type: "text" as const, text: JSON.stringify({ error: "attachments are only supported in Web API mode (refs are validated against the session's artifact store at the API edge)" }) }],
                         isError: true,
                     };
                 }
@@ -165,7 +175,11 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                     await ctx.api.call("sendMessage", {
                         sessionId: session_id,
                         prompt: message,
-                        options: { enqueueOnly: true, ...(client_message_ids ? { clientMessageIds: client_message_ids } : {}) },
+                        options: {
+                            enqueueOnly: true,
+                            ...(client_message_ids ? { clientMessageIds: client_message_ids } : {}),
+                            ...(attachments && attachments.length > 0 ? { attachments } : {}),
+                        },
                     });
                     return {
                         content: [
@@ -183,7 +197,16 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                 const session = sessionCache.get(session_id)
                     ?? await ctx.client.resumeSession(session_id);
                 if (!sessionCache.has(session_id)) sessionCache.set(session_id, session);
-                await session.send(message, client_message_ids ? { clientMessageIds: client_message_ids } : undefined);
+                // attachments only reach here in web mode (rejected above for
+                // direct); WebPilotSwarmSession.send accepts {filename} refs and
+                // the API edge resolves them — cast because the static type here
+                // is the direct-client union member.
+                await session.send(message, (client_message_ids || (attachments && attachments.length > 0))
+                    ? ({
+                        ...(client_message_ids ? { clientMessageIds: client_message_ids } : {}),
+                        ...(attachments && attachments.length > 0 ? { attachments } : {}),
+                    } as never)
+                    : undefined);
                 return {
                     content: [
                         { type: "text" as const, text: JSON.stringify({ sent: true, ...(client_message_ids ? { client_message_ids } : {}) }) },
@@ -204,19 +227,28 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
         "send_and_wait",
         {
             title: "Send and Wait",
-            description: "Send a message to a PilotSwarm session and wait for the response",
+            description: "Send a message to a PilotSwarm session and wait for the response. "
+                + "attachments references IMAGE artifacts already uploaded to this session (via upload_artifact).",
             inputSchema: {
                 session_id: sessionIdShape().describe("The session to send the message to"),
                 message: z.string().describe("The message to send"),
                 timeout_ms: z.number().optional().describe("Timeout in milliseconds (default 120000)"),
+                attachments: z.array(z.object({ filename: z.string().min(1) })).max(4).optional()
+                    .describe("Image artifacts of this session to show the model (upload first via upload_artifact; png/jpeg/gif/webp, ≤4 MB each)"),
             },
         },
-        async ({ session_id, message, timeout_ms }) => {
+        async ({ session_id, message, timeout_ms, attachments }) => {
             try {
                 const existing = await ctx.mgmt.getSession(session_id);
                 if (!existing) {
                     return {
                         content: [{ type: "text" as const, text: JSON.stringify({ error: "session not found", session_id }) }],
+                        isError: true,
+                    };
+                }
+                if (attachments && attachments.length > 0 && !ctx.api) {
+                    return {
+                        content: [{ type: "text" as const, text: JSON.stringify({ error: "attachments are only supported in Web API mode (refs are validated against the session's artifact store at the API edge)" }) }],
                         isError: true,
                     };
                 }
@@ -226,6 +258,14 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                 // for sessions created outside the MCP server.
                 const session = sessionCache.get(session_id)
                     ?? await ctx.client.resumeSession(session_id);
+                if (attachments && attachments.length > 0) {
+                    // Web mode only (rejected above for direct) — see send_message.
+                    await session.send(message, { attachments } as never);
+                    const response = await session.wait(timeout);
+                    return {
+                        content: [{ type: "text" as const, text: response ?? "(no response)" }],
+                    };
+                }
                 const response = await session.sendAndWait(message, timeout);
                 return {
                     content: [

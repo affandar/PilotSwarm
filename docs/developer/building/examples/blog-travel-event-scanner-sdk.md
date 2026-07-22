@@ -680,7 +680,7 @@ const worker = new PilotSwarmWorker({
 
   // Performance tuning
   maxSessionsPerRuntime: 50,         // concurrent sessions per worker (default: 50)
-  turnTimeoutMs: 120_000,            // LLM turn timeout (default: 2 minutes)
+  turnTimeoutMs: 1_200_000,          // explicit LLM turn cap (default: 20 minutes)
   sessionIdleTimeoutMs: 3_600_000,   // idle session cleanup (default: 1 hour)
 
   // Management agents — auto-started system agents for monitoring and maintenance

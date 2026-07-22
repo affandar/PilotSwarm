@@ -380,6 +380,11 @@ function buildChatMessage(event, role) {
     const sender = event?.data?.sender && typeof event.data.sender === "object"
         ? event.data.sender
         : null;
+    // Image attachment refs recorded by the runTurn activity — rendered as
+    // chips under the user message (bytes stay in the artifact store).
+    const attachments = Array.isArray(event?.data?.attachments)
+        ? event.data.attachments.filter((a) => a && typeof a.filename === "string" && a.filename)
+        : [];
     return {
         id: `${event.sessionId}:${event.seq}`,
         role: deriveChatRole(event, role, text),
@@ -388,6 +393,7 @@ function buildChatMessage(event, role) {
         createdAt: event.createdAt instanceof Date ? event.createdAt.getTime() : new Date(event.createdAt).getTime(),
         ...(clientMessageIds.length > 0 ? { clientMessageIds } : {}),
         ...(sender ? { sender } : {}),
+        ...(attachments.length > 0 ? { attachments } : {}),
     };
 }
 

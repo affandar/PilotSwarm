@@ -1,7 +1,6 @@
 import type { OrchestrationInput } from "../types.js";
-import { COMMAND_VERSION_KEY, RESPONSE_VERSION_KEY, sanitizePromptAttachmentRefs } from "../types.js";
+import { COMMAND_VERSION_KEY, RESPONSE_VERSION_KEY } from "../types.js";
 import { createSessionManagerProxy, createSessionProxy } from "../session-proxy.js";
-import { DURABLE_SESSION_LATEST_VERSION } from "../orchestration-version.js";
 import {
     continueInput,
     publishStatus,
@@ -18,7 +17,7 @@ import {
     type DurableSessionRuntime,
 } from "./state.js";
 
-export const CURRENT_ORCHESTRATION_VERSION = DURABLE_SESSION_LATEST_VERSION;
+export const CURRENT_ORCHESTRATION_VERSION = "1.0.64";
 
 /** Wraps `ctx.traceInfo` so every line is tagged with the running orchestration version. */
 function installVersionedTracing(ctx: any, sourceVersion: string): void {
@@ -58,7 +57,6 @@ function applyLegacyPendingMessage(runtime: DurableSessionRuntime): void {
         runtime.state.pendingPrompt = legacyMsg.prompt;
         runtime.state.bootstrapPrompt = Boolean(legacyMsg.bootstrap);
         runtime.state.pendingRequiredTool = legacyMsg.requiredTool;
-        runtime.state.pendingAttachments = sanitizePromptAttachmentRefs(legacyMsg.attachments);
     } else {
         runtime.state.legacyPendingMessage = legacyMsg;
     }

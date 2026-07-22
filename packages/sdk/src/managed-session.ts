@@ -235,7 +235,7 @@ const FENCED_CODE_BLOCK_RE = /```[\s\S]*?```/g;
 // in-flight permanently while the session's queue backs up. Two guards settle
 // the turn instead. Both are per-turn and worker-side only — no orchestration
 // change. An explicit 0 disables either guard.
-export const DEFAULT_TURN_TIMEOUT_MS = 10 * 60_000;
+export const DEFAULT_TURN_TIMEOUT_MS = 20 * 60_000;
 export const DEFAULT_TURN_INACTIVITY_TIMEOUT_MS = 5 * 60_000;
 // The inactivity settle is phrased to match isCopilotConnectionClosedError()
 // (orchestration/utils.ts) so the existing connection-closed recovery runs:
@@ -2087,11 +2087,24 @@ export class ManagedSession {
         try {
             normalizeCopilotSessionMessageHistory(this.copilotSession as any);
 
-            // Fire the prompt — non-blocking
+            // Fire the prompt — non-blocking. Image attachments arrive as
+            // ready-to-send base64 blobs (fetched + vision-gated by the runTurn
+            // activity host); the Copilot runtime packs them into the
+            // provider-specific multimodal content.
             await this.copilotSession.send({
                 prompt: effectivePrompt,
                 ...(effectivePrompt !== prompt ? { displayPrompt: prompt } : {}),
                 ...(opts?.requiredTool ? { requiredTool: opts.requiredTool } : {}),
+                ...(opts?.attachments && opts.attachments.length > 0
+                    ? {
+                        attachments: opts.attachments.map((a) => ({
+                            type: "blob" as const,
+                            data: a.data,
+                            mimeType: a.mimeType,
+                            ...(a.displayName ? { displayName: a.displayName } : {}),
+                        })),
+                    }
+                    : {}),
             });
 
             // Wait for session.idle, or a guard rejection (wall-clock cap /
