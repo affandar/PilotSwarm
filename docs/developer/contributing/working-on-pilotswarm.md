@@ -180,12 +180,13 @@ Useful end-to-end flows:
 Common operations:
 
 ```bash
-./scripts/deploy-aks.sh
-./scripts/deploy-aks.sh --skip-reset
-node --env-file=.env scripts/db-reset.js
+./scripts/deploy-aks.sh                                       # deploy (never resets data)
+./scripts/reset-db-aks.sh --i-understand-this-deletes-all-data  # explicit destructive wipe
 ```
 
-Use a full reset when you need a clean state for orchestration/version testing. Use `--skip-reset` for prompt or worker-only rollouts where preserving sessions is useful.
+Deploys are always non-destructive. Use the explicit reset script only when you
+need a clean state for orchestration/version testing and a wipe was explicitly
+requested — NO RESETS otherwise.
 
 ## Docs To Keep In Sync
 

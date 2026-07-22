@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.5.19 — 2026-07-22
+
+### SDK
+
+- **Vision gate now runs on the session's own Copilot client.** The image-attachment
+  vision check (`getModelVisionInfo`) used to consult the worker-default-token
+  CopilotClient; deployments whose sessions run on per-user/system GitHub Copilot
+  keys (where the default `GITHUB_TOKEN` may be an unset sentinel) reported "no
+  vision" even though the turn's own token could see images. The gate now resolves
+  the model catalog on the same client/token that serves the session's turns, with
+  per-token catalog caches so one identity's entitlements never bleed onto
+  another's sessions.
+
+### Maintainer Workflow
+
+- **Deploys never reset data.** The DB reset step was removed from
+  `scripts/deploy-aks.sh` (it previously wiped the database by default). Resets now
+  live only in the new `scripts/reset-db-aks.sh`, which must be invoked explicitly
+  with `--i-understand-this-deletes-all-data`. Deploy/reset skills, deployer
+  agents, and the builder-agent templates document the rule: NO RESETS unless the
+  user explicitly asks for a wipe.
+
 ## 0.5.18 — 2026-07-21
 
 ### Model-visible image attachments across every surface

@@ -13,7 +13,7 @@
 - Path used: the legacy shell scripts (this cluster is NOT GitOps/Flux).
   - Portal: `./scripts/deploy-portal.sh` (build + push + roll; refreshes the
     `copilot-runtime-secrets` K8s secret from `.env.remote`; no data touched).
-  - Worker: `./scripts/deploy-aks.sh --skip-tests --skip-reset` (build + push +
+  - Worker: `./scripts/deploy-aks.sh --skip-tests` (build + push +
     roll; **data preserved** — verified: workers reused persisted system
     sessions `22013ffb`/`bdad2272`).
 - Both scripts honor `K8S_CONTEXT=pilotswarm-aks` from `.env.remote`, so the

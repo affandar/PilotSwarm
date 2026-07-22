@@ -806,14 +806,17 @@ After a cold start or destructive reset, the workers will automatically recreate
 
 ## Reset Remote State For Reproduction Or Replay Cleanup
 
-When orchestration logic changed or you want a clean reproduction:
+Deploys never reset data. A reset is a separate, deliberate operation — run it
+only when a wipe was explicitly requested:
 
 ```bash
-kubectl scale deployment copilot-runtime-worker -n copilot-runtime --replicas=0
-NODE_TLS_REJECT_UNAUTHORIZED=0 node --env-file=.env.remote scripts/db-reset.js --yes
-kubectl scale deployment copilot-runtime-worker -n copilot-runtime --replicas=6
-kubectl rollout status deployment/copilot-runtime-worker -n copilot-runtime --timeout=180s
+./scripts/reset-db-aks.sh --i-understand-this-deletes-all-data
 ```
+
+This scales workers to 0, wipes the database, and restores the previous
+replica count. (Equivalent manual sequence: scale to 0 →
+`NODE_TLS_REJECT_UNAUTHORIZED=0 node --env-file=.env.remote scripts/db-reset.js --yes`
+→ scale back up.)
 
 This drops:
 
@@ -936,10 +939,11 @@ In-flight orchestrations are safe during rollouts. If a worker is killed mid-tur
 
 ### Database Reset
 
-To wipe all orchestration and session state:
+To wipe all orchestration and session state (only when a wipe was explicitly
+requested — deploys never do this):
 
 ```bash
-node --env-file=.env.remote scripts/db-reset.js --yes
+./scripts/reset-db-aks.sh --i-understand-this-deletes-all-data
 ```
 
 This drops the `ps_duroxide`, `copilot_sessions`, and `pilotswarm_facts` schemas (plus the legacy `duroxide` schema if present). Use with caution — all in-flight sessions will be lost.
