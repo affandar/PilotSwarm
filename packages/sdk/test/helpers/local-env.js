@@ -154,9 +154,27 @@ export function createTestEnv(suiteName = "test") {
     // Create temp directory
     mkdirSync(sessionStateDir, { recursive: true });
 
+    // A just-killed worker can still be flushing files into the tree while
+    // the recursive delete walks it, so rmSync races fresh entries and dies
+    // with ENOTEMPTY (observed in the fault-injection kill suites). rmSync's
+    // built-in linear-backoff retries cover one racing write; the outer loop
+    // (with a pause for the dying process to exit) covers a writer that
+    // outlives a single retry budget.
+    async function removeDirWithRetries(dir) {
+        for (let attempt = 0; ; attempt += 1) {
+            try {
+                rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+                return;
+            } catch (err) {
+                if (attempt >= 4) throw err;
+                await new Promise((resolve) => setTimeout(resolve, 150 * (attempt + 1)));
+            }
+        }
+    }
+
     async function reset() {
         if (existsSync(baseDir)) {
-            rmSync(baseDir, { recursive: true, force: true });
+            await removeDirWithRetries(baseDir);
         }
         mkdirSync(sessionStateDir, { recursive: true });
 

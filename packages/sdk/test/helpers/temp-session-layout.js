@@ -11,7 +11,10 @@ export function createTempSessionLayout(prefix = "pilotswarm-test-") {
         sessionStateDir,
         cleanup() {
             if (existsSync(baseDir)) {
-                rmSync(baseDir, { recursive: true, force: true });
+                // maxRetries/retryDelay: a just-killed worker may still be
+                // flushing into the tree (same ENOTEMPTY race as
+                // local-env.js reset()).
+                rmSync(baseDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
             }
         },
     };
