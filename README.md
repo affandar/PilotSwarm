@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.19** — The image vision gate now runs on the session's own Copilot client (per-user/system key aware), so deployments without a worker-default GitHub token gate correctly; deploy scripts are now always non-destructive, with DB resets moved to an explicit standalone script.
+> **Latest release: v0.5.20** — Parents wake when spawned children go quiet (idle/blocked children resolve waits, first reports always land, all-quiet digests deliver immediately); agent waits show as waiting instead of an endless "Working…" spinner; the portal collapses runtime-redelivered messages under an amber ✓✓↻ mark, uses day-aware timestamps, and stops polling deleted sessions. New sessions use orchestration `1.0.66`.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 

@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.5.20 — 2026-07-22
+
+### SDK / Orchestration (new sessions use `1.0.66`)
+
+- **Parents wake when children go quiet.** A spawned child that finished its
+  task by simply answering (idle, no `complete_session`) was invisible: the
+  `wait_for_agents` fallback poll had no mapping for `idle`, so a waiting
+  parent polled a finished child forever, and the child's completion notify
+  could be suppressed by its wake contract. Now: waits resolve when every
+  waited child is *settled* (terminal, idle, or blocked on input) with a
+  followup describing quiet/blocked children; spawns carry an `expectsReport`
+  ledger and a first report delivers the child digest immediately once all
+  agents settle; a child's first completion always notifies its parent
+  regardless of contract.
+- **`wait_for_agents` publishes `waiting` (with a reason) instead of
+  `running`**, so the portal shows "waiting for N agent(s)" rather than an
+  indefinite "Working…" spinner while parked on an agent wait.
+- Frozen `1.0.65` handler hardcodes its own version (freeze convention;
+  guards in-flight upgrade + replay behavior), with a lineage test pinning
+  the rule for future freezes.
+
+### Portal
+
+- **Redelivered messages collapse to one bubble** marked with an amber `✓✓↻`
+  and stamped with the latest delivery time. `clientMessageIds` are
+  authoritative for equivalence: a duroxide activity retry re-records the
+  same queue message and collapses regardless of retry latency, while a
+  deliberate identical re-send stays two bubbles.
+- **Day-aware chat timestamps** — same-day messages show time only; older
+  messages carry their date (and year when it differs).
+- **Deleted sessions are evicted on terminal 404** instead of being polled
+  forever: panes unbind, the active-session latch clears, and the console
+  404 stream stops. Local deletes evict proactively.
+
+### Tests
+
+- Temp-dir cleanup in the kill/fault-injection suites retries removal while
+  a killed worker finishes flushing files (ENOTEMPTY race).
+
 ## 0.5.19 — 2026-07-22
 
 ### SDK
