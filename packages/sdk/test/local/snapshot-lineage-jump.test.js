@@ -40,6 +40,17 @@ describe("orchestration version registry", () => {
         }
     });
 
+    it("frozen 1.0.64 and 1.0.65 hardcode their own version strings", () => {
+        // A frozen dir must never derive its identity from the floating
+        // DURABLE_SESSION_LATEST_VERSION: a frozen handler that believes it
+        // is latest never upgrades in-flight histories and can diverge on
+        // replayed continue-as-news (the beae878 incident class).
+        const frozen164 = readFileSync(new URL("../../src/orchestration_1_0_64/runtime.ts", import.meta.url), "utf8");
+        const frozen165 = readFileSync(new URL("../../src/orchestration_1_0_65/runtime.ts", import.meta.url), "utf8");
+        expect(frozen164).toMatch(/CURRENT_ORCHESTRATION_VERSION\s*=\s*"1\.0\.64"/);
+        expect(frozen165).toMatch(/CURRENT_ORCHESTRATION_VERSION\s*=\s*"1\.0\.65"/);
+    });
+
     it("registry versions are unique and strictly monotonic, floor still present", () => {
         const versions = REGISTRY.map((e) => e.version);
         expect(new Set(versions).size).toBe(versions.length); // no duplicates
