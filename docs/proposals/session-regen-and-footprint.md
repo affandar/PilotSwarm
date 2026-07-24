@@ -452,7 +452,8 @@ facts**, and a refusal is durable too:
 |---|---|---|
 | `session.regenerate_requested` | cmd accepted (gates passed) | `{attemptId, trigger: "operator"\|"agent"\|"parent"\|"policy", requestedBy, handoff?}` |
 | `session.regenerate_refused` | cmd rejected by a gate | `{attemptId, reason: "too_young"\|"already_pending"\|"cooldown"\|"fleet_not_ready"\|"not_owner"\|"not_parent"\|"is_system", requestedBy}` |
-| `session.epoch_committed` | **first drain of the new execution — after the CAN, before the grounding turn** | `{fromEpoch, toEpoch, attemptId, archiveArtifactId, packageArtifactId, turnsArchived, compactionsArchived}` |
+| `session.epoch_committed` | **first drain of the new execution — after the CAN, before the grounding turn** | `{fromEpoch, toEpoch, attemptId, archiveArtifactId, packageArtifactId, turnsArchived, compactionsArchived, distillMode, distillerModel?, distillerSessionId?}` |
+| `session.regen_distill` | deterministic distill completed (no service session to trace) | `{attemptId, mode: "deterministic", reason, inputArtifactId, packageArtifactId}` |
 | `session.regenerated` | **after the first E+1 snapshot commit** — the rebirth is proven, not presumed | `{epoch, attemptId, stats}` |
 | `session.regenerate_failed` | fail-safe abort (pre-flip) | `{epoch, attemptId, stage: "archive"\|"distill", error}` |
 
@@ -556,16 +557,58 @@ Command shape follows set_model: `buildLifecycleCommandId("regenerate")`,
 
 ## 9. Distiller and ResumePackage
 
-The Distiller is an **ephemeral, fresh-context session** — never the
-degraded session summarizing itself (the in-window self-summary *is* the
-disease). The mechanism is the title summarizer's one-shot pattern
-(session-proxy.ts:2794-2936: dynamic SdkClient, registry-resolved model,
-one prompt, teardown), with the hygiene that pattern currently lacks:
+The Distiller is a **fresh-context service session** — never the degraded
+session summarizing itself (the in-window self-summary *is* the disease).
+It is modeled as a **real PilotSwarm session with its own orchestration**,
+not a hidden subprocess: lifecycle events, metrics, tokens-by-model,
+transcript, and sweeper cleanup all apply to it for free because it *is* a
+session.
 
-- Its own `COPILOT_HOME` and a throwaway session id (never S);
-  `deleteSession` + directory removal in a `finally`. (The title
-  summarizer leaks its temp session dir today — fix it the same way while
-  in the file.)
+### 9.1 Service sessions — tree-scoped system sessions
+
+The distiller introduces a new session class. Cluster-level system
+sessions (sweeper, resourcemgr, facts-manager) serve the deployment; a
+**service session** serves *one session tree*. It is machinery that
+belongs to a root session, visible in that tree, and nothing else.
+
+- **CMS shape**: `service_kind` (e.g. `"regen-distiller"`) and
+  `service_of` (the session it serves) on the sessions row. `is_system`
+  stays false — service sessions are not cluster infrastructure and never
+  appear in the system filter.
+- **Parenting**: `parentSessionId` = the **root ancestor** of the served
+  session. A sub-agent's regen distiller still surfaces under the root, so
+  all of a tree's machinery collects in one visible place.
+- **Well-defined name**: `agentId: "regen-distiller"`, title
+  `Regen Distiller — <shortId> e<from>→e<to>`.
+- **Read-only to users**: the portal/TUI render a distinct icon (the
+  distiller gets an alembic) and no prompt input. Its transcript and
+  events are fully inspectable — the session IS the trace: `user.message`
+  carries the exact distiller input, `assistant.message` the raw output,
+  `turn_completed` the model/tokens/duration.
+- **Gates**: service sessions refuse regeneration, cron, children, and
+  inbound user messages; visibility follows the served tree (a viewer who
+  can read the root can read its service sessions).
+- **Cleanup**: the distiller ends in a terminal state, so the sweeper's
+  normal stale-terminal scan reclaims it — no bespoke janitor.
+- **Deterministic runs create no service session** — when no LLM runs
+  there is nothing to trace; the parent records a `session.regen_distill`
+  event (`mode: "deterministic"`, reason, artifact ids) instead.
+
+### 9.2 Map-reduce distillation
+
+The distiller agent reads the **whole archived transcript**, not a tail.
+The archive artifact (`transcript-e<E>-<attemptId>.jsonl`, §6.5) is its
+source; a purpose-built `read_transcript_page` tool pages through it
+(registered only for the `regen-distiller` identity, scoped to
+`service_of`'s archive). The agent maps (page → extraction notes) and
+reduces (notes → ResumePackage JSON as its final message) inside its own
+turn; the pipeline parses, validates, and stores the package. Long
+transcripts cost more tool iterations, not more machinery. The
+deterministic closure package (mission + verbatim tail + control-plane
+pointers) remains the guaranteed floor: timeout, junk output, or an
+unresolvable model all fall back to it rather than blocking the regen
+that exists to escape a broken transcript.
+
 - **Idempotency — scoped to the attempt, not the epoch**: the validated
   package is written to `package-e<E>-<attemptId>.json` before the
   activity returns; a retried distill *within the same attempt* finds it
@@ -585,29 +628,47 @@ one prompt, teardown), with the hygiene that pattern currently lacks:
   base for a rollback decision and for the M3 quality work).
 - Hard timeout, bounded retries (→ fail-safe on exhaustion).
 
-**Model policy**: the session's own model by default — capability parity,
-never silently smaller. A deployment can pin `distillerModel` (worker
-config) to a bigger or longer-context model; the binding constraint on
-distillation quality is how much verbatim transcript tail fits in the
-distiller's input window. A **configured fallback model is mandatory**, not
-optional: a common regen trigger is a deprecated/removed model, and
-without a fallback the distiller can't run for exactly the sessions that
-most need regeneration. Resolution uses the existing
+**Model policy**: the **cluster default model** — the deployment's
+`defaultModel`, the same model a new session gets — unless the caller
+pins a specific `distillerModel` (validated against the model catalog at
+the API edge). The served session's own model is deliberately *not* in
+the chain: a degraded session's model is a poor default for its own
+rescue, and a common regen trigger is exactly a deprecated/removed model.
+A **configured fallback model is mandatory**, not optional; after it, the
+deterministic package is the floor. Resolution uses the existing
 `ModelProviderRegistry.resolve(ref)` (model-providers.ts:258-297).
+**LLM distillation is the default** (`distillMode: "llm"`); callers may
+select `distillMode: "deterministic"` per regen, and a deployment can
+force deterministic-only via `PILOTSWARM_REGEN_DETERMINISTIC_ONLY=1`.
 
 **Inputs, in priority order — all framed as untrusted quoted data, never as
 instructions to the distiller**:
 
-1. The **closure**: recent transcript tail (from the final tar's
-   `events.jsonl`), facts map, child roster + recent outcomes, artifact
-   list, cron schedule, pending-message **count** (orchestration stats
-   expose the count only — there is no queue-content preview to give) —
-   assembled control-plane side.
+1. The **archived transcript**, paged in full via `read_transcript_page`
+   (§9.2), plus the **closure**: facts map, child roster + recent
+   outcomes, artifact list, cron schedule, pending-message **count**
+   (orchestration stats expose the count only — there is no queue-content
+   preview to give) — assembled control-plane side.
 2. The SDK's native `history.summarizeForHandoff()` output, captured at
    archive time — cheap but in-window; a hint to cross-check, not a source
    of truth.
 3. When the LLM triggered the regen: its freeform `handoff` tool argument
    (length-capped).
+4. **Distilling `instructions`** (≤4000 chars) — a directive about *how*
+   to distill ("preserve every SQL snippet verbatim", "drop the debugging
+   tangents"), supplied by the user (portal/API/MCP) or the agent
+   (`regenerate_context`) / parent (`regenerate_agent`). Rendered as a
+   fenced untrusted block; on a deterministic fallback the instructions
+   are embedded in the package as `requesterInstructions` so the reborn
+   agent still sees them.
+
+**Dumps**: the exact distiller input is persisted as
+`distill-input-e<E>-<attemptId>.md` and the raw pre-parse output as
+`distill-output-e<E>-<attemptId>.txt`, both attempt-scoped artifacts on
+the served session beside `package-e<E>-<attemptId>.json` — so junk
+outputs that triggered the fallback stay inspectable, and the artifact
+path answers "what did the distiller see/say" even after the service
+session is swept.
 
 Injection resistance is a first-class requirement because the distillate
 becomes the reborn session's bootstrap, and it covers the whole package,
@@ -1334,8 +1395,16 @@ Self-regen e2e (the loop the sensor exists for — agent regens itself):
    footprint readout and the `regenEligibility` read model; refusal-event
    handling on every surface; status/rebuilding chips; epoch divider; TUI
    parity.
-4. **M3 — Distiller quality**: full closure, map-reduce over long tails,
-   adversarial completeness pass, package spot-validation hardening.
+4. **M3 — Distiller as a service session + map-reduce**: the distiller
+   becomes an orchestration-modeled **service session** under the root
+   parent (§9.1) reading the **whole archived transcript** via
+   `read_transcript_page` (§9.2); distilling `instructions` on every
+   surface; cluster-default model policy with per-call override;
+   input/output dump artifacts; `epoch_committed`/`lastRegenStats` gain
+   `distillMode`/`distillerModel`/`distillerSessionId`; LLM distillation
+   default-on with per-regen `distillMode` opt-out. Adversarial
+   completeness pass and package spot-validation hardening remain the
+   follow-on quality slice.
 5. **M4 — Retention, rollback, policy**: `purge_regen_debris` +
    `cms_list_regen_attempt_debris` sweep (debris is harmless-by-scoping
    until then, §6.3/§9); `rollbackTo` operator path; `keepFiles` behind
