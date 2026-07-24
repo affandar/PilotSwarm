@@ -21,6 +21,28 @@
                     "cost": "low"
                 },
                 {
+                    "name": "claude-opus-5",
+                    "description": "Claude Opus 5.0. Newest flagship Claude through GitHub Copilot — deepest reasoning for the hardest, longest-horizon tasks.",
+                    "cost": "high",
+                    "supportedReasoningEfforts": [
+                        "low",
+                        "medium",
+                        "high",
+                        "xhigh",
+                        "max"
+                    ],
+                    "defaultReasoningEffort": "medium",
+                    "supportedContextTiers": [
+                        "default",
+                        "long_context"
+                    ],
+                    "defaultContextTier": "default",
+                    "contextWindowSizes": {
+                        "default": 200000,
+                        "long_context": 936000
+                    }
+                },
+                {
                     "name": "claude-opus-4.8",
                     "description": "Claude Opus 4.8. Most capable Claude option for the hardest analysis and reasoning tasks in the starter appliance.",
                     "cost": "high",
