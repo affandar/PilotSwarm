@@ -1276,7 +1276,7 @@ export class SessionManager {
         let storedExists = false;
         if (this.sessionStore) {
             try {
-                storedExists = await this.sessionStore.exists(sessionId);
+                storedExists = await this.sessionStore.exists(sessionId, transcriptEpoch || undefined);
             } catch (error: unknown) {
                 emitSessionManagerTrace(
                     sessionId,
@@ -1329,7 +1329,7 @@ export class SessionManager {
             } else if (this.sessionStore && storedExists) {
                 emitSessionManagerTrace(sessionId, "turn>0 hydrating from session store before resume", { trace });
                 try {
-                    await this.sessionStore.hydrate(sessionId);
+                    await this.sessionStore.hydrate(sessionId, transcriptEpoch || undefined);
                 } catch (error: unknown) {
                     emitSessionManagerTrace(
                         sessionId,

@@ -290,7 +290,7 @@ export async function computeSessionFootprint(
     return {
         sessionId,
         transcriptEpoch,
-        regenCount: transcriptEpoch, // M1 refines: rollbacks advance epochs without distillation
+        regenCount: (summary as any)?.regenCount ?? transcriptEpoch,
         epochAgeDays,
         turnsThisEpoch: finite(session.currentIteration as number),
         context: {

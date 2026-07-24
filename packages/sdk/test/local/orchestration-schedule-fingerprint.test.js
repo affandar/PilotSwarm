@@ -39,6 +39,7 @@ const GOLDEN_SURFACE = [
     "ctx.newGuid",
     "ctx.scheduleTimer",
     "ctx.utcNow",
+    "runtime.manager.commitEpochBoundary",
     "runtime.manager.computeCronAtNextFire",
     "runtime.manager.deleteSession",
     "runtime.manager.getDescendantSessionIds",
@@ -49,8 +50,11 @@ const GOLDEN_SURFACE = [
     "runtime.manager.listModels",
     "runtime.manager.listSessions",
     "runtime.manager.loadKnowledgeIndex",
+    "runtime.manager.recordRegenerated",
     "runtime.manager.recordSessionEvent",
     "runtime.manager.resolveAgentConfig",
+    "runtime.manager.runRegenArchive",
+    "runtime.manager.runRegenDistill",
     "runtime.manager.sendCommandToSession",
     "runtime.manager.sendToSession",
     "runtime.manager.spawnChildSession",
@@ -60,7 +64,7 @@ const GOLDEN_SURFACE = [
     "runtime.session.abortTurn",
     "runtime.session.destroy",
     "runtime.session.hydrate",
-    "runtime.session.runTurn",
+    "runtime.session.runTurn"
 ];
 
 // ── Layer 2 golden: ordered durable yields for a get_info command, blob on.

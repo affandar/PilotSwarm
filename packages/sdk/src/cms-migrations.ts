@@ -308,103 +308,41 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- ── cms_get_session (add transcript_epoch + last_regenerated_at) ──
--- The 3-arg reader (placement-aware) is the one the SDK calls. Changing its
--- RETURNS TABLE column set requires DROP + CREATE (CREATE OR REPLACE cannot
--- alter the return type). New columns append at the end so positional row
--- mapping for existing columns is unchanged.
-DROP FUNCTION IF EXISTS ${s}.cms_get_session(TEXT, TEXT, TEXT);
-CREATE FUNCTION ${s}.cms_get_session(
-    p_session_id         TEXT,
-    p_placement_provider TEXT DEFAULT NULL,
-    p_placement_subject  TEXT DEFAULT NULL
-) RETURNS TABLE (
-    session_id          TEXT,
-    orchestration_id    TEXT,
-    title               TEXT,
-    title_locked        BOOLEAN,
-    state               TEXT,
-    model               TEXT,
-    reasoning_effort    TEXT,
-    group_id            TEXT,
-    short_summary       TEXT,
-    summary_state       JSONB,
-    summary_updated_at  TIMESTAMPTZ,
-    created_at          TIMESTAMPTZ,
-    updated_at          TIMESTAMPTZ,
-    last_active_at      TIMESTAMPTZ,
-    deleted_at          TIMESTAMPTZ,
-    current_iteration   INTEGER,
-    last_error          TEXT,
-    parent_session_id   TEXT,
-    wait_reason         TEXT,
-    is_system           BOOLEAN,
-    agent_id            TEXT,
-    splash              TEXT,
-    owner_provider      TEXT,
-    owner_subject       TEXT,
-    owner_email         TEXT,
-    owner_display_name  TEXT,
-    active_turn_index   INTEGER,
-    splash_mobile       TEXT,
-    visibility          TEXT,
-    root_session_id     TEXT,
-    transcript_epoch    INTEGER,
-    last_regenerated_at TIMESTAMPTZ
-) AS $$
-DECLARE
-    v_placement_user BIGINT;
-BEGIN
-    IF p_placement_provider IS NOT NULL AND p_placement_subject IS NOT NULL THEN
-        SELECT u.user_id INTO v_placement_user
-        FROM ${s}.users u
-        WHERE u.provider = BTRIM(p_placement_provider) AND u.subject = BTRIM(p_placement_subject);
-    END IF;
-    RETURN QUERY
-    SELECT
-        sess.session_id,
-        sess.orchestration_id,
-        sess.title,
-        sess.title_locked,
-        sess.state,
-        sess.model,
-        sess.reasoning_effort,
-        usgp.group_id,
-        sess.short_summary,
-        sess.summary_state,
-        sess.summary_updated_at,
-        sess.created_at,
-        sess.updated_at,
-        sess.last_active_at,
-        sess.deleted_at,
-        sess.current_iteration,
-        sess.last_error,
-        sess.parent_session_id,
-        sess.wait_reason,
-        sess.is_system,
-        sess.agent_id,
-        sess.splash,
-        u.provider AS owner_provider,
-        u.subject AS owner_subject,
-        u.email AS owner_email,
-        u.display_name AS owner_display_name,
-        sess.active_turn_index,
-        sess.splash_mobile,
-        sess.visibility,
-        sess.root_session_id,
-        sess.transcript_epoch,
-        sess.last_regenerated_at
-    FROM ${s}.sessions sess
-    LEFT JOIN ${s}.session_owners so ON so.session_id = sess.session_id
-    LEFT JOIN ${s}.users u ON u.user_id = so.user_id
-    LEFT JOIN ${s}.user_session_group_placements usgp
-        ON usgp.user_id = v_placement_user AND usgp.root_session_id = sess.session_id
-    WHERE sess.session_id = p_session_id AND sess.deleted_at IS NULL;
-END;
-$$ LANGUAGE plpgsql;
 `;
 
-    return [step_columns, step_functions];
+    // Defense-in-depth for boundary/rebirth idempotency: the record procs
+    // SELECT-then-INSERT keyed on the attempt id, which is replay-safe under
+    // duroxide's single-active-execution guarantee. This partial unique index
+    // makes the dedup DB-enforced too, so two concurrent executions (a zombie
+    // + a failover winner) cannot double-insert the event or double-count
+    // regen_count — the losing INSERT raises, its activity retries, and the
+    // retry's SELECT finds the row. Built CONCURRENTLY (own step, no table
+    // lock); an INVALID leftover from a died build is swept first.
+    // Sweep an INVALID leftover from a died CIC first (own step; a bare DO
+    // block is fine in the autocommit path). CONCURRENTLY must then be its
+    // OWN step — it cannot share a multi-statement query or run in a
+    // transaction block.
+    const step_drop_invalid_dedup = `
+DO $$
+DECLARE v_invalid BOOLEAN;
+BEGIN
+    SELECT NOT ix.indisvalid INTO v_invalid
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    JOIN pg_index ix ON ix.indexrelid = c.oid
+    WHERE n.nspname = '${schema}' AND c.relname = 'idx_${schema}_regen_event_attempt';
+    IF v_invalid THEN
+        EXECUTE 'DROP INDEX ${s}.idx_${schema}_regen_event_attempt';
+    END IF;
+END $$;
+`;
+    const step_dedup_index = `
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_${schema}_regen_event_attempt
+    ON ${s}.session_events (session_id, event_type, (data->>'attemptId'))
+    WHERE event_type IN ('session.epoch_committed', 'session.regenerated');
+`;
+
+    return [step_columns, step_functions, step_drop_invalid_dedup, step_dedup_index];
 }
 
 // ─── Migration 0035: footprint stat procs ───────────────────────

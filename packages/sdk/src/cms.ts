@@ -1347,8 +1347,14 @@ export class PgSessionCatalog implements SessionCatalog {
     }
 
     async getSession(sessionId: string, placement?: { provider: string; subject: string } | null): Promise<SessionRow | null> {
+        // Join the two regeneration columns from the raw sessions table in the
+        // same round-trip rather than widening the shared cms_get_session
+        // proc's RETURNS TABLE — a proc-shape change breaks re-application of
+        // the earlier migration that CREATE-OR-REPLACEs it with the old shape.
         const { rows } = await this.pool.query(
-            `SELECT * FROM ${this.sql.fn.getSession}($1, $2, $3)`,
+            `SELECT g.*, s.transcript_epoch, s.last_regenerated_at
+               FROM ${this.sql.fn.getSession}($1, $2, $3) g
+               JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
             [sessionId, placement?.provider ?? null, placement?.subject ?? null],
         );
         return rows.length > 0 ? rowToSessionRow(rows[0]) : null;

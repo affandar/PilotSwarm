@@ -615,19 +615,27 @@ export function* handleCommand(
             if (state.regen) { yield* refuse("already_pending"); return; }
             if (runtime.options.isSystem) { yield* refuse("is_system"); return; }
             if (state.iteration - state.epochStartIteration < 5) { yield* refuse("too_young"); return; }
+            // Cooldown applies to every agent-driven trigger — self (tool) AND
+            // parent — so a supervising parent (which a child can prompt-inject)
+            // cannot destroy a child's transcript every few turns. Operator and
+            // policy triggers bypass the cooldown but still respect min-age.
+            const REGEN_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+            if ((source === "tool" || source === "parent")
+                && state.lastRegenAtMs > 0 && nowMs - state.lastRegenAtMs < REGEN_COOLDOWN_MS) {
+                yield* refuse("cooldown");
+                return;
+            }
             if (source === "tool") {
-                // Agent-initiated: fixed cooldown, and on shared sessions only
-                // an owner-attributed turn may trigger (the stamped sender is
-                // the bridge's server-side identity, never LLM text).
-                const REGEN_TOOL_COOLDOWN_MS = 6 * 60 * 60 * 1000;
-                if (state.lastRegenAtMs > 0 && nowMs - state.lastRegenAtMs < REGEN_TOOL_COOLDOWN_MS) {
-                    yield* refuse("cooldown");
-                    return;
-                }
-                if (state.multiWriter) {
-                    const sender = normalizeMessageSender(cmdMsg.sender);
-                    if (!sender || sender.relation !== "owner") { yield* refuse("not_owner"); return; }
-                }
+                // Owner-sender gate: a non-owner-attributed turn must not
+                // trigger a self-regen. Positive assertion — refuse whenever an
+                // explicitly non-owner sender is present (a collaborator human,
+                // OR a child/system-instigated turn whose injection tried to
+                // make the agent self-regen). A senderless self-driven turn
+                // (the common single-writer case) has no non-owner principal
+                // and is allowed. Not gated on the derived multiWriter flag,
+                // which never flips for agent/system senders.
+                const sender = normalizeMessageSender(cmdMsg.sender);
+                if (sender && sender.relation !== "owner") { yield* refuse("not_owner"); return; }
             } else if (source === "parent") {
                 if (!cmdMsg.requestedBy || cmdMsg.requestedBy !== runtime.options.parentSessionId) {
                     yield* refuse("not_parent");
@@ -645,6 +653,9 @@ export function* handleCommand(
                 ...(handoffRaw ? { handoff: handoffRaw.slice(0, 4_000) } : {}),
                 ...(typeof cmdMsg.args?.distillerModel === "string" && cmdMsg.args.distillerModel
                     ? { distillerModel: String(cmdMsg.args.distillerModel) }
+                    : {}),
+                ...(typeof cmdMsg.args?.model === "string" && cmdMsg.args.model
+                    ? { model: String(cmdMsg.args.model) }
                     : {}),
             };
             yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
@@ -851,6 +862,13 @@ export function* advanceRegenPipeline(
         // dispatches the grounding bootstrap, delaying the rebirth for up to
         // the hold window.
         yield* captureModelSwitchInterruptedTimer(runtime, "regenerated context");
+        // Optional model rebind: the reborn session's grounding turn runs on
+        // config.model, so an operator-supplied replacement (e.g. escaping a
+        // removed model) must be applied to the carried config before the CAN.
+        if (r.model && typeof r.model === "string") {
+            state.config = { ...state.config, model: r.model };
+            yield runtime.manager.updateSessionModel(sessionId, r.model);
+        }
         // Drop runtime notices that describe the dead transcript before the
         // carry-list is built.
         state.runtimeModelNotice = undefined;
@@ -872,6 +890,7 @@ export function* advanceRegenPipeline(
                 toEpoch,
                 attemptId: regen.attemptId,
                 trigger: regen.trigger,
+                requestedAtMs: regen.requestedAtMs,
                 ...(regen.archiveArtifactId ? { archiveArtifactId: regen.archiveArtifactId } : {}),
                 ...(regen.packageArtifactId ? { packageArtifactId: regen.packageArtifactId } : {}),
                 ...(r.turnsArchived ? { turnsArchived: r.turnsArchived } : {}),

@@ -1332,7 +1332,7 @@ export class PilotSwarmManagementClient {
      */
     async regenerateSession(
         sessionId: string,
-        opts?: { handoff?: string; distillerModel?: string; source?: string },
+        opts?: { handoff?: string; distillerModel?: string; model?: string; source?: string },
     ): Promise<{ attemptId: string }> {
         this._ensureStarted();
         const session = await this.getSession(sessionId).catch(() => null);
@@ -1340,11 +1340,24 @@ export class PilotSwarmManagementClient {
         if ((session as any).isSystem) {
             throw new Error("System sessions are excluded from regeneration (use restartSystemSession)");
         }
-        if (opts?.distillerModel) {
-            const models = this.listModels();
-            if (!models.some((m) => m.qualifiedName === opts.distillerModel)) {
-                throw new Error(`Unknown distiller model: ${opts.distillerModel}`);
-            }
+        const models = this.listModels();
+        const isKnown = (m?: string | null) => !!m && models.some((x) => x.qualifiedName === m);
+        if (opts?.distillerModel && !isKnown(opts.distillerModel)) {
+            throw new Error(`Unknown distiller model: ${opts.distillerModel}`);
+        }
+        if (opts?.model && !isKnown(opts.model)) {
+            throw new Error(`Unknown model: ${opts.model}`);
+        }
+        // Dead-model guard: the reborn session's grounding turn runs on the
+        // session's model. If that model no longer resolves (a common regen
+        // trigger is exactly a removed model), regenerating verbatim would
+        // discard the transcript and then wedge on the dead model. Require a
+        // live replacement rather than making a broken session strictly worse.
+        const currentModel = (session as any).model as string | undefined;
+        if (!opts?.model && currentModel && !isKnown(currentModel)) {
+            throw new Error(
+                `Session model '${currentModel}' is no longer available; pass a replacement model to regenerate this session.`,
+            );
         }
         const attemptId = buildLifecycleCommandId("regenerate");
         await this.sendCommand(sessionId, {
@@ -1353,6 +1366,7 @@ export class PilotSwarmManagementClient {
             args: {
                 ...(opts?.handoff ? { handoff: String(opts.handoff).slice(0, 4_000) } : {}),
                 ...(opts?.distillerModel ? { distillerModel: opts.distillerModel } : {}),
+                ...(opts?.model ? { model: opts.model } : {}),
                 source: opts?.source ?? "operator",
             },
         });

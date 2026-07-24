@@ -250,7 +250,7 @@ export function renderBootstrap(
         `MISSION (verify against your facts):\n${pkg.mission}`,
     ];
     if (pkg.standingInstructions.length > 0) {
-        sections.push(`STANDING INSTRUCTIONS (verbatim, owner-attributed):\n${list(pkg.standingInstructions)}`);
+        sections.push(`STANDING INSTRUCTIONS (distiller-extracted — verify against your own record):\n${list(pkg.standingInstructions)}`);
     }
     if (pkg.currentState) sections.push(`CURRENT STATE (distiller summary):\n${pkg.currentState}`);
     if (pkg.workingSet.length > 0) sections.push(`WORKING SET:\n${list(pkg.workingSet)}`);
@@ -421,48 +421,53 @@ export async function runRegenDistill(
 
     const prompt = buildDistillerPrompt(input, tail, childRoster, artifactNames);
     const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "ps-distill-"));
+    // The sdk handle and its session id are held OUTSIDE the raced fn so that
+    // when the deadline wins we can still tear the subprocess down (its inner
+    // finally never runs if the send/idle promise hangs). tempHome is removed
+    // only AFTER stop() resolves, never yanked from under a live child whose
+    // COPILOT_HOME points at it.
+    let sdk: any = null;
+    let ephemeralSessionId: string | null = null;
     let responseText: string | null = null;
     try {
-        // ONE overall deadline covers subprocess spawn (sdk.start /
-        // createSession, which the inner listener timeout cannot bound) AND
-        // the turn. A breach rejects the whole race → deterministic fallback.
         responseText = await withDeadline(DISTILL_TIMEOUT_MS, async () => {
             const { CopilotClient: SdkClient } = await import("@github/copilot-sdk");
-            const sdk: any = new (SdkClient as any)({
+            sdk = new (SdkClient as any)({
                 ...(resolved!.gitHubToken ? { gitHubToken: resolved!.gitHubToken } : {}),
                 logLevel: "error",
                 env: { ...process.env, COPILOT_HOME: tempHome },
             });
-            let ephemeralSessionId: string | null = null;
-            try {
-                await sdk.start();
-                const session: any = await sdk.createSession({
-                    ...(resolved!.model ? { model: resolved!.model } : {}),
-                    ...(resolved!.provider ? { provider: resolved!.provider } : {}),
-                    onPermissionRequest: approvePermissionForSession,
+            await sdk.start();
+            const session: any = await sdk.createSession({
+                ...(resolved!.model ? { model: resolved!.model } : {}),
+                ...(resolved!.provider ? { provider: resolved!.provider } : {}),
+                onPermissionRequest: approvePermissionForSession,
+            });
+            ephemeralSessionId = session.id ?? null;
+            return await new Promise<string>((resolve, reject) => {
+                let latest = "";
+                session.on("assistant.message", (event: any) => {
+                    const content = event?.data?.content;
+                    if (typeof content === "string" && content) latest = content;
                 });
-                ephemeralSessionId = session.id ?? null;
-                return await new Promise<string>((resolve, reject) => {
-                    let latest = "";
-                    session.on("assistant.message", (event: any) => {
-                        const content = event?.data?.content;
-                        if (typeof content === "string" && content) latest = content;
-                    });
-                    session.on("session.idle", () => resolve(latest));
-                    session.on("session.error", (event: any) =>
-                        reject(new Error(String(event?.data?.message ?? "distiller session error"))));
-                    Promise.resolve(session.send({ prompt })).catch(reject);
-                });
-            } finally {
-                try { if (ephemeralSessionId) await sdk.deleteSession(ephemeralSessionId); } catch { /* best-effort */ }
-                try { await sdk.stop(); } catch { /* best-effort */ }
-            }
+                session.on("session.idle", () => resolve(latest));
+                session.on("session.error", (event: any) =>
+                    reject(new Error(String(event?.data?.message ?? "distiller session error"))));
+                Promise.resolve(session.send({ prompt })).catch(reject);
+            });
         });
     } catch (err: unknown) {
         deps.trace(`distill ${sessionId}: LLM distiller failed (${err instanceof Error ? err.message : String(err)}) — deterministic closure package`);
-        return finish(fallbackPackage(), `(fallback:${resolvedRef ?? "default"})`);
+        // fall through to finally for teardown, then return the fallback below
     } finally {
+        if (sdk) {
+            try { if (ephemeralSessionId) await sdk.deleteSession(ephemeralSessionId); } catch { /* best-effort */ }
+            try { await sdk.stop(); } catch { /* best-effort */ }
+        }
         try { fs.rmSync(tempHome, { recursive: true, force: true }); } catch { /* best-effort */ }
+    }
+    if (responseText == null) {
+        return finish(fallbackPackage(), `(fallback:${resolvedRef ?? "default"})`);
     }
 
     try {

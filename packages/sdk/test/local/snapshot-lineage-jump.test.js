@@ -22,17 +22,17 @@ import {
 import * as dispatcher from "../../src/orchestration.ts";
 
 describe("orchestration version registry", () => {
-    it("latest is 1.0.66, registered, and exported from the dispatcher", () => {
-        expect(LATEST).toBe("1.0.66");
+    it("latest is 1.0.67, registered, and exported from the dispatcher", () => {
+        expect(LATEST).toBe("1.0.67");
         const latest = REGISTRY.find((e) => e.version === LATEST);
         expect(latest?.handler).toBeTypeOf("function");
-        expect(latest.handler.name).toBe("durableSessionOrchestration_1_0_66");
-        expect(dispatcher.durableSessionOrchestration_1_0_66).toBeTypeOf("function");
+        expect(latest.handler.name).toBe("durableSessionOrchestration_1_0_67");
+        expect(dispatcher.durableSessionOrchestration_1_0_67).toBeTypeOf("function");
     });
 
-    it("freezes 1.0.64 and 1.0.65 as distinct registered handlers", () => {
+    it("freezes 1.0.65 and 1.0.66 as distinct registered handlers", () => {
         const latest = REGISTRY.find((e) => e.version === LATEST);
-        for (const version of ["1.0.64", "1.0.65"]) {
+        for (const version of ["1.0.65", "1.0.66"]) {
             const frozen = REGISTRY.find((e) => e.version === version);
             expect(frozen?.handler).toBeTypeOf("function");
             expect(frozen.handler.name).toBe(`durableSessionOrchestration_${version.replaceAll(".", "_")}`);

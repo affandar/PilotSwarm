@@ -400,6 +400,8 @@ export interface RegenState {
     /** Quoted, length-capped handoff text (untrusted distiller input). */
     handoff?: string;
     distillerModel?: string;
+    /** Optional replacement model applied to the reborn session at the flip. */
+    model?: string;
     archiveArtifactId?: string;
     packageArtifactId?: string;
     /** Rendered bootstrap prompt produced by the distill stage. */
@@ -412,6 +414,8 @@ export interface PendingEpochCommit {
     toEpoch: number;
     attemptId: string;
     trigger: string;
+    /** ms when the attempt was accepted — feeds last_regen_stats.totalMs. */
+    requestedAtMs?: number;
     archiveArtifactId?: string;
     packageArtifactId?: string;
     turnsArchived?: number;

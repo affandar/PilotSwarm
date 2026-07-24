@@ -322,7 +322,7 @@ describe("session regeneration orchestration", () => {
                 atMs: 0,
                 payload: regenCmd({
                     args: { source: "tool" },
-                    sender: { kind: "user", relation: "collaborator", display: "Mallory" },
+                    sender: { kind: "user", provider: "github", subject: "mallory-123", relation: "collaborator", display: "Mallory" },
                 }),
             }],
         });
