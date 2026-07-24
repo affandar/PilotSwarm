@@ -10,6 +10,7 @@ import { fileTypeFromBuffer } from "file-type";
 import { faultPoint } from "./fault-injection.js";
 import {
     SnapshotConflictError,
+    isLegacyEpoch,
     type SnapshotCommitInput,
     type SnapshotCommitResult,
     type SnapshotHydrateResult,
@@ -35,13 +36,24 @@ export interface SessionMetadata {
     [key: string]: unknown;
 }
 
+/**
+ * `epoch` scopes every operation to one snapshot key family (see the epoch
+ * key-scoping contract in snapshot-protocol.ts): absent/0 is the legacy
+ * layout every pre-regen session keeps forever; >= 1 addresses that epoch's
+ * own chain. The legacy (non-versioned) write paths only ever run for
+ * epoch 0 — epoch chains are versioned-only and go through the
+ * {@link VersionedSnapshotStore} methods.
+ */
 export interface SessionStateStore {
-    dehydrate(sessionId: string, meta?: Record<string, unknown>): Promise<void>;
-    hydrate(sessionId: string): Promise<void>;
-    checkpoint(sessionId: string): Promise<void>;
-    getSnapshotSizeBytes(sessionId: string): Promise<number | undefined>;
-    exists(sessionId: string): Promise<boolean>;
-    delete(sessionId: string): Promise<void>;
+    dehydrate(sessionId: string, meta?: Record<string, unknown>, epoch?: number): Promise<void>;
+    hydrate(sessionId: string, epoch?: number): Promise<void>;
+    checkpoint(sessionId: string, epoch?: number): Promise<void>;
+    getSnapshotSizeBytes(sessionId: string, epoch?: number): Promise<number | undefined>;
+    exists(sessionId: string, epoch?: number): Promise<boolean>;
+    /** With epoch >= 1 removes ONLY that epoch's chain; absent/0 removes the legacy family. */
+    delete(sessionId: string, epoch?: number): Promise<void>;
+    /** Remove the legacy family AND every epoch chain (real session deletion). */
+    deleteAllEpochs(sessionId: string): Promise<void>;
 }
 
 export type ArtifactEncoding = "utf-8" | "base64";
@@ -354,6 +366,54 @@ function metaFileName(sessionId: string): string {
     return `${sessionId}.meta.json`;
 }
 
+// ─── Epoch-scoped names (session regeneration) ──────────────────────────────
+//
+// Epoch chains (>= 1) are brotli-only, so the names bake `.tar.br`. The blob
+// variant of this family must NEVER end `.tar.gz` — that is the only shape
+// old resource-manager purge binaries collect as delete candidates, and the
+// name invisibility (not fail-closed parsing in new code) is what protects
+// retained epochs from them. See the key-shape invariant in
+// snapshot-protocol.ts. The filesystem store is worker-local and never
+// exposed to the blob purge tool, so its meta name is unconstrained.
+
+/** Filesystem epoch-chain tar: `S.e<E>.v<N>.tar.br`. */
+export function epochVersionedTarFileName(sessionId: string, epoch: number, version: number): string {
+    return `${sessionId}.e${epoch}.v${version}.tar.br`;
+}
+
+/** Filesystem epoch-chain meta: `S.e<E>.meta.json` (worker-local only). */
+export function epochMetaFileName(sessionId: string, epoch: number): string {
+    return `${sessionId}.e${epoch}.meta.json`;
+}
+
+function escapeRegExp(value: string): string {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Fail-closed parse of an epoch-scoped snapshot object name. Epoch deletion
+ * paths (`delete` with epoch, `deleteAllEpochs`) may remove ONLY names this
+ * accepts — anything else under the `${sessionId}.e` prefix is logged and
+ * left alone, so deletion can never touch a shape the stores did not write.
+ */
+export function parseEpochSnapshotName(
+    sessionId: string,
+    name: string,
+): { epoch: number; version?: number; kind: "tar" | "meta" } | null {
+    const escaped = escapeRegExp(sessionId);
+    const tar = name.match(new RegExp(`^${escaped}\\.e(\\d+)\\.(?:v(\\d+)\\.)?tar\\.br$`));
+    if (tar) {
+        return {
+            epoch: Number(tar[1]),
+            ...(tar[2] !== undefined ? { version: Number(tar[2]) } : {}),
+            kind: "tar",
+        };
+    }
+    const meta = name.match(new RegExp(`^${escaped}\\.e(\\d+)\\.meta\\.json$`));
+    if (meta) return { epoch: Number(meta[1]), kind: "meta" };
+    return null;
+}
+
 function buildMetadata(tarPath: string, sessionId: string, meta?: Record<string, unknown>): SessionMetadata {
     return {
         sessionId,
@@ -538,8 +598,11 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
         return path.join(this.storeDir, tarFileName(sessionId));
     }
 
-    private metaPath(sessionId: string): string {
-        return path.join(this.storeDir, metaFileName(sessionId));
+    private metaPath(sessionId: string, epoch?: number): string {
+        return path.join(
+            this.storeDir,
+            isLegacyEpoch(epoch) ? metaFileName(sessionId) : epochMetaFileName(sessionId, epoch!),
+        );
     }
 
     // ─── Versioned CAS contract (session-lifecycle-protocol §3.1) ───
@@ -600,9 +663,9 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
         }
     }
 
-    private readStoredMeta(sessionId: string): (SessionMetadata & { version?: number; turnKey?: string; contentHash?: string; tarFile?: string }) | null {
+    private readStoredMeta(sessionId: string, epoch?: number): (SessionMetadata & { version?: number; turnKey?: string; contentHash?: string; tarFile?: string }) | null {
         try {
-            return JSON.parse(fs.readFileSync(this.metaPath(sessionId), "utf8"));
+            return JSON.parse(fs.readFileSync(this.metaPath(sessionId, epoch), "utf8"));
         } catch {
             return null;
         }
@@ -621,8 +684,15 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
         return this.tarPath(sessionId);
     }
 
-    private probeUnlocked(sessionId: string): SnapshotProbe & { meta: ReturnType<FilesystemSessionStore["readStoredMeta"]> } {
-        const meta = this.readStoredMeta(sessionId);
+    private probeUnlocked(sessionId: string, epoch?: number): SnapshotProbe & { meta: ReturnType<FilesystemSessionStore["readStoredMeta"]> } {
+        const meta = this.readStoredMeta(sessionId, epoch);
+        // Epoch chains (>= 1) are always versioned and always tarFile-named;
+        // there is no fixed-name fallback inside an epoch, so any other meta
+        // shape reads as an absent chain.
+        if (!isLegacyEpoch(epoch)
+            && (!meta?.tarFile || !Number.isFinite(Number(meta.version)) || Number(meta.version) < 1)) {
+            return { exists: false, version: 0, meta: null };
+        }
         const tarExists = fs.existsSync(this.currentTarPath(sessionId, meta));
         if (!tarExists) return { exists: false, version: 0, meta: null };
         const version = Number(meta?.version);
@@ -640,12 +710,12 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
         };
     }
 
-    async probeSnapshot(sessionId: string): Promise<SnapshotProbe> {
-        const { meta: _meta, ...probe } = this.probeUnlocked(sessionId);
+    async probeSnapshot(sessionId: string, epoch?: number): Promise<SnapshotProbe> {
+        const { meta: _meta, ...probe } = this.probeUnlocked(sessionId, epoch);
         return probe;
     }
 
-    async commitSnapshot(sessionId: string, input: SnapshotCommitInput): Promise<SnapshotCommitResult> {
+    async commitSnapshot(sessionId: string, input: SnapshotCommitInput, epoch?: number): Promise<SnapshotCommitResult> {
         const sessionDir = path.join(this.sessionStateDir, sessionId);
         const snapshot = await waitForSessionSnapshot(this.sessionStateDir, sessionId);
         if (!snapshot.ready) {
@@ -658,7 +728,9 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
         // Stage the tar OUTSIDE the lock, under a per-writer unique name:
         // concurrent writers can never interleave bytes into each other's
         // staging files, and the lock hold time stays in milliseconds.
-        const codec = DEFAULT_SNAPSHOT_CODEC;
+        // Epoch chains pin brotli — their names bake `.tar.br` (key-shape
+        // invariant) — rather than tracking the default.
+        const codec: SnapshotCodec = isLegacyEpoch(epoch) ? DEFAULT_SNAPSHOT_CODEC : "brotli";
         const stagedTar = path.join(
             this.storeDir,
             `${sessionId}.staging-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.tar`,
@@ -673,7 +745,7 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
             })();
 
             return await this.withCasLock(sessionId, () => {
-                const probe = this.probeUnlocked(sessionId);
+                const probe = this.probeUnlocked(sessionId, epoch);
                 const storedTurnKey = probe.turnKey;
 
                 if (probe.exists && !probe.legacy) {
@@ -700,7 +772,9 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
                     ? probe.version + 1
                     : input.baseVersion + 1;
 
-                const versionedTarName = versionedTarFileName(sessionId, version, codec);
+                const versionedTarName = isLegacyEpoch(epoch)
+                    ? versionedTarFileName(sessionId, version, codec)
+                    : epochVersionedTarFileName(sessionId, epoch!, version);
                 const versionedTarPath = path.join(this.storeDir, versionedTarName);
                 const previousTar = probe.exists ? this.currentTarPath(sessionId, probe.meta) : null;
                 const metadata = {
@@ -711,12 +785,13 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
                     codec,
                     rawSizeBytes,
                     tarFile: versionedTarName,
+                    ...(isLegacyEpoch(epoch) ? {} : { epoch }),
                 };
                 fs.renameSync(stagedTar, versionedTarPath);
                 faultPoint("store.commit.tar-renamed");
-                const tmpMeta = `${this.metaPath(sessionId)}.tmp-${process.pid}-${Date.now()}`;
+                const tmpMeta = `${this.metaPath(sessionId, epoch)}.tmp-${process.pid}-${Date.now()}`;
                 fs.writeFileSync(tmpMeta, JSON.stringify(metadata));
-                fs.renameSync(tmpMeta, this.metaPath(sessionId)); // ← the commit point
+                fs.renameSync(tmpMeta, this.metaPath(sessionId, epoch)); // ← the commit point
                 faultPoint("store.commit.after-write");
                 // GC the superseded tar (best-effort; never the one we wrote).
                 if (previousTar && previousTar !== versionedTarPath) {
@@ -735,12 +810,14 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
         }
     }
 
-    async hydrateSnapshot(sessionId: string): Promise<SnapshotHydrateResult> {
+    async hydrateSnapshot(sessionId: string, epoch?: number): Promise<SnapshotHydrateResult> {
         // Read tar + meta as one consistent unit vs. concurrent commits.
         const { stagedTar, meta } = await this.withCasLock(sessionId, () => {
-            const probe = this.probeUnlocked(sessionId);
+            const probe = this.probeUnlocked(sessionId, epoch);
             if (!probe.exists) {
-                throw new Error(`Session archive not found: ${sessionId}`);
+                throw new Error(
+                    `Session archive not found: ${sessionId}${isLegacyEpoch(epoch) ? "" : ` (epoch ${epoch})`}`,
+                );
             }
             const staged = path.join(os.tmpdir(), `ps-hydrate-${sessionId}-${process.pid}-${Date.now()}.tar`);
             fs.copyFileSync(this.currentTarPath(sessionId, probe.meta), staged);
@@ -804,14 +881,14 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
      * metadata and potentially roll the content back (review findings:
      * unfenced-legacy-write class).
      */
-    private hasVersionedSnapshot(sessionId: string): boolean {
-        const probe = this.probeUnlocked(sessionId);
+    private hasVersionedSnapshot(sessionId: string, epoch?: number): boolean {
+        const probe = this.probeUnlocked(sessionId, epoch);
         return probe.exists && !probe.legacy;
     }
 
-    async dehydrate(sessionId: string, meta?: Record<string, unknown>): Promise<void> {
+    async dehydrate(sessionId: string, meta?: Record<string, unknown>, epoch?: number): Promise<void> {
         const sessionDir = path.join(this.sessionStateDir, sessionId);
-        if (this.hasVersionedSnapshot(sessionId)) {
+        if (this.hasVersionedSnapshot(sessionId, epoch)) {
             // Versioned-snapshot fence: the committed chain already holds
             // this session's durable state. Dehydrate degrades to release —
             // free the local files, write nothing.
@@ -820,6 +897,13 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
             );
             fs.rmSync(sessionDir, { recursive: true, force: true });
             return;
+        }
+        // Epoch chains are versioned-only: the write below produces the
+        // legacy (epoch-0) tar family and must never run for epoch >= 1.
+        if (!isLegacyEpoch(epoch)) {
+            throw new Error(
+                `dehydrate(${sessionId}) reached the legacy write path with epoch ${epoch}; epoch chains commit via commitSnapshot`,
+            );
         }
         const snapshot = await waitForSessionSnapshot(this.sessionStateDir, sessionId);
         if (!snapshot.ready) {
@@ -847,7 +931,14 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
         fs.rmSync(sessionDir, { recursive: true, force: true });
     }
 
-    async hydrate(sessionId: string): Promise<void> {
+    async hydrate(sessionId: string, epoch?: number): Promise<void> {
+        // Legacy whole-dir restore; epoch chains hydrate via hydrateSnapshot
+        // (atomic swap + integrity check), so this path never sees them.
+        if (!isLegacyEpoch(epoch)) {
+            throw new Error(
+                `hydrate(${sessionId}) is the legacy path; epoch ${epoch} chains hydrate via hydrateSnapshot`,
+            );
+        }
         const sessionDir = path.join(this.sessionStateDir, sessionId);
         const meta = this.readStoredMeta(sessionId);
         const tarPath = this.currentTarPath(sessionId, meta);
@@ -860,16 +951,22 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
         await extractSessionArchive(this.sessionStateDir, tarPath, this.storedCodec(meta));
     }
 
-    async checkpoint(sessionId: string): Promise<void> {
+    async checkpoint(sessionId: string, epoch?: number): Promise<void> {
         const sessionDir = path.join(this.sessionStateDir, sessionId);
         if (!fs.existsSync(sessionDir)) return;
-        if (this.hasVersionedSnapshot(sessionId)) {
+        if (this.hasVersionedSnapshot(sessionId, epoch)) {
             // Versioned-snapshot fence: per-turn commits supersede legacy
             // checkpoints; overwriting would destroy the CAS metadata.
             console.warn(
                 `[FilesystemSessionStore] checkpoint(${sessionId}) skipped: a versioned snapshot exists`,
             );
             return;
+        }
+        // Epoch chains are versioned-only (see dehydrate).
+        if (!isLegacyEpoch(epoch)) {
+            throw new Error(
+                `checkpoint(${sessionId}) reached the legacy write path with epoch ${epoch}; epoch chains commit via commitSnapshot`,
+            );
         }
 
         const codec = DEFAULT_SNAPSHOT_CODEC;
@@ -882,9 +979,9 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
         fs.writeFileSync(tmpMeta, JSON.stringify(metadata));
         fs.renameSync(tmpMeta, this.metaPath(sessionId));
     }
-    async getSnapshotSizeBytes(sessionId: string): Promise<number | undefined> {
+    async getSnapshotSizeBytes(sessionId: string, epoch?: number): Promise<number | undefined> {
         try {
-            const metadataPath = this.metaPath(sessionId);
+            const metadataPath = this.metaPath(sessionId, epoch);
             if (fs.existsSync(metadataPath)) {
                 const metadata = JSON.parse(fs.readFileSync(metadataPath, "utf8")) as SessionMetadata;
                 const sizeBytes = Number(metadata?.sizeBytes);
@@ -893,7 +990,10 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
         } catch {}
 
         try {
-            const tarPath = this.currentTarPath(sessionId, this.readStoredMeta(sessionId));
+            const meta = this.readStoredMeta(sessionId, epoch);
+            // No fixed-name tar fallback inside an epoch chain.
+            if (!isLegacyEpoch(epoch) && !meta?.tarFile) return undefined;
+            const tarPath = this.currentTarPath(sessionId, meta);
             if (fs.existsSync(tarPath)) {
                 const sizeBytes = fs.statSync(tarPath).size;
                 if (Number.isFinite(sizeBytes)) return sizeBytes;
@@ -903,15 +1003,54 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
         return undefined;
     }
 
-    async exists(sessionId: string): Promise<boolean> {
+    async exists(sessionId: string, epoch?: number): Promise<boolean> {
+        if (!isLegacyEpoch(epoch)) return this.probeUnlocked(sessionId, epoch).exists;
         return fs.existsSync(this.currentTarPath(sessionId, this.readStoredMeta(sessionId)));
     }
 
-    async delete(sessionId: string): Promise<void> {
+    async delete(sessionId: string, epoch?: number): Promise<void> {
+        if (!isLegacyEpoch(epoch)) {
+            this.deleteEpochObjects(sessionId, epoch);
+            return;
+        }
         const meta = this.readStoredMeta(sessionId);
         try { fs.unlinkSync(this.currentTarPath(sessionId, meta)); } catch {}
         try { fs.unlinkSync(this.tarPath(sessionId)); } catch {}
         try { fs.unlinkSync(this.metaPath(sessionId)); } catch {}
+    }
+
+    async deleteAllEpochs(sessionId: string): Promise<void> {
+        await this.delete(sessionId);
+        this.deleteEpochObjects(sessionId);
+    }
+
+    /**
+     * Unlink epoch-chain objects (tars + meta), optionally narrowed to one
+     * epoch. Enumerates the `${sessionId}.e` prefix and removes ONLY names
+     * the fail-closed parser accepts; anything else is logged and left
+     * alone. Enumeration (not meta-directed deletion) also collects orphan
+     * version tars left by a crash between tar rename and meta rename.
+     */
+    private deleteEpochObjects(sessionId: string, onlyEpoch?: number): void {
+        const prefix = `${sessionId}.e`;
+        let names: string[];
+        try {
+            names = fs.readdirSync(this.storeDir);
+        } catch {
+            return;
+        }
+        for (const name of names) {
+            if (!name.startsWith(prefix)) continue;
+            const parsed = parseEpochSnapshotName(sessionId, name);
+            if (!parsed) {
+                console.warn(
+                    `[FilesystemSessionStore] deleteEpochObjects(${sessionId}) leaving unparseable name alone: ${name}`,
+                );
+                continue;
+            }
+            if (onlyEpoch !== undefined && parsed.epoch !== onlyEpoch) continue;
+            try { fs.unlinkSync(path.join(this.storeDir, name)); } catch {}
+        }
     }
 }
 
