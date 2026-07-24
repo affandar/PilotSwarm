@@ -135,6 +135,14 @@ export interface SessionRow {
     parentSessionId: string | null;
     /** Whether this is a system session (e.g. Sweeper Agent). */
     isSystem: boolean;
+    /**
+     * Service sessions (tree-scoped system sessions): machinery that serves
+     * ONE session tree, e.g. "regen-distiller". Read-only to users, distinct
+     * icon, parented under the served tree's root. null = ordinary session.
+     */
+    serviceKind: string | null;
+    /** The session this service session serves (regen: the regenerating session). */
+    serviceOf: string | null;
     /** Agent definition ID (e.g. "sweeper"). Links session to its agent config. */
     agentId: string | null;
     /** Splash banner (terminal markup) from the agent definition. */
@@ -1136,6 +1144,9 @@ export class PgSessionCatalog implements SessionCatalog {
         groupId?: string | null;
         owner?: SessionOwnerInfo | null;
         visibility?: SessionVisibility | null;
+        /** Service sessions (tree-scoped machinery, e.g. the regen distiller). */
+        serviceKind?: string | null;
+        serviceOf?: string | null;
     }): Promise<void> {
         const explicitGroupId = typeof opts?.groupId === "string" && opts.groupId.trim()
             ? opts.groupId.trim()
@@ -1162,6 +1173,15 @@ export class PgSessionCatalog implements SessionCatalog {
                 await client.query(
                     `SELECT ${this.sql.fn.createSession}($1, $2, $3, $4, $5, $6, $7, $8)`,
                     baseArgs,
+                );
+            }
+
+            // Service columns ride the same transaction as a raw UPDATE — the
+            // create proc's signature stays untouched (see migration 0037).
+            if (opts?.serviceKind) {
+                await client.query(
+                    `UPDATE "${this.sql.schema}".sessions SET service_kind = $2, service_of = $3 WHERE session_id = $1`,
+                    [sessionId, opts.serviceKind, opts.serviceOf ?? null],
                 );
             }
 
@@ -1290,8 +1310,12 @@ export class PgSessionCatalog implements SessionCatalog {
     // ── Reads ────────────────────────────────────────────────
 
     async listSessions(placement?: { provider: string; subject: string } | null): Promise<SessionRow[]> {
+        // Service columns join the raw table (same reasoning as getSession —
+        // never widen a shared proc's RETURNS TABLE).
         const { rows } = await this.pool.query(
-            `SELECT * FROM ${this.sql.fn.listSessions}($1, $2)`,
+            `SELECT g.*, s.service_kind, s.service_of
+               FROM ${this.sql.fn.listSessions}($1, $2) g
+               JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
             [placement?.provider ?? null, placement?.subject ?? null],
         );
         return rows.map(rowToSessionRow);
@@ -1306,7 +1330,9 @@ export class PgSessionCatalog implements SessionCatalog {
         placement?: { provider: string; subject: string } | null;
     }): Promise<SessionRow[]> {
         const { rows } = await this.pool.query(
-            `SELECT * FROM ${this.sql.fn.listSessionsPage}($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+            `SELECT g.*, s.service_kind, s.service_of
+               FROM ${this.sql.fn.listSessionsPage}($1, $2, $3, $4, $5, $6, $7, $8, $9) g
+               JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
             [
                 opts?.limit ?? null,
                 opts?.cursorUpdatedAt ?? null,
@@ -1327,7 +1353,9 @@ export class PgSessionCatalog implements SessionCatalog {
         placement?: { provider: string; subject: string } | null,
     ): Promise<SessionRow[]> {
         const { rows } = await this.pool.query(
-            `SELECT * FROM ${this.sql.fn.listSessionsVisible}($1, $2, $3, $4, $5)`,
+            `SELECT g.*, s.service_kind, s.service_of
+               FROM ${this.sql.fn.listSessionsVisible}($1, $2, $3, $4, $5) g
+               JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
             [viewer.provider, viewer.subject, viewer.systemVisible ?? true, placement?.provider ?? null, placement?.subject ?? null],
         );
         return rows.map(rowToSessionRow);
@@ -1352,7 +1380,7 @@ export class PgSessionCatalog implements SessionCatalog {
         // proc's RETURNS TABLE — a proc-shape change breaks re-application of
         // the earlier migration that CREATE-OR-REPLACEs it with the old shape.
         const { rows } = await this.pool.query(
-            `SELECT g.*, s.transcript_epoch, s.last_regenerated_at
+            `SELECT g.*, s.transcript_epoch, s.last_regenerated_at, s.service_kind, s.service_of
                FROM ${this.sql.fn.getSession}($1, $2, $3) g
                JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
             [sessionId, placement?.provider ?? null, placement?.subject ?? null],
@@ -2365,6 +2393,8 @@ function rowToSessionRow(row: any): SessionRow {
         activeTurnIndex: row.active_turn_index ?? null,
         parentSessionId: row.parent_session_id ?? null,
         isSystem: row.is_system ?? false,
+        serviceKind: row.service_kind ?? null,
+        serviceOf: row.service_of ?? null,
         agentId: row.agent_id ?? null,
         splash: row.splash ?? null,
         splashMobile: row.splash_mobile ?? null,

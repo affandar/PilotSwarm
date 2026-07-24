@@ -195,7 +195,27 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "session_regeneration",
             steps: migration_0036_session_regeneration(schema),
         },
+        {
+            version: "0037",
+            name: "service_sessions",
+            sql: migration_0037_service_sessions(schema),
+        },
     ];
+}
+
+// ─── Migration 0037: service sessions (tree-scoped system sessions) ─────
+//
+// A service session is machinery that serves ONE session tree (first kind:
+// "regen-distiller"), parented under the tree's root. Columns only — every
+// read path joins the raw table (the transcript_epoch precedent) and the
+// create path UPDATEs post-insert inside the same transaction, so no proc
+// signature changes and re-application stays idempotent.
+function migration_0037_service_sessions(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+        ALTER TABLE ${s}.sessions ADD COLUMN IF NOT EXISTS service_kind text;
+        ALTER TABLE ${s}.sessions ADD COLUMN IF NOT EXISTS service_of uuid;
+    `;
 }
 
 // ─── Migration 0036: session regeneration (epoch rebirth) ────────
