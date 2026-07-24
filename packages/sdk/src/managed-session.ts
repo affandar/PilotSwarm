@@ -521,6 +521,51 @@ export class ManagedSession {
             handler: async () => "stub",
         });
 
+        // Declaration stubs for the regeneration tools. Real per-turn handlers
+        // (with controlBridge wiring) are set in runTurn()'s systemToolsForTurn;
+        // these mirror their schemas so the declarations reach the CLI server via
+        // sessionConfig.tools — without them the LLM never sees the tools.
+        const regenerateContextTool = defineTool("regenerate_context", {
+            description:
+                "Regenerate YOUR OWN context: your transcript is archived, distilled into a resume "
+                + "package, and your working memory is rebuilt fresh from it at the next turn boundary. "
+                + "Durable state (facts, artifacts, children, schedule, chat history) is untouched; "
+                + "workspace files are dropped (the package maps how to recreate them). Use when "
+                + "context_health reads degraded, or you notice yourself losing track of earlier work. "
+                + "Rate-limited (once per epoch, 6h cooldown). Finish the current step FIRST — this ends the turn.",
+            parameters: {
+                type: "object",
+                properties: {
+                    handoff: {
+                        type: "string",
+                        description:
+                            "Your own statement of what matters right now: mission, in-flight work, "
+                            + "commitments, pitfalls. This is a HINT to the distiller (cross-checked "
+                            + "against the transcript), max 4000 chars.",
+                    },
+                },
+                required: ["handoff"],
+            },
+            handler: async () => "stub",
+        });
+
+        const regenerateAgentTool = defineTool("regenerate_agent", {
+            description:
+                "Regenerate a DIRECT child agent's context in place (its transcript is archived, "
+                + "distilled, and rebuilt) while it keeps its identity, queue, facts, and its link to you. "
+                + "Prefer this over killing and respawning a degraded long-running child. Applies at the "
+                + "child's next turn boundary; per-child rate limits apply.",
+            parameters: {
+                type: "object",
+                properties: {
+                    agent_id: { type: "string", description: "The child session id (raw UUID or session-<uuid>)." },
+                    handoff: { type: "string", description: "Optional hint to the child's distiller about what the child should stay focused on (max 4000 chars)." },
+                },
+                required: ["agent_id"],
+            },
+            handler: async () => "stub",
+        });
+
         const updateSessionSummaryTool = defineTool("update_session_summary", {
             description:
                 "Update this session's short live summary and optionally set this session's sticky title for session lists, discovery, and the Summary tab. " +
@@ -581,7 +626,7 @@ export class ManagedSession {
             handler: async () => "stub",
         });
 
-        return [waitTool, waitOnWorkerTool, cronTool, cronAtTool, askUserTool, reportCycleTool, listModelsTool, setSessionModelTool, updateSessionSummaryTool, sendSessionMessageTool, replySessionMessageTool];
+        return [waitTool, waitOnWorkerTool, cronTool, cronAtTool, askUserTool, reportCycleTool, listModelsTool, setSessionModelTool, regenerateContextTool, regenerateAgentTool, updateSessionSummaryTool, sendSessionMessageTool, replySessionMessageTool];
     }
 
     /**
