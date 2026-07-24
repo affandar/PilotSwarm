@@ -1332,7 +1332,7 @@ export class PilotSwarmManagementClient {
      */
     async regenerateSession(
         sessionId: string,
-        opts?: { handoff?: string; distillerModel?: string; model?: string; source?: string },
+        opts?: { handoff?: string; distillerModel?: string; model?: string; source?: string; force?: boolean },
     ): Promise<{ attemptId: string }> {
         this._ensureStarted();
         const session = await this.getSession(sessionId).catch(() => null);
@@ -1367,6 +1367,7 @@ export class PilotSwarmManagementClient {
                 ...(opts?.handoff ? { handoff: String(opts.handoff).slice(0, 4_000) } : {}),
                 ...(opts?.distillerModel ? { distillerModel: opts.distillerModel } : {}),
                 ...(opts?.model ? { model: opts.model } : {}),
+                ...(opts?.force ? { force: true } : {}),
                 source: opts?.source ?? "operator",
             },
         });

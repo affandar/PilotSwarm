@@ -603,6 +603,11 @@ export function* handleCommand(
             const state = runtime.state;
             const nowMs: number = yield runtime.ctx.utcNow();
             const source = String(cmdMsg.args?.source ?? "operator");
+            // Operator force: an explicit operator action (button/API/MCP, gated
+            // session:manage) may bypass the SOFT rate limits (min-age; cooldown
+            // is already operator-exempt below). It never bypasses the hard
+            // gates: a regen already in flight, or a system session.
+            const force = cmdMsg.args?.force === true && source === "operator";
             const refuse = function* (reason: string): Generator<any, void, any> {
                 yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
                     eventType: "session.regenerate_refused",
@@ -614,7 +619,7 @@ export function* handleCommand(
 
             if (state.regen) { yield* refuse("already_pending"); return; }
             if (runtime.options.isSystem) { yield* refuse("is_system"); return; }
-            if (state.iteration - state.epochStartIteration < 5) { yield* refuse("too_young"); return; }
+            if (!force && state.iteration - state.epochStartIteration < 5) { yield* refuse("too_young"); return; }
             // Cooldown applies to every agent-driven trigger — self (tool) AND
             // parent — so a supervising parent (which a child can prompt-inject)
             // cannot destroy a child's transcript every few turns. Operator and

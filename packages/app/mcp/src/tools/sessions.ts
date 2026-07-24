@@ -662,14 +662,16 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                 session_id: sessionIdShape().describe("The session to regenerate"),
                 handoff: z.string().max(4000).optional().describe("Optional operator hint for the distiller"),
                 distiller_model: z.string().optional().describe("Optional model override for the distiller"),
+                force: z.boolean().optional().describe("Bypass the soft rate limits (cooldown / minimum age). Hard gates (system session, regen already in flight) still apply."),
             },
         },
-        withToolErrors(async ({ session_id, handoff, distiller_model }) => {
+        withToolErrors(async ({ session_id, handoff, distiller_model, force }) => {
             const session = await ctx.mgmt.getSession(session_id);
             if (!session) return errorResult("session not found", { session_id });
             const result = await (ctx.mgmt as any).regenerateSession(session_id, {
                 ...(handoff ? { handoff } : {}),
                 ...(distiller_model ? { distillerModel: distiller_model } : {}),
+                ...(force ? { force: true } : {}),
             });
             return jsonResult({
                 accepted: true,

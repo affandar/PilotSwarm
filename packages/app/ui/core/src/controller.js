@@ -6667,7 +6667,7 @@ export class PilotSwarmUiController {
                 modal: {
                     type: "confirm",
                     title: "Regenerate Session",
-                    message: `Regenerate context for "${label}"? The transcript is archived and distilled, then the session rebuilds fresh from it at the next turn boundary. Facts, artifacts, sub-agents, sharing, schedule, and chat history are preserved.`,
+                    message: `Regenerate context for "${label}"? The transcript is archived and distilled, then the session rebuilds fresh from it at the next turn boundary. Facts, artifacts, sub-agents, sharing, schedule, and chat history are preserved. As an operator action this overrides the rate limits (cooldown / minimum age).`,
                     confirmLabel: "Regenerate",
                     action: "regenerateSession",
                     sessionId,
@@ -6677,7 +6677,10 @@ export class PilotSwarmUiController {
             return;
         }
         try {
-            await this.transport.regenerateSession(sessionId);
+            // Operator action behind a confirm — force past the soft rate limits
+            // (cooldown / min-age). Hard gates (system session, regen in flight)
+            // still apply server-side.
+            await this.transport.regenerateSession(sessionId, { force: true });
             this.dispatch({ type: "ui/status", text: `Regeneration requested for ${sessionId.slice(0, 8)} — rebuilding at the next boundary` });
         } catch (error) {
             this.dispatch({ type: "ui/status", text: `Regenerate failed: ${error?.message || String(error)}` });
