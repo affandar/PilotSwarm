@@ -2,7 +2,7 @@ import type { OrchestrationInput } from "../types.js";
 import { COMMAND_VERSION_KEY, RESPONSE_VERSION_KEY, sanitizePromptAttachmentRefs } from "../types.js";
 import { createSessionManagerProxy, createSessionProxy } from "../session-proxy.js";
 import { DURABLE_SESSION_LATEST_VERSION } from "../orchestration-version.js";
-import {
+import { advanceRegenPipeline,
     continueInput,
     publishStatus,
     readCounter,
@@ -180,6 +180,25 @@ export function* createRuntime(
  */
 export function* runLoop(runtime: DurableSessionRuntime): Generator<any, string, any> {
     const { ctx, state } = runtime;
+
+    // Session regeneration: a freshly flipped execution announces the epoch
+    // BEFORE any epoch turn runs — the boundary event's seq is what every
+    // per-epoch axis keys on, and the CMS transaction (event + transcript_epoch
+    // + regen_count) is attempt-idempotent, so replay/CAN re-emission is safe.
+    // pendingEpochCommit stays set until the rebirth is PROVEN (first epoch
+    // snapshot commit — cleared in the turn path with session.regenerated).
+    if (state.pendingEpochCommit) {
+        try {
+            const seq = yield runtime.manager.commitEpochBoundary(runtime.input.sessionId, state.pendingEpochCommit as any);
+            ctx.traceInfo(`[orch] epoch ${state.pendingEpochCommit.toEpoch} committed at seq ${seq}`);
+        } catch (err: any) {
+            // The boundary transaction is tiny and idempotent: an outage here
+            // stalls everything else too, so fail the execution and let replay
+            // retry rather than run epoch turns before the boundary exists.
+            throw new Error(`epoch boundary commit failed: ${err?.message ?? err}`);
+        }
+    }
+
     while (true) {
         state.loopIteration++;
 
@@ -210,6 +229,17 @@ export function* runLoop(runtime: DurableSessionRuntime): Generator<any, string,
 
         yield* drain(runtime);
         if (state.orchestrationResult !== null) return state.orchestrationResult;
+
+        // Session regeneration: while a pipeline is pending, advance exactly
+        // one stage per loop and dispatch NO turns — queued prompts wait in
+        // the FIFO for the reborn session; queued control cmds were just
+        // handled by drain (cancel_regen pre-empts between stages).
+        if (state.regen) {
+            const flipped = yield* advanceRegenPipeline(runtime);
+            if (flipped) return "";
+            if (state.orchestrationResult !== null) return state.orchestrationResult;
+            continue;
+        }
 
         const didWork = yield* decide(runtime);
         if (state.orchestrationResult !== null) return state.orchestrationResult;

@@ -1225,6 +1225,61 @@ export class ManagedSession {
             },
         });
 
+        const regenerateContextTool = defineTool("regenerate_context", {
+            description:
+                "Regenerate YOUR OWN context: your transcript is archived, distilled into a resume "
+                + "package, and your working memory is rebuilt fresh from it at the next turn boundary. "
+                + "Durable state (facts, artifacts, children, schedule, chat history) is untouched; "
+                + "workspace files are dropped (the package maps how to recreate them). Use when "
+                + "context_health reads degraded, or you notice yourself losing track of earlier work. "
+                + "Rate-limited (once per epoch, 6h cooldown). Finish the current step FIRST — this ends the turn.",
+            parameters: {
+                type: "object",
+                properties: {
+                    handoff: {
+                        type: "string",
+                        description:
+                            "Your own statement of what matters right now: mission, in-flight work, "
+                            + "commitments, pitfalls. This is a HINT to the distiller (cross-checked "
+                            + "against the transcript), max 4000 chars.",
+                    },
+                },
+                required: ["handoff"],
+            },
+            handler: async (args: { handoff: string }) => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("regenerate_context");
+                if (!controlBridge?.regenerateContext) return "Error: regenerate_context is unavailable in this session.";
+                const result = await controlBridge.regenerateContext({ handoff: String(args.handoff ?? "") });
+                if (/regeneration accepted/i.test(String(result))) {
+                    turnState.pendingActions.push({
+                        type: "completed",
+                        content: "Context regeneration requested. The runtime rebuilds this session's context at the boundary.",
+                    });
+                    return `${result}\n${acknowledgeTurnBoundary("regenerate_context")}`;
+                }
+                return result;
+            },
+        });
+        const regenerateAgentTool = defineTool("regenerate_agent", {
+            description:
+                "Regenerate a DIRECT child agent's context in place (its transcript is archived, "
+                + "distilled, and rebuilt) while it keeps its identity, queue, facts, and its link to you. "
+                + "Prefer this over killing and respawning a degraded long-running child. Applies at the "
+                + "child's next turn boundary; per-child rate limits apply.",
+            parameters: {
+                type: "object",
+                properties: {
+                    agent_id: { type: "string", description: "The child session id (raw UUID or session-<uuid>)." },
+                    handoff: { type: "string", description: "Optional hint to the child's distiller about what the child should stay focused on (max 4000 chars)." },
+                },
+                required: ["agent_id"],
+            },
+            handler: async (args: { agent_id: string; handoff?: string }) => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("regenerate_agent");
+                if (!controlBridge?.regenerateAgent) return "Error: regenerate_agent is unavailable in this session.";
+                return await controlBridge.regenerateAgent({ agent_id: String(args.agent_id ?? ""), ...(args.handoff ? { handoff: String(args.handoff) } : {}) });
+            },
+        });
         const setSessionModelTool = defineTool("set_session_model", {
             description:
                 "Switch this session's model for the next turn boundary. " +
@@ -1696,6 +1751,8 @@ export class ManagedSession {
             reportCycleTool,
             listModelsTool,
             setSessionModelTool,
+            regenerateContextTool,
+            regenerateAgentTool,
             updateSessionSummaryTool,
             sendSessionMessageTool,
             replySessionMessageTool,

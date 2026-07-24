@@ -561,6 +561,8 @@ export class PortalRuntime {
                 return this.transport.getSessionMetricSummary(safeParams.sessionId);
             case "getSessionFootprint":
                 return this.transport.getSessionFootprint(safeParams.sessionId);
+            case "regenerateSession":
+                return this.transport.regenerateSession(safeParams.sessionId, safeParams.options || {});
             case "getSessionTokensByModel":
                 return this.transport.getSessionTokensByModel(safeParams.sessionId);
             case "getSessionTreeStats":

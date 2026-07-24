@@ -9,6 +9,7 @@ import type {
     TurnAction,
 } from "../types.js";
 import { describeCronAt } from "../cron-at.js";
+import { normalizeMessageSender } from "../message-sender.js";
 import {
     COMMAND_VERSION_KEY,
     RESPONSE_LATEST_KEY,
@@ -447,6 +448,8 @@ export function buildContinueInput(
         ...(state.epochStartPending ? { epochStartPending: true } : {}),
         ...(state.regen ? { regen: state.regen } : {}),
         ...(state.pendingEpochCommit ? { pendingEpochCommit: state.pendingEpochCommit } : {}),
+        ...(state.epochStartIteration ? { epochStartIteration: state.epochStartIteration } : {}),
+        ...(state.lastRegenAtMs ? { lastRegenAtMs: state.lastRegenAtMs } : {}),
         parentSessionId: options.parentSessionId,
         nestingLevel: options.nestingLevel,
         ...(options.isSystem ? { isSystem: true } : {}),
@@ -596,6 +599,83 @@ export function* handleCommand(
             }));
             return;
         }
+        case "regenerate": {
+            const state = runtime.state;
+            const nowMs: number = yield runtime.ctx.utcNow();
+            const source = String(cmdMsg.args?.source ?? "operator");
+            const refuse = function* (reason: string): Generator<any, void, any> {
+                yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
+                    eventType: "session.regenerate_refused",
+                    data: { attemptId: cmdMsg.id, reason, source, requestedBy: cmdMsg.requestedBy ?? null },
+                }]);
+                yield* writeCommandResponse(runtime, { id: cmdMsg.id, cmd: cmdMsg.cmd, error: reason });
+                publishStatus(runtime, "idle");
+            };
+
+            if (state.regen) { yield* refuse("already_pending"); return; }
+            if (runtime.options.isSystem) { yield* refuse("is_system"); return; }
+            if (state.iteration - state.epochStartIteration < 5) { yield* refuse("too_young"); return; }
+            if (source === "tool") {
+                // Agent-initiated: fixed cooldown, and on shared sessions only
+                // an owner-attributed turn may trigger (the stamped sender is
+                // the bridge's server-side identity, never LLM text).
+                const REGEN_TOOL_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+                if (state.lastRegenAtMs > 0 && nowMs - state.lastRegenAtMs < REGEN_TOOL_COOLDOWN_MS) {
+                    yield* refuse("cooldown");
+                    return;
+                }
+                if (state.multiWriter) {
+                    const sender = normalizeMessageSender(cmdMsg.sender);
+                    if (!sender || sender.relation !== "owner") { yield* refuse("not_owner"); return; }
+                }
+            } else if (source === "parent") {
+                if (!cmdMsg.requestedBy || cmdMsg.requestedBy !== runtime.options.parentSessionId) {
+                    yield* refuse("not_parent");
+                    return;
+                }
+            }
+
+            const handoffRaw = typeof cmdMsg.args?.handoff === "string" ? cmdMsg.args.handoff : undefined;
+            state.regen = {
+                attemptId: cmdMsg.id,
+                stage: "requested",
+                requestedAtMs: nowMs,
+                trigger: source === "tool" ? "tool" : source === "parent" ? "parent" : source === "policy" ? "policy" : "operator",
+                ...(cmdMsg.requestedBy ? { requestedBy: cmdMsg.requestedBy } : {}),
+                ...(handoffRaw ? { handoff: handoffRaw.slice(0, 4_000) } : {}),
+                ...(typeof cmdMsg.args?.distillerModel === "string" && cmdMsg.args.distillerModel
+                    ? { distillerModel: String(cmdMsg.args.distillerModel) }
+                    : {}),
+            };
+            yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
+                eventType: "session.regenerate_requested",
+                data: { attemptId: cmdMsg.id, trigger: state.regen.trigger, requestedBy: cmdMsg.requestedBy ?? null, hasHandoff: Boolean(handoffRaw) },
+            }]);
+            yield* writeCommandResponse(runtime, {
+                id: cmdMsg.id,
+                cmd: cmdMsg.cmd,
+                result: { ok: true, accepted: true, attemptId: cmdMsg.id, fromEpoch: state.transcriptEpoch, appliesOn: "pipeline" },
+            });
+            publishStatus(runtime, "running", { regenStage: "requested" });
+            return;
+        }
+        case "cancel_regen": {
+            const state = runtime.state;
+            if (!state.regen) {
+                yield* writeCommandResponse(runtime, { id: cmdMsg.id, cmd: cmdMsg.cmd, error: "no_regen_pending" });
+                publishStatus(runtime, "idle");
+                return;
+            }
+            const cancelled = state.regen.attemptId;
+            state.regen = null;
+            yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
+                eventType: "session.regenerate_failed",
+                data: { attemptId: cancelled, stage: "cancelled", error: "cancelled by request" },
+            }]);
+            yield* writeCommandResponse(runtime, { id: cmdMsg.id, cmd: cmdMsg.cmd, result: { ok: true, cancelledAttemptId: cancelled } });
+            publishStatus(runtime, "idle");
+            return;
+        }
         case "list_models": {
             publishStatus(runtime, "idle", { cmdProcessing: cmdMsg.id });
             let models: unknown;
@@ -698,5 +778,112 @@ function* captureModelSwitchInterruptedTimer(runtime: DurableSessionRuntime, new
             runtime.ctx.traceInfo(`[orch-cmd] ${notePrefix}; clearing active ${timer.type} timer`);
             runtime.state.activeTimer = null;
             return;
+    }
+}
+
+
+// ─── Session regeneration pipeline (1.0.67, proposal §4) ────────
+//
+// Called from the run loop AFTER drain whenever state.regen is set: one
+// stage per invocation, returning to the loop between stages so a queued
+// cancel_regen / cancel / delete pre-empts a pending regen. Archive and
+// distill are attempt-idempotent activities; any pre-flip failure aborts
+// into the fail-safe (regen cleared, session continues in the old epoch —
+// nothing has changed). The flip is the point of no return: a continue-as-
+// new carrying the fresh epoch, the boundary record, and the flip-mutation
+// table's dispositions (contextUsage zeroed, shared preamble re-armed,
+// pending question and roster carried).
+export function* advanceRegenPipeline(
+    runtime: DurableSessionRuntime,
+): Generator<any, boolean, any> {
+    const { state } = runtime;
+    const regen = state.regen;
+    if (!regen) return false;
+    const sessionId = runtime.input.sessionId;
+
+    try {
+        if (regen.stage === "requested") {
+            publishStatus(runtime, "running", { regenStage: "archiving" });
+            const archive: any = yield runtime.manager.runRegenArchive(sessionId, state.transcriptEpoch, regen.attemptId);
+            state.regen = {
+                ...regen,
+                stage: "archived",
+                archiveArtifactId: String(archive?.archiveArtifactId ?? ""),
+            };
+            (state.regen as any).archiveMs = Number(archive?.archiveMs) || 0;
+            (state.regen as any).turnsArchived = Number(archive?.turnsArchived) || 0;
+            (state.regen as any).compactionsArchived = Number(archive?.compactionsArchived) || 0;
+            return false;
+        }
+
+        if (regen.stage === "archived") {
+            publishStatus(runtime, "running", { regenStage: "distilling" });
+            const distill: any = yield runtime.manager.runRegenDistill(sessionId, state.transcriptEpoch, regen.attemptId, {
+                ...(regen.handoff ? { handoff: regen.handoff } : {}),
+                ...(state.config.model ? { sessionModel: state.config.model } : {}),
+                ...(regen.distillerModel ? { distillerModel: regen.distillerModel } : {}),
+                ...(regen.archiveArtifactId ? { archiveArtifactId: regen.archiveArtifactId } : {}),
+            });
+            const bootstrap = String(distill?.bootstrap ?? "");
+            if (!bootstrap) throw new Error("distill produced no bootstrap");
+            state.regen = {
+                ...regen,
+                stage: "distilled",
+                packageArtifactId: String(distill?.packageArtifactId ?? ""),
+                bootstrap,
+            };
+            (state.regen as any).distillMs = Number(distill?.distillMs) || 0;
+            (state.regen as any).distillerModel = String(distill?.distillerModel ?? "");
+            return false;
+        }
+
+        // stage "distilled" → FLIP. COMMIT POINT: the distill result is in
+        // history; from here replay roll-forwards through the CAN.
+        const nowMs: number = yield runtime.ctx.utcNow();
+        publishStatus(runtime, "running", { regenStage: "flipping" });
+        const fromEpoch = state.transcriptEpoch;
+        const toEpoch = fromEpoch + 1;
+        const r: any = regen;
+        // Drop runtime notices that describe the dead transcript before the
+        // carry-list is built.
+        state.runtimeModelNotice = undefined;
+        const canInput: OrchestrationInput = {
+            ...continueInputWithPrompt(runtime, regen.bootstrap ?? "", { bootstrapPrompt: true }),
+            requiredTool: "read_facts",
+            transcriptEpoch: toEpoch,
+            epochStartPending: true,
+            epochStartIteration: state.iteration,
+            lastRegenAtMs: nowMs,
+            regen: undefined,
+            contextUsage: undefined,
+            sharedPreambleSent: false,
+            pendingEpochCommit: {
+                fromEpoch,
+                toEpoch,
+                attemptId: regen.attemptId,
+                trigger: regen.trigger,
+                ...(regen.archiveArtifactId ? { archiveArtifactId: regen.archiveArtifactId } : {}),
+                ...(regen.packageArtifactId ? { packageArtifactId: regen.packageArtifactId } : {}),
+                ...(r.turnsArchived ? { turnsArchived: r.turnsArchived } : {}),
+                ...(r.compactionsArchived ? { compactionsArchived: r.compactionsArchived } : {}),
+                ...(r.archiveMs ? { archiveMs: r.archiveMs } : {}),
+                ...(r.distillMs ? { distillMs: r.distillMs } : {}),
+            },
+        };
+        yield* versionedContinueAsNew(runtime, canInput);
+        return true;
+    } catch (err: any) {
+        // FAIL-SAFE (pre-flip only): clear the pipeline so a later attempt is
+        // not refused as pending; the session continues in the old epoch.
+        const failedStage = state.regen?.stage ?? "requested";
+        const attemptId = state.regen?.attemptId ?? "unknown";
+        state.regen = null;
+        runtime.ctx.traceInfo(`[orch] regen attempt ${attemptId} failed at ${failedStage}: ${err?.message ?? err}`);
+        yield runtime.manager.recordSessionEvent(sessionId, [{
+            eventType: "session.regenerate_failed",
+            data: { attemptId, stage: failedStage, error: String(err?.message ?? err).slice(0, 500) },
+        }]);
+        publishStatus(runtime, "idle");
+        return false;
     }
 }

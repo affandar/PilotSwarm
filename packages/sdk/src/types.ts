@@ -111,6 +111,10 @@ export interface TurnOptions {
             contract?: Record<string, unknown>;
         }): Promise<string>;
         setSessionModel(args: { model: string; reasoning_effort?: ReasoningEffort | null }): Promise<string>;
+        /** Session regeneration: enqueue the durable regenerate cmd for THIS session (sender-stamped server-side). */
+        regenerateContext?(args: { handoff?: string }): Promise<string>;
+        /** Session regeneration: enqueue the durable regenerate cmd for a DIRECT child (requestedBy-stamped). */
+        regenerateAgent?(args: { agent_id: string; handoff?: string }): Promise<string>;
         messageAgent(args: { agent_id: string; message: string; contract_patch?: Record<string, unknown> }): Promise<string>;
         checkAgents(): Promise<string>;
         resolveWaitForAgents(agentIds?: string[]): Promise<string[]>;
@@ -435,6 +439,10 @@ export interface OrchestrationInput {
     regen?: RegenState;
     /** Post-flip boundary record; consumed by the new execution's first drain. */
     pendingEpochCommit?: PendingEpochCommit;
+    /** state.iteration at the current epoch's start — min-age gate baseline. */
+    epochStartIteration?: number;
+    /** Epoch-ms of the last completed flip — the agent-initiated cooldown baseline. */
+    lastRegenAtMs?: number;
     responseVersion?: number;
     commandVersion?: number;
     affinityKey?: string;
@@ -1038,6 +1046,14 @@ export interface CommandMessage {
     cmd: string;
     args?: Record<string, unknown>;
     id: string;
+    /**
+     * Server-stamped sender identity (session regeneration owner-gate).
+     * Stamped by the worker-side control bridge from the runTurn activity
+     * input's authoritative sender — NEVER an LLM- or client-supplied value.
+     */
+    sender?: Record<string, unknown>;
+    /** Parent-initiated commands: the requesting parent's session id. */
+    requestedBy?: string;
 }
 
 export interface CommandResponse {

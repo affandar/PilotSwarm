@@ -110,6 +110,10 @@ export interface SessionRow {
     title: string | null;
     titleLocked: boolean;
     state: string;
+    /** Session regeneration: which SDK-transcript incarnation is live. 0 = original. */
+    transcriptEpoch: number;
+    /** Epoch-ms of the last completed flip; null before any regeneration. */
+    lastRegeneratedAt: number | null;
     model: string | null;
     reasoningEffort: string | null;
     createdAt: Date;
@@ -885,6 +889,16 @@ export interface SessionCatalog {
     /** Per-session compaction counters from persisted SDK events (footprint). */
     getSessionCompactionStats(sessionId: string, afterSeq?: number): Promise<SessionCompactionStats>;
 
+    /**
+     * Session regeneration boundary transaction: session.epoch_committed
+     * event + sessions.transcript_epoch + regen_count, atomically and
+     * idempotently (attempt-keyed). Returns the boundary event's seq.
+     */
+    recordEpochCommitted(sessionId: string, payload: Record<string, unknown>): Promise<number>;
+
+    /** Proven rebirth: session.regenerated event + last_regen_stats (attempt-idempotent). */
+    recordRegenerated(sessionId: string, payload: Record<string, unknown>): Promise<number>;
+
     /** Get a session's own stats plus rolled-up totals of all descendants. */
     getSessionTreeStats(sessionId: string): Promise<SessionTreeStats | null>;
 
@@ -1021,6 +1035,8 @@ function sqlForSchema(schema: string) {
             getSessionMetricSummary:    `${s}.cms_get_session_metric_summary`,
             getSessionEventStats:       `${s}.cms_get_session_event_stats`,
             getSessionCompactionStats:  `${s}.cms_get_session_compaction_stats`,
+            recordEpochCommitted:       `${s}.cms_record_epoch_committed`,
+            recordRegenerated:          `${s}.cms_record_regenerated`,
             getSessionTreeStats:        `${s}.cms_get_session_tree_stats`,
             getSessionTreeStatsByModel: `${s}.cms_get_session_tree_stats_by_model`,
             getFleetStatsByAgent:       `${s}.cms_get_fleet_stats_by_agent`,
@@ -1787,6 +1803,22 @@ export class PgSessionCatalog implements SessionCatalog {
         };
     }
 
+    async recordEpochCommitted(sessionId: string, payload: Record<string, unknown>): Promise<number> {
+        const { rows } = await this.pool.query(
+            `SELECT ${this.sql.fn.recordEpochCommitted}($1, $2) AS seq`,
+            [sessionId, JSON.stringify(payload)],
+        );
+        return Number(rows[0]?.seq ?? 0);
+    }
+
+    async recordRegenerated(sessionId: string, payload: Record<string, unknown>): Promise<number> {
+        const { rows } = await this.pool.query(
+            `SELECT ${this.sql.fn.recordRegenerated}($1, $2) AS seq`,
+            [sessionId, JSON.stringify(payload)],
+        );
+        return Number(rows[0]?.seq ?? 0);
+    }
+
     async getSessionTreeStats(sessionId: string): Promise<SessionTreeStats | null> {
         const self = await this.getSessionMetricSummary(sessionId);
         if (!self) return null;
@@ -2307,6 +2339,10 @@ function rowToSessionRow(row: any): SessionRow {
         title: row.title ?? null,
         titleLocked: row.title_locked ?? false,
         state: row.state,
+        transcriptEpoch: Number(row.transcript_epoch ?? 0),
+        lastRegeneratedAt: row.last_regenerated_at
+            ? new Date(row.last_regenerated_at).getTime()
+            : null,
         model: row.model ?? null,
         reasoningEffort: row.reasoning_effort ?? null,
         createdAt: new Date(row.created_at),

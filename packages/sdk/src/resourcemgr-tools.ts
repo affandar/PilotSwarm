@@ -12,6 +12,7 @@
  * @internal
  */
 
+import { parseEpochSnapshotName } from "./session-store.js";
 import { defineTool } from "@github/copilot-sdk";
 import { execSync } from "node:child_process";
 import type { SessionCatalog } from "./cms.js";
@@ -200,6 +201,22 @@ export function createResourceManagerTools(opts: {
                         stats.byType.metadata.count++;
                         stats.byType.metadata.sizeBytes += size;
                         stats.sessionIds.add(name.replace(".meta.json", ""));
+                    } else if (name.endsWith(".tar.br")) {
+                        // Epoch-scoped snapshot chains (session regeneration):
+                        // attribute to the OWNING session via the fail-closed
+                        // parser — an unparseable name is counted as other,
+                        // never guessed at.
+                        const dotE = name.indexOf(".e");
+                        const candidate = dotE > 0 ? name.slice(0, dotE) : "";
+                        const parsed = candidate ? parseEpochSnapshotName(candidate, name) : null;
+                        if (parsed) {
+                            stats.byType.sessionState.count++;
+                            stats.byType.sessionState.sizeBytes += size;
+                            stats.sessionIds.add(candidate);
+                        } else {
+                            stats.byType.other.count++;
+                            stats.byType.other.sizeBytes += size;
+                        }
                     } else {
                         stats.byType.other.count++;
                         stats.byType.other.sizeBytes += size;
@@ -442,6 +459,15 @@ export function createResourceManagerTools(opts: {
                     const name = blob.name;
                     if (name.endsWith(".tar.gz")) {
                         blobSessionIds.add(name.replace(".tar.gz", ""));
+                    } else if (name.endsWith(".tar.br")) {
+                        // Epoch chains (session regeneration): candidate ONLY
+                        // when the fail-closed parser accepts the shape — an
+                        // unparseable name is never nominated for deletion.
+                        const dotE = name.indexOf(".e");
+                        const candidate = dotE > 0 ? name.slice(0, dotE) : "";
+                        if (candidate && parseEpochSnapshotName(candidate, name)) {
+                            blobSessionIds.add(candidate);
+                        }
                     } else if (name.startsWith("artifacts/")) {
                         const parts = name.split("/");
                         if (parts[1]) blobSessionIds.add(parts[1]);
@@ -474,8 +500,10 @@ export function createResourceManagerTools(opts: {
                 let deletedBlobs = 0;
                 for (const sessionId of orphanIds) {
                     try {
-                        await blobStore.delete(sessionId);
-                        deletedBlobs += 2; // .tar.gz + .meta.json
+                        // Legacy family + every epoch chain, via the fail-closed
+                        // enumerator (unparseable names survive).
+                        await blobStore.deleteAllEpochs(sessionId);
+                        deletedBlobs += 2; // legacy .tar.gz + .meta.json (epoch chains uncounted)
                     } catch {}
                     // Also delete artifacts
                     try {

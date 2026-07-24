@@ -190,7 +190,122 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "footprint_stat_procs",
             sql: migration_0035_footprint_stat_procs(schema),
         },
+        {
+            version: "0036",
+            name: "session_regeneration",
+            steps: migration_0036_session_regeneration(schema),
+        },
     ];
+}
+
+// ─── Migration 0036: session regeneration (epoch rebirth) ────────
+
+function migration_0036_session_regeneration(schema: string): string[] {
+    const s = `"${schema}"`;
+
+    // Non-transactional steps (0029 hardened shape): the ALTERs are
+    // metadata-only fast defaults but still take a brief ACCESS EXCLUSIVE
+    // lock on hot tables — commit them alone under a lock_timeout so a
+    // blocked ALTER fails fast and the CMS-init retry re-attempts, instead
+    // of queueing the fleet behind the lock request. Function DDL stays one
+    // atomic step. Every step is idempotent.
+
+    const step_columns = `
+SET lock_timeout = '5s';
+ALTER TABLE ${s}.sessions
+    ADD COLUMN IF NOT EXISTS transcript_epoch INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE ${s}.sessions
+    ADD COLUMN IF NOT EXISTS last_regenerated_at TIMESTAMPTZ;
+ALTER TABLE ${s}.session_metric_summaries
+    ADD COLUMN IF NOT EXISTS regen_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE ${s}.session_metric_summaries
+    ADD COLUMN IF NOT EXISTS last_regen_stats JSONB;
+`;
+
+    const step_functions = `
+-- ── cms_record_epoch_committed ───────────────────────────────────
+-- The flip's boundary record, ONE transaction (a plpgsql function body):
+-- the session.epoch_committed event, sessions.transcript_epoch, and
+-- regen_count can never disagree, and replay cannot double-count —
+-- idempotent on the attempt id (a repeat returns the original seq).
+-- Emitted by the NEW execution before any epoch turn, so its seq is the
+-- epoch boundary every per-epoch axis keys on.
+CREATE OR REPLACE FUNCTION ${s}.cms_record_epoch_committed(
+    p_session_id TEXT,
+    p_payload    JSONB
+) RETURNS BIGINT AS $$
+DECLARE
+    v_existing BIGINT;
+    v_seq      BIGINT;
+BEGIN
+    SELECT e.seq INTO v_existing
+    FROM ${s}.session_events e
+    WHERE e.session_id = p_session_id
+      AND e.event_type = 'session.epoch_committed'
+      AND e.data->>'attemptId' = p_payload->>'attemptId'
+    ORDER BY e.seq DESC
+    LIMIT 1;
+    IF v_existing IS NOT NULL THEN
+        RETURN v_existing;
+    END IF;
+
+    INSERT INTO ${s}.session_events (session_id, event_type, data)
+    VALUES (p_session_id, 'session.epoch_committed', p_payload)
+    RETURNING seq INTO v_seq;
+
+    UPDATE ${s}.sessions
+    SET transcript_epoch = COALESCE(NULLIF(p_payload->>'toEpoch', ''), '0')::int,
+        last_regenerated_at = NOW(),
+        updated_at = NOW()
+    WHERE session_id = p_session_id;
+
+    INSERT INTO ${s}.session_metric_summaries (session_id, regen_count)
+    VALUES (p_session_id, 1)
+    ON CONFLICT (session_id) DO UPDATE
+    SET regen_count = COALESCE(${s}.session_metric_summaries.regen_count, 0) + 1,
+        updated_at = NOW();
+
+    RETURN v_seq;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── cms_record_regenerated ───────────────────────────────────────
+-- The PROVEN rebirth (first epoch snapshot commit landed): the
+-- session.regenerated event + last_regen_stats. Idempotent on attempt id.
+CREATE OR REPLACE FUNCTION ${s}.cms_record_regenerated(
+    p_session_id TEXT,
+    p_payload    JSONB
+) RETURNS BIGINT AS $$
+DECLARE
+    v_existing BIGINT;
+    v_seq      BIGINT;
+BEGIN
+    SELECT e.seq INTO v_existing
+    FROM ${s}.session_events e
+    WHERE e.session_id = p_session_id
+      AND e.event_type = 'session.regenerated'
+      AND e.data->>'attemptId' = p_payload->>'attemptId'
+    ORDER BY e.seq DESC
+    LIMIT 1;
+    IF v_existing IS NOT NULL THEN
+        RETURN v_existing;
+    END IF;
+
+    INSERT INTO ${s}.session_events (session_id, event_type, data)
+    VALUES (p_session_id, 'session.regenerated', p_payload)
+    RETURNING seq INTO v_seq;
+
+    UPDATE ${s}.session_metric_summaries
+    SET last_regen_stats = p_payload->'stats',
+        updated_at = NOW()
+    WHERE session_id = p_session_id;
+
+    RETURN v_seq;
+END;
+$$ LANGUAGE plpgsql;
+`;
+
+    return [step_columns, step_functions];
 }
 
 // ─── Migration 0035: footprint stat procs ───────────────────────

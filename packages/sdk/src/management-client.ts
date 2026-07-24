@@ -1323,6 +1323,43 @@ export class PilotSwarmManagementClient {
     }
 
     /**
+     * Regenerate a session's Copilot transcript in place (epoch rebirth,
+     * proposal §4): archive → distill → flip, applied by the orchestration at
+     * a turn boundary. Enqueue-then-observe — outcomes arrive as
+     * session.regenerate_* events; the cmd handler is the gate authority
+     * (too_young / already_pending / cooldown refusals emit
+     * session.regenerate_refused).
+     */
+    async regenerateSession(
+        sessionId: string,
+        opts?: { handoff?: string; distillerModel?: string; source?: string },
+    ): Promise<{ attemptId: string }> {
+        this._ensureStarted();
+        const session = await this.getSession(sessionId).catch(() => null);
+        if (!session) throw new Error(`Session ${sessionId.slice(0, 8)} was not found`);
+        if ((session as any).isSystem) {
+            throw new Error("System sessions are excluded from regeneration (use restartSystemSession)");
+        }
+        if (opts?.distillerModel) {
+            const models = this.listModels();
+            if (!models.some((m) => m.qualifiedName === opts.distillerModel)) {
+                throw new Error(`Unknown distiller model: ${opts.distillerModel}`);
+            }
+        }
+        const attemptId = buildLifecycleCommandId("regenerate");
+        await this.sendCommand(sessionId, {
+            cmd: "regenerate",
+            id: attemptId,
+            args: {
+                ...(opts?.handoff ? { handoff: String(opts.handoff).slice(0, 4_000) } : {}),
+                ...(opts?.distillerModel ? { distillerModel: opts.distillerModel } : {}),
+                source: opts?.source ?? "operator",
+            },
+        });
+        return { attemptId };
+    }
+
+    /**
      * Stop the session's in-flight LLM turn without completing, cancelling,
      * or deleting the session (stop-turn plan,
      * docs/proposals-impl/stop-button-turn-abort-plan.md).

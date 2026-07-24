@@ -410,6 +410,41 @@ export function* processPrompt(
             throw new Error(raced.message);
         }
         turnResult = raced.result;
+
+        // Session regeneration: the rebirth is PROVEN only by the epoch-start
+        // turn's committed snapshot (or, for storeless sessions, a non-error
+        // result). Until then health reads rebuilding and session.regenerated
+        // never fires; a failing grounding turn retries with epochStartPending
+        // intact so a retry re-enters the conditional epoch init.
+        if (state.epochStartPending && state.pendingEpochCommit) {
+            const resultType = String((turnResult as any)?.type ?? "");
+            const snapVersion = Number((turnResult as any)?.snapshotVersion);
+            const proven = Number.isFinite(snapVersion) && snapVersion >= 1
+                ? true
+                : (!state.blobEnabled && resultType !== "error" && resultType !== "stopped");
+            if (proven) {
+                const commit = state.pendingEpochCommit;
+                state.epochStartPending = false;
+                state.pendingEpochCommit = null;
+                const nowMs: number = yield ctx.utcNow();
+                yield runtime.manager.recordRegenerated(runtime.input.sessionId, {
+                    epoch: commit.toEpoch,
+                    attemptId: commit.attemptId,
+                    stats: {
+                        kind: "regen",
+                        fromEpoch: commit.fromEpoch,
+                        toEpoch: commit.toEpoch,
+                        trigger: commit.trigger,
+                        ...(commit.archiveMs ? { archiveMs: commit.archiveMs } : {}),
+                        ...(commit.distillMs ? { distillMs: commit.distillMs } : {}),
+                        ...(commit.turnsArchived ? { turnsArchived: commit.turnsArchived } : {}),
+                        ...(commit.compactionsArchived ? { compactionsArchived: commit.compactionsArchived } : {}),
+                        totalMs: Math.max(0, nowMs - (commit as any).requestedAtMs || 0),
+                    },
+                });
+                ctx.traceInfo(`[orch] epoch ${commit.toEpoch} rebirth proven (snapshot v${snapVersion || 0})`);
+            }
+        }
     } catch (err: any) {
         state.config.turnSystemPrompt = undefined;
         const errorMsg = err.message || String(err);

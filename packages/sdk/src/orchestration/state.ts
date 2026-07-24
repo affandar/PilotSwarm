@@ -137,6 +137,10 @@ export interface DurableSessionState {
     epochStartPending: boolean;
     /** In-flight regeneration pipeline (cleared at the flip and on abort). */
     regen: RegenState | null;
+    /** iteration at the current epoch's start (min-age gate baseline). */
+    epochStartIteration: number;
+    /** Epoch-ms of the last completed flip (agent cooldown baseline). */
+    lastRegenAtMs: number;
     /**
      * Post-flip boundary record: set by the flip CAN, consumed by the new
      * execution's first drain, which emits session.epoch_committed + sets
@@ -316,6 +320,8 @@ export function createInitialState(input: OrchestrationInput, options: DurableSe
             : 0,
         epochStartPending: input.epochStartPending === true,
         regen: input.regen ? { ...input.regen } : null,
+        epochStartIteration: typeof input.epochStartIteration === "number" ? input.epochStartIteration : 0,
+        lastRegenAtMs: typeof input.lastRegenAtMs === "number" ? input.lastRegenAtMs : 0,
         pendingEpochCommit: input.pendingEpochCommit ? { ...input.pendingEpochCommit } : null,
     };
 }

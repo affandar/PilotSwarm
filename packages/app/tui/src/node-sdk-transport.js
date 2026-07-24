@@ -809,6 +809,10 @@ export class NodeSdkTransport {
         return this.mgmt.getSessionFootprint(sessionId);
     }
 
+    async regenerateSession(sessionId, options = {}) {
+        return this.mgmt.regenerateSession(sessionId, options);
+    }
+
     async getSessionTokensByModel(sessionId) {
         return this.mgmt.getSessionTokensByModel(sessionId);
     }

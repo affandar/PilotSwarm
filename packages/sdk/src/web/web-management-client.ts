@@ -228,6 +228,10 @@ export class WebPilotSwarmManagementClient {
         return this._api.call("getSessionFootprint", { sessionId });
     }
 
+    async regenerateSession(sessionId: string, options: { handoff?: string; distillerModel?: string } = {}): Promise<any> {
+        return this._api.call("regenerateSession", { sessionId, options });
+    }
+
     async getSessionTokensByModel(sessionId: string): Promise<any[]> {
         return this._api.call("getSessionTokensByModel", { sessionId });
     }

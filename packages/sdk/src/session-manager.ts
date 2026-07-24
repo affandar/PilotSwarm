@@ -449,6 +449,30 @@ export class SessionManager {
         return { modelName: resolved.modelName, sdkProvider: resolved.sdkProvider };
     }
 
+    /**
+     * Resolve an arbitrary model ref (or the deployment default) to ephemeral
+     * SDK session options. Null when the ref doesn't resolve — the regen
+     * distiller walks its fallback chain on that (a dead session model must
+     * not block the regeneration that exists to escape it).
+     */
+    resolveModelSessionOptions(ref?: string): { model?: string; provider?: unknown; gitHubToken?: string } | null {
+        const registry = this.workerDefaults.modelProviders;
+        if (!registry) {
+            return this.githubToken ? { gitHubToken: this.githubToken } : null;
+        }
+        const target = ref ?? registry.defaultModel;
+        if (!target) return this.githubToken ? { gitHubToken: this.githubToken } : null;
+        try {
+            const resolved = registry.resolve(target);
+            if (!resolved) return null;
+            if (resolved.sdkProvider) return { model: resolved.modelName, provider: resolved.sdkProvider };
+            if (resolved.githubToken) return { model: resolved.modelName, gitHubToken: resolved.githubToken };
+            return null;
+        } catch {
+            return null;
+        }
+    }
+
     /** Ensure the CopilotClient is started. */
     private async ensureClient(tokenOverride?: string): Promise<CopilotClient> {
         // Resolve the effective token: explicit override > worker default >
