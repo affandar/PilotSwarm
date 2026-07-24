@@ -584,6 +584,10 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
         prefixRuns.push({ text: "🗂  ", color: "cyan", bold: true });
     } else if (session?.isSystem) {
         prefixRuns.push({ text: "⚙ ", color: "yellow", bold: true });
+    } else if (session?.serviceKind) {
+        // Service session (tree-scoped machinery, e.g. the regen distiller):
+        // the alembic marks it as read-only distillation machinery.
+        prefixRuns.push({ text: "⚗ ", color: "magenta", bold: true });
     } else {
         const icon = sessionStatusIcon(session, mode);
         prefixRuns.push({
@@ -4052,7 +4056,7 @@ function buildNodeMapCell(session, brandingTitle, width, active) {
             ? canonicalSystemTitle(session, brandingTitle)
             : (session?.title || shortSessionId(session?.sessionId)))
         : shortSessionId(session?.sessionId);
-    const prefix = session?.isSystem ? "⚙ " : `${sessionStatusIcon(session) || "."} `;
+    const prefix = session?.isSystem ? "⚙ " : session?.serviceKind ? "⚗ " : `${sessionStatusIcon(session) || "."} `;
     const text = padDisplayText(`${prefix}${label}`, width);
 
     if (active) {
@@ -5217,8 +5221,15 @@ function buildSessionStatsLines(state, session, maxWidth) {
     const regenCount = Number(summary.regenCount) || 0;
     const lastRegen = summary.lastRegenStats && typeof summary.lastRegenStats === "object" ? summary.lastRegenStats : null;
     const currentEpoch = Number.isFinite(lastRegen?.toEpoch) ? lastRegen.toEpoch : regenCount;
+    // Distillation provenance: "fast" = deterministic package; otherwise the
+    // distiller model label (strip the provider: prefix for width).
+    const distillLabel = lastRegen
+        ? (lastRegen.distillMode === "deterministic" || (!lastRegen.distillMode && !lastRegen.distillerModel)
+            ? "fast"
+            : String(lastRegen.distillerModel || "llm").replace(/^[^:]*:/, ""))
+        : null;
     const lastRegenLabel = lastRegen
-        ? `${lastRegen.turnsArchived ?? 0} turn${lastRegen.turnsArchived === 1 ? "" : "s"} · ${(Number(lastRegen.totalMs) / 1000).toFixed(1)}s`
+        ? `${lastRegen.turnsArchived ?? 0} turn${lastRegen.turnsArchived === 1 ? "" : "s"} · ${(Number(lastRegen.totalMs) / 1000).toFixed(1)}s${distillLabel ? ` · ${distillLabel}` : ""}`
         : null;
     lines.push(...buildMessageCardLines({
         title: "Persistence",

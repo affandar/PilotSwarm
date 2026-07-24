@@ -2861,12 +2861,18 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
     );
     const navigationError = useControllerSelector(controller, selectNavigationError, shallowEqualObject);
     const composerBase = showComposer && !viewState.activeSessionIsGroup && viewState.chatViewMode !== "summary";
-    const readOnly = Boolean(access) && access.canWrite === false;
+    // Service sessions (⚗ tree-scoped machinery, e.g. the regen distiller) are
+    // read-only BY KIND: their transcript is the trace of runtime machinery,
+    // never a conversation surface — no prompt for anyone, owner included.
+    const activeIsService = Boolean(viewState.sessionsById?.[viewState.activeSessionId]?.serviceKind);
+    const readOnly = activeIsService || (Boolean(access) && access.canWrite === false);
     const composer = composerBase
         ? React.createElement("div", { className: "ps-chat-composer" },
             readOnly
                 ? React.createElement("div", { className: "ps-composer-readonly" },
-                    `You have view access to this session. Ask ${access.owner?.displayName || access.owner?.email || "the owner"} for write access to participate.`)
+                    activeIsService
+                        ? "⚗ Service session — runtime machinery. Its transcript is a read-only trace; it does not accept messages."
+                        : `You have view access to this session. Ask ${access.owner?.displayName || access.owner?.email || "the owner"} for write access to participate.`)
                 : React.createElement(PromptComposer, { controller, mobile, active: true }))
         : null;
 
@@ -4506,6 +4512,10 @@ function ModalLayer({ controller }) {
     if (modal.type === "confirm" && modalState.confirm) {
         const isAlert = Boolean(modal.alert);
         const isDestructive = !isAlert && modal.action === "deleteSession";
+        // The regenerate confirm carries distillation inputs: a mode select and
+        // an optional distilling-instructions textarea, bound to modal.extras.
+        const isRegen = modal.action === "regenerateSession";
+        const extras = modal.extras || {};
         return React.createElement("div", { className: "ps-modal-backdrop", onClick: close },
             React.createElement("div", { className: "ps-modal is-narrow", onClick: (event) => event.stopPropagation() },
                 React.createElement("div", { className: "ps-modal-header" },
@@ -4515,6 +4525,32 @@ function ModalLayer({ controller }) {
                 React.createElement("div", { className: "ps-modal-body", style: { padding: "16px 20px" } },
                     React.createElement("p", { style: { color: "#94a3b8", margin: 0 } }, modalState.confirm.message),
                 ),
+                isRegen
+                    ? React.createElement("div", { className: "ps-modal-body", style: { padding: "0 20px 12px", display: "flex", flexDirection: "column", gap: 10 } },
+                        React.createElement("label", { style: { color: "#94a3b8", fontSize: "12px", display: "flex", alignItems: "center", gap: 8 } },
+                            "Distillation",
+                            React.createElement("select", {
+                                className: "ps-modal-input",
+                                style: { flex: "1", padding: "4px 8px" },
+                                value: extras.distillMode || "llm",
+                                onChange: (event) => controller.updateConfirmExtras({ distillMode: event.currentTarget.value }),
+                            },
+                                React.createElement("option", { value: "llm" }, "Intelligent (LLM reads the whole transcript)"),
+                                React.createElement("option", { value: "deterministic" }, "Fast (no LLM — tail + pointers)"),
+                            ),
+                        ),
+                        (extras.distillMode || "llm") === "llm"
+                            ? React.createElement("textarea", {
+                                className: "ps-modal-input",
+                                style: { width: "100%", minHeight: "64px", resize: "vertical", fontFamily: "inherit", fontSize: "13px" },
+                                placeholder: "Distilling instructions (optional) — e.g. \"preserve every SQL snippet verbatim\"",
+                                value: extras.instructions || "",
+                                maxLength: 4000,
+                                onChange: (event) => controller.updateConfirmExtras({ instructions: event.currentTarget.value }),
+                            })
+                            : null,
+                    )
+                    : null,
                 React.createElement("div", { className: "ps-modal-footer" },
                     isAlert ? null : React.createElement("button", { type: "button", className: "ps-modal-button", onClick: close }, "Cancel"),
                     React.createElement("button", {
@@ -4787,7 +4823,7 @@ function useKeyboardShortcuts(controller, mobile) {
         const handler = (event) => {
             const target = event.target;
             const editable = target instanceof HTMLElement
-                && (target.tagName === "TEXTAREA" || target.tagName === "INPUT" || target.isContentEditable);
+                && (target.tagName === "TEXTAREA" || target.tagName === "INPUT" || target.tagName === "SELECT" || target.isContentEditable);
             const modal = controller.getState().ui.modal;
             const visibleInspectorTabs = getVisibleInspectorTabs(controller);
             const currentInspectorTab = controller.getState().ui.inspectorTab;

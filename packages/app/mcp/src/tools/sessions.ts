@@ -661,15 +661,19 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
             inputSchema: {
                 session_id: sessionIdShape().describe("The session to regenerate"),
                 handoff: z.string().max(4000).optional().describe("Optional operator hint for the distiller"),
-                distiller_model: z.string().optional().describe("Optional model override for the distiller"),
+                instructions: z.string().max(4000).optional().describe("Optional distilling instructions — HOW to distill (e.g. 'preserve every SQL snippet verbatim')"),
+                distill_mode: z.enum(["llm", "deterministic"]).optional().describe("Distillation mode: 'llm' (default — a distiller service session reads the whole archived transcript) or 'deterministic' (fast closure package, no LLM)"),
+                distiller_model: z.string().optional().describe("Optional model override for the distiller (default: the cluster default model)"),
                 force: z.boolean().optional().describe("Bypass the soft rate limits (cooldown / minimum age). Hard gates (system session, regen already in flight) still apply."),
             },
         },
-        withToolErrors(async ({ session_id, handoff, distiller_model, force }) => {
+        withToolErrors(async ({ session_id, handoff, instructions, distill_mode, distiller_model, force }) => {
             const session = await ctx.mgmt.getSession(session_id);
             if (!session) return errorResult("session not found", { session_id });
             const result = await (ctx.mgmt as any).regenerateSession(session_id, {
                 ...(handoff ? { handoff } : {}),
+                ...(instructions ? { instructions } : {}),
+                ...(distill_mode ? { distillMode: distill_mode } : {}),
                 ...(distiller_model ? { distillerModel: distiller_model } : {}),
                 ...(force ? { force: true } : {}),
             });

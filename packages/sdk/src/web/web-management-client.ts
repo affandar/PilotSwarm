@@ -228,7 +228,7 @@ export class WebPilotSwarmManagementClient {
         return this._api.call("getSessionFootprint", { sessionId });
     }
 
-    async regenerateSession(sessionId: string, options: { handoff?: string; distillerModel?: string } = {}): Promise<any> {
+    async regenerateSession(sessionId: string, options: { handoff?: string; instructions?: string; distillMode?: "llm" | "deterministic"; distillerModel?: string; model?: string; force?: boolean } = {}): Promise<any> {
         return this._api.call("regenerateSession", { sessionId, options });
     }
 

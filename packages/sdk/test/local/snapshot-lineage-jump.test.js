@@ -22,17 +22,17 @@ import {
 import * as dispatcher from "../../src/orchestration.ts";
 
 describe("orchestration version registry", () => {
-    it("latest is 1.0.67, registered, and exported from the dispatcher", () => {
-        expect(LATEST).toBe("1.0.67");
+    it("latest is 1.0.68, registered, and exported from the dispatcher", () => {
+        expect(LATEST).toBe("1.0.68");
         const latest = REGISTRY.find((e) => e.version === LATEST);
         expect(latest?.handler).toBeTypeOf("function");
-        expect(latest.handler.name).toBe("durableSessionOrchestration_1_0_67");
-        expect(dispatcher.durableSessionOrchestration_1_0_67).toBeTypeOf("function");
+        expect(latest.handler.name).toBe("durableSessionOrchestration_1_0_68");
+        expect(dispatcher.durableSessionOrchestration_1_0_68).toBeTypeOf("function");
     });
 
-    it("freezes 1.0.65 and 1.0.66 as distinct registered handlers", () => {
+    it("freezes 1.0.65, 1.0.66 and 1.0.67 as distinct registered handlers", () => {
         const latest = REGISTRY.find((e) => e.version === LATEST);
-        for (const version of ["1.0.65", "1.0.66"]) {
+        for (const version of ["1.0.65", "1.0.66", "1.0.67"]) {
             const frozen = REGISTRY.find((e) => e.version === version);
             expect(frozen?.handler).toBeTypeOf("function");
             expect(frozen.handler.name).toBe(`durableSessionOrchestration_${version.replaceAll(".", "_")}`);
@@ -47,8 +47,12 @@ describe("orchestration version registry", () => {
         // replayed continue-as-news (the beae878 incident class).
         const frozen164 = readFileSync(new URL("../../src/orchestration_1_0_64/runtime.ts", import.meta.url), "utf8");
         const frozen165 = readFileSync(new URL("../../src/orchestration_1_0_65/runtime.ts", import.meta.url), "utf8");
+        const frozen166 = readFileSync(new URL("../../src/orchestration_1_0_66/runtime.ts", import.meta.url), "utf8");
+        const frozen167 = readFileSync(new URL("../../src/orchestration_1_0_67/runtime.ts", import.meta.url), "utf8");
         expect(frozen164).toMatch(/CURRENT_ORCHESTRATION_VERSION\s*=\s*"1\.0\.64"/);
         expect(frozen165).toMatch(/CURRENT_ORCHESTRATION_VERSION\s*=\s*"1\.0\.65"/);
+        expect(frozen166).toMatch(/CURRENT_ORCHESTRATION_VERSION\s*=\s*"1\.0\.66"/);
+        expect(frozen167).toMatch(/CURRENT_ORCHESTRATION_VERSION\s*=\s*"1\.0\.67"/);
     });
 
     it("registry versions are unique and strictly monotonic, floor still present", () => {

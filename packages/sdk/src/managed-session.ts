@@ -543,6 +543,12 @@ export class ManagedSession {
                             + "commitments, pitfalls. This is a HINT to the distiller (cross-checked "
                             + "against the transcript), max 4000 chars.",
                     },
+                    instructions: {
+                        type: "string",
+                        description:
+                            "Optional distilling instructions — HOW to distill (e.g. 'preserve every SQL "
+                            + "snippet verbatim', 'drop the debugging tangents'). Max 4000 chars.",
+                    },
                 },
                 required: ["handoff"],
             },
@@ -560,6 +566,7 @@ export class ManagedSession {
                 properties: {
                     agent_id: { type: "string", description: "The child session id (raw UUID or session-<uuid>)." },
                     handoff: { type: "string", description: "Optional hint to the child's distiller about what the child should stay focused on (max 4000 chars)." },
+                    instructions: { type: "string", description: "Optional distilling instructions — HOW to distill the child's transcript (max 4000 chars)." },
                 },
                 required: ["agent_id"],
             },
@@ -1288,13 +1295,22 @@ export class ManagedSession {
                             + "commitments, pitfalls. This is a HINT to the distiller (cross-checked "
                             + "against the transcript), max 4000 chars.",
                     },
+                    instructions: {
+                        type: "string",
+                        description:
+                            "Optional distilling instructions — HOW to distill (e.g. 'preserve every SQL "
+                            + "snippet verbatim', 'drop the debugging tangents'). Max 4000 chars.",
+                    },
                 },
                 required: ["handoff"],
             },
-            handler: async (args: { handoff: string }) => {
+            handler: async (args: { handoff: string; instructions?: string }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("regenerate_context");
                 if (!controlBridge?.regenerateContext) return "Error: regenerate_context is unavailable in this session.";
-                const result = await controlBridge.regenerateContext({ handoff: String(args.handoff ?? "") });
+                const result = await controlBridge.regenerateContext({
+                    handoff: String(args.handoff ?? ""),
+                    ...(args.instructions ? { instructions: String(args.instructions) } : {}),
+                });
                 if (/regeneration accepted/i.test(String(result))) {
                     turnState.pendingActions.push({
                         type: "completed",
@@ -1316,13 +1332,18 @@ export class ManagedSession {
                 properties: {
                     agent_id: { type: "string", description: "The child session id (raw UUID or session-<uuid>)." },
                     handoff: { type: "string", description: "Optional hint to the child's distiller about what the child should stay focused on (max 4000 chars)." },
+                    instructions: { type: "string", description: "Optional distilling instructions — HOW to distill the child's transcript (max 4000 chars)." },
                 },
                 required: ["agent_id"],
             },
-            handler: async (args: { agent_id: string; handoff?: string }) => {
+            handler: async (args: { agent_id: string; handoff?: string; instructions?: string }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("regenerate_agent");
                 if (!controlBridge?.regenerateAgent) return "Error: regenerate_agent is unavailable in this session.";
-                return await controlBridge.regenerateAgent({ agent_id: String(args.agent_id ?? ""), ...(args.handoff ? { handoff: String(args.handoff) } : {}) });
+                return await controlBridge.regenerateAgent({
+                    agent_id: String(args.agent_id ?? ""),
+                    ...(args.handoff ? { handoff: String(args.handoff) } : {}),
+                    ...(args.instructions ? { instructions: String(args.instructions) } : {}),
+                });
             },
         });
         const setSessionModelTool = defineTool("set_session_model", {

@@ -248,6 +248,8 @@ function sessionViewFromCmsRow(row: SessionRow): PilotSwarmSessionView {
         parentSessionId: row.parentSessionId ?? undefined,
         viewerGroupId: row.groupId ?? undefined,
         isSystem: row.isSystem || undefined,
+        serviceKind: row.serviceKind ?? undefined,
+        serviceOf: row.serviceOf ?? undefined,
         model: row.model ?? undefined,
         reasoningEffort: row.reasoningEffort ?? undefined,
         shortSummary: row.shortSummary ?? undefined,
@@ -285,6 +287,10 @@ export interface PilotSwarmSessionView {
     /** The requesting viewer's private group placement for this session's root. */
     viewerGroupId?: string;
     isSystem?: boolean;
+    /** Service session (tree-scoped machinery, e.g. "regen-distiller"): read-only to users. */
+    serviceKind?: string;
+    /** The session this service session serves. */
+    serviceOf?: string;
     model?: string;
     reasoningEffort?: string;
     shortSummary?: string;
@@ -1332,13 +1338,16 @@ export class PilotSwarmManagementClient {
      */
     async regenerateSession(
         sessionId: string,
-        opts?: { handoff?: string; distillerModel?: string; model?: string; source?: string; force?: boolean },
+        opts?: { handoff?: string; instructions?: string; distillMode?: "llm" | "deterministic"; distillerModel?: string; model?: string; source?: string; force?: boolean },
     ): Promise<{ attemptId: string }> {
         this._ensureStarted();
         const session = await this.getSession(sessionId).catch(() => null);
         if (!session) throw new Error(`Session ${sessionId.slice(0, 8)} was not found`);
         if ((session as any).isSystem) {
             throw new Error("System sessions are excluded from regeneration (use restartSystemSession)");
+        }
+        if ((session as any).serviceKind) {
+            throw new Error("Service sessions are runtime machinery and are excluded from regeneration");
         }
         const models = this.listModels();
         const isKnown = (m?: string | null) => !!m && models.some((x) => x.qualifiedName === m);
@@ -1365,6 +1374,8 @@ export class PilotSwarmManagementClient {
             id: attemptId,
             args: {
                 ...(opts?.handoff ? { handoff: String(opts.handoff).slice(0, 4_000) } : {}),
+                ...(opts?.instructions ? { instructions: String(opts.instructions).slice(0, 4_000) } : {}),
+                ...(opts?.distillMode === "deterministic" ? { distill_mode: "deterministic" } : {}),
                 ...(opts?.distillerModel ? { distillerModel: opts.distillerModel } : {}),
                 ...(opts?.model ? { model: opts.model } : {}),
                 ...(opts?.force ? { force: true } : {}),
@@ -2324,6 +2335,11 @@ export class PilotSwarmManagementClient {
         const session = await this.getSession(sessionId);
         if (!session) {
             throw new Error(`Session ${sessionId.slice(0, 8)} was not found.`);
+        }
+        if ((session as any).serviceKind) {
+            throw new Error(
+                `Session ${sessionId.slice(0, 8)} is a service session (runtime machinery) — its transcript is a read-only trace and it does not accept messages.`,
+            );
         }
         if (session.status === "failed" || session.status === "cancelled") {
             throw new Error(

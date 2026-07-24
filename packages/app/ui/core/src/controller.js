@@ -4658,8 +4658,9 @@ export class PilotSwarmUiController {
                 state: String(session.state || "").trim(),
                 // Regenerate (epoch rebirth) is a single-session, non-system,
                 // non-group action; the picker surfaces it above the terminal
-                // dispositions when the transport supports it.
-                canRegenerate: typeof this.transport.regenerateSession === "function",
+                // dispositions when the transport supports it. Service sessions
+                // (⚗ machinery, e.g. the distiller itself) are never regenerated.
+                canRegenerate: typeof this.transport.regenerateSession === "function" && !session.serviceKind,
             },
         });
     }
@@ -5156,7 +5157,7 @@ export class PilotSwarmUiController {
             } else if (modal.action === "deleteSession") {
                 await this.deleteActiveSession({ confirmed: true });
             } else if (modal.action === "regenerateSession") {
-                await this.regenerateActiveSession({ confirmed: true });
+                await this.regenerateActiveSession({ confirmed: true, ...(modal.extras || {}) });
             } else if (modal.action === "deleteArtifact") {
                 await this.deleteSelectedArtifact({ confirmed: true });
             }
@@ -6643,7 +6644,22 @@ export class PilotSwarmUiController {
      * LLM's working context is compacted and recreated. Enqueue-then-observe:
      * the outcome arrives asynchronously as session.regenerate_* / epoch events.
      */
-    async regenerateActiveSession({ confirmed = false } = {}) {
+    /**
+     * Merge extra inputs (distilling instructions, distill mode) into the open
+     * confirm modal. The portal's regenerate confirm renders a textarea + mode
+     * select bound here; the TUI renders the same modal as a plain confirm and
+     * simply submits the defaults — graceful degradation, no TUI-side wiring.
+     */
+    updateConfirmExtras(patch) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "confirm") return;
+        this.dispatch({
+            type: "ui/modal",
+            modal: { ...modal, extras: { ...(modal.extras || {}), ...(patch || {}) } },
+        });
+    }
+
+    async regenerateActiveSession({ confirmed = false, instructions = "", distillMode = "llm" } = {}) {
         const state = this.getState();
         const sessionId = state.sessions.activeSessionId;
         if (!sessionId) return;
@@ -6660,6 +6676,10 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "ui/status", text: "System sessions cannot be regenerated." });
             return;
         }
+        if (activeSession?.serviceKind) {
+            this.dispatch({ type: "ui/status", text: "Service sessions are runtime machinery and cannot be regenerated." });
+            return;
+        }
         if (!confirmed) {
             const label = activeSession?.title || sessionId.slice(0, 8);
             this.dispatch({
@@ -6672,6 +6692,10 @@ export class PilotSwarmUiController {
                     action: "regenerateSession",
                     sessionId,
                     previousFocus: state.ui.focusRegion,
+                    // Distillation inputs the portal's renderer binds via
+                    // updateConfirmExtras; plain-confirm renderers submit these
+                    // defaults untouched.
+                    extras: { instructions: "", distillMode: "llm" },
                 },
             });
             return;
@@ -6680,7 +6704,12 @@ export class PilotSwarmUiController {
             // Operator action behind a confirm — force past the soft rate limits
             // (cooldown / min-age). Hard gates (system session, regen in flight)
             // still apply server-side.
-            await this.transport.regenerateSession(sessionId, { force: true });
+            const trimmed = String(instructions || "").trim();
+            await this.transport.regenerateSession(sessionId, {
+                force: true,
+                ...(trimmed ? { instructions: trimmed.slice(0, 4000) } : {}),
+                ...(distillMode === "deterministic" ? { distillMode: "deterministic" } : {}),
+            });
             this.dispatch({ type: "ui/status", text: `Regeneration requested for ${sessionId.slice(0, 8)} — rebuilding at the next boundary` });
         } catch (error) {
             this.dispatch({ type: "ui/status", text: `Regenerate failed: ${error?.message || String(error)}` });

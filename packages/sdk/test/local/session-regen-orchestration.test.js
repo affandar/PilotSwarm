@@ -23,19 +23,24 @@ vi.mock("../../src/session-proxy.js", () => ({
 
 const STOP = Symbol("stop");
 
-function createHarness({ messages = [], inputOverrides = {}, failDistill = false } = {}) {
+function createHarness({ messages = [], inputOverrides = {}, failDistill = false, distillerPlan = ["completed"], startNowMs = 0 } = {}) {
     const values = new Map();
     const scheduledMessages = [...messages]
         .map((entry) => ({ atMs: entry.atMs ?? 0, payload: entry.payload }))
         .sort((left, right) => left.atMs - right.atMs);
 
     const state = {
-        nowMs: 0,
+        nowMs: startNowMs,
         runTurnCall: null,
         continueAsNew: null,
         recordedEvents: [],
         archiveCalls: [],
         distillCalls: [],
+        // Service-session distiller (1.0.68): spawn → poll → collect/cancel.
+        spawnCalls: [],
+        checkCalls: [],
+        collectCalls: [],
+        cancelCalls: [],
         boundaryCommits: [],
         regeneratedRecords: [],
     };
@@ -66,6 +71,10 @@ function createHarness({ messages = [], inputOverrides = {}, failDistill = false
         deleteSession: vi.fn(() => ({ effect: "deleteSession" })),
         runRegenArchive: vi.fn((sessionId, epoch, attemptId) => ({ effect: "runRegenArchive", sessionId, epoch, attemptId })),
         runRegenDistill: vi.fn((sessionId, epoch, attemptId, opts) => ({ effect: "runRegenDistill", sessionId, epoch, attemptId, opts })),
+        runRegenSpawnDistiller: vi.fn((sessionId, epoch, attemptId, opts) => ({ effect: "runRegenSpawnDistiller", sessionId, epoch, attemptId, opts })),
+        runRegenCheckDistiller: vi.fn((distillerSessionId) => ({ effect: "runRegenCheckDistiller", distillerSessionId })),
+        runRegenCollectDistiller: vi.fn((sessionId, epoch, attemptId, distillerSessionId, opts) => ({ effect: "runRegenCollectDistiller", sessionId, epoch, attemptId, distillerSessionId, opts })),
+        runRegenCancelDistiller: vi.fn((distillerSessionId) => ({ effect: "runRegenCancelDistiller", distillerSessionId })),
         commitEpochBoundary: vi.fn((sessionId, commit) => ({ effect: "commitEpochBoundary", sessionId, commit })),
         recordRegenerated: vi.fn((sessionId, payload) => ({ effect: "recordRegenerated", sessionId, payload })),
     };
@@ -136,6 +145,25 @@ function createHarness({ messages = [], inputOverrides = {}, failDistill = false
                 state.distillCalls.push(effect);
                 if (failDistill) return { __throw: new Error("distiller exploded") };
                 return { packageArtifactId: `package-e${effect.epoch}-${effect.attemptId}.json`, bootstrap: "[CONTEXT REGENERATED] mission…", distillMs: 34, distillerModel: "m", packageBytes: 512 };
+            case "runRegenSpawnDistiller":
+                state.spawnCalls.push(effect);
+                return { distillerSessionId: "distiller-svc-1", distillerModel: "cluster-default" };
+            case "runRegenCheckDistiller": {
+                const plan = distillerPlan;
+                const status = plan[Math.min(state.checkCalls.length, plan.length - 1)];
+                state.checkCalls.push(effect);
+                return status === "failed" ? { status: "failed", reason: "failed" } : { status };
+            }
+            case "runRegenCollectDistiller":
+                state.collectCalls.push(effect);
+                return { packageArtifactId: `package-e${effect.epoch}-${effect.attemptId}.json`, bootstrap: "[CONTEXT REGENERATED] llm mission…", distillerModel: "cluster-default", distillMode: "llm", packageBytes: 2048 };
+            case "runRegenCancelDistiller":
+                state.cancelCalls.push(effect);
+                return { ok: true };
+            case "scheduleTimer":
+                // Bare durable pause (the distiller poll): advance virtual time.
+                state.nowMs += Number(effect.ms) || 0;
+                return undefined;
             case "commitEpochBoundary":
                 state.boundaryCommits.push(effect);
                 return 4242;
@@ -251,7 +279,7 @@ describe("session regeneration orchestration", () => {
         expect(h.state.continueAsNew?.input?.regen ?? undefined).toBeUndefined();
     });
 
-    it("runs archive → distill → flip and applies the flip-mutation table", async () => {
+    it("runs archive → distill → flip and applies the flip-mutation table (deterministic mode)", async () => {
         const h = createHarness({
             inputOverrides: {
                 iteration: 8,
@@ -259,7 +287,7 @@ describe("session regeneration orchestration", () => {
                 sharedPreambleSent: true,
                 multiWriter: true,
             },
-            messages: [{ atMs: 0, payload: regenCmd() }],
+            messages: [{ atMs: 0, payload: regenCmd({ args: { source: "operator", distill_mode: "deterministic" } }) }],
         });
         const result = await h.run();
 
@@ -296,7 +324,7 @@ describe("session regeneration orchestration", () => {
         const h = createHarness({
             failDistill: true,
             inputOverrides: { iteration: 8 },
-            messages: [{ atMs: 0, payload: regenCmd() }],
+            messages: [{ atMs: 0, payload: regenCmd({ args: { source: "operator", distill_mode: "deterministic" } }) }],
         });
         const r = await h.run();
         expect(r.done || r.blocked).toBe(true);
@@ -309,10 +337,84 @@ describe("session regeneration orchestration", () => {
         // fresh harness whose distill succeeds.
         const retry = createHarness({
             inputOverrides: { iteration: 8 },
-            messages: [{ atMs: 0, payload: regenCmd({ id: "regen-attempt-2" }) }],
+            messages: [{ atMs: 0, payload: regenCmd({ id: "regen-attempt-2", args: { source: "operator", distill_mode: "deterministic" } }) }],
         });
         await retry.run();
         expect(retry.state.continueAsNew).toBeTruthy();
+    });
+
+    it("llm mode (default): spawn → poll → collect → flip, distiller provenance on the boundary", async () => {
+        const h = createHarness({
+            distillerPlan: ["running", "completed"],
+            inputOverrides: { iteration: 8 },
+            messages: [{ atMs: 0, payload: regenCmd() }],
+        });
+        const result = await h.run();
+
+        expect(h.state.archiveCalls).toHaveLength(1);
+        expect(h.state.spawnCalls).toHaveLength(1);
+        expect(h.state.checkCalls.length).toBeGreaterThanOrEqual(2); // running, then completed
+        expect(h.state.collectCalls).toHaveLength(1);
+        expect(h.state.collectCalls[0].distillerSessionId).toBe("distiller-svc-1");
+        expect(h.state.distillCalls, "deterministic path must not run").toHaveLength(0);
+        expect(h.state.cancelCalls).toHaveLength(0);
+
+        const input = h.state.continueAsNew?.input;
+        expect(input?.transcriptEpoch).toBe(1);
+        expect(String(input?.prompt)).toContain("llm mission");
+        expect(input?.pendingEpochCommit).toMatchObject({
+            distillMode: "llm",
+            distillerModel: "cluster-default",
+            distillerSessionId: "distiller-svc-1",
+        });
+        expect(result.done).toBe(true);
+    });
+
+    it("llm mode: a failed distiller session cancels and falls back deterministically", async () => {
+        const h = createHarness({
+            distillerPlan: ["failed"],
+            inputOverrides: { iteration: 8 },
+            messages: [{ atMs: 0, payload: regenCmd() }],
+        });
+        await h.run();
+        expect(h.state.spawnCalls).toHaveLength(1);
+        expect(h.state.cancelCalls).toHaveLength(1);
+        expect(h.state.distillCalls, "deterministic fallback runs").toHaveLength(1);
+        const input = h.state.continueAsNew?.input;
+        expect(input?.transcriptEpoch).toBe(1);
+        expect(input?.pendingEpochCommit?.distillMode).toBe("deterministic");
+        // The flip still happened — a broken distiller never blocks the regen.
+        expect(eventsOfType(h.state, "session.regenerate_failed")).toHaveLength(0);
+    });
+
+    it("llm mode: the 5-minute deadline cancels a hung distiller and falls back", async () => {
+        // A hung distillation legitimately spans continue-as-news (the poll
+        // loop hits the per-execution iteration cap; state.regen rides the CAN
+        // input). Drive the CAN chain like the runtime does, carrying virtual
+        // time forward, until the flip lands.
+        const totals = { checks: 0, cancels: 0, distills: 0 };
+        let overrides = { iteration: 8 };
+        let messages = [{ atMs: 0, payload: regenCmd() }];
+        let nowMs = 0;
+        let flipInput = null;
+        for (let hop = 0; hop < 16 && !flipInput; hop++) {
+            const h = createHarness({ distillerPlan: ["running"], inputOverrides: overrides, messages, startNowMs: nowMs });
+            await h.run();
+            totals.checks += h.state.checkCalls.length;
+            totals.cancels += h.state.cancelCalls.length;
+            totals.distills += h.state.distillCalls.length;
+            nowMs = h.state.nowMs;
+            const can = h.state.continueAsNew;
+            expect(can, "each execution must end in a CAN while the pipeline is pending").toBeTruthy();
+            if (can.input.transcriptEpoch === 1) { flipInput = can.input; break; }
+            overrides = { ...can.input };
+            messages = [];
+        }
+        expect(flipInput, "the deadline must eventually flip via the fallback").toBeTruthy();
+        expect(totals.checks).toBeGreaterThanOrEqual(2);
+        expect(totals.cancels).toBe(1);
+        expect(totals.distills).toBe(1);
+        expect(flipInput.pendingEpochCommit?.distillMode).toBe("deterministic");
     });
 
     it("owner-sender gate: a non-owner tool trigger on a shared session is refused", async () => {
@@ -344,7 +446,7 @@ describe("session regeneration orchestration", () => {
 
         const real = createHarness({
             inputOverrides: { iteration: 8, parentSessionId: "real-parent" },
-            messages: [{ atMs: 0, payload: regenCmd({ args: { source: "parent" }, requestedBy: "real-parent" }) }],
+            messages: [{ atMs: 0, payload: regenCmd({ args: { source: "parent", distill_mode: "deterministic" }, requestedBy: "real-parent" }) }],
         });
         await real.run();
         expect(real.state.continueAsNew?.input?.transcriptEpoch).toBe(1);

@@ -1606,7 +1606,7 @@ export function registerActivities(
                     return `[SYSTEM: set_session_model failed: ${err?.message || String(err)}]`;
                 }
             },
-            regenerateContext: async (args: { handoff?: string }) => {
+            regenerateContext: async (args: { handoff?: string; instructions?: string }) => {
                 try {
                     if (!storeUrl) return "[SYSTEM: regenerate_context failed: no storeUrl is configured.]";
                     const sdkClient = new PilotSwarmClient(internalClientConfig());
@@ -1621,6 +1621,7 @@ export function registerActivities(
                                 id: `regenerate-tool-${randomUUID()}`,
                                 args: {
                                     ...(args.handoff ? { handoff: String(args.handoff).slice(0, 4_000) } : {}),
+                                    ...(args.instructions ? { instructions: String(args.instructions).slice(0, 4_000) } : {}),
                                     source: "tool",
                                 },
                                 // Owner-gate evidence: the runTurn activity input's
@@ -1638,7 +1639,7 @@ export function registerActivities(
                     return `[SYSTEM: regenerate_context failed: ${err?.message || String(err)}]`;
                 }
             },
-            regenerateAgent: async (args: { agent_id: string; handoff?: string }) => {
+            regenerateAgent: async (args: { agent_id: string; handoff?: string; instructions?: string }) => {
                 try {
                     const child = await resolveManagedChild(args.agent_id);
                     const sdkClient = await getInlineClient();
@@ -1651,6 +1652,7 @@ export function registerActivities(
                             id: `regenerate-parent-${randomUUID()}`,
                             args: {
                                 ...(args.handoff ? { handoff: String(args.handoff).slice(0, 4_000) } : {}),
+                                ...(args.instructions ? { instructions: String(args.instructions).slice(0, 4_000) } : {}),
                                 source: "parent",
                             },
                             // Parent-of gate evidence: the child's handler accepts
