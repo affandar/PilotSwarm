@@ -43,7 +43,7 @@ export class EmbeddingClient {
             headers[headerName] = this.cfg.bearer ? `Bearer ${this.cfg.apiKey}` : this.cfg.apiKey;
         }
 
-        const body = JSON.stringify({ [inputField]: texts.length === 1 ? texts[0] : texts, model: this.cfg.model });
+        const body = JSON.stringify({ [inputField]: texts, model: this.cfg.model });
 
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), this.cfg.timeoutMs ?? 30_000);
