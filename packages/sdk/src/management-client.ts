@@ -1672,6 +1672,12 @@ export class PilotSwarmManagementClient {
                     : {}),
                 getOrchestrationStats: async (id) =>
                     (await this.getOrchestrationStats(id)) as Record<string, unknown> | null,
+                getEpochBoundarySeq: async (id) => {
+                    const rows = await catalog.getSessionEventsBefore(
+                        id, Number.MAX_SAFE_INTEGER, 1, ["session.epoch_committed"],
+                    );
+                    return rows.length > 0 ? Number((rows[0] as any).seq) : null;
+                },
             },
             sessionId,
         );

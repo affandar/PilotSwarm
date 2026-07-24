@@ -505,10 +505,14 @@ export function createSessionProxy(
             prompt: string,
             bootstrap?: boolean,
             turnIndex?: number,
-            turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; cycleOrigin?: "cron" | "cron_at"; retryCount?: number; clientMessageIds?: string[]; sender?: unknown; snapshot?: { expectedVersion?: number; turnKey: string }; attachments?: Array<{ filename: string; contentType: string; sizeBytes: number }> },
+            turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; cycleOrigin?: "cron" | "cron_at"; retryCount?: number; clientMessageIds?: string[]; sender?: unknown; snapshot?: { expectedVersion?: number; turnKey: string }; attachments?: Array<{ filename: string; contentType: string; sizeBytes: number }>; transcriptEpoch?: number; epochStart?: boolean },
         ) {
             return ctx.scheduleActivityOnSession(
-                "runTurn",
+                // The epoch-start turn is a distinct activity name (runTurn2):
+                // pre-1.0.67 workers don't register it, so a rolling deploy can
+                // never hand the fresh-epoch create to a worker that would
+                // silently resume the dead transcript instead.
+                turnMeta?.epochStart ? "runTurn2" : "runTurn",
                 {
                     sessionId,
                     prompt,
@@ -533,6 +537,8 @@ export function createSessionProxy(
                     ...(turnMeta?.attachments && turnMeta.attachments.length > 0
                         ? { attachments: turnMeta.attachments }
                         : {}),
+                    ...(turnMeta?.transcriptEpoch ? { transcriptEpoch: turnMeta.transcriptEpoch } : {}),
+                    ...(turnMeta?.epochStart ? { epochStart: true } : {}),
                 },
                 affinityKey,
             );
@@ -832,7 +838,7 @@ export function registerActivities(
     });
 
     // ── runTurn ──────────────────────────────────────────────
-    runtime.registerActivity("runTurn", async (
+    const runTurnHandler = async (
         activityCtx: any,
         input: {
             sessionId: string;
@@ -849,6 +855,10 @@ export function registerActivities(
             snapshot?: { expectedVersion?: number; turnKey: string };
             /** Image attachment refs (1.0.65+) — bytes are fetched from the artifact store below. */
             attachments?: PromptAttachmentRef[];
+            /** Session regeneration (1.0.67+): epoch this turn belongs to. Absent → 0. */
+            transcriptEpoch?: number;
+            /** First turn of a fresh epoch (runTurn2): conditional epoch init. */
+            epochStart?: boolean;
         },
     ): Promise<TurnResult> => {
         // Attachment count is traced unconditionally: a 2026-07-21 incident
@@ -958,12 +968,17 @@ export function registerActivities(
                     // observability-only reads (lossy flag, snapshot_store_empty).
                     expectedVersion: input.snapshot.expectedVersion ?? 0,
                     turnKey: input.snapshot.turnKey,
+                    // Session regeneration: epoch scopes every store call to
+                    // the current chain and gates local-dir trust. Absent on
+                    // pre-1.0.67 inputs → 0 (legacy chain, today's behavior).
+                    transcriptEpoch: input.transcriptEpoch ?? 0,
                     dropWarmSession: () => sessionManager.dropWarmSession(input.sessionId),
                     trace,
                 }
                 : null;
         let lifecycleBaseVersion = 0;
         let lifecycleRehydrated = false;
+        let lifecyclePreambleFresh = false;
         // Protocol-native persistence stats: the legacy dehydrate/hydrate
         // activities no longer run, so the preamble/commit paths feed the
         // same CMS summary + events the Stats pane reads. Best-effort only.
@@ -996,6 +1011,7 @@ export function registerActivities(
             }
             lifecycleBaseVersion = pre.baseVersion;
             lifecycleRehydrated = pre.kind === "hydrated";
+            lifecyclePreambleFresh = pre.kind === "fresh";
             if (lifecycleRehydrated) {
                 await recordLifecycleHydration(pre.baseVersion);
             }
@@ -1018,7 +1034,7 @@ export function registerActivities(
                     (msg) => activityCtx.traceInfo(msg),
                 );
             }
-            if (pre.kind === "fresh" && pre.lossy && catalog) {
+            if (pre.kind === "fresh" && pre.lossy && !input.epochStart && catalog) {
                 await cmsRetryBestEffort(
                     `runTurn.recordEvent snapshot-store-empty session=${input.sessionId}`,
                     () => catalog!.recordEvents(input.sessionId, [{
@@ -1036,9 +1052,17 @@ export function registerActivities(
         const executeTurnBody = async (): Promise<TurnResult> => {
         let session: any = null;
         let effectivePrompt = input.prompt;
+        // Conditional epoch init (runTurn2): create a brand-new SDK session
+        // ONLY when the epoch's chain is empty (preamble "fresh"). A committed
+        // grounding turn recovers via already-committed above; a non-empty
+        // chain resumes — an unconditional reset would erase a committed
+        // grounding turn on activity retry.
+        const epochCreate = input.epochStart === true && (!lifecycle || lifecyclePreambleFresh);
         try {
             session = await sessionManager.getOrCreate(input.sessionId, runConfig, {
                 turnIndex: input.turnIndex,
+                transcriptEpoch: input.transcriptEpoch ?? 0,
+                ...(epochCreate ? { epochStart: true } : {}),
                 trace,
                 lockHeld: true,
             });
@@ -2516,7 +2540,12 @@ export function registerActivities(
                 try { await (clientToStop as any).stop(); } catch {}
             }
         }
-    });
+    };
+    runtime.registerActivity("runTurn", runTurnHandler);
+    // Session regeneration: the epoch-start turn dispatches under a NEW
+    // activity name so pre-1.0.67 workers — which would silently resume the
+    // dead transcript — structurally cannot receive it (deployment gate §4).
+    runtime.registerActivity("runTurn2", runTurnHandler);
 
     // ── abortTurn ────────────────────────────────────────────
     // Stop-turn fast-path interrupt. Routed on the session affinity key so it

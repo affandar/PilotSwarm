@@ -245,7 +245,9 @@ CREATE OR REPLACE FUNCTION ${s}.cms_get_session_compaction_stats(
     starts         BIGINT,
     completes      BIGINT,
     failed         BIGINT,
-    tokens_removed BIGINT
+    tokens_removed BIGINT,
+    last_start_at    TIMESTAMPTZ,
+    last_complete_at TIMESTAMPTZ
 ) AS $$
 BEGIN
     RETURN QUERY
@@ -265,7 +267,11 @@ BEGIN
                 THEN (e.data->>'tokensRemoved')::numeric
                 ELSE NULL
             END
-        ), 0)::bigint AS tokens_removed
+        ), 0)::bigint AS tokens_removed,
+        MAX(e.created_at) FILTER (WHERE e.event_type = 'session.compaction_start')
+            AS last_start_at,
+        MAX(e.created_at) FILTER (WHERE e.event_type = 'session.compaction_complete')
+            AS last_complete_at
     FROM ${s}.session_events e
     WHERE e.session_id = p_session_id
       AND e.event_type IN ('session.compaction_start', 'session.compaction_complete')

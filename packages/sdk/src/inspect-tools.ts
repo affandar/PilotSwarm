@@ -1047,7 +1047,12 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
                         getSessionEventsBefore: (id, beforeSeq, limit, eventTypes) =>
                             catalog.getSessionEventsBefore(id, beforeSeq, limit, eventTypes),
                         getSessionMetricSummary: (id) => catalog.getSessionMetricSummary(id),
-                        getDescendantSessionIds: (id) => catalog.getDescendantSessionIds(id),
+                        getEpochBoundarySeq: async (id) => {
+                            const rows = await catalog.getSessionEventsBefore(
+                                id, Number.MAX_SAFE_INTEGER, 1, ["session.epoch_committed"],
+                            );
+                            return rows.length > 0 ? Number((rows[0] as any).seq) : null;
+                        },
                     },
                     sessionId,
                 );

@@ -33,6 +33,14 @@ export interface SnapshotMarker {
     version: number;
     turnKey?: string;
     contentHash?: string;
+    /**
+     * Transcript epoch the local files belong to (session regeneration).
+     * Absent = 0 (legacy). A marker whose epoch differs from the
+     * orchestration's current epoch names a DEAD incarnation: the lifecycle
+     * preamble must treat the dir as untrusted and resolve from the
+     * epoch-scoped store — never trust it warm, never throw.
+     */
+    epoch?: number;
     updatedAt: string;
 }
 
@@ -112,21 +120,47 @@ export class SnapshotConflictError extends Error {
  */
 export interface VersionedSnapshotStore {
     /** Cheap metadata read — no snapshot bytes transferred. */
-    probeSnapshot(sessionId: string): Promise<SnapshotProbe>;
+    probeSnapshot(sessionId: string, epoch?: number): Promise<SnapshotProbe>;
     /**
      * Tar the local session dir and CAS-write it: succeed iff the stored
      * version equals `baseVersion` (or the same turnKey already committed
      * baseVersion+1 → `alreadyCommitted`). Local files are NOT removed.
      * Throws {@link SnapshotConflictError} on a foreign advance.
      */
-    commitSnapshot(sessionId: string, input: SnapshotCommitInput): Promise<SnapshotCommitResult>;
+    commitSnapshot(sessionId: string, input: SnapshotCommitInput, epoch?: number): Promise<SnapshotCommitResult>;
     /**
      * Download the stored snapshot and atomically replace the local session
      * dir (unpack to a temp dir, then rename — a crash mid-hydrate never
      * leaves a plausible-looking dir). Does NOT write the marker; the
      * lifecycle layer does, so marker semantics live in one place.
      */
-    hydrateSnapshot(sessionId: string): Promise<SnapshotHydrateResult>;
+    hydrateSnapshot(sessionId: string, epoch?: number): Promise<SnapshotHydrateResult>;
+}
+
+/**
+ * Epoch key scoping (session regeneration, proposal §6):
+ *
+ *   epoch 0 (or absent)  →  the LEGACY key family, byte-for-byte — blob
+ *                           `S.tar.gz`, fs `S.v<N>.tar.{br,gz}` + `S.meta.json`.
+ *                           Every pre-regen session keeps its storage forever;
+ *                           there is no migration.
+ *   epoch >= 1           →  a separate CAS chain per epoch whose version
+ *                           numbering restarts at 1. KEY-SHAPE INVARIANT: no
+ *                           epoch-scoped BLOB name may end in `.tar.gz` or
+ *                           `.meta.json` — those are the only shapes the
+ *                           shipped 1.0.66 resource-manager purge collects as
+ *                           delete candidates (resourcemgr-tools.ts:441-449),
+ *                           and fail-closed parsing in NEW code cannot protect
+ *                           against an OLD binary. Epoch blobs are
+ *                           `S.e<E>.tar.br` (brotli is the only codec for new
+ *                           chains) with `psepoch` metadata and no meta.json
+ *                           mirror.
+ *
+ * Separate chains are the fence that makes a zombie old-epoch commit harmless
+ * to the new epoch: it lands on its own key with its own CAS counter.
+ */
+export function isLegacyEpoch(epoch: number | undefined): boolean {
+    return !epoch || epoch <= 0;
 }
 
 export function supportsVersionedSnapshots(store: unknown): store is VersionedSnapshotStore {

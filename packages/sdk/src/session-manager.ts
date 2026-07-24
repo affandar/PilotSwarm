@@ -15,7 +15,7 @@ import { buildKnowledgePromptBlocks, loadKnowledgeIndexFromFactStore, buildEnhan
 import { composeStructuredSystemMessage, extractPromptContent, mergePromptSections } from "./prompt-layering.js";
 import { buildPromptLayersEventPayload, type PromptLayerDescriptor } from "./prompt-layers.js";
 import { approvePermissionForSession } from "./permissions.js";
-import { readSnapshotMarker, supportsVersionedSnapshots } from "./snapshot-protocol.js";
+import { readSnapshotMarker, supportsVersionedSnapshots, writeSnapshotMarker } from "./snapshot-protocol.js";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -608,6 +608,41 @@ export class SessionManager {
         }
     }
 
+    /**
+     * Epoch-start reset (session regeneration): discard the warm handle, the
+     * SDK's registration of the id, and the local dir — and clear ONLY the
+     * current epoch's (empty or partial) store chain. Prior epochs' snapshots
+     * and the legacy chain are never touched; they are the archive/rollback
+     * record.
+     */
+    private async _resetSessionStateForEpoch(sessionId: string, epoch: number): Promise<void> {
+        const existing = this.sessions.get(sessionId);
+        if (existing) {
+            try {
+                await existing.destroy();
+            } catch {}
+            this.sessions.delete(sessionId);
+        }
+
+        try {
+            const client = await this._ensureClientForSession(sessionId);
+            await client.deleteSession(sessionId);
+        } catch {}
+
+        this.sessionClientKeys.delete(sessionId);
+
+        const sessionDir = path.join(this.sessionStateDir, sessionId);
+        if (fs.existsSync(sessionDir)) {
+            fs.rmSync(sessionDir, { recursive: true, force: true });
+        }
+
+        if (this.sessionStore && epoch > 0) {
+            try {
+                await this.sessionStore.delete(sessionId, epoch);
+            } catch {}
+        }
+    }
+
     private async _withSessionLock<T>(
         sessionId: string,
         operation: string,
@@ -852,7 +887,7 @@ export class SessionManager {
     async getOrCreate(
         sessionId: string,
         serializableConfig: SerializableSessionConfig,
-        options?: { turnIndex?: number; trace?: SessionTraceWriter; lockHeld?: boolean },
+        options?: { turnIndex?: number; trace?: SessionTraceWriter; lockHeld?: boolean; transcriptEpoch?: number; epochStart?: boolean },
     ): Promise<ManagedSession> {
         if (!options?.lockHeld) {
             return this._withSessionLock(
@@ -868,11 +903,13 @@ export class SessionManager {
     private async _getOrCreateUnlocked(
         sessionId: string,
         serializableConfig: SerializableSessionConfig,
-        options?: { turnIndex?: number; trace?: SessionTraceWriter; lockHeld?: boolean },
+        options?: { turnIndex?: number; trace?: SessionTraceWriter; lockHeld?: boolean; transcriptEpoch?: number; epochStart?: boolean },
     ): Promise<ManagedSession> {
         this.sessionLastTouchedAt.set(sessionId, Date.now());
         const turnIndex = options?.turnIndex;
         const trace = options?.trace;
+        const transcriptEpoch = options?.transcriptEpoch ?? 0;
+        const epochStart = options?.epochStart === true;
         const inheritedToolNames = Array.from(new Set([
             ...(this.workerDefaults.frameworkBaseToolNames ?? []),
             ...(this.workerDefaults.appDefaultToolNames ?? []),
@@ -1191,6 +1228,13 @@ export class SessionManager {
                     `discarding it and creating a fresh session.`,
                 );
                 await this._resetSessionState(sessionId);
+            } else if (epochStart) {
+                console.warn(
+                    `[SessionManager] epoch-start for ${sessionId} (epoch ${transcriptEpoch}); ` +
+                    `discarding the warm Copilot session of the previous epoch.`,
+                );
+                await existing.destroy();
+                this.sessions.delete(sessionId);
             } else if (existing.requiresModelRebind(config)) {
                 console.warn(
                     `[SessionManager] model config changed for ${sessionId}; ` +
@@ -1234,6 +1278,26 @@ export class SessionManager {
             }
 
             copilotSession = await client.createSession(sessionConfig);
+        } else if (epochStart) {
+            // Session regeneration: first turn of a fresh epoch whose chain is
+            // empty (the caller verified via the lifecycle preamble). Epoch-
+            // aware reset — the previous epochs' snapshots are NEVER touched;
+            // only the local dir and the SDK's own registration go.
+            emitSessionManagerTrace(
+                sessionId,
+                `epoch-start create epoch=${transcriptEpoch}: discarding local dir, creating fresh SDK session`,
+                { trace },
+            );
+            await this._resetSessionStateForEpoch(sessionId, transcriptEpoch);
+            copilotSession = await client.createSession(sessionConfig);
+            // Birth marker: the preamble's epoch invariant refuses to trust a
+            // markerless dir under epoch >= 1, so stamp the incarnation the
+            // moment it exists (version 0 = no commit yet).
+            if (transcriptEpoch > 0) {
+                try {
+                    writeSnapshotMarker(sessionDir, { version: 0, epoch: transcriptEpoch });
+                } catch { /* marker is rewritten on first commit */ }
+            }
         } else if (turnIndex != null && turnIndex > 0) {
             if (fs.existsSync(sessionDir)) {
                 emitSessionManagerTrace(sessionId, "turn>0 resuming from local session directory", { trace });

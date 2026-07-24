@@ -700,8 +700,9 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                 if (includes.has("footprint")) {
                     try {
                         result.footprint = await ctx.mgmt.getSessionFootprint(session_id);
-                    } catch {
+                    } catch (err: unknown) {
                         result.footprint = null;
+                        result.footprint_error = err instanceof Error ? err.message : String(err);
                     }
                 }
 

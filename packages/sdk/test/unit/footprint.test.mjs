@@ -15,17 +15,21 @@ import {
     FootprintCache,
     FOOTPRINT_SUSTAINED_WINDOW,
     FOOTPRINT_EVENTS_PRUNE_BYTES,
+    FOOTPRINT_STUCK_COMPACTION_MS,
 } from "../../dist/footprint.js";
 import { CMS_MIGRATIONS } from "../../dist/cms-migrations.js";
 
 const SESSION = "11111111-2222-3333-4444-555555555555";
+
+const noCompactions = () => ({ starts: 0, completes: 0, failed: 0, tokensRemoved: 0, lastStartAtMs: null, lastCompleteAtMs: null });
+const compactions = (over) => ({ ...noCompactions(), ...over });
 
 /** Build fake sources; overrides patch individual axes. */
 function fakeSources(overrides = {}) {
     return {
         getSession: async () => ({ createdAt: Date.now() - 86_400_000, currentIteration: 12 }),
         getSessionEventStats: async () => ({ eventCount: 100, dataBytes: 50_000, maxSeq: 100 }),
-        getSessionCompactionStats: async () => ({ starts: 0, completes: 0, failed: 0, tokensRemoved: 0 }),
+        getSessionCompactionStats: async () => noCompactions(),
         getSessionEventsBefore: async () => [],
         getSessionMetricSummary: async () => ({ snapshotSizeBytes: 1_000_000, rawSizeBytes: 4_000_000 }),
         ...overrides,
@@ -53,7 +57,7 @@ test("healthy session reads ok with recommendation none", async () => {
 test("one compaction or 0.7+ utilization reads elevated", async () => {
     const compacted = await computeSessionFootprint(
         fakeSources({
-            getSessionCompactionStats: async () => ({ starts: 1, completes: 1, failed: 0, tokensRemoved: 5000 }),
+            getSessionCompactionStats: async () => compactions({ starts: 1, completes: 1, tokensRemoved: 5000 }),
         }),
         SESSION,
     );
@@ -69,7 +73,7 @@ test("one compaction or 0.7+ utilization reads elevated", async () => {
 test("compactionGeneration = completes - 1 and >= 2 reads degraded", async () => {
     const fp = await computeSessionFootprint(
         fakeSources({
-            getSessionCompactionStats: async () => ({ starts: 3, completes: 3, failed: 0, tokensRemoved: 90_000 }),
+            getSessionCompactionStats: async () => compactions({ starts: 3, completes: 3, tokensRemoved: 90_000 }),
         }),
         SESSION,
     );
@@ -80,11 +84,10 @@ test("compactionGeneration = completes - 1 and >= 2 reads degraded", async () =>
 });
 
 test("sustained utilization needs the FULL window, never a single reading", async () => {
+    // Distinct readings — identical ones collapse (see the dedupe test).
+    const shortReadings = [0.86, 0.88].slice(0, FOOTPRINT_SUSTAINED_WINDOW - 1);
     const short = await computeSessionFootprint(
-        fakeSources({
-            getSessionEventsBefore: async () =>
-                usageEvents(Array(FOOTPRINT_SUSTAINED_WINDOW - 1).fill(0.9)),
-        }),
+        fakeSources({ getSessionEventsBefore: async () => usageEvents(shortReadings) }),
         SESSION,
     );
     assert.equal(short.context.sustainedHighUtilization, false);
@@ -92,8 +95,7 @@ test("sustained utilization needs the FULL window, never a single reading", asyn
 
     const sustained = await computeSessionFootprint(
         fakeSources({
-            getSessionEventsBefore: async () =>
-                usageEvents(Array(FOOTPRINT_SUSTAINED_WINDOW).fill(0.9)),
+            getSessionEventsBefore: async () => usageEvents([0.86, 0.88, 0.9]),
         }),
         SESSION,
     );
@@ -111,15 +113,82 @@ test("a recovery reading breaks sustainment even after high ones", async () => {
     assert.equal(fp.context.sustainedHighUtilization, false);
 });
 
-test("a start with no complete counts as stuck and degrades", async () => {
-    const fp = await computeSessionFootprint(
+test("an unmatched start is RUNNING until the stuck timeout, then degrades", async () => {
+    // In flight: the newest start is recent — not stuck, not degraded.
+    const live = await computeSessionFootprint(
         fakeSources({
-            getSessionCompactionStats: async () => ({ starts: 2, completes: 1, failed: 0, tokensRemoved: 0 }),
+            getSessionCompactionStats: async () =>
+                compactions({ starts: 1, completes: 0, lastStartAtMs: Date.now() - 5_000 }),
         }),
         SESSION,
     );
-    assert.equal(fp.context.failedOrStuckCompactions, 1);
+    assert.equal(live.context.failedOrStuckCompactions, 0);
+    assert.notEqual(live.assessment.level, "degraded");
+
+    // Crashed: the start aged past the timeout — stuck, degraded.
+    const stuck = await computeSessionFootprint(
+        fakeSources({
+            getSessionCompactionStats: async () =>
+                compactions({ starts: 2, completes: 1, lastStartAtMs: Date.now() - FOOTPRINT_STUCK_COMPACTION_MS - 1000 }),
+        }),
+        SESSION,
+    );
+    assert.equal(stuck.context.failedOrStuckCompactions, 1);
+    assert.equal(stuck.assessment.level, "degraded");
+});
+
+test("failed completes cannot deepen the generation count", async () => {
+    const fp = await computeSessionFootprint(
+        fakeSources({
+            getSessionCompactionStats: async () =>
+                compactions({ starts: 3, completes: 3, failed: 2, tokensRemoved: 10_000 }),
+        }),
+        SESSION,
+    );
+    // Only 1 succeeded — no summaries-of-summaries, but failures still degrade.
+    assert.equal(fp.context.compactionCount, 1);
+    assert.equal(fp.context.compactionGeneration, 0);
     assert.equal(fp.assessment.level, "degraded");
+    assert.ok(fp.assessment.reasons.some((r) => r.includes("failed")));
+});
+
+test("consecutive identical usage readings collapse for the sustained window", async () => {
+    // One long turn echoing the same hot number must not read sustained.
+    const fp = await computeSessionFootprint(
+        fakeSources({
+            getSessionEventsBefore: async () => [
+                { seq: 1, data: { tokenLimit: 100, currentTokens: 90, messagesLength: 1 } },
+                { seq: 2, data: { tokenLimit: 100, currentTokens: 90, messagesLength: 1 } },
+                { seq: 3, data: { tokenLimit: 100, currentTokens: 90, messagesLength: 1 } },
+            ],
+        }),
+        SESSION,
+    );
+    assert.equal(fp.context.sustainedHighUtilization, false);
+});
+
+test("a regenerated session refuses whole-session counters without a boundary", async () => {
+    await assert.rejects(
+        computeSessionFootprint(
+            fakeSources({ getSession: async () => ({ createdAt: Date.now(), transcriptEpoch: 2 }) }),
+            SESSION,
+        ),
+        /epoch boundary/,
+    );
+    // With a boundary wired, the epoch axes scope to it.
+    const fp = await computeSessionFootprint(
+        fakeSources({
+            getSession: async () => ({ createdAt: Date.now(), transcriptEpoch: 2, lastRegeneratedAt: Date.now() }),
+            getEpochBoundarySeq: async () => 50,
+            getSessionEventStats: async (_id, afterSeq) =>
+                afterSeq != null
+                    ? { eventCount: 10, dataBytes: 5_000, maxSeq: 100 }
+                    : { eventCount: 100, dataBytes: 50_000, maxSeq: 100 },
+        }),
+        SESSION,
+    );
+    assert.equal(fp.events.count, 100);
+    assert.equal(fp.events.sinceEpochStart, 10);
 });
 
 test("large event log with healthy context recommends prune-events", async () => {

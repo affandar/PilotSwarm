@@ -35,6 +35,10 @@ export const FOOTPRINT_SUSTAINED_WINDOW = 3;
 export const FOOTPRINT_GENERATION_DEGRADED = 2;
 export const FOOTPRINT_EVENTS_PRUNE_BYTES = 64 * 1024 * 1024;
 export const FOOTPRINT_CACHE_TTL_MS = 15_000;
+/** An unmatched compaction start younger than this is RUNNING, not stuck. */
+export const FOOTPRINT_STUCK_COMPACTION_MS = 10 * 60 * 1000;
+/** Sweep threshold: entries are pruned on write once the cache exceeds this. */
+export const FOOTPRINT_CACHE_SWEEP_SIZE = 512;
 
 /** Sentinel "after everything" seq for reverse event reads. */
 const MAX_SEQ = Number.MAX_SAFE_INTEGER;
@@ -142,10 +146,25 @@ export async function computeSessionFootprint(
     if (!session) throw new Error(`session not found: ${sessionId}`);
 
     const transcriptEpoch = finite(session.transcriptEpoch as number) ?? 0;
-    const boundarySeq =
-        transcriptEpoch > 0 && sources.getEpochBoundarySeq
-            ? ((await sources.getEpochBoundarySeq(sessionId)) ?? 0)
-            : 0;
+    let boundarySeq = 0;
+    if (transcriptEpoch > 0) {
+        // A regenerated session assessed from WHOLE-SESSION counters would
+        // inherit the dead epoch's degradation — refuse loudly rather than
+        // silently lie (the caller wires getEpochBoundarySeq; its absence or
+        // failure here is a bug, not a fallback).
+        if (!sources.getEpochBoundarySeq) {
+            throw new Error(
+                `footprint: session ${sessionId} is at epoch ${transcriptEpoch} but no epoch boundary source is wired`,
+            );
+        }
+        const seq = await sources.getEpochBoundarySeq(sessionId);
+        if (seq == null || seq <= 0) {
+            throw new Error(
+                `footprint: session ${sessionId} is at epoch ${transcriptEpoch} but the epoch boundary seq is unavailable`,
+            );
+        }
+        boundarySeq = seq;
+    }
     const afterSeq = boundarySeq > 0 ? boundarySeq : undefined;
 
     const [eventStatsAll, eventStatsEpoch, compaction, usageEvents, summary] = await Promise.all([
@@ -179,16 +198,32 @@ export async function computeSessionFootprint(
                 ? { tokenLimit, currentTokens, utilization: currentTokens / tokenLimit }
                 : null;
         })
-        .filter((r): r is NonNullable<typeof r> => r != null);
+        .filter((r): r is NonNullable<typeof r> => r != null)
+        // Collapse consecutive identical readings: usage_info fires more than
+        // once per turn, and the sustained window must span distinct states,
+        // not one long turn echoing the same number.
+        .filter((r, i, all) => i === 0 || r.currentTokens !== all[i - 1].currentTokens);
     const latest = readings.length > 0 ? readings[readings.length - 1] : null;
     const window = readings.slice(-FOOTPRINT_SUSTAINED_WINDOW);
     const sustainedHighUtilization =
         window.length >= FOOTPRINT_SUSTAINED_WINDOW &&
         window.every((r) => r.utilization > FOOTPRINT_UTILIZATION_DEGRADED);
 
-    const compactionCount = compaction.completes;
-    const compactionGeneration = Math.max(0, compaction.completes - 1);
-    const failedOrStuck = compaction.failed + Math.max(0, compaction.starts - compaction.completes);
+    // Failed completes inject no summary — they cannot deepen the
+    // summaries-of-summaries chain, so depth counts SUCCEEDED compactions only.
+    const succeeded = Math.max(0, compaction.completes - compaction.failed);
+    const compactionCount = succeeded;
+    const compactionGeneration = Math.max(0, succeeded - 1);
+    // A single unmatched start is a compaction IN FLIGHT until the stuck
+    // timeout passes — without the age gate every live compaction (and,
+    // permanently, one crashed worker) would read degraded.
+    const unmatchedStarts = Math.max(0, compaction.starts - compaction.completes);
+    const newestStartMs = compaction.lastStartAtMs ?? 0;
+    const trailingStartIsStuck =
+        unmatchedStarts > 0 &&
+        (newestStartMs === 0 || Date.now() - newestStartMs > FOOTPRINT_STUCK_COMPACTION_MS);
+    const stuck = trailingStartIsStuck ? unmatchedStarts : Math.max(0, unmatchedStarts - 1);
+    const failedOrStuck = compaction.failed + stuck;
 
     // ── assessment ──────────────────────────────────────────────
     const reasons: string[] = [];
@@ -310,6 +345,14 @@ export class FootprintCache {
     }
 
     set(footprint: SessionFootprint): void {
+        if (this.entries.size > FOOTPRINT_CACHE_SWEEP_SIZE) {
+            const cutoff = Date.now() - this.ttlMs;
+            for (const [key, entry] of this.entries) {
+                if (entry.at < cutoff) this.entries.delete(key);
+            }
+            // Pathological churn (fleet-wide pollers): hard reset beats growth.
+            if (this.entries.size > FOOTPRINT_CACHE_SWEEP_SIZE * 8) this.entries.clear();
+        }
         this.entries.set(footprint.sessionId, { at: Date.now(), value: footprint });
     }
 

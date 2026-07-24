@@ -334,6 +334,9 @@ export interface SessionCompactionStats {
     completes: number;
     failed: number;
     tokensRemoved: number;
+    /** Epoch-ms of the newest start/complete — feeds the stuck-compaction timeout. */
+    lastStartAtMs: number | null;
+    lastCompleteAtMs: number | null;
 }
 
 /** Fleet-wide aggregate stats. */
@@ -1769,11 +1772,18 @@ export class PgSessionCatalog implements SessionCatalog {
             [sessionId, afterSeq ?? null],
         );
         const row = rows[0] ?? {};
+        const toMs = (v: unknown): number | null => {
+            if (v instanceof Date) return v.getTime();
+            if (typeof v === "string") { const t = Date.parse(v); return Number.isFinite(t) ? t : null; }
+            return null;
+        };
         return {
             starts: Number(row.starts ?? 0),
             completes: Number(row.completes ?? 0),
             failed: Number(row.failed ?? 0),
             tokensRemoved: Number(row.tokens_removed ?? 0),
+            lastStartAtMs: toMs(row.last_start_at),
+            lastCompleteAtMs: toMs(row.last_complete_at),
         };
     }
 

@@ -373,11 +373,6 @@ export function* processPrompt(
         const turnTask = runtime.session.runTurn(prompt, promptIsBootstrap, state.iteration, {
             ...(runtime.options.parentSessionId ? { parentSessionId: runtime.options.parentSessionId } : {}),
             nestingLevel: runtime.options.nestingLevel,
-            // Session regeneration: scope the worker's store access to the
-            // current epoch chain; the first post-flip turn dispatches as
-            // runTurn2 (conditional epoch init — see createSessionProxy).
-            ...(state.transcriptEpoch > 0 ? { transcriptEpoch: state.transcriptEpoch } : {}),
-            ...(state.epochStartPending ? { epochStart: true } : {}),
             ...(requiredTool ? { requiredTool } : {}),
             ...(cycleOrigin ? { cycleOrigin } : {}),
             retryCount: state.retryCount,

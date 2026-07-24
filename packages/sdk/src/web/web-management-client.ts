@@ -222,7 +222,9 @@ export class WebPilotSwarmManagementClient {
         return this._api.call("getSessionMetricSummary", { sessionId });
     }
 
-    async getSessionFootprint(sessionId: string): Promise<any> {
+    async getSessionFootprint(sessionId: string, _opts?: { bypassCache?: boolean }): Promise<any> {
+        // bypassCache is a direct-mode/test affordance; the web path always
+        // reads through the server-side TTL cache.
         return this._api.call("getSessionFootprint", { sessionId });
     }
 

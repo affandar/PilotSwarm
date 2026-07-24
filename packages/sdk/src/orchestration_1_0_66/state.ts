@@ -1,6 +1,4 @@
 import { sanitizePromptAttachmentRefs } from "../types.js";
-import type { RegenState, PendingEpochCommit } from "../types.js";
-export type { RegenState, PendingEpochCommit } from "../types.js";
 import type {
     OrchestrationInput,
     SerializableSessionConfig,
@@ -120,31 +118,7 @@ export interface DurableSessionState {
     sharedPreambleSent: boolean;
     /** Owner display name learned from an owner-relation sender. */
     ownerDisplay?: string;
-
-    // ── Session regeneration (epoch rebirth, 1.0.67) ─────────────
-    /**
-     * Which incarnation of the SDK transcript is live. 0 = original.
-     * Carried across every continue-as-new; incremented only by the
-     * regenerate flip. The turn index is NEVER reset (stopTurn queues,
-     * turn metrics, cascade ids all rely on its monotonicity).
-     */
-    transcriptEpoch: number;
-    /**
-     * One-shot: the next turn is the first of a fresh epoch and dispatches
-     * as the runTurn2 activity (conditional epoch init). Cleared once that
-     * turn's result is recorded.
-     */
-    epochStartPending: boolean;
-    /** In-flight regeneration pipeline (cleared at the flip and on abort). */
-    regen: RegenState | null;
-    /**
-     * Post-flip boundary record: set by the flip CAN, consumed by the new
-     * execution's first drain, which emits session.epoch_committed + sets
-     * sessions.transcript_epoch in one CMS transaction, then clears this.
-     */
-    pendingEpochCommit: PendingEpochCommit | null;
 }
-
 
 /** Immutable per-execution configuration derived from the orchestration input. */
 export interface DurableSessionOptions {
@@ -308,15 +282,6 @@ export function createInitialState(input: OrchestrationInput, options: DurableSe
         multiWriter: (input as any).multiWriter === true,
         sharedPreambleSent: (input as any).sharedPreambleSent === true,
         ownerDisplay: typeof (input as any).ownerDisplay === "string" ? (input as any).ownerDisplay : undefined,
-
-        // Session regeneration (1.0.67): epoch 0 when absent — every
-        // pre-regen chain migrates in as the legacy epoch, zero migration.
-        transcriptEpoch: typeof input.transcriptEpoch === "number" && Number.isFinite(input.transcriptEpoch)
-            ? input.transcriptEpoch
-            : 0,
-        epochStartPending: input.epochStartPending === true,
-        regen: input.regen ? { ...input.regen } : null,
-        pendingEpochCommit: input.pendingEpochCommit ? { ...input.pendingEpochCommit } : null,
     };
 }
 

@@ -384,6 +384,38 @@ export interface CronSchedule {
 
 // ─── Orchestration Input ─────────────────────────────────────────
 
+/** Regeneration pipeline state (session regen, orch 1.0.67+). */
+export interface RegenState {
+    /** Lifecycle command id — scopes every storage object the attempt produces. */
+    attemptId: string;
+    stage: "requested" | "archived" | "distilled" | "flipping";
+    requestedAtMs: number;
+    trigger: "operator" | "tool" | "parent" | "policy";
+    /** Server-stamped requester (sender key for tool, parent session id for parent). */
+    requestedBy?: string;
+    /** Quoted, length-capped handoff text (untrusted distiller input). */
+    handoff?: string;
+    distillerModel?: string;
+    archiveArtifactId?: string;
+    packageArtifactId?: string;
+    /** Rendered bootstrap prompt produced by the distill stage. */
+    bootstrap?: string;
+}
+
+/** Post-flip boundary record carried through the regenerate continue-as-new. */
+export interface PendingEpochCommit {
+    fromEpoch: number;
+    toEpoch: number;
+    attemptId: string;
+    trigger: string;
+    archiveArtifactId?: string;
+    packageArtifactId?: string;
+    turnsArchived?: number;
+    compactionsArchived?: number;
+    archiveMs?: number;
+    distillMs?: number;
+}
+
 export interface OrchestrationInput {
     sessionId: string;
     config: SerializableSessionConfig;
@@ -395,6 +427,14 @@ export interface OrchestrationInput {
     sourceOrchestrationVersion?: string;
     // Carried across continueAsNew
     iteration?: number;
+    /** Transcript epoch (session regeneration, 1.0.67+). 0/absent = original SDK session. */
+    transcriptEpoch?: number;
+    /** One-shot: the next turn is the first of a fresh epoch (dispatches as runTurn2). */
+    epochStartPending?: boolean;
+    /** In-flight regeneration pipeline state, carried across non-flip CANs. */
+    regen?: RegenState;
+    /** Post-flip boundary record; consumed by the new execution's first drain. */
+    pendingEpochCommit?: PendingEpochCommit;
     responseVersion?: number;
     commandVersion?: number;
     affinityKey?: string;

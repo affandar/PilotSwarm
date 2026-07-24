@@ -113,11 +113,11 @@ describe("session footprint", () => {
         assertEqual(fp.events.sinceEpochStart, fp.events.count, "epoch 0 spans the whole session");
         assert(fp.context.utilization > 0.8, "latest usage reading wins");
 
-        // Cache contract: a cached call returns the same computation; bypass recomputes.
+        // Cache contract: direct mode returns the cached OBJECT; bypass recomputes.
         const cached = await mgmt.getSessionFootprint(sessionId);
-        assertEqual(cached.computedAt, fp.computedAt, "second call within TTL serves the cache");
+        assert(cached === fp, "second call within TTL serves the cached object");
         const fresh = await mgmt.getSessionFootprint(sessionId, { bypassCache: true });
-        assertGreaterOrEqual(fresh.computedAt, fp.computedAt, "bypass recomputes");
+        assert(fresh !== fp, "bypass recomputes a new object");
     });
 
     it("healthy session reads ok end to end", { timeout: TIMEOUT }, async () => {

@@ -441,12 +441,6 @@ export function buildContinueInput(
         subAgents: state.subAgents,
         ...(state.reportedFirstCompletionToParent ? { reportedFirstCompletionToParent: true } : {}),
         ...(state.pendingToolActions.length > 0 ? { pendingToolActions: state.pendingToolActions } : {}),
-        // Session regeneration (1.0.67): epoch + in-flight pipeline state ride
-        // EVERY continue-as-new (forced CANs included) or they silently drop.
-        transcriptEpoch: state.transcriptEpoch,
-        ...(state.epochStartPending ? { epochStartPending: true } : {}),
-        ...(state.regen ? { regen: state.regen } : {}),
-        ...(state.pendingEpochCommit ? { pendingEpochCommit: state.pendingEpochCommit } : {}),
         parentSessionId: options.parentSessionId,
         nestingLevel: options.nestingLevel,
         ...(options.isSystem ? { isSystem: true } : {}),
