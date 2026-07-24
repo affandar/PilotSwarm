@@ -75,6 +75,7 @@ import type {
 import { resolveStorageConfig, type StorageConfig } from "./storage-config.js";
 import { getDuroxideStorageProvider, getRuntimeStorageProvider } from "./storage-providers.js";
 import { SessionDumper } from "./session-dumper.js";
+import { computeSessionFootprint, FootprintCache, type SessionFootprint } from "./footprint.js";
 import { loadModelProviders, type ModelProviderRegistry, type ModelDescriptor, type ReasoningEffort, type ContextTier } from "./model-providers.js";
 import { deriveStatusFromCmsAndRuntime, shouldSyncCompletedStatus, shouldSyncFailedStatus } from "./session-status.js";
 import { assertUnambiguousProvider, isWebOptions, type PilotSwarmWebOptions } from "./web/api-connection.js";
@@ -1322,6 +1323,57 @@ export class PilotSwarmManagementClient {
     }
 
     /**
+     * Regenerate a session's Copilot transcript in place (epoch rebirth,
+     * proposal §4): archive → distill → flip, applied by the orchestration at
+     * a turn boundary. Enqueue-then-observe — outcomes arrive as
+     * session.regenerate_* events; the cmd handler is the gate authority
+     * (too_young / already_pending / cooldown refusals emit
+     * session.regenerate_refused).
+     */
+    async regenerateSession(
+        sessionId: string,
+        opts?: { handoff?: string; distillerModel?: string; model?: string; source?: string },
+    ): Promise<{ attemptId: string }> {
+        this._ensureStarted();
+        const session = await this.getSession(sessionId).catch(() => null);
+        if (!session) throw new Error(`Session ${sessionId.slice(0, 8)} was not found`);
+        if ((session as any).isSystem) {
+            throw new Error("System sessions are excluded from regeneration (use restartSystemSession)");
+        }
+        const models = this.listModels();
+        const isKnown = (m?: string | null) => !!m && models.some((x) => x.qualifiedName === m);
+        if (opts?.distillerModel && !isKnown(opts.distillerModel)) {
+            throw new Error(`Unknown distiller model: ${opts.distillerModel}`);
+        }
+        if (opts?.model && !isKnown(opts.model)) {
+            throw new Error(`Unknown model: ${opts.model}`);
+        }
+        // Dead-model guard: the reborn session's grounding turn runs on the
+        // session's model. If that model no longer resolves (a common regen
+        // trigger is exactly a removed model), regenerating verbatim would
+        // discard the transcript and then wedge on the dead model. Require a
+        // live replacement rather than making a broken session strictly worse.
+        const currentModel = (session as any).model as string | undefined;
+        if (!opts?.model && currentModel && !isKnown(currentModel)) {
+            throw new Error(
+                `Session model '${currentModel}' is no longer available; pass a replacement model to regenerate this session.`,
+            );
+        }
+        const attemptId = buildLifecycleCommandId("regenerate");
+        await this.sendCommand(sessionId, {
+            cmd: "regenerate",
+            id: attemptId,
+            args: {
+                ...(opts?.handoff ? { handoff: String(opts.handoff).slice(0, 4_000) } : {}),
+                ...(opts?.distillerModel ? { distillerModel: opts.distillerModel } : {}),
+                ...(opts?.model ? { model: opts.model } : {}),
+                source: opts?.source ?? "operator",
+            },
+        });
+        return { attemptId };
+    }
+
+    /**
      * Stop the session's in-flight LLM turn without completing, cancelling,
      * or deleting the session (stop-turn plan,
      * docs/proposals-impl/stop-button-turn-abort-plan.md).
@@ -1635,6 +1687,53 @@ export class PilotSwarmManagementClient {
     async getSessionMetricSummary(sessionId: string): Promise<SessionMetricSummary | null> {
         this._ensureStarted();
         return this._catalog!.getSessionMetricSummary(sessionId);
+    }
+
+    // ── Session footprint (sensor) ────────────────────────────
+
+    private _footprintCache: FootprintCache | null = null;
+
+    /**
+     * Control-plane footprint for one session (never wakes it). TTL-cached
+     * (§11 — TTL-only staleness by design); pass bypassCache for tests.
+     */
+    async getSessionFootprint(
+        sessionId: string,
+        opts?: { bypassCache?: boolean },
+    ): Promise<SessionFootprint> {
+        this._ensureStarted();
+        if (!this._footprintCache) this._footprintCache = new FootprintCache();
+        if (!opts?.bypassCache) {
+            const cached = this._footprintCache.get(sessionId);
+            if (cached) return cached;
+        }
+        const catalog = this._catalog!;
+        const footprint = await computeSessionFootprint(
+            {
+                getSession: (id) => catalog.getSession(id),
+                getSessionEventStats: (id, afterSeq) => catalog.getSessionEventStats(id, afterSeq),
+                getSessionCompactionStats: (id, afterSeq) =>
+                    catalog.getSessionCompactionStats(id, afterSeq),
+                getSessionEventsBefore: (id, beforeSeq, limit, eventTypes) =>
+                    catalog.getSessionEventsBefore(id, beforeSeq, limit, eventTypes),
+                getSessionMetricSummary: (id) => catalog.getSessionMetricSummary(id),
+                getDescendantSessionIds: (id) => catalog.getDescendantSessionIds(id),
+                ...(this._factStore
+                    ? { getSessionFactsStats: (id: string) => this.getSessionFactsStats(id) }
+                    : {}),
+                getOrchestrationStats: async (id) =>
+                    (await this.getOrchestrationStats(id)) as Record<string, unknown> | null,
+                getEpochBoundarySeq: async (id) => {
+                    const rows = await catalog.getSessionEventsBefore(
+                        id, Number.MAX_SAFE_INTEGER, 1, ["session.epoch_committed"],
+                    );
+                    return rows.length > 0 ? Number((rows[0] as any).seq) : null;
+                },
+            },
+            sessionId,
+        );
+        this._footprintCache.set(footprint);
+        return footprint;
     }
 
     /** Per-session token totals grouped by provider:model:reasoning, with turn count. */

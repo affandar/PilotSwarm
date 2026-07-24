@@ -14,6 +14,7 @@ import { mergePromptSections } from "./prompt-layering.js";
 import { approvePermissionForSession } from "./permissions.js";
 import { formatSessionOwnerLabel, getSessionOwnerKind, matchesSessionOwnerFilters } from "./session-owner-utils.js";
 import { cmsRetryBestEffort, cmsRetryCritical } from "./cms-retry.js";
+import { runRegenArchive, runRegenDistill } from "./regen-worker.js";
 import { computeCronAtNextFire, type CronAtSchedule } from "./cron-at.js";
 import { SpanStatusCode, trace as otelTrace } from "@opentelemetry/api";
 import os from "node:os";
@@ -505,10 +506,14 @@ export function createSessionProxy(
             prompt: string,
             bootstrap?: boolean,
             turnIndex?: number,
-            turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; cycleOrigin?: "cron" | "cron_at"; retryCount?: number; clientMessageIds?: string[]; sender?: unknown; snapshot?: { expectedVersion?: number; turnKey: string }; attachments?: Array<{ filename: string; contentType: string; sizeBytes: number }> },
+            turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; cycleOrigin?: "cron" | "cron_at"; retryCount?: number; clientMessageIds?: string[]; sender?: unknown; snapshot?: { expectedVersion?: number; turnKey: string }; attachments?: Array<{ filename: string; contentType: string; sizeBytes: number }>; transcriptEpoch?: number; epochStart?: boolean },
         ) {
             return ctx.scheduleActivityOnSession(
-                "runTurn",
+                // The epoch-start turn is a distinct activity name (runTurn2):
+                // pre-1.0.67 workers don't register it, so a rolling deploy can
+                // never hand the fresh-epoch create to a worker that would
+                // silently resume the dead transcript instead.
+                turnMeta?.epochStart ? "runTurn2" : "runTurn",
                 {
                     sessionId,
                     prompt,
@@ -533,6 +538,8 @@ export function createSessionProxy(
                     ...(turnMeta?.attachments && turnMeta.attachments.length > 0
                         ? { attachments: turnMeta.attachments }
                         : {}),
+                    ...(turnMeta?.transcriptEpoch ? { transcriptEpoch: turnMeta.transcriptEpoch } : {}),
+                    ...(turnMeta?.epochStart ? { epochStart: true } : {}),
                 },
                 affinityKey,
             );
@@ -767,6 +774,23 @@ export function createSessionManagerProxy(ctx: any) {
         computeCronAtNextFire(schedule: CronAtSchedule, afterUtcMs: number, lastOccurrenceKey?: string) {
             return ctx.scheduleActivity("computeCronAtNextFire", { schedule, afterUtcMs, lastOccurrenceKey });
         },
+        // ── Session regeneration (1.0.67) ──────────────────────
+        /** ARCHIVE stage: transcript slice → attempt-scoped artifact. Idempotent per attempt. */
+        runRegenArchive(sessionId: string, epoch: number, attemptId: string) {
+            return ctx.scheduleActivity("runRegenArchive", { sessionId, epoch, attemptId });
+        },
+        /** DISTILL stage: ephemeral fresh-context distiller → ResumePackage artifact + bootstrap. */
+        runRegenDistill(sessionId: string, epoch: number, attemptId: string, opts?: { handoff?: string; sessionModel?: string; distillerModel?: string; archiveArtifactId?: string }) {
+            return ctx.scheduleActivity("runRegenDistill", { sessionId, epoch, attemptId, ...(opts ?? {}) });
+        },
+        /** Post-flip boundary: epoch_committed event + transcript_epoch + regen_count, one CMS transaction. */
+        commitEpochBoundary(sessionId: string, commit: Record<string, unknown>) {
+            return ctx.scheduleActivity("commitEpochBoundary", { sessionId, commit });
+        },
+        /** Proven rebirth: session.regenerated event + last_regen_stats. */
+        recordRegenerated(sessionId: string, payload: Record<string, unknown>) {
+            return ctx.scheduleActivity("recordRegenerated", { sessionId, payload });
+        },
     };
 }
 
@@ -832,7 +856,7 @@ export function registerActivities(
     });
 
     // ── runTurn ──────────────────────────────────────────────
-    runtime.registerActivity("runTurn", async (
+    const runTurnHandler = async (
         activityCtx: any,
         input: {
             sessionId: string;
@@ -849,6 +873,10 @@ export function registerActivities(
             snapshot?: { expectedVersion?: number; turnKey: string };
             /** Image attachment refs (1.0.65+) — bytes are fetched from the artifact store below. */
             attachments?: PromptAttachmentRef[];
+            /** Session regeneration (1.0.67+): epoch this turn belongs to. Absent → 0. */
+            transcriptEpoch?: number;
+            /** First turn of a fresh epoch (runTurn2): conditional epoch init. */
+            epochStart?: boolean;
         },
     ): Promise<TurnResult> => {
         // Attachment count is traced unconditionally: a 2026-07-21 incident
@@ -958,12 +986,17 @@ export function registerActivities(
                     // observability-only reads (lossy flag, snapshot_store_empty).
                     expectedVersion: input.snapshot.expectedVersion ?? 0,
                     turnKey: input.snapshot.turnKey,
+                    // Session regeneration: epoch scopes every store call to
+                    // the current chain and gates local-dir trust. Absent on
+                    // pre-1.0.67 inputs → 0 (legacy chain, today's behavior).
+                    transcriptEpoch: input.transcriptEpoch ?? 0,
                     dropWarmSession: () => sessionManager.dropWarmSession(input.sessionId),
                     trace,
                 }
                 : null;
         let lifecycleBaseVersion = 0;
         let lifecycleRehydrated = false;
+        let lifecyclePreambleFresh = false;
         // Protocol-native persistence stats: the legacy dehydrate/hydrate
         // activities no longer run, so the preamble/commit paths feed the
         // same CMS summary + events the Stats pane reads. Best-effort only.
@@ -996,6 +1029,7 @@ export function registerActivities(
             }
             lifecycleBaseVersion = pre.baseVersion;
             lifecycleRehydrated = pre.kind === "hydrated";
+            lifecyclePreambleFresh = pre.kind === "fresh";
             if (lifecycleRehydrated) {
                 await recordLifecycleHydration(pre.baseVersion);
             }
@@ -1018,7 +1052,7 @@ export function registerActivities(
                     (msg) => activityCtx.traceInfo(msg),
                 );
             }
-            if (pre.kind === "fresh" && pre.lossy && catalog) {
+            if (pre.kind === "fresh" && pre.lossy && !input.epochStart && catalog) {
                 await cmsRetryBestEffort(
                     `runTurn.recordEvent snapshot-store-empty session=${input.sessionId}`,
                     () => catalog!.recordEvents(input.sessionId, [{
@@ -1036,9 +1070,17 @@ export function registerActivities(
         const executeTurnBody = async (): Promise<TurnResult> => {
         let session: any = null;
         let effectivePrompt = input.prompt;
+        // Conditional epoch init (runTurn2): create a brand-new SDK session
+        // ONLY when the epoch's chain is empty (preamble "fresh"). A committed
+        // grounding turn recovers via already-committed above; a non-empty
+        // chain resumes — an unconditional reset would erase a committed
+        // grounding turn on activity retry.
+        const epochCreate = input.epochStart === true && (!lifecycle || lifecyclePreambleFresh);
         try {
             session = await sessionManager.getOrCreate(input.sessionId, runConfig, {
                 turnIndex: input.turnIndex,
+                transcriptEpoch: input.transcriptEpoch ?? 0,
+                ...(epochCreate ? { epochStart: true } : {}),
                 trace,
                 lockHeld: true,
             });
@@ -1530,6 +1572,64 @@ export function registerActivities(
                     return `[SYSTEM: Model switch accepted. Stop this turn now; the runtime will automatically continue on ${resolved.model}${effortText}.]`;
                 } catch (err: any) {
                     return `[SYSTEM: set_session_model failed: ${err?.message || String(err)}]`;
+                }
+            },
+            regenerateContext: async (args: { handoff?: string }) => {
+                try {
+                    if (!storeUrl) return "[SYSTEM: regenerate_context failed: no storeUrl is configured.]";
+                    const sdkClient = new PilotSwarmClient(internalClientConfig());
+                    try {
+                        await sdkClient.start();
+                        await (sdkClient as any).duroxideClient.enqueueEvent(
+                            `session-${input.sessionId}`,
+                            "messages",
+                            JSON.stringify({
+                                type: "cmd",
+                                cmd: "regenerate",
+                                id: `regenerate-tool-${randomUUID()}`,
+                                args: {
+                                    ...(args.handoff ? { handoff: String(args.handoff).slice(0, 4_000) } : {}),
+                                    source: "tool",
+                                },
+                                // Owner-gate evidence: the runTurn activity input's
+                                // authoritative sender, stamped server-side — the
+                                // cmd handler refuses non-owner turns on shared
+                                // sessions. Never an LLM-supplied value.
+                                ...((input as any).sender ? { sender: (input as any).sender } : {}),
+                            }),
+                        );
+                    } finally {
+                        await sdkClient.stop().catch(() => {});
+                    }
+                    return "[SYSTEM: Regeneration accepted. Finish this turn cleanly NOW — at the next boundary the runtime archives your transcript, distills a resume package, and rebuilds your context. Durable state (facts, artifacts, children, schedule) is untouched.]";
+                } catch (err: any) {
+                    return `[SYSTEM: regenerate_context failed: ${err?.message || String(err)}]`;
+                }
+            },
+            regenerateAgent: async (args: { agent_id: string; handoff?: string }) => {
+                try {
+                    const child = await resolveManagedChild(args.agent_id);
+                    const sdkClient = await getInlineClient();
+                    await sdkClient._getDuroxideClient().enqueueEvent(
+                        child.orchId,
+                        "messages",
+                        JSON.stringify({
+                            type: "cmd",
+                            cmd: "regenerate",
+                            id: `regenerate-parent-${randomUUID()}`,
+                            args: {
+                                ...(args.handoff ? { handoff: String(args.handoff).slice(0, 4_000) } : {}),
+                                source: "parent",
+                            },
+                            // Parent-of gate evidence: the child's handler accepts
+                            // source "parent" only when this id equals its own
+                            // carried parentSessionId.
+                            requestedBy: input.sessionId,
+                        }),
+                    );
+                    return `[SYSTEM: Regeneration requested for sub-agent ${child.orchId}. It applies at the child's next turn boundary; check_agents will reflect the rebirth. Continue your work in this SAME turn.]`;
+                } catch (err: any) {
+                    return `[SYSTEM: regenerate_agent failed: ${err?.message || String(err)}]`;
                 }
             },
             messageAgent: async (args: { agent_id: string; message: string; contract_patch?: Record<string, unknown> }) => {
@@ -2516,7 +2616,12 @@ export function registerActivities(
                 try { await (clientToStop as any).stop(); } catch {}
             }
         }
-    });
+    };
+    runtime.registerActivity("runTurn", runTurnHandler);
+    // Session regeneration: the epoch-start turn dispatches under a NEW
+    // activity name so pre-1.0.67 workers — which would silently resume the
+    // dead transcript — structurally cannot receive it (deployment gate §4).
+    runtime.registerActivity("runTurn2", runTurnHandler);
 
     // ── abortTurn ────────────────────────────────────────────
     // Stop-turn fast-path interrupt. Routed on the session affinity key so it
@@ -3516,5 +3621,51 @@ export function registerActivities(
     ): Promise<ReturnType<typeof computeCronAtNextFire>> => {
         activityCtx.traceInfo(`[computeCronAtNextFire] tz=${input.schedule?.tz} after=${input.afterUtcMs}`);
         return computeCronAtNextFire(input.schedule, input.afterUtcMs, input.lastOccurrenceKey);
+    });
+
+    // ── Session regeneration activities (1.0.67) ──────────────
+    const regenDeps = (activityCtx: any) => {
+        if (!catalog) throw new Error("session regeneration requires the CMS catalog");
+        return {
+            catalog,
+            artifactStore: artifactStore ?? null,
+            resolveModelOptions: (ref?: string) => sessionManager.resolveModelSessionOptions(ref),
+            fallbackDistillerModel: process.env.PILOTSWARM_DISTILLER_FALLBACK_MODEL || undefined,
+            trace: (message: string) => activityCtx.traceInfo(`[regen] ${message}`),
+        };
+    };
+
+    runtime.registerActivity("runRegenArchive", async (
+        activityCtx: any,
+        input: { sessionId: string; epoch: number; attemptId: string },
+    ) => {
+        activityCtx.traceInfo(`[runRegenArchive] session=${input.sessionId} epoch=${input.epoch} attempt=${input.attemptId}`);
+        return runRegenArchive(regenDeps(activityCtx), input);
+    });
+
+    runtime.registerActivity("runRegenDistill", async (
+        activityCtx: any,
+        input: { sessionId: string; epoch: number; attemptId: string; handoff?: string; sessionModel?: string; distillerModel?: string; archiveArtifactId?: string },
+    ) => {
+        activityCtx.traceInfo(`[runRegenDistill] session=${input.sessionId} epoch=${input.epoch} attempt=${input.attemptId}`);
+        return runRegenDistill(regenDeps(activityCtx), input);
+    });
+
+    runtime.registerActivity("commitEpochBoundary", async (
+        activityCtx: any,
+        input: { sessionId: string; commit: Record<string, unknown> },
+    ): Promise<number> => {
+        if (!catalog) throw new Error("session regeneration requires the CMS catalog");
+        activityCtx.traceInfo(`[commitEpochBoundary] session=${input.sessionId} toEpoch=${(input.commit as any)?.toEpoch}`);
+        return catalog.recordEpochCommitted(input.sessionId, input.commit);
+    });
+
+    runtime.registerActivity("recordRegenerated", async (
+        activityCtx: any,
+        input: { sessionId: string; payload: Record<string, unknown> },
+    ): Promise<number> => {
+        if (!catalog) throw new Error("session regeneration requires the CMS catalog");
+        activityCtx.traceInfo(`[recordRegenerated] session=${input.sessionId} epoch=${(input.payload as any)?.epoch}`);
+        return catalog.recordRegenerated(input.sessionId, input.payload);
     });
 }

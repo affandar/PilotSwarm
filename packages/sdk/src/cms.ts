@@ -110,6 +110,10 @@ export interface SessionRow {
     title: string | null;
     titleLocked: boolean;
     state: string;
+    /** Session regeneration: which SDK-transcript incarnation is live. 0 = original. */
+    transcriptEpoch: number;
+    /** Epoch-ms of the last completed flip; null before any regeneration. */
+    lastRegeneratedAt: number | null;
     model: string | null;
     reasoningEffort: string | null;
     createdAt: Date;
@@ -300,6 +304,10 @@ export interface SessionMetricSummary {
     tokensCacheWrite: number;
     /** Cached-prompt hit ratio (0..1), null when tokensInput is 0. Derived. */
     cacheHitRatio: number | null;
+    /** Session regeneration: completed flips (rollbacks included). */
+    regenCount: number;
+    /** Stats of the last completed regeneration (kind, stage timings, sizes). */
+    lastRegenStats: Record<string, unknown> | null;
     deletedAt: number | null;
     createdAt: number;
     updatedAt: number;
@@ -319,6 +327,24 @@ export interface SessionMetricSummaryUpsert {
     tokensOutputIncrement?: number;
     tokensCacheReadIncrement?: number;
     tokensCacheWriteIncrement?: number;
+}
+
+/** Per-session event-log aggregate (footprint events axis). */
+export interface SessionEventStats {
+    eventCount: number;
+    dataBytes: number;
+    maxSeq: number;
+}
+
+/** Per-session compaction counters derived from persisted SDK events. */
+export interface SessionCompactionStats {
+    starts: number;
+    completes: number;
+    failed: number;
+    tokensRemoved: number;
+    /** Epoch-ms of the newest start/complete — feeds the stuck-compaction timeout. */
+    lastStartAtMs: number | null;
+    lastCompleteAtMs: number | null;
 }
 
 /** Fleet-wide aggregate stats. */
@@ -861,6 +887,22 @@ export interface SessionCatalog {
     /** Get the metric summary for a single session. */
     getSessionMetricSummary(sessionId: string): Promise<SessionMetricSummary | null>;
 
+    /** Per-session event count/bytes/max-seq aggregate (footprint). Always session-scoped. */
+    getSessionEventStats(sessionId: string, afterSeq?: number): Promise<SessionEventStats>;
+
+    /** Per-session compaction counters from persisted SDK events (footprint). */
+    getSessionCompactionStats(sessionId: string, afterSeq?: number): Promise<SessionCompactionStats>;
+
+    /**
+     * Session regeneration boundary transaction: session.epoch_committed
+     * event + sessions.transcript_epoch + regen_count, atomically and
+     * idempotently (attempt-keyed). Returns the boundary event's seq.
+     */
+    recordEpochCommitted(sessionId: string, payload: Record<string, unknown>): Promise<number>;
+
+    /** Proven rebirth: session.regenerated event + last_regen_stats (attempt-idempotent). */
+    recordRegenerated(sessionId: string, payload: Record<string, unknown>): Promise<number>;
+
     /** Get a session's own stats plus rolled-up totals of all descendants. */
     getSessionTreeStats(sessionId: string): Promise<SessionTreeStats | null>;
 
@@ -995,6 +1037,10 @@ function sqlForSchema(schema: string) {
             getHourlyTokenBuckets:      `${s}.cms_get_hourly_token_buckets`,
             pruneTurnMetrics:           `${s}.cms_prune_turn_metrics`,
             getSessionMetricSummary:    `${s}.cms_get_session_metric_summary`,
+            getSessionEventStats:       `${s}.cms_get_session_event_stats`,
+            getSessionCompactionStats:  `${s}.cms_get_session_compaction_stats`,
+            recordEpochCommitted:       `${s}.cms_record_epoch_committed`,
+            recordRegenerated:          `${s}.cms_record_regenerated`,
             getSessionTreeStats:        `${s}.cms_get_session_tree_stats`,
             getSessionTreeStatsByModel: `${s}.cms_get_session_tree_stats_by_model`,
             getFleetStatsByAgent:       `${s}.cms_get_fleet_stats_by_agent`,
@@ -1301,8 +1347,14 @@ export class PgSessionCatalog implements SessionCatalog {
     }
 
     async getSession(sessionId: string, placement?: { provider: string; subject: string } | null): Promise<SessionRow | null> {
+        // Join the two regeneration columns from the raw sessions table in the
+        // same round-trip rather than widening the shared cms_get_session
+        // proc's RETURNS TABLE — a proc-shape change breaks re-application of
+        // the earlier migration that CREATE-OR-REPLACEs it with the old shape.
         const { rows } = await this.pool.query(
-            `SELECT * FROM ${this.sql.fn.getSession}($1, $2, $3)`,
+            `SELECT g.*, s.transcript_epoch, s.last_regenerated_at
+               FROM ${this.sql.fn.getSession}($1, $2, $3) g
+               JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
             [sessionId, placement?.provider ?? null, placement?.subject ?? null],
         );
         return rows.length > 0 ? rowToSessionRow(rows[0]) : null;
@@ -1725,6 +1777,56 @@ export class PgSessionCatalog implements SessionCatalog {
             [sessionId],
         );
         return rows.length > 0 ? rowToSessionMetricSummary(rows[0]) : null;
+    }
+
+    async getSessionEventStats(sessionId: string, afterSeq?: number): Promise<SessionEventStats> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.getSessionEventStats}($1, $2)`,
+            [sessionId, afterSeq ?? null],
+        );
+        const row = rows[0] ?? {};
+        return {
+            eventCount: Number(row.event_count ?? 0),
+            dataBytes: Number(row.data_bytes ?? 0),
+            maxSeq: Number(row.max_seq ?? 0),
+        };
+    }
+
+    async getSessionCompactionStats(sessionId: string, afterSeq?: number): Promise<SessionCompactionStats> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.getSessionCompactionStats}($1, $2)`,
+            [sessionId, afterSeq ?? null],
+        );
+        const row = rows[0] ?? {};
+        const toMs = (v: unknown): number | null => {
+            if (v instanceof Date) return v.getTime();
+            if (typeof v === "string") { const t = Date.parse(v); return Number.isFinite(t) ? t : null; }
+            return null;
+        };
+        return {
+            starts: Number(row.starts ?? 0),
+            completes: Number(row.completes ?? 0),
+            failed: Number(row.failed ?? 0),
+            tokensRemoved: Number(row.tokens_removed ?? 0),
+            lastStartAtMs: toMs(row.last_start_at),
+            lastCompleteAtMs: toMs(row.last_complete_at),
+        };
+    }
+
+    async recordEpochCommitted(sessionId: string, payload: Record<string, unknown>): Promise<number> {
+        const { rows } = await this.pool.query(
+            `SELECT ${this.sql.fn.recordEpochCommitted}($1, $2) AS seq`,
+            [sessionId, JSON.stringify(payload)],
+        );
+        return Number(rows[0]?.seq ?? 0);
+    }
+
+    async recordRegenerated(sessionId: string, payload: Record<string, unknown>): Promise<number> {
+        const { rows } = await this.pool.query(
+            `SELECT ${this.sql.fn.recordRegenerated}($1, $2) AS seq`,
+            [sessionId, JSON.stringify(payload)],
+        );
+        return Number(rows[0]?.seq ?? 0);
     }
 
     async getSessionTreeStats(sessionId: string): Promise<SessionTreeStats | null> {
@@ -2247,6 +2349,10 @@ function rowToSessionRow(row: any): SessionRow {
         title: row.title ?? null,
         titleLocked: row.title_locked ?? false,
         state: row.state,
+        transcriptEpoch: Number(row.transcript_epoch ?? 0),
+        lastRegeneratedAt: row.last_regenerated_at
+            ? new Date(row.last_regenerated_at).getTime()
+            : null,
         model: row.model ?? null,
         reasoningEffort: row.reasoning_effort ?? null,
         createdAt: new Date(row.created_at),
@@ -2423,6 +2529,8 @@ function rowToSessionMetricSummary(row: any): SessionMetricSummary {
         tokensCacheRead,
         tokensCacheWrite: Number(row.tokens_cache_write) || 0,
         cacheHitRatio: computeCacheHitRatio(tokensInput, tokensCacheRead),
+        regenCount: Number(row.regen_count ?? 0),
+        lastRegenStats: row.last_regen_stats ?? null,
         deletedAt: row.deleted_at ? new Date(row.deleted_at).getTime() : null,
         createdAt: new Date(row.created_at).getTime(),
         updatedAt: new Date(row.updated_at).getTime(),

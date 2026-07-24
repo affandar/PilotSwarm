@@ -22,12 +22,12 @@ export function registerObservabilityTools(server: McpServer, ctx: ServerContext
             description:
                 "Metrics for one session (or its whole spawn tree with tree=true). include selects axes: "
                 + "'summary' (turn/token metric summary), 'tokens_by_model', 'skill_usage', 'retrieval_usage', "
-                + "'facts_stats', 'orchestration_stats' (runtime internals; self only). Default ['summary']. "
+                + "'facts_stats', 'orchestration_stats' (runtime internals; self only), 'footprint' (context/compaction health + sizes + assessment). Default ['summary']. "
                 + "For a full diagnostic bundle (events, execution history, graph usage), use debug_session.",
             inputSchema: {
                 session_id: z.string().min(1).describe("The session to inspect"),
                 include: z
-                    .array(z.enum(["summary", "tokens_by_model", "skill_usage", "retrieval_usage", "facts_stats", "orchestration_stats"]))
+                    .array(z.enum(["summary", "tokens_by_model", "skill_usage", "retrieval_usage", "facts_stats", "orchestration_stats", "footprint"]))
                     .optional()
                     .describe("Metric axes to fetch (default ['summary'])"),
                 tree: z.boolean().optional().describe("Aggregate across the spawn tree where supported (skill_usage, retrieval_usage, facts_stats; summary→tree stats)"),
@@ -76,6 +76,9 @@ export function registerObservabilityTools(server: McpServer, ctx: ServerContext
             }
             if (wants.has("orchestration_stats")) {
                 await grab("orchestration_stats", () => ctx.mgmt.getOrchestrationStats(session_id));
+            }
+            if (wants.has("footprint")) {
+                await grab("footprint", () => ctx.mgmt.getSessionFootprint(session_id));
             }
 
             if (Object.keys(errors).length > 0) result.errors = errors;

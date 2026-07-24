@@ -9,7 +9,6 @@ import type {
     TurnAction,
 } from "../types.js";
 import { describeCronAt } from "../cron-at.js";
-import { normalizeMessageSender } from "../message-sender.js";
 import {
     COMMAND_VERSION_KEY,
     RESPONSE_LATEST_KEY,
@@ -442,14 +441,6 @@ export function buildContinueInput(
         subAgents: state.subAgents,
         ...(state.reportedFirstCompletionToParent ? { reportedFirstCompletionToParent: true } : {}),
         ...(state.pendingToolActions.length > 0 ? { pendingToolActions: state.pendingToolActions } : {}),
-        // Session regeneration (1.0.67): epoch + in-flight pipeline state ride
-        // EVERY continue-as-new (forced CANs included) or they silently drop.
-        transcriptEpoch: state.transcriptEpoch,
-        ...(state.epochStartPending ? { epochStartPending: true } : {}),
-        ...(state.regen ? { regen: state.regen } : {}),
-        ...(state.pendingEpochCommit ? { pendingEpochCommit: state.pendingEpochCommit } : {}),
-        ...(state.epochStartIteration ? { epochStartIteration: state.epochStartIteration } : {}),
-        ...(state.lastRegenAtMs ? { lastRegenAtMs: state.lastRegenAtMs } : {}),
         parentSessionId: options.parentSessionId,
         nestingLevel: options.nestingLevel,
         ...(options.isSystem ? { isSystem: true } : {}),
@@ -599,94 +590,6 @@ export function* handleCommand(
             }));
             return;
         }
-        case "regenerate": {
-            const state = runtime.state;
-            const nowMs: number = yield runtime.ctx.utcNow();
-            const source = String(cmdMsg.args?.source ?? "operator");
-            const refuse = function* (reason: string): Generator<any, void, any> {
-                yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
-                    eventType: "session.regenerate_refused",
-                    data: { attemptId: cmdMsg.id, reason, source, requestedBy: cmdMsg.requestedBy ?? null },
-                }]);
-                yield* writeCommandResponse(runtime, { id: cmdMsg.id, cmd: cmdMsg.cmd, error: reason });
-                publishStatus(runtime, "idle");
-            };
-
-            if (state.regen) { yield* refuse("already_pending"); return; }
-            if (runtime.options.isSystem) { yield* refuse("is_system"); return; }
-            if (state.iteration - state.epochStartIteration < 5) { yield* refuse("too_young"); return; }
-            // Cooldown applies to every agent-driven trigger — self (tool) AND
-            // parent — so a supervising parent (which a child can prompt-inject)
-            // cannot destroy a child's transcript every few turns. Operator and
-            // policy triggers bypass the cooldown but still respect min-age.
-            const REGEN_COOLDOWN_MS = 6 * 60 * 60 * 1000;
-            if ((source === "tool" || source === "parent")
-                && state.lastRegenAtMs > 0 && nowMs - state.lastRegenAtMs < REGEN_COOLDOWN_MS) {
-                yield* refuse("cooldown");
-                return;
-            }
-            if (source === "tool") {
-                // Owner-sender gate: a non-owner-attributed turn must not
-                // trigger a self-regen. Positive assertion — refuse whenever an
-                // explicitly non-owner sender is present (a collaborator human,
-                // OR a child/system-instigated turn whose injection tried to
-                // make the agent self-regen). A senderless self-driven turn
-                // (the common single-writer case) has no non-owner principal
-                // and is allowed. Not gated on the derived multiWriter flag,
-                // which never flips for agent/system senders.
-                const sender = normalizeMessageSender(cmdMsg.sender);
-                if (sender && sender.relation !== "owner") { yield* refuse("not_owner"); return; }
-            } else if (source === "parent") {
-                if (!cmdMsg.requestedBy || cmdMsg.requestedBy !== runtime.options.parentSessionId) {
-                    yield* refuse("not_parent");
-                    return;
-                }
-            }
-
-            const handoffRaw = typeof cmdMsg.args?.handoff === "string" ? cmdMsg.args.handoff : undefined;
-            state.regen = {
-                attemptId: cmdMsg.id,
-                stage: "requested",
-                requestedAtMs: nowMs,
-                trigger: source === "tool" ? "tool" : source === "parent" ? "parent" : source === "policy" ? "policy" : "operator",
-                ...(cmdMsg.requestedBy ? { requestedBy: cmdMsg.requestedBy } : {}),
-                ...(handoffRaw ? { handoff: handoffRaw.slice(0, 4_000) } : {}),
-                ...(typeof cmdMsg.args?.distillerModel === "string" && cmdMsg.args.distillerModel
-                    ? { distillerModel: String(cmdMsg.args.distillerModel) }
-                    : {}),
-                ...(typeof cmdMsg.args?.model === "string" && cmdMsg.args.model
-                    ? { model: String(cmdMsg.args.model) }
-                    : {}),
-            };
-            yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
-                eventType: "session.regenerate_requested",
-                data: { attemptId: cmdMsg.id, trigger: state.regen.trigger, requestedBy: cmdMsg.requestedBy ?? null, hasHandoff: Boolean(handoffRaw) },
-            }]);
-            yield* writeCommandResponse(runtime, {
-                id: cmdMsg.id,
-                cmd: cmdMsg.cmd,
-                result: { ok: true, accepted: true, attemptId: cmdMsg.id, fromEpoch: state.transcriptEpoch, appliesOn: "pipeline" },
-            });
-            publishStatus(runtime, "running", { regenStage: "requested" });
-            return;
-        }
-        case "cancel_regen": {
-            const state = runtime.state;
-            if (!state.regen) {
-                yield* writeCommandResponse(runtime, { id: cmdMsg.id, cmd: cmdMsg.cmd, error: "no_regen_pending" });
-                publishStatus(runtime, "idle");
-                return;
-            }
-            const cancelled = state.regen.attemptId;
-            state.regen = null;
-            yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
-                eventType: "session.regenerate_failed",
-                data: { attemptId: cancelled, stage: "cancelled", error: "cancelled by request" },
-            }]);
-            yield* writeCommandResponse(runtime, { id: cmdMsg.id, cmd: cmdMsg.cmd, result: { ok: true, cancelledAttemptId: cancelled } });
-            publishStatus(runtime, "idle");
-            return;
-        }
         case "list_models": {
             publishStatus(runtime, "idle", { cmdProcessing: cmdMsg.id });
             let models: unknown;
@@ -789,130 +692,5 @@ function* captureModelSwitchInterruptedTimer(runtime: DurableSessionRuntime, new
             runtime.ctx.traceInfo(`[orch-cmd] ${notePrefix}; clearing active ${timer.type} timer`);
             runtime.state.activeTimer = null;
             return;
-    }
-}
-
-
-// ─── Session regeneration pipeline (1.0.67, proposal §4) ────────
-//
-// Called from the run loop AFTER drain whenever state.regen is set: one
-// stage per invocation, returning to the loop between stages so a queued
-// cancel_regen / cancel / delete pre-empts a pending regen. Archive and
-// distill are attempt-idempotent activities; any pre-flip failure aborts
-// into the fail-safe (regen cleared, session continues in the old epoch —
-// nothing has changed). The flip is the point of no return: a continue-as-
-// new carrying the fresh epoch, the boundary record, and the flip-mutation
-// table's dispositions (contextUsage zeroed, shared preamble re-armed,
-// pending question and roster carried).
-export function* advanceRegenPipeline(
-    runtime: DurableSessionRuntime,
-): Generator<any, boolean, any> {
-    const { state } = runtime;
-    const regen = state.regen;
-    if (!regen) return false;
-    const sessionId = runtime.input.sessionId;
-
-    try {
-        if (regen.stage === "requested") {
-            publishStatus(runtime, "running", { regenStage: "archiving" });
-            const archive: any = yield runtime.manager.runRegenArchive(sessionId, state.transcriptEpoch, regen.attemptId);
-            state.regen = {
-                ...regen,
-                stage: "archived",
-                archiveArtifactId: String(archive?.archiveArtifactId ?? ""),
-            };
-            (state.regen as any).archiveMs = Number(archive?.archiveMs) || 0;
-            (state.regen as any).turnsArchived = Number(archive?.turnsArchived) || 0;
-            (state.regen as any).compactionsArchived = Number(archive?.compactionsArchived) || 0;
-            return false;
-        }
-
-        if (regen.stage === "archived") {
-            publishStatus(runtime, "running", { regenStage: "distilling" });
-            const distill: any = yield runtime.manager.runRegenDistill(sessionId, state.transcriptEpoch, regen.attemptId, {
-                ...(regen.handoff ? { handoff: regen.handoff } : {}),
-                ...(state.config.model ? { sessionModel: state.config.model } : {}),
-                ...(regen.distillerModel ? { distillerModel: regen.distillerModel } : {}),
-                ...(regen.archiveArtifactId ? { archiveArtifactId: regen.archiveArtifactId } : {}),
-            });
-            const bootstrap = String(distill?.bootstrap ?? "");
-            if (!bootstrap) throw new Error("distill produced no bootstrap");
-            state.regen = {
-                ...regen,
-                stage: "distilled",
-                packageArtifactId: String(distill?.packageArtifactId ?? ""),
-                bootstrap,
-            };
-            (state.regen as any).distillMs = Number(distill?.distillMs) || 0;
-            (state.regen as any).distillerModel = String(distill?.distillerModel ?? "");
-            return false;
-        }
-
-        // stage "distilled" → FLIP. COMMIT POINT: the distill result is in
-        // history; from here replay roll-forwards through the CAN.
-        const nowMs: number = yield runtime.ctx.utcNow();
-        publishStatus(runtime, "running", { regenStage: "flipping" });
-        const fromEpoch = state.transcriptEpoch;
-        const toEpoch = fromEpoch + 1;
-        const r: any = regen;
-        // Clear the armed idle/affinity/cron timer (stashing wait/cron as
-        // interrupted so they re-arm after the grounding turn) — exactly as
-        // set_model does before its bootstrap CAN. Without this the reborn
-        // execution restores the timer and drain parks on it BEFORE decide
-        // dispatches the grounding bootstrap, delaying the rebirth for up to
-        // the hold window.
-        yield* captureModelSwitchInterruptedTimer(runtime, "regenerated context");
-        // Optional model rebind: the reborn session's grounding turn runs on
-        // config.model, so an operator-supplied replacement (e.g. escaping a
-        // removed model) must be applied to the carried config before the CAN.
-        if (r.model && typeof r.model === "string") {
-            state.config = { ...state.config, model: r.model };
-            yield runtime.manager.updateSessionModel(sessionId, r.model);
-        }
-        // Drop runtime notices that describe the dead transcript before the
-        // carry-list is built.
-        state.runtimeModelNotice = undefined;
-        const canInput: OrchestrationInput = {
-            ...continueInputWithPrompt(runtime, regen.bootstrap ?? "", { bootstrapPrompt: true }),
-            // Grounding is prompt-level in M1 (FIRST ACTIONS in the rendered
-            // bootstrap): a hard requiredTool would fail the grounding turn on
-            // deployments without fact tools. Enforce once fact tools are
-            // guaranteed present.
-            transcriptEpoch: toEpoch,
-            epochStartPending: true,
-            epochStartIteration: state.iteration,
-            lastRegenAtMs: nowMs,
-            regen: undefined,
-            contextUsage: undefined,
-            sharedPreambleSent: false,
-            pendingEpochCommit: {
-                fromEpoch,
-                toEpoch,
-                attemptId: regen.attemptId,
-                trigger: regen.trigger,
-                requestedAtMs: regen.requestedAtMs,
-                ...(regen.archiveArtifactId ? { archiveArtifactId: regen.archiveArtifactId } : {}),
-                ...(regen.packageArtifactId ? { packageArtifactId: regen.packageArtifactId } : {}),
-                ...(r.turnsArchived ? { turnsArchived: r.turnsArchived } : {}),
-                ...(r.compactionsArchived ? { compactionsArchived: r.compactionsArchived } : {}),
-                ...(r.archiveMs ? { archiveMs: r.archiveMs } : {}),
-                ...(r.distillMs ? { distillMs: r.distillMs } : {}),
-            },
-        };
-        yield* versionedContinueAsNew(runtime, canInput);
-        return true;
-    } catch (err: any) {
-        // FAIL-SAFE (pre-flip only): clear the pipeline so a later attempt is
-        // not refused as pending; the session continues in the old epoch.
-        const failedStage = state.regen?.stage ?? "requested";
-        const attemptId = state.regen?.attemptId ?? "unknown";
-        state.regen = null;
-        runtime.ctx.traceInfo(`[orch] regen attempt ${attemptId} failed at ${failedStage}: ${err?.message ?? err}`);
-        yield runtime.manager.recordSessionEvent(sessionId, [{
-            eventType: "session.regenerate_failed",
-            data: { attemptId, stage: failedStage, error: String(err?.message ?? err).slice(0, 500) },
-        }]);
-        publishStatus(runtime, "idle");
-        return false;
     }
 }

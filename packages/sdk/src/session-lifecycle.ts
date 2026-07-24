@@ -113,6 +113,14 @@ export interface TurnLifecycleContext {
     store: VersionedSnapshotStore;
     sessionStateDir: string;
     sessionId: string;
+    /**
+     * Transcript epoch this turn belongs to (session regeneration). 0 =
+     * legacy. Scopes every store call to the epoch's CAS chain, and gates
+     * the warm fast path: local files stamped by a different epoch are a
+     * dead incarnation and are never trusted (resolved from the store or
+     * discarded — never a throw, a throw would wedge the session).
+     */
+    transcriptEpoch: number;
     /** Orchestration's last recorded snapshot version (validation input). */
     expectedVersion: number;
     /** Deterministic per-turn key (orchestration-generated GUID). */
@@ -154,11 +162,12 @@ function contentMatches(markerHash?: string, probeHash?: string): boolean {
     return true;
 }
 
-function markerFromHydrate(sessionDir: string, hydrated: SnapshotHydrateResult): void {
+function markerFromHydrate(ctx: TurnLifecycleContext, sessionDir: string, hydrated: SnapshotHydrateResult): void {
     writeSnapshotMarker(sessionDir, {
         version: hydrated.version,
         ...(hydrated.turnKey ? { turnKey: hydrated.turnKey } : {}),
         ...(hydrated.contentHash ? { contentHash: hydrated.contentHash } : {}),
+        ...(ctx.transcriptEpoch > 0 ? { epoch: ctx.transcriptEpoch } : {}),
     });
 }
 
@@ -166,8 +175,8 @@ function markerFromHydrate(sessionDir: string, hydrated: SnapshotHydrateResult):
 async function recoverAlreadyCommitted(ctx: TurnLifecycleContext): Promise<TurnPreambleOutcome> {
     const sessionDir = sessionDirOf(ctx);
     await ctx.dropWarmSession();
-    const hydrated = await ctx.store.hydrateSnapshot(ctx.sessionId);
-    markerFromHydrate(sessionDir, hydrated);
+    const hydrated = await ctx.store.hydrateSnapshot(ctx.sessionId, ctx.transcriptEpoch);
+    markerFromHydrate(ctx, sessionDir, hydrated);
     clearTurnSentinel(sessionDir);
     const commitFile = readTurnCommitFile(sessionDir);
     if (commitFile && commitFile.turnKey === ctx.turnKey) {
@@ -192,8 +201,8 @@ async function resolveFromStore(
 ): Promise<TurnPreambleOutcome> {
     const sessionDir = sessionDirOf(ctx);
     await ctx.dropWarmSession();
-    const hydrated = await ctx.store.hydrateSnapshot(ctx.sessionId);
-    markerFromHydrate(sessionDir, hydrated);
+    const hydrated = await ctx.store.hydrateSnapshot(ctx.sessionId, ctx.transcriptEpoch);
+    markerFromHydrate(ctx, sessionDir, hydrated);
     clearTurnSentinel(sessionDir);
     const storeBehindExpected = hydrated.version < ctx.expectedVersion;
     if (storeBehindExpected) {
@@ -233,10 +242,29 @@ export async function runTurnPreamble(ctx: TurnLifecycleContext): Promise<TurnPr
     const marker = readSnapshotMarker(sessionDir);
     const localDirUsable = fs.existsSync(sessionDir) && hasUsableSessionLayout(sessionDir);
 
+    // Epoch invariant (session regeneration, checked on EVERY turn): local
+    // files are trusted only when stamped by the CURRENT epoch. A stale dir
+    // from a dead epoch survives on any node inside the eviction window and
+    // would otherwise be resumed as warm truth — the resurrection this gate
+    // exists to kill. Epoch chains (>0) additionally require a marker to
+    // trust local at all: the epoch-start create path stamps one at birth,
+    // so a markerless usable dir under epoch >= 1 is by definition foreign.
+    const markerEpoch = marker?.epoch ?? 0;
+    const epochMismatch = ctx.transcriptEpoch > 0
+        ? (!marker || markerEpoch !== ctx.transcriptEpoch)
+        : markerEpoch !== 0;
+    if (epochMismatch && (localDirUsable || marker)) {
+        ctx.trace(
+            `session=${ctx.sessionId} local dir is epoch ${markerEpoch}${marker ? "" : " (no marker)"} ` +
+            `but the session is at epoch ${ctx.transcriptEpoch}; dead incarnation — local untrusted`,
+        );
+    }
+    const localTrusted = !sentinel && localDirUsable && !epochMismatch;
+
     // Store-wins: one metadata probe is the ONLY oracle. `expectedVersion`
     // rides in the input for frozen orchestration versions but is load-bearing
     // for nothing here except the lossy-replay observability flag.
-    const probe = await ctx.store.probeSnapshot(ctx.sessionId);
+    const probe = await ctx.store.probeSnapshot(ctx.sessionId, ctx.transcriptEpoch);
 
     if (sentinel) {
         ctx.trace(
@@ -254,9 +282,9 @@ export async function runTurnPreamble(ctx: TurnLifecycleContext): Promise<TurnPr
 
     // Store holds nothing.
     if (!probe.exists) {
-        // A clean, usable local dir is the best (only) data — trust it over a
-        // fresh replay; the fresh chain publishes from here.
-        if (!sentinel && localDirUsable) {
+        // A clean, usable local dir OF THIS EPOCH is the best (only) data —
+        // trust it over a fresh replay; the fresh chain publishes from here.
+        if (localTrusted) {
             return { kind: "warm", baseVersion: marker?.version ?? 0 };
         }
         // Dirty or unusable local + empty store → fresh; lossy iff turns had
@@ -270,7 +298,7 @@ export async function runTurnPreamble(ctx: TurnLifecycleContext): Promise<TurnPr
     // Legacy snapshot (pre-protocol, no version metadata, counts as v0): a
     // clean local dir is still trustworthy; otherwise hydrate what's stored.
     if (probe.legacy) {
-        if (!sentinel && localDirUsable) {
+        if (localTrusted) {
             return { kind: "warm", baseVersion: marker?.version ?? 0 };
         }
         return resolveFromStore(ctx);
@@ -288,7 +316,7 @@ export async function runTurnPreamble(ctx: TurnLifecycleContext): Promise<TurnPr
     // layout anchor guards a marker orphaned by a torn delete; the hash guards
     // a rule-breaking same-version restore (§5.1). Only branch that trusts
     // local files without hydrating.
-    if (!sentinel && localDirUsable && marker
+    if (localTrusted && marker
         && marker.version === probe.version
         && contentMatches(marker.contentHash, probe.contentHash)) {
         return { kind: "warm", baseVersion: marker.version };
@@ -309,12 +337,12 @@ export async function runTurnPreamble(ctx: TurnLifecycleContext): Promise<TurnPr
  * store-deleting reset is a no-op against an empty store.
  */
 export async function attemptStoreRecovery(ctx: TurnLifecycleContext): Promise<number | null> {
-    const probe = await ctx.store.probeSnapshot(ctx.sessionId);
+    const probe = await ctx.store.probeSnapshot(ctx.sessionId, ctx.transcriptEpoch);
     if (!probe.exists) return null;
     const sessionDir = sessionDirOf(ctx);
     await ctx.dropWarmSession();
-    const hydrated = await ctx.store.hydrateSnapshot(ctx.sessionId);
-    markerFromHydrate(sessionDir, hydrated);
+    const hydrated = await ctx.store.hydrateSnapshot(ctx.sessionId, ctx.transcriptEpoch);
+    markerFromHydrate(ctx, sessionDir, hydrated);
     clearTurnSentinel(sessionDir);
     return hydrated.version;
 }
@@ -366,7 +394,7 @@ export async function runTurnCommit(
             const committed = await ctx.store.commitSnapshot(ctx.sessionId, {
                 baseVersion,
                 turnKey: ctx.turnKey,
-            });
+            }, ctx.transcriptEpoch);
             faultPoint("turn.commit.after-cas");
 
             if (committed.alreadyCommitted) {
@@ -378,8 +406,8 @@ export async function runTurnCommit(
                     `v${committed.version} by a racing attempt; restoring the committed state`,
                 );
                 await ctx.dropWarmSession();
-                const hydrated = await ctx.store.hydrateSnapshot(ctx.sessionId);
-                markerFromHydrate(sessionDir, hydrated);
+                const hydrated = await ctx.store.hydrateSnapshot(ctx.sessionId, ctx.transcriptEpoch);
+                markerFromHydrate(ctx, sessionDir, hydrated);
                 clearTurnSentinel(sessionDir);
                 const commitFile = readTurnCommitFile(sessionDir);
                 return {
@@ -399,6 +427,7 @@ export async function runTurnCommit(
                 version: committed.version,
                 turnKey: ctx.turnKey,
                 contentHash: committed.contentHash,
+                ...(ctx.transcriptEpoch > 0 ? { epoch: ctx.transcriptEpoch } : {}),
             });
             faultPoint("turn.commit.after-marker");
             clearTurnSentinel(sessionDir);

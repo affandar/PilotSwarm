@@ -185,7 +185,227 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "user_session_group_placements",
             sql: migration_0034_user_session_group_placements(schema),
         },
+        {
+            version: "0035",
+            name: "footprint_stat_procs",
+            sql: migration_0035_footprint_stat_procs(schema),
+        },
+        {
+            version: "0036",
+            name: "session_regeneration",
+            steps: migration_0036_session_regeneration(schema),
+        },
     ];
+}
+
+// ─── Migration 0036: session regeneration (epoch rebirth) ────────
+
+function migration_0036_session_regeneration(schema: string): string[] {
+    const s = `"${schema}"`;
+
+    // Non-transactional steps (0029 hardened shape): the ALTERs are
+    // metadata-only fast defaults but still take a brief ACCESS EXCLUSIVE
+    // lock on hot tables — commit them alone under a lock_timeout so a
+    // blocked ALTER fails fast and the CMS-init retry re-attempts, instead
+    // of queueing the fleet behind the lock request. Function DDL stays one
+    // atomic step. Every step is idempotent.
+
+    const step_columns = `
+SET lock_timeout = '5s';
+ALTER TABLE ${s}.sessions
+    ADD COLUMN IF NOT EXISTS transcript_epoch INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE ${s}.sessions
+    ADD COLUMN IF NOT EXISTS last_regenerated_at TIMESTAMPTZ;
+ALTER TABLE ${s}.session_metrics
+    ADD COLUMN IF NOT EXISTS regen_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE ${s}.session_metrics
+    ADD COLUMN IF NOT EXISTS last_regen_stats JSONB;
+-- session_metric_summaries is the 0027 compatibility VIEW (SELECT * frozen at
+-- creation) — recreate it so the new columns are visible through it.
+DROP VIEW IF EXISTS ${s}.session_metric_summaries;
+CREATE VIEW ${s}.session_metric_summaries AS SELECT * FROM ${s}.session_metrics;
+`;
+
+    const step_functions = `
+-- Idempotency note: the two record procs below dedup on the attempt id via
+-- SELECT-then-INSERT, which is replay-safe under duroxide's single-active-
+-- execution guarantee (the only writer). A DB-enforced partial unique index
+-- was evaluated but deferred: CREATE INDEX CONCURRENTLY interacts poorly with
+-- the migrator's advisory-lock path under many parallel schema builds, and it
+-- guards only a scenario the single-writer guarantee already prevents.
+
+-- ── cms_record_epoch_committed ───────────────────────────────────
+-- The flip's boundary record, ONE transaction (a plpgsql function body):
+-- the session.epoch_committed event, sessions.transcript_epoch, and
+-- regen_count can never disagree, and replay cannot double-count —
+-- idempotent on the attempt id (a repeat returns the original seq).
+-- Emitted by the NEW execution before any epoch turn, so its seq is the
+-- epoch boundary every per-epoch axis keys on.
+CREATE OR REPLACE FUNCTION ${s}.cms_record_epoch_committed(
+    p_session_id TEXT,
+    p_payload    JSONB
+) RETURNS BIGINT AS $$
+DECLARE
+    v_existing BIGINT;
+    v_seq      BIGINT;
+BEGIN
+    SELECT e.seq INTO v_existing
+    FROM ${s}.session_events e
+    WHERE e.session_id = p_session_id
+      AND e.event_type = 'session.epoch_committed'
+      AND e.data->>'attemptId' = p_payload->>'attemptId'
+    ORDER BY e.seq DESC
+    LIMIT 1;
+    IF v_existing IS NOT NULL THEN
+        RETURN v_existing;
+    END IF;
+
+    INSERT INTO ${s}.session_events (session_id, event_type, data)
+    VALUES (p_session_id, 'session.epoch_committed', p_payload)
+    RETURNING seq INTO v_seq;
+
+    UPDATE ${s}.sessions
+    SET transcript_epoch = COALESCE(NULLIF(p_payload->>'toEpoch', ''), '0')::int,
+        last_regenerated_at = NOW(),
+        updated_at = NOW()
+    WHERE session_id = p_session_id;
+
+    INSERT INTO ${s}.session_metrics (session_id, regen_count)
+    VALUES (p_session_id, 1)
+    ON CONFLICT (session_id) DO UPDATE
+    SET regen_count = COALESCE(${s}.session_metrics.regen_count, 0) + 1,
+        updated_at = NOW();
+
+    RETURN v_seq;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── cms_record_regenerated ───────────────────────────────────────
+-- The PROVEN rebirth (first epoch snapshot commit landed): the
+-- session.regenerated event + last_regen_stats. Idempotent on attempt id.
+CREATE OR REPLACE FUNCTION ${s}.cms_record_regenerated(
+    p_session_id TEXT,
+    p_payload    JSONB
+) RETURNS BIGINT AS $$
+DECLARE
+    v_existing BIGINT;
+    v_seq      BIGINT;
+BEGIN
+    SELECT e.seq INTO v_existing
+    FROM ${s}.session_events e
+    WHERE e.session_id = p_session_id
+      AND e.event_type = 'session.regenerated'
+      AND e.data->>'attemptId' = p_payload->>'attemptId'
+    ORDER BY e.seq DESC
+    LIMIT 1;
+    IF v_existing IS NOT NULL THEN
+        RETURN v_existing;
+    END IF;
+
+    INSERT INTO ${s}.session_events (session_id, event_type, data)
+    VALUES (p_session_id, 'session.regenerated', p_payload)
+    RETURNING seq INTO v_seq;
+
+    UPDATE ${s}.session_metrics
+    SET last_regen_stats = p_payload->'stats',
+        updated_at = NOW()
+    WHERE session_id = p_session_id;
+
+    RETURN v_seq;
+END;
+$$ LANGUAGE plpgsql;
+
+`;
+
+    return [step_columns, step_functions];
+}
+
+// ─── Migration 0035: footprint stat procs ───────────────────────
+
+function migration_0035_footprint_stat_procs(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- 0035_footprint_stat_procs: per-session aggregates for the session
+-- footprint sensor (docs/proposals/session-regen-and-footprint.md §11).
+-- CREATE FUNCTION only — no table DDL, no locks, safe on hot tables.
+--
+-- Both functions REQUIRE the session_id predicate by construction: the
+-- events table has no full-coverage created_at index, so an unfiltered
+-- aggregate would seq-scan the fleet table.
+
+-- ── cms_get_session_event_stats ──────────────────────────────────
+-- Count + stored payload bytes + max seq for one session's events,
+-- optionally restricted to events after p_after_seq (the epoch boundary).
+-- Served by idx_events_session_seq: the count is index-driven and the byte
+-- sum heap-fetches only this session's rows. pg_column_size reports stored
+-- (possibly TOAST-compressed) size without detoasting.
+CREATE OR REPLACE FUNCTION ${s}.cms_get_session_event_stats(
+    p_session_id TEXT,
+    p_after_seq  BIGINT DEFAULT NULL
+) RETURNS TABLE (
+    event_count BIGINT,
+    data_bytes  BIGINT,
+    max_seq     BIGINT
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        COUNT(*)::bigint                                   AS event_count,
+        COALESCE(SUM(pg_column_size(e.data)), 0)::bigint   AS data_bytes,
+        COALESCE(MAX(e.seq), 0)::bigint                    AS max_seq
+    FROM ${s}.session_events e
+    WHERE e.session_id = p_session_id
+      AND (p_after_seq IS NULL OR e.seq > p_after_seq);
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── cms_get_session_compaction_stats ─────────────────────────────
+-- Compaction counters derived from the persisted SDK transcript events
+-- (session.compaction_start / session.compaction_complete — these are NOT
+-- in the ephemeral filter, so they land in session_events). Uses the
+-- (session_id, event_type, seq) index. tokensRemoved is summed defensively:
+-- non-numeric payloads are skipped, never an error.
+CREATE OR REPLACE FUNCTION ${s}.cms_get_session_compaction_stats(
+    p_session_id TEXT,
+    p_after_seq  BIGINT DEFAULT NULL
+) RETURNS TABLE (
+    starts         BIGINT,
+    completes      BIGINT,
+    failed         BIGINT,
+    tokens_removed BIGINT,
+    last_start_at    TIMESTAMPTZ,
+    last_complete_at TIMESTAMPTZ
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        COUNT(*) FILTER (WHERE e.event_type = 'session.compaction_start')::bigint
+            AS starts,
+        COUNT(*) FILTER (WHERE e.event_type = 'session.compaction_complete')::bigint
+            AS completes,
+        COUNT(*) FILTER (
+            WHERE e.event_type = 'session.compaction_complete'
+              AND (e.data->>'success') = 'false'
+        )::bigint AS failed,
+        COALESCE(SUM(
+            CASE
+                WHEN e.event_type = 'session.compaction_complete'
+                 AND (e.data->>'tokensRemoved') ~ '^[0-9]+(\\.[0-9]+)?$'
+                THEN (e.data->>'tokensRemoved')::numeric
+                ELSE NULL
+            END
+        ), 0)::bigint AS tokens_removed,
+        MAX(e.created_at) FILTER (WHERE e.event_type = 'session.compaction_start')
+            AS last_start_at,
+        MAX(e.created_at) FILTER (WHERE e.event_type = 'session.compaction_complete')
+            AS last_complete_at
+    FROM ${s}.session_events e
+    WHERE e.session_id = p_session_id
+      AND e.event_type IN ('session.compaction_start', 'session.compaction_complete')
+      AND (p_after_seq IS NULL OR e.seq > p_after_seq);
+END;
+$$ LANGUAGE plpgsql;
+`;
 }
 
 // ─── Migration 0034: private per-user session-group placements ──

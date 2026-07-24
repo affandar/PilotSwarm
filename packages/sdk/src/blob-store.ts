@@ -42,6 +42,7 @@ import path from "node:path";
 import { faultPoint } from "./fault-injection.js";
 import {
     SnapshotConflictError,
+    isLegacyEpoch,
     type SnapshotCommitInput,
     type SnapshotCommitResult,
     type SnapshotHydrateResult,
@@ -62,12 +63,48 @@ import {
     extractSessionArchive,
     isBinaryArtifactContentType,
     normalizeArtifactContentType,
+    parseEpochSnapshotName,
     resolveArtifactFileUpload,
     resolveArtifactUpload,
     resolveSnapshotCodec,
     waitForSessionSnapshot,
     type SnapshotCodec,
 } from "./session-store.js";
+
+/**
+ * Epoch-chain snapshot blob: `S.e<E>.tar.br`, one blob per chain. The name
+ * must NEVER end `.tar.gz` — that is the only shape shipped resource-manager
+ * purge binaries collect as delete candidates, and this name invisibility
+ * (not fail-closed parsing in new code) is what protects retained epochs
+ * from an old binary. See the key-shape invariant in snapshot-protocol.ts.
+ */
+export function epochSnapshotBlobName(sessionId: string, epoch: number): string {
+    return `${sessionId}.e${epoch}.tar.br`;
+}
+
+/**
+ * Snapshot-blob metadata for a CAS commit, written atomically with the
+ * content by single-shot Put Blob. Epoch chains additionally carry
+ * `psepoch` — the key already scopes them; the field makes listings
+ * self-describing.
+ */
+export function snapshotCommitBlobMetadata(args: {
+    version: number;
+    turnKey: string;
+    contentHash: string;
+    codec: SnapshotCodec;
+    rawSizeBytes: number;
+    epoch?: number;
+}): Record<string, string> {
+    return {
+        psver: String(args.version),
+        psturnkey: args.turnKey,
+        pssha: args.contentHash,
+        pscodec: args.codec,
+        psraw: String(args.rawSizeBytes),
+        ...(isLegacyEpoch(args.epoch) ? {} : { psepoch: String(args.epoch) }),
+    };
+}
 
 function formatBlobLogValue(value: unknown): string {
     if (value == null) return "";
@@ -195,19 +232,20 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
      * Dehydrate a session: tar, upload, remove local files.
      * Frees the worker slot for another session.
      */
-    async dehydrate(sessionId: string, meta?: Record<string, unknown>): Promise<void> {
+    async dehydrate(sessionId: string, meta?: Record<string, unknown>, epoch?: number): Promise<void> {
         const sessionDir = path.join(this.sessionStateDir, sessionId);
         logBlobStore("info", sessionId, "dehydrate start", {
             container: this.containerName,
             dir: sessionDir,
             reason: meta?.reason,
+            ...(isLegacyEpoch(epoch) ? {} : { epoch }),
         });
         // Versioned-snapshot fence: the committed chain (lifecycle protocol)
         // already holds this session's durable state, and an unconditional
         // legacy Put would replace both content and the CAS metadata
         // (psver/psturnkey/pssha). Degrade to release: free local files.
         try {
-            const head = await this.headSnapshot(sessionId);
+            const head = await this.headSnapshot(sessionId, epoch);
             if (head.exists && !head.legacy) {
                 logBlobStore("warn", sessionId, "dehydrate skipped upload: versioned snapshot exists; releasing local files only", {
                     container: this.containerName,
@@ -221,6 +259,13 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
                 container: this.containerName,
                 error: errorMessage(probeErr),
             });
+        }
+        // Epoch chains are versioned-only: the Put below writes the legacy
+        // (epoch-0) family (`S.tar.gz`) and must never run for epoch >= 1.
+        if (!isLegacyEpoch(epoch)) {
+            throw new Error(
+                `dehydrate(${sessionId}) reached the legacy upload path with epoch ${epoch}; epoch chains commit via commitSnapshot`,
+            );
         }
         const snapshot = await waitForSessionSnapshot(this.sessionStateDir, sessionId);
         if (!snapshot.ready) {
@@ -286,7 +331,14 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
      * Hydrate a session: download tar from blob, extract to local disk.
      * No-op if local session files already exist.
      */
-    async hydrate(sessionId: string): Promise<void> {
+    async hydrate(sessionId: string, epoch?: number): Promise<void> {
+        // Legacy whole-dir restore; epoch chains hydrate via hydrateSnapshot
+        // (atomic swap), so this path never sees them.
+        if (!isLegacyEpoch(epoch)) {
+            throw new Error(
+                `hydrate(${sessionId}) is the legacy path; epoch ${epoch} chains hydrate via hydrateSnapshot`,
+            );
+        }
         const sessionDir = path.join(this.sessionStateDir, sessionId);
         logBlobStore("info", sessionId, "hydrate start", {
             container: this.containerName,
@@ -329,7 +381,7 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
      * Checkpoint: upload current session state to blob without removing local files.
      * Used for crash resilience — the session stays warm in memory.
      */
-    async checkpoint(sessionId: string): Promise<void> {
+    async checkpoint(sessionId: string, epoch?: number): Promise<void> {
         const sessionDir = path.join(this.sessionStateDir, sessionId);
         if (!fs.existsSync(sessionDir)) {
             logBlobStore("info", sessionId, "checkpoint skipped", {
@@ -341,7 +393,7 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
         // Versioned-snapshot fence (see dehydrate): never clobber the
         // CAS-protected chain with an unversioned legacy write.
         try {
-            const head = await this.headSnapshot(sessionId);
+            const head = await this.headSnapshot(sessionId, epoch);
             if (head.exists && !head.legacy) {
                 logBlobStore("warn", sessionId, "checkpoint skipped: versioned snapshot exists", {
                     container: this.containerName,
@@ -354,6 +406,12 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
                 container: this.containerName,
                 error: errorMessage(probeErr),
             });
+        }
+        // Epoch chains are versioned-only (see dehydrate).
+        if (!isLegacyEpoch(epoch)) {
+            throw new Error(
+                `checkpoint(${sessionId}) reached the legacy upload path with epoch ${epoch}; epoch chains commit via commitSnapshot`,
+            );
         }
 
         const codec = DEFAULT_SNAPSHOT_CODEC;
@@ -391,9 +449,37 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
         }
     }
 
-    async getSnapshotSizeBytes(sessionId: string): Promise<number | undefined> {
-        const cached = this.snapshotSizeBySession.get(sessionId);
+    /** Size-cache key: legacy family caches under the bare id, epoch chains under their blob name. */
+    private sizeCacheKey(sessionId: string, epoch?: number): string {
+        return isLegacyEpoch(epoch) ? sessionId : epochSnapshotBlobName(sessionId, epoch!);
+    }
+
+    async getSnapshotSizeBytes(sessionId: string, epoch?: number): Promise<number | undefined> {
+        const cached = this.snapshotSizeBySession.get(this.sizeCacheKey(sessionId, epoch));
         if (Number.isFinite(cached)) return cached;
+
+        // Epoch chains keep no meta.json mirror (key-shape invariant) — the
+        // blob's own content length is the stored size.
+        if (!isLegacyEpoch(epoch)) {
+            const blobName = epochSnapshotBlobName(sessionId, epoch!);
+            try {
+                const props = await this.containerClient.getBlockBlobClient(blobName).getProperties();
+                const sizeBytes = Number(props.contentLength);
+                if (Number.isFinite(sizeBytes)) {
+                    this.snapshotSizeBySession.set(this.sizeCacheKey(sessionId, epoch), sizeBytes);
+                    return sizeBytes;
+                }
+            } catch (error: any) {
+                if (error?.statusCode !== 404) {
+                    logBlobStore("warn", sessionId, "snapshot size read failed", {
+                        container: this.containerName,
+                        blob: blobName,
+                        error: errorMessage(error),
+                    });
+                }
+            }
+            return undefined;
+        }
 
         const metaBlob = this.containerClient.getBlockBlobClient(`${sessionId}.meta.json`);
         try {
@@ -423,36 +509,44 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
     }
 
     /** Check if a dehydrated session exists in blob storage. */
-    async exists(sessionId: string): Promise<boolean> {
-        const tarBlob = this.containerClient.getBlockBlobClient(`${sessionId}.tar.gz`);
+    async exists(sessionId: string, epoch?: number): Promise<boolean> {
+        const blobName = this.snapshotBlobName(sessionId, epoch);
+        const tarBlob = this.containerClient.getBlockBlobClient(blobName);
         try {
             const exists = await tarBlob.exists();
             logBlobStore("info", sessionId, "exists probe", {
                 container: this.containerName,
-                blob: `${sessionId}.tar.gz`,
+                blob: blobName,
                 exists,
             });
             return exists;
         } catch (error: unknown) {
             logBlobStore("warn", sessionId, "exists probe failed", {
                 container: this.containerName,
-                blob: `${sessionId}.tar.gz`,
+                blob: blobName,
                 error: errorMessage(error),
             });
             throw error;
         }
     }
 
-    /** Delete a dehydrated session from blob storage. */
-    async delete(sessionId: string): Promise<void> {
+    /** Delete a dehydrated session from blob storage (epoch >= 1: only that epoch's chain). */
+    async delete(sessionId: string, epoch?: number): Promise<void> {
         logBlobStore("info", sessionId, "delete start", {
             container: this.containerName,
+            ...(isLegacyEpoch(epoch) ? {} : { epoch }),
         });
         try {
-            await this.containerClient.getBlockBlobClient(`${sessionId}.tar.gz`).deleteIfExists();
-            await this.containerClient.getBlockBlobClient(`${sessionId}.meta.json`).deleteIfExists();
+            if (isLegacyEpoch(epoch)) {
+                await this.containerClient.getBlockBlobClient(`${sessionId}.tar.gz`).deleteIfExists();
+                await this.containerClient.getBlockBlobClient(`${sessionId}.meta.json`).deleteIfExists();
+            } else {
+                // One blob per epoch chain, no meta.json mirror — nothing else to collect.
+                await this.containerClient.getBlockBlobClient(epochSnapshotBlobName(sessionId, epoch!)).deleteIfExists();
+            }
             logBlobStore("info", sessionId, "delete complete", {
                 container: this.containerName,
+                ...(isLegacyEpoch(epoch) ? {} : { epoch }),
             });
         } catch (error: unknown) {
             logBlobStore("warn", sessionId, "delete failed", {
@@ -460,6 +554,28 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
                 error: errorMessage(error),
             });
             throw error;
+        }
+    }
+
+    /**
+     * Remove the legacy family AND every epoch chain for the session (real
+     * session deletion). Epoch objects are enumerated by prefix and deleted
+     * ONLY when the fail-closed parser accepts the name — anything else
+     * under the prefix is logged and left alone.
+     */
+    async deleteAllEpochs(sessionId: string): Promise<void> {
+        await this.delete(sessionId);
+        const prefix = `${sessionId}.e`;
+        for await (const blob of this.containerClient.listBlobsFlat({ prefix })) {
+            const parsed = parseEpochSnapshotName(sessionId, blob.name);
+            if (!parsed) {
+                logBlobStore("warn", sessionId, "deleteAllEpochs leaving unparseable name alone", {
+                    container: this.containerName,
+                    blob: blob.name,
+                });
+                continue;
+            }
+            await this.containerClient.getBlockBlobClient(blob.name).deleteIfExists();
         }
     }
 
@@ -478,8 +594,8 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
     private static readonly COMMIT_MAX_ATTEMPTS = 5;
     private static readonly SINGLE_SHOT_MAX_BYTES = 256 * 1024 * 1024;
 
-    private snapshotBlobName(sessionId: string): string {
-        return `${sessionId}.tar.gz`;
+    private snapshotBlobName(sessionId: string, epoch?: number): string {
+        return isLegacyEpoch(epoch) ? `${sessionId}.tar.gz` : epochSnapshotBlobName(sessionId, epoch!);
     }
 
     private probeFromMetadata(
@@ -503,8 +619,8 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
         };
     }
 
-    private async headSnapshot(sessionId: string): Promise<SnapshotProbe & { etag?: string }> {
-        const blob = this.containerClient.getBlockBlobClient(this.snapshotBlobName(sessionId));
+    private async headSnapshot(sessionId: string, epoch?: number): Promise<SnapshotProbe & { etag?: string }> {
+        const blob = this.containerClient.getBlockBlobClient(this.snapshotBlobName(sessionId, epoch));
         try {
             const props = await blob.getProperties();
             return this.probeFromMetadata(props.metadata as Record<string, string> | undefined, props.etag);
@@ -514,12 +630,12 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
         }
     }
 
-    async probeSnapshot(sessionId: string): Promise<SnapshotProbe> {
-        const { etag: _etag, ...probe } = await this.headSnapshot(sessionId);
+    async probeSnapshot(sessionId: string, epoch?: number): Promise<SnapshotProbe> {
+        const { etag: _etag, ...probe } = await this.headSnapshot(sessionId, epoch);
         return probe;
     }
 
-    async commitSnapshot(sessionId: string, input: SnapshotCommitInput): Promise<SnapshotCommitResult> {
+    async commitSnapshot(sessionId: string, input: SnapshotCommitInput, epoch?: number): Promise<SnapshotCommitResult> {
         const sessionDir = path.join(this.sessionStateDir, sessionId);
         const snapshot = await waitForSessionSnapshot(this.sessionStateDir, sessionId);
         if (!snapshot.ready) {
@@ -529,7 +645,9 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
             );
         }
 
-        const codec = DEFAULT_SNAPSHOT_CODEC;
+        // Epoch chains pin brotli — their names bake `.tar.br` (key-shape
+        // invariant) — rather than tracking the default.
+        const codec: SnapshotCodec = isLegacyEpoch(epoch) ? DEFAULT_SNAPSHOT_CODEC : "brotli";
         const tarPath = path.join(os.tmpdir(), `ps-commit-${sessionId}-${process.pid}-${Date.now()}.tar`);
         try {
             const { rawSizeBytes } = await archiveSessionDir(this.sessionStateDir, sessionId, tarPath, codec);
@@ -542,10 +660,10 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
                 );
             }
             const contentHash = crypto.createHash("sha256").update(body).digest("hex");
-            const blob = this.containerClient.getBlockBlobClient(this.snapshotBlobName(sessionId));
+            const blob = this.containerClient.getBlockBlobClient(this.snapshotBlobName(sessionId, epoch));
 
             for (let attempt = 1; attempt <= SessionBlobStore.COMMIT_MAX_ATTEMPTS; attempt++) {
-                const head = await this.headSnapshot(sessionId);
+                const head = await this.headSnapshot(sessionId, epoch);
 
                 if (head.exists && head.version === input.baseVersion + 1 && head.turnKey === input.turnKey) {
                     logBlobStore("info", sessionId, "commit already landed (idempotent retry)", {
@@ -573,35 +691,42 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
                 try {
                     await blob.upload(body, body.length, {
                         conditions,
-                        metadata: {
-                            psver: String(version),
-                            psturnkey: input.turnKey,
-                            pssha: contentHash,
-                            pscodec: codec,
-                            psraw: String(rawSizeBytes),
-                        },
-                    });
-                    faultPoint("store.commit.after-write");
-                    // Legacy compat: keep <sessionId>.meta.json fresh so
-                    // getSnapshotSizeBytes and older tooling keep working.
-                    // Unconditional + best-effort — it is informational only.
-                    try {
-                        const metadata: SessionMetadata = {
-                            ...buildMetadata(tarPath, sessionId, { reason: "turn-commit" }),
+                        metadata: snapshotCommitBlobMetadata({
                             version,
                             turnKey: input.turnKey,
                             contentHash,
                             codec,
                             rawSizeBytes,
-                        };
-                        this.snapshotSizeBySession.set(sessionId, metadata.sizeBytes);
-                        const metaBlob = this.containerClient.getBlockBlobClient(`${sessionId}.meta.json`);
-                        const metaJson = JSON.stringify(metadata);
-                        await metaBlob.upload(metaJson, metaJson.length);
-                    } catch (metaErr: unknown) {
-                        logBlobStore("warn", sessionId, "commit meta.json refresh failed (non-fatal)", {
-                            error: errorMessage(metaErr),
-                        });
+                            epoch,
+                        }),
+                    });
+                    faultPoint("store.commit.after-write");
+                    if (isLegacyEpoch(epoch)) {
+                        // Legacy compat: keep <sessionId>.meta.json fresh so
+                        // getSnapshotSizeBytes and older tooling keep working.
+                        // Unconditional + best-effort — it is informational only.
+                        // Epoch chains keep NO meta.json mirror: nothing
+                        // epoch-scoped may end `.meta.json` (key-shape invariant).
+                        try {
+                            const metadata: SessionMetadata = {
+                                ...buildMetadata(tarPath, sessionId, { reason: "turn-commit" }),
+                                version,
+                                turnKey: input.turnKey,
+                                contentHash,
+                                codec,
+                                rawSizeBytes,
+                            };
+                            this.snapshotSizeBySession.set(sessionId, metadata.sizeBytes);
+                            const metaBlob = this.containerClient.getBlockBlobClient(`${sessionId}.meta.json`);
+                            const metaJson = JSON.stringify(metadata);
+                            await metaBlob.upload(metaJson, metaJson.length);
+                        } catch (metaErr: unknown) {
+                            logBlobStore("warn", sessionId, "commit meta.json refresh failed (non-fatal)", {
+                                error: errorMessage(metaErr),
+                            });
+                        }
+                    } else {
+                        this.snapshotSizeBySession.set(this.sizeCacheKey(sessionId, epoch), body.length);
                     }
                     logBlobStore("info", sessionId, "commit complete", {
                         version,
@@ -610,6 +735,7 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
                         rawSizeBytes,
                         codec,
                         attempt,
+                        ...(isLegacyEpoch(epoch) ? {} : { epoch }),
                     });
                     return { version, contentHash, sizeBytes: body.length, rawSizeBytes, alreadyCommitted: false };
                 } catch (error: any) {
@@ -635,9 +761,9 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
         }
     }
 
-    async hydrateSnapshot(sessionId: string): Promise<SnapshotHydrateResult> {
+    async hydrateSnapshot(sessionId: string, epoch?: number): Promise<SnapshotHydrateResult> {
         const sessionDir = path.join(this.sessionStateDir, sessionId);
-        const blob = this.containerClient.getBlockBlobClient(this.snapshotBlobName(sessionId));
+        const blob = this.containerClient.getBlockBlobClient(this.snapshotBlobName(sessionId, epoch));
         const tarPath = path.join(os.tmpdir(), `ps-hydrate-${sessionId}-${process.pid}-${Date.now()}.tar`);
 
         // One download response carries body + metadata consistently.
@@ -671,6 +797,7 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
         logBlobStore("info", sessionId, "versioned hydrate complete", {
             version: probe.version,
             legacy: probe.legacy,
+            ...(isLegacyEpoch(epoch) ? {} : { epoch }),
         });
         return {
             version: probe.version,

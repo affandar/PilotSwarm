@@ -225,19 +225,6 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
             msg = state.legacyPendingMessage;
             state.legacyPendingMessage = undefined;
 
-        } else if (state.regen) {
-            // Session regeneration: while a pipeline is pending, drain does a
-            // SINGLE non-blocking sweep for a pre-empting control cmd
-            // (cancel_regen / cancel / delete) and then yields to the run loop
-            // to advance the next stage. It must never park on the session's
-            // armed idle/affinity/cron timer (up to 30 min) or on a blocking
-            // dequeue — either would stall the flip indefinitely.
-            const msgTask = ctx.dequeueEvent("messages");
-            const timerTask = ctx.scheduleTimer(NON_BLOCKING_TIMER_MS);
-            const race: any = yield ctx.race(msgTask, timerTask);
-            if (race.index === 1) break;
-            msg = typeof race.value === "string" ? JSON.parse(race.value) : race.value;
-
         } else if (state.activeTimer || (state.pendingChildDigest && !state.pendingChildDigest.ready)) {
             const now: number = yield ctx.utcNow();
             const candidate = nextTimerCandidate(state.activeTimer, state.pendingChildDigest, now);
@@ -272,7 +259,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
 
             msg = typeof race.value === "string" ? JSON.parse(race.value) : race.value;
 
-        } else if (!state.regen && needsBlockingDequeue(runtime)) {
+        } else if (needsBlockingDequeue(runtime)) {
             if (i > 0) break;
             if (state.pendingInputQuestion) {
                 publishStatus(runtime, "input_required");
@@ -327,12 +314,6 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
             if (stash.length > 0) { appendPromptStashToFifo(runtime, stash); stash.length = 0; }
             yield* handleCommand(runtime, msg as CommandMessage);
             if (state.orchestrationResult !== null) return;
-            // Session regeneration: a pending pipeline is advanced by the run
-            // loop — return control instead of draining on (a blocking
-            // dequeue here would park the session with the regen never
-            // starting). Later cmds still pre-empt: the loop re-enters drain
-            // between stages and this pass is non-blocking while regen is set.
-            if (state.regen) return;
             continue;
         }
 
@@ -536,12 +517,6 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
             if (stash.length > 0) { appendPromptStashToFifo(runtime, stash); stash.length = 0; }
             yield* handleCommand(runtime, msg as CommandMessage);
             if (state.orchestrationResult !== null) return;
-            // Session regeneration: a pending pipeline is advanced by the run
-            // loop — return control instead of draining on (a blocking
-            // dequeue here would park the session with the regen never
-            // starting). Later cmds still pre-empt: the loop re-enters drain
-            // between stages and this pass is non-blocking while regen is set.
-            if (state.regen) return;
             continue;
         }
 

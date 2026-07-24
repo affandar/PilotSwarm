@@ -23,6 +23,7 @@
 import { defineTool } from "@github/copilot-sdk";
 import type { Tool } from "@github/copilot-sdk";
 import type { SessionCatalog, SessionEvent } from "./cms.js";
+import { computeSessionFootprint, FootprintCache } from "./footprint.js";
 import { isEnhancedFactStore } from "./facts-store.js";
 import { formatOwnerBucketLabel, formatSessionOwnerLabel, getSessionOwnerKind, matchesOwnerBucketFilters, matchesSessionOwnerFilters } from "./session-owner-utils.js";
 
@@ -37,6 +38,9 @@ const SYSTEM_AGENT_IDS = new Set([
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
+
+/** Shared TTL cache for the context_health tool (per worker process). */
+const contextHealthCache = new FootprintCache();
 const MAX_DATA_BYTES = 4 * 1024;
 const MAX_RESPONSE_BYTES = 64 * 1024;
 
@@ -1022,8 +1026,64 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
         }));
     }
 
+    const contextHealthTool = defineTool("context_health", {
+        description:
+            "Check YOUR OWN context health: token utilization, compaction depth (summaries-of-"
+            + "summaries), event-log and snapshot sizes, and an overall assessment "
+            + "(ok / elevated / degraded) with a recommendation. Cheap (control-plane, cached). "
+            + "Call this when you have been running a long time, notice yourself losing track of "
+            + "earlier work, or want to decide whether to regenerate your context at a natural boundary.",
+        parameters: { type: "object" as const, properties: {} },
+        handler: async (_args: Record<string, never>, ctx?: { sessionId?: string }) => {
+            const sessionId = ctx?.sessionId;
+            if (!sessionId) return { error: "context_health: caller session id is required" };
+            try {
+                const cached = contextHealthCache.get(sessionId);
+                const footprint = cached ?? await computeSessionFootprint(
+                    {
+                        getSession: (id) => catalog.getSession(id),
+                        getSessionEventStats: (id, afterSeq) => catalog.getSessionEventStats(id, afterSeq),
+                        getSessionCompactionStats: (id, afterSeq) => catalog.getSessionCompactionStats(id, afterSeq),
+                        getSessionEventsBefore: (id, beforeSeq, limit, eventTypes) =>
+                            catalog.getSessionEventsBefore(id, beforeSeq, limit, eventTypes),
+                        getSessionMetricSummary: (id) => catalog.getSessionMetricSummary(id),
+                        getEpochBoundarySeq: async (id) => {
+                            const rows = await catalog.getSessionEventsBefore(
+                                id, Number.MAX_SAFE_INTEGER, 1, ["session.epoch_committed"],
+                            );
+                            return rows.length > 0 ? Number((rows[0] as any).seq) : null;
+                        },
+                    },
+                    sessionId,
+                );
+                if (!cached) contextHealthCache.set(footprint);
+                const { assessment } = footprint;
+                const recommendationText =
+                    assessment.level === "degraded"
+                        ? "Consider calling regenerate_context at a natural boundary (finish the current step first)."
+                        : assessment.level === "elevated"
+                            ? "Context is aging but workable. Re-anchor on facts if you feel unsure about earlier work."
+                            : "Context is healthy. No action needed.";
+                return {
+                    sessionId: footprint.sessionId,
+                    transcriptEpoch: footprint.transcriptEpoch,
+                    epochAgeDays: footprint.epochAgeDays,
+                    turnsThisEpoch: footprint.turnsThisEpoch,
+                    context: footprint.context,
+                    transcript: footprint.transcript,
+                    events: footprint.events,
+                    assessment,
+                    recommendation: recommendationText,
+                };
+            } catch (err: any) {
+                return { error: `context_health: ${err?.message || String(err)}` };
+            }
+        },
+    });
+
     const tools: Tool<any>[] = [
         readAgentEventsTool,
+        contextHealthTool,
         ...systemReadTools,
         readSessionMetricSummaryTool,
         readSessionTokensByModelTool,

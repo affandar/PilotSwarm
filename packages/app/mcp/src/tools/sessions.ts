@@ -3,6 +3,7 @@ import { z } from "zod";
 import { sessionIdShape } from "../session-id.js";
 import type { PilotSwarmSession } from "pilotswarm-sdk";
 import type { ServerContext } from "../context.js";
+import { jsonResult, errorResult, withToolErrors } from "../util/respond.js";
 
 // Cache session objects so send_and_wait can reuse them instead of
 // calling resumeSession() which incorrectly assumes the orchestration
@@ -644,6 +645,40 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
         },
     );
 
+    // Regenerate — epoch rebirth (proposal §4): archive + distill + rebuild
+    // the Copilot transcript in place. Enqueue-then-observe: outcomes arrive
+    // as session.regenerate_* events on the feed.
+    server.registerTool(
+        "regenerate_session",
+        {
+            title: "Regenerate Session",
+            description:
+                "Regenerate a session's context in place (epoch rebirth): the transcript is archived, "
+                + "distilled into a resume package, and the underlying Copilot session is rebuilt fresh — "
+                + "same session id; facts, artifacts, children, schedule, and chat history untouched. "
+                + "Use when get_session_metrics footprint reads degraded. Owner/admin only. "
+                + "Outcome arrives as session.regenerate_* events (watch get_session_events).",
+            inputSchema: {
+                session_id: sessionIdShape().describe("The session to regenerate"),
+                handoff: z.string().max(4000).optional().describe("Optional operator hint for the distiller"),
+                distiller_model: z.string().optional().describe("Optional model override for the distiller"),
+            },
+        },
+        withToolErrors(async ({ session_id, handoff, distiller_model }) => {
+            const session = await ctx.mgmt.getSession(session_id);
+            if (!session) return errorResult("session not found", { session_id });
+            const result = await (ctx.mgmt as any).regenerateSession(session_id, {
+                ...(handoff ? { handoff } : {}),
+                ...(distiller_model ? { distillerModel: distiller_model } : {}),
+            });
+            return jsonResult({
+                accepted: true,
+                attempt_id: result?.attemptId ?? null,
+                note: "Applies at the next turn boundary; observe session.regenerate_* events for the outcome.",
+            });
+        }),
+    );
+
     // 8. get_session_detail — Get detailed info for a single session
     server.registerTool(
         "get_session_detail",
@@ -651,13 +686,13 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
             title: "Get Session Detail",
             description:
                 "Get detailed information for a specific PilotSwarm session including status, context usage, cron state, and pending questions. " +
-                "Use 'include' to fetch additional data: 'status' for live orchestration status, 'response' for latest LLM response, 'dump' for full Markdown dump.",
+                "Use 'include' to fetch additional data: 'status' for live orchestration status, 'response' for latest LLM response, 'dump' for full Markdown dump, 'footprint' for context/compaction health + sizes + assessment.",
             inputSchema: {
                 session_id: sessionIdShape().describe("The session ID to inspect"),
                 include: z
-                    .array(z.enum(["status", "response", "dump"]))
+                    .array(z.enum(["status", "response", "dump", "footprint"]))
                     .optional()
-                    .describe("Additional data to include: 'status' (orchestration status), 'response' (latest LLM response), 'dump' (full Markdown dump)"),
+                    .describe("Additional data to include: 'status' (orchestration status), 'response' (latest LLM response), 'dump' (full Markdown dump), 'footprint' (health assessment + sizes)"),
             },
         },
         async ({ session_id, include }) => {
@@ -694,6 +729,15 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                         result.dump = await ctx.mgmt.dumpSession(session_id);
                     } catch {
                         result.dump = null;
+                    }
+                }
+
+                if (includes.has("footprint")) {
+                    try {
+                        result.footprint = await ctx.mgmt.getSessionFootprint(session_id);
+                    } catch (err: unknown) {
+                        result.footprint = null;
+                        result.footprint_error = err instanceof Error ? err.message : String(err);
                     }
                 }
 
