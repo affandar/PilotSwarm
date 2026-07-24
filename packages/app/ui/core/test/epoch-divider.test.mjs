@@ -86,7 +86,7 @@ test("regenerate_refused renders an inline notice with a friendly reason", () =>
 
     const text = renderText(model);
     assert.match(text, /regeneration refused/);
-    assert.match(text, /already regenerated within the last 6h/, "cooldown maps to friendly text");
+    assert.match(text, /on cooldown \(once per 6h\)/, "cooldown maps to friendly text");
 });
 
 test("an unknown refusal reason degrades gracefully", () => {

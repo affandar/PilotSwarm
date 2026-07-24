@@ -2307,51 +2307,53 @@ export function selectChatLines(state, maxWidth = 80, options = {}) {
     return lines.length > 0 ? lines : [{ text: "No messages yet.", color: "gray" }];
 }
 
-// The inline transcript divider for a session-regeneration epoch flip. A
-// centered magenta rule with the epoch and the count of archived turns, so the
-// boundary between the old and the freshly-rebuilt context is visible in the
-// sequence view (proposal M2).
-function buildEpochDividerLine(message, maxWidth) {
+// A centered inline rule ("──── label ────") for transcript markers. The dash
+// runs are CAPPED (not stretched to maxWidth): the web portal wraps by pixel
+// width, and a maxWidth-long "─" run overflows a narrower pane and wraps the
+// rule mid-label. A short symmetric rule reads as a divider on every width, and
+// when the label alone will not fit it is rendered bare (wraps as plain text,
+// never as dangling dash fragments).
+function buildRuleLine(label, color, maxWidth) {
     const safeWidth = Math.max(24, Number(maxWidth) || 80);
-    const turns = Number.isFinite(message?.turnsArchived) ? message.turnsArchived : null;
-    const label = ` ↻ context regenerated · epoch ${message?.epoch ?? "?"}`
-        + `${turns != null ? ` · ${turns} turn${turns === 1 ? "" : "s"} archived` : ""} `;
-    const dashTotal = Math.max(4, safeWidth - label.length);
-    const left = Math.floor(dashTotal / 2);
-    const right = dashTotal - left;
+    const room = safeWidth - label.length;
+    if (room < 2) return [{ text: label.trim(), color, bold: true }];
+    const perSide = Math.min(6, Math.floor(room / 2));
+    if (perSide < 1) return [{ text: label.trim(), color, bold: true }];
     return [
-        { text: "─".repeat(left), color: "magenta" },
-        { text: label, color: "magenta", bold: true },
-        { text: "─".repeat(right), color: "magenta" },
+        { text: "─".repeat(perSide), color },
+        { text: label, color, bold: true },
+        { text: "─".repeat(perSide), color },
     ];
 }
 
-// Friendly text for the orchestration's regenerate_refused reasons (lifecycle.ts).
+// The inline transcript divider for a session-regeneration epoch flip — magenta,
+// with the new epoch and the count of archived turns (proposal M2).
+function buildEpochDividerLine(message, maxWidth) {
+    const turns = Number.isFinite(message?.turnsArchived) ? message.turnsArchived : null;
+    const label = ` ↻ context regenerated · epoch ${message?.epoch ?? "?"}`
+        + `${turns != null ? ` · ${turns} turn${turns === 1 ? "" : "s"} archived` : ""} `;
+    return buildRuleLine(label, "magenta", maxWidth);
+}
+
+// Friendly (compact) text for the orchestration's regenerate_refused reasons
+// (lifecycle.ts). Kept short so the inline rule fits on one line.
 const REGEN_REFUSED_REASONS = {
-    cooldown: "cooldown — already regenerated within the last 6h",
-    too_young: "too soon — needs ≥5 turns since the last regeneration",
-    already_pending: "a regeneration is already in progress",
-    is_system: "system sessions cannot be regenerated",
-    not_owner: "only the session owner can regenerate it",
-    not_parent: "only the parent can regenerate this child",
+    cooldown: "on cooldown (once per 6h)",
+    too_young: "too soon (needs 5+ turns)",
+    already_pending: "already in progress",
+    is_system: "not allowed for system sessions",
+    not_owner: "owner only",
+    not_parent: "parent only",
 };
 
 // The inline notice for a refused regeneration. Yellow (vs the magenta success
 // divider) so a no-op attempt reads as a warning, correcting the tool's
 // optimistic "regeneration accepted" acknowledgement.
 function buildRegenRefusedLine(message, maxWidth) {
-    const safeWidth = Math.max(24, Number(maxWidth) || 80);
     const reason = String(message?.reason || "unknown");
     const text = REGEN_REFUSED_REASONS[reason] || reason.replace(/_/g, " ");
     const label = ` ↻ regeneration refused · ${text} `;
-    const dashTotal = Math.max(4, safeWidth - label.length);
-    const left = Math.floor(dashTotal / 2);
-    const right = dashTotal - left;
-    return [
-        { text: "─".repeat(left), color: "yellow" },
-        { text: label, color: "yellow", bold: true },
-        { text: "─".repeat(right), color: "yellow" },
-    ];
+    return buildRuleLine(label, "yellow", maxWidth);
 }
 
 export function selectOutboxOverlayLines(state, maxWidth = 80, options = {}) {
