@@ -513,8 +513,16 @@ function canPinSessionRow(session) {
 
 function buildSelectedSessionMetaRuns(session, mode) {
     const runs = [];
+    // Live regeneration chip: the orchestration publishes regenStage in
+    // customStatus while the pipeline runs (archiving → distilling →
+    // flipping) and getSession spreads it onto the session view. Magenta to
+    // match the epoch divider; disappears when the flip lands.
+    if (typeof session?.regenStage === "string" && session.regenStage) {
+        runs.push({ text: `↻ regen:${session.regenStage}`, color: "magenta" });
+    }
     const statusLabel = getSessionRowStatusLabel(session);
     if (statusLabel) {
+        if (runs.length > 0) runs.push({ text: " · ", color: "gray" });
         runs.push({ text: statusLabel, color: sessionStatusColor(session, mode) });
     }
 

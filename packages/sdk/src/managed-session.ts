@@ -1807,8 +1807,15 @@ export class ManagedSession {
             }));
 
         const isReadOnlyTuner = this.config.agentIdentity === "agent-tuner";
+        // Service sessions (tree-scoped machinery, e.g. the regen distiller)
+        // get NO system or sub-agent tools: their toolset is exactly their
+        // user tools (the transcript pager). Their system message also forbids
+        // side effects, but hard exclusion beats instructions — defense in
+        // depth on top of the pager's CMS-column call-time gate. Generalize to
+        // a config.serviceKind check if a second service kind ever appears.
+        const isServiceSession = this.config.agentIdentity === "regen-distiller";
         const mutatingSystemToolNames = new Set(["update_session_summary", "send_session_message", "reply_session_message"]);
-        const systemToolsForTurn: Tool<any>[] = [
+        const systemToolsForTurn: Tool<any>[] = isServiceSession ? [] : [
             waitTool,
             waitOnWorkerTool,
             cronTool,
@@ -1823,18 +1830,20 @@ export class ManagedSession {
             sendSessionMessageTool,
             replySessionMessageTool,
         ].filter((tool: any) => !isReadOnlyTuner || !mutatingSystemToolNames.has(tool.name));
-        const subAgentToolsForTurn = isReadOnlyTuner
-            ? [checkAgentsTool, listSessionsTool]
-            : [
-                spawnAgentTool,
-                messageAgentTool,
-                checkAgentsTool,
-                waitForAgentsTool,
-                listSessionsTool,
-                completeAgentTool,
-                cancelAgentTool,
-                deleteAgentTool,
-            ];
+        const subAgentToolsForTurn = isServiceSession
+            ? []
+            : isReadOnlyTuner
+                ? [checkAgentsTool, listSessionsTool]
+                : [
+                    spawnAgentTool,
+                    messageAgentTool,
+                    checkAgentsTool,
+                    waitForAgentsTool,
+                    listSessionsTool,
+                    completeAgentTool,
+                    cancelAgentTool,
+                    deleteAgentTool,
+                ];
 
         const allTools: Tool<any>[] = [
             ...wrappedUserTools,

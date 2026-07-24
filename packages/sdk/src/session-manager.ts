@@ -1165,22 +1165,28 @@ export class SessionManager {
                 factStore: this.factStore ?? undefined,
             })
             : [];
+        // Service sessions (tree-scoped machinery, e.g. the regen distiller)
+        // declare ONLY their user tools (the transcript pager): no system,
+        // sub-agent, fact, inspect, or graph tools. Mirrors the per-turn gate
+        // in managed-session.ts runTurn — hard exclusion beats instructions.
+        const isServiceSession = effectiveSerializableConfig.agentIdentity === "regen-distiller";
+        const unlessService = <T,>(tools: T[]): T[] => (isServiceSession ? [] : tools);
         const SYSTEM_TOOL_NAMES = new Set([
             ...systemTools, ...subAgentTools, ...factTools, ...inspectTools, ...graphTools,
         ].map((t: any) => t.name));
         const persistentSessionTools = [
             ...userTools.filter((t: any) => !SYSTEM_TOOL_NAMES.has(t.name)),
-            ...factTools,
-            ...inspectTools,
-            ...graphTools,
+            ...unlessService(factTools),
+            ...unlessService(inspectTools),
+            ...unlessService(graphTools),
         ];
         const allTools = [
             ...persistentSessionTools.filter((t: any) => !SYSTEM_TOOL_NAMES.has(t.name)),
-            ...systemTools,
-            ...subAgentTools,
-            ...factTools,
-            ...inspectTools,
-            ...graphTools,
+            ...unlessService(systemTools),
+            ...unlessService(subAgentTools),
+            ...unlessService(factTools),
+            ...unlessService(inspectTools),
+            ...unlessService(graphTools),
         ];
         config.tools = persistentSessionTools;
 
