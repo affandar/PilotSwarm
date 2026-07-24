@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.20** — Parents wake when spawned children go quiet (idle/blocked children resolve waits, first reports always land, all-quiet digests deliver immediately); agent waits show as waiting instead of an endless "Working…" spinner; the portal collapses runtime-redelivered messages under an amber ✓✓↻ mark, uses day-aware timestamps, and stops polling deleted sessions. New sessions use orchestration `1.0.66`.
+> **Latest release: v0.5.21** — Session regeneration (epoch rebirth): archive + distill a long-running session's transcript and rebuild its context in place, with the distiller running as a visible, read-only service session that reads the whole archive; a Lifecycle → Regenerate control, footprint/`context_health` sensor, epoch dividers and a live rebuilding chip; Claude Opus 5.0 in the GitHub Copilot catalog. New sessions use orchestration `1.0.68`.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 

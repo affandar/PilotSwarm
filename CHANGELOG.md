@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.5.21 — 2026-07-24
+
+### Session regeneration — epoch rebirth (new sessions use orchestration `1.0.68`)
+
+- **Regenerate a session in place.** A long-running session's transcript can be
+  archived, distilled into a compact resume package, and its underlying Copilot
+  session rebuilt fresh — same session id; facts, artifacts, sub-agents,
+  sharing, schedule, and chat history are untouched. Reachable as the
+  `regenerate_context` (self) and `regenerate_agent` (parent → child) in-session
+  tools, the `regenerate_session` MCP tool, and the management API. The
+  transcript flips to a new **epoch**; storage is epoch-scoped (epoch 0 is the
+  legacy layout, zero migration). Two-event contract: `session.epoch_committed`
+  (the flip) then `session.regenerated` (proven after the grounding turn).
+- **The distiller is a first-class service session.** LLM distillation (the
+  default) spawns a real, orchestration-modeled **service session** — a new
+  tree-scoped session class (`service_kind`/`service_of`, migration 0037) — under
+  the tree root, titled `Regen Distiller — <id> eN→eN+1`. It reads the WHOLE
+  archived transcript map-reduce style via a purpose-built, self-gating
+  `read_transcript_page` tool, emits the resume package, and self-completes so
+  the sweeper reclaims it in the normal flow. It is read-only in the UI (⚗ icon,
+  no prompt) and carries only that one tool. Per-regen `distill_mode`
+  (`llm` default / fast `deterministic`), optional distilling `instructions`,
+  and a model policy of per-call override → cluster default → fallback →
+  deterministic (which never blocks the regen). Distiller input/output are dumped
+  as attempt-scoped artifacts. Deployment kill switch:
+  `PILOTSWARM_REGEN_DETERMINISTIC_ONLY`.
+- **Footprint sensor.** `context_health` (available to every session) reports the
+  current epoch, turns-this-epoch, context utilization, compaction depth,
+  transcript/event sizes, and an ok/elevated/degraded assessment — so an agent
+  can decide when to regenerate. Surfaced on `get_session_detail` and in the
+  portal Stats panel (Epoch / Regens / Last Regen).
+- **UX.** The session **Terminate** control is now **Lifecycle** (new
+  circular-arrows glyph) with a Regenerate option; refused regens surface inline
+  in the transcript (yellow notice) and an epoch divider marks each flip
+  (magenta); a live `↻ regen:<stage>` chip shows while the pipeline runs. Shared
+  ui-core, so the TUI inherits the readouts (Shift+R triggers regenerate).
+- **Operator force** bypasses the soft rate limits (6h cooldown / min-age); hard
+  gates (system/service session, regen in flight, shutting down, unproven flip)
+  always hold.
+
+### Models
+
+- **Claude Opus 5.0** added to the GitHub Copilot catalog (full reasoning ladder,
+  both context tiers: default 200K / long-context 936K).
+
+### Hardening
+
+- Adversarial pass on the regen machinery: distiller sessions are cancelled on
+  every teardown path (no idle-orphan leak), untrusted distiller inputs are
+  nonce-fenced against prompt-injection breakout, the spawn re-seeds on a
+  crash-before-send retry, and collect tolerates a distiller that narrates after
+  emitting the package.
+
 ## 0.5.20 — 2026-07-22
 
 ### SDK / Orchestration (new sessions use `1.0.66`)
