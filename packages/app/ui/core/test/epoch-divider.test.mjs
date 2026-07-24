@@ -68,4 +68,30 @@ test("epoch_committed is included in the chat-history paging filter", async () =
         CHAT_HISTORY_EVENT_TYPES.includes("session.epoch_committed"),
         "backward chat paging must fetch epoch boundaries or old dividers vanish",
     );
+    assert.ok(
+        CHAT_HISTORY_EVENT_TYPES.includes("session.regenerate_refused"),
+        "refusals must page too, or the correction to the optimistic ack vanishes",
+    );
+});
+
+test("regenerate_refused renders an inline notice with a friendly reason", () => {
+    const model = buildHistoryModel([
+        evt(1, "user.message", { content: "regenerate yourself" }),
+        evt(2, "session.regenerate_refused", { reason: "cooldown", source: "tool" }),
+    ], {});
+
+    const notice = model.chat.find((m) => m.kind === "regen-refused");
+    assert.ok(notice, "a refusal notice item is produced");
+    assert.equal(notice.reason, "cooldown");
+
+    const text = renderText(model);
+    assert.match(text, /regeneration refused/);
+    assert.match(text, /already regenerated within the last 6h/, "cooldown maps to friendly text");
+});
+
+test("an unknown refusal reason degrades gracefully", () => {
+    let h = buildHistoryModel([evt(1, "user.message", { content: "go" })], {});
+    h = appendEventToHistory(h, evt(2, "session.regenerate_refused", { reason: "some_new_gate" }));
+    const text = renderText(h);
+    assert.match(text, /regeneration refused · some new gate/, "underscores humanized, no crash");
 });

@@ -21,6 +21,9 @@ export const CHAT_HISTORY_EVENT_TYPES = [
     // Session regeneration boundary — rendered as an inline epoch divider in
     // the transcript, so it must survive backward chat-history paging.
     "session.epoch_committed",
+    // A refused regeneration — surfaced inline so the optimistic "regeneration
+    // accepted" ack is corrected by the real outcome (e.g. cooldown/too_young).
+    "session.regenerate_refused",
 ];
 
 // Build the inline transcript divider marking a session-regeneration epoch
@@ -36,6 +39,20 @@ function buildEpochDividerItem(event) {
         role: "epoch-divider",
         epoch,
         turnsArchived,
+        time: formatTimestamp(event.createdAt),
+        createdAt: event.createdAt instanceof Date ? event.createdAt.getTime() : new Date(event.createdAt).getTime(),
+    };
+}
+
+// A refused regeneration attempt, rendered inline so the truth (e.g. cooldown,
+// too_young) corrects the optimistic "regeneration accepted" the tool returns.
+function buildRegenRefusedItem(event) {
+    const data = event?.data && typeof event.data === "object" ? event.data : {};
+    return {
+        id: `${event.sessionId}:${event.seq}:regen-refused`,
+        kind: "regen-refused",
+        role: "regen-refused",
+        reason: typeof data.reason === "string" ? data.reason : "unknown",
         time: formatTimestamp(event.createdAt),
         createdAt: event.createdAt instanceof Date ? event.createdAt.getTime() : new Date(event.createdAt).getTime(),
     };
@@ -926,6 +943,10 @@ export function buildHistoryModel(events = [], options = {}) {
             chat.push(buildEpochDividerItem(event));
             continue;
         }
+        if (event.eventType === "session.regenerate_refused") {
+            chat.push(buildRegenRefusedItem(event));
+            continue;
+        }
         const activityItem = formatActivity(event);
         if (activityItem) activity.push(activityItem);
     }
@@ -1025,6 +1046,11 @@ export function appendEventToHistory(history, event) {
     }
     if (event.eventType === "session.epoch_committed") {
         next.chat.push(buildEpochDividerItem(event));
+        next.chat = clampHistoryItems(next.chat, loadedEventLimit);
+        return next;
+    }
+    if (event.eventType === "session.regenerate_refused") {
+        next.chat.push(buildRegenRefusedItem(event));
         next.chat = clampHistoryItems(next.chat, loadedEventLimit);
         return next;
     }

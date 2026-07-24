@@ -2289,6 +2289,8 @@ export function selectChatLines(state, maxWidth = 80, options = {}) {
     for (const [index, message] of messages.entries()) {
         if (message?.kind === "epoch-divider") {
             lines.push(buildEpochDividerLine(message, maxWidth));
+        } else if (message?.kind === "regen-refused") {
+            lines.push(buildRegenRefusedLine(message, maxWidth));
         } else {
             const messageLines = buildChatMessageLines(message, maxWidth, buildOptions);
             appendChatBlockLines(lines, messageLines);
@@ -2321,6 +2323,34 @@ function buildEpochDividerLine(message, maxWidth) {
         { text: "─".repeat(left), color: "magenta" },
         { text: label, color: "magenta", bold: true },
         { text: "─".repeat(right), color: "magenta" },
+    ];
+}
+
+// Friendly text for the orchestration's regenerate_refused reasons (lifecycle.ts).
+const REGEN_REFUSED_REASONS = {
+    cooldown: "cooldown — already regenerated within the last 6h",
+    too_young: "too soon — needs ≥5 turns since the last regeneration",
+    already_pending: "a regeneration is already in progress",
+    is_system: "system sessions cannot be regenerated",
+    not_owner: "only the session owner can regenerate it",
+    not_parent: "only the parent can regenerate this child",
+};
+
+// The inline notice for a refused regeneration. Yellow (vs the magenta success
+// divider) so a no-op attempt reads as a warning, correcting the tool's
+// optimistic "regeneration accepted" acknowledgement.
+function buildRegenRefusedLine(message, maxWidth) {
+    const safeWidth = Math.max(24, Number(maxWidth) || 80);
+    const reason = String(message?.reason || "unknown");
+    const text = REGEN_REFUSED_REASONS[reason] || reason.replace(/_/g, " ");
+    const label = ` ↻ regeneration refused · ${text} `;
+    const dashTotal = Math.max(4, safeWidth - label.length);
+    const left = Math.floor(dashTotal / 2);
+    const right = dashTotal - left;
+    return [
+        { text: "─".repeat(left), color: "yellow" },
+        { text: label, color: "yellow", bold: true },
+        { text: "─".repeat(right), color: "yellow" },
     ];
 }
 
