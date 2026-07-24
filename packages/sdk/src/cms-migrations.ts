@@ -227,6 +227,13 @@ CREATE VIEW ${s}.session_metric_summaries AS SELECT * FROM ${s}.session_metrics;
 `;
 
     const step_functions = `
+-- Idempotency note: the two record procs below dedup on the attempt id via
+-- SELECT-then-INSERT, which is replay-safe under duroxide's single-active-
+-- execution guarantee (the only writer). A DB-enforced partial unique index
+-- was evaluated but deferred: CREATE INDEX CONCURRENTLY interacts poorly with
+-- the migrator's advisory-lock path under many parallel schema builds, and it
+-- guards only a scenario the single-writer guarantee already prevents.
+
 -- ── cms_record_epoch_committed ───────────────────────────────────
 -- The flip's boundary record, ONE transaction (a plpgsql function body):
 -- the session.epoch_committed event, sessions.transcript_epoch, and
@@ -310,39 +317,7 @@ $$ LANGUAGE plpgsql;
 
 `;
 
-    // Defense-in-depth for boundary/rebirth idempotency: the record procs
-    // SELECT-then-INSERT keyed on the attempt id, which is replay-safe under
-    // duroxide's single-active-execution guarantee. This partial unique index
-    // makes the dedup DB-enforced too, so two concurrent executions (a zombie
-    // + a failover winner) cannot double-insert the event or double-count
-    // regen_count — the losing INSERT raises, its activity retries, and the
-    // retry's SELECT finds the row. Built CONCURRENTLY (own step, no table
-    // lock); an INVALID leftover from a died build is swept first.
-    // Sweep an INVALID leftover from a died CIC first (own step; a bare DO
-    // block is fine in the autocommit path). CONCURRENTLY must then be its
-    // OWN step — it cannot share a multi-statement query or run in a
-    // transaction block.
-    const step_drop_invalid_dedup = `
-DO $$
-DECLARE v_invalid BOOLEAN;
-BEGIN
-    SELECT NOT ix.indisvalid INTO v_invalid
-    FROM pg_class c
-    JOIN pg_namespace n ON n.oid = c.relnamespace
-    JOIN pg_index ix ON ix.indexrelid = c.oid
-    WHERE n.nspname = '${schema}' AND c.relname = 'idx_${schema}_regen_event_attempt';
-    IF v_invalid THEN
-        EXECUTE 'DROP INDEX ${s}.idx_${schema}_regen_event_attempt';
-    END IF;
-END $$;
-`;
-    const step_dedup_index = `
-CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_${schema}_regen_event_attempt
-    ON ${s}.session_events (session_id, event_type, (data->>'attemptId'))
-    WHERE event_type IN ('session.epoch_committed', 'session.regenerated');
-`;
-
-    return [step_columns, step_functions, step_drop_invalid_dedup, step_dedup_index];
+    return [step_columns, step_functions];
 }
 
 // ─── Migration 0035: footprint stat procs ───────────────────────
