@@ -417,6 +417,36 @@ describe("session regeneration orchestration", () => {
         expect(flipInput.pendingEpochCommit?.distillMode).toBe("deterministic");
     });
 
+    it("cancel_regen mid-distilling cancels the distiller service session (no orphan leak)", async () => {
+        const h = createHarness({
+            distillerPlan: ["running"], // parked in distilling when the cancel lands
+            inputOverrides: { iteration: 8 },
+            messages: [
+                { atMs: 0, payload: regenCmd() },
+                // atMs 5000: past the ~30ms of pre-distilling drain sweeps
+                // (NON_BLOCKING_TIMER_MS=10), so it only lands once the pipeline
+                // is parked in the distilling 10s poll.
+                { atMs: 5000, payload: { type: "cmd", cmd: "cancel_regen", id: "cancel-1" } },
+            ],
+        });
+        await h.run();
+        // The distiller was spawned, then cancelled on teardown — never left live.
+        expect(h.state.spawnCalls).toHaveLength(1);
+        expect(h.state.cancelCalls, "teardown cancels the in-flight distiller").toHaveLength(1);
+        expect(h.state.continueAsNew?.input?.transcriptEpoch ?? 0, "no flip").toBe(0);
+    });
+
+    it("regenerate is refused while a flip's rebirth is unproven (epoch_unsettled)", async () => {
+        const h = createHarness({
+            inputOverrides: { iteration: 8, transcriptEpoch: 1, epochStartPending: true, epochStartIteration: 8 },
+            messages: [{ atMs: 0, payload: regenCmd({ args: { source: "operator", force: true } }) }],
+        });
+        await h.run();
+        const refused = eventsOfType(h.state, "session.regenerate_refused");
+        expect(refused[0]?.data.reason, "force cannot bypass the hard gate").toBe("epoch_unsettled");
+        expect(h.state.archiveCalls, "pipeline never started").toHaveLength(0);
+    });
+
     it("owner-sender gate: a non-owner tool trigger on a shared session is refused", async () => {
         const h = createHarness({
             inputOverrides: { iteration: 8, multiWriter: true, observedSenderKeys: ["user:a", "user:b"] },

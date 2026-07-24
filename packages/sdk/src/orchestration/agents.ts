@@ -467,8 +467,24 @@ export function* failPendingShutdown(
     runtime.state.orchestrationResult = "failed";
 }
 
+/**
+ * Best-effort cancel of a distiller SERVICE SESSION still running when its
+ * regen is torn down (cancel_regen, a pre-flip failure, or the served session
+ * shutting down). Without this the distiller finishes its LLM turn then parks
+ * idle forever — the sweeper never reclaims a LIVE session, so each abort leaks
+ * one (adversarial-review finding). The cancel is a queued cmd (the activity
+ * swallows its own errors), so it is safe to yield from any teardown path.
+ */
+export function* cancelInFlightDistiller(runtime: DurableSessionRuntime): Generator<any, void, any> {
+    const regen: any = runtime.state.regen;
+    if (regen?.stage === "distilling" && regen.distillerSessionId) {
+        yield runtime.manager.runRegenCancelDistiller(regen.distillerSessionId);
+    }
+}
+
 export function* finalizePendingShutdown(runtime: DurableSessionRuntime): Generator<any, void, any> {
     if (!runtime.state.pendingShutdown) return;
+    yield* cancelInFlightDistiller(runtime);
     const shutdown = runtime.state.pendingShutdown;
     if (shutdown.mode === "done") {
         yield* completeSession(runtime, shutdown.reason, shutdown.commandId);

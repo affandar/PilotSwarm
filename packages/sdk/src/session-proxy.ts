@@ -3748,9 +3748,59 @@ export function registerActivities(
         }
         const deps = regenDeps(activityCtx);
         const distillerSessionId = distillerSessionIdFor(input.sessionId, input.epoch, input.attemptId);
+        // Build the seed once — reused by the fresh spawn and by the re-seed
+        // path below so a create-then-crash-before-send retry still delivers it.
+        const buildSeed = async (): Promise<string> => {
+            const closure = await assembleRegenClosure({ catalog, artifactStore: artifactStore! }, input.sessionId);
+            const seed = buildMapReduceSeedPrompt({
+                servedSessionId: input.sessionId,
+                epoch: input.epoch,
+                attemptId: input.attemptId,
+                archiveArtifactId: input.archiveArtifactId || archiveName(input.epoch, input.attemptId),
+                closure,
+                ...(input.handoff ? { handoff: input.handoff } : {}),
+                ...(input.instructions ? { instructions: input.instructions } : {}),
+            });
+            // Dump the EXACT distiller input (§9 dumps) on the served session.
+            await artifactStore!.uploadArtifact(
+                input.sessionId, distillInputName(input.epoch, input.attemptId), Buffer.from(seed, "utf8"), "text/markdown",
+            );
+            return seed;
+        };
         const existing = await catalog.getSession(distillerSessionId).catch(() => null);
         if (existing) {
-            activityCtx.traceInfo(`[runRegenSpawnDistiller] reusing ${distillerSessionId} (attempt retry)`);
+            // Only reuse a row that is ACTUALLY our distiller for THIS session —
+            // re-verify the service columns before trusting its output as this
+            // regen's package. The id is per-attempt and unguessable, so a
+            // mismatch is not a real attack, but defense-in-depth: never collect
+            // a foreign/mislabelled session as the distiller (adversarial-review
+            // finding). A mismatch throws → the pipeline falls back deterministically.
+            if (existing.serviceKind !== REGEN_DISTILLER_SERVICE_KIND || existing.serviceOf !== input.sessionId) {
+                throw new Error(
+                    `distiller id collision: ${distillerSessionId} exists but is not this session's distiller `
+                    + `(serviceKind=${existing.serviceKind ?? "null"}, serviceOf=${existing.serviceOf ?? "null"})`,
+                );
+            }
+            // Re-seed if the seed never landed (activity retried after
+            // createSession but before send): otherwise the distiller sits with
+            // no orchestration/work and the regen burns the whole 5-min deadline
+            // before falling back (adversarial-review finding). Idempotent —
+            // _startTurn ensures the orchestration then enqueues the prompt.
+            const seeded = (await catalog.getSessionEventsBefore(distillerSessionId, Number.MAX_SAFE_INTEGER, 1, ["user.message"]).catch(() => [])).length > 0;
+            if (!seeded) {
+                activityCtx.traceInfo(`[runRegenSpawnDistiller] ${distillerSessionId} exists but was never seeded — re-seeding`);
+                const seed = await buildSeed();
+                const reseedClient = new PilotSwarmClient(internalClientConfig());
+                try {
+                    await reseedClient.start();
+                    await catalog.markSessionService(distillerSessionId, REGEN_DISTILLER_SERVICE_KIND, input.sessionId);
+                    await (reseedClient as any)._startTurn(distillerSessionId, seed, { bootstrap: true });
+                } finally {
+                    await reseedClient.stop().catch(() => {});
+                }
+            } else {
+                activityCtx.traceInfo(`[runRegenSpawnDistiller] reusing ${distillerSessionId} (attempt retry)`);
+            }
             return { distillerSessionId, distillerModel: existing.model ?? "(existing)", reused: true };
         }
         // Model policy (§9): per-call override → CLUSTER DEFAULT → configured
@@ -3773,23 +3823,7 @@ export function registerActivities(
             if (!row?.parentSessionId) break;
             rootId = row.parentSessionId;
         }
-        const closure = await assembleRegenClosure({ catalog, artifactStore }, input.sessionId);
-        const seed = buildMapReduceSeedPrompt({
-            servedSessionId: input.sessionId,
-            epoch: input.epoch,
-            attemptId: input.attemptId,
-            archiveArtifactId: input.archiveArtifactId || archiveName(input.epoch, input.attemptId),
-            closure,
-            ...(input.handoff ? { handoff: input.handoff } : {}),
-            ...(input.instructions ? { instructions: input.instructions } : {}),
-        });
-        // Dump the EXACT distiller input (§9 dumps) on the served session.
-        await artifactStore.uploadArtifact(
-            input.sessionId,
-            distillInputName(input.epoch, input.attemptId),
-            Buffer.from(seed, "utf8"),
-            "text/markdown",
-        );
+        const seed = await buildSeed();
         const owner = await resolveEffectiveSpawnOwner((id) => catalog.getSession(id), rootId).catch(() => null);
         const sdkClient = new PilotSwarmClient(internalClientConfig());
         try {
@@ -3863,10 +3897,19 @@ export function registerActivities(
                 packageBytes: stored.body.length,
             };
         }
+        // Scan the last few assistant messages (newest first), not just the
+        // latest: a distiller that emits the JSON and THEN narrates ("done!")
+        // would otherwise be misread as junk (adversarial-review finding). The
+        // latest message is still dumped as the raw output of record.
         const rows = await catalog.getSessionEventsBefore(
-            distillerSessionId, Number.MAX_SAFE_INTEGER, 1, ["assistant.message"],
+            distillerSessionId, Number.MAX_SAFE_INTEGER, 5, ["assistant.message"],
         );
-        const responseText = rows.length > 0 ? String((rows[0].data as any)?.content ?? "") : "";
+        const candidates = rows
+            .slice()
+            .sort((a, b) => Number((b as any).seq) - Number((a as any).seq))
+            .map((r) => String((r.data as any)?.content ?? ""))
+            .filter((t) => t.trim());
+        const responseText = candidates[0] ?? "";
         // Dump the RAW pre-parse output (§9 dumps) — junk that triggers the
         // fallback stays inspectable.
         await artifactStore.uploadArtifact(
@@ -3879,8 +3922,14 @@ export function registerActivities(
         let distillMode = "llm";
         let modelLabel = input.distillerModel ?? "(default)";
         try {
-            if (!responseText.trim()) throw new Error("distiller produced no response");
-            pkg = parseDistillerResponse(responseText);
+            if (candidates.length === 0) throw new Error("distiller produced no response");
+            // Take the newest message that parses as a valid ResumePackage.
+            let parsed;
+            for (const text of candidates) {
+                try { parsed = parseDistillerResponse(text); break; } catch { /* try older */ }
+            }
+            if (!parsed) throw new Error("no assistant message parsed as a ResumePackage");
+            pkg = parsed;
         } catch (err: any) {
             activityCtx.traceInfo(`[runRegenCollectDistiller] parse failed (${err?.message || err}) — deterministic fallback`);
             const closure = await assembleRegenClosure({ catalog, artifactStore }, sessionId);

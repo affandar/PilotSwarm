@@ -19,6 +19,7 @@ import {
 import { createSessionProxy } from "../session-proxy.js";
 import {
     beginGracefulShutdown,
+    cancelInFlightDistiller,
     type ShutdownMode,
 } from "./agents.js";
 import {
@@ -619,6 +620,16 @@ export function* handleCommand(
 
             if (state.regen) { yield* refuse("already_pending"); return; }
             if (runtime.options.isSystem) { yield* refuse("is_system"); return; }
+            // A session tearing down must not start a 5-minute distill pipeline
+            // the shutdown would then abandon (leaking the distiller and, on a
+            // held grounding prompt, spinning continue-as-news). Force cannot
+            // bypass this — it is a hard gate, not a rate limit.
+            if (state.pendingShutdown) { yield* refuse("shutting_down"); return; }
+            // The previous flip's rebirth is not yet proven (grounding turn
+            // pending). Starting another regen now would replace the unconsumed
+            // pendingEpochCommit and merge the two grounding bootstraps
+            // (adversarial-review finding). Also a hard gate — force cannot skip it.
+            if (state.epochStartPending) { yield* refuse("epoch_unsettled"); return; }
             if (!force && state.iteration - state.epochStartIteration < 5) { yield* refuse("too_young"); return; }
             // Cooldown applies to every agent-driven trigger — self (tool) AND
             // parent — so a supervising parent (which a child can prompt-inject)
@@ -688,6 +699,7 @@ export function* handleCommand(
                 return;
             }
             const cancelled = state.regen.attemptId;
+            yield* cancelInFlightDistiller(runtime);
             state.regen = null;
             yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
                 eventType: "session.regenerate_failed",
@@ -901,7 +913,10 @@ export function* advanceRegenPipeline(
                 ...regen,
                 stage: "distilling",
                 distillerSessionId: String(spawn.distillerSessionId),
-                distillerModel: String(spawn.distillerModel ?? "(default)"),
+                // Record the RESOLVED model separately — leave distillerModel
+                // (the requester's override) intact so a later deterministic
+                // fallback still resolves the operator's choice, not "(default)".
+                distillerModelResolved: String(spawn.distillerModel ?? "(default)"),
                 distillStartedAtMs: spawnedAt,
             };
             return false;
@@ -930,7 +945,7 @@ export function* advanceRegenPipeline(
                     stage: "distilled",
                     packageArtifactId: String(collect?.packageArtifactId ?? ""),
                     bootstrap,
-                    distillerModel: String(collect?.distillerModel ?? regen.distillerModel ?? "(default)"),
+                    distillerModelResolved: String(collect?.distillerModel ?? regen.distillerModelResolved ?? "(default)"),
                 };
                 (state.regen as any).distillMs = Math.max(0, doneAt - startedAt);
                 (state.regen as any).distillModeFinal = String(collect?.distillMode ?? "llm");
@@ -998,7 +1013,7 @@ export function* advanceRegenPipeline(
                 ...(r.archiveMs ? { archiveMs: r.archiveMs } : {}),
                 ...(r.distillMs ? { distillMs: r.distillMs } : {}),
                 ...(r.distillModeFinal ? { distillMode: r.distillModeFinal } : {}),
-                ...(r.distillerModel ? { distillerModel: r.distillerModel } : {}),
+                ...((r.distillerModelResolved || r.distillerModel) ? { distillerModel: r.distillerModelResolved || r.distillerModel } : {}),
                 ...(r.distillerSessionId && r.distillModeFinal === "llm" ? { distillerSessionId: r.distillerSessionId } : {}),
             },
         };
@@ -1006,9 +1021,12 @@ export function* advanceRegenPipeline(
         return true;
     } catch (err: any) {
         // FAIL-SAFE (pre-flip only): clear the pipeline so a later attempt is
-        // not refused as pending; the session continues in the old epoch.
+        // not refused as pending; the session continues in the old epoch. If a
+        // distiller service session was in flight, cancel it first so it does
+        // not park idle forever (the sweeper never reclaims a live session).
         const failedStage = state.regen?.stage ?? "requested";
         const attemptId = state.regen?.attemptId ?? "unknown";
+        yield* cancelInFlightDistiller(runtime);
         state.regen = null;
         runtime.ctx.traceInfo(`[orch] regen attempt ${attemptId} failed at ${failedStage}: ${err?.message ?? err}`);
         yield runtime.manager.recordSessionEvent(sessionId, [{

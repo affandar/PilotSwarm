@@ -407,7 +407,10 @@ export interface RegenState {
     instructions?: string;
     /** "llm" (default — service-session distiller) or "deterministic". */
     distillMode?: "llm" | "deterministic";
+    /** Requester's model OVERRIDE (input to spawn + deterministic fallback); never mutated. */
     distillerModel?: string;
+    /** Model the distiller actually RESOLVED to (telemetry / boundary); set at spawn. */
+    distillerModelResolved?: string;
     /** Service session performing the LLM distillation (stage "distilling"). */
     distillerSessionId?: string;
     /** ms when the distiller session was spawned — bounds the poll deadline. */
