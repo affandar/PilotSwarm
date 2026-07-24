@@ -651,13 +651,13 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
             title: "Get Session Detail",
             description:
                 "Get detailed information for a specific PilotSwarm session including status, context usage, cron state, and pending questions. " +
-                "Use 'include' to fetch additional data: 'status' for live orchestration status, 'response' for latest LLM response, 'dump' for full Markdown dump.",
+                "Use 'include' to fetch additional data: 'status' for live orchestration status, 'response' for latest LLM response, 'dump' for full Markdown dump, 'footprint' for context/compaction health + sizes + assessment.",
             inputSchema: {
                 session_id: sessionIdShape().describe("The session ID to inspect"),
                 include: z
-                    .array(z.enum(["status", "response", "dump"]))
+                    .array(z.enum(["status", "response", "dump", "footprint"]))
                     .optional()
-                    .describe("Additional data to include: 'status' (orchestration status), 'response' (latest LLM response), 'dump' (full Markdown dump)"),
+                    .describe("Additional data to include: 'status' (orchestration status), 'response' (latest LLM response), 'dump' (full Markdown dump), 'footprint' (health assessment + sizes)"),
             },
         },
         async ({ session_id, include }) => {
@@ -694,6 +694,14 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                         result.dump = await ctx.mgmt.dumpSession(session_id);
                     } catch {
                         result.dump = null;
+                    }
+                }
+
+                if (includes.has("footprint")) {
+                    try {
+                        result.footprint = await ctx.mgmt.getSessionFootprint(session_id);
+                    } catch {
+                        result.footprint = null;
                     }
                 }
 

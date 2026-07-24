@@ -222,6 +222,10 @@ export class WebPilotSwarmManagementClient {
         return this._api.call("getSessionMetricSummary", { sessionId });
     }
 
+    async getSessionFootprint(sessionId: string): Promise<any> {
+        return this._api.call("getSessionFootprint", { sessionId });
+    }
+
     async getSessionTokensByModel(sessionId: string): Promise<any[]> {
         return this._api.call("getSessionTokensByModel", { sessionId });
     }

@@ -321,6 +321,21 @@ export interface SessionMetricSummaryUpsert {
     tokensCacheWriteIncrement?: number;
 }
 
+/** Per-session event-log aggregate (footprint events axis). */
+export interface SessionEventStats {
+    eventCount: number;
+    dataBytes: number;
+    maxSeq: number;
+}
+
+/** Per-session compaction counters derived from persisted SDK events. */
+export interface SessionCompactionStats {
+    starts: number;
+    completes: number;
+    failed: number;
+    tokensRemoved: number;
+}
+
 /** Fleet-wide aggregate stats. */
 export interface FleetStats {
     windowStart: number | null;
@@ -861,6 +876,12 @@ export interface SessionCatalog {
     /** Get the metric summary for a single session. */
     getSessionMetricSummary(sessionId: string): Promise<SessionMetricSummary | null>;
 
+    /** Per-session event count/bytes/max-seq aggregate (footprint). Always session-scoped. */
+    getSessionEventStats(sessionId: string, afterSeq?: number): Promise<SessionEventStats>;
+
+    /** Per-session compaction counters from persisted SDK events (footprint). */
+    getSessionCompactionStats(sessionId: string, afterSeq?: number): Promise<SessionCompactionStats>;
+
     /** Get a session's own stats plus rolled-up totals of all descendants. */
     getSessionTreeStats(sessionId: string): Promise<SessionTreeStats | null>;
 
@@ -995,6 +1016,8 @@ function sqlForSchema(schema: string) {
             getHourlyTokenBuckets:      `${s}.cms_get_hourly_token_buckets`,
             pruneTurnMetrics:           `${s}.cms_prune_turn_metrics`,
             getSessionMetricSummary:    `${s}.cms_get_session_metric_summary`,
+            getSessionEventStats:       `${s}.cms_get_session_event_stats`,
+            getSessionCompactionStats:  `${s}.cms_get_session_compaction_stats`,
             getSessionTreeStats:        `${s}.cms_get_session_tree_stats`,
             getSessionTreeStatsByModel: `${s}.cms_get_session_tree_stats_by_model`,
             getFleetStatsByAgent:       `${s}.cms_get_fleet_stats_by_agent`,
@@ -1725,6 +1748,33 @@ export class PgSessionCatalog implements SessionCatalog {
             [sessionId],
         );
         return rows.length > 0 ? rowToSessionMetricSummary(rows[0]) : null;
+    }
+
+    async getSessionEventStats(sessionId: string, afterSeq?: number): Promise<SessionEventStats> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.getSessionEventStats}($1, $2)`,
+            [sessionId, afterSeq ?? null],
+        );
+        const row = rows[0] ?? {};
+        return {
+            eventCount: Number(row.event_count ?? 0),
+            dataBytes: Number(row.data_bytes ?? 0),
+            maxSeq: Number(row.max_seq ?? 0),
+        };
+    }
+
+    async getSessionCompactionStats(sessionId: string, afterSeq?: number): Promise<SessionCompactionStats> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.getSessionCompactionStats}($1, $2)`,
+            [sessionId, afterSeq ?? null],
+        );
+        const row = rows[0] ?? {};
+        return {
+            starts: Number(row.starts ?? 0),
+            completes: Number(row.completes ?? 0),
+            failed: Number(row.failed ?? 0),
+            tokensRemoved: Number(row.tokens_removed ?? 0),
+        };
     }
 
     async getSessionTreeStats(sessionId: string): Promise<SessionTreeStats | null> {

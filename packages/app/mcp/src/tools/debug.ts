@@ -30,6 +30,7 @@ const DEBUG_AXES = [
     "retrieval_usage",         // read_session_retrieval_usage (tree-aware)
     "facts_stats",             // per-session facts footprint
     "orchestration_stats",     // read_orchestration_stats (duroxide runtime)
+    "footprint",               // context/compaction health + sizes + assessment
     "execution_history",       // read_execution_history (heavyweight)
     "child_outcomes",          // what sub-agents concluded
     "graph_node_usage",        // read_session_graph_node_usage
@@ -92,6 +93,7 @@ export function registerDebugTools(server: McpServer, ctx: ServerContext) {
                 tree ? ctx.mgmt.getSessionTreeRetrievalUsage(session_id, sinceOpts) : ctx.mgmt.getSessionRetrievalUsage(session_id, sinceOpts));
             await grab("facts_stats", () => ctx.mgmt.getSessionFactsStats(session_id));
             await grab("orchestration_stats", () => ctx.mgmt.getOrchestrationStats(session_id));
+            await grab("footprint", () => ctx.mgmt.getSessionFootprint(session_id));
             await grab("execution_history", () => ctx.mgmt.getExecutionHistory(session_id, execution_id));
             await grab("child_outcomes", () => ctx.mgmt.listChildOutcomes(session_id));
             await grab("graph_node_usage", () => ctx.mgmt.getSessionGraphNodeUsage(session_id, sinceOpts));

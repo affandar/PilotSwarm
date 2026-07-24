@@ -805,6 +805,10 @@ export class NodeSdkTransport {
         return this.mgmt.getSessionMetricSummary(sessionId);
     }
 
+    async getSessionFootprint(sessionId) {
+        return this.mgmt.getSessionFootprint(sessionId);
+    }
+
     async getSessionTokensByModel(sessionId) {
         return this.mgmt.getSessionTokensByModel(sessionId);
     }

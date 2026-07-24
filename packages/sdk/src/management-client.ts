@@ -75,6 +75,7 @@ import type {
 import { resolveStorageConfig, type StorageConfig } from "./storage-config.js";
 import { getDuroxideStorageProvider, getRuntimeStorageProvider } from "./storage-providers.js";
 import { SessionDumper } from "./session-dumper.js";
+import { computeSessionFootprint, FootprintCache, type SessionFootprint } from "./footprint.js";
 import { loadModelProviders, type ModelProviderRegistry, type ModelDescriptor, type ReasoningEffort, type ContextTier } from "./model-providers.js";
 import { deriveStatusFromCmsAndRuntime, shouldSyncCompletedStatus, shouldSyncFailedStatus } from "./session-status.js";
 import { assertUnambiguousProvider, isWebOptions, type PilotSwarmWebOptions } from "./web/api-connection.js";
@@ -1635,6 +1636,47 @@ export class PilotSwarmManagementClient {
     async getSessionMetricSummary(sessionId: string): Promise<SessionMetricSummary | null> {
         this._ensureStarted();
         return this._catalog!.getSessionMetricSummary(sessionId);
+    }
+
+    // ── Session footprint (sensor) ────────────────────────────
+
+    private _footprintCache: FootprintCache | null = null;
+
+    /**
+     * Control-plane footprint for one session (never wakes it). TTL-cached
+     * (§11 — TTL-only staleness by design); pass bypassCache for tests.
+     */
+    async getSessionFootprint(
+        sessionId: string,
+        opts?: { bypassCache?: boolean },
+    ): Promise<SessionFootprint> {
+        this._ensureStarted();
+        if (!this._footprintCache) this._footprintCache = new FootprintCache();
+        if (!opts?.bypassCache) {
+            const cached = this._footprintCache.get(sessionId);
+            if (cached) return cached;
+        }
+        const catalog = this._catalog!;
+        const footprint = await computeSessionFootprint(
+            {
+                getSession: (id) => catalog.getSession(id),
+                getSessionEventStats: (id, afterSeq) => catalog.getSessionEventStats(id, afterSeq),
+                getSessionCompactionStats: (id, afterSeq) =>
+                    catalog.getSessionCompactionStats(id, afterSeq),
+                getSessionEventsBefore: (id, beforeSeq, limit, eventTypes) =>
+                    catalog.getSessionEventsBefore(id, beforeSeq, limit, eventTypes),
+                getSessionMetricSummary: (id) => catalog.getSessionMetricSummary(id),
+                getDescendantSessionIds: (id) => catalog.getDescendantSessionIds(id),
+                ...(this._factStore
+                    ? { getSessionFactsStats: (id: string) => this.getSessionFactsStats(id) }
+                    : {}),
+                getOrchestrationStats: async (id) =>
+                    (await this.getOrchestrationStats(id)) as Record<string, unknown> | null,
+            },
+            sessionId,
+        );
+        this._footprintCache.set(footprint);
+        return footprint;
     }
 
     /** Per-session token totals grouped by provider:model:reasoning, with turn count. */

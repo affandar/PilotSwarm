@@ -559,6 +559,8 @@ export class PortalRuntime {
                 return this.transport.getOrchestrationStats(safeParams.sessionId);
             case "getSessionMetricSummary":
                 return this.transport.getSessionMetricSummary(safeParams.sessionId);
+            case "getSessionFootprint":
+                return this.transport.getSessionFootprint(safeParams.sessionId);
             case "getSessionTokensByModel":
                 return this.transport.getSessionTokensByModel(safeParams.sessionId);
             case "getSessionTreeStats":

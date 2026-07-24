@@ -185,7 +185,94 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "user_session_group_placements",
             sql: migration_0034_user_session_group_placements(schema),
         },
+        {
+            version: "0035",
+            name: "footprint_stat_procs",
+            sql: migration_0035_footprint_stat_procs(schema),
+        },
     ];
+}
+
+// ─── Migration 0035: footprint stat procs ───────────────────────
+
+function migration_0035_footprint_stat_procs(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- 0035_footprint_stat_procs: per-session aggregates for the session
+-- footprint sensor (docs/proposals/session-regen-and-footprint.md §11).
+-- CREATE FUNCTION only — no table DDL, no locks, safe on hot tables.
+--
+-- Both functions REQUIRE the session_id predicate by construction: the
+-- events table has no full-coverage created_at index, so an unfiltered
+-- aggregate would seq-scan the fleet table.
+
+-- ── cms_get_session_event_stats ──────────────────────────────────
+-- Count + stored payload bytes + max seq for one session's events,
+-- optionally restricted to events after p_after_seq (the epoch boundary).
+-- Served by idx_events_session_seq: the count is index-driven and the byte
+-- sum heap-fetches only this session's rows. pg_column_size reports stored
+-- (possibly TOAST-compressed) size without detoasting.
+CREATE OR REPLACE FUNCTION ${s}.cms_get_session_event_stats(
+    p_session_id TEXT,
+    p_after_seq  BIGINT DEFAULT NULL
+) RETURNS TABLE (
+    event_count BIGINT,
+    data_bytes  BIGINT,
+    max_seq     BIGINT
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        COUNT(*)::bigint                                   AS event_count,
+        COALESCE(SUM(pg_column_size(e.data)), 0)::bigint   AS data_bytes,
+        COALESCE(MAX(e.seq), 0)::bigint                    AS max_seq
+    FROM ${s}.session_events e
+    WHERE e.session_id = p_session_id
+      AND (p_after_seq IS NULL OR e.seq > p_after_seq);
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── cms_get_session_compaction_stats ─────────────────────────────
+-- Compaction counters derived from the persisted SDK transcript events
+-- (session.compaction_start / session.compaction_complete — these are NOT
+-- in the ephemeral filter, so they land in session_events). Uses the
+-- (session_id, event_type, seq) index. tokensRemoved is summed defensively:
+-- non-numeric payloads are skipped, never an error.
+CREATE OR REPLACE FUNCTION ${s}.cms_get_session_compaction_stats(
+    p_session_id TEXT,
+    p_after_seq  BIGINT DEFAULT NULL
+) RETURNS TABLE (
+    starts         BIGINT,
+    completes      BIGINT,
+    failed         BIGINT,
+    tokens_removed BIGINT
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        COUNT(*) FILTER (WHERE e.event_type = 'session.compaction_start')::bigint
+            AS starts,
+        COUNT(*) FILTER (WHERE e.event_type = 'session.compaction_complete')::bigint
+            AS completes,
+        COUNT(*) FILTER (
+            WHERE e.event_type = 'session.compaction_complete'
+              AND (e.data->>'success') = 'false'
+        )::bigint AS failed,
+        COALESCE(SUM(
+            CASE
+                WHEN e.event_type = 'session.compaction_complete'
+                 AND (e.data->>'tokensRemoved') ~ '^[0-9]+(\\.[0-9]+)?$'
+                THEN (e.data->>'tokensRemoved')::numeric
+                ELSE NULL
+            END
+        ), 0)::bigint AS tokens_removed
+    FROM ${s}.session_events e
+    WHERE e.session_id = p_session_id
+      AND e.event_type IN ('session.compaction_start', 'session.compaction_complete')
+      AND (p_after_seq IS NULL OR e.seq > p_after_seq);
+END;
+$$ LANGUAGE plpgsql;
+`;
 }
 
 // ─── Migration 0034: private per-user session-group placements ──
