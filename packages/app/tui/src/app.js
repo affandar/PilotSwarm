@@ -246,6 +246,7 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
         const isShiftN = input === "N" || (key.shift && key.name === "n");
         const isShiftM = !key.ctrl && !key.meta && !key.alt && (input === "M" || (key.shift && key.name === "m"));
         const isShiftD = input === "D" || (key.shift && key.name === "d");
+        const isShiftR = !key.ctrl && !key.meta && !key.alt && (input === "R" || (key.shift && key.name === "r"));
         const isShiftT = !key.ctrl && !key.meta && !key.alt && (input === "T" || (key.shift && key.name === "t"));
         const isShiftA = !key.ctrl && !key.meta && !key.alt && (input === "A" || (key.shift && key.name === "a"));
         const isAltBackspace = key.meta && (key.backspace || key.delete || key.name === "backspace" || key.name === "delete");
@@ -799,6 +800,10 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
         }
         if (plainShortcut && isShiftD) {
             controller.handleCommand(UI_COMMANDS.DELETE_SESSION).catch(() => {});
+            return;
+        }
+        if (plainShortcut && isShiftR) {
+            controller.handleCommand(UI_COMMANDS.REGENERATE_SESSION).catch(() => {});
             return;
         }
         if (focus !== "prompt" && (input === "h" || key.leftArrow)) {

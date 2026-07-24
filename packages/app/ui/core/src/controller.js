@@ -7263,6 +7263,9 @@ export class PilotSwarmUiController {
             case UI_COMMANDS.DELETE_SESSION:
                 await this.deleteActiveSession();
                 return;
+            case UI_COMMANDS.REGENERATE_SESSION:
+                await this.regenerateActiveSession();
+                return;
             case UI_COMMANDS.PIN_SESSION:
                 this.togglePinActiveSession();
                 return;

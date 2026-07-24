@@ -18,7 +18,28 @@ export const CHAT_HISTORY_EVENT_TYPES = [
     "user.message",
     "assistant.message",
     "system.message",
+    // Session regeneration boundary — rendered as an inline epoch divider in
+    // the transcript, so it must survive backward chat-history paging.
+    "session.epoch_committed",
 ];
+
+// Build the inline transcript divider marking a session-regeneration epoch
+// flip (proposal M2). The epoch_committed seq IS the epoch boundary, so the
+// divider lands between the archived (old-epoch) turns and the fresh ones.
+function buildEpochDividerItem(event) {
+    const data = event?.data && typeof event.data === "object" ? event.data : {};
+    const epoch = Number.isFinite(data.toEpoch) ? data.toEpoch : (Number(data.epoch) || 0);
+    const turnsArchived = Number.isFinite(data.turnsArchived) ? data.turnsArchived : null;
+    return {
+        id: `${event.sessionId}:${event.seq}:epoch`,
+        kind: "epoch-divider",
+        role: "epoch-divider",
+        epoch,
+        turnsArchived,
+        time: formatTimestamp(event.createdAt),
+        createdAt: event.createdAt instanceof Date ? event.createdAt.getTime() : new Date(event.createdAt).getTime(),
+    };
+}
 
 function clampHistoryItems(items, maxItems) {
     const list = Array.isArray(items) ? items.filter(Boolean) : [];
@@ -901,6 +922,10 @@ export function buildHistoryModel(events = [], options = {}) {
             }
             continue;
         }
+        if (event.eventType === "session.epoch_committed") {
+            chat.push(buildEpochDividerItem(event));
+            continue;
+        }
         const activityItem = formatActivity(event);
         if (activityItem) activity.push(activityItem);
     }
@@ -996,6 +1021,11 @@ export function appendEventToHistory(history, event) {
             next.chat.push(message);
             next.chat = clampHistoryItems(dedupeChatMessages(next.chat), loadedEventLimit);
         }
+        return next;
+    }
+    if (event.eventType === "session.epoch_committed") {
+        next.chat.push(buildEpochDividerItem(event));
+        next.chat = clampHistoryItems(next.chat, loadedEventLimit);
         return next;
     }
     const activityItem = formatActivity(event);

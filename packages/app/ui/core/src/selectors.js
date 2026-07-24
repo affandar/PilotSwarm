@@ -2287,8 +2287,12 @@ export function selectChatLines(state, maxWidth = 80, options = {}) {
     };
     const lines = [];
     for (const [index, message] of messages.entries()) {
-        const messageLines = buildChatMessageLines(message, maxWidth, buildOptions);
-        appendChatBlockLines(lines, messageLines);
+        if (message?.kind === "epoch-divider") {
+            lines.push(buildEpochDividerLine(message, maxWidth));
+        } else {
+            const messageLines = buildChatMessageLines(message, maxWidth, buildOptions);
+            appendChatBlockLines(lines, messageLines);
+        }
         const nextMessage = messages[index + 1];
         if (
             nextMessage
@@ -2299,6 +2303,25 @@ export function selectChatLines(state, maxWidth = 80, options = {}) {
         }
     }
     return lines.length > 0 ? lines : [{ text: "No messages yet.", color: "gray" }];
+}
+
+// The inline transcript divider for a session-regeneration epoch flip. A
+// centered magenta rule with the epoch and the count of archived turns, so the
+// boundary between the old and the freshly-rebuilt context is visible in the
+// sequence view (proposal M2).
+function buildEpochDividerLine(message, maxWidth) {
+    const safeWidth = Math.max(24, Number(maxWidth) || 80);
+    const turns = Number.isFinite(message?.turnsArchived) ? message.turnsArchived : null;
+    const label = ` ↻ context regenerated · epoch ${message?.epoch ?? "?"}`
+        + `${turns != null ? ` · ${turns} turn${turns === 1 ? "" : "s"} archived` : ""} `;
+    const dashTotal = Math.max(4, safeWidth - label.length);
+    const left = Math.floor(dashTotal / 2);
+    const right = dashTotal - left;
+    return [
+        { text: "─".repeat(left), color: "magenta" },
+        { text: label, color: "magenta", bold: true },
+        { text: "─".repeat(right), color: "magenta" },
+    ];
 }
 
 export function selectOutboxOverlayLines(state, maxWidth = 80, options = {}) {
@@ -5156,10 +5179,21 @@ function buildSessionStatsLines(state, session, maxWidth) {
     }));
     lines.push(plainInspectorLine(""));
 
-    // Persistence card
+    // Persistence card. Epoch (session-regeneration incarnation) is always
+    // shown — 0 for a session that has never regenerated — so the current
+    // epoch is visible at a glance; regen counters appear once it has.
+    const regenCount = Number(summary.regenCount) || 0;
+    const lastRegen = summary.lastRegenStats && typeof summary.lastRegenStats === "object" ? summary.lastRegenStats : null;
+    const currentEpoch = Number.isFinite(lastRegen?.toEpoch) ? lastRegen.toEpoch : regenCount;
+    const lastRegenLabel = lastRegen
+        ? `${lastRegen.turnsArchived ?? 0} turn${lastRegen.turnsArchived === 1 ? "" : "s"} · ${(Number(lastRegen.totalMs) / 1000).toFixed(1)}s`
+        : null;
     lines.push(...buildMessageCardLines({
         title: "Persistence",
         body: formatKeyValueTable([
+            ["Epoch",           String(currentEpoch)],
+            ["Regens",          regenCount > 0 ? String(regenCount) : null],
+            ["Last Regen",      lastRegenLabel],
             ["Snapshot",        formatCompactBytes(summary.snapshotSizeBytes)],
             ["Uncompressed",    summary.rawSizeBytes ? formatCompactBytes(summary.rawSizeBytes) : null],
             ["Compression",     formatCompressionRatio(summary.rawSizeBytes, summary.snapshotSizeBytes)],
