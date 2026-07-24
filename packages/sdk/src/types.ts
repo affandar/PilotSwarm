@@ -392,14 +392,26 @@ export interface CronSchedule {
 export interface RegenState {
     /** Lifecycle command id — scopes every storage object the attempt produces. */
     attemptId: string;
-    stage: "requested" | "archived" | "distilled" | "flipping";
+    stage: "requested" | "archived" | "distilling" | "distilled" | "flipping";
     requestedAtMs: number;
     trigger: "operator" | "tool" | "parent" | "policy";
     /** Server-stamped requester (sender key for tool, parent session id for parent). */
     requestedBy?: string;
     /** Quoted, length-capped handoff text (untrusted distiller input). */
     handoff?: string;
+    /**
+     * Distilling instructions (≤4000): HOW to distill, from the user or the
+     * requesting agent. Untrusted-fenced in the distiller prompt; embedded as
+     * requesterInstructions in deterministic packages.
+     */
+    instructions?: string;
+    /** "llm" (default — service-session distiller) or "deterministic". */
+    distillMode?: "llm" | "deterministic";
     distillerModel?: string;
+    /** Service session performing the LLM distillation (stage "distilling"). */
+    distillerSessionId?: string;
+    /** ms when the distiller session was spawned — bounds the poll deadline. */
+    distillStartedAtMs?: number;
     /** Optional replacement model applied to the reborn session at the flip. */
     model?: string;
     archiveArtifactId?: string;
@@ -422,6 +434,12 @@ export interface PendingEpochCommit {
     compactionsArchived?: number;
     archiveMs?: number;
     distillMs?: number;
+    /** How the package was produced: "llm" (service-session distiller) or "deterministic". */
+    distillMode?: string;
+    /** Model label the distiller ran on (or "(deterministic)"/fallback labels). */
+    distillerModel?: string;
+    /** The distiller service session, when an LLM distillation ran. */
+    distillerSessionId?: string;
 }
 
 export interface OrchestrationInput {

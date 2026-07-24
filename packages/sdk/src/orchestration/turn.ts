@@ -439,6 +439,9 @@ export function* processPrompt(
                         ...(commit.distillMs ? { distillMs: commit.distillMs } : {}),
                         ...(commit.turnsArchived ? { turnsArchived: commit.turnsArchived } : {}),
                         ...(commit.compactionsArchived ? { compactionsArchived: commit.compactionsArchived } : {}),
+                        ...(commit.distillMode ? { distillMode: commit.distillMode } : {}),
+                        ...(commit.distillerModel ? { distillerModel: commit.distillerModel } : {}),
+                        ...(commit.distillerSessionId ? { distillerSessionId: commit.distillerSessionId } : {}),
                         totalMs: Math.max(0, nowMs - (commit as any).requestedAtMs || 0),
                     },
                 });

@@ -649,6 +649,7 @@ export function* handleCommand(
             }
 
             const handoffRaw = typeof cmdMsg.args?.handoff === "string" ? cmdMsg.args.handoff : undefined;
+            const instructionsRaw = typeof cmdMsg.args?.instructions === "string" ? cmdMsg.args.instructions : undefined;
             state.regen = {
                 attemptId: cmdMsg.id,
                 stage: "requested",
@@ -656,6 +657,10 @@ export function* handleCommand(
                 trigger: source === "tool" ? "tool" : source === "parent" ? "parent" : source === "policy" ? "policy" : "operator",
                 ...(cmdMsg.requestedBy ? { requestedBy: cmdMsg.requestedBy } : {}),
                 ...(handoffRaw ? { handoff: handoffRaw.slice(0, 4_000) } : {}),
+                ...(instructionsRaw ? { instructions: instructionsRaw.slice(0, 4_000) } : {}),
+                // LLM (service-session) distillation is the default; callers may
+                // pick the fast deterministic package per regen.
+                distillMode: cmdMsg.args?.distill_mode === "deterministic" ? "deterministic" : "llm",
                 ...(typeof cmdMsg.args?.distillerModel === "string" && cmdMsg.args.distillerModel
                     ? { distillerModel: String(cmdMsg.args.distillerModel) }
                     : {}),
@@ -809,6 +814,42 @@ function* captureModelSwitchInterruptedTimer(runtime: DurableSessionRuntime, new
 // new carrying the fresh epoch, the boundary record, and the flip-mutation
 // table's dispositions (contextUsage zeroed, shared preamble re-armed,
 // pending question and roster carried).
+/** Overall budget for a service-session distillation before the deterministic fallback. */
+const DISTILLER_SESSION_DEADLINE_MS = 5 * 60 * 1000;
+/** Durable pause between distiller polls (drain sweeps for pre-empting cmds in between). */
+const DISTILLER_POLL_MS = 10_000;
+
+/**
+ * Deterministic distill: the in-activity closure package (M1 path). Shared by
+ * the per-regen deterministic mode and every LLM-path fallback (no model,
+ * distiller failed, deadline exceeded) — the regen never blocks on
+ * distillation quality.
+ */
+function* runDeterministicDistill(
+    runtime: DurableSessionRuntime,
+    regen: NonNullable<DurableSessionRuntime["state"]["regen"]>,
+): Generator<any, void, any> {
+    const state = runtime.state;
+    const distill: any = yield runtime.manager.runRegenDistill(runtime.input.sessionId, state.transcriptEpoch, regen.attemptId, {
+        ...(regen.handoff ? { handoff: regen.handoff } : {}),
+        ...(regen.instructions ? { instructions: regen.instructions } : {}),
+        ...(state.config.model ? { sessionModel: state.config.model } : {}),
+        ...(regen.distillerModel ? { distillerModel: regen.distillerModel } : {}),
+        ...(regen.archiveArtifactId ? { archiveArtifactId: regen.archiveArtifactId } : {}),
+    });
+    const bootstrap = String(distill?.bootstrap ?? "");
+    if (!bootstrap) throw new Error("distill produced no bootstrap");
+    state.regen = {
+        ...regen,
+        stage: "distilled",
+        packageArtifactId: String(distill?.packageArtifactId ?? ""),
+        bootstrap,
+    };
+    (state.regen as any).distillMs = Number(distill?.distillMs) || 0;
+    (state.regen as any).distillerModel = String(distill?.distillerModel ?? "");
+    (state.regen as any).distillModeFinal = "deterministic";
+}
+
 export function* advanceRegenPipeline(
     runtime: DurableSessionRuntime,
 ): Generator<any, boolean, any> {
@@ -834,22 +875,76 @@ export function* advanceRegenPipeline(
 
         if (regen.stage === "archived") {
             publishStatus(runtime, "running", { regenStage: "distilling" });
-            const distill: any = yield runtime.manager.runRegenDistill(sessionId, state.transcriptEpoch, regen.attemptId, {
-                ...(regen.handoff ? { handoff: regen.handoff } : {}),
-                ...(state.config.model ? { sessionModel: state.config.model } : {}),
-                ...(regen.distillerModel ? { distillerModel: regen.distillerModel } : {}),
+            // Deterministic mode (per-regen choice) → the in-activity closure
+            // package, exactly the M1 path. LLM mode (default) → spawn the
+            // regen-distiller SERVICE SESSION under the tree root and poll it.
+            if (regen.distillMode === "deterministic") {
+                yield* runDeterministicDistill(runtime, regen);
+                return false;
+            }
+            const spawn: any = yield runtime.manager.runRegenSpawnDistiller(sessionId, state.transcriptEpoch, regen.attemptId, {
                 ...(regen.archiveArtifactId ? { archiveArtifactId: regen.archiveArtifactId } : {}),
+                ...(regen.handoff ? { handoff: regen.handoff } : {}),
+                ...(regen.instructions ? { instructions: regen.instructions } : {}),
+                ...(regen.distillerModel ? { distillerModel: regen.distillerModel } : {}),
             });
-            const bootstrap = String(distill?.bootstrap ?? "");
-            if (!bootstrap) throw new Error("distill produced no bootstrap");
+            if (!spawn?.distillerSessionId) {
+                // No resolvable distiller model (or deterministic-only deployment
+                // kill switch inside the activity) — the deterministic package is
+                // the floor, never a blocked regen.
+                runtime.ctx.traceInfo(`[orch] distiller spawn fell back (${String(spawn?.fallback ?? "unknown")}) — deterministic package`);
+                yield* runDeterministicDistill(runtime, regen);
+                return false;
+            }
+            const spawnedAt: number = yield runtime.ctx.utcNow();
             state.regen = {
                 ...regen,
-                stage: "distilled",
-                packageArtifactId: String(distill?.packageArtifactId ?? ""),
-                bootstrap,
+                stage: "distilling",
+                distillerSessionId: String(spawn.distillerSessionId),
+                distillerModel: String(spawn.distillerModel ?? "(default)"),
+                distillStartedAtMs: spawnedAt,
             };
-            (state.regen as any).distillMs = Number(distill?.distillMs) || 0;
-            (state.regen as any).distillerModel = String(distill?.distillerModel ?? "");
+            return false;
+        }
+
+        if (regen.stage === "distilling") {
+            publishStatus(runtime, "running", { regenStage: "distilling", distillerSessionId: regen.distillerSessionId });
+            const nowMs: number = yield runtime.ctx.utcNow();
+            const startedAt = regen.distillStartedAtMs ?? regen.requestedAtMs;
+            const check: any = yield runtime.manager.runRegenCheckDistiller(regen.distillerSessionId!);
+            if (check?.status === "completed") {
+                const collect: any = yield runtime.manager.runRegenCollectDistiller(
+                    sessionId, state.transcriptEpoch, regen.attemptId, regen.distillerSessionId!,
+                    {
+                        ...(regen.archiveArtifactId ? { archiveArtifactId: regen.archiveArtifactId } : {}),
+                        ...(regen.handoff ? { handoff: regen.handoff } : {}),
+                        ...(regen.instructions ? { instructions: regen.instructions } : {}),
+                        ...(regen.distillerModel ? { distillerModel: regen.distillerModel } : {}),
+                    },
+                );
+                const bootstrap = String(collect?.bootstrap ?? "");
+                if (!bootstrap) throw new Error("distiller collect produced no bootstrap");
+                const doneAt: number = yield runtime.ctx.utcNow();
+                state.regen = {
+                    ...regen,
+                    stage: "distilled",
+                    packageArtifactId: String(collect?.packageArtifactId ?? ""),
+                    bootstrap,
+                    distillerModel: String(collect?.distillerModel ?? regen.distillerModel ?? "(default)"),
+                };
+                (state.regen as any).distillMs = Math.max(0, doneAt - startedAt);
+                (state.regen as any).distillModeFinal = String(collect?.distillMode ?? "llm");
+                return false;
+            }
+            if (check?.status === "failed" || nowMs - startedAt > DISTILLER_SESSION_DEADLINE_MS) {
+                runtime.ctx.traceInfo(`[orch] distiller ${regen.distillerSessionId} ${check?.status === "failed" ? `failed (${check?.reason})` : "deadline exceeded"} — cancelling + deterministic package`);
+                yield runtime.manager.runRegenCancelDistiller(regen.distillerSessionId!);
+                yield* runDeterministicDistill(runtime, regen);
+                return false;
+            }
+            // Still running: pace the poll with a short durable timer, then
+            // yield back to the drain (which sweeps for pre-empting cmds).
+            yield runtime.ctx.scheduleTimer(DISTILLER_POLL_MS);
             return false;
         }
 
@@ -902,6 +997,9 @@ export function* advanceRegenPipeline(
                 ...(r.compactionsArchived ? { compactionsArchived: r.compactionsArchived } : {}),
                 ...(r.archiveMs ? { archiveMs: r.archiveMs } : {}),
                 ...(r.distillMs ? { distillMs: r.distillMs } : {}),
+                ...(r.distillModeFinal ? { distillMode: r.distillModeFinal } : {}),
+                ...(r.distillerModel ? { distillerModel: r.distillerModel } : {}),
+                ...(r.distillerSessionId && r.distillModeFinal === "llm" ? { distillerSessionId: r.distillerSessionId } : {}),
             },
         };
         yield* versionedContinueAsNew(runtime, canInput);

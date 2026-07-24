@@ -14,6 +14,7 @@ import { startSystemAgents } from "./system-agents.js";
 import { loadMcpConfig } from "./mcp-loader.js";
 import { createModelProvidersReloader, type ModelProviderRegistry } from "./model-providers.js";
 import { createArtifactTools } from "./artifact-tools.js";
+import { createDistillerTools } from "./distiller-tools.js";
 import { isEnhancedFactStore, PgFactStore, type FactStore } from "./facts-store.js";
 import type { GraphStore } from "./graph-store.js";
 import { resolveStorageConfig, type StorageConfig } from "./storage-config.js";
@@ -617,6 +618,13 @@ export class PilotSwarmWorker {
         if (this.artifactStore) {
             const artifactTools = createArtifactTools({ blobStore: this.artifactStore });
             this.registerTools(artifactTools);
+        }
+
+        // Regen-distiller service-session tools (archived-transcript pager).
+        // Registered fleet-wide — any pod can host the distiller's turn — but
+        // the tool self-gates at call time on the caller's CMS service columns.
+        if (this.artifactStore && this._catalog) {
+            this.registerTools(createDistillerTools({ catalog: this._catalog, blobStore: this.artifactStore }));
         }
 
         // Auto-register resource manager tools

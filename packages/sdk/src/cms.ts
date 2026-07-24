@@ -726,7 +726,13 @@ export interface SessionCatalog {
         owner?: SessionOwnerInfo | null;
         /** Sharing level for a new ROOT session; children resolve through their root. */
         visibility?: SessionVisibility | null;
+        /** Service sessions (tree-scoped machinery, migration 0037). */
+        serviceKind?: string | null;
+        serviceOf?: string | null;
     }): Promise<void>;
+
+    /** Stamp a session as a service session post-create (migration 0037). */
+    markSessionService(sessionId: string, serviceKind: string, serviceOf: string | null): Promise<void>;
 
     /** Update one or more fields on an existing session. */
     updateSession(sessionId: string, updates: SessionRowUpdates): Promise<void>;
@@ -1222,6 +1228,18 @@ export class PgSessionCatalog implements SessionCatalog {
         } finally {
             client.release();
         }
+    }
+
+    /**
+     * Stamp a session as a service session (tree-scoped machinery, migration
+     * 0037) after creation — for callers that go through client.createSession
+     * and cannot thread opts into the create transaction.
+     */
+    async markSessionService(sessionId: string, serviceKind: string, serviceOf: string | null): Promise<void> {
+        await this.pool.query(
+            `UPDATE "${this.sql.schema}".sessions SET service_kind = $2, service_of = $3 WHERE session_id = $1`,
+            [sessionId, serviceKind, serviceOf],
+        );
     }
 
     private _splashMobileCreateSupported: boolean | null = null;

@@ -14,13 +14,28 @@ import { mergePromptSections } from "./prompt-layering.js";
 import { approvePermissionForSession } from "./permissions.js";
 import { formatSessionOwnerLabel, getSessionOwnerKind, matchesSessionOwnerFilters } from "./session-owner-utils.js";
 import { cmsRetryBestEffort, cmsRetryCritical } from "./cms-retry.js";
-import { runRegenArchive, runRegenDistill } from "./regen-worker.js";
+import {
+    archiveName,
+    artifactExists,
+    assembleRegenClosure,
+    buildMapReduceSeedPrompt,
+    deterministicPackage,
+    DISTILLER_SYSTEM_MESSAGE,
+    distillInputName,
+    distillOutputName,
+    packageName,
+    parseDistillerResponse,
+    renderBootstrap,
+    runRegenArchive,
+    runRegenDistill,
+} from "./regen-worker.js";
+import { REGEN_DISTILLER_SERVICE_KIND } from "./distiller-tools.js";
 import { computeCronAtNextFire, type CronAtSchedule } from "./cron-at.js";
 import { SpanStatusCode, trace as otelTrace } from "@opentelemetry/api";
 import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { attemptStoreRecovery, runTurnCommit, runTurnPreamble, type TurnLifecycleContext } from "./session-lifecycle.js";
 import { supportsVersionedSnapshots, writeTurnSentinel } from "./snapshot-protocol.js";
 
@@ -779,8 +794,8 @@ export function createSessionManagerProxy(ctx: any) {
         runRegenArchive(sessionId: string, epoch: number, attemptId: string) {
             return ctx.scheduleActivity("runRegenArchive", { sessionId, epoch, attemptId });
         },
-        /** DISTILL stage: ephemeral fresh-context distiller → ResumePackage artifact + bootstrap. */
-        runRegenDistill(sessionId: string, epoch: number, attemptId: string, opts?: { handoff?: string; sessionModel?: string; distillerModel?: string; archiveArtifactId?: string }) {
+        /** DISTILL (deterministic): closure package in-activity → ResumePackage artifact + bootstrap. */
+        runRegenDistill(sessionId: string, epoch: number, attemptId: string, opts?: { handoff?: string; instructions?: string; sessionModel?: string; distillerModel?: string; archiveArtifactId?: string }) {
             return ctx.scheduleActivity("runRegenDistill", { sessionId, epoch, attemptId, ...(opts ?? {}) });
         },
         /** Post-flip boundary: epoch_committed event + transcript_epoch + regen_count, one CMS transaction. */
@@ -790,6 +805,23 @@ export function createSessionManagerProxy(ctx: any) {
         /** Proven rebirth: session.regenerated event + last_regen_stats. */
         recordRegenerated(sessionId: string, payload: Record<string, unknown>) {
             return ctx.scheduleActivity("recordRegenerated", { sessionId, payload });
+        },
+        // ── Service-session distiller (1.0.68) ─────────────────
+        /** Spawn the regen-distiller service session under the tree root (idempotent per attempt). */
+        runRegenSpawnDistiller(sessionId: string, epoch: number, attemptId: string, opts?: { archiveArtifactId?: string; handoff?: string; instructions?: string; distillerModel?: string }) {
+            return ctx.scheduleActivity("runRegenSpawnDistiller", { sessionId, epoch, attemptId, ...(opts ?? {}) });
+        },
+        /** Poll the distiller service session: running | completed (with response) | failed. */
+        runRegenCheckDistiller(distillerSessionId: string) {
+            return ctx.scheduleActivity("runRegenCheckDistiller", { distillerSessionId });
+        },
+        /** Parse/validate the distiller's final message into the package (+dumps); deterministic fallback on junk. */
+        runRegenCollectDistiller(sessionId: string, epoch: number, attemptId: string, distillerSessionId: string, opts?: { archiveArtifactId?: string; handoff?: string; instructions?: string; distillerModel?: string }) {
+            return ctx.scheduleActivity("runRegenCollectDistiller", { sessionId, epoch, attemptId, distillerSessionId, ...(opts ?? {}) });
+        },
+        /** Best-effort cancel of a timed-out/failed distiller service session. */
+        runRegenCancelDistiller(distillerSessionId: string) {
+            return ctx.scheduleActivity("runRegenCancelDistiller", { distillerSessionId });
         },
     };
 }
@@ -3645,7 +3677,7 @@ export function registerActivities(
 
     runtime.registerActivity("runRegenDistill", async (
         activityCtx: any,
-        input: { sessionId: string; epoch: number; attemptId: string; handoff?: string; sessionModel?: string; distillerModel?: string; archiveArtifactId?: string },
+        input: { sessionId: string; epoch: number; attemptId: string; handoff?: string; instructions?: string; sessionModel?: string; distillerModel?: string; archiveArtifactId?: string },
     ) => {
         activityCtx.traceInfo(`[runRegenDistill] session=${input.sessionId} epoch=${input.epoch} attempt=${input.attemptId}`);
         return runRegenDistill(regenDeps(activityCtx), input);
@@ -3667,5 +3699,222 @@ export function registerActivities(
         if (!catalog) throw new Error("session regeneration requires the CMS catalog");
         activityCtx.traceInfo(`[recordRegenerated] session=${input.sessionId} epoch=${(input.payload as any)?.epoch}`);
         return catalog.recordRegenerated(input.sessionId, input.payload);
+    });
+
+    // ── Service-session distiller activities (1.0.68) ──────────
+    // The distiller is a REAL session (service_kind="regen-distiller") under
+    // the served tree's ROOT: lifecycle events, metrics, and normal sweeper
+    // cleanup apply because nothing is special-cased. Its id is deterministic
+    // per attempt so activity retries reuse the same session.
+
+    const distillerSessionIdFor = (sessionId: string, epoch: number, attemptId: string): string => {
+        const digest = createHash("sha1")
+            .update(`ps-regen-distiller:${sessionId}:e${epoch}:${attemptId}`)
+            .digest();
+        const b = Buffer.from(digest.subarray(0, 16));
+        b[6] = (b[6] & 0x0f) | 0x50; // UUIDv5 version bits
+        b[8] = (b[8] & 0x3f) | 0x80; // RFC 4122 variant
+        const h = b.toString("hex");
+        return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
+    };
+
+    const enqueueDistillerCmd = async (distillerSessionId: string, cmd: "done" | "cancel", idPrefix: string) => {
+        const sdkClient = new PilotSwarmClient(internalClientConfig());
+        try {
+            await sdkClient.start();
+            await (sdkClient as any).duroxideClient.enqueueEvent(
+                `session-${distillerSessionId}`,
+                "messages",
+                JSON.stringify({ type: "cmd", cmd, id: `${idPrefix}-${randomUUID()}` }),
+            );
+        } finally {
+            await sdkClient.stop().catch(() => {});
+        }
+    };
+
+    runtime.registerActivity("runRegenSpawnDistiller", async (
+        activityCtx: any,
+        input: { sessionId: string; epoch: number; attemptId: string; archiveArtifactId?: string; handoff?: string; instructions?: string; distillerModel?: string },
+    ) => {
+        if (!catalog) throw new Error("distiller spawn requires the CMS catalog");
+        if (!artifactStore) throw new Error("distiller spawn requires an artifact store");
+        if (!storeUrl) throw new Error("distiller spawn requires a storeUrl");
+        // Deployment kill switch: force the deterministic package fleet-wide.
+        // Read in the ACTIVITY (recorded in history) — never in the orchestration.
+        if (process.env.PILOTSWARM_REGEN_DETERMINISTIC_ONLY === "1") {
+            return { fallback: "deterministic-only" };
+        }
+        const deps = regenDeps(activityCtx);
+        const distillerSessionId = distillerSessionIdFor(input.sessionId, input.epoch, input.attemptId);
+        const existing = await catalog.getSession(distillerSessionId).catch(() => null);
+        if (existing) {
+            activityCtx.traceInfo(`[runRegenSpawnDistiller] reusing ${distillerSessionId} (attempt retry)`);
+            return { distillerSessionId, distillerModel: existing.model ?? "(existing)", reused: true };
+        }
+        // Model policy (§9): per-call override → CLUSTER DEFAULT → configured
+        // fallback. The served session's model is deliberately not in the chain.
+        const candidates: Array<string | undefined> = [input.distillerModel, undefined, deps.fallbackDistillerModel];
+        let resolvedRef: string | undefined;
+        let resolvedAny = false;
+        for (const ref of candidates) {
+            if (deps.resolveModelOptions(ref)) { resolvedRef = ref; resolvedAny = true; break; }
+        }
+        if (!resolvedAny) {
+            activityCtx.traceInfo(`[runRegenSpawnDistiller] no distiller model resolvable — caller falls back deterministically`);
+            return { fallback: "no-model" };
+        }
+        // Root ancestor: service sessions collect under the tree root so a
+        // sub-agent's distiller is still visible at the top (§9.1).
+        let rootId = input.sessionId;
+        for (let hop = 0; hop < 16; hop++) {
+            const row = await catalog.getSession(rootId).catch(() => null);
+            if (!row?.parentSessionId) break;
+            rootId = row.parentSessionId;
+        }
+        const closure = await assembleRegenClosure({ catalog, artifactStore }, input.sessionId);
+        const seed = buildMapReduceSeedPrompt({
+            servedSessionId: input.sessionId,
+            epoch: input.epoch,
+            attemptId: input.attemptId,
+            archiveArtifactId: input.archiveArtifactId || archiveName(input.epoch, input.attemptId),
+            closure,
+            ...(input.handoff ? { handoff: input.handoff } : {}),
+            ...(input.instructions ? { instructions: input.instructions } : {}),
+        });
+        // Dump the EXACT distiller input (§9 dumps) on the served session.
+        await artifactStore.uploadArtifact(
+            input.sessionId,
+            distillInputName(input.epoch, input.attemptId),
+            Buffer.from(seed, "utf8"),
+            "text/markdown",
+        );
+        const owner = await resolveEffectiveSpawnOwner((id) => catalog.getSession(id), rootId).catch(() => null);
+        const sdkClient = new PilotSwarmClient(internalClientConfig());
+        try {
+            await sdkClient.start();
+            const session = await sdkClient.createSession({
+                sessionId: distillerSessionId,
+                parentSessionId: rootId,
+                nestingLevel: 1,
+                agentId: REGEN_DISTILLER_SERVICE_KIND,
+                ...(resolvedRef ? { model: resolvedRef } : {}),
+                systemMessage: DISTILLER_SYSTEM_MESSAGE,
+                toolNames: ["read_transcript_page"],
+                ...(owner ? { owner } : {}),
+            });
+            await catalog.markSessionService(distillerSessionId, REGEN_DISTILLER_SERVICE_KIND, input.sessionId);
+            await cmsRetryBestEffort(
+                `runRegenSpawnDistiller.updateSession meta session=${distillerSessionId}`,
+                () => catalog.updateSession(distillerSessionId, {
+                    title: `Regen Distiller — ${input.sessionId.slice(0, 8)} e${input.epoch}→e${input.epoch + 1}`,
+                    agentId: REGEN_DISTILLER_SERVICE_KIND,
+                }),
+                (msg) => activityCtx.traceInfo(msg),
+            );
+            await session.send(seed, { bootstrap: true });
+        } finally {
+            await sdkClient.stop().catch(() => {});
+        }
+        activityCtx.traceInfo(`[runRegenSpawnDistiller] spawned ${distillerSessionId} under root ${rootId} model=${resolvedRef ?? "(default)"}`);
+        return { distillerSessionId, distillerModel: resolvedRef ?? "(default)" };
+    });
+
+    runtime.registerActivity("runRegenCheckDistiller", async (
+        _activityCtx: any,
+        input: { distillerSessionId: string },
+    ) => {
+        if (!catalog) throw new Error("distiller check requires the CMS catalog");
+        const row = await catalog.getSession(input.distillerSessionId).catch(() => null);
+        if (!row) return { status: "failed", reason: "missing" };
+        const rows = await catalog.getSessionEventsBefore(
+            input.distillerSessionId, Number.MAX_SAFE_INTEGER, 1, ["assistant.message"],
+        );
+        if (rows.length > 0) return { status: "completed" };
+        if (row.state === "failed" || row.state === "cancelled" || row.state === "completed") {
+            return { status: "failed", reason: row.state };
+        }
+        return { status: "running" };
+    });
+
+    runtime.registerActivity("runRegenCollectDistiller", async (
+        activityCtx: any,
+        input: { sessionId: string; epoch: number; attemptId: string; distillerSessionId: string; archiveArtifactId?: string; handoff?: string; instructions?: string; distillerModel?: string },
+    ) => {
+        if (!catalog) throw new Error("distiller collect requires the CMS catalog");
+        if (!artifactStore) throw new Error("distiller collect requires an artifact store");
+        const { sessionId, epoch, attemptId, distillerSessionId } = input;
+        const filename = packageName(epoch, attemptId);
+        const bootstrapMeta = {
+            epoch,
+            ...(input.archiveArtifactId ? { archiveArtifactId: input.archiveArtifactId } : {}),
+            packageArtifactId: filename,
+        };
+        // Attempt idempotency: a retry after the package landed re-renders from it.
+        if (await artifactExists(artifactStore, sessionId, filename)) {
+            const stored = await artifactStore.downloadArtifact(sessionId, filename);
+            const pkg = parseDistillerResponse(stored.body.toString("utf8"));
+            return {
+                packageArtifactId: filename,
+                bootstrap: renderBootstrap(pkg, bootstrapMeta),
+                distillerModel: "(reused)",
+                distillMode: "llm",
+                packageBytes: stored.body.length,
+            };
+        }
+        const rows = await catalog.getSessionEventsBefore(
+            distillerSessionId, Number.MAX_SAFE_INTEGER, 1, ["assistant.message"],
+        );
+        const responseText = rows.length > 0 ? String((rows[0].data as any)?.content ?? "") : "";
+        // Dump the RAW pre-parse output (§9 dumps) — junk that triggers the
+        // fallback stays inspectable.
+        await artifactStore.uploadArtifact(
+            sessionId,
+            distillOutputName(epoch, attemptId),
+            Buffer.from(responseText, "utf8"),
+            "text/plain",
+        );
+        let pkg;
+        let distillMode = "llm";
+        let modelLabel = input.distillerModel ?? "(default)";
+        try {
+            if (!responseText.trim()) throw new Error("distiller produced no response");
+            pkg = parseDistillerResponse(responseText);
+        } catch (err: any) {
+            activityCtx.traceInfo(`[runRegenCollectDistiller] parse failed (${err?.message || err}) — deterministic fallback`);
+            const closure = await assembleRegenClosure({ catalog, artifactStore }, sessionId);
+            pkg = deterministicPackage(closure, { ...(input.instructions ? { instructions: input.instructions } : {}) });
+            distillMode = "deterministic";
+            modelLabel = `(fallback:${modelLabel}:invalid)`;
+        }
+        const body = Buffer.from(JSON.stringify(pkg, null, 2), "utf8");
+        await artifactStore.uploadArtifact(sessionId, filename, body, "application/json");
+        // The distiller delivered — complete it so the sweeper's normal
+        // stale-terminal scan reclaims it. Best-effort: an already-terminal or
+        // unreachable distiller must never fail the collect.
+        try {
+            await enqueueDistillerCmd(distillerSessionId, "done", "distiller-complete");
+        } catch (err: any) {
+            activityCtx.traceInfo(`[runRegenCollectDistiller] complete enqueue failed (${err?.message || err})`);
+        }
+        return {
+            packageArtifactId: filename,
+            bootstrap: renderBootstrap(pkg, bootstrapMeta),
+            distillerModel: modelLabel,
+            distillMode,
+            packageBytes: body.length,
+        };
+    });
+
+    runtime.registerActivity("runRegenCancelDistiller", async (
+        activityCtx: any,
+        input: { distillerSessionId: string },
+    ) => {
+        try {
+            await enqueueDistillerCmd(input.distillerSessionId, "cancel", "distiller-cancel");
+            return { ok: true };
+        } catch (err: any) {
+            activityCtx.traceInfo(`[runRegenCancelDistiller] cancel enqueue failed (${err?.message || err})`);
+            return { ok: false };
+        }
     });
 }
