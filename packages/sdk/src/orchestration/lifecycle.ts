@@ -844,12 +844,22 @@ export function* advanceRegenPipeline(
         const fromEpoch = state.transcriptEpoch;
         const toEpoch = fromEpoch + 1;
         const r: any = regen;
+        // Clear the armed idle/affinity/cron timer (stashing wait/cron as
+        // interrupted so they re-arm after the grounding turn) — exactly as
+        // set_model does before its bootstrap CAN. Without this the reborn
+        // execution restores the timer and drain parks on it BEFORE decide
+        // dispatches the grounding bootstrap, delaying the rebirth for up to
+        // the hold window.
+        yield* captureModelSwitchInterruptedTimer(runtime, "regenerated context");
         // Drop runtime notices that describe the dead transcript before the
         // carry-list is built.
         state.runtimeModelNotice = undefined;
         const canInput: OrchestrationInput = {
             ...continueInputWithPrompt(runtime, regen.bootstrap ?? "", { bootstrapPrompt: true }),
-            requiredTool: "read_facts",
+            // Grounding is prompt-level in M1 (FIRST ACTIONS in the rendered
+            // bootstrap): a hard requiredTool would fail the grounding turn on
+            // deployments without fact tools. Enforce once fact tools are
+            // guaranteed present.
             transcriptEpoch: toEpoch,
             epochStartPending: true,
             epochStartIteration: state.iteration,

@@ -304,6 +304,10 @@ export interface SessionMetricSummary {
     tokensCacheWrite: number;
     /** Cached-prompt hit ratio (0..1), null when tokensInput is 0. Derived. */
     cacheHitRatio: number | null;
+    /** Session regeneration: completed flips (rollbacks included). */
+    regenCount: number;
+    /** Stats of the last completed regeneration (kind, stage timings, sizes). */
+    lastRegenStats: Record<string, unknown> | null;
     deletedAt: number | null;
     createdAt: number;
     updatedAt: number;
@@ -2519,6 +2523,8 @@ function rowToSessionMetricSummary(row: any): SessionMetricSummary {
         tokensCacheRead,
         tokensCacheWrite: Number(row.tokens_cache_write) || 0,
         cacheHitRatio: computeCacheHitRatio(tokensInput, tokensCacheRead),
+        regenCount: Number(row.regen_count ?? 0),
+        lastRegenStats: row.last_regen_stats ?? null,
         deletedAt: row.deleted_at ? new Date(row.deleted_at).getTime() : null,
         createdAt: new Date(row.created_at).getTime(),
         updatedAt: new Date(row.updated_at).getTime(),

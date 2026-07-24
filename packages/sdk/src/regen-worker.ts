@@ -25,6 +25,7 @@ import os from "node:os";
 import path from "node:path";
 import type { SessionCatalog, SessionEvent } from "./cms.js";
 import type { ArtifactStore } from "./session-store.js";
+import { approvePermissionForSession } from "./permissions.js";
 
 export interface RegenArchiveInput {
     sessionId: string;
@@ -78,7 +79,7 @@ const HANDOFF_MAX_CHARS = 4_000;
 const TAIL_MESSAGE_COUNT = 40;
 const TAIL_MESSAGE_CLIP = 2_000;
 const ARCHIVE_EVENT_LIMIT = 1_000;
-const DISTILL_TIMEOUT_MS = Number.parseInt(process.env.PILOTSWARM_DISTILL_TIMEOUT_MS ?? "", 10) || 180_000;
+const DISTILL_TIMEOUT_MS = Number.parseInt(process.env.PILOTSWARM_DISTILL_TIMEOUT_MS ?? "", 10) || 90_000;
 
 const MAX_SEQ = Number.MAX_SAFE_INTEGER;
 const TRANSCRIPT_TYPES = ["user.message", "assistant.message", "system.message"];
@@ -346,6 +347,41 @@ export async function runRegenDistill(
         artifactNames = (await deps.artifactStore.listArtifacts(sessionId)).map((a) => a.filename);
     } catch { /* listing degrades to empty */ }
 
+    // Deterministic fallback package from the closure alone (no LLM). This
+    // is what the reborn session boots from if the distiller model is
+    // unavailable, hangs, or returns junk — a degraded-but-real resume
+    // package always beats blocking the regeneration that exists to escape a
+    // broken transcript.
+    const fallbackPackage = (): ResumePackage => {
+        const firstUser = rows.find((e) => e.eventType === "user.message");
+        const mission = clip((firstUser?.data as any)?.content ?? "Continue the session's work.", 1_000);
+        return normalizePackage({
+            mission,
+            standingInstructions: [],
+            currentState: "Context was regenerated from a transcript summary; re-anchor via read_facts.",
+            workingSet: [],
+            commitments: [],
+            childRoster,
+            factsMap: [],
+            artifactsMap: artifactNames.map((id) => ({ id })),
+            workspaceMap: [],
+            pitfalls: [],
+            openQuestions: [],
+            recentTail: tail,
+        });
+    };
+    const finish = async (pkg: ResumePackage, model: string): Promise<RegenDistillResult> => {
+        const body = Buffer.from(JSON.stringify(pkg, null, 2), "utf8");
+        await deps.artifactStore!.uploadArtifact(sessionId, filename, body, "application/json");
+        return {
+            packageArtifactId: filename,
+            bootstrap: renderBootstrap(pkg, { epoch, archiveArtifactId: input.archiveArtifactId, packageArtifactId: filename }),
+            distillMs: Date.now() - startedAt,
+            distillerModel: model,
+            packageBytes: body.length,
+        };
+    };
+
     // Attempt idempotency: a retry after the package landed re-renders from it.
     if (await artifactExists(deps.artifactStore, sessionId, filename)) {
         const stored = await deps.artifactStore.downloadArtifact(sessionId, filename);
@@ -360,7 +396,17 @@ export async function runRegenDistill(
         };
     }
 
-    // Model: session's own → configured override → mandatory fallback.
+    // M1 ships the DETERMINISTIC distiller by default: the closure package
+    // (mission + verbatim tail + live roster + artifact pointers) is fast,
+    // dependency-free, and always usable. The LLM-enhanced distiller — which
+    // spawns an ephemeral Copilot subprocess and is the quality lever M3
+    // builds on — is opt-in via PILOTSWARM_REGEN_LLM_DISTILLER, and even then
+    // any failure or an overall-deadline breach falls back deterministically
+    // rather than blocking the flip.
+    if (process.env.PILOTSWARM_REGEN_LLM_DISTILLER !== "1") {
+        return finish(fallbackPackage(), "(deterministic)");
+    }
+
     const candidates = [input.distillerModel, input.sessionModel, deps.fallbackDistillerModel, undefined];
     let resolved: { model?: string; provider?: unknown; gitHubToken?: string } | null = null;
     let resolvedRef: string | undefined;
@@ -368,67 +414,74 @@ export async function runRegenDistill(
         resolved = deps.resolveModelOptions(ref);
         if (resolved) { resolvedRef = ref; break; }
     }
-    if (!resolved) throw new Error("no distiller model resolvable (session model, override, and fallback all failed)");
+    if (!resolved) {
+        deps.trace(`distill ${sessionId}: no distiller model resolvable — deterministic closure package`);
+        return finish(fallbackPackage(), "(fallback:no-model)");
+    }
 
     const prompt = buildDistillerPrompt(input, tail, childRoster, artifactNames);
-
-    // Ephemeral one-shot SDK session with its own COPILOT_HOME (never S's).
     const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "ps-distill-"));
-    const { CopilotClient: SdkClient } = await import("@github/copilot-sdk");
-    const sdk: any = new (SdkClient as any)({
-        ...(resolved.gitHubToken ? { gitHubToken: resolved.gitHubToken } : {}),
-        logLevel: "error",
-        env: { ...process.env, COPILOT_HOME: tempHome },
-    });
-    let responseText = "";
-    let ephemeralSessionId: string | null = null;
+    let responseText: string | null = null;
     try {
-        await sdk.start();
-        const session = await sdk.createSession({
-            ...(resolved.model ? { model: resolved.model } : {}),
-            ...(resolved.provider ? { provider: resolved.provider } : {}),
-            onPermissionRequest: () => ({ behavior: "deny" }),
-        });
-        ephemeralSessionId = session.id ?? null;
-        responseText = await new Promise<string>((resolve, reject) => {
-            const timer = setTimeout(
-                () => reject(new Error(`distill timed out after ${DISTILL_TIMEOUT_MS}ms`)),
-                DISTILL_TIMEOUT_MS,
-            );
-            let latest = "";
-            session.on((event: any) => {
-                if (event?.type === "assistant.message" && typeof event?.data?.content === "string") {
-                    latest = event.data.content;
-                }
-                if (event?.type === "session.idle") {
-                    clearTimeout(timer);
-                    resolve(latest);
-                }
-                if (event?.type === "session.error") {
-                    clearTimeout(timer);
-                    reject(new Error(String(event?.data?.message ?? "distiller session error")));
-                }
+        // ONE overall deadline covers subprocess spawn (sdk.start /
+        // createSession, which the inner listener timeout cannot bound) AND
+        // the turn. A breach rejects the whole race → deterministic fallback.
+        responseText = await withDeadline(DISTILL_TIMEOUT_MS, async () => {
+            const { CopilotClient: SdkClient } = await import("@github/copilot-sdk");
+            const sdk: any = new (SdkClient as any)({
+                ...(resolved!.gitHubToken ? { gitHubToken: resolved!.gitHubToken } : {}),
+                logLevel: "error",
+                env: { ...process.env, COPILOT_HOME: tempHome },
             });
-            session.send({ prompt }).catch((err: unknown) => {
-                clearTimeout(timer);
-                reject(err instanceof Error ? err : new Error(String(err)));
-            });
+            let ephemeralSessionId: string | null = null;
+            try {
+                await sdk.start();
+                const session: any = await sdk.createSession({
+                    ...(resolved!.model ? { model: resolved!.model } : {}),
+                    ...(resolved!.provider ? { provider: resolved!.provider } : {}),
+                    onPermissionRequest: approvePermissionForSession,
+                });
+                ephemeralSessionId = session.id ?? null;
+                return await new Promise<string>((resolve, reject) => {
+                    let latest = "";
+                    session.on("assistant.message", (event: any) => {
+                        const content = event?.data?.content;
+                        if (typeof content === "string" && content) latest = content;
+                    });
+                    session.on("session.idle", () => resolve(latest));
+                    session.on("session.error", (event: any) =>
+                        reject(new Error(String(event?.data?.message ?? "distiller session error"))));
+                    Promise.resolve(session.send({ prompt })).catch(reject);
+                });
+            } finally {
+                try { if (ephemeralSessionId) await sdk.deleteSession(ephemeralSessionId); } catch { /* best-effort */ }
+                try { await sdk.stop(); } catch { /* best-effort */ }
+            }
         });
+    } catch (err: unknown) {
+        deps.trace(`distill ${sessionId}: LLM distiller failed (${err instanceof Error ? err.message : String(err)}) — deterministic closure package`);
+        return finish(fallbackPackage(), `(fallback:${resolvedRef ?? "default"})`);
     } finally {
-        try { if (ephemeralSessionId) await sdk.deleteSession(ephemeralSessionId); } catch { /* best-effort */ }
-        try { await sdk.stop(); } catch { /* best-effort */ }
         try { fs.rmSync(tempHome, { recursive: true, force: true }); } catch { /* best-effort */ }
     }
 
-    const pkg = normalizePackage(extractJson(responseText));
-    const body = Buffer.from(JSON.stringify(pkg, null, 2), "utf8");
-    await deps.artifactStore.uploadArtifact(sessionId, filename, body, "application/json");
+    try {
+        return finish(normalizePackage(extractJson(responseText)), resolvedRef ?? "(default)");
+    } catch (err: unknown) {
+        deps.trace(`distill ${sessionId}: package validation failed (${err instanceof Error ? err.message : String(err)}) — deterministic closure package`);
+        return finish(fallbackPackage(), `(fallback:${resolvedRef ?? "default"}:invalid)`);
+    }
+}
 
-    return {
-        packageArtifactId: filename,
-        bootstrap: renderBootstrap(pkg, { epoch, archiveArtifactId: input.archiveArtifactId, packageArtifactId: filename }),
-        distillMs: Date.now() - startedAt,
-        distillerModel: resolvedRef ?? "(default)",
-        packageBytes: body.length,
-    };
+/** Reject if `fn` outlives `ms` — bounds subprocess spawn the inner timers can't. */
+async function withDeadline<T>(ms: number, fn: () => Promise<T>): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`distill deadline ${ms}ms exceeded`)), ms);
+    });
+    try {
+        return await Promise.race([fn(), deadline]);
+    } finally {
+        if (timer) clearTimeout(timer);
+    }
 }
