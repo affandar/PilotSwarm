@@ -132,6 +132,22 @@ describe("inline control tool execution", () => {
         expect(replyTool?.description).toContain("Do not only write the answer in your own chat");
     });
 
+    it("declares the regeneration tools so the model actually sees them", () => {
+        // Regression guard: runTurn() wires real handlers for regenerate_context
+        // and regenerate_agent, but the SCHEMAS the CLI server advertises to the
+        // model come only from systemToolDefs() (→ sessionConfig.tools). A tool
+        // present only in runTurn is invisible to the LLM — an agent asked to
+        // call it truthfully reports "no such tool" (was live in prod pre-f18c851).
+        const tools = ManagedSession.systemToolDefs();
+        const regenContext = tools.find((tool) => tool.name === "regenerate_context");
+        const regenAgent = tools.find((tool) => tool.name === "regenerate_agent");
+
+        expect(regenContext, "regenerate_context must be declared in systemToolDefs").toBeDefined();
+        expect(regenContext?.parameters?.required ?? []).toContain("handoff");
+        expect(regenAgent, "regenerate_agent must be declared in systemToolDefs").toBeDefined();
+        expect(regenAgent?.parameters?.required ?? []).toContain("agent_id");
+    });
+
     it("blocks user tool side effects after a wait boundary", async () => {
         const fakeSession = new FakeCopilotSession();
         const storeFact = vi.fn(async () => "stored");
