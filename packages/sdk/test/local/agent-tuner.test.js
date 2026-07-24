@@ -90,6 +90,9 @@ describe("Agent Tuner: read-only diagnostic tools", () => {
 
             const userNames = userTools.map((t) => t.name).sort();
             const expectedUser = [
+                // context_health is a self-scoped footprint sensor available to
+                // every session (regeneration M0), not just the tuner.
+                "context_health",
                 "read_agent_events",
                 "read_session_graph_edge_search_usage",
                 "read_session_graph_node_usage",

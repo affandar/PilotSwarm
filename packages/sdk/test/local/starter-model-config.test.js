@@ -28,6 +28,7 @@ describe("starter docker model config", () => {
             "claude-sonnet-5",
             "gpt-5.4",
             "gpt-5.4-mini",
+            "claude-opus-5",
             "claude-opus-4.8",
             "gpt-5.6-sol",
             "gpt-5.6-luna",
