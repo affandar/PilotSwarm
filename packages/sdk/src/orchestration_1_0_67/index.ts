@@ -1,5 +1,9 @@
 /**
- * Durable session orchestration v1.0.68.
+ * Durable session orchestration v1.0.67 — FROZEN.
+ *
+ * Frozen at the session-regeneration M1/M2 state (epoch rebirth, staged
+ * regen pipeline with in-activity distill, operator force). Replay-only
+ * maintenance from here; live development continues in ../orchestration/.
  *
  * Flat event loop backed by a KV FIFO work buffer:
  *   1. `createRuntime` builds the mutable runtime and runs startup gates.
@@ -23,7 +27,7 @@ import { DURABLE_SESSION_LATEST_VERSION } from "../orchestration-version.js";
 
 export { CURRENT_ORCHESTRATION_VERSION };
 
-export function* durableSessionOrchestration_1_0_68(
+export function* durableSessionOrchestration_1_0_67(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {

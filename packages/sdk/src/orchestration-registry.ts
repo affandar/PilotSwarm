@@ -18,8 +18,9 @@ import { durableSessionOrchestration_1_0_63 } from "./orchestration_1_0_63/index
 import { durableSessionOrchestration_1_0_64 } from "./orchestration_1_0_64/index.js";
 import { durableSessionOrchestration_1_0_65 } from "./orchestration_1_0_65/index.js";
 import { durableSessionOrchestration_1_0_66 } from "./orchestration_1_0_66/index.js";
+import { durableSessionOrchestration_1_0_67 } from "./orchestration_1_0_67/index.js";
 import { DURABLE_SESSION_LATEST_VERSION } from "./orchestration-version.js";
-import { durableSessionOrchestration_1_0_67 } from "./orchestration/index.js";
+import { durableSessionOrchestration_1_0_68 } from "./orchestration/index.js";
 
 export const DURABLE_SESSION_ORCHESTRATION_NAME = "durable-session-v2";
 export { DURABLE_SESSION_LATEST_VERSION } from "./orchestration-version.js";
@@ -48,5 +49,6 @@ export const DURABLE_SESSION_ORCHESTRATION_REGISTRY: ReadonlyArray<{
     { version: "1.0.64", handler: durableSessionOrchestration_1_0_64 },
     { version: "1.0.65", handler: durableSessionOrchestration_1_0_65 },
     { version: "1.0.66", handler: durableSessionOrchestration_1_0_66 },
-    { version: DURABLE_SESSION_LATEST_VERSION, handler: durableSessionOrchestration_1_0_67 },
+    { version: "1.0.67", handler: durableSessionOrchestration_1_0_67 },
+    { version: DURABLE_SESSION_LATEST_VERSION, handler: durableSessionOrchestration_1_0_68 },
 ];
