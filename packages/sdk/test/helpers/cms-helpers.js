@@ -158,7 +158,16 @@ export async function validateSessionAfterTurn(env, sessionId, opts = {}) {
         }
 
         // ── 3. CMS events: existence + ordering ────────────────
-        const events = await catalog.getSessionEvents(sessionId);
+        // The state poll above can return at state="running" the instant the
+        // turn starts, before the first events (session.turn_started, …) have
+        // committed. Poll briefly for the first event rather than sampling once,
+        // mirroring the state and orchestration-status polls in this function.
+        let events = await catalog.getSessionEvents(sessionId);
+        const eventsDeadline = Date.now() + 20_000;
+        while (events.length === 0 && Date.now() < eventsDeadline) {
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+            events = await catalog.getSessionEvents(sessionId);
+        }
         if (events.length === 0) {
             throw new Error(`[CMS] No events persisted for session ${sessionId.slice(0, 8)}`);
         }
