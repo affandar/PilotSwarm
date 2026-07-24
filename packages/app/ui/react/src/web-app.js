@@ -2199,13 +2199,6 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             return s && !s.isSystem && !s.isGroup;
         })
         : activeSession?.isGroup ? true : Boolean(activeSession);
-    const activeSessionActionLabel = activeSession?.isGroup
-        ? "Delete"
-        : isBulkSelection
-            ? `Terminate (${selectedCount})`
-            : activeSession?.isSystem
-                ? "Restart"
-                : "Terminate";
     const hasExplicitSelection = selectedCount > 0;
     const groupableIds = hasExplicitSelection
         ? viewState.selectedIds.filter((id) => {
@@ -2300,7 +2293,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         }),
         React.createElement(IconButton, {
             className: "ps-mini-button",
-            icon: activeSession?.isSystem ? "↻" : "⊗",
+            icon: activeSession?.isSystem ? "↻" : activeSession?.isGroup ? "⊗" : React.createElement(LifecycleGlyph),
             onClick: () => controller.handleCommand(activeSession?.isGroup ? UI_COMMANDS.DELETE_SESSION : UI_COMMANDS.OPEN_TERMINATE_PICKER).catch(() => {}),
             disabled: !canTerminate,
             label: isBulkSelection
@@ -2309,7 +2302,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                     ? (activeGroupCanDelete ? "Delete this empty group" : "This group cannot be deleted yet")
                     : activeSession?.isSystem
                         ? "Restart this system session (complete, terminate, or hard delete)"
-                        : `${activeSessionActionLabel} — mark completed, cancel, or delete`,
+                        : "Lifecycle — regenerate context, mark completed, cancel, or delete",
         }),
         actions);
 
@@ -2474,6 +2467,20 @@ function LinkGlyph() {
     },
     React.createElement("path", { d: "M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" }),
     React.createElement("path", { d: "M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" }));
+}
+
+// The "lifecycle" glyph (two curved arrows forming a cycle). Fronts the session
+// Lifecycle menu — Regenerate (rebirth) plus the terminal dispositions.
+function LifecycleGlyph() {
+    return React.createElement("svg", {
+        className: "ps-share-glyph", viewBox: "0 0 24 24", fill: "none",
+        stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round",
+        "aria-hidden": "true",
+    },
+    React.createElement("path", { d: "M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" }),
+    React.createElement("path", { d: "M3 3v5h5" }),
+    React.createElement("path", { d: "M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" }),
+    React.createElement("path", { d: "M21 21v-5h-5" }));
 }
 
 /**
@@ -4657,7 +4664,7 @@ function ModalLayer({ controller }) {
         return React.createElement("div", { className: "ps-modal-backdrop", onClick: close },
             React.createElement("div", { className: "ps-modal is-narrow", onClick: (event) => event.stopPropagation() },
                 React.createElement("div", { className: "ps-modal-header" },
-                    React.createElement("div", { className: "ps-modal-title" }, modal.title || "Terminate session"),
+                    React.createElement("div", { className: "ps-modal-title" }, modal.title || "Session Lifecycle"),
                     React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close }, "Close"),
                 ),
                 React.createElement("div", { className: "ps-modal-body", style: { padding: "12px 16px 4px" } },
@@ -4666,6 +4673,15 @@ function ModalLayer({ controller }) {
                     className: "ps-modal-body",
                     style: { padding: "10px 16px 16px", display: "flex", flexDirection: "column", gap: 8 },
                 },
+                    modal.canRegenerate
+                        ? React.createElement("button", {
+                            type: "button",
+                            className: "ps-modal-button",
+                            style: { width: "100%", justifyContent: "flex-start" },
+                            title: "Archive and distill the transcript, then rebuild context fresh at the next turn boundary. Facts, artifacts, sub-agents, sharing, schedule, and chat history are preserved.",
+                            onClick: pick("regenerate"),
+                        }, "Regenerate Context")
+                        : null,
                     React.createElement("button", {
                         type: "button",
                         className: "ps-modal-button is-primary",

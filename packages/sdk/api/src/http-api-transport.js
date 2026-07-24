@@ -150,6 +150,10 @@ export class HttpApiTransport {
         return this.api.call("setSessionModel", { sessionId, options });
     }
 
+    async regenerateSession(sessionId, options = {}) {
+        return this.api.call("regenerateSession", { sessionId, options });
+    }
+
     async stopSessionTurn(sessionId, options = {}) {
         return this.api.call("stopSessionTurn", { sessionId, options });
     }

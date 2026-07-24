@@ -4651,11 +4651,15 @@ export class PilotSwarmUiController {
             type: "ui/modal",
             modal: {
                 type: "terminatePicker",
-                title: `Terminate (${shortSessionIdValue(sessionId)})`,
+                title: `Lifecycle (${shortSessionIdValue(sessionId)})`,
                 sessionId,
                 previousFocus: state.ui.focusRegion,
                 sessionTitle: String(session.title || "").trim(),
                 state: String(session.state || "").trim(),
+                // Regenerate (epoch rebirth) is a single-session, non-system,
+                // non-group action; the picker surfaces it above the terminal
+                // dispositions when the transport supports it.
+                canRegenerate: typeof this.transport.regenerateSession === "function",
             },
         });
     }
@@ -4677,6 +4681,8 @@ export class PilotSwarmUiController {
             await this.cancelActiveSession();
         } else if (action === "delete") {
             await this.deleteActiveSession();
+        } else if (action === "regenerate") {
+            await this.regenerateActiveSession();
         }
     }
 
@@ -5149,6 +5155,8 @@ export class PilotSwarmUiController {
                 await this.completeActiveSession("Completed by user", { confirmed: true });
             } else if (modal.action === "deleteSession") {
                 await this.deleteActiveSession({ confirmed: true });
+            } else if (modal.action === "regenerateSession") {
+                await this.regenerateActiveSession({ confirmed: true });
             } else if (modal.action === "deleteArtifact") {
                 await this.deleteSelectedArtifact({ confirmed: true });
             }
@@ -6624,6 +6632,57 @@ export class PilotSwarmUiController {
         }
         await this.transport.cancelSession(sessionId);
         this.dispatch({ type: "ui/status", text: `Cancelled ${sessionId.slice(0, 8)}` });
+        await this.refreshSessions();
+    }
+
+    /**
+     * Regenerate the active session's context in place (epoch rebirth): archive
+     * the transcript, distill it into a resume package, and rebuild the Copilot
+     * session at the next turn boundary. NON-destructive — facts, artifacts,
+     * children, sharing, schedule, and chat history are preserved; only the
+     * LLM's working context is compacted and recreated. Enqueue-then-observe:
+     * the outcome arrives asynchronously as session.regenerate_* / epoch events.
+     */
+    async regenerateActiveSession({ confirmed = false } = {}) {
+        const state = this.getState();
+        const sessionId = state.sessions.activeSessionId;
+        if (!sessionId) return;
+        if (typeof this.transport.regenerateSession !== "function") {
+            this.dispatch({ type: "ui/status", text: "Session regeneration is not supported by this deployment" });
+            return;
+        }
+        const activeSession = state.sessions.byId[sessionId];
+        if (activeSession?.isGroup) {
+            this.dispatch({ type: "ui/status", text: "Groups are containers; regenerate sessions individually." });
+            return;
+        }
+        if (activeSession?.isSystem) {
+            this.dispatch({ type: "ui/status", text: "System sessions cannot be regenerated." });
+            return;
+        }
+        if (!confirmed) {
+            const label = activeSession?.title || sessionId.slice(0, 8);
+            this.dispatch({
+                type: "ui/modal",
+                modal: {
+                    type: "confirm",
+                    title: "Regenerate Session",
+                    message: `Regenerate context for "${label}"? The transcript is archived and distilled, then the session rebuilds fresh from it at the next turn boundary. Facts, artifacts, sub-agents, sharing, schedule, and chat history are preserved.`,
+                    confirmLabel: "Regenerate",
+                    action: "regenerateSession",
+                    sessionId,
+                    previousFocus: state.ui.focusRegion,
+                },
+            });
+            return;
+        }
+        try {
+            await this.transport.regenerateSession(sessionId);
+            this.dispatch({ type: "ui/status", text: `Regeneration requested for ${sessionId.slice(0, 8)} — rebuilding at the next boundary` });
+        } catch (error) {
+            this.dispatch({ type: "ui/status", text: `Regenerate failed: ${error?.message || String(error)}` });
+            return;
+        }
         await this.refreshSessions();
     }
 
