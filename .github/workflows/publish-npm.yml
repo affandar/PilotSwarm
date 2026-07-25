@@ -132,3 +132,48 @@ jobs:
               fi
             }
           fi
+
+  # Attach the packed npm tarballs to the GitHub Release as downloadable assets.
+  # This is purely additive — the npm publish above is unchanged. `npm pack`
+  # produces the exact same tarball npm publishes (same prepack hooks), so the
+  # assets are byte-identical to the registry artifacts. Consumers on networks
+  # that can't reach the public npm registry (or must wait out a mirror's
+  # quarantine window) can install straight from these URLs, e.g.
+  #   https://github.com/<owner>/<repo>/releases/download/v<X>/pilotswarm-sdk-<X>.tgz
+  # while everyone else keeps installing from npm normally.
+  attach-release-tarballs:
+    name: Attach package tarballs to the Release
+    runs-on: ubuntu-latest
+    needs: [publish-sdk, publish-horizon-store, publish-app]
+    # Only real Release events have a Release to attach to (a manual
+    # workflow_dispatch re-publish does not).
+    if: github.event_name == 'release'
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build workspaces
+        run: npm run build
+
+      - name: Pack packages
+        run: |
+          mkdir -p dist-tarballs
+          npm pack ./packages/sdk --pack-destination dist-tarballs
+          npm pack ./packages/horizon-store --pack-destination dist-tarballs
+          npm pack ./packages/app --pack-destination dist-tarballs
+          ls -l dist-tarballs
+
+      - name: Attach tarballs to the Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.event.release.tag_name }}" dist-tarballs/*.tgz --clobber
