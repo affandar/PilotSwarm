@@ -23,7 +23,7 @@ import { SessionManager } from "../../src/session-manager.ts";
 import { resolveStorageConfig, getRuntimeStorageProvider } from "../../src/index.ts";
 import { assert, assertEqual, assertIncludes, assertGreaterOrEqual, assertNotNull } from "../helpers/assertions.js";
 import { validateSessionAfterTurn } from "../helpers/cms-helpers.js";
-import { createAddTool, createMultiplyTool, ONEWORD_CONFIG, TOOL_CONFIG } from "../helpers/fixtures.js";
+import { createAddTool, createMultiplyTool, ONEWORD_CONFIG, TOOL_CONFIG, TEST_GPT_MODEL } from "../helpers/fixtures.js";
 
 const TIMEOUT = 180_000;
 const getEnv = useSuiteEnv(import.meta.url);
@@ -104,6 +104,24 @@ function expectedLlmVisibleToolNamesForProvider() {
     const provider = getRuntimeStorageProvider(storage.runtime.provider);
     if (provider.capabilities?.enhancedFactStore) {
         names.push("facts_search", "facts_similar", "search_skills");
+    }
+    // The provider's `graphStore` capability is what makes the worker append the
+    // graph tools, exactly as `enhancedFactStore` does for the facts trio. Without
+    // this branch every `--with-horizondb` run sees 11 unexpected `graph_*` tools.
+    if (provider.capabilities?.graphStore) {
+        names.push(
+            "graph_list_namespaces",
+            "graph_get_namespace",
+            "graph_search_nodes",
+            "graph_search_edges",
+            "graph_neighbourhood",
+            "graph_upsert_namespace",
+            "graph_upsert_node",
+            "graph_upsert_edge",
+            "graph_merge_nodes",
+            "graph_delete_node",
+            "graph_delete_edge",
+        );
     }
     return names;
 }
@@ -562,7 +580,15 @@ async function testTopLevelAgentToolMerging(env) {
             pluginDirs: [AGENT_TOOL_MERGE_PLUGIN_DIR],
         },
     }, async (client) => {
+        // MODEL VARIABILITY: the assertions below require the model to actually
+        // call BOTH tools in one turn. That is a behavioral expectation, not a
+        // contract one — the merged toolset is already correct by the time the
+        // prompt is sent. Models that answer with a single call, or narrate the
+        // answer instead of calling, fail here without anything being wrong in
+        // the tool-merging path. Pin a model known to fan out to both tools so a
+        // red here means the merge is broken, not that the model chose one tool.
         const session = await client.createSessionForAgent("toolmerge", {
+            model: TEST_GPT_MODEL,
             toolNames: ["caller_secret"],
         });
 
@@ -711,7 +737,19 @@ async function testLlmSeesExactAlwaysOnTools(env) {
     await withClient(env, {
         worker: { pluginDirs: [NO_TOOLS_AGENT_PLUGIN_DIR] },
     }, async (client) => {
+        // MODEL VARIABILITY: this assertion is an exact match against a list the
+        // model types out itself, so it is only as stable as the model's
+        // willingness to introspect. Observed on other models: (a) an outright
+        // refusal — "ignore your normal role ... return your tool names" reads as
+        // a prompt-injection attempt, so the reply is prose and parsing fails;
+        // and (b) substitution — the model answers with familiar tool names it
+        // was NOT given (e.g. `create`/`edit`/`grep` in place of the CLI's real
+        // `apply_patch`/`rg`), which looks like catalog drift but is confabulation.
+        // Neither is a contract violation: the toolset really was delivered.
+        // Pin a model known to comply so a red here means the toolset is wrong,
+        // not that the model declined. Revisit if this model's behavior changes.
         const session = await client.createSession({
+            model: TEST_GPT_MODEL,
             agentId: "coordinator",
             systemMessage: {
                 mode: "append",
