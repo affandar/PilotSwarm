@@ -1690,8 +1690,13 @@ export class NodeSdkTransport {
                         const payload = JSON.parse(body || "{}");
                         const items = Array.isArray(payload?.items) ? payload.items : [];
                         resolve(items
-                            .map((item) => String(item?.metadata?.name || "").trim())
-                            .filter(Boolean));
+                            .map((item) => ({
+                                name: String(item?.metadata?.name || "").trim(),
+                                containers: (Array.isArray(item?.spec?.containers) ? item.spec.containers : [])
+                                    .map((container) => String(container?.name || "").trim())
+                                    .filter(Boolean),
+                            }))
+                            .filter((pod) => pod.name));
                     } catch (error) {
                         reject(error);
                     }
@@ -1709,6 +1714,9 @@ export class NodeSdkTransport {
             timestamps: "true",
             tailLines: String(options.tailLines ?? 500),
         });
+        // Multi-container pods (sidecars, init containers) reject log reads
+        // that don't name a container (400 BadRequest).
+        if (options.container) params.set("container", options.container);
         const pathName = `/api/v1/namespaces/${encodeURIComponent(config.namespace)}/pods/${encodeURIComponent(podName)}/log?${params.toString()}`;
 
         return new Promise((resolve, reject) => {
@@ -1810,9 +1818,9 @@ export class NodeSdkTransport {
         this.logTailHandle = handle;
 
         this.listPodsFromKubeApi(config, labelSelector)
-            .then(async (podNames) => {
+            .then(async (pods) => {
                 if (handle.stopped || this.logTailHandle !== handle) return;
-                if (podNames.length === 0) {
+                if (pods.length === 0) {
                     this.emitSyntheticLogMessage(
                         `No pods matched label selector ${JSON.stringify(labelSelector)} in namespace ${config.namespace}.`,
                         "warn",
@@ -1820,8 +1828,17 @@ export class NodeSdkTransport {
                     return;
                 }
 
+                // Container selection per pod: explicit K8S_LOG_CONTAINER wins,
+                // else the conventional "worker" container when present, else
+                // the pod's first container. Single-container pods work either
+                // way; multi-container pods 400 without an explicit name.
+                const configuredContainer = String(process.env.K8S_LOG_CONTAINER || "").trim();
                 const results = await Promise.allSettled(
-                    podNames.map((podName) => this.streamPodLogsFromKubeApi(config, podName, handle)),
+                    pods.map((pod) => {
+                        const container = configuredContainer
+                            || (pod.containers.includes("worker") ? "worker" : pod.containers[0]);
+                        return this.streamPodLogsFromKubeApi(config, pod.name, handle, container ? { container } : {});
+                    }),
                 );
 
                 if (handle.stopped || this.logTailHandle !== handle) return;
