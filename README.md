@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.21** — Session regeneration (epoch rebirth): archive + distill a long-running session's transcript and rebuild its context in place, with the distiller running as a visible, read-only service session that reads the whole archive; a Lifecycle → Regenerate control, footprint/`context_health` sensor, epoch dividers and a live rebuilding chip; Claude Opus 5.0 in the GitHub Copilot catalog. New sessions use orchestration `1.0.68`.
+> **Latest release: v0.5.22** — The release pipeline now attaches each version's npm-pack tarballs as GitHub Release assets, so the packages install directly from the release (`…/releases/download/v<X>/<pkg>-<X>.tgz`) on networks where the public npm registry isn't reachable. Purely additive — npm publish is unchanged and registry consumers are unaffected; no functional changes to the packages. New sessions use orchestration `1.0.68`.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 

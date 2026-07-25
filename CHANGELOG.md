@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.22 — 2026-07-25
+
+### Release pipeline — installable GitHub Release tarballs
+
+- **Every release now attaches its npm-pack tarballs as GitHub Release assets.**
+  The publish workflow packs `pilotswarm-sdk`, `pilotswarm-horizon-store`, and
+  `pilotswarm` (byte-identical to the registry artifacts, same `prepack` hooks)
+  and uploads them to the triggering release, so the packages can be installed
+  straight from `…/releases/download/v<X>/<pkg>-<X>.tgz` on networks where the
+  public npm registry isn't reachable (or that must wait out a mirror's
+  quarantine window). Purely additive: the npm publish jobs are unchanged and
+  public-registry consumers are unaffected. No functional changes to the
+  packages; new sessions still use orchestration `1.0.68`.
+
 ## 0.5.21 — 2026-07-24
 
 ### Session regeneration — epoch rebirth (new sessions use orchestration `1.0.68`)
