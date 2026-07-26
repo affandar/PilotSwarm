@@ -972,6 +972,30 @@ const CODE_TOKEN_COLORS = {
 // pay tokenizer cost for a dumped file.
 const CODE_HIGHLIGHT_MAX_CHARS = 20000;
 
+// Tokenizing runs inside the render path, so an unmemoized transcript
+// re-highlights EVERY code block on every render (a keystroke in the
+// composer re-renders the pane). Results are content-addressed and cached;
+// the cap keeps a long-lived session from growing this without bound.
+const CODE_TOKEN_CACHE = new Map();
+const CODE_TOKEN_CACHE_MAX = 120;
+
+function tokenizeCodeCached(source, language) {
+    const key = `${language || ""}\u0000${source}`;
+    const hit = CODE_TOKEN_CACHE.get(key);
+    if (hit) {
+        // Refresh LRU position.
+        CODE_TOKEN_CACHE.delete(key);
+        CODE_TOKEN_CACHE.set(key, hit);
+        return hit;
+    }
+    const tokens = tokenizeCode(source, language);
+    CODE_TOKEN_CACHE.set(key, tokens);
+    if (CODE_TOKEN_CACHE.size > CODE_TOKEN_CACHE_MAX) {
+        CODE_TOKEN_CACHE.delete(CODE_TOKEN_CACHE.keys().next().value);
+    }
+    return tokens;
+}
+
 function tokenizeCode(source, language) {
     const lang = CODE_LANGUAGE_ALIASES[String(language || "").trim().toLowerCase()] || "default";
     const keywords = CODE_KEYWORDS[lang] || CODE_KEYWORDS.js;
@@ -1026,7 +1050,7 @@ function renderHighlightedCode(content, language, theme) {
     if (!source || source.length > CODE_HIGHLIGHT_MAX_CHARS) return source;
     let tokens;
     try {
-        tokens = tokenizeCode(source, language);
+        tokens = tokenizeCodeCached(source, language);
     } catch {
         return source;
     }
@@ -1049,23 +1073,30 @@ function renderHighlightedCode(content, language, theme) {
 
 let mermaidModulePromise = null;
 
-function loadMermaid(light) {
+function loadMermaid() {
     if (!mermaidModulePromise) {
-        mermaidModulePromise = import("mermaid").then((module) => {
-            const mermaid = module.default || module;
-            mermaid.initialize({
-                startOnLoad: false,
-                securityLevel: "strict",
-                theme: light ? "default" : "dark",
-                fontFamily: "-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif",
+        mermaidModulePromise = import("mermaid")
+            .then((module) => module.default || module)
+            .catch((error) => {
+                mermaidModulePromise = null;
+                throw error;
             });
-            return mermaid;
-        }).catch((error) => {
-            mermaidModulePromise = null;
-            throw error;
-        });
     }
     return mermaidModulePromise;
+}
+
+// initialize() must run per render, not once at import: the module promise is
+// cached, so configuring the palette only on first load left every diagram
+// frozen on whichever theme happened to be active when mermaid loaded (a
+// dark->light switch kept rendering dark diagrams until a reload).
+function configureMermaid(mermaid, light) {
+    mermaid.initialize({
+        startOnLoad: false,
+        securityLevel: "strict",
+        theme: light ? "default" : "dark",
+        fontFamily: "-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif",
+    });
+    return mermaid;
 }
 
 let mermaidRenderSeq = 0;
@@ -1093,9 +1124,10 @@ function MermaidDiagram({ code, theme, fallback }) {
         const source = String(code || "").trim();
         if (!source) return undefined;
         setFailed(false);
-        loadMermaid(light)
+        loadMermaid()
             .then((mermaid) => queueMermaidRender(async () => {
                 if (!active) return;
+                configureMermaid(mermaid, light);
                 mermaidRenderSeq += 1;
                 const id = `ps-mermaid-${mermaidRenderSeq}`;
                 // parse() first so a half-streamed diagram fails cheaply and
