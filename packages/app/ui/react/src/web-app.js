@@ -2163,6 +2163,19 @@ function StructuredBlockList({ blocks, theme, controller = null }) {
         }));
 }
 
+// Pane titles carry terminal-style bracketed runs (" [+3]", " [5f086c7c]").
+// The rich view keeps the information but drops the brackets — a web title
+// bar shows a count and an id, it does not draw them in ASCII delimiters.
+function unbracketTitleRuns(runs) {
+    if (!Array.isArray(runs)) return runs;
+    return runs.map((run) => {
+        const text = String(run?.text ?? "");
+        const match = /^(\s*)\[(.+)\](\s*)$/.exec(text);
+        if (!match) return run;
+        return { ...run, text: `${match[1]}${match[2]}${match[3]}` };
+    });
+}
+
 function Panel({ title, titleRight = null, color = "gray", focused = false, actions = null, children, theme, className = "" }) {
     const accent = resolveColor(theme, color);
     return React.createElement("section", {
@@ -3297,7 +3310,10 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
 
     return React.createElement(ScrollLinesPanel, {
         controller,
-        title: mobile ? compactTitleRuns(chrome.title, 28) : chrome.title,
+        title: (() => {
+            const baseTitle = mobile ? compactTitleRuns(chrome.title, 28) : chrome.title;
+            return richMode ? unbracketTitleRuns(baseTitle) : baseTitle;
+        })(),
         titleRight: mobile && titleRight ? compactTitleRuns(titleRight, 18) : titleRight,
         // Chat/Summary toggling lives on the top toolbar so the pane chrome
         // stays clean. The toolbar button is disabled for group sessions.
@@ -4049,7 +4065,19 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
                         }, "✕"));
                 }))
             : null,
-        React.createElement("label", { className: "ps-prompt-label" }, promptState.answerMode ? "answer" : selectedCancelling ? "cancelling" : selectedQueued ? "queued" : promptState.editingPending ? "pending" : "you"),
+        // The label carries real mode signal (answer / queued / pending /
+        // cancelling); only the idle "you" is a terminal-prompt affordance,
+        // so it is tagged for the rich view to hide.
+        (() => {
+            const promptLabelText = promptState.answerMode ? "answer"
+                : selectedCancelling ? "cancelling"
+                : selectedQueued ? "queued"
+                : promptState.editingPending ? "pending"
+                : "you";
+            return React.createElement("label", {
+                className: `ps-prompt-label${promptLabelText === "you" ? " is-default" : ""}`,
+            }, promptLabelText);
+        })(),
         React.createElement("textarea", {
             ref: inputRef,
             className: "ps-prompt-input",

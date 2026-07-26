@@ -3678,3 +3678,38 @@ body.ps-rich-ui .ps-icon-button-glyph {
   max-width: 100%;
   height: auto;
 }
+
+/* ── Rich UI: quieter chrome ───────────────────────────────────────────── */
+
+/* Per-pane accent borders (cyan chat, magenta sequence, …) are a terminal
+   convention. In the rich view every pane gets the SAME neutral border and
+   color is reserved for state — focus, and the panel title itself. */
+body.ps-rich-ui .ps-panel {
+  border-color: color-mix(in srgb, var(--ps-border) 78%, transparent);
+}
+
+body.ps-rich-ui .ps-panel-header {
+  border-bottom-color: color-mix(in srgb, var(--ps-border) 55%, transparent);
+}
+
+/* Focus is the one border that still carries the pane's accent. */
+body.ps-rich-ui .ps-panel.is-focused {
+  border-color: color-mix(in srgb, var(--ps-panel-accent, var(--ps-border)) 70%, transparent);
+}
+
+/* The composer's idle "you" prompt label is a terminal affordance; the real
+   mode signals (answer / queued / pending / cancelling) still show. */
+/* The label occupies grid column 1 of `auto minmax(0,1fr) auto`; hiding it
+   outright collapsed the input into the auto column, so drop the column
+   along with the label. */
+body.ps-rich-ui .ps-prompt-label.is-default {
+  display: none;
+}
+
+body.ps-rich-ui .ps-prompt-shell:has(.ps-prompt-label.is-default) {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+body.ps-rich-ui .ps-prompt-shell {
+  border-radius: 12px;
+}

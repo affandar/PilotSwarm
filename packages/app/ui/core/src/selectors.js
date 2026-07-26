@@ -229,7 +229,15 @@ function shouldDecorateSessionOwners(state) {
     // distinct human owner — otherwise the owner chip is pure noise on every
     // row (you are always "you"). A narrowed owner filter is an explicit
     // multi-user context, so honor that too.
-    if (state.sessions?.ownerFilter && state.sessions.ownerFilter.all !== true) return true;
+    // A narrowed filter counts as an explicit multi-user context ONLY when it
+    // names specific owners. The DEFAULT signed-in filter already sets
+    // `all: false` AND `includeShared: true` (see
+    // defaultOwnerFilterForPrincipal), so testing either of those tagged every
+    // row in a single-user deployment with a pointless "you are you" chip.
+    // Everything else falls through to counting DISTINCT owners below, which
+    // is what the chip actually communicates.
+    const ownerFilter = state.sessions?.ownerFilter;
+    if (Array.isArray(ownerFilter?.ownerKeys) && ownerFilter.ownerKeys.length > 0) return true;
     const owners = new Set();
     for (const session of Object.values(state.sessions?.byId || {})) {
         if (!session || session.isSystem || session.isGroup) continue;
