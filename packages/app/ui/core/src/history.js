@@ -24,6 +24,12 @@ export const CHAT_HISTORY_EVENT_TYPES = [
     // A refused regeneration — surfaced inline so the optimistic "regeneration
     // accepted" ack is corrected by the real outcome (e.g. cooldown/too_young).
     "session.regenerate_refused",
+    // A regeneration that was accepted and then FAILED downstream (archive or
+    // distill). Previously invisible: the tool returns an optimistic ack on
+    // enqueue, so a failure left the agent reporting success while the epoch
+    // silently never flipped. Observed live — two attempts died on
+    // ARTIFACT_TOO_LARGE with nothing shown in the transcript.
+    "session.regenerate_failed",
 ];
 
 // Build the inline transcript divider marking a session-regeneration epoch
@@ -53,6 +59,20 @@ function buildRegenRefusedItem(event) {
         kind: "regen-refused",
         role: "regen-refused",
         reason: typeof data.reason === "string" ? data.reason : "unknown",
+        time: formatTimestamp(event.createdAt),
+        createdAt: event.createdAt instanceof Date ? event.createdAt.getTime() : new Date(event.createdAt).getTime(),
+    };
+}
+
+function buildRegenFailedItem(event) {
+    const data = event?.data && typeof event.data === "object" ? event.data : {};
+    const rawError = typeof data.error === "string" ? data.error : "";
+    return {
+        id: `${event.sessionId}:${event.seq}:regen-failed`,
+        kind: "regen-failed",
+        role: "regen-failed",
+        stage: typeof data.stage === "string" ? data.stage : "unknown",
+        error: rawError,
         time: formatTimestamp(event.createdAt),
         createdAt: event.createdAt instanceof Date ? event.createdAt.getTime() : new Date(event.createdAt).getTime(),
     };
@@ -947,6 +967,10 @@ export function buildHistoryModel(events = [], options = {}) {
             chat.push(buildRegenRefusedItem(event));
             continue;
         }
+        if (event.eventType === "session.regenerate_failed") {
+            chat.push(buildRegenFailedItem(event));
+            continue;
+        }
         const activityItem = formatActivity(event);
         if (activityItem) activity.push(activityItem);
     }
@@ -1051,6 +1075,11 @@ export function appendEventToHistory(history, event) {
     }
     if (event.eventType === "session.regenerate_refused") {
         next.chat.push(buildRegenRefusedItem(event));
+        next.chat = clampHistoryItems(next.chat, loadedEventLimit);
+        return next;
+    }
+    if (event.eventType === "session.regenerate_failed") {
+        next.chat.push(buildRegenFailedItem(event));
         next.chat = clampHistoryItems(next.chat, loadedEventLimit);
         return next;
     }

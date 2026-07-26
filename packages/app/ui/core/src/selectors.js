@@ -2387,6 +2387,8 @@ export function selectChatLines(state, maxWidth = 80, options = {}) {
             lines.push(buildEpochDividerLine(message, maxWidth));
         } else if (message?.kind === "regen-refused") {
             lines.push(buildRegenRefusedLine(message, maxWidth));
+        } else if (message?.kind === "regen-failed") {
+            lines.push(buildRegenFailedLine(message, maxWidth));
         } else {
             const messageLines = buildChatMessageLines(message, maxWidth, buildOptions);
             appendChatBlockLines(lines, messageLines);
@@ -2411,7 +2413,7 @@ export function selectChatLines(state, maxWidth = 80, options = {}) {
 // knows every edge case.
 function isRichRenderableChatMessage(message) {
     if (!message) return false;
-    if (message.kind === "epoch-divider" || message.kind === "regen-refused") return false;
+    if (message.kind === "epoch-divider" || message.kind === "regen-refused" || message.kind === "regen-failed") return false;
     if (message.splash || message.thinking || message.noChrome) return false;
     if (message.role !== "user" && message.role !== "assistant") return false;
     if (message.role === "user" && parseAskedAndAnsweredExchange(message?.text || "")) return false;
@@ -2460,6 +2462,10 @@ export function selectChatBlocks(state, maxWidth = 80, options = {}) {
     for (const message of messages) {
         if (message?.kind === "epoch-divider") {
             blocks.push({ kind: "lines", variant: "divider", lines: [buildEpochDividerLine(message, maxWidth)] });
+            continue;
+        }
+        if (message?.kind === "regen-failed") {
+            blocks.push({ kind: "lines", variant: "divider", lines: [buildRegenFailedLine(message, maxWidth)] });
             continue;
         }
         if (message?.kind === "regen-refused") {
@@ -2537,6 +2543,18 @@ function buildRegenRefusedLine(message, maxWidth) {
     const text = REGEN_REFUSED_REASONS[reason] || reason.replace(/_/g, " ");
     const label = ` ↻ regeneration refused · ${text} `;
     return buildRuleLine(label, "yellow", maxWidth);
+}
+
+// A regeneration that was accepted then failed downstream. RED (vs yellow for
+// a refusal): a refusal is the system declining on purpose, a failure is the
+// pipeline breaking. Names the stage and the underlying cause, because the
+// agent's own turn will have already claimed success from the optimistic ack.
+function buildRegenFailedLine(message, maxWidth) {
+    const stage = String(message?.stage || "unknown");
+    const raw = String(message?.error || "").split("\n")[0];
+    const cause = raw.length > 120 ? `${raw.slice(0, 117)}…` : raw;
+    const label = ` ✕ regeneration failed at ${stage}${cause ? ` · ${cause}` : ""} `;
+    return buildRuleLine(label, "red", maxWidth);
 }
 
 export function selectOutboxOverlayLines(state, maxWidth = 80, options = {}) {

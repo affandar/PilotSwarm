@@ -116,3 +116,43 @@ test("session titles decode HTML entities for display", () => {
     assert.equal(decodeHtmlEntitiesForDisplay("plain title"), "plain title");
     assert.equal(decodeHtmlEntitiesForDisplay(""), "");
 });
+
+// A regeneration that is ACCEPTED and then fails downstream was invisible:
+// the tool returns an optimistic ack on enqueue, so the agent reported
+// success while the epoch never flipped. Observed live on chk — two attempts
+// died on ARTIFACT_TOO_LARGE with nothing in the transcript.
+test("a failed regeneration surfaces inline in both views", () => {
+    const model = buildHistoryModel([
+        evt(1, "user.message", { content: "regenerate please" }),
+        evt(2, "session.regenerate_failed", {
+            attemptId: "regenerate-123",
+            stage: "requested",
+            error: "Activity 'runRegenArchive' JS execution failed: Artifact too large: 1803885 bytes (max 1048576)",
+        }),
+    ], {});
+
+    const item = model.chat.find((m) => m.kind === "regen-failed");
+    assert.ok(item, "a regen-failed chat item is produced");
+    assert.equal(item.stage, "requested");
+
+    // Terminal view.
+    const lineText = selectChatLines(renderState(model), 100)
+        .flatMap((row) => (Array.isArray(row) ? row.map((seg) => seg.text || "") : [row.text || ""]))
+        .join("");
+    assert.match(lineText, /regeneration failed at requested/);
+    assert.match(lineText, /Artifact too large/);
+
+    // Rich view — routed down the line path, not rendered as a chat message.
+    const blocks = selectChatBlocks(renderState(model), 100, { tableMode: "sentinel" });
+    const failedBlock = blocks.find((b) => b.kind === "lines"
+        && b.lines.flat().map((r) => r.text || "").join("").includes("regeneration failed"));
+    assert.ok(failedBlock, "rich view renders the failure as a divider block");
+});
+
+test("regenerate_failed survives backward chat-history paging", async () => {
+    const { CHAT_HISTORY_EVENT_TYPES } = await import("../src/history.js");
+    assert.ok(
+        CHAT_HISTORY_EVENT_TYPES.includes("session.regenerate_failed"),
+        "otherwise the failure vanishes as soon as the page scrolls",
+    );
+});
