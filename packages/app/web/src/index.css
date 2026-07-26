@@ -3631,10 +3631,15 @@ body.ps-rich-ui .ps-icon-button-glyph {
   min-height: 14px;
 }
 
+/* Pushed to the far right of the message row so it never sits over the
+   start of the text, and it reveals into reserved space rather than
+   overlapping the paragraph below. */
 .ps-rich-msg-meta {
   display: inline-flex;
   align-items: baseline;
   gap: 6px;
+  margin-left: auto;
+  padding-left: 12px;
   opacity: 0;
   transition: opacity 120ms ease;
 }
@@ -3649,17 +3654,13 @@ body.ps-rich-ui .ps-icon-button-glyph {
   margin-top: 6px;
 }
 
+/* A merged turn keeps a slim header STRIP rather than collapsing to zero
+   height: at height 0 the revealed timestamp painted straight over the
+   paragraph beneath it. 13px is enough for the meta and still reads as
+   continuous prose. */
 .ps-rich-msg.is-continued .ps-rich-msg-head {
-  min-height: 0;
+  min-height: 13px;
   margin-bottom: 0;
-  height: 0;
-  overflow: visible;
-}
-
-/* Keep the hover meta reachable on a merged turn without reserving space. */
-.ps-rich-msg.is-continued .ps-rich-msg-meta {
-  position: relative;
-  top: -2px;
 }
 
 /* Rendered mermaid diagrams sit on the code-block surface but scroll on
@@ -3712,4 +3713,71 @@ body.ps-rich-ui .ps-prompt-shell:has(.ps-prompt-label.is-default) {
 
 body.ps-rich-ui .ps-prompt-shell {
   border-radius: 12px;
+}
+
+/* ── Rich UI: slim pane resizers ───────────────────────────────────────────
+   The 16px gutter was sized for a terminal grid. The grid tracks read
+   `var(--ps-resizer-track, 16px)`, so narrowing the variable narrows the
+   gutter and the hit area together. The drag affordance stays discoverable:
+   the rule brightens and the grip appears on hover. */
+
+body.ps-rich-ui {
+  --ps-resizer-track: 7px;
+}
+
+body.ps-rich-ui .ps-column-resizer {
+  width: var(--ps-resizer-track);
+}
+
+body.ps-rich-ui .ps-row-resizer {
+  height: var(--ps-resizer-track);
+}
+
+body.ps-rich-ui .ps-column-resizer::before,
+body.ps-rich-ui .ps-row-resizer::before {
+  background: color-mix(in srgb, var(--ps-border) 30%, transparent);
+  transition: background 120ms ease;
+}
+
+body.ps-rich-ui .ps-column-resizer::before {
+  top: 0;
+  bottom: 0;
+}
+
+body.ps-rich-ui .ps-row-resizer::before {
+  left: 0;
+  right: 0;
+}
+
+body.ps-rich-ui .ps-column-resizer:hover::before,
+body.ps-rich-ui .ps-column-resizer.is-dragging::before,
+body.ps-rich-ui .ps-row-resizer:hover::before,
+body.ps-rich-ui .ps-row-resizer.is-dragging::before {
+  background: color-mix(in srgb, var(--ps-panel-accent, var(--ps-border)) 70%, transparent);
+}
+
+/* The dot grip is hover-only in the rich view — the thin rule is enough of a
+   seam at rest, and the grip would not fit a 7px gutter otherwise. */
+body.ps-rich-ui .ps-column-resizer-handle,
+body.ps-rich-ui .ps-row-resizer-handle {
+  opacity: 0;
+  transform: scale(0.82);
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+body.ps-rich-ui .ps-column-resizer:hover .ps-column-resizer-handle,
+body.ps-rich-ui .ps-column-resizer:focus-visible .ps-column-resizer-handle,
+body.ps-rich-ui .ps-column-resizer.is-dragging .ps-column-resizer-handle,
+body.ps-rich-ui .ps-row-resizer:hover .ps-row-resizer-handle,
+body.ps-rich-ui .ps-row-resizer:focus-visible .ps-row-resizer-handle,
+body.ps-rich-ui .ps-row-resizer.is-dragging .ps-row-resizer-handle {
+  opacity: 1;
+  transform: scale(1);
+}
+
+/* A mermaid block that fails to parse keeps its source and states why. */
+.ps-mermaid-error {
+  margin-bottom: 4px;
+  font-size: 11.5px;
+  color: color-mix(in srgb, var(--ps-muted) 82%, var(--ps-foreground));
 }

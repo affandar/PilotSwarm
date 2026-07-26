@@ -1070,9 +1070,22 @@ function loadMermaid(light) {
 
 let mermaidRenderSeq = 0;
 
+// mermaid.render() is NOT re-entrant: it stages each diagram through shared
+// internal state, so two blocks in one message racing each other leaves one
+// of them unrendered (whichever lost the race falls back to source). Renders
+// are therefore serialized through a promise chain.
+let mermaidRenderQueue = Promise.resolve();
+
+function queueMermaidRender(task) {
+    const run = mermaidRenderQueue.then(task, task);
+    mermaidRenderQueue = run.then(() => undefined, () => undefined);
+    return run;
+}
+
 function MermaidDiagram({ code, theme, fallback }) {
     const [svg, setSvg] = React.useState(null);
     const [failed, setFailed] = React.useState(false);
+    const [errorText, setErrorText] = React.useState("");
     const light = React.useMemo(() => isThemeLight(theme), [theme]);
 
     React.useEffect(() => {
@@ -1081,7 +1094,8 @@ function MermaidDiagram({ code, theme, fallback }) {
         if (!source) return undefined;
         setFailed(false);
         loadMermaid(light)
-            .then(async (mermaid) => {
+            .then((mermaid) => queueMermaidRender(async () => {
+                if (!active) return;
                 mermaidRenderSeq += 1;
                 const id = `ps-mermaid-${mermaidRenderSeq}`;
                 // parse() first so a half-streamed diagram fails cheaply and
@@ -1089,9 +1103,9 @@ function MermaidDiagram({ code, theme, fallback }) {
                 await mermaid.parse(source);
                 const { svg: rendered } = await mermaid.render(id, source);
                 if (active) setSvg(rendered);
-            })
-            .catch(() => {
-                if (active) { setSvg(null); setFailed(true); }
+            }))
+            .catch((error) => {
+                if (active) { setSvg(null); setFailed(true); setErrorText(String(error?.message || error)); }
             });
         return () => { active = false; };
     }, [code, light]);
@@ -1103,6 +1117,14 @@ function MermaidDiagram({ code, theme, fallback }) {
             // securityLevel "strict" (HTML labels off, scripts stripped).
             dangerouslySetInnerHTML: { __html: svg },
         });
+    }
+    // A diagram mermaid cannot parse falls back to its source WITH the
+    // reason: silently showing code left "why didn't this render?" a mystery.
+    if (failed && errorText) {
+        return React.createElement("div", { className: "ps-mermaid-failed" },
+            React.createElement("div", { className: "ps-mermaid-error" },
+                `Diagram could not be rendered — ${String(errorText).split("\n")[0]}`),
+            fallback);
     }
     return fallback;
 }
@@ -5958,14 +5980,14 @@ export function PilotSwarmWebApp({ controller }) {
     const desktopWorkspace = React.createElement("div", {
         className: "ps-workspace-grid",
         style: {
-            gridTemplateColumns: `minmax(0, ${layout.leftWidth}fr) 16px minmax(0, ${layout.rightWidth}fr)`,
+            gridTemplateColumns: `minmax(0, ${layout.leftWidth}fr) var(--ps-resizer-track, 16px) minmax(0, ${layout.rightWidth}fr)`,
         },
     },
     React.createElement("div", {
         ref: mainGridRef,
         className: `ps-workspace-main-grid is-session-${sessionColumnMode}`,
         style: {
-            gridTemplateColumns: `${sessionColumnTrack} 16px minmax(14rem, 1fr)`,
+            gridTemplateColumns: `${sessionColumnTrack} var(--ps-resizer-track, 16px) minmax(14rem, 1fr)`,
         },
     },
     sessionColumnMode !== "hidden" ? React.createElement("div", {
@@ -5989,7 +6011,7 @@ export function PilotSwarmWebApp({ controller }) {
     React.createElement(ColumnResizeHandle, { controller, paneAdjust: state.paneAdjust }),
     React.createElement("div", {
         className: "ps-workspace-column",
-        style: { gridTemplateRows: `${layout.inspectorPaneHeight}fr 16px ${layout.activityPaneHeight}fr` },
+        style: { gridTemplateRows: `${layout.inspectorPaneHeight}fr var(--ps-resizer-track, 16px) ${layout.activityPaneHeight}fr` },
     },
     React.createElement("div", {
         className: "ps-workspace-pane-slot",
