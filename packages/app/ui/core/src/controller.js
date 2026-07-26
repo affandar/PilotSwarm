@@ -3870,7 +3870,7 @@ export class PilotSwarmUiController {
     }
 
     setChatViewMode(mode) {
-        if (mode !== "summary" && mode !== "transcript") return;
+        if (mode !== "summary" && mode !== "transcript" && mode !== "rich") return;
         if (this.getActiveSession()?.isGroup) return;
         this.dispatch({ type: "ui/chatViewMode", mode });
     }

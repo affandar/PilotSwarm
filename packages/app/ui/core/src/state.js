@@ -129,7 +129,7 @@ export function createInitialState({ mode = "local", branding = null, themeId = 
             inspectorTab: INSPECTOR_TABS[0],
             sequenceExpandedTurns: [],
             sequenceSelectedTurn: null,
-            chatViewMode: chatViewMode === "summary" ? "summary" : "transcript",
+            chatViewMode: (chatViewMode === "summary" || chatViewMode === "rich") ? chatViewMode : "transcript",
             statsViewMode: "session",
             prompt: "",
             promptCursor: 0,

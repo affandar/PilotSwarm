@@ -1374,7 +1374,12 @@ function prefixRuns(text, color = "gray", options = {}) {
     }];
 }
 
-function buildChatMessagePrefix(message, options = {}) {
+// Header facts for one chat message — speaker label, label color, delivery
+// glyph, and timestamp — extracted from buildChatMessagePrefix so the rich
+// (block) chat renderer can consume the same labeling rules without the
+// terminal run/prefix shape. Returns { time, glyph, glyphColor, roleLabel,
+// roleColor }.
+function describeChatMessageHeader(message, options = {}) {
     const time = formatTimestamp(message?.createdAt || message?.time);
     // A user.message is labeled from the CURRENT VIEWER's perspective: "You"
     // for the viewer's own messages, the sender's name for anyone else. When
@@ -1459,6 +1464,11 @@ function buildChatMessagePrefix(message, options = {}) {
             : message?.role === "system"
                 ? "yellow"
                 : "white";
+    return { time, glyph, glyphColor, roleLabel, roleColor };
+}
+
+function buildChatMessagePrefix(message, options = {}) {
+    const { time, glyph, glyphColor, roleLabel, roleColor } = describeChatMessageHeader(message, options);
     const prefix = time ? `[${time}] ` : "";
     const runs = [...prefixRuns(prefix, "gray")];
     if (glyph) {
@@ -2317,6 +2327,93 @@ export function selectChatLines(state, maxWidth = 80, options = {}) {
         }
     }
     return lines.length > 0 ? lines : [{ text: "No messages yet.", color: "gray" }];
+}
+
+// True when a chat message is plain user/assistant prose the rich (block)
+// renderer can format as markdown directly. Everything with terminal-era
+// special handling — splash art, thinking cards, chrome-less summaries,
+// system/PilotSwarm cards, asked-and-answered exchanges, embedded
+// [SYSTEM: …] notice segments — stays on the line renderer, which already
+// knows every edge case.
+function isRichRenderableChatMessage(message) {
+    if (!message) return false;
+    if (message.kind === "epoch-divider" || message.kind === "regen-refused") return false;
+    if (message.splash || message.thinking || message.noChrome) return false;
+    if (message.role !== "user" && message.role !== "assistant") return false;
+    if (message.role === "user" && parseAskedAndAnsweredExchange(message?.text || "")) return false;
+    const segments = splitSystemNoticeSegments(message?.text || "");
+    if (segments.some((segment) => segment.kind === "system")) return false;
+    return true;
+}
+
+/**
+ * Message-level view of the active chat for the rich (desktop-style) web
+ * renderer. Returns an ordered array of blocks:
+ *
+ *   { kind: "message", id, role, header, text, pendingPhase, attachments }
+ *     — plain user/assistant prose. `header` is describeChatMessageHeader()
+ *       output; `text` is the artifact-link-decorated markdown source the
+ *       renderer formats itself; `attachments` is { sessionId, attachments }
+ *       (the sentinel shape) or null.
+ *
+ *   { kind: "lines", variant, lines }
+ *     — everything else (splash, thinking cards, system cards, dividers),
+ *       pre-rendered through the exact same line builders the terminal
+ *       transcript uses, so no edge case has two implementations.
+ *
+ * The TUI never calls this; selectChatLines remains the terminal path.
+ */
+export function selectChatBlocks(state, maxWidth = 80, options = {}) {
+    const messages = selectActiveChat(state);
+    if (!messages || messages.length === 0) return [];
+
+    const viewerKey = ownerKeyForOwner(state?.auth?.principal);
+    const activeSessionId = state?.sessions?.activeSessionId;
+    const activeSession = activeSessionId ? state?.sessions?.byId?.[activeSessionId] : null;
+    const ownerKey = ownerKeyForOwner(activeSession?.owner);
+    const sharedContext = Boolean(activeSession && (
+        (activeSession.visibility && activeSession.visibility !== "private")
+        || (ownerKey && viewerKey && ownerKey !== viewerKey)
+    ));
+    const buildOptions = {
+        ...(options?.tableMode ? { tableMode: options.tableMode } : {}),
+        ...(viewerKey ? { viewerKey } : {}),
+        ...(ownerKey ? { ownerKey } : {}),
+        ...(sharedContext ? { sharedContext: true } : {}),
+    };
+
+    const blocks = [];
+    for (const message of messages) {
+        if (message?.kind === "epoch-divider") {
+            blocks.push({ kind: "lines", variant: "divider", lines: [buildEpochDividerLine(message, maxWidth)] });
+            continue;
+        }
+        if (message?.kind === "regen-refused") {
+            blocks.push({ kind: "lines", variant: "divider", lines: [buildRegenRefusedLine(message, maxWidth)] });
+            continue;
+        }
+        if (isRichRenderableChatMessage(message)) {
+            const attachmentLines = buildAttachmentChipLines(message, { tableMode: "sentinel" });
+            const attachmentSentinel = attachmentLines.find((line) => line?.kind === "imageAttachments") || null;
+            blocks.push({
+                kind: "message",
+                id: message?.id ?? null,
+                role: message.role,
+                header: describeChatMessageHeader(message, buildOptions),
+                text: decorateArtifactLinksForChat(message?.text || ""),
+                pendingPhase: message?.pendingPhase || null,
+                attachments: attachmentSentinel
+                    ? { sessionId: attachmentSentinel.sessionId, attachments: attachmentSentinel.attachments }
+                    : null,
+            });
+            continue;
+        }
+        const lines = buildChatMessageLines(message, maxWidth, buildOptions);
+        if (lines.length > 0) {
+            blocks.push({ kind: "lines", variant: "event", lines });
+        }
+    }
+    return blocks;
 }
 
 // A centered inline rule ("──── label ────") for transcript markers. The dash

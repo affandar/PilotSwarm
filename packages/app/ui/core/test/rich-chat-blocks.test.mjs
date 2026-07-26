@@ -1,0 +1,104 @@
+// selectChatBlocks — the message-level view behind the portal's rich
+// (desktop-style) chat renderer. Plain user/assistant prose comes through as
+// { kind: "message" } blocks carrying raw markdown + header facts; everything
+// with terminal-era special handling (system cards, dividers, splash) stays
+// pre-rendered as { kind: "lines" } through the same builders selectChatLines
+// uses. The TUI never calls this selector.
+import test from "node:test";
+import assert from "node:assert/strict";
+import { appReducer, buildHistoryModel, createInitialState, selectChatBlocks, selectChatLines } from "../src/index.js";
+
+function evt(seq, eventType, data) {
+    return { sessionId: "s1", seq, eventType, data, createdAt: 1_700_000_000_000 + seq * 1000 };
+}
+
+function renderState(history) {
+    return {
+        sessions: { activeSessionId: "s1", byId: { s1: { sessionId: "s1" } } },
+        history: { bySessionId: new Map([["s1", history]]) },
+        auth: {},
+        ui: {},
+        branding: {},
+    };
+}
+
+test("plain user/assistant prose becomes message blocks with raw markdown", () => {
+    const model = buildHistoryModel([
+        evt(1, "user.message", { content: "run the **tests** please" }),
+        evt(2, "assistant.message", { content: "## Results\n\nAll `103` passed." }),
+    ], {});
+    const blocks = selectChatBlocks(renderState(model), 80, { tableMode: "sentinel" });
+
+    assert.equal(blocks.length, 2);
+    assert.equal(blocks[0].kind, "message");
+    assert.equal(blocks[0].role, "user");
+    assert.match(blocks[0].text, /run the \*\*tests\*\* please/);
+    assert.equal(blocks[0].header.roleLabel, "You");
+    assert.ok(blocks[0].header.time, "user message header carries a timestamp");
+
+    assert.equal(blocks[1].kind, "message");
+    assert.equal(blocks[1].role, "assistant");
+    assert.match(blocks[1].text, /## Results/, "markdown reaches the renderer unrendered");
+    assert.equal(blocks[1].header.roleLabel, "Agent");
+});
+
+test("epoch dividers and system-notice messages stay on the line path", () => {
+    const model = buildHistoryModel([
+        evt(1, "user.message", { content: "before" }),
+        evt(2, "session.epoch_committed", { fromEpoch: 0, toEpoch: 1, turnsArchived: 2 }),
+        // Prose with an embedded [SYSTEM: …] segment — buildChatMessageLines
+        // owns the split, so the whole message stays on the line path.
+        evt(3, "user.message", { content: "resuming now\n[SYSTEM: sub-agent finished]" }),
+    ], {});
+    const blocks = selectChatBlocks(renderState(model), 80, { tableMode: "sentinel" });
+
+    const kinds = blocks.map((block) => block.kind);
+    // buildHistoryModel strips [SYSTEM: …] segments before chat, so the third
+    // message reaches the selector as plain prose and rich-renders; the
+    // classifier's system-segment guard covers selector-injected messages
+    // (pending questions, error cards) that never pass through history.
+    assert.deepEqual(kinds, ["message", "lines", "message"]);
+    assert.equal(blocks[1].variant, "divider");
+    const dividerText = blocks[1].lines.flat().map((run) => run.text || "").join("");
+    assert.match(dividerText, /context regenerated/);
+    assert.equal(blocks[2].text, "resuming now");
+});
+
+// "rich" must be accepted by EVERY gate on the chatViewMode path. Missing the
+// reducer's guard made the toolbar toggle a silent no-op: the controller
+// allowed the mode, dispatched, and the reducer dropped the action.
+test("rich is a first-class chatViewMode through reducer and boot state", () => {
+    const initial = createInitialState({});
+    assert.equal(initial.ui.chatViewMode, "transcript");
+
+    const rich = appReducer(initial, { type: "ui/chatViewMode", mode: "rich" });
+    assert.equal(rich.ui.chatViewMode, "rich", "reducer must accept the rich mode");
+
+    const back = appReducer(rich, { type: "ui/chatViewMode", mode: "transcript" });
+    assert.equal(back.ui.chatViewMode, "transcript", "toggling back still works");
+
+    // Unknown modes are still rejected.
+    assert.equal(appReducer(rich, { type: "ui/chatViewMode", mode: "bogus" }).ui.chatViewMode, "rich");
+
+    // Survives a reload (persisted profile settings → createInitialState).
+    assert.equal(createInitialState({ chatViewMode: "rich" }).ui.chatViewMode, "rich");
+    assert.equal(createInitialState({ chatViewMode: "bogus" }).ui.chatViewMode, "transcript");
+});
+
+test("empty chat yields no blocks and line/block parity holds for prose", () => {
+    assert.deepEqual(selectChatBlocks(renderState(buildHistoryModel([], {})), 80), []);
+
+    // Sanity: a transcript that renders in selectChatLines also renders in
+    // blocks — nothing silently dropped by classification.
+    const model = buildHistoryModel([
+        evt(1, "user.message", { content: "hello" }),
+        evt(2, "assistant.message", { content: "hi there" }),
+    ], {});
+    const lineText = selectChatLines(renderState(model), 80)
+        .flatMap((row) => (Array.isArray(row) ? row.map((seg) => seg.text || "") : [row.text || ""]))
+        .join("\n");
+    assert.match(lineText, /hello/);
+    assert.match(lineText, /hi there/);
+    const blocks = selectChatBlocks(renderState(model), 80);
+    assert.equal(blocks.filter((b) => b.kind === "message").length, 2);
+});

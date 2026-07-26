@@ -3142,3 +3142,145 @@ body.is-resizing-pane-y * {
   height: 18px;
   display: block;
 }
+
+/* ── Rich chat (desktop-style transcript, chatViewMode="rich") ─────────────
+   Prose switches to a proportional reading face inside a centered measure;
+   code, tables, and terminal-era line blocks (cards, dividers, splash) keep
+   the monospace stack so they render exactly as the transcript view does. */
+
+.ps-chat-panel.is-rich .ps-scroll-panel {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter,
+    "Helvetica Neue", Arial, sans-serif;
+  font-size: 14.5px;
+  line-height: 1.65;
+}
+
+.ps-rich-chat {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  padding: 14px 22px 28px;
+}
+
+.ps-rich-msg {
+  display: flex;
+  flex-direction: column;
+  margin-top: 18px;
+  min-width: 0;
+}
+
+.ps-rich-msg-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 5px;
+  font-size: 11.5px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.ps-rich-msg-label {
+  font-weight: 700;
+}
+
+.ps-rich-msg-time,
+.ps-rich-msg-glyph {
+  font-size: 11px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.ps-rich-msg-time {
+  color: var(--ps-muted);
+}
+
+/* User messages: right-shifted tinted bubble, Claude-desktop style. */
+.ps-rich-msg.is-user {
+  align-self: flex-end;
+  align-items: flex-end;
+  max-width: 78%;
+}
+
+.ps-rich-msg.is-user .ps-rich-msg-body {
+  background: color-mix(in srgb, var(--ps-selection-background) 13%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ps-selection-background) 26%, transparent);
+  border-radius: 14px 14px 4px 14px;
+  padding: 9px 15px;
+}
+
+.ps-rich-msg.is-pending .ps-rich-msg-body,
+.ps-rich-msg.is-queued .ps-rich-msg-body {
+  opacity: 0.75;
+}
+
+/* Assistant messages: full-measure prose, no chrome. */
+.ps-rich-msg.is-assistant {
+  align-self: stretch;
+}
+
+.ps-rich-msg-body {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Markdown block rhythm inside a rich message. */
+.ps-rich-msg-body .ps-markdown-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6em;
+  padding: 0;
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.ps-rich-msg-body .ps-md-heading.is-h1 { font-size: 1.35em; margin-top: 0.4em; }
+.ps-rich-msg-body .ps-md-heading.is-h2 { font-size: 1.2em; margin-top: 0.35em; }
+.ps-rich-msg-body .ps-md-heading.is-h3 { font-size: 1.08em; margin-top: 0.3em; }
+
+.ps-rich-msg-body .ps-md-list {
+  margin: 0;
+  padding-left: 1.4em;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25em;
+}
+
+/* Left rule + muted text, no background band — a full-width tinted block
+   reads as a callout rather than a quote once the pane is full width. */
+.ps-rich-msg-body .ps-md-quote {
+  margin: 0;
+  padding: 0.1em 0 0.1em 0.9em;
+  border-left: 3px solid color-mix(in srgb, var(--ps-border) 60%, transparent);
+  background: none;
+  color: var(--ps-muted);
+}
+
+/* Code keeps the terminal face — slightly smaller than prose. */
+.ps-rich-msg-body .ps-md-code-pre,
+.ps-rich-msg-body .ps-md-inline-code,
+.ps-rich-msg-body .ps-md-table {
+  font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas,
+    Liberation Mono, monospace;
+  font-size: 12.5px;
+}
+
+.ps-rich-msg-body .ps-md-code-block {
+  border-radius: var(--ps-radius-md);
+  overflow: hidden;
+}
+
+/* Terminal-era blocks (cards, dividers, thinking, splash) render through the
+   structured line renderer — pin them back to the monospace metrics so they
+   look identical to the transcript view. */
+.ps-rich-lineblock {
+  margin-top: 14px;
+  font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas,
+    Liberation Mono, monospace;
+  font-size: var(--ps-font-size-base);
+  line-height: var(--ps-line-height-base);
+}
+
+.ps-rich-lineblock.is-divider {
+  opacity: 0.9;
+  text-align: center;
+}

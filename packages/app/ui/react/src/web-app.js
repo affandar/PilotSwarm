@@ -22,6 +22,7 @@ import {
     selectArtifactPickerModal,
     selectArtifactUploadModal,
     selectLiveActivityLines,
+    selectChatBlocks,
     selectChatLines,
     selectChatPaneChrome,
     selectOutboxOverlayLines,
@@ -208,7 +209,7 @@ function normalizeProfileSettings(settings) {
         const id = candidate.activeSessionId == null ? null : String(candidate.activeSessionId).trim();
         normalized.activeSessionId = id || null;
     }
-    if (candidate.chatViewMode === "summary" || candidate.chatViewMode === "transcript") {
+    if (candidate.chatViewMode === "summary" || candidate.chatViewMode === "transcript" || candidate.chatViewMode === "rich") {
         normalized.chatViewMode = candidate.chatViewMode;
     }
     return normalized;
@@ -890,6 +891,151 @@ function usePanePixelScroll(ref, scrollOffset, paneKey, controller) {
     }, [controller, paneKey, ref]);
 }
 
+// ── Code syntax highlighting ──────────────────────────────────────────────
+// A dependency-free tokenizer. Vendoring a real highlighter (highlight.js,
+// prism) is not worth the offline-vendor cost for what fenced blocks in a
+// chat transcript need: comments, strings, numbers, keywords, and call
+// targets. Token colors resolve through the active THEME (same path as
+// markdown links), so every theme — light or dark — stays coherent.
+
+const CODE_LANGUAGE_ALIASES = {
+    js: "js", jsx: "js", mjs: "js", cjs: "js", javascript: "js",
+    ts: "js", tsx: "js", typescript: "js",
+    json: "json", jsonc: "json",
+    py: "python", python: "python",
+    sh: "shell", bash: "shell", zsh: "shell", shell: "shell", console: "shell",
+    sql: "sql", postgres: "sql", postgresql: "sql", psql: "sql",
+    rs: "rust", rust: "rust",
+    go: "go", golang: "go",
+    yaml: "yaml", yml: "yaml",
+    css: "css", scss: "css",
+};
+
+const CODE_KEYWORDS = {
+    js: new Set(["async", "await", "break", "case", "catch", "class", "const", "continue", "default", "delete", "do", "else", "export", "extends", "finally", "for", "from", "function", "if", "import", "in", "instanceof", "let", "new", "of", "return", "static", "super", "switch", "this", "throw", "try", "typeof", "var", "void", "while", "yield", "true", "false", "null", "undefined", "interface", "type", "enum", "implements", "readonly", "public", "private", "protected"]),
+    python: new Set(["and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del", "elif", "else", "except", "finally", "for", "from", "global", "if", "import", "in", "is", "lambda", "None", "nonlocal", "not", "or", "pass", "raise", "return", "True", "False", "try", "while", "with", "yield", "self"]),
+    shell: new Set(["if", "then", "else", "elif", "fi", "for", "while", "do", "done", "case", "esac", "in", "function", "return", "export", "local", "set", "echo", "cd", "sudo", "source"]),
+    sql: new Set(["select", "from", "where", "insert", "into", "values", "update", "set", "delete", "create", "table", "alter", "drop", "index", "join", "left", "right", "inner", "outer", "on", "group", "order", "by", "having", "limit", "offset", "and", "or", "not", "null", "as", "distinct", "union", "all", "case", "when", "then", "else", "end", "with", "returning", "primary", "key", "foreign", "references", "default", "constraint", "begin", "commit", "rollback"]),
+    rust: new Set(["as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref", "return", "self", "Self", "static", "struct", "super", "trait", "true", "type", "unsafe", "use", "where", "while"]),
+    go: new Set(["break", "case", "chan", "const", "continue", "default", "defer", "else", "fallthrough", "for", "func", "go", "goto", "if", "import", "interface", "map", "package", "range", "return", "select", "struct", "switch", "type", "var", "nil", "true", "false"]),
+    json: new Set(["true", "false", "null"]),
+    yaml: new Set(["true", "false", "null", "yes", "no"]),
+    css: new Set(["important", "media", "keyframes", "import", "supports"]),
+};
+
+// Scanner rules per family. Order matters: comments and strings first so a
+// `#` or quote inside them never re-enters another rule. Sticky (`y`) so a
+// rule only ever matches at the current cursor.
+function codeScannerRules(lang) {
+    const hashComment = { type: "comment", re: /#[^\n]*/y };
+    const slashComment = { type: "comment", re: /\/\/[^\n]*|\/\*[\s\S]*?\*\//y };
+    const dashComment = { type: "comment", re: /--[^\n]*|\/\*[\s\S]*?\*\//y };
+    const number = { type: "number", re: /\b\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?\b|\b0[xX][0-9a-fA-F]+\b/y };
+    const identifier = { type: "identifier", re: /[A-Za-z_$][\w$]*/y };
+    const dq = { type: "string", re: /"(?:\\.|[^"\\])*"?/y };
+    const sq = { type: "string", re: /'(?:\\.|[^'\\])*'?/y };
+    const backtick = { type: "string", re: /`(?:\\.|[^`\\])*`?/y };
+    const pyTriple = { type: "string", re: /"""[\s\S]*?"""|'''[\s\S]*?'''/y };
+
+    switch (lang) {
+        case "python":
+            return [hashComment, pyTriple, dq, sq, number, identifier];
+        case "shell":
+            return [hashComment, dq, sq, number, identifier];
+        case "sql":
+            return [dashComment, sq, dq, number, identifier];
+        case "yaml":
+            return [hashComment, dq, sq, number, identifier];
+        case "json":
+            return [dq, number, identifier];
+        case "css":
+            return [{ type: "comment", re: /\/\*[\s\S]*?\*\//y }, dq, sq, number, identifier];
+        default:
+            return [slashComment, dq, sq, backtick, number, identifier];
+    }
+}
+
+const CODE_TOKEN_COLORS = {
+    comment: "gray",
+    string: "green",
+    number: "yellow",
+    keyword: "magenta",
+    fn: "cyan",
+};
+
+// Blocks past this size skip highlighting — a chat transcript should never
+// pay tokenizer cost for a dumped file.
+const CODE_HIGHLIGHT_MAX_CHARS = 20000;
+
+function tokenizeCode(source, language) {
+    const lang = CODE_LANGUAGE_ALIASES[String(language || "").trim().toLowerCase()] || "default";
+    const keywords = CODE_KEYWORDS[lang] || CODE_KEYWORDS.js;
+    const rules = codeScannerRules(lang);
+    const tokens = [];
+    let cursor = 0;
+    let plainStart = 0;
+
+    const flushPlain = (end) => {
+        if (end > plainStart) tokens.push({ type: "plain", text: source.slice(plainStart, end) });
+    };
+
+    while (cursor < source.length) {
+        let hit = null;
+        for (const rule of rules) {
+            rule.re.lastIndex = cursor;
+            const match = rule.re.exec(source);
+            if (match && match.index === cursor && match[0].length > 0) {
+                hit = { type: rule.type, text: match[0] };
+                break;
+            }
+        }
+        if (!hit) {
+            cursor += 1;
+            continue;
+        }
+        let type = hit.type;
+        if (type === "identifier") {
+            if (keywords.has(hit.text)) {
+                type = "keyword";
+            } else {
+                // A call target reads as a function; anything else is plain.
+                const after = source.slice(cursor + hit.text.length);
+                type = /^\s*\(/.test(after) ? "fn" : "plain";
+            }
+        }
+        if (type === "plain") {
+            cursor += hit.text.length;
+            continue;
+        }
+        flushPlain(cursor);
+        tokens.push({ type, text: hit.text });
+        cursor += hit.text.length;
+        plainStart = cursor;
+    }
+    flushPlain(source.length);
+    return tokens;
+}
+
+function renderHighlightedCode(content, language, theme) {
+    const source = String(content || "");
+    if (!source || source.length > CODE_HIGHLIGHT_MAX_CHARS) return source;
+    let tokens;
+    try {
+        tokens = tokenizeCode(source, language);
+    } catch {
+        return source;
+    }
+    return tokens.map((token, index) => {
+        const color = CODE_TOKEN_COLORS[token.type];
+        if (!color) return React.createElement(React.Fragment, { key: `t:${index}` }, token.text);
+        return React.createElement("span", {
+            key: `t:${index}`,
+            className: `ps-code-token is-${token.type}`,
+            style: { color: resolveColor(theme, color) || undefined },
+        }, token.text);
+    });
+}
+
 function renderInlineMarkdown(source, theme, keyPrefix = "md") {
     return tokenizeInlineMarkdown(source).map((token, index) => {
         const key = `${keyPrefix}:${index}`;
@@ -1189,7 +1335,7 @@ function MarkdownPreviewContent({ content, theme }) {
                 return React.createElement("section", { key: `block:${index}`, className: "ps-md-code-block" },
                     React.createElement("div", { className: "ps-md-code-header" }, block.language || "text"),
                     React.createElement("pre", { className: "ps-md-code-pre" },
-                        React.createElement("code", null, block.content)));
+                        React.createElement("code", null, renderHighlightedCode(block.content, block.language, theme))));
             }
             if (block.type === "blockquote") {
                 return React.createElement("blockquote", { key: `block:${index}`, className: "ps-md-quote" },
@@ -1661,6 +1807,61 @@ function StructuredChatBlocks({ lines, theme, controller = null }) {
     return React.createElement(StructuredBlockList, { blocks, theme, controller });
 }
 
+// Rich (desktop-style) chat transcript. Consumes selectChatBlocks: plain
+// user/assistant prose renders as proportional-type markdown messages;
+// every other block (splash, thinking cards, system cards, epoch dividers)
+// reuses the structured line renderer so the terminal-era special cases
+// keep exactly one implementation.
+function RichChatBlocks({ blocks, theme, controller = null }) {
+    return React.createElement("div", { className: "ps-rich-chat" },
+        (blocks || []).map((block, index) => {
+            if (block.kind === "message") {
+                const header = block.header || {};
+                const roleClass = block.role === "user" ? " is-user" : " is-assistant";
+                const pendingClass = block.pendingPhase ? ` is-${block.pendingPhase}` : "";
+                const text = String(block.text || "");
+                return React.createElement("article", {
+                    key: block.id != null ? `msg:${block.id}` : `msg:${index}`,
+                    className: `ps-rich-msg${roleClass}${pendingClass}`,
+                },
+                    React.createElement("header", { className: "ps-rich-msg-head" },
+                        React.createElement("span", {
+                            className: "ps-rich-msg-label",
+                            style: { color: resolveColor(theme, header.roleColor) || undefined },
+                        }, header.roleLabel || (block.role === "user" ? "You" : "Agent")),
+                        header.glyph
+                            ? React.createElement("span", {
+                                className: "ps-rich-msg-glyph",
+                                title: block.pendingPhase || undefined,
+                                style: { color: resolveColor(theme, header.glyphColor) || undefined },
+                            }, header.glyph)
+                            : null,
+                        header.time
+                            ? React.createElement("span", { className: "ps-rich-msg-time" }, header.time)
+                            : null),
+                    text.trim()
+                        ? React.createElement("div", { className: "ps-rich-msg-body" },
+                            React.createElement(MarkdownPreviewContent, { content: text, theme }))
+                        : null,
+                    block.attachments
+                        ? React.createElement(ArtifactImageStrip, {
+                            controller,
+                            sessionId: block.attachments.sessionId,
+                            attachments: block.attachments.attachments,
+                        })
+                        : null);
+            }
+            return React.createElement("div", {
+                key: `lines:${index}`,
+                className: `ps-rich-lineblock is-${block.variant || "event"}`,
+            }, React.createElement(StructuredChatBlocks, {
+                lines: normalizeLines(block.lines || []),
+                theme,
+                controller,
+            }));
+        }));
+}
+
 // Authenticated artifact thumbnails: bytes are fetched through the transport
 // (Bearer token) and served to <img> as object URLs. Module-level cache so
 // scrolling the transcript doesn't refetch; oldest entries are revoked at cap.
@@ -1770,7 +1971,7 @@ function StructuredBlockList({ blocks, theme, controller = null }) {
                 return React.createElement("section", { key: `code:${index}`, className: "ps-md-code-block ps-chat-code-block" },
                     React.createElement("div", { className: "ps-md-code-header" }, block.language || "text"),
                     React.createElement("pre", { className: "ps-md-code-pre" },
-                        React.createElement("code", null, block.content || "")));
+                        React.createElement("code", null, renderHighlightedCode(block.content || "", block.language, theme))));
             }
 
             if (block.type === "card") {
@@ -2831,10 +3032,24 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         () => appendAnimatedDotsToRuns(chrome.titleRight, chrome.animateTitleRight ? animatedDots : ""),
         [animatedDots, chrome.animateTitleRight, chrome.titleRight],
     );
-    const lines = React.useMemo(
-        () => selectChatLines(selectorState, viewState.contentWidth, { tableMode: "sentinel" }),
-        [selectorState, viewState.contentWidth],
+    const richMode = viewState.chatViewMode === "rich" && !viewState.activeSessionIsGroup;
+    const richBlocks = React.useMemo(
+        () => (richMode ? selectChatBlocks(selectorState, viewState.contentWidth, { tableMode: "sentinel" }) : null),
+        [richMode, selectorState, viewState.contentWidth],
     );
+    const lines = React.useMemo(() => {
+        if (richBlocks) {
+            // Rich mode paints from `richBlocks` via renderBody; these
+            // pseudo-lines exist only as the scroll-sync change signal
+            // (autoscroll-to-bottom fires when a block grows or arrives).
+            return richBlocks.map((block, index) => ({
+                text: block.kind === "message"
+                    ? `m:${block.id ?? index}:${(block.text || "").length}:${block.pendingPhase || ""}`
+                    : `l:${index}:${(block.lines || []).length}`,
+            }));
+        }
+        return selectChatLines(selectorState, viewState.contentWidth, { tableMode: "sentinel" });
+    }, [richBlocks, selectorState, viewState.contentWidth]);
     const spinnerFrame = useSpinnerFrame(viewState.activeSessionStatus === "running");
     const liveActivityLines = React.useMemo(
         () => selectLiveActivityLines(selectorState, { spinnerFrame, maxWidth: viewState.contentWidth }),
@@ -2915,10 +3130,17 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         scrollOffset: viewState.scroll,
         scrollMode: "bottom",
         paneKey: "chat",
-        className: "is-wrapped",
-        panelClassName: "ps-chat-panel",
+        className: richMode ? "is-wrapped is-rich" : "is-wrapped",
+        panelClassName: richMode ? "ps-chat-panel is-rich" : "ps-chat-panel",
         bottomContent: composer,
         structuredBlocks: true,
+        renderBody: richBlocks
+            ? (_bodyLines, bodyTheme) => React.createElement(RichChatBlocks, {
+                blocks: richBlocks,
+                theme: bodyTheme,
+                controller,
+            })
+            : null,
     });
 }
 
@@ -3965,6 +4187,16 @@ function Toolbar({ controller, mobile, chatFocusMode = false, onToggleChatFocus 
             icon: "◑",
             label: "Theme",
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_THEME_PICKER).catch(() => {}),
+        },
+        {
+            key: "rich",
+            icon: "Aa",
+            label: chatView.activeSessionIsGroup
+                ? "Groups show group details"
+                : (chatView.mode === "rich" ? "Show terminal transcript" : "Rich chat view (experimental)"),
+            onClick: () => controller.setChatViewMode(chatView.mode === "rich" ? "transcript" : "rich"),
+            disabled: chatView.activeSessionIsGroup,
+            active: chatView.mode === "rich",
         },
         {
             key: "summary",
