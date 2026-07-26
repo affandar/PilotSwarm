@@ -92,6 +92,13 @@ export interface RegenWorkerDeps {
 const HANDOFF_MAX_CHARS = 4_000;
 const TAIL_MESSAGE_COUNT = 40;
 const TAIL_MESSAGE_CLIP = 2_000;
+// The OPENING of the session, carried verbatim alongside the tail. One message
+// is not enough: the mission is usually stated across the first exchange —
+// the ask, the agent's read-back of it, and the constraints that follow. The
+// deterministic package used only the first user message, so a reborn session
+// lost the agreed interpretation of its own job.
+const OPENING_MESSAGE_COUNT = 10;
+const OPENING_CLIP = 4_000;
 /** Messages the distiller ultimately reads (the selection budget). */
 const ARCHIVE_EVENT_LIMIT = 1_000;
 /** How far back selection looks. Wider than the budget so it can choose. */
@@ -268,6 +275,8 @@ export interface ResumePackage {
     pitfalls: string[];
     openQuestions: string[];
     recentTail: string;
+    /** Verbatim opening of the session — the mission as it was actually stated. */
+    openingContext?: string;
     /**
      * Requester's distilling instructions, embedded verbatim when the
      * DETERMINISTIC path ran (no LLM to honor them) so the reborn agent still
@@ -337,6 +346,9 @@ function normalizePackage(raw: unknown): ResumePackage {
                 }];
             })
             : [],
+        ...(typeof r.openingContext === "string" && r.openingContext.trim()
+            ? { openingContext: clip(r.openingContext, OPENING_CLIP) }
+            : {}),
         factsMap: asStringArray(r.factsMap, 64),
         artifactsMap: Array.isArray(r.artifactsMap)
             ? r.artifactsMap.slice(0, 50).flatMap((a) => {
@@ -411,6 +423,9 @@ export function renderBootstrap(
     if (pkg.requesterInstructions) {
         sections.push(`REQUESTER'S DISTILLING INSTRUCTIONS (quoted — the deterministic distiller could not apply them; weigh them yourself):\n${pkg.requesterInstructions}`);
     }
+    if (pkg.openingContext) {
+        sections.push(`HOW THIS SESSION OPENED (verbatim — the mission as actually stated):\n${pkg.openingContext}`);
+    }
     if (pkg.recentTail) sections.push(`RECENT CONVERSATION TAIL (verbatim):\n${pkg.recentTail}`);
     sections.push(
         `FIRST ACTIONS: call read_facts to re-anchor on durable state` +
@@ -453,8 +468,30 @@ function buildDistillerPrompt(
  * live pointers (child roster, artifact list). Shared by the deterministic
  * package and the service-session distiller's seed prompt.
  */
+/**
+ * Render events as `ROLE: content` lines under a TOTAL character budget.
+ * Messages are kept whole until the budget runs out rather than each being
+ * clipped to budget/N — an opening exchange is usually front-loaded, and a
+ * fixed per-message slice would truncate the one message that matters.
+ */
+function renderMessageBlock(events: SessionEvent[], totalBudget: number): string {
+    const lines: string[] = [];
+    let used = 0;
+    for (const e of events) {
+        const role = e.eventType === "user.message" ? "USER" : "ASSISTANT";
+        const remaining = totalBudget - used;
+        if (remaining <= 0) break;
+        const line = `${role}: ${clip((e.data as any)?.content ?? "", Math.min(TAIL_MESSAGE_CLIP, remaining))}`;
+        lines.push(line);
+        used += line.length + 1;
+    }
+    return lines.join("\n");
+}
+
 export interface RegenClosure {
     tail: string;
+    /** First OPENING_MESSAGE_COUNT user/assistant messages, ≤ OPENING_CLIP chars. */
+    opening: string;
     firstUserMessage: string | null;
     childRoster: Array<{ id: string; status?: string }>;
     artifactNames: string[];
@@ -475,6 +512,15 @@ export async function assembleRegenClosure(
             return `${role}: ${clip(content ?? "", TAIL_MESSAGE_CLIP)}`;
         })
         .join("\n");
+    // Forward read from the START of the epoch — getSessionEventsBefore(MAX_SEQ)
+    // gives the tail, which is the opposite end.
+    const headRows = await deps.catalog.getSessionEvents(
+        sessionId, 0, OPENING_MESSAGE_COUNT, ["user.message", "assistant.message"],
+    );
+    const opening = renderMessageBlock(
+        headRows.slice().sort((a, b) => Number((a as any).seq) - Number((b as any).seq)),
+        OPENING_CLIP,
+    );
     const firstUser = sorted.find((e) => e.eventType === "user.message");
     let childRoster: Array<{ id: string; status?: string }> = [];
     try {
@@ -489,6 +535,7 @@ export async function assembleRegenClosure(
     } catch { /* listing degrades to empty */ }
     return {
         tail,
+        opening,
         firstUserMessage: typeof (firstUser?.data as any)?.content === "string" ? (firstUser!.data as any).content : null,
         childRoster,
         artifactNames,
@@ -515,6 +562,7 @@ export function deterministicPackage(
         workingSet: [],
         commitments: [],
         childRoster: closure.childRoster,
+        ...(closure.opening ? { openingContext: closure.opening } : {}),
         factsMap: [],
         artifactsMap: closure.artifactNames.map((id) => ({ id })),
         workspaceMap: [],
