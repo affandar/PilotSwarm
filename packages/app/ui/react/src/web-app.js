@@ -3868,9 +3868,11 @@ function ChatFocusOverlay({ controller, pane, onClose, mobile = false }) {
             structuredRows: mobile,
             actions: React.createElement("button", {
                 type: "button",
-                className: "ps-mini-button",
+                className: "ps-mini-button ps-overlay-close",
                 onClick: onClose,
-            }, "Close"),
+                "aria-label": "Close",
+                title: "Close",
+            }, "✕"),
         });
     } else if (pane === "inspector") {
         content = React.createElement(InspectorPane, {
@@ -3879,9 +3881,11 @@ function ChatFocusOverlay({ controller, pane, onClose, mobile = false }) {
             panelClassName: "ps-chat-focus-pane",
             extraActions: React.createElement("button", {
                 type: "button",
-                className: "ps-mini-button",
+                className: "ps-mini-button ps-overlay-close",
                 onClick: onClose,
-            }, "Close"),
+                "aria-label": "Close",
+                title: "Close",
+            }, "✕"),
         });
     } else if (pane === "activity") {
         content = React.createElement(ActivityPane, {
@@ -3889,9 +3893,11 @@ function ChatFocusOverlay({ controller, pane, onClose, mobile = false }) {
             panelClassName: "ps-chat-focus-pane",
             extraActions: React.createElement("button", {
                 type: "button",
-                className: "ps-mini-button",
+                className: "ps-mini-button ps-overlay-close",
                 onClick: onClose,
-            }, "Close"),
+                "aria-label": "Close",
+                title: "Close",
+            }, "✕"),
         });
     }
 

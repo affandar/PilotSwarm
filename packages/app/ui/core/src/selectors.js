@@ -324,7 +324,38 @@ function splitTypedSessionTitle(displayTitle) {
     return { userTitle, typeTitle };
 }
 
+// Titles are plain text everywhere they are rendered (terminal runs, DOM
+// text nodes) — never interpreted as HTML. A title that arrived already
+// HTML-escaped therefore shows its entities literally ("PostgreSQL &amp;
+// MySQL"). Decoding the handful of entities an escaper emits repairs those
+// rows on read; the write path also normalizes now, so this covers history.
+const HTML_ENTITY_REPLACEMENTS = [
+    [/&lt;/g, "<"],
+    [/&gt;/g, ">"],
+    [/&quot;/g, '"'],
+    [/&#0?39;/g, "'"],
+    [/&apos;/g, "'"],
+    [/&nbsp;/g, " "],
+    // Ampersand LAST: decoding it first would let "&amp;lt;" collapse to "<".
+    [/&amp;/g, "&"],
+];
+
+export function decodeHtmlEntitiesForDisplay(value) {
+    let text = String(value ?? "");
+    if (!text.includes("&")) return text;
+    for (const [pattern, replacement] of HTML_ENTITY_REPLACEMENTS) {
+        text = text.replace(pattern, replacement);
+    }
+    return text;
+}
+
 function buildSessionDisplayTitle(session) {
+    // Decode at the single exit so the agent-prefixed and typed-title paths
+    // are covered too, not just the bare title.
+    return decodeHtmlEntitiesForDisplay(buildRawSessionDisplayTitle(session));
+}
+
+function buildRawSessionDisplayTitle(session) {
     const title = String(session?.title || "").trim();
     const splitTitle = splitAgentPrefixedSessionTitle(session);
     if (!splitTitle) return title;

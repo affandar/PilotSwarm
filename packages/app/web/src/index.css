@@ -3866,3 +3866,12 @@ body:not(.ps-rich-ui) .ps-mermaid {
     gap: 0;
   }
 }
+
+/* Overlay dismiss is an icon button, not a word — it sits in a row of icon
+   controls (pin, grid, filter, link, refresh) where "Close" read as odd. */
+.ps-mini-button.ps-overlay-close {
+  min-width: 34px;
+  padding: 6px 10px;
+  font-size: 14px;
+  line-height: 1;
+}

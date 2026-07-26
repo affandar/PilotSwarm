@@ -6,7 +6,7 @@
 // uses. The TUI never calls this selector.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { appReducer, buildHistoryModel, createInitialState, selectChatBlocks, selectChatLines } from "../src/index.js";
+import { appReducer, buildHistoryModel, createInitialState, decodeHtmlEntitiesForDisplay, selectChatBlocks, selectChatLines } from "../src/index.js";
 
 function evt(seq, eventType, data) {
     return { sessionId: "s1", seq, eventType, data, createdAt: 1_700_000_000_000 + seq * 1000 };
@@ -101,4 +101,18 @@ test("empty chat yields no blocks and line/block parity holds for prose", () => 
     assert.match(lineText, /hi there/);
     const blocks = selectChatBlocks(renderState(model), 80);
     assert.equal(blocks.filter((b) => b.kind === "message").length, 2);
+});
+
+// A title that arrived already HTML-escaped (an LLM summarizing escaped
+// material) rendered its entities literally, e.g. "PostgreSQL &amp; MySQL".
+// Titles are plain text at every render site, so they decode on read.
+test("session titles decode HTML entities for display", () => {
+    assert.equal(decodeHtmlEntitiesForDisplay("PostgreSQL &amp; MySQL"), "PostgreSQL & MySQL");
+    assert.equal(decodeHtmlEntitiesForDisplay("a &lt;b&gt; c"), "a <b> c");
+    assert.equal(decodeHtmlEntitiesForDisplay("Bob&#39;s &quot;run&quot;"), 'Bob\'s "run"');
+    // Ampersand decodes LAST: a double-escaped "<" must not collapse to "<".
+    assert.equal(decodeHtmlEntitiesForDisplay("&amp;lt;"), "&lt;");
+    // Untouched when there is nothing to decode.
+    assert.equal(decodeHtmlEntitiesForDisplay("plain title"), "plain title");
+    assert.equal(decodeHtmlEntitiesForDisplay(""), "");
 });

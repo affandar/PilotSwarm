@@ -2989,10 +2989,21 @@ export function registerActivities(
             ): Promise<string> => {
                 // Defensive cleanup: models occasionally wrap the title in
                 // quotes or add trailing punctuation despite instructions.
+                // Models sometimes emit HTML-escaped text when the material
+                // they summarized was itself escaped, which persisted titles
+                // like "PostgreSQL &amp; MySQL". Titles are rendered as plain
+                // text everywhere, so decode before storing. (&amp; last, or
+                // "&amp;lt;" would collapse to "<".)
                 const cleaned = String(rawTitle || "")
                     .trim()
                     .replace(/^["'`“”‘’]+|["'`“”‘’]+$/g, "")
                     .replace(/[.。!?…\s]+$/g, "")
+                    .replace(/&lt;/g, "<")
+                    .replace(/&gt;/g, ">")
+                    .replace(/&quot;/g, '"')
+                    .replace(/&#0?39;|&apos;/g, "'")
+                    .replace(/&nbsp;/g, " ")
+                    .replace(/&amp;/g, "&")
                     .trim();
                 const title = cleaned.slice(0, 60).trim();
                 if (!title) return "";
