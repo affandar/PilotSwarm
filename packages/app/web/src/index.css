@@ -3875,3 +3875,33 @@ body:not(.ps-rich-ui) .ps-mermaid {
   font-size: 14px;
   line-height: 1;
 }
+
+/* ── Diff blocks ───────────────────────────────────────────────────────────
+   Each line is a block so its tint spans the full row. The tint derives from
+   the line's own resolved color via currentColor, so it follows the theme
+   (and stays legible on light themes) without a second palette. */
+.ps-diff-line {
+  display: block;
+  padding-inline: 4px;
+  margin-inline: -4px;
+}
+
+/* Blank context lines must still occupy a row. */
+.ps-diff-line:empty::after {
+  content: " ";
+  white-space: pre;
+}
+
+.ps-diff-line.is-add,
+.ps-diff-line.is-del {
+  background: color-mix(in srgb, currentColor 13%, transparent);
+}
+
+.ps-diff-line.is-hunk {
+  background: color-mix(in srgb, currentColor 9%, transparent);
+  font-weight: 600;
+}
+
+.ps-diff-line.is-meta {
+  opacity: 0.85;
+}

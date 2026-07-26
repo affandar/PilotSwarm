@@ -912,6 +912,49 @@ const CODE_LANGUAGE_ALIASES = {
     css: "css", scss: "css",
 };
 
+// ── Diff blocks ───────────────────────────────────────────────────────────
+// A ```diff fence is line-oriented, not token-oriented: running it through
+// the generic tokenizer colored Rust/JS keywords inside the payload while
+// leaving the +/- semantics — the only thing that matters in a diff — as
+// undifferentiated text. Diffs are classified per line instead.
+
+const DIFF_LANGUAGES = new Set(["diff", "patch", "udiff"]);
+
+function isDiffLanguage(language) {
+    return DIFF_LANGUAGES.has(String(language || "").trim().toLowerCase());
+}
+
+// File/meta headers are matched BEFORE +/- so "--- a/x" and "+++ b/x" are not
+// mistaken for removed/added lines.
+const DIFF_META_PATTERN = /^(?:diff --git |index |--- |\+\+\+ |new file mode|deleted file mode|old mode|new mode|similarity index|dissimilarity index|rename (?:from|to) |copy (?:from|to) |Binary files |GIT binary patch|\\)/;
+
+function classifyDiffLine(line) {
+    if (DIFF_META_PATTERN.test(line)) return "meta";
+    if (line.startsWith("@@")) return "hunk";
+    if (line.startsWith("+")) return "add";
+    if (line.startsWith("-")) return "del";
+    return "context";
+}
+
+const DIFF_LINE_COLORS = { add: "green", del: "red", hunk: "cyan", meta: "gray" };
+
+function renderDiffCode(content, theme) {
+    const lines = String(content || "").replace(/\n$/, "").split("\n");
+    return lines.map((line, index) => {
+        const kind = classifyDiffLine(line);
+        const color = DIFF_LINE_COLORS[kind];
+        return React.createElement("span", {
+            key: `d:${index}`,
+            className: `ps-diff-line is-${kind}`,
+            // Each line is its own block so the +/- tint spans the full row.
+            // No trailing "\n" in the text: browsers already insert line
+            // breaks between block elements when copying, so this keeps a
+            // copied diff byte-faithful instead of double-spaced.
+            style: color ? { color: resolveColor(theme, color) || undefined } : undefined,
+        }, line);
+    });
+}
+
 function isMermaidLanguage(language) {
     return String(language || "").trim().toLowerCase() === "mermaid";
 }
@@ -1457,10 +1500,16 @@ function MarkdownPreviewContent({ content, theme }) {
                 }, renderInlineMarkdown(block.text, theme, `heading:${index}`));
             }
             if (block.type === "code") {
-                const codeSection = React.createElement("section", { key: `block:${index}`, className: "ps-md-code-block" },
+                const isDiff = isDiffLanguage(block.language);
+                const codeSection = React.createElement("section", {
+                    key: `block:${index}`,
+                    className: `ps-md-code-block${isDiff ? " is-diff" : ""}`,
+                },
                     React.createElement("div", { className: "ps-md-code-header" }, block.language || "text"),
                     React.createElement("pre", { className: "ps-md-code-pre" },
-                        React.createElement("code", null, renderHighlightedCode(block.content, block.language, theme))));
+                        React.createElement("code", null, isDiff
+                            ? renderDiffCode(block.content, theme)
+                            : renderHighlightedCode(block.content, block.language, theme))));
                 if (isMermaidLanguage(block.language)) {
                     return React.createElement(MermaidDiagram, {
                         key: `block:${index}`,
@@ -2119,10 +2168,16 @@ function StructuredBlockList({ blocks, theme, controller = null }) {
             }
 
             if (block.type === "code") {
-                const chatCodeSection = React.createElement("section", { key: `code:${index}`, className: "ps-md-code-block ps-chat-code-block" },
+                const chatIsDiff = isDiffLanguage(block.language);
+                const chatCodeSection = React.createElement("section", {
+                    key: `code:${index}`,
+                    className: `ps-md-code-block ps-chat-code-block${chatIsDiff ? " is-diff" : ""}`,
+                },
                     React.createElement("div", { className: "ps-md-code-header" }, block.language || "text"),
                     React.createElement("pre", { className: "ps-md-code-pre" },
-                        React.createElement("code", null, renderHighlightedCode(block.content || "", block.language, theme))));
+                        React.createElement("code", null, chatIsDiff
+                            ? renderDiffCode(block.content || "", theme)
+                            : renderHighlightedCode(block.content || "", block.language, theme))));
                 if (isMermaidLanguage(block.language)) {
                     return React.createElement(MermaidDiagram, {
                         key: `code:${index}`,
