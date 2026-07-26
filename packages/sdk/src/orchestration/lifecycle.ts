@@ -883,6 +883,8 @@ export function* advanceRegenPipeline(
             // Chunk list rides alongside the id so the distiller can page the
             // WHOLE archive; archiveArtifactId stays the first chunk for
             // consumers (and already-archived epochs) that predate chunking.
+            (state.regen as any).selectionStrategy = String(archive?.selectionStrategy ?? "");
+            (state.regen as any).elidedCount = Number(archive?.elidedCount) || 0;
             (state.regen as any).archiveChunkIds = Array.isArray(archive?.archiveChunkIds)
                 ? archive.archiveChunkIds.map((id: unknown) => String(id))
                 : [];

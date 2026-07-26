@@ -22,6 +22,7 @@
 
 import fs from "node:fs";
 import { TEXT_ARTIFACT_MAX_BYTES } from "./session-store.js";
+import { selectTranscript } from "./transcript-selection.js";
 import os from "node:os";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
@@ -30,6 +31,8 @@ import type { ArtifactStore } from "./session-store.js";
 import { approvePermissionForSession } from "./permissions.js";
 
 export interface RegenArchiveInput {
+    /** Selection strategy name; defaults to exchange-clustered. */
+    selectionStrategy?: string;
     sessionId: string;
     epoch: number;
     attemptId: string;
@@ -40,6 +43,10 @@ export interface RegenArchiveResult {
     archiveArtifactId: string;
     /** Every chunk in order; length 1 for a single-artifact archive. */
     archiveChunkIds: string[];
+    /** Which strategy chose the archived messages, and what it dropped. */
+    selectionStrategy: string;
+    selectionStats: Record<string, number>;
+    elidedCount: number;
     turnsArchived: number;
     compactionsArchived: number;
     archiveMs: number;
@@ -85,7 +92,10 @@ export interface RegenWorkerDeps {
 const HANDOFF_MAX_CHARS = 4_000;
 const TAIL_MESSAGE_COUNT = 40;
 const TAIL_MESSAGE_CLIP = 2_000;
+/** Messages the distiller ultimately reads (the selection budget). */
 const ARCHIVE_EVENT_LIMIT = 1_000;
+/** How far back selection looks. Wider than the budget so it can choose. */
+const ARCHIVE_SCAN_LIMIT = 10_000;
 const DISTILL_TIMEOUT_MS = Number.parseInt(process.env.PILOTSWARM_DISTILL_TIMEOUT_MS ?? "", 10) || 90_000;
 
 const MAX_SEQ = Number.MAX_SAFE_INTEGER;
@@ -169,19 +179,36 @@ export async function runRegenArchive(
     }
     const filename = archiveName(epoch, attemptId);
 
-    // Chronological transcript slice for THIS epoch (CMS is the archive
-    // source in M1; the tar-native events.jsonl extraction is M3 work).
+    // Scan a WIDE window of the epoch's transcript, then let the selection
+    // strategy decide what the distiller actually reads. Scanning wide and
+    // selecting beats a raw tail cap: the old behavior kept the most recent
+    // ARCHIVE_EVENT_LIMIT messages, which on a long session meant the mission
+    // and every standing instruction had already scrolled out of the archive.
     const rows = await deps.catalog.getSessionEventsBefore(
-        sessionId, MAX_SEQ, ARCHIVE_EVENT_LIMIT, TRANSCRIPT_TYPES,
+        sessionId, MAX_SEQ, ARCHIVE_SCAN_LIMIT, TRANSCRIPT_TYPES,
     );
     const chronological = rows.slice().sort((a, b) => Number((a as any).seq) - Number((b as any).seq));
-    const lines = chronological.map((e) => JSON.stringify({
+
+    const selection = selectTranscript(
+        chronological.map((e) => ({
+            seq: Number((e as any).seq),
+            role: e.eventType === "user.message"
+                ? "user" as const
+                : e.eventType === "assistant.message" ? "assistant" as const : "system" as const,
+            text: typeof (e.data as any)?.content === "string" ? (e.data as any).content : "",
+        })),
+        { budget: ARCHIVE_EVENT_LIMIT, strategy: input.selectionStrategy },
+    );
+    const keptSeqs = new Set(selection.selected.map((m) => m.seq));
+    const archived = chronological.filter((e) => keptSeqs.has(Number((e as any).seq)));
+
+    const lines = archived.map((e) => JSON.stringify({
         seq: Number((e as any).seq),
         type: e.eventType,
         at: e.createdAt instanceof Date ? e.createdAt.toISOString() : e.createdAt,
         data: e.data ?? null,
     }));
-    const turnsArchived = chronological.filter((e) => e.eventType === "user.message").length;
+    const turnsArchived = archived.filter((e) => e.eventType === "user.message").length;
     const compaction = await deps.catalog.getSessionCompactionStats(sessionId);
 
     // Written as CHUNKS under the text-artifact ceiling. A single-artifact
@@ -212,6 +239,9 @@ export async function runRegenArchive(
         // working; chunk-aware readers page the full list.
         archiveArtifactId: chunkIds[0] ?? filename,
         archiveChunkIds: chunkIds,
+        selectionStrategy: selection.strategy,
+        selectionStats: selection.stats,
+        elidedCount: selection.elisions.reduce((n, e) => n + e.count, 0),
         turnsArchived,
         compactionsArchived: compaction.completes,
         archiveMs: Date.now() - startedAt,
