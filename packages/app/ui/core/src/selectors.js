@@ -1495,7 +1495,11 @@ function describeChatMessageHeader(message, options = {}) {
             : message?.role === "system"
                 ? "yellow"
                 : "white";
-    return { time, glyph, glyphColor, roleLabel, roleColor };
+    // `fromOtherPerson` lets renderers drop the speaker label for the
+    // viewer's own messages and the agent's (a 1:1 chat needs no "You:" /
+    // "Agent:" on every turn) while still naming OTHER humans in a shared
+    // session, where attribution is the whole point.
+    return { time, glyph, glyphColor, roleLabel, roleColor, fromOtherPerson };
 }
 
 function buildChatMessagePrefix(message, options = {}) {

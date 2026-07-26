@@ -14,6 +14,7 @@ import {
     createStore,
     getPromptInputRows,
     getTheme,
+    isThemeLight,
     parseTerminalMarkupRuns,
     PilotSwarmUiController,
     tokenizeInlineMarkdown,
@@ -911,6 +912,10 @@ const CODE_LANGUAGE_ALIASES = {
     css: "css", scss: "css",
 };
 
+function isMermaidLanguage(language) {
+    return String(language || "").trim().toLowerCase() === "mermaid";
+}
+
 const CODE_KEYWORDS = {
     js: new Set(["async", "await", "break", "case", "catch", "class", "const", "continue", "default", "delete", "do", "else", "export", "extends", "finally", "for", "from", "function", "if", "import", "in", "instanceof", "let", "new", "of", "return", "static", "super", "switch", "this", "throw", "try", "typeof", "var", "void", "while", "yield", "true", "false", "null", "undefined", "interface", "type", "enum", "implements", "readonly", "public", "private", "protected"]),
     python: new Set(["and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del", "elif", "else", "except", "finally", "for", "from", "global", "if", "import", "in", "is", "lambda", "None", "nonlocal", "not", "or", "pass", "raise", "return", "True", "False", "try", "while", "with", "yield", "self"]),
@@ -1034,6 +1039,72 @@ function renderHighlightedCode(content, language, theme) {
             style: { color: resolveColor(theme, color) || undefined },
         }, token.text);
     });
+}
+
+// ── Mermaid diagrams ──────────────────────────────────────────────────────
+// mermaid is ~2MB, so it is imported DYNAMICALLY: vite splits it into its own
+// chunk that is fetched only when a transcript actually contains a ```mermaid
+// fence. A failed parse (very common while a diagram is still streaming in)
+// falls back to the highlighted source rather than an error box.
+
+let mermaidModulePromise = null;
+
+function loadMermaid(light) {
+    if (!mermaidModulePromise) {
+        mermaidModulePromise = import("mermaid").then((module) => {
+            const mermaid = module.default || module;
+            mermaid.initialize({
+                startOnLoad: false,
+                securityLevel: "strict",
+                theme: light ? "default" : "dark",
+                fontFamily: "-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif",
+            });
+            return mermaid;
+        }).catch((error) => {
+            mermaidModulePromise = null;
+            throw error;
+        });
+    }
+    return mermaidModulePromise;
+}
+
+let mermaidRenderSeq = 0;
+
+function MermaidDiagram({ code, theme, fallback }) {
+    const [svg, setSvg] = React.useState(null);
+    const [failed, setFailed] = React.useState(false);
+    const light = React.useMemo(() => isThemeLight(theme), [theme]);
+
+    React.useEffect(() => {
+        let active = true;
+        const source = String(code || "").trim();
+        if (!source) return undefined;
+        setFailed(false);
+        loadMermaid(light)
+            .then(async (mermaid) => {
+                mermaidRenderSeq += 1;
+                const id = `ps-mermaid-${mermaidRenderSeq}`;
+                // parse() first so a half-streamed diagram fails cheaply and
+                // without mermaid injecting an error graphic into the DOM.
+                await mermaid.parse(source);
+                const { svg: rendered } = await mermaid.render(id, source);
+                if (active) setSvg(rendered);
+            })
+            .catch(() => {
+                if (active) { setSvg(null); setFailed(true); }
+            });
+        return () => { active = false; };
+    }, [code, light]);
+
+    if (svg && !failed) {
+        return React.createElement("div", {
+            className: "ps-mermaid",
+            // mermaid output is generated from the diagram source with
+            // securityLevel "strict" (HTML labels off, scripts stripped).
+            dangerouslySetInnerHTML: { __html: svg },
+        });
+    }
+    return fallback;
 }
 
 function renderInlineMarkdown(source, theme, keyPrefix = "md") {
@@ -1332,10 +1403,19 @@ function MarkdownPreviewContent({ content, theme }) {
                 }, renderInlineMarkdown(block.text, theme, `heading:${index}`));
             }
             if (block.type === "code") {
-                return React.createElement("section", { key: `block:${index}`, className: "ps-md-code-block" },
+                const codeSection = React.createElement("section", { key: `block:${index}`, className: "ps-md-code-block" },
                     React.createElement("div", { className: "ps-md-code-header" }, block.language || "text"),
                     React.createElement("pre", { className: "ps-md-code-pre" },
                         React.createElement("code", null, renderHighlightedCode(block.content, block.language, theme))));
+                if (isMermaidLanguage(block.language)) {
+                    return React.createElement(MermaidDiagram, {
+                        key: `block:${index}`,
+                        code: block.content,
+                        theme,
+                        fallback: codeSection,
+                    });
+                }
+                return codeSection;
             }
             if (block.type === "blockquote") {
                 return React.createElement("blockquote", { key: `block:${index}`, className: "ps-md-quote" },
@@ -1820,25 +1900,42 @@ function RichChatBlocks({ blocks, theme, controller = null }) {
                 const roleClass = block.role === "user" ? " is-user" : " is-assistant";
                 const pendingClass = block.pendingPhase ? ` is-${block.pendingPhase}` : "";
                 const text = String(block.text || "");
+                // A speaker label only earns its place when it disambiguates:
+                // another human in a shared session. The viewer's own turns
+                // and the agent's are obvious from side and styling.
+                const showLabel = block.role === "user" && header.fromOtherPerson;
+                // Consecutive turns from the same speaker read as one
+                // continuous passage — no repeated header, tighter spacing.
+                const previous = blocks[index - 1];
+                const continued = previous
+                    && previous.kind === "message"
+                    && previous.role === block.role
+                    && !(previous.header && previous.header.fromOtherPerson)
+                    && !showLabel;
                 return React.createElement("article", {
                     key: block.id != null ? `msg:${block.id}` : `msg:${index}`,
-                    className: `ps-rich-msg${roleClass}${pendingClass}`,
+                    className: `ps-rich-msg${roleClass}${pendingClass}${continued ? " is-continued" : ""}`,
                 },
                     React.createElement("header", { className: "ps-rich-msg-head" },
-                        React.createElement("span", {
-                            className: "ps-rich-msg-label",
-                            style: { color: resolveColor(theme, header.roleColor) || undefined },
-                        }, header.roleLabel || (block.role === "user" ? "You" : "Agent")),
-                        header.glyph
+                        showLabel
                             ? React.createElement("span", {
-                                className: "ps-rich-msg-glyph",
-                                title: block.pendingPhase || undefined,
-                                style: { color: resolveColor(theme, header.glyphColor) || undefined },
-                            }, header.glyph)
+                                className: "ps-rich-msg-label",
+                                style: { color: resolveColor(theme, header.roleColor) || undefined },
+                            }, header.roleLabel)
                             : null,
-                        header.time
-                            ? React.createElement("span", { className: "ps-rich-msg-time" }, header.time)
-                            : null),
+                        // Delivery glyph + timestamp are on-demand detail:
+                        // revealed on hover so a quiet transcript stays quiet.
+                        React.createElement("span", { className: "ps-rich-msg-meta" },
+                            header.glyph
+                                ? React.createElement("span", {
+                                    className: "ps-rich-msg-glyph",
+                                    title: block.pendingPhase || undefined,
+                                    style: { color: resolveColor(theme, header.glyphColor) || undefined },
+                                }, header.glyph)
+                                : null,
+                            header.time
+                                ? React.createElement("span", { className: "ps-rich-msg-time" }, header.time)
+                                : null)),
                     text.trim()
                         ? React.createElement("div", { className: "ps-rich-msg-body" },
                             React.createElement(MarkdownPreviewContent, { content: text, theme }))
@@ -1968,10 +2065,19 @@ function StructuredBlockList({ blocks, theme, controller = null }) {
             }
 
             if (block.type === "code") {
-                return React.createElement("section", { key: `code:${index}`, className: "ps-md-code-block ps-chat-code-block" },
+                const chatCodeSection = React.createElement("section", { key: `code:${index}`, className: "ps-md-code-block ps-chat-code-block" },
                     React.createElement("div", { className: "ps-md-code-header" }, block.language || "text"),
                     React.createElement("pre", { className: "ps-md-code-pre" },
                         React.createElement("code", null, renderHighlightedCode(block.content || "", block.language, theme))));
+                if (isMermaidLanguage(block.language)) {
+                    return React.createElement(MermaidDiagram, {
+                        key: `code:${index}`,
+                        code: block.content || "",
+                        theme,
+                        fallback: chatCodeSection,
+                    });
+                }
+                return chatCodeSection;
             }
 
             if (block.type === "card") {
@@ -2310,13 +2416,10 @@ function RichSessionRow({ row, theme }) {
                     style: { color: resolveColor(theme, chrome.ctx.color) || undefined },
                 }, chrome.ctx.text)
                 : null),
-        // Untitled rows already carry id · age · model in the title slot;
-        // titled rows show a muted age line so the list reads at a glance.
-        !row.active && !chrome.untitled && chrome.age
-            ? React.createElement("div", { className: "ps-rich-session-sub" },
-                [chrome.age, chrome.model].filter(Boolean).join(" · "))
-            : null,
-        row.active && detailRuns.length > 0
+        // The detail line is ALWAYS rendered, selected or not. Swapping row
+        // content on selection made the whole list jump; now the only things
+        // that reflow are expand/collapse and the highlight moving.
+        detailRuns.length > 0
             ? React.createElement("div", { className: "ps-rich-session-detail" },
                 React.createElement(Runs, { runs: detailRuns, theme }))
             : null);

@@ -3435,15 +3435,6 @@ body.is-resizing-pane-y * {
   white-space: nowrap;
 }
 
-.ps-rich-session-sub {
-  font-size: 10.5px;
-  line-height: 1.3;
-  color: var(--ps-muted);
-  padding-inline-start: 14px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 
 .ps-rich-session-detail {
   font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas,
@@ -3470,7 +3461,7 @@ body.ps-rich-ui {
 body.ps-rich-ui .portal-header {
   font-family: var(--ps-ui-font);
   padding: 12px 18px;
-  border-bottom: 1px solid color-mix(in srgb, var(--ps-border) 34%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--ps-border) 62%, transparent);
   background: color-mix(in srgb, var(--ps-page-background) 92%, transparent);
 }
 
@@ -3515,7 +3506,7 @@ body.ps-rich-ui .ps-modal-button,
 body.ps-rich-ui .ps-tab {
   font-family: var(--ps-ui-font);
   border-radius: 9px;
-  border-color: color-mix(in srgb, var(--ps-border) 34%, transparent);
+  border-color: color-mix(in srgb, var(--ps-border) 55%, transparent);
   background: color-mix(in srgb, var(--ps-border) 9%, transparent);
   transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
 }
@@ -3545,7 +3536,7 @@ body.ps-rich-ui .ps-send-button {
 
 body.ps-rich-ui .ps-panel {
   border-width: 1px;
-  border-color: color-mix(in srgb, var(--ps-border) 34%, transparent);
+  border-color: color-mix(in srgb, var(--ps-border) 78%, transparent);
   border-radius: 12px;
   box-shadow: none;
 }
@@ -3561,18 +3552,18 @@ body.ps-rich-ui .ps-panel-header {
   min-height: 34px;
   padding: 6px 12px;
   background: transparent;
-  border-bottom: 1px solid color-mix(in srgb, var(--ps-border) 22%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--ps-border) 55%, transparent);
 }
 
 body.ps-rich-ui .ps-panel-title {
-  font-size: 0.8rem;
+  font-size: 0.95rem;
   font-weight: 650;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.01em;
 }
 
 body.ps-rich-ui .ps-panel-title-right {
-  font-size: 0.7rem;
-  opacity: 0.82;
+  font-size: 0.76rem;
+  opacity: 0.85;
 }
 
 /* ── Inspector tab row → segmented control ──────────────────────────────── */
@@ -3615,4 +3606,75 @@ body.ps-rich-ui .ps-inspector-pane .ps-line {
 
 body.ps-rich-ui .ps-activity-pane .ps-line:hover {
   background: color-mix(in srgb, var(--ps-border) 12%, transparent);
+}
+
+/* ── Rich UI refinements ───────────────────────────────────────────────── */
+
+/* Icons were sized for touch targets; in the desktop chrome they read as
+   oversized. Glyphs stay MONOSPACE so the geometric/box-drawing icons keep
+   their intended metrics — the proportional face rendered multi-cell
+   glyphs (e.g. the stats "▁▄▇" bars) as one wide blob. */
+body.ps-rich-ui .ps-icon-button {
+  min-width: 34px;
+  padding: 6px 9px;
+}
+
+body.ps-rich-ui .ps-icon-button-glyph {
+  font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas,
+    Liberation Mono, monospace;
+  font-size: 15px;
+  letter-spacing: 0;
+}
+
+/* Chat message meta (delivery glyph + timestamp): on-demand, not ambient. */
+.ps-rich-msg-head {
+  min-height: 14px;
+}
+
+.ps-rich-msg-meta {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.ps-rich-msg:hover .ps-rich-msg-meta,
+.ps-rich-msg:focus-within .ps-rich-msg-meta {
+  opacity: 1;
+}
+
+/* A run of turns from one speaker reads as continuous prose. */
+.ps-rich-msg.is-continued {
+  margin-top: 6px;
+}
+
+.ps-rich-msg.is-continued .ps-rich-msg-head {
+  min-height: 0;
+  margin-bottom: 0;
+  height: 0;
+  overflow: visible;
+}
+
+/* Keep the hover meta reachable on a merged turn without reserving space. */
+.ps-rich-msg.is-continued .ps-rich-msg-meta {
+  position: relative;
+  top: -2px;
+}
+
+/* Rendered mermaid diagrams sit on the code-block surface but scroll on
+   their own axis — wide flowcharts must not widen the chat pane. */
+.ps-mermaid {
+  margin: 0;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--ps-border) 45%, transparent);
+  border-radius: var(--ps-radius-md);
+  background: color-mix(in srgb, var(--ps-surface) 96%, transparent);
+  overflow-x: auto;
+  text-align: center;
+}
+
+.ps-mermaid svg {
+  max-width: 100%;
+  height: auto;
 }
