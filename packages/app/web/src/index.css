@@ -3781,3 +3781,21 @@ body.ps-rich-ui .ps-row-resizer.is-dragging .ps-row-resizer-handle {
   font-size: 11.5px;
   color: color-mix(in srgb, var(--ps-muted) 82%, var(--ps-foreground));
 }
+
+/* ── Rich UI: no chat pane title bar ───────────────────────────────────────
+   The session title, id, model and context are already on the selected row
+   in the session list, so the chat header was a second copy of all of it.
+   Dropping it hands the space back to the transcript.
+
+   Kept below the mobile breakpoint: there the session list is collapsed, so
+   the header is the only thing naming the session you are in. */
+@media (min-width: 921px) {
+  body.ps-rich-ui .ps-chat-panel > .ps-panel-header {
+    display: none;
+  }
+
+  /* Without a header the transcript starts flush against the panel edge. */
+  body.ps-rich-ui .ps-chat-panel > .ps-scroll-panel {
+    padding-top: 6px;
+  }
+}
