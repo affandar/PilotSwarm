@@ -3895,6 +3895,23 @@ body:not(.ps-rich-ui) .ps-mermaid {
    Each line is a block so its tint spans the full row. The tint derives from
    the line's own resolved color via currentColor, so it follows the theme
    (and stays legible on light themes) without a second palette. */
+/* A diff block wraps instead of scrolling, so its <pre> must NOT keep the
+   `white-space: pre` + horizontal-scroll behavior used for ordinary code.
+   Two things go wrong otherwise: <code> is display:inline by default, so the
+   block-level grid rows below sit in an inline formatting context and their
+   width resolves oddly (wrapped rows started at the container's left edge
+   instead of the code column); and because each row's box is only as wide as
+   the CONTAINER, scrolling right revealed code with no +/- tint behind it. */
+.ps-md-code-block.is-diff .ps-md-code-pre {
+  white-space: normal;
+  overflow-x: hidden;
+}
+
+.ps-md-code-block.is-diff .ps-md-code-pre > code {
+  display: block;
+  min-width: 0;
+}
+
 /* Two columns: a fixed marker gutter and the code. A grid (not inline text)
    means a wrapped line hangs under the CODE column rather than restarting
    under the marker — the alignment that made long diffs unreadable on
