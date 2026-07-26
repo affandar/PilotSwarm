@@ -146,11 +146,51 @@ function takeTopScored(
     if (count <= 0) return [];
     if (pool.length <= count) return pool.slice();
     const ordered = pool.slice().sort((a, b) => {
-        const diff = scores[b] - scores[a];
-        if (diff !== 0) return diff;
+        // COMPARE, never subtract: user messages score +Infinity, and
+        // Infinity - Infinity is NaN. A NaN comparator result is coerced to
+        // "equal", so the stable sort silently preserved ascending order and
+        // the `latest` preference never applied — on a user-dense chat the
+        // NEWEST messages were dropped, the exact opposite of the intent.
+        //
+        // Written as two one-sided comparisons rather than `!==` + `<` so that
+        // a NaN score (unreachable today, but one refactor away) falls through
+        // to the positional tie-break instead of making the comparator
+        // non-antisymmetric — which is the same class of bug, relocated.
+        if (scores[a] > scores[b]) return -1;
+        if (scores[b] > scores[a]) return 1;
         return prefer === "earliest" ? a - b : b - a;
     });
     return ordered.slice(0, count).sort((a, b) => a - b);
+}
+
+/**
+ * Fill a budget from `pool`, split between the transcript's head and tail
+ * halves so both ends survive. Unused budget in one half flows to the other
+ * rather than being lost.
+ */
+function fillHalves(
+    pool: number[],
+    scores: number[],
+    budget: number,
+    headFraction: number,
+    mid: number,
+): number[] {
+    if (budget <= 0 || pool.length === 0) return [];
+    const head = pool.filter((i) => i < mid);
+    const tail = pool.filter((i) => i >= mid);
+    const headBudget = Math.min(budget, Math.round(budget * headFraction));
+    const tailBudget = budget - headBudget;
+
+    let headPick = takeTopScored(head, scores, headBudget, "earliest");
+    let tailPick = takeTopScored(tail, scores, tailBudget, "latest");
+    const headSlack = headBudget - headPick.length;
+    const tailSlack = tailBudget - tailPick.length;
+    if (headSlack > 0 && tailPick.length < tail.length) {
+        tailPick = takeTopScored(tail, scores, tailBudget + headSlack, "latest");
+    } else if (tailSlack > 0 && headPick.length < head.length) {
+        headPick = takeTopScored(head, scores, headBudget + tailSlack, "earliest");
+    }
+    return headPick.concat(tailPick);
 }
 
 function buildElisions(
@@ -213,64 +253,74 @@ export const exchangeClusteredStrategy: TranscriptSelectionStrategy = {
             eligible: eligible.length,
         };
 
-        // Everything fits: no selection is better than any selection.
-        if (eligible.length <= budget) {
-            return {
-                selected: eligible,
-                elisions: [],
-                strategy: this.name,
-                stats: {
-                    ...baseStats,
-                    selectedCount: eligible.length,
-                    headSelected: eligible.length,
-                    tailSelected: 0,
-                    userKept: eligible.filter((m) => m.role === "user").length,
-                    droppedCount: 0,
-                },
-            };
-        }
-
-        const scores = scoreByExchangeProximity(eligible, exchangeWindow);
-        const headBudget = Math.min(budget, Math.round(budget * headFraction));
-        const tailBudget = budget - headBudget;
-
         // Halve on message position, so "first 500 / last 500" means the most
         // salient of the first half and of the second half — not the first 500
         // messages, which would be pure recency-blindness.
         const mid = Math.floor(eligible.length / 2);
-        const headPool: number[] = [];
-        const tailPool: number[] = [];
-        for (let i = 0; i < eligible.length; i += 1) {
-            (i < mid ? headPool : tailPool).push(i);
-        }
-
-        // Unused budget in one half flows to the other rather than being lost.
-        let headPick = takeTopScored(headPool, scores, headBudget, "earliest");
-        let tailPick = takeTopScored(tailPool, scores, tailBudget, "latest");
-        const headSlack = headBudget - headPick.length;
-        const tailSlack = tailBudget - tailPick.length;
-        if (headSlack > 0 && tailPick.length < tailPool.length) {
-            tailPick = takeTopScored(tailPool, scores, tailBudget + headSlack, "latest");
-        } else if (tailSlack > 0 && headPick.length < headPool.length) {
-            headPick = takeTopScored(headPool, scores, headBudget + tailSlack, "earliest");
-        }
-
-        const keptIdx = headPick.concat(tailPick).sort((a, b) => a - b);
-        const selected = keptIdx.map((i) => eligible[i]);
-
-        return {
-            selected,
-            elisions: buildElisions(eligible, keptIdx),
-            strategy: this.name,
-            stats: {
-                ...baseStats,
-                selectedCount: selected.length,
-                headSelected: headPick.length,
-                tailSelected: tailPick.length,
-                userKept: selected.filter((m) => m.role === "user").length,
-                droppedCount: eligible.length - selected.length,
-            },
+        const finish = (keptIdx: number[]): SelectionResult => {
+            const selected = keptIdx.map((i) => eligible[i]);
+            return {
+                selected,
+                elisions: buildElisions(eligible, keptIdx),
+                strategy: this.name,
+                stats: {
+                    ...baseStats,
+                    selectedCount: selected.length,
+                    // Counted by position, so these never claim a split that
+                    // did not happen.
+                    headSelected: keptIdx.filter((i) => i < mid).length,
+                    tailSelected: keptIdx.filter((i) => i >= mid).length,
+                    userKept: selected.filter((m) => m.role === "user").length,
+                    droppedCount: eligible.length - selected.length,
+                },
+            };
         };
+
+        // Everything fits: no selection is better than any selection.
+        if (eligible.length <= budget) {
+            return finish(eligible.map((_, i) => i));
+        }
+
+        const scores = scoreByExchangeProximity(eligible, exchangeWindow);
+
+        // Reserve in PRIORITY TIERS, globally, before any positional split.
+        //
+        // Splitting first was wrong: the halves each spent their own budget,
+        // so a +Infinity user message in a user-dense half lost to a
+        // zero-score filler message in a quiet half. On the shape this module
+        // exists for — a chatty setup phase followed by a long autonomous run
+        // — that dropped real user turns while keeping cron noise, breaking
+        // the invariant this file documents.
+        const kept = new Set<number>();
+
+        // Tier 0 — the first and last eligible messages. The opening states
+        // the mission and the closing states where the work actually stands;
+        // neither is recoverable from anything else in the transcript.
+        for (const anchor of [0, eligible.length - 1]) {
+            if (kept.size < budget) kept.add(anchor);
+        }
+
+        // Tier 1 — user messages. Never dropped while budget remains. Only
+        // when the users alone overflow the budget does the head/tail split
+        // apply to them, keeping the earliest and latest exchanges.
+        const users: number[] = [];
+        for (let i = 0; i < eligible.length; i += 1) {
+            if (eligible[i].role === "user" && !kept.has(i)) users.push(i);
+        }
+        for (const i of fillHalves(users, scores, budget - kept.size, headFraction, mid)) {
+            kept.add(i);
+        }
+
+        // Tier 2 — everything else, by salience, head and tail balanced.
+        const rest: number[] = [];
+        for (let i = 0; i < eligible.length; i += 1) {
+            if (!kept.has(i)) rest.push(i);
+        }
+        for (const i of fillHalves(rest, scores, budget - kept.size, headFraction, mid)) {
+            kept.add(i);
+        }
+
+        return finish([...kept].sort((a, b) => a - b));
     },
 };
 
