@@ -3453,3 +3453,166 @@ body.is-resizing-pane-y * {
   padding-inline-start: 14px;
   opacity: 0.9;
 }
+
+/* ══ Rich UI chrome ════════════════════════════════════════════════════════
+   Driven by `body.ps-rich-ui` (set from controller state in web-app.js) so
+   surfaces OUTSIDE the controller tree — the portal header in App.jsx —
+   restyle together with the panes. Log/technical content keeps the
+   monospace face on purpose: only the chrome around it goes proportional. */
+
+body.ps-rich-ui {
+  --ps-ui-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter,
+    "Helvetica Neue", Arial, sans-serif;
+}
+
+/* ── Header ─────────────────────────────────────────────────────────────── */
+
+body.ps-rich-ui .portal-header {
+  font-family: var(--ps-ui-font);
+  padding: 12px 18px;
+  border-bottom: 1px solid color-mix(in srgb, var(--ps-border) 34%, transparent);
+  background: color-mix(in srgb, var(--ps-page-background) 92%, transparent);
+}
+
+body.ps-rich-ui .portal-header-kicker {
+  font-size: 0.66rem;
+  letter-spacing: 0.13em;
+  opacity: 0.65;
+}
+
+body.ps-rich-ui .portal-header-name {
+  font-size: 0.92rem;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+body.ps-rich-ui .portal-logo-frame {
+  border-radius: 11px;
+  overflow: hidden;
+}
+
+body.ps-rich-ui .portal-header-version,
+body.ps-rich-ui .portal-header-status,
+body.ps-rich-ui .portal-header-email {
+  font-size: 0.7rem;
+}
+
+body.ps-rich-ui .portal-header-version {
+  background: color-mix(in srgb, var(--ps-border) 16%, transparent);
+  border-color: transparent;
+}
+
+/* ── Buttons ────────────────────────────────────────────────────────────── */
+
+body.ps-rich-ui .ps-toolbar {
+  font-family: var(--ps-ui-font);
+  gap: 5px;
+}
+
+body.ps-rich-ui .ps-toolbar-button,
+body.ps-rich-ui .ps-mini-button,
+body.ps-rich-ui .ps-modal-button,
+body.ps-rich-ui .ps-tab {
+  font-family: var(--ps-ui-font);
+  border-radius: 9px;
+  border-color: color-mix(in srgb, var(--ps-border) 34%, transparent);
+  background: color-mix(in srgb, var(--ps-border) 9%, transparent);
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+body.ps-rich-ui .ps-toolbar-button:hover,
+body.ps-rich-ui .ps-mini-button:hover,
+body.ps-rich-ui .ps-tab:hover {
+  transform: none;
+  background: color-mix(in srgb, var(--ps-border) 20%, transparent);
+  border-color: color-mix(in srgb, var(--ps-border) 46%, transparent);
+}
+
+/* Active/selected controls read as a filled accent pill. */
+body.ps-rich-ui .ps-toolbar-button.is-active,
+body.ps-rich-ui .ps-toolbar-button[aria-pressed="true"],
+body.ps-rich-ui .ps-tab.is-active {
+  background: color-mix(in srgb, var(--ps-selection-background) 24%, transparent);
+  border-color: color-mix(in srgb, var(--ps-selection-background) 52%, transparent);
+  color: var(--ps-foreground);
+}
+
+body.ps-rich-ui .ps-send-button {
+  border-radius: 10px;
+}
+
+/* ── Panels (chat, sessions, inspector, activity) ───────────────────────── */
+
+body.ps-rich-ui .ps-panel {
+  border-width: 1px;
+  border-color: color-mix(in srgb, var(--ps-border) 34%, transparent);
+  border-radius: 12px;
+  box-shadow: none;
+}
+
+body.ps-rich-ui .ps-panel.is-focused {
+  border-color: color-mix(in srgb, var(--ps-panel-accent, var(--ps-border)) 62%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ps-panel-accent, var(--ps-border)) 22%, transparent);
+}
+
+/* Flat header bar — the terminal gradient reads as a title chrome strip. */
+body.ps-rich-ui .ps-panel-header {
+  font-family: var(--ps-ui-font);
+  min-height: 34px;
+  padding: 6px 12px;
+  background: transparent;
+  border-bottom: 1px solid color-mix(in srgb, var(--ps-border) 22%, transparent);
+}
+
+body.ps-rich-ui .ps-panel-title {
+  font-size: 0.8rem;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+}
+
+body.ps-rich-ui .ps-panel-title-right {
+  font-size: 0.7rem;
+  opacity: 0.82;
+}
+
+/* ── Inspector tab row → segmented control ──────────────────────────────── */
+
+body.ps-rich-ui .ps-tab-row-icons {
+  gap: 3px;
+  padding: 4px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--ps-border) 10%, transparent);
+}
+
+body.ps-rich-ui .ps-tab-row-icons .ps-toolbar-button {
+  border-color: transparent;
+  background: transparent;
+  border-radius: 7px;
+}
+
+body.ps-rich-ui .ps-tab-row-icons .ps-toolbar-button.is-active {
+  background: color-mix(in srgb, var(--ps-surface) 92%, var(--ps-border));
+  border-color: color-mix(in srgb, var(--ps-border) 30%, transparent);
+}
+
+/* ── Activity / log surfaces ────────────────────────────────────────────── */
+/* Log bodies stay monospace — they are machine output and column alignment
+   carries meaning. What changes is density, muting, and the timestamp
+   column reading as a gutter rather than inline noise. */
+
+body.ps-rich-ui .ps-activity-pane .ps-scroll-panel,
+body.ps-rich-ui .ps-inspector-pane .ps-scroll-panel {
+  padding: 8px 12px;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+body.ps-rich-ui .ps-activity-pane .ps-line,
+body.ps-rich-ui .ps-inspector-pane .ps-line {
+  padding-block: 1px;
+  border-radius: 4px;
+}
+
+body.ps-rich-ui .ps-activity-pane .ps-line:hover {
+  background: color-mix(in srgb, var(--ps-border) 12%, transparent);
+}

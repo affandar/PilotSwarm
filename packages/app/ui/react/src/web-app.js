@@ -3623,7 +3623,7 @@ function InspectorPane({ controller, mobile = false, panelClassName = "", extraA
         stickyBottom: inspector.activeTab === "logs",
         paneKey: "inspector",
         className: inspector.activeTab === "history" || inspector.activeTab === "logs" ? "is-wrapped" : "is-preserve",
-        panelClassName: `${inspector.activeTab === "sequence" ? "has-preserved-sticky" : ""}${panelClassName ? ` ${panelClassName}` : ""}`.trim(),
+        panelClassName: `ps-inspector-pane${inspector.activeTab === "sequence" ? " has-preserved-sticky" : ""}${panelClassName ? ` ${panelClassName}` : ""}`.trim(),
     });
 }
 
@@ -3672,7 +3672,9 @@ function ActivityPane({ controller, panelClassName = "", extraActions = null }) 
         stickyBottom: true,
         paneKey: "activity",
         className: "is-wrapped",
-        panelClassName,
+        // Stable identity class so styling can target the activity surface
+        // without depending on which slot rendered it.
+        panelClassName: `ps-activity-pane${panelClassName ? ` ${panelClassName}` : ""}`,
     });
 }
 
@@ -5563,6 +5565,16 @@ export function createWebPilotSwarmController({ transport, mode = "remote", bran
 }
 
 export function PilotSwarmWebApp({ controller }) {
+    // The rich UI restyles chrome that lives OUTSIDE this tree (the portal
+    // header in App.jsx), so the flag rides on <body> and every surface
+    // keys off `body.ps-rich-ui` in CSS rather than threading a prop.
+    const richUi = useControllerSelector(controller, (state) => state.ui.chatViewMode === "rich");
+    React.useEffect(() => {
+        if (typeof document === "undefined") return undefined;
+        document.body.classList.toggle("ps-rich-ui", richUi);
+        return () => document.body.classList.remove("ps-rich-ui");
+    }, [richUi]);
+
     const viewportRef = React.useRef(null);
     const mainGridRef = React.useRef(null);
     const viewport = useMeasuredViewport(viewportRef);
