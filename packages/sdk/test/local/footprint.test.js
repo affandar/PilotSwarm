@@ -133,4 +133,32 @@ describe("session footprint", () => {
         assertEqual(fp.assessment.recommendation, "none");
         assertEqual(fp.context.failedOrStuckCompactions, 0);
     });
+
+    // Regression: the Copilot CLI frequently omits session.compaction_complete
+    // even when the compaction succeeded. Counting those as failures reported
+    // healthy sessions as degraded (observed live: 67 starts / 4 completes on a
+    // session whose conversation tokens were demonstrably falling).
+    it("starts without a recorded complete count as unknown, not failed", { timeout: TIMEOUT }, async () => {
+        const { catalog, mgmt } = await setup(true);
+        const sessionId = randomUUID();
+        await catalog.createSession(sessionId, {});
+        const events = [{ eventType: "user.message", data: { content: "hi" } }];
+        // Six compactions started; only the first reported completion. The
+        // trailing start is in-flight (age-gated), the rest are unknown.
+        events.push({ eventType: "session.compaction_start", data: {} });
+        events.push({ eventType: "session.compaction_complete", data: { success: true } });
+        for (let i = 0; i < 5; i += 1) {
+            events.push({ eventType: "session.compaction_start", data: {} });
+        }
+        events.push(usage(30_000));
+        await catalog.recordEvents(sessionId, events);
+
+        const fp = await mgmt.getSessionFootprint(sessionId, { bypassCache: true });
+        assertEqual(fp.context.failedOrStuckCompactions, 0, "unmatched starts are not failures");
+        assertEqual(fp.context.unknownCompactions, 4, "non-trailing unmatched starts are unknown");
+        assert(
+            !fp.assessment.reasons.includes("failed or stuck compaction"),
+            "missing completion events must not degrade a healthy session",
+        );
+    });
 });

@@ -16,7 +16,10 @@
  *                            summary after the first compaction, so every
  *                            subsequent compaction's input includes one:
  *                            generation = max(0, completes - 1).
- *   - failedOrStuck          failed completes + starts with no complete
+ *   - failedOrStuck          explicitly failed completes + a stuck trailing start
+ *   - unknownCompactions      starts with no recorded complete. NOT failures:
+ *                             the CLI frequently omits the complete event even
+ *                             when the compaction succeeded.
  *   - sustained utilization  the last SUSTAINED_WINDOW usage readings all
  *                            above the threshold — never a single reading.
  */
@@ -62,6 +65,8 @@ export interface SessionFootprint {
         compactionGeneration: number;
         tokensRemovedCumulative: number;
         failedOrStuckCompactions: number;
+        /** Starts with no recorded complete — the CLI often omits the event, so these are UNKNOWN outcomes, not failures. */
+        unknownCompactions: number;
     };
     transcript: {
         snapshotSizeBytes: number | null;
@@ -217,12 +222,26 @@ export async function computeSessionFootprint(
     // A single unmatched start is a compaction IN FLIGHT until the stuck
     // timeout passes — without the age gate every live compaction (and,
     // permanently, one crashed worker) would read degraded.
+    // A start with no matching complete is UNKNOWN, not failed. The Copilot
+    // CLI does not reliably emit `session.compaction_complete`: a healthy
+    // session was observed with 67 starts against 4 completes while its
+    // conversation token count demonstrably fell by tens of thousands of
+    // tokens between starts — i.e. the compactions ran and succeeded, the
+    // completion event simply was not recorded. Counting those as failures
+    // reported a working session as `degraded` and recommended regeneration
+    // it did not need. Only an EXPLICITLY failed complete is a failure; the
+    // trailing unmatched start is still treated as in-flight/stuck (that one
+    // is age-gated and genuinely actionable).
     const unmatchedStarts = Math.max(0, compaction.starts - compaction.completes);
     const newestStartMs = compaction.lastStartAtMs ?? 0;
     const trailingStartIsStuck =
         unmatchedStarts > 0 &&
         (newestStartMs === 0 || Date.now() - newestStartMs > FOOTPRINT_STUCK_COMPACTION_MS);
-    const stuck = trailingStartIsStuck ? unmatchedStarts : Math.max(0, unmatchedStarts - 1);
+    const stuck = trailingStartIsStuck ? 1 : 0;
+    // The trailing unmatched start is accounted for separately — it is either
+    // in flight (fresh, counted nowhere) or stuck (counted in failedOrStuck).
+    // Every unmatched start BEHIND it has an unknown outcome.
+    const unknownCompactions = Math.max(0, unmatchedStarts - 1);
     const failedOrStuck = compaction.failed + stuck;
 
     // ── assessment ──────────────────────────────────────────────
@@ -302,6 +321,7 @@ export async function computeSessionFootprint(
             compactionGeneration,
             tokensRemovedCumulative: compaction.tokensRemoved,
             failedOrStuckCompactions: failedOrStuck,
+            unknownCompactions,
         },
         transcript: {
             snapshotSizeBytes: summary?.snapshotSizeBytes ?? null,
