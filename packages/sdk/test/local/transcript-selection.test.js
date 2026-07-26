@@ -4,8 +4,9 @@
  * The module is pure, so these need no database, no session, and no network:
  * synthetic transcripts in, selection out. The final case is an LLM JUDGE —
  * it asks a model whether the selected subset preserves what a resumed agent
- * would need, which is the property unit assertions cannot express. It skips
- * automatically when no model credentials are configured.
+ * would need, which is the property unit assertions cannot express. It runs
+ * with the suite — test/local is LLM-backed by design, so an eval that only
+ * runs behind a flag is an eval that never runs.
  */
 import { describe, it } from "vitest";
 import { useSuiteEnv } from "../helpers/local-env.js";
@@ -201,11 +202,7 @@ describe("transcript selection", () => {
      * that actually matters: could an agent resume from this subset? So we
      * ask a model to compare the selection against the full transcript.
      */
-    it("selection preserves resumability (LLM judge)", { timeout: JUDGE_TIMEOUT }, async ({ skip }) => {
-        if (process.env.PILOTSWARM_SELECTION_JUDGE !== "1") {
-            skip("set PILOTSWARM_SELECTION_JUDGE=1 to run the LLM judge");
-            return;
-        }
+    it("selection preserves resumability (LLM judge)", { timeout: JUDGE_TIMEOUT }, async () => {
         const messages = buildWatchTranscript();
         const result = selectTranscript(messages, { budget: 60 });
         const render = (list) => list.map((m) => `${m.role.toUpperCase()}: ${m.text}`).join("\n");
