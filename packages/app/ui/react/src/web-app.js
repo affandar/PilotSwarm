@@ -943,15 +943,27 @@ function renderDiffCode(content, theme) {
     return lines.map((line, index) => {
         const kind = classifyDiffLine(line);
         const color = DIFF_LINE_COLORS[kind];
+        // Payload lines carry their +/-/space in column 1. Split it off into
+        // a gutter (GitHub/GitLab/VS Code all do this) so the marker stops
+        // colliding with the code, wrapped lines hang under the text column
+        // instead of under the marker, and a copied selection yields clean
+        // code — the gutter is user-select:none. Meta/hunk lines have no
+        // marker but keep the empty gutter so every line stays aligned.
+        const hasMarker = kind === "add" || kind === "del" || kind === "context";
+        const marker = hasMarker ? line.slice(0, 1) : "";
+        const text = hasMarker ? line.slice(1) : line;
         return React.createElement("span", {
             key: `d:${index}`,
             className: `ps-diff-line is-${kind}`,
-            // Each line is its own block so the +/- tint spans the full row.
-            // No trailing "\n" in the text: browsers already insert line
-            // breaks between block elements when copying, so this keeps a
-            // copied diff byte-faithful instead of double-spaced.
             style: color ? { color: resolveColor(theme, color) || undefined } : undefined,
-        }, line);
+        },
+            React.createElement("span", {
+                className: "ps-diff-marker",
+                // Decorative: the tint already carries the meaning visually,
+                // and the row is announced by its text.
+                "aria-hidden": "true",
+            }, marker.trim()),
+            React.createElement("span", { className: "ps-diff-text" }, text));
     });
 }
 

@@ -3880,14 +3880,37 @@ body:not(.ps-rich-ui) .ps-mermaid {
    Each line is a block so its tint spans the full row. The tint derives from
    the line's own resolved color via currentColor, so it follows the theme
    (and stays legible on light themes) without a second palette. */
+/* Two columns: a fixed marker gutter and the code. A grid (not inline text)
+   means a wrapped line hangs under the CODE column rather than restarting
+   under the marker — the alignment that made long diffs unreadable on
+   narrow screens. */
 .ps-diff-line {
-  display: block;
+  display: grid;
+  grid-template-columns: 1.1ch minmax(0, 1fr);
+  gap: 0.7ch;
   padding-inline: 4px;
   margin-inline: -4px;
 }
 
-/* Blank context lines must still occupy a row. */
-.ps-diff-line:empty::after {
+/* Decorative and NOT copyable: selecting a diff yields clean code that can
+   be pasted straight into a file. */
+.ps-diff-marker {
+  user-select: none;
+  -webkit-user-select: none;
+  opacity: 0.5;
+  text-align: center;
+}
+
+/* Diffs wrap rather than scroll: a horizontally scrolled diff on a phone
+   hides exactly the +/- context you are reading it for. */
+.ps-diff-text {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Blank lines must still occupy a row. */
+.ps-diff-text:empty::after {
   content: " ";
   white-space: pre;
 }
