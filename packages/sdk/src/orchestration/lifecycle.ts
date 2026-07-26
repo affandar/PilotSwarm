@@ -848,6 +848,7 @@ function* runDeterministicDistill(
         ...(state.config.model ? { sessionModel: state.config.model } : {}),
         ...(regen.distillerModel ? { distillerModel: regen.distillerModel } : {}),
         ...(regen.archiveArtifactId ? { archiveArtifactId: regen.archiveArtifactId } : {}),
+        ...((regen as any).archiveChunkIds?.length ? { archiveChunkIds: (regen as any).archiveChunkIds } : {}),
     });
     const bootstrap = String(distill?.bootstrap ?? "");
     if (!bootstrap) throw new Error("distill produced no bootstrap");
@@ -879,6 +880,12 @@ export function* advanceRegenPipeline(
                 stage: "archived",
                 archiveArtifactId: String(archive?.archiveArtifactId ?? ""),
             };
+            // Chunk list rides alongside the id so the distiller can page the
+            // WHOLE archive; archiveArtifactId stays the first chunk for
+            // consumers (and already-archived epochs) that predate chunking.
+            (state.regen as any).archiveChunkIds = Array.isArray(archive?.archiveChunkIds)
+                ? archive.archiveChunkIds.map((id: unknown) => String(id))
+                : [];
             (state.regen as any).archiveMs = Number(archive?.archiveMs) || 0;
             (state.regen as any).turnsArchived = Number(archive?.turnsArchived) || 0;
             (state.regen as any).compactionsArchived = Number(archive?.compactionsArchived) || 0;
@@ -896,6 +903,7 @@ export function* advanceRegenPipeline(
             }
             const spawn: any = yield runtime.manager.runRegenSpawnDistiller(sessionId, state.transcriptEpoch, regen.attemptId, {
                 ...(regen.archiveArtifactId ? { archiveArtifactId: regen.archiveArtifactId } : {}),
+                ...((regen as any).archiveChunkIds?.length ? { archiveChunkIds: (regen as any).archiveChunkIds } : {}),
                 ...(regen.handoff ? { handoff: regen.handoff } : {}),
                 ...(regen.instructions ? { instructions: regen.instructions } : {}),
                 ...(regen.distillerModel ? { distillerModel: regen.distillerModel } : {}),
@@ -932,6 +940,7 @@ export function* advanceRegenPipeline(
                     sessionId, state.transcriptEpoch, regen.attemptId, regen.distillerSessionId!,
                     {
                         ...(regen.archiveArtifactId ? { archiveArtifactId: regen.archiveArtifactId } : {}),
+                        ...((regen as any).archiveChunkIds?.length ? { archiveChunkIds: (regen as any).archiveChunkIds } : {}),
                         ...(regen.handoff ? { handoff: regen.handoff } : {}),
                         ...(regen.instructions ? { instructions: regen.instructions } : {}),
                         ...(regen.distillerModel ? { distillerModel: regen.distillerModel } : {}),
@@ -1007,6 +1016,7 @@ export function* advanceRegenPipeline(
                 trigger: regen.trigger,
                 requestedAtMs: regen.requestedAtMs,
                 ...(regen.archiveArtifactId ? { archiveArtifactId: regen.archiveArtifactId } : {}),
+                ...((regen as any).archiveChunkIds?.length ? { archiveChunkIds: (regen as any).archiveChunkIds } : {}),
                 ...(regen.packageArtifactId ? { packageArtifactId: regen.packageArtifactId } : {}),
                 ...(r.turnsArchived ? { turnsArchived: r.turnsArchived } : {}),
                 ...(r.compactionsArchived ? { compactionsArchived: r.compactionsArchived } : {}),

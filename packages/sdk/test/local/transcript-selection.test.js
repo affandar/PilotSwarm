@@ -237,3 +237,52 @@ describe("transcript selection", () => {
         });
     });
 });
+
+/**
+ * Archive chunking — the failure that motivated all of this. A 1.8 MB
+ * archive threw ARTIFACT_TOO_LARGE against the 1 MiB text-artifact cap and
+ * aborted regeneration at the `requested` stage, before the distiller and
+ * before the deterministic fallback that needs no archive at all.
+ */
+describe("archive chunking", () => {
+    it("splits on line boundaries and keeps every chunk under the cap", { timeout: TIMEOUT }, async () => {
+        const { chunkArchiveLines } = await import("../../src/regen-worker.ts");
+        const { TEXT_ARTIFACT_MAX_BYTES } = await import("../../src/session-store.ts");
+        const budget = Math.floor(TEXT_ARTIFACT_MAX_BYTES * 0.9);
+
+        // ~1.8 MB of JSONL, mirroring the real archive that failed.
+        const lines = [];
+        for (let i = 0; i < 1200; i += 1) {
+            lines.push(JSON.stringify({ seq: i, type: "assistant.message", data: { content: "x".repeat(1500) } }));
+        }
+        const total = lines.reduce((n, l) => n + Buffer.byteLength(l, "utf8") + 1, 0);
+        assert(total > TEXT_ARTIFACT_MAX_BYTES, "fixture must exceed the single-artifact cap");
+
+        const chunks = chunkArchiveLines(lines, budget);
+        assert(chunks.length > 1, "an oversized archive is split");
+        for (const c of chunks) {
+            assert(Buffer.byteLength(c, "utf8") <= budget, "every chunk fits the artifact cap");
+        }
+        // Lossless: concatenating the chunks reproduces the input exactly.
+        const rejoined = chunks.join("").trimEnd().split("\n");
+        assertEqual(rejoined.length, lines.length, "no line is lost");
+        assertEqual(rejoined[0], lines[0], "first line intact");
+        assertEqual(rejoined[rejoined.length - 1], lines[lines.length - 1], "last line intact");
+        for (const line of rejoined) JSON.parse(line); // never split mid-record
+    });
+
+    it("keeps a small archive as a single chunk", { timeout: TIMEOUT }, async () => {
+        const { chunkArchiveLines } = await import("../../src/regen-worker.ts");
+        const chunks = chunkArchiveLines(["{\"a\":1}", "{\"b\":2}"], 1_048_576);
+        assertEqual(chunks.length, 1, "no needless splitting");
+    });
+
+    it("does not drop a single line that exceeds the cap on its own", { timeout: TIMEOUT }, async () => {
+        const { chunkArchiveLines } = await import("../../src/regen-worker.ts");
+        const huge = JSON.stringify({ data: "y".repeat(2_000_000) });
+        const chunks = chunkArchiveLines(["{\"small\":1}", huge], 1_048_576);
+        const rejoined = chunks.join("").trimEnd().split("\n");
+        assertEqual(rejoined.length, 2, "the oversized record survives as its own chunk");
+        assertEqual(rejoined[1], huge, "and is not truncated — the store rejects it loudly instead");
+    });
+});

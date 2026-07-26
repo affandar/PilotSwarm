@@ -808,7 +808,7 @@ export function createSessionManagerProxy(ctx: any) {
         },
         // ── Service-session distiller (1.0.68) ─────────────────
         /** Spawn the regen-distiller service session under the tree root (idempotent per attempt). */
-        runRegenSpawnDistiller(sessionId: string, epoch: number, attemptId: string, opts?: { archiveArtifactId?: string; handoff?: string; instructions?: string; distillerModel?: string }) {
+        runRegenSpawnDistiller(sessionId: string, epoch: number, attemptId: string, opts?: { archiveArtifactId?: string; archiveChunkIds?: string[]; handoff?: string; instructions?: string; distillerModel?: string }) {
             return ctx.scheduleActivity("runRegenSpawnDistiller", { sessionId, epoch, attemptId, ...(opts ?? {}) });
         },
         /** Poll the distiller service session: running | completed (with response) | failed. */
@@ -816,7 +816,7 @@ export function createSessionManagerProxy(ctx: any) {
             return ctx.scheduleActivity("runRegenCheckDistiller", { distillerSessionId });
         },
         /** Parse/validate the distiller's final message into the package (+dumps); deterministic fallback on junk. */
-        runRegenCollectDistiller(sessionId: string, epoch: number, attemptId: string, distillerSessionId: string, opts?: { archiveArtifactId?: string; handoff?: string; instructions?: string; distillerModel?: string }) {
+        runRegenCollectDistiller(sessionId: string, epoch: number, attemptId: string, distillerSessionId: string, opts?: { archiveArtifactId?: string; archiveChunkIds?: string[]; handoff?: string; instructions?: string; distillerModel?: string }) {
             return ctx.scheduleActivity("runRegenCollectDistiller", { sessionId, epoch, attemptId, distillerSessionId, ...(opts ?? {}) });
         },
         /** Best-effort cancel of a timed-out/failed distiller service session. */
@@ -3747,7 +3747,7 @@ export function registerActivities(
 
     runtime.registerActivity("runRegenSpawnDistiller", async (
         activityCtx: any,
-        input: { sessionId: string; epoch: number; attemptId: string; archiveArtifactId?: string; handoff?: string; instructions?: string; distillerModel?: string },
+        input: { sessionId: string; epoch: number; attemptId: string; archiveArtifactId?: string; archiveChunkIds?: string[]; handoff?: string; instructions?: string; distillerModel?: string },
     ) => {
         if (!catalog) throw new Error("distiller spawn requires the CMS catalog");
         if (!artifactStore) throw new Error("distiller spawn requires an artifact store");
@@ -3768,6 +3768,7 @@ export function registerActivities(
                 epoch: input.epoch,
                 attemptId: input.attemptId,
                 archiveArtifactId: input.archiveArtifactId || archiveName(input.epoch, input.attemptId),
+                ...(input.archiveChunkIds?.length ? { archiveChunkIds: input.archiveChunkIds } : {}),
                 closure,
                 ...(input.handoff ? { handoff: input.handoff } : {}),
                 ...(input.instructions ? { instructions: input.instructions } : {}),
@@ -3885,7 +3886,7 @@ export function registerActivities(
 
     runtime.registerActivity("runRegenCollectDistiller", async (
         activityCtx: any,
-        input: { sessionId: string; epoch: number; attemptId: string; distillerSessionId: string; archiveArtifactId?: string; handoff?: string; instructions?: string; distillerModel?: string },
+        input: { sessionId: string; epoch: number; attemptId: string; distillerSessionId: string; archiveArtifactId?: string; archiveChunkIds?: string[]; handoff?: string; instructions?: string; distillerModel?: string },
     ) => {
         if (!catalog) throw new Error("distiller collect requires the CMS catalog");
         if (!artifactStore) throw new Error("distiller collect requires an artifact store");

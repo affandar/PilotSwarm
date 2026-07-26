@@ -21,6 +21,7 @@
  */
 
 import fs from "node:fs";
+import { TEXT_ARTIFACT_MAX_BYTES } from "./session-store.js";
 import os from "node:os";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
@@ -35,7 +36,10 @@ export interface RegenArchiveInput {
 }
 
 export interface RegenArchiveResult {
+    /** First chunk — also the whole archive when it fits in one artifact. */
     archiveArtifactId: string;
+    /** Every chunk in order; length 1 for a single-artifact archive. */
+    archiveChunkIds: string[];
     turnsArchived: number;
     compactionsArchived: number;
     archiveMs: number;
@@ -85,10 +89,48 @@ const ARCHIVE_EVENT_LIMIT = 1_000;
 const DISTILL_TIMEOUT_MS = Number.parseInt(process.env.PILOTSWARM_DISTILL_TIMEOUT_MS ?? "", 10) || 90_000;
 
 const MAX_SEQ = Number.MAX_SAFE_INTEGER;
+/** Chunk target: the hard text-artifact cap with headroom, so a chunk can never land ON the limit. */
+const ARCHIVE_CHUNK_MAX_BYTES = Math.floor(TEXT_ARTIFACT_MAX_BYTES * 0.9);
 const TRANSCRIPT_TYPES = ["user.message", "assistant.message", "system.message"];
 
 export function archiveName(epoch: number, attemptId: string): string {
     return `transcript-e${epoch}-${attemptId}.jsonl`;
+}
+
+/**
+ * Chunk N of a multi-part archive. The archive is written as several
+ * artifacts because a text artifact is capped at 1 MiB
+ * (TEXT_ARTIFACT_MAX_BYTES) — a real 1.8 MB transcript threw
+ * ARTIFACT_TOO_LARGE and killed regeneration outright on the session that
+ * needed it most.
+ */
+export function archiveChunkName(epoch: number, attemptId: string, part: number): string {
+    return `transcript-e${epoch}-${attemptId}.part${String(part).padStart(3, "0")}.jsonl`;
+}
+
+/**
+ * Chunk payloads so each stays under the artifact ceiling. Splits on line
+ * boundaries only — a JSONL record is never divided — and a single line that
+ * exceeds the limit on its own becomes its own oversized chunk rather than
+ * being silently dropped (the store will reject it and the caller reports a
+ * real failure instead of losing a message).
+ */
+export function chunkArchiveLines(lines: string[], maxBytes: number): string[] {
+    const chunks: string[] = [];
+    let current: string[] = [];
+    let currentBytes = 0;
+    for (const line of lines) {
+        const lineBytes = Buffer.byteLength(line, "utf8") + 1; // + newline
+        if (current.length > 0 && currentBytes + lineBytes > maxBytes) {
+            chunks.push(current.join("\n") + "\n");
+            current = [];
+            currentBytes = 0;
+        }
+        current.push(line);
+        currentBytes += lineBytes;
+    }
+    if (current.length > 0) chunks.push(current.join("\n") + "\n");
+    return chunks;
 }
 
 export function packageName(epoch: number, attemptId: string): string {
@@ -142,18 +184,34 @@ export async function runRegenArchive(
     const turnsArchived = chronological.filter((e) => e.eventType === "user.message").length;
     const compaction = await deps.catalog.getSessionCompactionStats(sessionId);
 
-    // Attempt idempotency: a retry after the upload landed short-circuits.
-    if (!(await artifactExists(deps.artifactStore, sessionId, filename))) {
-        await deps.artifactStore.uploadArtifact(
-            sessionId,
-            filename,
-            Buffer.from(lines.join("\n") + "\n", "utf8"),
-            "application/x-ndjson",
-        );
+    // Written as CHUNKS under the text-artifact ceiling. A single-artifact
+    // archive threw ARTIFACT_TOO_LARGE at 1.8 MB and aborted regeneration at
+    // the `requested` stage — before the distiller, and before the
+    // deterministic fallback that needs no archive at all.
+    const chunkBodies = chunkArchiveLines(lines, ARCHIVE_CHUNK_MAX_BYTES);
+    const chunkIds: string[] = [];
+    for (let part = 0; part < chunkBodies.length; part += 1) {
+        const chunkId = chunkBodies.length === 1
+            ? filename
+            : archiveChunkName(epoch, attemptId, part + 1);
+        chunkIds.push(chunkId);
+        // Attempt idempotency: a retry after an upload landed short-circuits
+        // per chunk, so a partially-written archive resumes where it stopped.
+        if (!(await artifactExists(deps.artifactStore, sessionId, chunkId))) {
+            await deps.artifactStore.uploadArtifact(
+                sessionId,
+                chunkId,
+                Buffer.from(chunkBodies[part], "utf8"),
+                "application/x-ndjson",
+            );
+        }
     }
 
     return {
-        archiveArtifactId: filename,
+        // First chunk doubles as the archive id, so existing consumers keep
+        // working; chunk-aware readers page the full list.
+        archiveArtifactId: chunkIds[0] ?? filename,
+        archiveChunkIds: chunkIds,
         turnsArchived,
         compactionsArchived: compaction.completes,
         archiveMs: Date.now() - startedAt,
@@ -594,6 +652,8 @@ export function buildMapReduceSeedPrompt(args: {
     epoch: number;
     attemptId: string;
     archiveArtifactId: string;
+    /** Full chunk list when the archive spans several artifacts. */
+    archiveChunkIds?: string[];
     closure: RegenClosure;
     handoff?: string;
     instructions?: string;
@@ -605,8 +665,14 @@ export function buildMapReduceSeedPrompt(args: {
         `Distill session ${args.servedSessionId} (epoch ${args.epoch}, attempt ${args.attemptId}).`,
         fenceIntro(nonce),
         `PLAN (map-reduce):`,
-        `1. Call read_transcript_page with artifact "${args.archiveArtifactId}" starting at page 1;`
-        + ` keep paging until has_more is false. Take running notes of: the mission, owner-issued`
+        `1. ${(args.archiveChunkIds && args.archiveChunkIds.length > 1)
+            ? `The archive spans ${args.archiveChunkIds.length} artifacts, in order: `
+              + `${args.archiveChunkIds.map((id) => `"${id}"`).join(", ")}. `
+              + `Page EACH one with read_transcript_page from page 1 until has_more is false, `
+              + `then move to the next. They are chronological — do not stop after the first.`
+            : `Call read_transcript_page with artifact "${args.archiveArtifactId}" starting at page 1;`
+              + ` keep paging until has_more is false.`}`
+        + ` Take running notes of: the mission, owner-issued`
         + ` standing instructions (quote near-verbatim), the current state of the work, active threads,`
         + ` commitments made, pitfalls/dead ends, and open questions.`,
         `2. When you have read EVERY page, reply with ONLY this JSON object (no prose, no fences):`,

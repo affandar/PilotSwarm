@@ -87,7 +87,7 @@ export interface ArtifactDownloadResult extends ArtifactMetadata {
 
 const DEFAULT_ARTIFACT_CONTENT_TYPE = "text/markdown";
 const DEFAULT_ARTIFACT_SOURCE: ArtifactSource = "agent";
-const TEXT_ARTIFACT_MAX_BYTES = 1_048_576;
+export const TEXT_ARTIFACT_MAX_BYTES = 1_048_576;
 const DEFAULT_BINARY_ARTIFACT_MAX_BYTES = 10_485_760;
 const OCTET_STREAM_CONTENT_TYPE = "application/octet-stream";
 const YAML_ARTIFACT_CONTENT_TYPES = new Set(["application/yaml", "application/x-yaml", "text/yaml"]);
