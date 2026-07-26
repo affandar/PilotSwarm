@@ -2936,7 +2936,7 @@ function SessionLinkModal({ url, warn, onCopyAgain, onClose }) {
         React.createElement("div", { className: "ps-link-modal", onClick: stop },
             React.createElement("div", { className: "ps-share-modal-head" },
                 React.createElement("span", null, "Link copied"),
-                React.createElement("button", { className: "ps-modal-close", onClick: onClose }, "✕")),
+                React.createElement("button", { className: "ps-modal-close", onClick: onClose, "aria-label": "Close", title: "Close" }, "✕")),
             React.createElement("div", { className: "ps-share-section-sub" },
                 "Copied to your clipboard — anyone with access can open the session from this link."),
             React.createElement("div", { className: "ps-link-row" },
@@ -3173,7 +3173,7 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
         React.createElement("div", { className: "ps-share-modal", onClick: stop },
             React.createElement("div", { className: "ps-share-modal-head" },
                 React.createElement("span", null, "Manage session"),
-                React.createElement("button", { className: "ps-modal-close", onClick: onClose }, "✕")),
+                React.createElement("button", { className: "ps-modal-close", onClick: onClose, "aria-label": "Close", title: "Close" }, "✕")),
 
             // ── Tab bar ───────────────────────────────────────────────
             React.createElement("div", { className: "ps-manage-tabs", role: "tablist" },
@@ -5070,7 +5070,7 @@ function ModalLayer({ controller }) {
         React.createElement("div", { className: `ps-modal${modal.type === "themePicker" ? " is-theme-picker" : ""}`, onClick: (event) => event.stopPropagation() },
             React.createElement("div", { className: "ps-modal-header" },
                 React.createElement("div", { className: "ps-modal-title" }, presentation.title),
-                React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close }, "Close"),
+                React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close, "aria-label": "Close", title: "Close" }, "✕"),
             ),
             React.createElement("div", { className: "ps-modal-grid" },
                 React.createElement("div", { ref: listModalRef, className: "ps-modal-list" },
@@ -5096,82 +5096,13 @@ function ModalLayer({ controller }) {
         const isDestructive = !isAlert && modal.action === "deleteSession";
         // The regenerate confirm carries distillation inputs: a mode select and
         // an optional distilling-instructions textarea, bound to modal.extras.
-// Distiller model / effort / context-tier pickers for the regenerate confirm.
-// The distiller runs on deployment machinery config rather than the served
-// session's model, so these are explicit choices; empty means "deployment
-// default". Effort and tier lists follow the SELECTED model, so an
-// unsupported combination cannot be submitted.
-function DistillerModelPickers({ controller, extras }) {
-    const options = Array.isArray(extras.distillerModelOptions) ? extras.distillerModelOptions : [];
-    const selected = options.find((m) => m.qualifiedName === extras.distillerModel) || null;
-    const efforts = selected?.supportedReasoningEfforts || [];
-    const tiers = selected?.supportedContextTiers || [];
-    const labelStyle = { color: "#94a3b8", fontSize: "12px", display: "flex", alignItems: "center", gap: 8 };
-    const selectStyle = { flex: "1", padding: "4px 8px" };
-
-    const pick = (patch) => controller.updateConfirmExtras(patch);
-
-    return React.createElement(React.Fragment, null,
-        React.createElement("label", { style: labelStyle },
-            "Distiller model",
-            React.createElement("select", {
-                className: "ps-modal-input",
-                style: selectStyle,
-                value: extras.distillerModel || "",
-                // Switching model clears effort/tier: the previous values may
-                // not exist on the new model.
-                onChange: (event) => pick({
-                    distillerModel: event.currentTarget.value,
-                    distillerEffort: "",
-                    distillerContextTier: "",
-                }),
-            },
-                React.createElement("option", { value: "" }, "Deployment default"),
-                options.map((m) => React.createElement("option", {
-                    key: m.qualifiedName,
-                    value: m.qualifiedName,
-                }, m.qualifiedName)),
-            ),
-        ),
-        efforts.length > 0
-            ? React.createElement("label", { style: labelStyle },
-                "Reasoning",
-                React.createElement("select", {
-                    className: "ps-modal-input",
-                    style: selectStyle,
-                    value: extras.distillerEffort || "",
-                    onChange: (event) => pick({ distillerEffort: event.currentTarget.value }),
-                },
-                    React.createElement("option", { value: "" }, "Model default"),
-                    efforts.map((e) => React.createElement("option", { key: e, value: e }, e)),
-                ),
-            )
-            : null,
-        tiers.length > 0
-            ? React.createElement("label", { style: labelStyle },
-                "Context",
-                React.createElement("select", {
-                    className: "ps-modal-input",
-                    style: selectStyle,
-                    value: extras.distillerContextTier || "",
-                    onChange: (event) => pick({ distillerContextTier: event.currentTarget.value }),
-                },
-                    React.createElement("option", { value: "" }, "Model default"),
-                    tiers.map((t) => React.createElement("option", { key: t, value: t },
-                        t === "long_context" ? "long context (fits a larger transcript)" : t)),
-                ),
-            )
-            : null,
-    );
-}
-
         const isRegen = modal.action === "regenerateSession";
         const extras = modal.extras || {};
         return React.createElement("div", { className: "ps-modal-backdrop", onClick: close },
             React.createElement("div", { className: "ps-modal is-narrow", onClick: (event) => event.stopPropagation() },
                 React.createElement("div", { className: "ps-modal-header" },
                     React.createElement("div", { className: "ps-modal-title" }, modalState.confirm.title),
-                    React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close }, "Close"),
+                    React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close, "aria-label": "Close", title: "Close" }, "✕"),
                 ),
                 React.createElement("div", { className: "ps-modal-body", style: { padding: "16px 20px" } },
                     React.createElement("p", { style: { color: "#94a3b8", margin: 0 } }, modalState.confirm.message),
@@ -5245,7 +5176,7 @@ function DistillerModelPickers({ controller, extras }) {
             React.createElement("div", { className: "ps-modal", onClick: (event) => event.stopPropagation() },
                 React.createElement("div", { className: "ps-modal-header" },
                     React.createElement("div", { className: "ps-modal-title" }, presentation.title),
-                    React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close }, "Close"),
+                    React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close, "aria-label": "Close", title: "Close" }, "✕"),
                 ),
                 React.createElement("div", { className: "ps-modal-grid" },
                     React.createElement("div", { ref: listModalRef, className: "ps-modal-list" },
@@ -5277,7 +5208,7 @@ function DistillerModelPickers({ controller, extras }) {
             React.createElement("div", { className: "ps-modal is-narrow", onClick: (event) => event.stopPropagation() },
                 React.createElement("div", { className: "ps-modal-header" },
                     React.createElement("div", { className: "ps-modal-title" }, modalState.renameSession.title),
-                    React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close }, "Close"),
+                    React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close, "aria-label": "Close", title: "Close" }, "✕"),
                 ),
                 React.createElement("input", {
                     ref: renameInputRef,
@@ -5310,7 +5241,7 @@ function DistillerModelPickers({ controller, extras }) {
             React.createElement("div", { className: "ps-modal is-narrow", onClick: (event) => event.stopPropagation() },
                 React.createElement("div", { className: "ps-modal-header" },
                     React.createElement("div", { className: "ps-modal-title" }, modalState.sessionGroupName.title),
-                    React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close }, "Close"),
+                    React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close, "aria-label": "Close", title: "Close" }, "✕"),
                 ),
                 React.createElement("input", {
                     ref: groupNameInputRef,
@@ -5355,7 +5286,7 @@ function DistillerModelPickers({ controller, extras }) {
             React.createElement("div", { className: "ps-modal is-narrow", onClick: (event) => event.stopPropagation() },
                 React.createElement("div", { className: "ps-modal-header" },
                     React.createElement("div", { className: "ps-modal-title" }, modal.title || "Session Lifecycle"),
-                    React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close }, "Close"),
+                    React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close, "aria-label": "Close", title: "Close" }, "✕"),
                 ),
                 React.createElement("div", { className: "ps-modal-body", style: { padding: "12px 16px 4px" } },
                     React.createElement("p", { style: { color: "#94a3b8", margin: 0 } }, bodyText)),
@@ -5400,7 +5331,7 @@ function DistillerModelPickers({ controller, extras }) {
             React.createElement("div", { className: "ps-modal is-narrow", onClick: (event) => event.stopPropagation() },
                 React.createElement("div", { className: "ps-modal-header" },
                     React.createElement("div", { className: "ps-modal-title" }, modalState.artifactUpload.title),
-                    React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close }, "Close"),
+                    React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close, "aria-label": "Close", title: "Close" }, "✕"),
                 ),
                 React.createElement("input", {
                     className: "ps-modal-input",
@@ -5434,7 +5365,7 @@ function DistillerModelPickers({ controller, extras }) {
             React.createElement("div", { className: "ps-modal is-wide", onClick: (event) => event.stopPropagation() },
                 React.createElement("div", { className: "ps-modal-header" },
                     React.createElement("div", { className: "ps-modal-title" }, filterPresentation.title),
-                    React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close }, "Close"),
+                    React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close, "aria-label": "Close", title: "Close" }, "✕"),
                 ),
                 React.createElement("div", { className: "ps-filter-grid" },
                     (modal.items || []).map((item, itemIndex) => {
@@ -5470,6 +5401,75 @@ function DistillerModelPickers({ controller, extras }) {
     }
 
     return null;
+}
+
+// Distiller model / effort / context-tier pickers for the regenerate confirm.
+// The distiller runs on deployment machinery config rather than the served
+// session's model, so these are explicit choices; empty means "deployment
+// default". Effort and tier lists follow the SELECTED model, so an
+// unsupported combination cannot be submitted.
+function DistillerModelPickers({ controller, extras }) {
+    const options = Array.isArray(extras.distillerModelOptions) ? extras.distillerModelOptions : [];
+    const selected = options.find((m) => m.qualifiedName === extras.distillerModel) || null;
+    const efforts = selected?.supportedReasoningEfforts || [];
+    const tiers = selected?.supportedContextTiers || [];
+    const labelStyle = { color: "#94a3b8", fontSize: "12px", display: "flex", alignItems: "center", gap: 8 };
+    const selectStyle = { flex: "1", padding: "4px 8px" };
+
+    const pick = (patch) => controller.updateConfirmExtras(patch);
+
+    return React.createElement(React.Fragment, null,
+        React.createElement("label", { style: labelStyle },
+            "Distiller model",
+            React.createElement("select", {
+                className: "ps-modal-input",
+                style: selectStyle,
+                value: extras.distillerModel || "",
+                // Switching model clears effort/tier: the previous values may
+                // not exist on the new model.
+                onChange: (event) => pick({
+                    distillerModel: event.currentTarget.value,
+                    distillerEffort: "",
+                    distillerContextTier: "",
+                }),
+            },
+                React.createElement("option", { value: "" }, "Deployment default"),
+                options.map((m) => React.createElement("option", {
+                    key: m.qualifiedName,
+                    value: m.qualifiedName,
+                }, m.qualifiedName)),
+            ),
+        ),
+        efforts.length > 0
+            ? React.createElement("label", { style: labelStyle },
+                "Reasoning",
+                React.createElement("select", {
+                    className: "ps-modal-input",
+                    style: selectStyle,
+                    value: extras.distillerEffort || "",
+                    onChange: (event) => pick({ distillerEffort: event.currentTarget.value }),
+                },
+                    React.createElement("option", { value: "" }, "Model default"),
+                    efforts.map((e) => React.createElement("option", { key: e, value: e }, e)),
+                ),
+            )
+            : null,
+        tiers.length > 0
+            ? React.createElement("label", { style: labelStyle },
+                "Context",
+                React.createElement("select", {
+                    className: "ps-modal-input",
+                    style: selectStyle,
+                    value: extras.distillerContextTier || "",
+                    onChange: (event) => pick({ distillerContextTier: event.currentTarget.value }),
+                },
+                    React.createElement("option", { value: "" }, "Model default"),
+                    tiers.map((t) => React.createElement("option", { key: t, value: t },
+                        t === "long_context" ? "long context (fits a larger transcript)" : t)),
+                ),
+            )
+            : null,
+    );
 }
 
 function useKeyboardShortcuts(controller, mobile) {
