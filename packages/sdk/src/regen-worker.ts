@@ -140,6 +140,10 @@ export function chunkArchiveLines(lines: string[], maxBytes: number): string[] {
         currentBytes += lineBytes;
     }
     if (current.length > 0) chunks.push(current.join("\n") + "\n");
+    // Always at least one chunk. An empty transcript used to yield zero
+    // chunks, so runRegenArchive returned an archiveArtifactId naming an
+    // artifact it never uploaded and the distiller's first read 404'd.
+    if (chunks.length === 0) chunks.push("");
     return chunks;
 }
 
