@@ -2257,6 +2257,71 @@ function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, l
         bottomContent);
 }
 
+// Rich (desktop-style) session row: a status dot instead of a glyph, the
+// title in proportional type, and the id/age/model metadata demoted to a
+// muted second line under the selected row. Depth becomes real indentation
+// with a guide rail rather than an ASCII "└" prefix.
+const SESSION_KIND_GLYPHS = { group: "🗂", system: "⚙", service: "⚗" };
+
+function RichSessionRow({ row, theme }) {
+    const chrome = row.chrome;
+    if (!chrome) return React.createElement(SessionRowContent, { row, theme, structured: true });
+
+    const kindGlyph = SESSION_KIND_GLYPHS[chrome.kind] || null;
+    const accent = resolveColor(theme, chrome.accentColor) || undefined;
+    const detailRuns = Array.isArray(row.detailRuns) ? row.detailRuns : [];
+
+    return React.createElement("div", { className: "ps-rich-session-row" },
+        React.createElement("div", { className: "ps-rich-session-main" },
+            chrome.selectMode
+                ? React.createElement("span", {
+                    className: `ps-rich-session-check${chrome.checked ? " is-checked" : ""}`,
+                }, chrome.checked ? "✓" : "")
+                : null,
+            kindGlyph
+                ? React.createElement("span", { className: "ps-rich-session-kind" }, kindGlyph)
+                : React.createElement("span", {
+                    className: "ps-rich-session-dot",
+                    style: { background: resolveColor(theme, chrome.statusColor) || undefined },
+                    title: row.status || undefined,
+                }),
+            chrome.owner
+                ? React.createElement("span", {
+                    className: `ps-rich-session-owner${chrome.owner.isMine ? " is-mine" : ""}`,
+                    title: chrome.owner.initials,
+                }, chrome.owner.initials)
+                : null,
+            React.createElement("span", {
+                className: `ps-rich-session-title${chrome.untitled ? " is-untitled" : ""}`,
+                style: chrome.kind === "session" ? undefined : { color: accent },
+                title: chrome.title,
+            }, chrome.title),
+            chrome.pinned ? React.createElement("span", { className: "ps-rich-session-pin", title: "Pinned" }, "📌") : null,
+            chrome.cron ? React.createElement("span", { className: "ps-rich-session-cron", title: "Scheduled" }, "⏱") : null,
+            chrome.childBadge
+                ? React.createElement("span", {
+                    className: "ps-rich-session-count",
+                    style: { color: resolveColor(theme, chrome.childBadge.color) || undefined },
+                }, chrome.childBadge.text)
+                : null,
+            chrome.ctx
+                ? React.createElement("span", {
+                    className: "ps-rich-session-ctx",
+                    style: { color: resolveColor(theme, chrome.ctx.color) || undefined },
+                }, chrome.ctx.text)
+                : null),
+        // Untitled rows already carry id · age · model in the title slot;
+        // titled rows show a muted age line so the list reads at a glance.
+        !row.active && !chrome.untitled && chrome.age
+            ? React.createElement("div", { className: "ps-rich-session-sub" },
+                [chrome.age, chrome.model].filter(Boolean).join(" · "))
+            : null,
+        row.active && detailRuns.length > 0
+            ? React.createElement("div", { className: "ps-rich-session-detail" },
+                React.createElement(Runs, { runs: detailRuns, theme }))
+            : null);
+}
+
 function SessionRowContent({ row, theme, structured = false }) {
     const hasStructuredRuns = structured && Array.isArray(row.titleRuns);
     if (!hasStructuredRuns) {
@@ -2306,6 +2371,11 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         connectionMode: state.connection?.mode || "local",
         modalOpen: Boolean(state.ui.modal),
         focused: state.ui.focusRegion === "sessions",
+        // The rich chat view also restyles the session list, so the portal
+        // reads as one product rather than half terminal / half desktop.
+        // TODO: promote this to its own `ui.richUi` setting if the two are
+        // ever wanted independently.
+        rich: state.ui.chatViewMode === "rich",
     }), shallowEqualObject);
     const rows = React.useMemo(() => selectSessionRows({
         sessions: {
@@ -2408,7 +2478,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         })
         : (activeSession && !activeSession.isSystem && !activeSession.isGroup && !activeSession.parentSessionId ? [activeSession.sessionId] : []);
     const canMoveToGroup = groupableIds.length > 0;
-    const combinedPanelClassName = `ps-session-pane${panelClassName ? ` ${panelClassName}` : ""}`;
+    const combinedPanelClassName = `ps-session-pane${viewState.rich ? " is-rich" : ""}${panelClassName ? ` ${panelClassName}` : ""}`;
     const setSessionButtonRef = React.useCallback((sessionId, node) => {
         if (!sessionId) return;
         if (node) {
@@ -2577,10 +2647,16 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                 },
             },
             React.createElement("div", {
-                className: "ps-line ps-session-row-content",
-                style: { paddingInlineStart: `${Math.max(0, row.depth) * 4}px` },
+                className: viewState.rich ? "ps-session-row-content is-rich" : "ps-line ps-session-row-content",
+                style: {
+                    paddingInlineStart: viewState.rich
+                        ? `${Math.max(0, row.depth) * 14}px`
+                        : `${Math.max(0, row.depth) * 4}px`,
+                },
             },
-                React.createElement(SessionRowContent, { row, theme, structured: structuredRows })),
+                viewState.rich
+                    ? React.createElement(RichSessionRow, { row, theme })
+                    : React.createElement(SessionRowContent, { row, theme, structured: structuredRows })),
             )),
     )),
     (manageOpen && activeSession && !activeSession.isGroup)

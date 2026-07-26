@@ -731,6 +731,37 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
         badgeRuns: [],
         selectedMetaRuns: detailRuns,
         detailRuns,
+        // Structured row description for renderers that draw real chrome
+        // instead of terminal runs (the portal's rich session list): status
+        // becomes a dot, depth becomes indentation, the owner/child/cron
+        // badges become chips. Purely additive — `runs`/`titleRuns` above
+        // stay the terminal's source of truth and the TUI ignores this.
+        chrome: {
+            kind: session?.isGroup ? "group"
+                : session?.isSystem ? "system"
+                : session?.serviceKind ? "service"
+                : "session",
+            title: hasRealTitle ? rawTitle : shortId,
+            untitled: !hasRealTitle,
+            statusColor: sessionStatusColor(session, mode),
+            accentColor: mainColor,
+            pinned: isPinned,
+            selectMode,
+            checked: isSelected,
+            owner: shouldDecorateSessionOwners(state) && !session?.isSystem && !session?.isGroup
+                ? {
+                    initials: effectiveOwner ? ownerInitials(effectiveOwner) : "?",
+                    isMine: Boolean(ownerKeyForOwner(state?.auth?.principal)
+                        && ownerKeyForOwner(effectiveOwner) === ownerKeyForOwner(state?.auth?.principal)),
+                }
+                : null,
+            childBadge: collapseBadge ? { text: collapseBadge.text, color: collapseBadge.color } : null,
+            cron: Boolean(cronBadge),
+            age: relTime || null,
+            model: modelLabel || null,
+            shortId,
+            ctx: ctxRuns.length > 0 ? { text: ctxRuns[0].text, color: ctxRuns[0].color } : null,
+        },
     };
 }
 

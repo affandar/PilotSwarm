@@ -3284,3 +3284,172 @@ body.is-resizing-pane-y * {
   opacity: 0.9;
   text-align: center;
 }
+
+/* ── Rich session list (desktop-style sidebar) ─────────────────────────────
+   Status becomes a dot, depth becomes indentation with a guide rail, and
+   the id/age/model metadata is demoted to a muted sub-line. Titles use the
+   proportional face and ellipsize instead of forcing the list to scroll
+   horizontally as one max-content block. */
+
+.ps-session-pane.is-rich .ps-session-list {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter,
+    "Helvetica Neue", Arial, sans-serif;
+}
+
+/* Undo the compact max-content sizing so titles can ellipsize. */
+.ps-session-pane.is-rich:not(.ps-mobile-session-pane) .ps-session-row-content,
+.ps-session-pane.is-rich:not(.ps-mobile-session-pane) .ps-rich-session-main,
+.ps-session-pane.is-rich:not(.ps-mobile-session-pane) .ps-rich-session-title {
+  width: auto;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.ps-session-pane.is-rich .ps-session-list-button {
+  border-radius: var(--ps-radius-md);
+  padding: 7px 10px;
+  min-height: 0;
+}
+
+.ps-session-pane.is-rich .ps-session-list-button.is-selected {
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--ps-panel-accent, var(--ps-border)) 90%, transparent);
+}
+
+/* Depth guide rail — replaces the terminal's "└" prefix. */
+.ps-session-row-content.is-rich {
+  position: relative;
+  display: block;
+}
+
+.ps-session-row-content.is-rich::before {
+  content: "";
+  position: absolute;
+  inset-inline-start: -7px;
+  top: 2px;
+  bottom: 2px;
+  width: 1px;
+  background: color-mix(in srgb, var(--ps-border) 45%, transparent);
+  opacity: 0;
+}
+
+.ps-session-list-button[style*="padding-inline-start"] .ps-session-row-content.is-rich::before {
+  opacity: 1;
+}
+
+.ps-rich-session-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ps-rich-session-main {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.ps-rich-session-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ps-muted);
+}
+
+.ps-rich-session-kind,
+.ps-rich-session-pin,
+.ps-rich-session-cron {
+  flex: 0 0 auto;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.ps-rich-session-check {
+  flex: 0 0 auto;
+  width: 13px;
+  height: 13px;
+  border-radius: 3px;
+  border: 1px solid color-mix(in srgb, var(--ps-border) 70%, transparent);
+  font-size: 10px;
+  line-height: 11px;
+  text-align: center;
+}
+
+.ps-rich-session-check.is-checked {
+  background: color-mix(in srgb, var(--ps-selection-background) 30%, transparent);
+  border-color: var(--ps-selection-background);
+}
+
+/* Owner initials as a small avatar chip. */
+.ps-rich-session-owner {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  border-radius: 999px;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  background: color-mix(in srgb, var(--ps-border) 26%, transparent);
+  color: var(--ps-muted);
+}
+
+.ps-rich-session-owner.is-mine {
+  background: color-mix(in srgb, var(--ps-selection-background) 22%, transparent);
+  color: color-mix(in srgb, var(--ps-selection-background) 70%, var(--ps-foreground));
+}
+
+.ps-rich-session-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ps-rich-session-title.is-untitled {
+  font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas,
+    Liberation Mono, monospace;
+  font-size: 11.5px;
+  color: var(--ps-muted);
+}
+
+/* Child count as a pill, context % as a tabular right column. */
+.ps-rich-session-count {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 9.5px;
+  font-weight: 700;
+  background: color-mix(in srgb, var(--ps-border) 22%, transparent);
+}
+
+.ps-rich-session-ctx {
+  flex: 0 0 auto;
+  margin-inline-start: auto;
+  padding-inline-start: 6px;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ps-rich-session-sub {
+  font-size: 10.5px;
+  line-height: 1.3;
+  color: var(--ps-muted);
+  padding-inline-start: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ps-rich-session-detail {
+  font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas,
+    Liberation Mono, monospace;
+  font-size: 10.5px;
+  line-height: 1.3;
+  padding-inline-start: 14px;
+  opacity: 0.9;
+}
