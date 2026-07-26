@@ -5096,6 +5096,75 @@ function ModalLayer({ controller }) {
         const isDestructive = !isAlert && modal.action === "deleteSession";
         // The regenerate confirm carries distillation inputs: a mode select and
         // an optional distilling-instructions textarea, bound to modal.extras.
+// Distiller model / effort / context-tier pickers for the regenerate confirm.
+// The distiller runs on deployment machinery config rather than the served
+// session's model, so these are explicit choices; empty means "deployment
+// default". Effort and tier lists follow the SELECTED model, so an
+// unsupported combination cannot be submitted.
+function DistillerModelPickers({ controller, extras }) {
+    const options = Array.isArray(extras.distillerModelOptions) ? extras.distillerModelOptions : [];
+    const selected = options.find((m) => m.qualifiedName === extras.distillerModel) || null;
+    const efforts = selected?.supportedReasoningEfforts || [];
+    const tiers = selected?.supportedContextTiers || [];
+    const labelStyle = { color: "#94a3b8", fontSize: "12px", display: "flex", alignItems: "center", gap: 8 };
+    const selectStyle = { flex: "1", padding: "4px 8px" };
+
+    const pick = (patch) => controller.updateConfirmExtras(patch);
+
+    return React.createElement(React.Fragment, null,
+        React.createElement("label", { style: labelStyle },
+            "Distiller model",
+            React.createElement("select", {
+                className: "ps-modal-input",
+                style: selectStyle,
+                value: extras.distillerModel || "",
+                // Switching model clears effort/tier: the previous values may
+                // not exist on the new model.
+                onChange: (event) => pick({
+                    distillerModel: event.currentTarget.value,
+                    distillerEffort: "",
+                    distillerContextTier: "",
+                }),
+            },
+                React.createElement("option", { value: "" }, "Deployment default"),
+                options.map((m) => React.createElement("option", {
+                    key: m.qualifiedName,
+                    value: m.qualifiedName,
+                }, m.qualifiedName)),
+            ),
+        ),
+        efforts.length > 0
+            ? React.createElement("label", { style: labelStyle },
+                "Reasoning",
+                React.createElement("select", {
+                    className: "ps-modal-input",
+                    style: selectStyle,
+                    value: extras.distillerEffort || "",
+                    onChange: (event) => pick({ distillerEffort: event.currentTarget.value }),
+                },
+                    React.createElement("option", { value: "" }, "Model default"),
+                    efforts.map((e) => React.createElement("option", { key: e, value: e }, e)),
+                ),
+            )
+            : null,
+        tiers.length > 0
+            ? React.createElement("label", { style: labelStyle },
+                "Context",
+                React.createElement("select", {
+                    className: "ps-modal-input",
+                    style: selectStyle,
+                    value: extras.distillerContextTier || "",
+                    onChange: (event) => pick({ distillerContextTier: event.currentTarget.value }),
+                },
+                    React.createElement("option", { value: "" }, "Model default"),
+                    tiers.map((t) => React.createElement("option", { key: t, value: t },
+                        t === "long_context" ? "long context (fits a larger transcript)" : t)),
+                ),
+            )
+            : null,
+    );
+}
+
         const isRegen = modal.action === "regenerateSession";
         const extras = modal.extras || {};
         return React.createElement("div", { className: "ps-modal-backdrop", onClick: close },
@@ -5121,6 +5190,9 @@ function ModalLayer({ controller }) {
                                 React.createElement("option", { value: "deterministic" }, "Fast (no LLM — tail + pointers)"),
                             ),
                         ),
+                        (extras.distillMode || "llm") === "llm"
+                            ? React.createElement(DistillerModelPickers, { controller, extras })
+                            : null,
                         (extras.distillMode || "llm") === "llm"
                             ? React.createElement("textarea", {
                                 className: "ps-modal-input",

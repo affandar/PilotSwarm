@@ -1338,7 +1338,7 @@ export class PilotSwarmManagementClient {
      */
     async regenerateSession(
         sessionId: string,
-        opts?: { handoff?: string; instructions?: string; distillMode?: "llm" | "deterministic"; distillerModel?: string; model?: string; source?: string; force?: boolean },
+        opts?: { handoff?: string; instructions?: string; distillMode?: "llm" | "deterministic"; distillerModel?: string; distillerReasoningEffort?: string; distillerContextTier?: string; model?: string; source?: string; force?: boolean },
     ): Promise<{ attemptId: string }> {
         this._ensureStarted();
         const session = await this.getSession(sessionId).catch(() => null);
@@ -1377,6 +1377,8 @@ export class PilotSwarmManagementClient {
                 ...(opts?.instructions ? { instructions: String(opts.instructions).slice(0, 4_000) } : {}),
                 ...(opts?.distillMode === "deterministic" ? { distill_mode: "deterministic" } : {}),
                 ...(opts?.distillerModel ? { distillerModel: opts.distillerModel } : {}),
+                ...(opts?.distillerReasoningEffort ? { distillerReasoningEffort: opts.distillerReasoningEffort } : {}),
+                ...(opts?.distillerContextTier ? { distillerContextTier: opts.distillerContextTier } : {}),
                 ...(opts?.model ? { model: opts.model } : {}),
                 ...(opts?.force ? { force: true } : {}),
                 source: opts?.source ?? "operator",

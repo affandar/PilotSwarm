@@ -510,6 +510,21 @@ async function tryReadSnapshotSizeBytes(sessionStore: SessionStateStore | null |
 // The orchestration's view of a specific ManagedSession.
 // Each method maps 1:1 to an activity dispatched to the session's worker node.
 
+import type { ContextTier, ReasoningEffort } from "./model-providers.js";
+
+const DISTILLER_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
+const DISTILLER_TIERS = new Set(["default", "long_context"]);
+
+/** Operator-supplied effort, validated. Unknown values fall back to the model default. */
+function normalizeDistillerEffort(value?: string): ReasoningEffort | undefined {
+    return value && DISTILLER_EFFORTS.has(value) ? (value as ReasoningEffort) : undefined;
+}
+
+/** Operator-supplied context tier, validated the same way. */
+function normalizeDistillerTier(value?: string): ContextTier | undefined {
+    return value && DISTILLER_TIERS.has(value) ? (value as ContextTier) : undefined;
+}
+
 export function createSessionProxy(
     ctx: any,
     sessionId: string,
@@ -808,7 +823,7 @@ export function createSessionManagerProxy(ctx: any) {
         },
         // ── Service-session distiller (1.0.68) ─────────────────
         /** Spawn the regen-distiller service session under the tree root (idempotent per attempt). */
-        runRegenSpawnDistiller(sessionId: string, epoch: number, attemptId: string, opts?: { archiveArtifactId?: string; archiveChunkIds?: string[]; handoff?: string; instructions?: string; distillerModel?: string }) {
+        runRegenSpawnDistiller(sessionId: string, epoch: number, attemptId: string, opts?: { archiveArtifactId?: string; archiveChunkIds?: string[]; handoff?: string; instructions?: string; distillerModel?: string; distillerReasoningEffort?: string; distillerContextTier?: string }) {
             return ctx.scheduleActivity("runRegenSpawnDistiller", { sessionId, epoch, attemptId, ...(opts ?? {}) });
         },
         /** Poll the distiller service session: running | completed (with response) | failed. */
@@ -816,7 +831,7 @@ export function createSessionManagerProxy(ctx: any) {
             return ctx.scheduleActivity("runRegenCheckDistiller", { distillerSessionId });
         },
         /** Parse/validate the distiller's final message into the package (+dumps); deterministic fallback on junk. */
-        runRegenCollectDistiller(sessionId: string, epoch: number, attemptId: string, distillerSessionId: string, opts?: { archiveArtifactId?: string; archiveChunkIds?: string[]; handoff?: string; instructions?: string; distillerModel?: string }) {
+        runRegenCollectDistiller(sessionId: string, epoch: number, attemptId: string, distillerSessionId: string, opts?: { archiveArtifactId?: string; archiveChunkIds?: string[]; handoff?: string; instructions?: string; distillerModel?: string; distillerReasoningEffort?: string; distillerContextTier?: string }) {
             return ctx.scheduleActivity("runRegenCollectDistiller", { sessionId, epoch, attemptId, distillerSessionId, ...(opts ?? {}) });
         },
         /** Best-effort cancel of a timed-out/failed distiller service session. */
@@ -3747,7 +3762,7 @@ export function registerActivities(
 
     runtime.registerActivity("runRegenSpawnDistiller", async (
         activityCtx: any,
-        input: { sessionId: string; epoch: number; attemptId: string; archiveArtifactId?: string; archiveChunkIds?: string[]; handoff?: string; instructions?: string; distillerModel?: string },
+        input: { sessionId: string; epoch: number; attemptId: string; archiveArtifactId?: string; archiveChunkIds?: string[]; handoff?: string; instructions?: string; distillerModel?: string; distillerReasoningEffort?: string; distillerContextTier?: string },
     ) => {
         if (!catalog) throw new Error("distiller spawn requires the CMS catalog");
         if (!artifactStore) throw new Error("distiller spawn requires an artifact store");
@@ -3846,6 +3861,15 @@ export function registerActivities(
                 nestingLevel: 1,
                 agentId: REGEN_DISTILLER_SERVICE_KIND,
                 ...(resolvedRef ? { model: resolvedRef } : {}),
+                // Operator-chosen distiller knobs. The context tier is the one
+                // that decides whether a large archive can be read in a single
+                // pass or has to be sampled, so it is worth exposing.
+                ...(normalizeDistillerEffort(input.distillerReasoningEffort)
+                    ? { reasoningEffort: normalizeDistillerEffort(input.distillerReasoningEffort)! }
+                    : {}),
+                ...(normalizeDistillerTier(input.distillerContextTier)
+                    ? { contextTier: normalizeDistillerTier(input.distillerContextTier)! }
+                    : {}),
                 systemMessage: DISTILLER_SYSTEM_MESSAGE,
                 toolNames: ["read_transcript_page"],
                 ...(owner ? { owner } : {}),
@@ -3886,7 +3910,7 @@ export function registerActivities(
 
     runtime.registerActivity("runRegenCollectDistiller", async (
         activityCtx: any,
-        input: { sessionId: string; epoch: number; attemptId: string; distillerSessionId: string; archiveArtifactId?: string; archiveChunkIds?: string[]; handoff?: string; instructions?: string; distillerModel?: string },
+        input: { sessionId: string; epoch: number; attemptId: string; distillerSessionId: string; archiveArtifactId?: string; archiveChunkIds?: string[]; handoff?: string; instructions?: string; distillerModel?: string; distillerReasoningEffort?: string; distillerContextTier?: string },
     ) => {
         if (!catalog) throw new Error("distiller collect requires the CMS catalog");
         if (!artifactStore) throw new Error("distiller collect requires an artifact store");

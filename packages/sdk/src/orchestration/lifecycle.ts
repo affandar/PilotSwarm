@@ -672,6 +672,12 @@ export function* handleCommand(
                 // LLM (service-session) distillation is the default; callers may
                 // pick the fast deterministic package per regen.
                 distillMode: cmdMsg.args?.distill_mode === "deterministic" ? "deterministic" : "llm",
+                ...(typeof cmdMsg.args?.distillerReasoningEffort === "string" && cmdMsg.args.distillerReasoningEffort
+                    ? { distillerReasoningEffort: String(cmdMsg.args.distillerReasoningEffort) }
+                    : {}),
+                ...(typeof cmdMsg.args?.distillerContextTier === "string" && cmdMsg.args.distillerContextTier
+                    ? { distillerContextTier: String(cmdMsg.args.distillerContextTier) }
+                    : {}),
                 ...(typeof cmdMsg.args?.distillerModel === "string" && cmdMsg.args.distillerModel
                     ? { distillerModel: String(cmdMsg.args.distillerModel) }
                     : {}),
@@ -847,6 +853,8 @@ function* runDeterministicDistill(
         ...(regen.instructions ? { instructions: regen.instructions } : {}),
         ...(state.config.model ? { sessionModel: state.config.model } : {}),
         ...(regen.distillerModel ? { distillerModel: regen.distillerModel } : {}),
+        ...((regen as any).distillerReasoningEffort ? { distillerReasoningEffort: (regen as any).distillerReasoningEffort } : {}),
+        ...((regen as any).distillerContextTier ? { distillerContextTier: (regen as any).distillerContextTier } : {}),
         ...(regen.archiveArtifactId ? { archiveArtifactId: regen.archiveArtifactId } : {}),
         ...((regen as any).archiveChunkIds?.length ? { archiveChunkIds: (regen as any).archiveChunkIds } : {}),
     });
@@ -909,6 +917,8 @@ export function* advanceRegenPipeline(
                 ...(regen.handoff ? { handoff: regen.handoff } : {}),
                 ...(regen.instructions ? { instructions: regen.instructions } : {}),
                 ...(regen.distillerModel ? { distillerModel: regen.distillerModel } : {}),
+                ...((regen as any).distillerReasoningEffort ? { distillerReasoningEffort: (regen as any).distillerReasoningEffort } : {}),
+                ...((regen as any).distillerContextTier ? { distillerContextTier: (regen as any).distillerContextTier } : {}),
             });
             if (!spawn?.distillerSessionId) {
                 // No resolvable distiller model (or deterministic-only deployment
@@ -946,6 +956,8 @@ export function* advanceRegenPipeline(
                         ...(regen.handoff ? { handoff: regen.handoff } : {}),
                         ...(regen.instructions ? { instructions: regen.instructions } : {}),
                         ...(regen.distillerModel ? { distillerModel: regen.distillerModel } : {}),
+                        ...((regen as any).distillerReasoningEffort ? { distillerReasoningEffort: (regen as any).distillerReasoningEffort } : {}),
+                        ...((regen as any).distillerContextTier ? { distillerContextTier: (regen as any).distillerContextTier } : {}),
                     },
                 );
                 const bootstrap = String(collect?.bootstrap ?? "");

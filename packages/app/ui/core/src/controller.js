@@ -6659,7 +6659,14 @@ export class PilotSwarmUiController {
         });
     }
 
-    async regenerateActiveSession({ confirmed = false, instructions = "", distillMode = "llm" } = {}) {
+    async regenerateActiveSession({
+        confirmed = false,
+        instructions = "",
+        distillMode = "llm",
+        distillerModel = "",
+        distillerEffort = "",
+        distillerContextTier = "",
+    } = {}) {
         const state = this.getState();
         const sessionId = state.sessions.activeSessionId;
         if (!sessionId) return;
@@ -6695,7 +6702,18 @@ export class PilotSwarmUiController {
                     // Distillation inputs the portal's renderer binds via
                     // updateConfirmExtras; plain-confirm renderers submit these
                     // defaults untouched.
-                    extras: { instructions: "", distillMode: "llm" },
+                    extras: {
+                        instructions: "",
+                        distillMode: "llm",
+                        // Empty = deployment default (cluster default model,
+                        // model's own default effort/tier). The distiller runs
+                        // on machinery config, NOT the served session's model,
+                        // so these are explicit choices rather than inherited.
+                        distillerModel: "",
+                        distillerEffort: "",
+                        distillerContextTier: "",
+                        distillerModelOptions: await this._loadDistillerModelOptions(),
+                    },
                 },
             });
             return;
@@ -6709,6 +6727,9 @@ export class PilotSwarmUiController {
                 force: true,
                 ...(trimmed ? { instructions: trimmed.slice(0, 4000) } : {}),
                 ...(distillMode === "deterministic" ? { distillMode: "deterministic" } : {}),
+                ...(distillerModel ? { distillerModel } : {}),
+                ...(distillerEffort ? { distillerReasoningEffort: distillerEffort } : {}),
+                ...(distillerContextTier ? { distillerContextTier } : {}),
             });
             this.dispatch({ type: "ui/status", text: `Regeneration requested for ${sessionId.slice(0, 8)} — rebuilding at the next boundary` });
         } catch (error) {
@@ -6716,6 +6737,33 @@ export class PilotSwarmUiController {
             return;
         }
         await this.refreshSessions();
+    }
+
+    /**
+     * Model choices for the regen distiller picker: qualified name plus the
+     * efforts / context tiers each model actually supports, so the UI can
+     * offer only valid combinations. Failure is non-fatal — the picker simply
+     * falls back to "deployment default".
+     */
+    async _loadDistillerModelOptions() {
+        if (typeof this.transport.listModels !== "function") return [];
+        try {
+            const groups = await this.transport.listModels({ groupByProvider: true });
+            const list = Array.isArray(groups) ? groups : [];
+            return list.flatMap((group) => (group.models || []).map((model) => ({
+                qualifiedName: model.qualifiedName,
+                modelName: model.modelName || model.qualifiedName,
+                providerId: model.providerId || group.providerId,
+                supportedReasoningEfforts: Array.isArray(model.supportedReasoningEfforts)
+                    ? model.supportedReasoningEfforts
+                    : [],
+                supportedContextTiers: Array.isArray(model.supportedContextTiers)
+                    ? model.supportedContextTiers
+                    : [],
+            })));
+        } catch {
+            return [];
+        }
     }
 
     /**
