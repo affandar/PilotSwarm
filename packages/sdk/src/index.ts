@@ -223,6 +223,22 @@ export type {
 } from "./cron-at.js";
 
 // Debug utilities
+export {
+    exchangeClusteredStrategy,
+    listSelectionStrategies,
+    registerSelectionStrategy,
+    resolveSelectionStrategy,
+    scoreByExchangeProximity,
+    selectTranscript,
+} from "./transcript-selection.js";
+export type {
+    SelectableMessage,
+    SelectionElision,
+    SelectionOptions,
+    SelectionResult,
+    TranscriptSelectionStrategy,
+} from "./transcript-selection.js";
+
 export { SessionDumper } from "./session-dumper.js";
 
 // Re-export defineTool from Copilot SDK for convenience
