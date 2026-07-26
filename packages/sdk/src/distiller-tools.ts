@@ -86,9 +86,14 @@ export function createDistillerTools(opts: {
             const entries = lines.slice(start, start + pageSize).map((line) => {
                 try {
                     const evt = JSON.parse(line);
-                    const role = evt.eventType === "user.message"
+                    // The archive writes `type`; `eventType` is the CMS row
+                    // shape. Reading only the latter classified EVERY archived
+                    // message as "system", erasing the user/assistant structure
+                    // the selection strategy exists to preserve.
+                    const eventType = evt.type ?? evt.eventType;
+                    const role = eventType === "user.message"
                         ? "user"
-                        : evt.eventType === "assistant.message" ? "assistant" : "system";
+                        : eventType === "assistant.message" ? "assistant" : "system";
                     const content = String(evt?.data?.content ?? "");
                     return {
                         seq: evt.seq,
