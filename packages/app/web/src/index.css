@@ -3822,3 +3822,44 @@ body.ps-rich-ui .ps-row-resizer.is-dragging .ps-row-resizer-handle {
     background: transparent;
   }
 }
+
+/* In the terminal view the transcript is a flat run of lines, so a rendered
+   diagram butts straight against the prose beneath it. (The rich view already
+   spaces blocks via the markdown-preview flex gap.) */
+body:not(.ps-rich-ui) .ps-mermaid {
+  margin-block: 6px 14px;
+}
+
+/* ── Rich UI: one top bar ──────────────────────────────────────────────────
+   The workspace toolbar portals into the header slot on desktop, so the
+   header carries brand · actions · status in a single row and the panes
+   start directly beneath it. */
+.portal-header-slot {
+  display: contents;
+}
+
+@media (min-width: 921px) {
+  body.ps-rich-ui .portal-header {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    padding: 8px 16px;
+  }
+
+  body.ps-rich-ui .portal-header-slot {
+    display: flex;
+    justify-content: center;
+    min-width: 0;
+  }
+
+  body.ps-rich-ui .portal-header-slot .ps-toolbar {
+    justify-content: center;
+  }
+
+  /* The toolbar row is gone from the shell — reclaim its padding too. */
+  body.ps-rich-ui .portal-main {
+    padding: 0 8px 8px;
+  }
+
+  body.ps-rich-ui .ps-web-shell {
+    gap: 0;
+  }
+}

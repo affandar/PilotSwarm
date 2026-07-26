@@ -373,6 +373,10 @@ function PortalHeader({ account, authEnabled, isAdmin = false, branding, onSignO
                             ? React.createElement("span", { className: "portal-header-email" }, email)
                             : null)
                     : React.createElement("span", { className: "portal-header-identity is-muted" }, "Auth disabled"))),
+        // Slot the workspace toolbar portals into when the rich UI is on, so
+        // the app has ONE top bar instead of a header plus a button strip.
+        // Always rendered (empty otherwise) so the portal target is stable.
+        React.createElement("div", { className: "portal-header-slot", id: "ps-header-toolbar-slot" }),
         (authEnabled || versionLabel || statusText)
             ? React.createElement("div", { className: "portal-header-user" },
                 React.createElement("div", { className: "portal-header-meta" },

@@ -4386,6 +4386,12 @@ function IconButton({ icon, label, onClick, disabled = false, active = false, cl
 }
 
 function Toolbar({ controller, mobile, chatFocusMode = false, onToggleChatFocus = null, chatFocusDisabled = false }) {
+    const richUi = useControllerSelector(controller, (state) => state.ui.chatViewMode === "rich");
+    const [headerSlot, setHeaderSlot] = React.useState(null);
+    React.useEffect(() => {
+        if (typeof document === "undefined") return;
+        setHeaderSlot(richUi && !mobile ? document.getElementById("ps-header-toolbar-slot") : null);
+    }, [richUi, mobile]);
     const adminVisible = useControllerSelector(controller, (state) => Boolean(state.admin?.visible));
     const chatView = useControllerSelector(controller, (state) => ({
         mode: state.ui.chatViewMode || "transcript",
@@ -4475,9 +4481,17 @@ function Toolbar({ controller, mobile, chatFocusMode = false, onToggleChatFocus 
         );
     }
 
-    return React.createElement("div", { className: "ps-toolbar" },
+    const toolbar = React.createElement("div", { className: "ps-toolbar" },
         React.createElement("div", { className: "ps-toolbar-actions" }, buttonDefs.map(renderButton)),
     );
+
+    // Rich desktop UI: the toolbar lives IN the portal header (one top bar)
+    // rather than as its own strip, handing that row back to the panes. The
+    // slot is rendered by PortalHeader in App.jsx, outside this tree, so the
+    // handoff is a portal. Falls back to inline rendering when the slot is
+    // absent (mobile layouts, embeddings that use their own header).
+    if (headerSlot) return createPortal(toolbar, headerSlot);
+    return toolbar;
 }
 
 function ColumnResizeHandle({ controller, paneAdjust = 0 }) {
