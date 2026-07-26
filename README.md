@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.22** — The release pipeline now attaches each version's npm-pack tarballs as GitHub Release assets, so the packages install directly from the release (`…/releases/download/v<X>/<pkg>-<X>.tgz`) on networks where the public npm registry isn't reachable. Purely additive — npm publish is unchanged and registry consumers are unaffected; no functional changes to the packages. New sessions use orchestration `1.0.68`.
+> **Latest release: v0.5.23** — A rich, desktop-style portal chat view (toolbar `Aa`): markdown-rendered replies, syntax-highlighted code, rendered mermaid diagrams, and a web-styled session list, single top bar, and frameless chat surface. The terminal transcript is unchanged and remains the default; the TUI is untouched. Also fixes owner chips showing in single-owner deployments (portal + TUI). New sessions use orchestration `1.0.68`.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 

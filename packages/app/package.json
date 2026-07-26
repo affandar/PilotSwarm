@@ -1,6 +1,6 @@
 {
     "name": "pilotswarm",
-    "version": "0.5.22",
+    "version": "0.5.23",
     "description": "PilotSwarm application package: terminal UI, browser portal + Web API server, and MCP server — one install, three bins.",
     "type": "module",
     "license": "MIT",

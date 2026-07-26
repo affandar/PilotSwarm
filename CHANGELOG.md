@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.5.23 — 2026-07-25
+
+### Rich portal UI — a desktop-style chat view
+
+- **New `rich` chat view (toolbar `Aa`), alongside the existing terminal
+  transcript.** Assistant replies render as proportional-type markdown —
+  headings, lists, quotes, tables, fenced code — and user turns as
+  right-aligned bubbles, instead of hard-wrapped terminal lines. The terminal
+  view is unchanged and remains the default; the TUI is untouched.
+- **Fenced code is syntax highlighted** (js/ts, python, shell, sql, json,
+  rust, go, yaml, css) by a dependency-free tokenizer whose token colors
+  resolve through the active theme, so highlighting follows theme switches.
+  Applies to both chat views and artifact previews.
+- **```mermaid blocks render as diagrams.** mermaid is imported dynamically,
+  so it splits into its own chunk fetched only when a transcript contains
+  one; a diagram that fails to parse keeps its source and states why.
+- **The rest of the portal chrome follows the rich view**: session rows
+  become desktop list items (status dot, indentation guides, owner/child
+  chips, a stable metadata line), the header and workspace toolbar merge into
+  a single top bar, panels lose their per-pane accent borders, resizers slim
+  to 7px, and the chat becomes a free-flowing surface with no title bar or
+  frame. Speaker labels and timestamps give way to hover-revealed metadata,
+  and consecutive turns from one speaker merge into continuous prose.
+- **Fix (both views): owner initials chips no longer appear in single-owner
+  deployments.** `shouldDecorateSessionOwners` treated any narrowed owner
+  filter as a multi-user context, but the default signed-in filter already
+  sets `all: false` and `includeShared: true`, so every row got a chip. This
+  fixes the TUI as well.
+
+No orchestration change — new sessions still use `1.0.68`.
+
 ## 0.5.22 — 2026-07-25
 
 ### Release pipeline — installable GitHub Release tarballs
