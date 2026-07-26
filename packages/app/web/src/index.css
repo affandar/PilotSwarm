@@ -3466,26 +3466,29 @@ body.ps-rich-ui .portal-header {
 }
 
 body.ps-rich-ui .portal-header-kicker {
-  font-size: 0.66rem;
+  font-size: 0.76rem;
   letter-spacing: 0.13em;
-  opacity: 0.65;
+  opacity: 0.72;
 }
 
-body.ps-rich-ui .portal-header-name {
-  font-size: 0.92rem;
+body.ps-rich-ui .portal-header-name,
+body.ps-rich-ui .portal-header-identity {
+  font-size: 1.02rem;
   font-weight: 650;
   letter-spacing: 0.01em;
 }
 
 body.ps-rich-ui .portal-logo-frame {
-  border-radius: 11px;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
   overflow: hidden;
 }
 
 body.ps-rich-ui .portal-header-version,
 body.ps-rich-ui .portal-header-status,
 body.ps-rich-ui .portal-header-email {
-  font-size: 0.7rem;
+  font-size: 0.78rem;
 }
 
 body.ps-rich-ui .portal-header-version {
