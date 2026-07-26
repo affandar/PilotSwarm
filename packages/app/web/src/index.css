@@ -1835,6 +1835,13 @@ body.is-resizing-pane-y * {
   background: color-mix(in srgb, var(--ps-highlight-background) 12%, var(--ps-surface));
   border: 1px solid color-mix(in srgb, var(--ps-border) 35%, transparent);
   font-size: 0.94em;
+  /* A multi-word inline code span that wraps was sliced into two
+     open-ended pills (border and radius applied once across the whole
+     box). `clone` gives EACH line fragment its own complete pill, so a
+     wrapped `LLM Sees Exact Always-On Toolset` reads as two chips rather
+     than a broken one. */
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
 }
 
 .ps-md-code-block {
@@ -3159,7 +3166,15 @@ body.is-resizing-pane-y * {
   display: flex;
   flex-direction: column;
   width: 100%;
-  padding: 6px 14px 14px;
+  padding: 6px 10px 14px;
+}
+
+/* Phones have no width to spare: the transcript already sits inside the
+   panel's own border, so side padding here is nearly pure loss. */
+@media (max-width: 920px) {
+  .ps-rich-chat {
+    padding-inline: 2px;
+  }
 }
 
 .ps-rich-msg {
