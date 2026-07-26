@@ -3159,13 +3159,13 @@ body.is-resizing-pane-y * {
   display: flex;
   flex-direction: column;
   width: 100%;
-  padding: 14px 22px 28px;
+  padding: 6px 14px 14px;
 }
 
 .ps-rich-msg {
   display: flex;
   flex-direction: column;
-  margin-top: 18px;
+  margin-top: 10px;
   min-width: 0;
 }
 
@@ -3173,7 +3173,7 @@ body.is-resizing-pane-y * {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  margin-bottom: 5px;
+  margin-bottom: 2px;
   font-size: 11.5px;
   letter-spacing: 0.03em;
   text-transform: uppercase;
@@ -3227,7 +3227,7 @@ body.is-resizing-pane-y * {
 .ps-rich-msg-body .ps-markdown-preview {
   display: flex;
   flex-direction: column;
-  gap: 0.6em;
+  gap: 0.5em;
   padding: 0;
   font-size: inherit;
   line-height: inherit;
@@ -3654,7 +3654,7 @@ body.ps-rich-ui .ps-icon-button-glyph {
 
 /* A run of turns from one speaker reads as continuous prose. */
 .ps-rich-msg.is-continued {
-  margin-top: 6px;
+  margin-top: 4px;
 }
 
 /* A merged turn keeps a slim header STRIP rather than collapsing to zero
