@@ -3799,3 +3799,26 @@ body.ps-rich-ui .ps-row-resizer.is-dragging .ps-row-resizer-handle {
     padding-top: 6px;
   }
 }
+
+/* ── Rich UI: the chat is a surface, not a widget ──────────────────────────
+   With the header gone the remaining box drew a frame around the primary
+   content for no reason. The transcript now flows from the top chrome down
+   to the composer; the pane resizers still supply the seam against the
+   session list and inspector. Mobile keeps its panel (it has a header). */
+@media (min-width: 921px) {
+  body.ps-rich-ui .ps-chat-panel,
+  body.ps-rich-ui .ps-chat-panel.is-focused {
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  /* The composer keeps a hairline so the input still reads as a footer
+     against a free-flowing transcript, but loses the panel accent tint. */
+  body.ps-rich-ui .ps-chat-panel > .ps-chat-composer {
+    padding: 10px 4px 6px;
+    border-top: 1px solid color-mix(in srgb, var(--ps-border) 42%, transparent);
+    background: transparent;
+  }
+}
