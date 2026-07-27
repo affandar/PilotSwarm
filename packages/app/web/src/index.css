@@ -4923,3 +4923,63 @@ body.ps-rich-ui .ps-panel-header {
     gap: 3px;
   }
 }
+
+/* Panel titles are runs with INLINE colours from the theme palette (magenta
+   for sequence, cyan for activity, and so on). An inline style beats a class
+   rule, so the earlier white declaration never applied and the titles stayed
+   coloured-on-navy — the same defect as the selection bar. On a title bar the
+   only correct colour is title-bar white. */
+:root[data-ps-theme="win95"] .ps-panel-header .ps-panel-title,
+:root[data-ps-theme="win95"] .ps-panel-header .ps-panel-title * {
+  color: #ffffff !important;
+}
+
+/* ── Tabular (CSV/TSV) preview ─────────────────────────────────────────────
+   Our own table rather than a viewer library's, so it inherits the active
+   theme — Win95 bevels, MS-DOS reverse video — which a drop-in viewer with its
+   own styling cannot do. */
+.ps-csv-preview {
+  padding: 0;
+}
+
+.ps-csv-wrap {
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  max-width: 100%;
+}
+
+.ps-csv-table {
+  border-collapse: collapse;
+  width: max-content;
+  min-width: 100%;
+  font-size: var(--ps-font-size-dense);
+}
+
+.ps-csv-table th,
+.ps-csv-table td {
+  padding: 4px 10px;
+  border: 1px solid color-mix(in srgb, var(--ps-border) 45%, transparent);
+  text-align: left;
+  white-space: pre;
+  vertical-align: top;
+}
+
+/* The header stays put while scrolling a long export — the single thing that
+   makes a wide CSV readable at all. */
+.ps-csv-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--ps-chrome-strong);
+  font-weight: 650;
+}
+
+.ps-csv-table tbody tr:nth-child(even) td {
+  background: color-mix(in srgb, var(--ps-foreground) 4%, transparent);
+}
+
+.ps-csv-status {
+  padding: 6px 10px;
+  color: var(--ps-muted);
+  font-size: var(--ps-font-size-dense);
+}

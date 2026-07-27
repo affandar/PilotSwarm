@@ -1080,6 +1080,70 @@ function stripYamlFrontmatter(content) {
     return text.slice(3 + close.index + close[0].length);
 }
 
+const TABULAR_ARTIFACT_RE = /\.(csv|tsv)$/i;
+
+function isTabularArtifact(filename, contentType) {
+    if (TABULAR_ARTIFACT_RE.test(String(filename || ""))) return true;
+    return /^text\/(csv|tab-separated-values)$/i.test(String(contentType || "").trim());
+}
+
+/**
+ * Tabular preview.
+ *
+ * Parsing is delegated to Papa Parse rather than split(",") because the cases
+ * that break naive parsers are exactly the ones real exports contain: quoted
+ * fields holding commas, embedded newlines inside a quoted cell, and escaped
+ * quotes. It is loaded lazily so opening a .md never pays for the parser.
+ *
+ * Rendering is our own table, not a viewer library's: the preview has to
+ * inherit the active theme's chrome (Win95 bevels, MS-DOS reverse video), and
+ * a drop-in viewer ships its own styling that cannot participate in that.
+ */
+function TabularPreview({ content, filename }) {
+    const [parsed, setParsed] = React.useState(null);
+
+    React.useEffect(() => {
+        let cancelled = false;
+        setParsed(null);
+        import("papaparse")
+            .then((mod) => {
+                if (cancelled) return;
+                const Papa = mod.default || mod;
+                const delimiter = /\.tsv$/i.test(String(filename || "")) ? "\t" : "";
+                const out = Papa.parse(String(content || "").trim(), {
+                    delimiter,
+                    skipEmptyLines: "greedy",
+                });
+                setParsed({ rows: out.data || [], errors: out.errors || [] });
+            })
+            .catch(() => { if (!cancelled) setParsed({ rows: null, errors: [{ message: "parser unavailable" }] }); });
+        return () => { cancelled = true; };
+    }, [content, filename]);
+
+    if (!parsed) {
+        return React.createElement("div", { className: "ps-csv-status" }, "Parsing…");
+    }
+    // Fall back to the raw text rather than showing nothing: a file that will
+    // not parse is still readable, and hiding it would be worse than plain.
+    if (!parsed.rows || parsed.rows.length === 0) {
+        return React.createElement("pre", { className: "ps-md-code-pre" },
+            React.createElement("code", null, String(content || "")));
+    }
+
+    const [header, ...body] = parsed.rows;
+    return React.createElement("div", { className: "ps-csv-wrap" },
+        React.createElement("table", { className: "ps-csv-table" },
+            React.createElement("thead", null,
+                React.createElement("tr", null,
+                    header.map((cell, i) => React.createElement("th", { key: `h${i}` }, String(cell ?? ""))))),
+            React.createElement("tbody", null,
+                body.map((row, r) => React.createElement("tr", { key: `r${r}` },
+                    header.map((_, c) => React.createElement("td", { key: `c${c}` }, String(row[c] ?? ""))))))),
+        React.createElement("div", { className: "ps-csv-status" },
+            `${body.length} row${body.length === 1 ? "" : "s"} × ${header.length} column${header.length === 1 ? "" : "s"}`
+            + (parsed.errors.length ? ` · ${parsed.errors.length} parse warning(s)` : "")));
+}
+
 function codeLanguageForArtifact(filename) {
     const ext = /\.([A-Za-z0-9]+)$/.exec(String(filename || ""));
     if (!ext) return null;
@@ -4171,7 +4235,21 @@ function FilesPane({ controller, focused, mobile = false, previewOnly = false, n
     // In the mobile overlay the browser owns scrolling outright.
     const previewPaneKey = nativeScroll ? null : "filePreview";
 
-    const previewPane = previewIsImage
+    const previewIsTabular = previewReady
+        && !filesView.previewIsBinary
+        && isTabularArtifact(filesView.selectedFilename, filesView.previewContentType)
+        && Boolean(filesView.previewContent);
+
+    const previewPane = previewIsTabular
+        ? React.createElement(RenderedPreviewPanel, {
+            controller, title: null, color: "cyan", focused: false, theme,
+            paneKey: previewPaneKey, scrollOffset: viewState.previewScroll,
+            className: "ps-csv-preview", focusRegion: previewFocusRegion,
+        }, React.createElement(TabularPreview, {
+            content: filesView.previewContent,
+            filename: filesView.selectedFilename,
+        }))
+        : previewIsImage
         ? React.createElement(BinaryArtifactPreviewPanel, {
             title: null,
             color: "cyan",

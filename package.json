@@ -56,7 +56,8 @@
     "@opentelemetry/exporter-trace-otlp-http": "^0.217.0",
     "@opentelemetry/resources": "^2.7.1",
     "@opentelemetry/sdk-node": "^0.217.0",
-    "@opentelemetry/semantic-conventions": "^1.41.1"
+    "@opentelemetry/semantic-conventions": "^1.41.1",
+    "papaparse": "^5.5.4"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.0-alpha-2026-07-20"
