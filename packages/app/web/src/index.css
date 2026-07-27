@@ -4258,3 +4258,119 @@ body:not(.ps-rich-ui) .ps-mermaid {
      the widest line so its tint covers the whole scrollable width. */
   min-width: max-content;
 }
+
+/* ── Windows 95 ────────────────────────────────────────────────────────────
+   Colours come from the theme; the LOOK comes from bevels, and a bevel is not
+   a palette entry — it is a border built from four different greys. Scoped to
+   [data-ps-theme="win95"] so nothing here can reach another theme.
+
+   The rule is the original one: raised surfaces are lit from the top-left
+   (white highlight top/left, dark shadow bottom/right), and inset wells are
+   the same edges reversed. */
+:root[data-ps-theme="win95"] {
+  --w95-face: #c0c0c0;
+  --w95-light: #ffffff;
+  --w95-shadow: #808080;
+  --w95-dark: #000000;
+  /* Tahoma is the real Win95 UI face; the rest are era-appropriate fallbacks. */
+  --ps-ui-font: Tahoma, "MS Sans Serif", Verdana, Geneva, sans-serif;
+}
+
+:root[data-ps-theme="win95"] body {
+  /* Square everything. Rounded corners are the single biggest tell that a
+     Win95 skin is a modern app wearing a costume. */
+  --ps-radius-sm: 0px;
+  --ps-radius-md: 0px;
+}
+
+/* Panes are raised windows on the teal desktop. */
+:root[data-ps-theme="win95"] .ps-panel {
+  border: 2px solid;
+  border-color: var(--w95-light) var(--w95-dark) var(--w95-dark) var(--w95-light);
+  border-radius: 0;
+  box-shadow: inset 1px 1px 0 var(--w95-face), inset -1px -1px 0 var(--w95-shadow);
+  background: var(--w95-face);
+}
+
+/* Title bars: the navy gradient, white bold text, full-bleed. */
+:root[data-ps-theme="win95"] .ps-panel-header,
+:root[data-ps-theme="win95"] .portal-header {
+  background: linear-gradient(90deg, #000080 0%, #1084d0 100%);
+  border-bottom: 0;
+  color: #ffffff;
+}
+
+:root[data-ps-theme="win95"] .ps-panel-title,
+:root[data-ps-theme="win95"] .ps-panel-title * {
+  color: #ffffff;
+  font-weight: 700;
+}
+
+/* Buttons are raised, and press IN on click — the whole point of the bevel. */
+:root[data-ps-theme="win95"] .ps-mini-button,
+:root[data-ps-theme="win95"] .ps-modal-button,
+:root[data-ps-theme="win95"] .ps-modal-close,
+:root[data-ps-theme="win95"] .ps-send-button,
+:root[data-ps-theme="win95"] .ps-artifact-overlay-btn,
+:root[data-ps-theme="win95"] .portal-primary-button,
+:root[data-ps-theme="win95"] .portal-secondary-button {
+  background: var(--w95-face);
+  color: var(--w95-dark);
+  border: 2px solid;
+  border-color: var(--w95-light) var(--w95-dark) var(--w95-dark) var(--w95-light);
+  border-radius: 0;
+  box-shadow: inset 1px 1px 0 var(--w95-face), inset -1px -1px 0 var(--w95-shadow);
+}
+
+:root[data-ps-theme="win95"] .ps-mini-button:active,
+:root[data-ps-theme="win95"] .ps-modal-button:active,
+:root[data-ps-theme="win95"] .ps-modal-close:active,
+:root[data-ps-theme="win95"] .ps-send-button:active,
+:root[data-ps-theme="win95"] .ps-artifact-overlay-btn:active,
+:root[data-ps-theme="win95"] .portal-primary-button:active,
+:root[data-ps-theme="win95"] .portal-secondary-button:active {
+  border-color: var(--w95-dark) var(--w95-light) var(--w95-light) var(--w95-dark);
+  box-shadow: none;
+  transform: none;
+  /* Content shifts a pixel down-right, as a pressed Win95 button does. */
+  padding-block-start: calc(0.25rem + 1px);
+  padding-inline-start: calc(0.5rem + 1px);
+}
+
+/* Text entry is an inset well — edges reversed from a raised face. */
+:root[data-ps-theme="win95"] .ps-prompt-input,
+:root[data-ps-theme="win95"] .ps-scroll-panel,
+:root[data-ps-theme="win95"] .ps-action-list {
+  background: #ffffff;
+  color: var(--w95-dark);
+  border: 2px solid;
+  border-color: var(--w95-shadow) var(--w95-light) var(--w95-light) var(--w95-shadow);
+  border-radius: 0;
+}
+
+/* Selection is Explorer's navy bar, not a tint. */
+:root[data-ps-theme="win95"] .ps-list-button.is-selected,
+:root[data-ps-theme="win95"] .ps-session-list-button.is-selected {
+  background: #000080;
+  color: #ffffff;
+  box-shadow: none;
+}
+
+:root[data-ps-theme="win95"] .ps-list-button.is-selected *,
+:root[data-ps-theme="win95"] .ps-session-list-button.is-selected * {
+  color: #ffffff;
+}
+
+/* Scrollbars: square, bevelled, no rounding. */
+:root[data-ps-theme="win95"] ::-webkit-scrollbar-thumb {
+  background: var(--w95-face);
+  border: 2px solid;
+  border-color: var(--w95-light) var(--w95-dark) var(--w95-dark) var(--w95-light);
+  border-radius: 0;
+}
+
+:root[data-ps-theme="win95"] ::-webkit-scrollbar-track {
+  /* The classic 50% dither, approximated with a checker gradient. */
+  background:
+    repeating-conic-gradient(var(--w95-face) 0% 25%, #dfdfdf 0% 50%) 0 0 / 2px 2px;
+}

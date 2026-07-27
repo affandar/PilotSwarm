@@ -593,6 +593,10 @@ function applyDocumentTheme(themeId) {
     root.style.setProperty("--ps-modal-selected-background", theme.page.modalSelectedBackground);
     root.style.setProperty("--ps-modal-selected-border", theme.page.modalSelectedBorder);
     root.style.setProperty("--ps-modal-selected-foreground", theme.page.modalSelectedForeground);
+    // Expose the theme id so a theme can carry CHROME, not just colours. Win95
+    // is defined by its bevels — raised faces, inset wells, square corners —
+    // and none of that is expressible as a palette entry.
+    root.dataset.psTheme = theme.id;
 }
 
 function useMeasuredViewport(ref) {
