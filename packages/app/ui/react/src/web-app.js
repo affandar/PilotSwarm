@@ -745,6 +745,10 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
         };
     }, [normalizedLines, ref, scrollMode, scrollOffset, stickyBottom, viewportRevision]);
 
+    const dispatchScrollOffset = useFrameCoalescedCallback((offset) => {
+        controller.dispatch({ type: "ui/scroll", pane: paneKey, offset });
+    });
+
     const onScroll = React.useCallback(() => {
         const node = ref.current;
         if (!node || !paneKey) return;
@@ -779,15 +783,14 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
             ? Math.max(0, maxScroll - node.scrollTop)
             : Math.max(0, node.scrollTop);
         userScrollRef.current.lastDispatchedOffset = pixels / SCROLL_ROW_HEIGHT;
-        controller.dispatch({
-            type: "ui/scroll",
-            pane: paneKey,
-            offset: pixels / SCROLL_ROW_HEIGHT,
-        });
+        // One dispatch per frame. A scroll gesture fires far more events than
+        // the browser paints, and every dispatch notifies each subscriber —
+        // the offset the user actually sees is the last one in the frame.
+        dispatchScrollOffset(pixels / SCROLL_ROW_HEIGHT);
         if (paneKey === "chat" && scrollMode === "bottom" && node.scrollTop <= PROGRAMMATIC_SCROLL_TOLERANCE_PX) {
             controller.armChatTopHistoryLoad?.();
         }
-    }, [controller, paneKey, ref, scrollMode, stickyBottom]);
+    }, [controller, dispatchScrollOffset, paneKey, ref, scrollMode, stickyBottom]);
 
     const onWheel = React.useCallback((event) => {
         const node = ref.current;
@@ -902,7 +905,45 @@ function SystemNoticeLine({ line, theme }) {
             : null);
 }
 
-function Line({ line, theme, className = "" }) {
+/**
+ * Coalesce high-frequency dispatches to one per animation frame.
+ *
+ * pointermove and scroll fire many times per frame, and each dispatch
+ * notifies every subscriber, so a loaded transcript re-renders repeatedly
+ * between two painted frames — work that is thrown away before it is ever
+ * seen. Collapsing to one dispatch per frame keeps the interaction
+ * responsive without changing what the state ends up as: the LAST value in
+ * the frame wins, which is the one the user is actually looking at.
+ */
+function useFrameCoalescedCallback(fn) {
+    const frameRef = React.useRef(0);
+    const argsRef = React.useRef(null);
+    const fnRef = React.useRef(fn);
+    fnRef.current = fn;
+
+    React.useEffect(() => () => {
+        if (frameRef.current) cancelAnimationFrame(frameRef.current);
+    }, []);
+
+    return React.useCallback((...args) => {
+        argsRef.current = args;
+        if (frameRef.current) return;
+        frameRef.current = requestAnimationFrame(() => {
+            frameRef.current = 0;
+            const pending = argsRef.current;
+            argsRef.current = null;
+            if (pending) fnRef.current(...pending);
+        });
+    }, []);
+}
+
+/**
+ * Rendering a transcript is proportional to its length, so it must not repeat
+ * for state changes that do not alter the lines — scroll offset and pane
+ * resize both notify every subscriber. Memoizing on the line object keeps
+ * React from reconciling thousands of rows on every scroll event.
+ */
+const Line = React.memo(function Line({ line, theme, className = "" }) {
     const lineClassName = className ? `ps-line ${className}` : "ps-line";
     if (!line) {
         return React.createElement("div", { className: lineClassName }, " ");
@@ -923,7 +964,7 @@ function Line({ line, theme, className = "" }) {
             textDecoration: line.underline ? "underline" : "none",
         },
     }, line.text || " ");
-}
+});
 
 function lineText(line) {
     if (!line) return "";
@@ -5151,14 +5192,27 @@ function ColumnResizeHandle({ controller, paneAdjust = 0 }) {
             document.body.classList.remove("is-resizing-pane-x");
         };
 
-        const onPointerMove = (event) => {
+        // Apply at most one adjustment per frame. A drag emits pointermove far
+        // faster than the browser paints, and each adjust re-renders every
+        // pane — so most of that work was discarded before being displayed,
+        // which is what made dragging a loaded layout feel heavy.
+        let movePending = 0;
+        let pendingClientX = 0;
+        const applyMove = () => {
+            movePending = 0;
             const dragState = dragStateRef.current;
             if (!dragState) return;
-            const deltaCells = Math.round((event.clientX - dragState.startX) / GRID_CELL_WIDTH);
+            const deltaCells = Math.round((pendingClientX - dragState.startX) / GRID_CELL_WIDTH);
             const deltaIncrement = deltaCells - dragState.appliedCells;
             if (!deltaIncrement) return;
             controller.adjustPaneSplit(deltaIncrement);
             dragState.appliedCells = deltaCells;
+        };
+        const onPointerMove = (event) => {
+            if (!dragStateRef.current) return;
+            pendingClientX = event.clientX;
+            if (movePending) return;
+            movePending = requestAnimationFrame(applyMove);
         };
 
         window.addEventListener("pointermove", onPointerMove);
@@ -5166,6 +5220,7 @@ function ColumnResizeHandle({ controller, paneAdjust = 0 }) {
         window.addEventListener("pointercancel", stopDragging);
 
         return () => {
+            if (movePending) { cancelAnimationFrame(movePending); movePending = 0; }
             window.removeEventListener("pointermove", onPointerMove);
             window.removeEventListener("pointerup", stopDragging);
             window.removeEventListener("pointercancel", stopDragging);

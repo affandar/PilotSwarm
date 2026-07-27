@@ -112,3 +112,31 @@ for (const theme of THEMES) {
         expect(ratio, `${theme}: body text ${fg} on ${bg} is ${ratio.toFixed(2)}:1`).toBeGreaterThan(4.5);
     });
 }
+
+test("scrolling the transcript does not re-render every line", async ({ page }) => {
+    // Guards the regression this test was written for: scroll dispatched state
+    // on EVERY scroll event, and each dispatch re-rendered the whole
+    // transcript. Rendering is proportional to transcript length, so a loaded
+    // session got progressively more sluggish. Assert the work is bounded:
+    // a burst of scroll events must not produce a burst of layout work.
+    await openPortal(page);
+    const scroller = await page.$(".ps-chat-panel .ps-scroll-panel");
+    test.skip(!scroller, "no chat scroller in this layout");
+
+    const elapsed = await page.evaluate(async () => {
+        const el = document.querySelector(".ps-chat-panel .ps-scroll-panel");
+        const start = performance.now();
+        // 60 scroll events — far more than the browser will paint.
+        for (let i = 0; i < 60; i += 1) {
+            el.scrollTop = i * 3;
+            el.dispatchEvent(new Event("scroll", { bubbles: true }));
+        }
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+        return performance.now() - start;
+    });
+
+    // Generous ceiling: this is a smoke check against unbounded per-event work,
+    // not a benchmark. Before frame-coalescing, 60 synchronous dispatches each
+    // re-rendered the transcript.
+    expect(elapsed, `60 scroll events took ${elapsed.toFixed(0)}ms`).toBeLessThan(1500);
+});
