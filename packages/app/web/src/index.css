@@ -4886,3 +4886,40 @@ body.ps-rich-ui .ps-panel-header {
   border-top: 1px solid currentColor;
   opacity: 0.55;
 }
+
+/* ── Pane header: never wrap ───────────────────────────────────────────────
+   The header declares a fixed height, so wrapping is not a graceful fallback —
+   the second row escapes the box and lands on top of the pane content. On a
+   narrow pane the session header's five icon buttons did exactly that.
+
+   Nowrap plus a shrinkable title means the title ellipsizes (it already does)
+   while the controls keep their size, which is the right trade: the buttons
+   are the only way to reach those actions, whereas the title is duplicated on
+   the selected row. */
+.ps-panel-header {
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
+.ps-panel-header .ps-panel-header-right,
+.ps-panel-header .ps-panel-actions {
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  overflow: visible;
+}
+
+/* Narrow panes: tighten the icon buttons so five of them plus a title still
+   fit on one row rather than being clipped. */
+@media (max-width: 920px) {
+  .ps-panel-header .ps-mini-button,
+  .ps-panel-header .ps-toolbar-button,
+  .ps-panel-header .ps-icon-button {
+    min-width: 0;
+    padding-inline: 5px;
+  }
+
+  .ps-panel-header .ps-panel-actions,
+  .ps-panel-header .ps-panel-header-right {
+    gap: 3px;
+  }
+}

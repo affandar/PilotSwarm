@@ -140,3 +140,27 @@ test("scrolling the transcript does not re-render every line", async ({ page }) 
     // re-rendered the transcript.
     expect(elapsed, `60 scroll events took ${elapsed.toFixed(0)}ms`).toBeLessThan(1500);
 });
+
+test("pane header controls never wrap out of the header", async ({ page }) => {
+    // A fixed-height header cannot absorb a wrapped row: the overflow escapes
+    // the box and lands on top of the pane content below.
+    //
+    // HONEST LIMIT: this asserts the invariant, but the stub layout does not
+    // reproduce the original failure even at 330px — that needed the real
+    // session pane at high browser zoom. So it guards the rule going forward
+    // rather than having been proven against the bug it was written for.
+    await page.setViewportSize({ width: 330, height: 900 });
+    await openPortal(page);
+    const escaped = await page.$$eval(".ps-panel-header", (headers) => headers.flatMap((h) => {
+        const hb = h.getBoundingClientRect();
+        if (hb.height === 0) return [];
+        return [...h.querySelectorAll("button")]
+            .filter((b) => {
+                const bb = b.getBoundingClientRect();
+                // Bottom edge past the header means it wrapped to a new row.
+                return bb.height > 0 && bb.bottom > hb.bottom + 1;
+            })
+            .map((b) => `${b.getAttribute("aria-label") || b.className}`);
+    }));
+    expect(escaped, `controls wrapped outside their header: ${escaped.join(", ")}`).toEqual([]);
+});
