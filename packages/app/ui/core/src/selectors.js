@@ -2953,6 +2953,40 @@ export function selectFileSessionIdsForScope(state, scope = selectFilesScope(sta
     return ordered;
 }
 
+/**
+ * Artifacts in the order they appear in the CONVERSATION.
+ *
+ * The Files list is sorted for browsing (alphabetical); the transcript order is
+ * the order the work actually happened in. Stepping through a preview opened
+ * from a chat link should follow the conversation, not the filing cabinet — so
+ * these are two distinct sequences and neither can be derived from the other.
+ *
+ * Ids are `<sessionId>/<filename>`, matching files.selectedArtifactId.
+ */
+export function selectChatOrderedArtifactIds(state) {
+    const session = selectActiveSession(state);
+    const sessionId = session?.sessionId;
+    if (!sessionId) return [];
+    const history = state.history?.bySessionId?.get?.(sessionId);
+    const events = history?.events || [];
+    const seen = new Set();
+    const ordered = [];
+    const re = /artifact:\/\/([a-f0-9-]+)\/([^\s"'{})\]]+)/g;
+    for (const event of events) {
+        const text = typeof event?.data?.content === "string" ? event.data.content : "";
+        if (!text) continue;
+        re.lastIndex = 0;
+        let m;
+        while ((m = re.exec(text)) !== null) {
+            const id = `${m[1]}/${m[2]}`;
+            if (seen.has(id)) continue;
+            seen.add(id);
+            ordered.push(id);
+        }
+    }
+    return ordered;
+}
+
 export function selectFileBrowserItems(state) {
     const scope = selectFilesScope(state);
     const activeSessionId = selectActiveSession(state)?.sessionId || null;

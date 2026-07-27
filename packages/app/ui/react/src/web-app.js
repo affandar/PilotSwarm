@@ -3709,44 +3709,65 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
  * not like shrinking content into one more box. Desktop never mounts this.
  */
 function MobileArtifactOverlay({ controller }) {
-    const view = useControllerSelector(controller, (state) => ({
-        filename: state.files.selectedArtifactId
-            ? String(state.files.selectedArtifactId).slice(String(state.files.selectedArtifactId).indexOf("/") + 1)
-            : "",
-        origin: state.files.previewOrigin || null,
-    }), shallowEqualObject);
+    const view = useControllerSelector(controller, (state) => {
+        const id = state.files.selectedArtifactId || "";
+        const filename = id ? id.slice(id.indexOf("/") + 1) : "";
+        return {
+            filename,
+            origin: state.files.previewOrigin || null,
+            canPrev: controller.canStepArtifactPreview(-1),
+            canNext: controller.canStepArtifactPreview(1),
+        };
+    }, shallowEqualObject);
 
-    // Horizontal swipe steps the preview; vertical is left to the scroller.
-    // No wraparound — running off the end should feel like the end.
-    const swipeRef = React.useRef(null);
-    const onTouchStart = React.useCallback((event) => {
-        const t = event.touches?.[0];
-        swipeRef.current = t ? { x: t.clientX, y: t.clientY } : null;
-    }, []);
-    const onTouchEnd = React.useCallback((event) => {
-        const start = swipeRef.current;
-        swipeRef.current = null;
-        const t = event.changedTouches?.[0];
-        if (!start || !t) return;
-        const dx = t.clientX - start.x;
-        const dy = t.clientY - start.y;
-        if (Math.abs(dx) < 60 || Math.abs(dx) <= Math.abs(dy)) return;
-        controller.stepArtifactPreview(dx < 0 ? 1 : -1).catch(() => {});
+    // Wrap toggle applies to CODE only. Markdown always wraps — prose in a
+    // horizontal scroller is unreadable — and its fenced blocks keep their own
+    // behavior. Images have nothing to wrap.
+    const isCode = Boolean(codeLanguageForArtifact(view.filename))
+        || isDiffArtifact(view.filename);
+    const [contentWidth, setContentWidth] = React.useState(false);
+    React.useEffect(() => { setContentWidth(false); }, [view.filename]);
+
+    const step = React.useCallback((delta) => {
+        controller.stepArtifactPreview(delta).catch(() => {});
     }, [controller]);
 
     return React.createElement("div", { className: "ps-artifact-overlay" },
         React.createElement("header", { className: "ps-artifact-overlay-bar" },
             React.createElement("button", {
                 type: "button",
-                className: "ps-artifact-overlay-back",
+                className: "ps-artifact-overlay-btn",
                 onClick: () => controller.closeArtifactPreview().catch(() => {}),
-                "aria-label": view.origin === "chat" ? "Back to chat" : "Back to artifacts",
-            }, "←"),
-            React.createElement("span", { className: "ps-artifact-overlay-title" }, view.filename || "Artifact")),
+                "aria-label": view.origin === "chat" ? "Close, back to chat" : "Close, back to artifacts",
+            }, "✕"),
+            React.createElement("span", { className: "ps-artifact-overlay-title" }, view.filename || "Artifact"),
+            isCode
+                ? React.createElement("button", {
+                    type: "button",
+                    className: `ps-artifact-overlay-btn${contentWidth ? " is-active" : ""}`,
+                    onClick: () => setContentWidth((v) => !v),
+                    "aria-label": contentWidth ? "Wrap lines" : "Show full lines",
+                    title: contentWidth ? "Wrap to screen width" : "Full line width (scroll horizontally)",
+                }, contentWidth ? "⇥" : "↔")
+                : null,
+            React.createElement("button", {
+                type: "button",
+                className: "ps-artifact-overlay-btn",
+                disabled: !view.canPrev,
+                onClick: () => step(-1),
+                "aria-label": "Previous artifact",
+            }, "‹"),
+            React.createElement("button", {
+                type: "button",
+                className: "ps-artifact-overlay-btn",
+                disabled: !view.canNext,
+                onClick: () => step(1),
+                "aria-label": "Next artifact",
+            }, "›")),
+        // No swipe handlers: horizontal drag belongs to the content, so a wide
+        // code line can be scrolled without also changing which file you are on.
         React.createElement("div", {
-            className: "ps-artifact-overlay-body",
-            onTouchStart,
-            onTouchEnd,
+            className: `ps-artifact-overlay-body${contentWidth ? " is-content-width" : ""}`,
         }, React.createElement(FilesPane, {
             controller, focused: true, mobile: true, previewOnly: true, nativeScroll: true,
         })));

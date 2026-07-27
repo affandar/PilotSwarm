@@ -4135,7 +4135,7 @@ body:not(.ps-rich-ui) .ps-mermaid {
   background: var(--ps-chrome-strong);
 }
 
-.ps-artifact-overlay-back {
+.ps-artifact-overlay-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -4182,4 +4182,40 @@ body:not(.ps-rich-ui) .ps-mermaid {
 .ps-artifact-overlay-body .ps-panel-body {
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
+}
+
+.ps-artifact-overlay-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.ps-artifact-overlay-btn.is-active {
+  background: var(--ps-highlight-background);
+  border-color: var(--ps-highlight-background);
+  color: var(--ps-highlight-foreground);
+}
+
+/* Content-width mode: code keeps its real line length and scrolls sideways,
+   instead of being folded to the screen. Markdown prose is never put in this
+   mode — only files that ARE code — so the toggle cannot make text unreadable. */
+.ps-artifact-overlay-body.is-content-width .ps-md-code-pre,
+.ps-artifact-overlay-body.is-content-width .ps-md-code-pre code,
+.ps-artifact-overlay-body.is-content-width .ps-diff-line,
+.ps-artifact-overlay-body.is-content-width .ps-diff-text {
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+.ps-artifact-overlay-body.is-content-width .ps-md-code-pre {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Default (mobile) mode: fold long lines so nothing needs sideways scrolling. */
+.ps-artifact-overlay-body:not(.is-content-width) .ps-md-code-pre,
+.ps-artifact-overlay-body:not(.is-content-width) .ps-md-code-pre code,
+.ps-artifact-overlay-body:not(.is-content-width) .ps-diff-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }

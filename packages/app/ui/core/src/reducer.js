@@ -1936,6 +1936,10 @@ export function appReducer(state, action) {
                 selectedFilename,
                 loading: false,
                 loaded: true,
+                // Stored, not just computed — without this the TTL guard read
+                // undefined, treated every list as ancient, and refetched on
+                // every poll cycle. That was the ~3s flicker.
+                fetchedAt,
                 error: null,
             };
             return {

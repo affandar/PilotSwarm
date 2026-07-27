@@ -32,6 +32,7 @@ import {
     selectLiveActivityLines,
     selectChatLines,
     selectFileBrowserItems,
+    selectChatOrderedArtifactIds,
     selectFileSessionIdsForScope,
     selectFilesScope,
     selectFilesView,
@@ -4512,9 +4513,49 @@ export class PilotSwarmUiController {
         this.dispatch({ type: "ui/focus", focusRegion: FOCUS_REGIONS.CHAT });
     }
 
-    /** Step the preview to the next/previous artifact. Never wraps. */
+    /**
+     * Step the preview to the next/previous artifact. Never wraps.
+     *
+     * A chat-opened preview walks the CONVERSATION order — the order the work
+     * happened in — while a list-opened one walks the Files list order, which
+     * is sorted for browsing. Same buttons, two sequences, chosen by origin.
+     */
     async stepArtifactPreview(delta) {
-        await this.moveFileSelection(delta);
+        const state = this.getState();
+        if (state.files.previewOrigin !== "chat") {
+            await this.moveFileSelection(delta);
+            return;
+        }
+        const ordered = selectChatOrderedArtifactIds(state);
+        if (ordered.length === 0) {
+            await this.moveFileSelection(delta);
+            return;
+        }
+        const currentIndex = ordered.indexOf(state.files.selectedArtifactId);
+        // Unknown current position: start from whichever end we are heading in
+        // from, rather than silently doing nothing.
+        const from = currentIndex >= 0 ? currentIndex : (delta > 0 ? -1 : ordered.length);
+        const nextIndex = from + (delta > 0 ? 1 : -1);
+        if (nextIndex < 0 || nextIndex >= ordered.length) return;   // no wraparound
+        const nextId = ordered[nextIndex];
+        const slash = nextId.indexOf("/");
+        if (slash <= 0) return;
+        const sessionId = nextId.slice(0, slash);
+        const filename = nextId.slice(slash + 1);
+        this.dispatch({ type: "files/select", sessionId, filename });
+        await this.ensureFilePreview(sessionId, filename).catch(() => {});
+    }
+
+    /** Can the preview step in this direction? Drives arrow disabled state. */
+    canStepArtifactPreview(delta) {
+        const state = this.getState();
+        const ordered = state.files.previewOrigin === "chat"
+            ? selectChatOrderedArtifactIds(state)
+            : selectFileBrowserItems(state).map((item) => item.id);
+        if (ordered.length === 0) return false;
+        const i = ordered.indexOf(state.files.selectedArtifactId);
+        if (i < 0) return true;
+        return delta > 0 ? i < ordered.length - 1 : i > 0;
     }
 
     async finalizeArtifactUpload(upload, { sessionId = null, suppressStatus = false } = {}) {
