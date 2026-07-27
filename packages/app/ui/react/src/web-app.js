@@ -5020,7 +5020,11 @@ function Toolbar({ controller, mobile, chatFocusMode = false, onToggleChatFocus 
     const [headerSlot, setHeaderSlot] = React.useState(null);
     React.useEffect(() => {
         if (typeof document === "undefined") return;
-        setHeaderSlot(richUi && !mobile ? document.getElementById("ps-header-toolbar-slot") : null);
+        // Desktop centres the toolbar in the portal header regardless of chat
+        // view — the terminal view was spending a whole strip on it while the
+        // rich view had already handed that row back to the panes. Mobile keeps
+        // the inline strip; there is no header room for it on a phone.
+        setHeaderSlot(!mobile ? document.getElementById("ps-header-toolbar-slot") : null);
     }, [richUi, mobile]);
     const adminVisible = useControllerSelector(controller, (state) => Boolean(state.admin?.visible));
     const chatView = useControllerSelector(controller, (state) => ({

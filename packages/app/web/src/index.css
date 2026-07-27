@@ -22,9 +22,9 @@
      of the UI is sized in rem against a 14px root so panes, lists, headers and
      the activity stream stay in proportion with it instead of drifting down to
      9-11px hardcoded values. */
-  --ps-font-size-chat: 15px;
-  --ps-font-size-base: 14px;
-  --ps-font-size-dense: 13px;
+  --ps-font-size-chat: 13.5px;
+  --ps-font-size-base: 12.5px;
+  --ps-font-size-dense: 11.5px;
   --ps-line-height-base: 1.28;
   --ps-line-height-dense: 1.18;
   /* ── Elevation ──────────────────────────────────────────────────────────
@@ -2453,9 +2453,9 @@ body.is-resizing-pane-y * {
 @media (max-width: 920px) {
   :root {
     /* Phones step the scale down one notch, keeping the same proportions. */
-    --ps-font-size-chat: 14.5px;
-    --ps-font-size-base: 13.5px;
-    --ps-font-size-dense: 12.5px;
+    --ps-font-size-chat: 13px;
+    --ps-font-size-base: 12.5px;
+    --ps-font-size-dense: 11.5px;
   }
 
   .portal-main {
@@ -3946,11 +3946,11 @@ body:not(.ps-rich-ui) .ps-mermaid {
      of it: with top padding at 0 the session and sequence panes butted their
      top borders straight into the header's bottom border. Match the 8px the
      grid already uses between panes, so the header reads as separate chrome. */
-  body.ps-rich-ui .portal-main {
+  .portal-main {
     padding: 8px;
   }
 
-  body.ps-rich-ui .ps-web-shell {
+  .ps-web-shell {
     gap: 0;
   }
 }
@@ -4721,11 +4721,11 @@ body:not(.ps-rich-ui) .ps-mermaid {
 
    The header now declares its own height and the buttons fit INSIDE it. */
 :root {
-  --ps-panel-header-h: 30px;
+  --ps-panel-header-h: 36px;
 }
 
 body.ps-rich-ui {
-  --ps-panel-header-h: 34px;
+  --ps-panel-header-h: 38px;
 }
 
 .ps-panel-header {
@@ -4778,4 +4778,23 @@ body.ps-rich-ui .ps-panel-header {
 :root[data-ps-theme="win95"] .ps-panel-header .ps-toolbar-button,
 :root[data-ps-theme="win95"] .ps-panel-header .ps-icon-button {
   height: calc(var(--ps-panel-header-h) - 6px);
+}
+
+/* A fixed-height header cannot absorb a wrapped title — the second line is
+   simply clipped. Long session titles now ellipsize, and the right-hand
+   metadata shrinks before the title does, so the identifying text survives. */
+.ps-panel-header .ps-panel-title {
+  min-width: 0;
+  flex: 1 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ps-panel-header .ps-panel-title-right {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
