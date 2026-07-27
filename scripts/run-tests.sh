@@ -617,12 +617,39 @@ clear_standalone_horizondb_env() {
     done
 }
 
+# Load a .env file as DATA, not as shell.
+#
+# This used to `source` the file with `set -a`, which makes the shell interpret
+# every value. A connection string containing `&` (query params like
+# `?sslmode=require&connect_timeout=10`) is then read as a command separator, so
+# the variable silently never reaches the environment. That is what made the
+# --with-horizondb phase run without HORIZON_GRAPH_DATABASE_URL: the worker came
+# up with no graph store while the contract test still expected the 11 graph_*
+# tools, and the failure looked like catalog drift rather than a parsing bug.
+#
+# Node's --env-file (used by every other entry point here) parses these files as
+# data, so plain assignment keeps the harness consistent with the runtime.
 load_env_file() {
     local file="$1"
-    set -a
-    # shellcheck disable=SC1090
-    source "$file"
-    set +a
+    local line key value
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+            ''|'#'*) continue ;;
+        esac
+        line="${line#export }"
+        key="${line%%=*}"
+        [ "$key" = "$line" ] && continue
+        # Keys must look like identifiers; anything else is not an assignment.
+        case "$key" in
+            *[!A-Za-z0-9_]*|'') continue ;;
+        esac
+        value="${line#*=}"
+        case "$value" in
+            \"*\") value="${value#\"}"; value="${value%\"}" ;;
+            \'*\') value="${value#\'}"; value="${value%\'}" ;;
+        esac
+        export "$key=$value"
+    done < "$file"
 }
 
 configure_provider_env() {

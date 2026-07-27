@@ -3788,6 +3788,12 @@ function FilesPane({ controller, focused, mobile = false, previewOnly = false })
         }
     }, [controller, viewState.canBrowserUpload, viewState.canPathUpload]);
 
+    // Declared BEFORE panelActions, which reads it. When this sat further down
+    // the component it was a temporal dead zone violation: panelActions threw
+    // "Cannot access 'markedSet' before initialization" during render, React
+    // unmounted the whole tree, and the portal went blank on opening Artifacts.
+    const markedSet = React.useMemo(() => new Set(viewState.markedIds || []), [viewState.markedIds]);
+
     const panelActions = React.createElement(React.Fragment, null,
         // Bulk actions only appear once something is marked, so the header
         // stays quiet in the common single-selection case.
@@ -3861,7 +3867,6 @@ function FilesPane({ controller, focused, mobile = false, previewOnly = false })
     // Keyboard selection has to drag the viewport with it, exactly as the
     // session list does — otherwise j/k walks the selection straight out of
     // view and the list appears frozen.
-    const markedSet = React.useMemo(() => new Set(viewState.markedIds || []), [viewState.markedIds]);
     const selectedItemRef = React.useRef(null);
     React.useEffect(() => {
         const node = selectedItemRef.current;
