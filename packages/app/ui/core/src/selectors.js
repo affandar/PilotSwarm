@@ -3957,6 +3957,39 @@ function buildNodeMapNodeUnionForWindow(state, window) {
     return Array.from(labels).sort((left, right) => left.localeCompare(right));
 }
 
+/**
+ * Strip trailing pad from the last run of a sequence line.
+ *
+ * Every column is padded to colWidth for alignment, but the FINAL column's
+ * trailing spaces align nothing — there is no column after them. With
+ * `white-space: pre` those spaces occupy real width, so every line rendered at
+ * exactly the computed width and the pane had zero tolerance for rounding
+ * between "columns x char width" and its actual pixel width. The result was a
+ * horizontal scrollbar that never went away, on content that visibly fit.
+ */
+function trimTrailingRunPad(runs) {
+    const out = runs.slice();
+    while (out.length > 0) {
+        const last = out[out.length - 1];
+        const trimmed = String(last.text ?? "").replace(/\s+$/, "");
+        if (trimmed === "") { out.pop(); continue; }
+        out[out.length - 1] = { ...last, text: trimmed };
+        break;
+    }
+    return out;
+}
+
+/** Widest rendered line, so decoration never outruns real content. */
+function sequenceLineWidth(line) {
+    if (Array.isArray(line?.runs)) {
+        return line.runs.reduce((n, r) => n + displayLength(String(r.text ?? "")), 0);
+    }
+    if (Array.isArray(line)) {
+        return line.reduce((n, r) => n + displayLength(String(r.text ?? "")), 0);
+    }
+    return displayLength(String(line?.text ?? ""));
+}
+
 function buildSequenceHeaderLine(nodeLabels, timeWidth, colWidth) {
     const runs = [
         { text: padDisplayText("TIME", timeWidth), color: "white", bold: true },
@@ -3966,12 +3999,15 @@ function buildSequenceHeaderLine(nodeLabels, timeWidth, colWidth) {
         if (index > 0) runs.push({ text: " ", color: null });
         runs.push({ text: padDisplayText(nodeLabel, colWidth), color: "white", bold: true });
     });
-    return runs;
+    return trimTrailingRunPad(runs);
 }
 
-function buildSequenceDividerLine(nodeLabels, timeWidth, colWidth) {
+function buildSequenceDividerLine(nodeLabels, timeWidth, colWidth, contentWidth = Infinity) {
+    const full = `${"-".repeat(timeWidth)} ${nodeLabels.map(() => "─".repeat(colWidth)).join(" ")}`;
+    // Clip to the widest real line: a full-width rule under short content is
+    // itself enough to force the scrollbar this trimming exists to remove.
     return plainInspectorLine(
-        `${"-".repeat(timeWidth)} ${nodeLabels.map(() => "─".repeat(colWidth)).join(" ")}`,
+        Number.isFinite(contentWidth) ? full.slice(0, Math.max(timeWidth, contentWidth)) : full,
         "gray",
     );
 }
@@ -4060,7 +4096,7 @@ function buildSequenceEventLine(entry, nodeLabels, timeWidth, colWidth) {
         }
     });
 
-    return runs;
+    return trimTrailingRunPad(runs);
 }
 
 function buildNodeMapHeaderLine(nodeLabels, colWidth) {
@@ -4207,12 +4243,21 @@ function buildSequenceViewForSession(state, session, maxWidth, options = {}) {
         }
     }
 
+    // Decoration is sized to real content, never to the pane's nominal width:
+    // a full-width rule under short content forces the very scrollbar the
+    // trimming above exists to remove.
+    const headerLine = buildSequenceHeaderLine(nodeLabels, timeWidth, colWidth);
+    const contentWidth = lines.reduce(
+        (widest, line) => Math.max(widest, sequenceLineWidth(line)),
+        sequenceLineWidth(headerLine),
+    );
+
     return {
         stickyLines: [
             ...statsLines,
             plainInspectorLine(`Window: ${recentWindow.label}`, "gray"),
-            buildSequenceHeaderLine(nodeLabels, timeWidth, colWidth),
-            buildSequenceDividerLine(nodeLabels, timeWidth, colWidth),
+            headerLine,
+            buildSequenceDividerLine(nodeLabels, timeWidth, colWidth, contentWidth),
         ],
         lines,
     };
