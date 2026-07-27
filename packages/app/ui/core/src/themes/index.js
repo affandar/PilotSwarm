@@ -17,6 +17,7 @@ import terminalGreenTheme from "./terminal-green.js";
 import solarizedOpsTheme from "./solarized-ops.js";
 import highContrastMonoTheme from "./high-contrast-mono.js";
 import win95Theme from "./win95.js";
+import msDosTheme from "./ms-dos.js";
 
 const THEMES = Object.freeze([
     draculaTheme,
@@ -38,6 +39,7 @@ const THEMES = Object.freeze([
     solarizedOpsTheme,
     highContrastMonoTheme,
     win95Theme,
+    msDosTheme,
 ].sort((left, right) => left.label.localeCompare(right.label, undefined, { sensitivity: "base" })));
 
 const THEME_MAP = new Map(THEMES.map((theme) => [theme.id, theme]));

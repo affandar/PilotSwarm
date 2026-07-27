@@ -4419,3 +4419,155 @@ body:not(.ps-rich-ui) .ps-mermaid {
   border-radius: 0;
   color: #000080;
 }
+
+/* ── MS-DOS 2.0 ────────────────────────────────────────────────────────────
+   Where Win95 ADDS chrome, this removes it. DOS 2.0 had no windows at all, so
+   the job is subtractive: strip every gradient, shadow, rounded corner and
+   transition, then frame panes the way a CP437 application would.
+
+   Everything is scoped to [data-ps-theme="ms-dos"]. */
+:root[data-ps-theme="ms-dos"] {
+  --dos-fg: #aaaaaa;
+  --dos-bright: #ffffff;
+  --dos-dim: #8f8f8f;
+  /* Bitmap-ish stacks first; these are the faces most likely to be present
+     that still read as a PC text mode rather than a modern terminal. */
+  --ps-ui-font: "PxPlus IBM VGA8", "Perfect DOS VGA 437", "IBM Plex Mono",
+    "Consolas", ui-monospace, monospace;
+}
+
+:root[data-ps-theme="ms-dos"] body {
+  --ps-radius-sm: 0px;
+  --ps-radius-md: 0px;
+}
+
+/* Text mode is monospace, full stop — including the rich transcript, which
+   would otherwise render prose in a proportional face DOS never had. */
+:root[data-ps-theme="ms-dos"] .ps-chat-panel.is-rich .ps-scroll-panel,
+:root[data-ps-theme="ms-dos"] .ps-rich-msg-body,
+:root[data-ps-theme="ms-dos"] .portal-header,
+:root[data-ps-theme="ms-dos"] .ps-panel-title {
+  font-family: var(--ps-ui-font);
+}
+
+/* Panes are CP437 frames: a single hairline in BODY colour, so it reads as
+   line-drawing characters rather than as a UI border. */
+:root[data-ps-theme="ms-dos"] .ps-panel {
+  background: #000000;
+  border: 1px solid var(--dos-fg);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+:root[data-ps-theme="ms-dos"] .ps-panel.is-focused {
+  /* Focus is brightness, not colour — attribute 15 over attribute 7, which is
+     the only emphasis a text mode has. */
+  border-color: var(--dos-bright);
+  box-shadow: none;
+}
+
+:root[data-ps-theme="ms-dos"] .ps-panel-header {
+  background: transparent;
+  border-bottom: 1px solid var(--dos-fg);
+}
+
+:root[data-ps-theme="ms-dos"] .ps-panel-title,
+:root[data-ps-theme="ms-dos"] .ps-panel-title * {
+  color: var(--dos-bright);
+  font-weight: 400;   /* text mode had one weight */
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+/* No raised anything. Buttons are bracketed labels, as a DOS TUI drew them. */
+:root[data-ps-theme="ms-dos"] .ps-mini-button,
+:root[data-ps-theme="ms-dos"] .ps-modal-button,
+:root[data-ps-theme="ms-dos"] .ps-modal-close,
+:root[data-ps-theme="ms-dos"] .ps-send-button,
+:root[data-ps-theme="ms-dos"] .ps-artifact-overlay-btn,
+:root[data-ps-theme="ms-dos"] .portal-primary-button,
+:root[data-ps-theme="ms-dos"] .portal-secondary-button {
+  background: #000000;
+  color: var(--dos-fg);
+  border: 1px solid var(--dos-fg);
+  border-radius: 0;
+  box-shadow: none;
+  transition: none;
+}
+
+/* Hover and press are REVERSE VIDEO — the only interaction feedback CGA had. */
+:root[data-ps-theme="ms-dos"] .ps-mini-button:hover,
+:root[data-ps-theme="ms-dos"] .ps-modal-button:hover,
+:root[data-ps-theme="ms-dos"] .ps-modal-close:hover,
+:root[data-ps-theme="ms-dos"] .ps-send-button:hover,
+:root[data-ps-theme="ms-dos"] .ps-artifact-overlay-btn:hover,
+:root[data-ps-theme="ms-dos"] .ps-mini-button:active,
+:root[data-ps-theme="ms-dos"] .ps-modal-button:active {
+  background: var(--dos-fg);
+  color: #000000;
+  transform: none;
+}
+
+:root[data-ps-theme="ms-dos"] .ps-prompt-input,
+:root[data-ps-theme="ms-dos"] .ps-scroll-panel,
+:root[data-ps-theme="ms-dos"] .ps-action-list {
+  background: #000000;
+  color: var(--dos-fg);
+  border-radius: 0;
+}
+
+/* Selection is reverse video, not a tint. */
+:root[data-ps-theme="ms-dos"] .ps-list-button.is-selected,
+:root[data-ps-theme="ms-dos"] .ps-session-list-button.is-selected,
+:root[data-ps-theme="ms-dos"] .ps-list-button.is-selected *,
+:root[data-ps-theme="ms-dos"] .ps-session-list-button.is-selected * {
+  background: var(--dos-fg);
+  color: #000000;
+  box-shadow: none;
+}
+
+/* Header is a status line, not a title bar. */
+:root[data-ps-theme="ms-dos"] .portal-header {
+  background: #000000;
+  border-bottom: 1px solid var(--dos-fg);
+}
+
+:root[data-ps-theme="ms-dos"] .portal-header-kicker,
+:root[data-ps-theme="ms-dos"] .portal-header-name,
+:root[data-ps-theme="ms-dos"] .portal-header-identity {
+  color: var(--dos-bright);
+  text-transform: uppercase;
+}
+
+:root[data-ps-theme="ms-dos"] .portal-header-email,
+:root[data-ps-theme="ms-dos"] .portal-header-status,
+:root[data-ps-theme="ms-dos"] .portal-header-version {
+  color: var(--dos-dim);
+  background: transparent;
+  border: 0;
+}
+
+:root[data-ps-theme="ms-dos"] .portal-logo-frame {
+  background: #000000;
+  border: 1px solid var(--dos-fg);
+  border-radius: 0;
+  color: var(--dos-bright);
+}
+
+/* Square, unstyled scrollbars — no thumb rounding, no track gradient. */
+:root[data-ps-theme="ms-dos"] ::-webkit-scrollbar-thumb {
+  background: var(--dos-fg);
+  border-radius: 0;
+  border: 0;
+}
+
+:root[data-ps-theme="ms-dos"] ::-webkit-scrollbar-track {
+  background: #000000;
+  border-left: 1px solid var(--dos-dim);
+}
+
+/* Kill every modern affordance the base stylesheet adds. */
+:root[data-ps-theme="ms-dos"] * {
+  text-shadow: none !important;
+  border-radius: 0 !important;
+}
