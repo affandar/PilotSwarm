@@ -210,10 +210,37 @@ function normalizeProfileSettings(settings) {
         const id = candidate.activeSessionId == null ? null : String(candidate.activeSessionId).trim();
         normalized.activeSessionId = id || null;
     }
-    if (candidate.chatViewMode === "summary" || candidate.chatViewMode === "transcript" || candidate.chatViewMode === "rich") {
+    if (isChatViewMode(candidate.chatViewMode)) {
         normalized.chatViewMode = candidate.chatViewMode;
     }
+    // Phones and desktops keep SEPARATE view preferences: rich prose reads well
+    // on a wide transcript and poorly in a 390px column, so a single shared
+    // value would have each device overwriting the other's choice.
+    if (isChatViewMode(candidate.chatViewModeMobile)) {
+        normalized.chatViewModeMobile = candidate.chatViewModeMobile;
+    }
     return normalized;
+}
+
+function isChatViewMode(value) {
+    return value === "summary" || value === "transcript" || value === "rich";
+}
+
+/** True on phone-sized viewports — the device class that owns the mobile slot. */
+function isNarrowViewport() {
+    return typeof window !== "undefined"
+        && typeof window.matchMedia === "function"
+        && window.matchMedia("(max-width: 920px)").matches;
+}
+
+/** Profile key this device reads and writes. */
+function chatViewModeKey() {
+    return isNarrowViewport() ? "chatViewModeMobile" : "chatViewMode";
+}
+
+/** The key belonging to the OTHER device class. */
+function otherChatViewModeKey() {
+    return isNarrowViewport() ? "chatViewMode" : "chatViewModeMobile";
 }
 
 function normalizeStoredCollapsedSessionIdsToArray(value) {
@@ -243,7 +270,7 @@ function hasOwn(value, key) {
     return Boolean(value && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, key));
 }
 
-function profileSettingsFromViewState(state) {
+function profileSettingsFromViewState(state, preservedOtherChatViewMode = null) {
     return normalizeProfileSettings({
         themeId: state.themeId,
         sessionOwnerFilter: state.ownerFilter,
@@ -256,11 +283,17 @@ function profileSettingsFromViewState(state) {
         pinnedSessionIds: state.pinnedIds,
         collapsedSessionIds: state.collapsedSessionIds,
         activeSessionId: state.activeSessionId,
-        chatViewMode: state.chatViewMode,
+        [chatViewModeKey()]: state.chatViewMode,
+        // setCurrentUserProfileSettings REPLACES the settings object, so the
+        // other device class's slot has to be written back verbatim or saving
+        // from a desktop would wipe the phone's preference (and vice versa).
+        ...(isChatViewMode(preservedOtherChatViewMode)
+            ? { [otherChatViewModeKey()]: preservedOtherChatViewMode }
+            : {}),
     });
 }
 
-function buildDefaultProfileSettingsFromState(state) {
+function buildDefaultProfileSettingsFromState(state, preservedOtherChatViewMode = null) {
     return normalizeProfileSettings({
         themeId: state?.ui?.themeId,
         // Derive the owner-filter default from the RESOLVED principal, never a
@@ -274,7 +307,10 @@ function buildDefaultProfileSettingsFromState(state) {
         pinnedSessionIds: state?.sessions?.pinnedIds,
         collapsedSessionIds: state?.sessions?.collapsedIds,
         activeSessionId: state?.sessions?.activeSessionId,
-        chatViewMode: state?.ui?.chatViewMode,
+        [chatViewModeKey()]: state?.ui?.chatViewMode,
+        ...(isChatViewMode(preservedOtherChatViewMode)
+            ? { [otherChatViewModeKey()]: preservedOtherChatViewMode }
+            : {}),
     });
 }
 
@@ -307,8 +343,11 @@ function materializeProfileSettings(remoteSettings, defaults) {
         ...(hasOwn(normalizedRemote, "activeSessionId")
             ? { activeSessionId: normalizedRemote.activeSessionId }
             : {}),
-        ...(hasOwn(normalizedRemote, "chatViewMode")
-            ? { chatViewMode: normalizedRemote.chatViewMode }
+        // Apply only the slot this device owns. The other is preserved by the
+        // save path (see profileSettingsFromViewState), not applied here — it
+        // describes a screen size we are not on.
+        ...(hasOwn(normalizedRemote, chatViewModeKey())
+            ? { chatViewMode: normalizedRemote[chatViewModeKey()] }
             : {}),
     });
 }
@@ -6460,6 +6499,10 @@ export function PilotSwarmWebApp({ controller }) {
     }), shallowEqualObject);
     const profileSettingsHydratedRef = React.useRef(false);
     const lastProfileSettingsJsonRef = React.useRef(null);
+    // Last-known value of the OTHER device class's chat-view slot. The save
+    // endpoint replaces the whole settings object, so this is what keeps a
+    // desktop save from erasing the phone's preference.
+    const otherChatViewModeRef = React.useRef(null);
     const profileSettingsSaveTimerRef = React.useRef(null);
     const profileSettingsPollTimerRef = React.useRef(null);
     const profileSettingsPollInFlightRef = React.useRef(false);
@@ -6513,13 +6556,21 @@ export function PilotSwarmWebApp({ controller }) {
                 // the principal is resolved by now (it was likely null at mount),
                 // so the "no persisted filter" fallback becomes the correct
                 // principal-scoped default (Me+System) instead of {all:true}.
-                defaultProfileSettingsRef.current = buildDefaultProfileSettingsFromState(controller.getState());
+                const remoteNormalized = normalizeProfileSettings(profile?.profileSettings);
+                if (isChatViewMode(remoteNormalized[otherChatViewModeKey()])) {
+                    otherChatViewModeRef.current = remoteNormalized[otherChatViewModeKey()];
+                }
+                defaultProfileSettingsRef.current = buildDefaultProfileSettingsFromState(
+                    controller.getState(), otherChatViewModeRef.current,
+                );
                 const settings = materializeProfileSettings(
                     profile?.profileSettings,
                     defaultProfileSettingsRef.current,
                 );
                 const settingsJson = JSON.stringify(settings);
-                const currentSettingsBeforeApply = profileSettingsFromViewState(controller.getState());
+                const currentSettingsBeforeApply = profileSettingsFromViewState(
+                    controller.getState(), otherChatViewModeRef.current,
+                );
                 const currentSettingsBeforeApplyJson = JSON.stringify(currentSettingsBeforeApply);
                 const hasUnpersistedLocalChange = profileSettingsHydratedRef.current
                     && lastProfileSettingsJsonRef.current != null
@@ -6532,7 +6583,9 @@ export function PilotSwarmWebApp({ controller }) {
                     appliedProfileSettingsJsonRef.current = settingsJson;
                 }
 
-                const currentSettings = profileSettingsFromViewState(controller.getState());
+                const currentSettings = profileSettingsFromViewState(
+                    controller.getState(), otherChatViewModeRef.current,
+                );
                 lastProfileSettingsJsonRef.current = JSON.stringify(currentSettings);
                 profileSettingsHydratedRef.current = true;
             } catch {
@@ -6564,7 +6617,7 @@ export function PilotSwarmWebApp({ controller }) {
 
     React.useEffect(() => {
         if (!profileSettingsHydratedRef.current) return undefined;
-        const settings = profileSettingsFromViewState(state);
+        const settings = profileSettingsFromViewState(state, otherChatViewModeRef.current);
         const settingsJson = JSON.stringify(settings);
         if (lastProfileSettingsJsonRef.current === settingsJson) return undefined;
         lastProfileSettingsJsonRef.current = settingsJson;
