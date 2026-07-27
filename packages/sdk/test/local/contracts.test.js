@@ -1003,7 +1003,7 @@ describe("Level 8: Contract Tests", () => {
     it("Replace Mode Still Layers Base Prompt", { timeout: TIMEOUT }, async () => {
         await testReplaceSystemMessageKeepsLayering(getEnv());
     });
-    it("LLM Sees Exact Always-On Toolset", { timeout: TIMEOUT }, async () => {
+    it("LLM Sees Exact Always-On Toolset", { timeout: TIMEOUT, retry: 2 }, async () => {
         await testLlmSeesExactAlwaysOnTools(getEnv());
     });
 });

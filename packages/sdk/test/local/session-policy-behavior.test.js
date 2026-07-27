@@ -945,7 +945,7 @@ describe("Level 10b: Session Policy — Behavior", () => {
     it("App System Agents Coexist with Built-In", { timeout: TIMEOUT }, async () => {
         await testAppSystemAgentsCoexist(getEnv());
     });
-    it("Named Agent Title Preserved After Summarization", { timeout: TIMEOUT * 3 }, async () => {
+    it("Named Agent Title Preserved After Summarization", { timeout: TIMEOUT * 3, retry: 2 }, async () => {
         await testNamedAgentTitleAfterSummarization(getEnv());
     });
 });

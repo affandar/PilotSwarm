@@ -2870,6 +2870,36 @@ function SessionRowContent({ row, theme, structured = false }) {
             : null);
 }
 
+/**
+ * Reuse the previous value when a freshly computed one is deep-equal.
+ *
+ * The session poll rebuilds sessions.byId whenever ANY session's updatedAt or
+ * iteration count moves, which invalidates every downstream memo and re-renders
+ * the whole list — visibly, every poll — even though the rows that are actually
+ * displayed did not change. Comparing the rendered result and keeping the old
+ * reference stops the churn at the render boundary, without having to chase
+ * which upstream field ticked.
+ *
+ * Sized for lists of tens of rows: the comparison is far cheaper than the
+ * reconciliation it avoids.
+ */
+function useStableValue(value) {
+    const ref = React.useRef(value);
+    const previousJson = React.useRef(null);
+    const nextJson = React.useMemo(() => {
+        try {
+            return JSON.stringify(value);
+        } catch {
+            return null;   // unserializable: never claim equality
+        }
+    }, [value]);
+    if (nextJson === null || previousJson.current !== nextJson) {
+        previousJson.current = nextJson;
+        ref.current = value;
+    }
+    return ref.current;
+}
+
 function SessionPane({ controller, actions = null, panelClassName = "", structuredRows = false }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
@@ -2893,7 +2923,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         // ever wanted independently.
         rich: state.ui.chatViewMode === "rich",
     }), shallowEqualObject);
-    const rows = React.useMemo(() => selectSessionRows({
+    const computedRows = React.useMemo(() => selectSessionRows({
         sessions: {
             activeSessionId: viewState.activeSessionId,
             byId: viewState.sessionsById,
@@ -2909,6 +2939,8 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             mode: viewState.connectionMode,
         },
     }), [viewState.activeSessionId, viewState.auth, viewState.connectionMode, viewState.filterQuery, viewState.ownerFilter, viewState.pinnedIds, viewState.selectedIds, viewState.selectMode, viewState.sessionsById, viewState.sessionsFlat]);
+    // Hold the previous rows when a poll produced identical output.
+    const rows = useStableValue(computedRows);
     const activeSession = viewState.activeSessionId
         ? viewState.sessionsById[viewState.activeSessionId] || null
         : null;

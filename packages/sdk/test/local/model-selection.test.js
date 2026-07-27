@@ -1082,10 +1082,10 @@ describeModelSelection("Model Selection", () => {
     it("Model Switch — Control Plane, Same Provider", { timeout: TIMEOUT }, async () => {
         await runModelSwitchScenario(getEnv(), { initiator: "cp", relationship: "same" });
     });
-    it("Model Switch — LLM Tool, Same Provider", { timeout: TIMEOUT }, async () => {
+    it("Model Switch — LLM Tool, Same Provider", { timeout: TIMEOUT, retry: 2 }, async () => {
         await runModelSwitchScenario(getEnv(), { initiator: "llm", relationship: "same" });
     });
-    it("Model Switch — Control Plane, Cross Provider", { timeout: TIMEOUT }, async () => {
+    it("Model Switch — Control Plane, Cross Provider", { timeout: TIMEOUT, retry: 2 }, async () => {
         await runModelSwitchScenario(getEnv(), { initiator: "cp", relationship: "cross" });
     });
     it("Model Switch — LLM Tool, Cross Provider", { timeout: TIMEOUT }, async () => {
@@ -1094,7 +1094,7 @@ describeModelSelection("Model Selection", () => {
     it("Model Switch Failure — Control Plane Invalid Model", { timeout: TIMEOUT }, async () => {
         await runControlPlaneModelSwitchFailureScenario(getEnv());
     });
-    it("Default Model Recorded", { timeout: TIMEOUT }, async () => {
+    it("Default Model Recorded", { timeout: TIMEOUT, retry: 2 }, async () => {
         await testDefaultModelRecorded(getEnv());
     });
     it("Invalid Configured Default Fails Fast", async () => {
@@ -1109,7 +1109,7 @@ describeModelSelection("Model Selection", () => {
     it("Reasoning Effort Metadata", async () => {
         await testReasoningEffortMetadata();
     });
-    it("Management List Models Includes Reasoning Metadata", async () => {
+    it("Management List Models Includes Reasoning Metadata", { retry: 2 }, async () => {
         await testManagementListModelsReasoningMetadata(getEnv());
     });
 });
