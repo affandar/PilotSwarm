@@ -1101,8 +1101,20 @@ function isTabularArtifact(filename, contentType) {
  */
 const TABULAR_MAX_ROWS = 2000;
 
+/**
+ * Quote a cell for TSV the way a spreadsheet expects: only when the value
+ * would otherwise break the row/column framing.
+ */
+function tsvCell(value) {
+    const text = String(value ?? "");
+    return /[\t\n\r"]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
 function TabularPreview({ content, filename }) {
     const [parsed, setParsed] = React.useState(null);
+    const wrapRef = React.useRef(null);
+    const tableRef = React.useRef(null);
+    const anchorCellRef = React.useRef(null);
 
     React.useEffect(() => {
         let cancelled = false;
@@ -1121,6 +1133,85 @@ function TabularPreview({ content, filename }) {
             .catch(() => { if (!cancelled) setParsed({ rows: null, errors: [{ message: "parser unavailable" }] }); });
         return () => { cancelled = true; };
     }, [content, filename]);
+
+    // The drag can end anywhere, including outside the pane or the window.
+    React.useEffect(() => {
+        const release = () => { anchorCellRef.current = null; };
+        window.addEventListener("mouseup", release);
+        return () => window.removeEventListener("mouseup", release);
+    }, []);
+
+    /** Select whole cells: snap both range ends to cell boundaries. */
+    const selectCellSpan = React.useCallback((a, b) => {
+        if (!a || !b) return;
+        const selection = window.getSelection();
+        if (!selection) return;
+        const backwards = !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_PRECEDING);
+        const range = document.createRange();
+        range.setStartBefore(backwards ? b : a);
+        range.setEndAfter(backwards ? a : b);
+        selection.removeAllRanges();
+        selection.addRange(range);
+    }, []);
+
+    const cellFrom = (event) => (event.target?.closest ? event.target.closest("td,th") : null);
+
+    const onMouseDown = React.useCallback((event) => {
+        if (event.button !== 0) return;
+        const cell = cellFrom(event);
+        if (!cell) return;
+        // Suppress the native character-level selection before it starts, then
+        // take focus by hand (preventDefault would otherwise deny it, and the
+        // wrapper needs focus for Ctrl+A to reach us).
+        event.preventDefault();
+        wrapRef.current?.focus();
+        anchorCellRef.current = cell;
+        selectCellSpan(cell, cell);
+    }, [selectCellSpan]);
+
+    const onMouseMove = React.useCallback((event) => {
+        if (!anchorCellRef.current || !(event.buttons & 1)) return;
+        const cell = cellFrom(event);
+        if (cell) selectCellSpan(anchorCellRef.current, cell);
+    }, [selectCellSpan]);
+
+    // Ctrl/Cmd+A selects the TABLE, not the page. Scoped to the pane, so it only
+    // applies once the table has focus.
+    const onKeyDown = React.useCallback((event) => {
+        if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
+        if (event.key !== "a" && event.key !== "A") return;
+        const table = tableRef.current;
+        const selection = window.getSelection();
+        if (!table || !selection) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const range = document.createRange();
+        range.selectNodeContents(table);
+        selection.removeAllRanges();
+        selection.addRange(range);
+    }, []);
+
+    /**
+     * Emit real TSV rather than trusting each browser's table serializer, so a
+     * paste into a spreadsheet lands in the right cells every time.
+     */
+    const onCopy = React.useCallback((event) => {
+        const table = tableRef.current;
+        const selection = window.getSelection();
+        if (!table || !selection || selection.rangeCount === 0) return;
+        const range = selection.getRangeAt(0);
+        const rows = new Map();
+        for (const cell of table.querySelectorAll("th,td")) {
+            if (!range.intersectsNode(cell)) continue;
+            const row = cell.parentElement;
+            if (!rows.has(row)) rows.set(row, []);
+            rows.get(row).push(tsvCell(cell.textContent));
+        }
+        // Nothing of the table is selected — leave the event alone.
+        if (rows.size === 0) return;
+        event.clipboardData.setData("text/plain", Array.from(rows.values(), (cells) => cells.join("\t")).join("\n"));
+        event.preventDefault();
+    }, []);
 
     if (!parsed) {
         return React.createElement("div", { className: "ps-csv-status" }, "Parsing…");
@@ -1149,18 +1240,32 @@ function TabularPreview({ content, filename }) {
     const truncated = body.length > TABULAR_MAX_ROWS;
     const visible = truncated ? body.slice(0, TABULAR_MAX_ROWS) : body;
 
-    return React.createElement("div", { className: "ps-csv-wrap" },
-        React.createElement("table", { className: "ps-csv-table" },
+    // No row/column tally — it is not part of the file, and a footer under the
+    // table is one more thing to avoid when copying. The only notes worth
+    // showing are the ones that say the view is NOT the whole truth.
+    const notes = [];
+    if (truncated) notes.push(`showing first ${TABULAR_MAX_ROWS} of ${body.length} rows`);
+    if (parsed.errors.length) notes.push(`${parsed.errors.length} parse warning${parsed.errors.length === 1 ? "" : "s"}`);
+
+    return React.createElement("div", {
+        className: "ps-csv-wrap",
+        ref: wrapRef,
+        tabIndex: 0,
+        onMouseDown,
+        onMouseMove,
+        onKeyDown,
+        onCopy,
+    },
+        React.createElement("table", { className: "ps-csv-table", ref: tableRef },
             React.createElement("thead", null,
                 React.createElement("tr", null,
                     columns.map((cell, i) => React.createElement("th", { key: `h${i}` }, String(cell ?? ""))))),
             React.createElement("tbody", null,
                 visible.map((row, r) => React.createElement("tr", { key: `r${r}` },
                     columns.map((_, c) => React.createElement("td", { key: `c${c}` }, String(row[c] ?? ""))))))),
-        React.createElement("div", { className: "ps-csv-status" },
-            `${body.length} row${body.length === 1 ? "" : "s"} × ${columnCount} column${columnCount === 1 ? "" : "s"}`
-            + (truncated ? ` · showing first ${TABULAR_MAX_ROWS}` : "")
-            + (parsed.errors.length ? ` · ${parsed.errors.length} parse warning(s)` : "")));
+        notes.length
+            ? React.createElement("div", { className: "ps-csv-status" }, notes.join(" · "))
+            : null);
 }
 
 function codeLanguageForArtifact(filename) {

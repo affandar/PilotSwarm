@@ -4948,6 +4948,18 @@ body.ps-rich-ui .ps-panel-header {
   max-width: 100%;
 }
 
+/* Focusable so Ctrl/Cmd+A can be scoped to the table, but a focus ring on a
+   pane the user simply clicked into is noise — show it only for keyboard
+   focus, where it is the only cue that the shortcut is now aimed here. */
+.ps-csv-wrap:focus {
+  outline: none;
+}
+
+.ps-csv-wrap:focus-visible {
+  outline: 1px solid var(--ps-border-strong);
+  outline-offset: -1px;
+}
+
 .ps-csv-table {
   border-collapse: collapse;
   width: max-content;
@@ -4978,8 +4990,19 @@ body.ps-rich-ui .ps-panel-header {
   background: color-mix(in srgb, var(--ps-foreground) 4%, transparent);
 }
 
+/* Shown only when the view is not the whole file (truncated / parse warnings).
+   Never selectable: it is our text, not the file's, and a Ctrl+A or a drag
+   that swept it up would paste commentary into the user's spreadsheet. */
 .ps-csv-status {
   padding: 6px 10px;
   color: var(--ps-muted);
   font-size: var(--ps-font-size-dense);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Cells are selected whole, so the I-beam would be lying about the granularity. */
+.ps-csv-table th,
+.ps-csv-table td {
+  cursor: default;
 }

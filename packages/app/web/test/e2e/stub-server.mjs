@@ -38,6 +38,28 @@ const SESSIONS = Array.from({ length: 6 }, (_, i) => ({
     updatedAt: 1785000000000 + i,
 }));
 
+// A small but deliberately awkward CSV: a quoted field containing a comma
+// (must survive parsing) that needs NO quoting in TSV (only tab/newline/quote
+// do), so the copy tests can prove we neither drop it nor over-quote it.
+export const CSV_ARTIFACT = {
+    filename: "changes.csv",
+    contentType: "text/csv",
+    content: [
+        "commit_hash,date,summary",
+        'bd57abbb,2026-06-04,"Bulk pgindent, mechanical"',
+        "95b6ec52,2026-06-03,vacuumdb analyze-only",
+    ].join("\n"),
+};
+
+const ARTIFACT_ENTRIES = [{
+    filename: CSV_ARTIFACT.filename,
+    contentType: CSV_ARTIFACT.contentType,
+    sizeBytes: Buffer.byteLength(CSV_ARTIFACT.content),
+    uploadedAt: "2026-06-04T00:00:00.000Z",
+    source: "agent",
+    isBinary: false,
+}];
+
 const API = {
     "/api/health": { ok: true, started: true, mode: "remote" },
     "/api/auth-config": { enabled: false, provider: "none", displayName: "No auth", client: null },
@@ -75,6 +97,36 @@ export function startStubServer(port = 0) {
         const pathname = url.pathname;
 
         if (pathname.startsWith("/api/")) {
+            // These routes are path-shaped, so the last-segment heuristic below
+            // cannot answer them. The client unwraps `result`.
+            if (/\/management\/sessions$/.test(pathname)) {
+                res.writeHead(200, { "content-type": "application/json" });
+                res.end(JSON.stringify({ ok: true, result: { sessions: SESSIONS, hasMore: false, nextCursor: null } }));
+                return;
+            }
+            const sessionMatch = /\/sessions\/([^/]+)$/.exec(pathname);
+            if (sessionMatch) {
+                const found = SESSIONS.find((s) => s.sessionId === sessionMatch[1]) || SESSIONS[0];
+                res.writeHead(200, { "content-type": "application/json" });
+                res.end(JSON.stringify({ ok: true, result: { ...found, messages: [], events: [], pendingMessages: [] } }));
+                return;
+            }
+            if (/\/artifacts$/.test(pathname)) {
+                res.writeHead(200, { "content-type": "application/json" });
+                res.end(JSON.stringify({ ok: true, result: ARTIFACT_ENTRIES }));
+                return;
+            }
+            if (/\/artifacts\/[^/]+\/text$/.test(pathname)) {
+                res.writeHead(200, { "content-type": "application/json" });
+                res.end(JSON.stringify({ ok: true, result: CSV_ARTIFACT.content }));
+                return;
+            }
+            if (/\/artifacts\/[^/]+\/meta$/.test(pathname)) {
+                res.writeHead(200, { "content-type": "application/json" });
+                res.end(JSON.stringify({ ok: true, result: ARTIFACT_ENTRIES[0] }));
+                return;
+            }
+
             let body = API[pathname];
             if (body === undefined) {
                 // Everything else: derive from the last path segment, which is
