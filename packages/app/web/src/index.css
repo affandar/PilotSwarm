@@ -4308,6 +4308,8 @@ body:not(.ps-rich-ui) .ps-mermaid {
 
 /* Buttons are raised, and press IN on click — the whole point of the bevel. */
 :root[data-ps-theme="win95"] .ps-mini-button,
+:root[data-ps-theme="win95"] .ps-toolbar-button,
+:root[data-ps-theme="win95"] .ps-icon-button,
 :root[data-ps-theme="win95"] .ps-modal-button,
 :root[data-ps-theme="win95"] .ps-modal-close,
 :root[data-ps-theme="win95"] .ps-send-button,
@@ -4323,6 +4325,8 @@ body:not(.ps-rich-ui) .ps-mermaid {
 }
 
 :root[data-ps-theme="win95"] .ps-mini-button:active,
+:root[data-ps-theme="win95"] .ps-toolbar-button:active,
+:root[data-ps-theme="win95"] .ps-icon-button:active,
 :root[data-ps-theme="win95"] .ps-modal-button:active,
 :root[data-ps-theme="win95"] .ps-modal-close:active,
 :root[data-ps-theme="win95"] .ps-send-button:active,
@@ -4481,6 +4485,8 @@ body:not(.ps-rich-ui) .ps-mermaid {
 
 /* No raised anything. Buttons are bracketed labels, as a DOS TUI drew them. */
 :root[data-ps-theme="ms-dos"] .ps-mini-button,
+:root[data-ps-theme="ms-dos"] .ps-toolbar-button,
+:root[data-ps-theme="ms-dos"] .ps-icon-button,
 :root[data-ps-theme="ms-dos"] .ps-modal-button,
 :root[data-ps-theme="ms-dos"] .ps-modal-close,
 :root[data-ps-theme="ms-dos"] .ps-send-button,
@@ -4497,6 +4503,8 @@ body:not(.ps-rich-ui) .ps-mermaid {
 
 /* Hover and press are REVERSE VIDEO — the only interaction feedback CGA had. */
 :root[data-ps-theme="ms-dos"] .ps-mini-button:hover,
+:root[data-ps-theme="ms-dos"] .ps-toolbar-button:hover,
+:root[data-ps-theme="ms-dos"] .ps-icon-button:hover,
 :root[data-ps-theme="ms-dos"] .ps-modal-button:hover,
 :root[data-ps-theme="ms-dos"] .ps-modal-close:hover,
 :root[data-ps-theme="ms-dos"] .ps-send-button:hover,
@@ -4570,4 +4578,22 @@ body:not(.ps-rich-ui) .ps-mermaid {
 :root[data-ps-theme="ms-dos"] * {
   text-shadow: none !important;
   border-radius: 0 !important;
+}
+
+/* The active toolbar toggle is a PRESSED button in Win95 — inset edges and a
+   dithered face, which is how a latched toolbar control looked. Without this
+   the base theme's blue "is-active" fill reappears on the navy bar. */
+:root[data-ps-theme="win95"] .ps-toolbar-button.is-active {
+  border-color: var(--w95-dark) var(--w95-light) var(--w95-light) var(--w95-dark);
+  box-shadow: none;
+  background:
+    repeating-conic-gradient(var(--w95-face) 0% 25%, #dfdfdf 0% 50%) 0 0 / 2px 2px;
+  color: var(--w95-dark);
+}
+
+/* Latched control in a text mode is reverse video — no other state exists. */
+:root[data-ps-theme="ms-dos"] .ps-toolbar-button.is-active {
+  background: var(--dos-fg);
+  color: #000000;
+  border-color: var(--dos-bright);
 }
