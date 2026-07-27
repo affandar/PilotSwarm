@@ -3680,6 +3680,56 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
     });
 }
 
+/**
+ * Mobile artifact viewer — a genuine full-viewport overlay, not a pane.
+ *
+ * Rendered OUTSIDE the workspace and fixed to the viewport, so the portal
+ * header, session list and composer are all covered: opening an artifact on a
+ * phone should feel like pushing a detail screen, the way a native app does,
+ * not like shrinking content into one more box. Desktop never mounts this.
+ */
+function MobileArtifactOverlay({ controller }) {
+    const view = useControllerSelector(controller, (state) => ({
+        filename: state.files.selectedArtifactId
+            ? String(state.files.selectedArtifactId).slice(String(state.files.selectedArtifactId).indexOf("/") + 1)
+            : "",
+        origin: state.files.previewOrigin || null,
+    }), shallowEqualObject);
+
+    // Horizontal swipe steps the preview; vertical is left to the scroller.
+    // No wraparound — running off the end should feel like the end.
+    const swipeRef = React.useRef(null);
+    const onTouchStart = React.useCallback((event) => {
+        const t = event.touches?.[0];
+        swipeRef.current = t ? { x: t.clientX, y: t.clientY } : null;
+    }, []);
+    const onTouchEnd = React.useCallback((event) => {
+        const start = swipeRef.current;
+        swipeRef.current = null;
+        const t = event.changedTouches?.[0];
+        if (!start || !t) return;
+        const dx = t.clientX - start.x;
+        const dy = t.clientY - start.y;
+        if (Math.abs(dx) < 60 || Math.abs(dx) <= Math.abs(dy)) return;
+        controller.stepArtifactPreview(dx < 0 ? 1 : -1).catch(() => {});
+    }, [controller]);
+
+    return React.createElement("div", { className: "ps-artifact-overlay" },
+        React.createElement("header", { className: "ps-artifact-overlay-bar" },
+            React.createElement("button", {
+                type: "button",
+                className: "ps-artifact-overlay-back",
+                onClick: () => controller.closeArtifactPreview().catch(() => {}),
+                "aria-label": view.origin === "chat" ? "Back to chat" : "Back to artifacts",
+            }, "←"),
+            React.createElement("span", { className: "ps-artifact-overlay-title" }, view.filename || "Artifact")),
+        React.createElement("div", {
+            className: "ps-artifact-overlay-body",
+            onTouchStart,
+            onTouchEnd,
+        }, React.createElement(FilesPane, { controller, focused: true, mobile: true, previewOnly: true })));
+}
+
 function MobileWorkspace({ controller }) {
     // The session list is always shown; use the toolbar Focus button to give
     // the chat the full screen (the old Show/Hide toggle was redundant with it).
@@ -3865,19 +3915,14 @@ function FilesPane({ controller, focused, mobile = false, previewOnly = false })
             label: "Filter",
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_FILES_FILTER).catch(() => {}),
         }),
-        viewState.fullscreen
-            ? React.createElement(IconButton, {
-                // Back, not "exit fullscreen": where it returns to depends on
-                // how the preview was opened, and the controller owns that.
-                icon: "←",
-                label: viewState.previewOrigin === "chat" ? "Back to chat" : "Back to artifacts",
-                onClick: () => controller.closeArtifactPreview().catch(() => {}),
-            })
-            : React.createElement(IconButton, {
-                icon: "⛶",
-                label: "Fullscreen",
-                onClick: () => controller.handleCommand(UI_COMMANDS.TOGGLE_FILE_PREVIEW_FULLSCREEN).catch(() => {}),
-            }));
+        // Desktop keeps the plain fullscreen toggle it has always had. The
+        // back affordance belongs to the mobile overlay, which renders its own
+        // top bar — putting it here too would change desktop behavior.
+        React.createElement(IconButton, {
+            icon: viewState.fullscreen ? "⇱" : "⛶",
+            label: viewState.fullscreen ? "Exit fullscreen" : "Fullscreen",
+            onClick: () => controller.handleCommand(UI_COMMANDS.TOGGLE_FILE_PREVIEW_FULLSCREEN).catch(() => {}),
+        }));
 
     // Keyboard selection has to drag the viewport with it, exactly as the
     // session list does — otherwise j/k walks the selection straight out of
@@ -4028,25 +4073,6 @@ function FilesPane({ controller, focused, mobile = false, previewOnly = false })
             focusRegion: previewFocusRegion,
             className: "is-preview is-wrapped",
         });
-    // Horizontal swipe steps the preview. Deliberately NOT wrapping: running off
-    // the end should feel like the end, not silently loop you back to the top.
-    // A vertical-dominant gesture is left alone so scrolling still works.
-    const swipeRef = React.useRef(null);
-    const onPreviewTouchStart = React.useCallback((event) => {
-        const t = event.touches?.[0];
-        swipeRef.current = t ? { x: t.clientX, y: t.clientY } : null;
-    }, []);
-    const onPreviewTouchEnd = React.useCallback((event) => {
-        const start = swipeRef.current;
-        swipeRef.current = null;
-        const t = event.changedTouches?.[0];
-        if (!start || !t) return;
-        const dx = t.clientX - start.x;
-        const dy = t.clientY - start.y;
-        if (Math.abs(dx) < 60 || Math.abs(dx) <= Math.abs(dy)) return;
-        controller.stepArtifactPreview(dx < 0 ? 1 : -1).catch(() => {});
-    }, [controller]);
-
     const view = viewState;
 
     if (previewOnly) return previewPane;
@@ -4065,11 +4091,7 @@ function FilesPane({ controller, focused, mobile = false, previewOnly = false })
     React.createElement(InspectorTabs, { activeTab: "files", controller }),
     // Fullscreen files mode shows only the preview pane; the list stays hidden.
     view.fullscreen
-        ? React.createElement("div", {
-            className: "ps-fullscreen-preview",
-            onTouchStart: onPreviewTouchStart,
-            onTouchEnd: onPreviewTouchEnd,
-        }, previewPane)
+        ? previewPane
         : React.createElement("div", {
             // On desktop the preview is detached into the activity slot, so the
             // inspector shows the list alone and gives it the full pane.
@@ -6646,7 +6668,9 @@ export function PilotSwarmWebApp({ controller }) {
         React.createElement(InspectorPane, { controller, mobile: false }));
 
     let mobileContent = null;
-    if (filesFullscreenActive) mobileContent = React.createElement("div", { className: "ps-mobile-pane-fill" },
+    // Mobile gets the overlay below instead of an in-pane fullscreen view; the
+    // workspace keeps rendering underneath so backing out restores it intact.
+    if (filesFullscreenActive && !mobile) mobileContent = React.createElement("div", { className: "ps-mobile-pane-fill" },
         React.createElement(InspectorPane, { controller, mobile: true }));
     else if (mobilePane === "inspector") mobileContent = React.createElement("div", { className: "ps-mobile-pane-fill" },
         React.createElement(InspectorPane, { controller, mobile: true }));
@@ -6680,5 +6704,8 @@ export function PilotSwarmWebApp({ controller }) {
                         ? chatFocusWorkspace
                         : (mobile ? mobileContent : desktopWorkspace)))),
         mobile && !chatFocusMode ? React.createElement(MobileNav, { activePane: mobilePane, setActivePane: setMobilePane, controller }) : null,
+        mobile && filesFullscreenActive
+            ? React.createElement(MobileArtifactOverlay, { controller })
+            : null,
         React.createElement(ModalLayer, { controller })));
 }

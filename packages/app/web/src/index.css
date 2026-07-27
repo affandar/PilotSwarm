@@ -4103,3 +4103,70 @@ body:not(.ps-rich-ui) .ps-mermaid {
   flex: 1;
   min-height: 0;
 }
+
+/* ── Mobile artifact overlay ───────────────────────────────────────────────
+   A real full-viewport surface, not a pane: fixed to the viewport above the
+   header, session list and composer, so opening an artifact on a phone reads
+   as pushing a detail screen. Desktop never mounts this. */
+.ps-artifact-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  background: var(--ps-surface);
+  /* Respect the notch / home indicator rather than sliding under them. */
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.ps-artifact-overlay-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--ps-border-strong);
+  background: var(--ps-chrome-strong);
+}
+
+.ps-artifact-overlay-back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 40px;
+  min-height: 40px;
+  padding: 0;
+  border: 1px solid var(--ps-border-strong);
+  border-radius: var(--ps-radius-sm);
+  background: var(--ps-surface);
+  color: var(--ps-foreground);
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.ps-artifact-overlay-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 650;
+  font-size: 1.02rem;
+}
+
+.ps-artifact-overlay-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Inside the overlay the panel IS the screen — no border, no rounding. */
+.ps-artifact-overlay-body > .ps-panel {
+  flex: 1;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
