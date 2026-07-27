@@ -3469,7 +3469,7 @@ body.is-resizing-pane-y * {
 .ps-rich-session-title {
   flex: 1 1 auto;
   min-width: 0;
-  font-size: 1rem;
+  font-size: 1.07rem;
   /* The title is the row's identity; the id, model and ctx line beneath it are
      metadata. Weight is what separates them — without it the row reads as one
      undifferentiated block of small text. */
@@ -3537,14 +3537,14 @@ body.ps-rich-ui .portal-header {
 }
 
 body.ps-rich-ui .portal-header-kicker {
-  font-size: 0.76rem;
+  font-size: 0.83rem;
   letter-spacing: 0.13em;
   opacity: 0.72;
 }
 
 body.ps-rich-ui .portal-header-name,
 body.ps-rich-ui .portal-header-identity {
-  font-size: 1.02rem;
+  font-size: 1.09rem;
   font-weight: 650;
   letter-spacing: 0.01em;
 }
@@ -3559,7 +3559,7 @@ body.ps-rich-ui .portal-logo-frame {
 body.ps-rich-ui .portal-header-version,
 body.ps-rich-ui .portal-header-status,
 body.ps-rich-ui .portal-header-email {
-  font-size: 0.78rem;
+  font-size: 0.85rem;
 }
 
 body.ps-rich-ui .portal-header-version {
@@ -3644,7 +3644,7 @@ body.ps-rich-ui .ps-session-pane .ps-panel-body {
 }
 
 body.ps-rich-ui .ps-panel-title {
-  font-size: 0.95rem;
+  font-size: 1.02rem;
   font-weight: 650;
   letter-spacing: 0.01em;
 }
@@ -3942,9 +3942,12 @@ body:not(.ps-rich-ui) .ps-mermaid {
     justify-content: center;
   }
 
-  /* The toolbar row is gone from the shell — reclaim its padding too. */
+  /* The toolbar row is gone from the shell — reclaim its padding, but NOT all
+     of it: with top padding at 0 the session and sequence panes butted their
+     top borders straight into the header's bottom border. Match the 8px the
+     grid already uses between panes, so the header reads as separate chrome. */
   body.ps-rich-ui .portal-main {
-    padding: 0 8px 8px;
+    padding: 8px;
   }
 
   body.ps-rich-ui .ps-web-shell {
