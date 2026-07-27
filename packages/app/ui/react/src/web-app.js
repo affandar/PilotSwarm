@@ -6587,7 +6587,19 @@ export function PilotSwarmWebApp({ controller }) {
         applyDocumentTheme(state.themeId);
     }, [state.themeId]);
 
+    // Follow focus only on an actual TRANSITION, never on the first run.
+    //
+    // The default focus is "sessions", but the mobile layout has no sessions
+    // region, so normalizeFocusRegion rewrites it to order[0] — the inspector.
+    // Syncing that initial value made a plain page load open the inspector on
+    // its default (sequence) tab instead of the chat. A real focus change, e.g.
+    // tapping the mobile nav, still switches panes.
+    const lastFocusRef = React.useRef(null);
     React.useEffect(() => {
+        const previous = lastFocusRef.current;
+        lastFocusRef.current = state.focusRegion;
+        if (previous === null) return;
+        if (previous === state.focusRegion) return;
         if (mobile && state.focusRegion !== "prompt") {
             setMobilePane(state.focusRegion === "activity"
                 ? "activity"
