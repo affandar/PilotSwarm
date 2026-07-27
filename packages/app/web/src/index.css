@@ -18,10 +18,28 @@
   --ps-modal-selected-background: rgba(31, 111, 235, 0.16);
   --ps-modal-selected-border: #58a6ff;
   --ps-modal-selected-foreground: #ffffff;
-  --ps-font-size-base: 13px;
-  --ps-font-size-dense: 12px;
+  /* One type scale. The rich chat is the reading reference at 15px; the rest
+     of the UI is sized in rem against a 14px root so panes, lists, headers and
+     the activity stream stay in proportion with it instead of drifting down to
+     9-11px hardcoded values. */
+  --ps-font-size-chat: 15px;
+  --ps-font-size-base: 14px;
+  --ps-font-size-dense: 13px;
   --ps-line-height-base: 1.28;
   --ps-line-height-dense: 1.18;
+  /* ── Elevation ──────────────────────────────────────────────────────────
+     Derived from the palette rather than declared per theme. Light themes
+     were white-on-white-on-white: page, panes, panel headers and the composer
+     all resolved to #ffffff, so nothing had a visible edge and the layout read
+     as one undifferentiated sheet.
+
+     Mixing the surface TOWARD the foreground is polarity-correct — it tints
+     light themes darker and dark themes lighter, which is the right direction
+     for chrome in both — and it cannot drift out of sync when a theme is
+     added, because there is nothing per-theme to keep in sync. */
+  --ps-chrome: color-mix(in srgb, var(--ps-surface) 94%, var(--ps-foreground) 6%);
+  --ps-chrome-strong: color-mix(in srgb, var(--ps-surface) 89%, var(--ps-foreground) 11%);
+  --ps-border-strong: color-mix(in srgb, var(--ps-border) 72%, var(--ps-foreground) 28%);
   --ps-radius-sm: 6px;
   --ps-radius-md: 8px;
   --ps-scrollbar-size: 10px;
@@ -103,7 +121,7 @@ button {
 .portal-gate-kicker,
 .portal-header-kicker {
   color: var(--ps-muted);
-  font-size: 12px;
+  font-size: 0.96rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -474,7 +492,7 @@ button {
 .ps-toolbar-status {
   flex: 0 1 auto;
   color: var(--ps-muted);
-  font-size: 10px;
+  font-size: 0.82rem;
   line-height: 1;
   white-space: nowrap;
   overflow: hidden;
@@ -1132,7 +1150,7 @@ body.is-resizing-pane-y * {
   border-left: 2px solid var(--ps-accent);
   color: var(--ps-text-muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
+  font-size: 0.96rem;
   line-height: 1.5;
 }
 
@@ -1719,6 +1737,38 @@ body.is-resizing-pane-y * {
   padding: 0 10px 10px;
 }
 
+/* Desktop: the preview lives in the activity slot, so the list takes the pane. */
+.ps-files-grid.is-list-only {
+  grid-template-rows: minmax(0, 1fr);
+}
+
+/* Artifact references in the transcript are openable, not just downloadable. */
+.ps-artifact-link {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.ps-artifact-link:hover,
+.ps-artifact-link:focus-visible {
+  background: color-mix(in srgb, var(--ps-highlight-background) 18%, transparent);
+}
+
+/* Diff artifacts get a marker so a patch is identifiable without opening it. */
+.ps-artifact-link.is-diff .ps-artifact-link-glyph {
+  font-weight: 700;
+  opacity: 0.75;
+}
+
 .ps-scroll-panel.is-preview {
   padding-top: 10px;
 }
@@ -1971,7 +2021,7 @@ body.is-resizing-pane-y * {
   gap: 10px;
   padding: 0 2px;
   color: var(--ps-muted);
-  font-size: 9px;
+  font-size: 0.75rem;
 }
 
 .ps-status-left,
@@ -2019,7 +2069,7 @@ body.is-resizing-pane-y * {
   padding: 0 4px 0 2px;
   color: var(--ps-muted);
   text-transform: uppercase;
-  font-size: 10px;
+  font-size: 0.82rem;
   letter-spacing: 0.08em;
   align-self: center;
 }
@@ -2052,7 +2102,7 @@ body.is-resizing-pane-y * {
 }
 
 .ps-prompt-shell.is-mobile .ps-prompt-input {
-  font-size: 16px;
+  font-size: 1.25rem;
   line-height: 1.25;
 }
 
@@ -2108,7 +2158,7 @@ body.is-resizing-pane-y * {
 
 .ps-attach-size {
   color: var(--ps-muted);
-  font-size: 11px;
+  font-size: 0.89rem;
 }
 
 .ps-attach-remove {
@@ -2155,7 +2205,7 @@ body.is-resizing-pane-y * {
   justify-content: center;
   background: color-mix(in srgb, var(--ps-border) 24%, transparent);
   color: var(--ps-muted);
-  font-size: 24px;
+  font-size: 1.75rem;
   cursor: default;
 }
 
@@ -2187,7 +2237,7 @@ body.is-resizing-pane-y * {
   min-height: 40px;
   min-width: 40px;
   padding: 0;
-  font-size: 15px;
+  font-size: 1.18rem;
   line-height: 1;
   border: 1px solid color-mix(in srgb, #e5534b 55%, var(--ps-modal-border));
   border-radius: var(--ps-radius-sm);
@@ -2218,7 +2268,7 @@ body.is-resizing-pane-y * {
   min-width: 40px;
   padding: 0;
   border-radius: var(--ps-radius-sm);
-  font-size: 18px;
+  font-size: 1.36rem;
   line-height: 1;
   display: inline-flex;
   align-items: center;
@@ -2322,7 +2372,7 @@ body.is-resizing-pane-y * {
 .ps-modal-title,
 .ps-modal-details-title,
 .ps-filter-title {
-  font-size: 16px;
+  font-size: 1.25rem;
   font-weight: 700;
 }
 
@@ -2402,8 +2452,10 @@ body.is-resizing-pane-y * {
 
 @media (max-width: 920px) {
   :root {
-    --ps-font-size-base: 13px;
-    --ps-font-size-dense: 12px;
+    /* Phones step the scale down one notch, keeping the same proportions. */
+    --ps-font-size-chat: 14.5px;
+    --ps-font-size-base: 13.5px;
+    --ps-font-size-dense: 12.5px;
   }
 
   .portal-main {
@@ -2449,7 +2501,7 @@ body.is-resizing-pane-y * {
 
   .ps-toolbar-status {
     max-width: 40%;
-    font-size: 9px;
+    font-size: 0.75rem;
   }
 
   .ps-chat-focus-rail {
@@ -2655,13 +2707,13 @@ body.is-resizing-pane-y * {
   border-bottom: 1px solid var(--ps-border);
   padding-bottom: 8px;
 }
-.ps-admin-console__header h2 { margin: 0; font-size: 16px; }
+.ps-admin-console__header h2 { margin: 0; font-size: 1.25rem; }
 .ps-admin-console__identity dl {
   display: grid;
   grid-template-columns: max-content 1fr;
   gap: 4px 12px;
   margin: 0;
-  font-size: 13px;
+  font-size: 1.04rem;
 }
 .ps-admin-console__identity dt { color: var(--ps-muted); }
 .ps-admin-console__identity dd { margin: 0; }
@@ -2673,10 +2725,10 @@ body.is-resizing-pane-y * {
   border-radius: 6px;
   padding: 12px 14px;
 }
-.ps-admin-console__section h3 { margin: 0; font-size: 14px; }
-.ps-admin-console__hint { margin: 0; color: var(--ps-muted); font-size: 12px; }
-.ps-admin-console__status { margin: 0; font-size: 12px; color: var(--ps-muted); }
-.ps-admin-console__system-toggle { display: flex; align-items: center; gap: 8px; margin: 2px 0; font-size: 12px; color: var(--ps-fg); cursor: pointer; user-select: none; }
+.ps-admin-console__section h3 { margin: 0; font-size: 1.11rem; }
+.ps-admin-console__hint { margin: 0; color: var(--ps-muted); font-size: 0.96rem; }
+.ps-admin-console__status { margin: 0; font-size: 0.96rem; color: var(--ps-muted); }
+.ps-admin-console__system-toggle { display: flex; align-items: center; gap: 8px; margin: 2px 0; font-size: 0.96rem; color: var(--ps-fg); cursor: pointer; user-select: none; }
 .ps-admin-console__system-toggle input { accent-color: var(--ps-accent, #4a9eff); }
 .ps-admin-console__status.is-error { color: var(--ps-error, #d33); }
 .ps-admin-console__error {
@@ -2685,7 +2737,7 @@ body.is-resizing-pane-y * {
   color: var(--ps-error, #d33);
   padding: 8px 10px;
   border-radius: 4px;
-  font-size: 12px;
+  font-size: 0.96rem;
 }
 .ps-admin-console__form {
   display: flex;
@@ -2724,7 +2776,7 @@ body.is-resizing-pane-y * {
   );
   border: 1px solid rgba(234, 179, 8, 0.55);
   color: var(--ps-foreground);
-  font-size: 12px;
+  font-size: 0.96rem;
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -2774,7 +2826,7 @@ body.is-resizing-pane-y * {
   height: 28px;
   border-radius: 50%;
   background: color-mix(in srgb, var(--ps-foreground) 12%, transparent);
-  font-size: 11px;
+  font-size: 0.89rem;
   font-weight: 700;
   flex: none;
 }
@@ -2785,7 +2837,7 @@ body.is-resizing-pane-y * {
 }
 
 .portal-dev-persona-role {
-  font-size: 11px;
+  font-size: 0.89rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--ps-muted);
@@ -2803,7 +2855,7 @@ body.is-resizing-pane-y * {
   align-items: center;
   gap: 10px;
   padding: 4px 6px 8px;
-  font-size: 12px;
+  font-size: 0.96rem;
   color: var(--ps-muted);
 }
 
@@ -2826,7 +2878,7 @@ body.is-resizing-pane-y * {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  font-size: 11px;
+  font-size: 0.89rem;
 }
 
 .ps-access-spacer { flex: 1; }
@@ -2836,7 +2888,7 @@ body.is-resizing-pane-y * {
   border: 1px dashed var(--ps-modal-border);
   border-radius: var(--ps-radius-sm);
   color: var(--ps-muted);
-  font-size: 13px;
+  font-size: 1.04rem;
   line-height: 1.5;
 }
 
@@ -2871,7 +2923,7 @@ body.is-resizing-pane-y * {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-size: 16px;
+  font-size: 1.25rem;
   font-weight: 700;
   margin-bottom: 12px;
 }
@@ -2900,7 +2952,7 @@ body.is-resizing-pane-y * {
   flex: 1;
   min-width: 0;
   font-family: var(--ps-mono, monospace);
-  font-size: 12px;
+  font-size: 0.96rem;
   padding: 8px 10px;
   color: var(--ps-foreground);
   background: var(--ps-background);
@@ -2911,7 +2963,7 @@ body.is-resizing-pane-y * {
 .ps-link-warn {
   margin-top: 12px;
   padding: 8px 10px;
-  font-size: 12px;
+  font-size: 0.96rem;
   color: var(--ps-foreground);
   background: color-mix(in srgb, var(--ps-warning, #d0a215) 16%, transparent);
   border: 1px solid color-mix(in srgb, var(--ps-warning, #d0a215) 45%, transparent);
@@ -2919,7 +2971,7 @@ body.is-resizing-pane-y * {
 }
 
 .ps-share-section-label {
-  font-size: 11px;
+  font-size: 0.89rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--ps-muted);
@@ -2942,7 +2994,7 @@ body.is-resizing-pane-y * {
   background: transparent;
   color: var(--ps-muted);
   font: inherit;
-  font-size: 13px;
+  font-size: 1.04rem;
   padding: 8px 14px;
   cursor: pointer;
   border: 1px solid transparent;
@@ -2970,7 +3022,7 @@ body.is-resizing-pane-y * {
 .ps-manage-model-current {
   flex: 1;
   font-family: var(--ps-mono, monospace);
-  font-size: 13px;
+  font-size: 1.04rem;
   color: var(--ps-foreground);
   overflow-wrap: anywhere;
 }
@@ -3002,11 +3054,11 @@ body.is-resizing-pane-y * {
   padding: 6px 8px;
   border-radius: var(--ps-radius-sm);
   cursor: pointer;
-  font-size: 13px;
+  font-size: 1.04rem;
 }
 .ps-share-radio.is-active { background: color-mix(in srgb, var(--ps-highlight-background) 22%, transparent); }
 .ps-share-radio-glyph { width: 18px; text-align: center; }
-.ps-share-radio-hint { color: var(--ps-muted); font-size: 11px; margin-left: auto; }
+.ps-share-radio-hint { color: var(--ps-muted); font-size: 0.89rem; margin-left: auto; }
 
 .ps-share-grant-row,
 .ps-share-add-row,
@@ -3017,14 +3069,14 @@ body.is-resizing-pane-y * {
   padding: 5px 0;
 }
 .ps-share-link-row .ps-share-section-sub { margin: 0; }
-.ps-share-grant-name { flex: 1; font-size: 13px; }
+.ps-share-grant-name { flex: 1; font-size: 1.04rem; }
 .ps-share-grant-access {
-  font-size: 11px;
+  font-size: 0.89rem;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--ps-muted);
 }
-.ps-share-empty { color: var(--ps-muted); font-size: 12px; padding: 4px 0; }
+.ps-share-empty { color: var(--ps-muted); font-size: 0.96rem; padding: 4px 0; }
 
 .ps-share-add-input {
   flex: 1;
@@ -3033,7 +3085,7 @@ body.is-resizing-pane-y * {
   border-radius: var(--ps-radius-sm);
   background: var(--ps-background);
   color: var(--ps-foreground);
-  font-size: 13px;
+  font-size: 1.04rem;
 }
 .ps-share-add-select {
   padding: 6px 8px;
@@ -3041,23 +3093,23 @@ body.is-resizing-pane-y * {
   border-radius: var(--ps-radius-sm);
   background: var(--ps-background);
   color: var(--ps-foreground);
-  font-size: 13px;
+  font-size: 1.04rem;
 }
 
 .ps-share-error {
   margin-top: 10px;
   color: #ef4444;
-  font-size: 12px;
+  font-size: 0.96rem;
 }
 .ps-share-foot-hint {
   margin-top: 14px;
   color: var(--ps-muted);
-  font-size: 11px;
+  font-size: 0.89rem;
 }
 
 .ps-share-section-sub {
   color: var(--ps-muted);
-  font-size: 11px;
+  font-size: 0.89rem;
   line-height: 1.4;
   margin: -2px 0 6px;
 }
@@ -3086,14 +3138,14 @@ body.is-resizing-pane-y * {
   color: var(--ps-foreground);
   cursor: pointer;
   text-align: left;
-  font-size: 13px;
+  font-size: 1.04rem;
 }
 .ps-share-suggestion:hover {
   background: var(--ps-highlight-background);
   color: var(--ps-highlight-foreground);
 }
 .ps-share-suggestion-name { font-weight: 600; }
-.ps-share-suggestion-email { color: var(--ps-muted); font-size: 11px; }
+.ps-share-suggestion-email { color: var(--ps-muted); font-size: 0.89rem; }
 .ps-share-suggestion:hover .ps-share-suggestion-email { color: inherit; }
 
 /* ── Icon toolbar buttons + long-press tooltip (mobile-friendly) ───────── */
@@ -3116,7 +3168,7 @@ body.is-resizing-pane-y * {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 20px;
+  font-size: 1.5rem;
   line-height: 1;
   letter-spacing: -0.02em;
 }
@@ -3134,7 +3186,7 @@ body.is-resizing-pane-y * {
   color: var(--ps-background);
   padding: 5px 9px;
   border-radius: var(--ps-radius-sm);
-  font-size: 11px;
+  font-size: 0.89rem;
   line-height: 1.35;
   font-weight: 500;
   z-index: 100000;
@@ -3158,7 +3210,7 @@ body.is-resizing-pane-y * {
 .ps-chat-panel.is-rich .ps-scroll-panel {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter,
     "Helvetica Neue", Arial, sans-serif;
-  font-size: 14.5px;
+  font-size: var(--ps-font-size-chat);
   line-height: 1.65;
 }
 
@@ -3189,7 +3241,7 @@ body.is-resizing-pane-y * {
   align-items: baseline;
   gap: 8px;
   margin-bottom: 2px;
-  font-size: 11.5px;
+  font-size: 0.93rem;
   letter-spacing: 0.03em;
   text-transform: uppercase;
 }
@@ -3200,7 +3252,7 @@ body.is-resizing-pane-y * {
 
 .ps-rich-msg-time,
 .ps-rich-msg-glyph {
-  font-size: 11px;
+  font-size: 0.89rem;
   text-transform: none;
   letter-spacing: 0;
 }
@@ -3276,7 +3328,7 @@ body.is-resizing-pane-y * {
 .ps-rich-msg-body .ps-md-table {
   font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas,
     Liberation Mono, monospace;
-  font-size: 12.5px;
+  font-size: 1rem;
 }
 
 .ps-rich-msg-body .ps-md-code-block {
@@ -3377,7 +3429,7 @@ body.is-resizing-pane-y * {
 .ps-rich-session-pin,
 .ps-rich-session-cron {
   flex: 0 0 auto;
-  font-size: 11px;
+  font-size: 0.89rem;
   line-height: 1;
 }
 
@@ -3387,7 +3439,7 @@ body.is-resizing-pane-y * {
   height: 13px;
   border-radius: 3px;
   border: 1px solid color-mix(in srgb, var(--ps-border) 70%, transparent);
-  font-size: 10px;
+  font-size: 0.82rem;
   line-height: 11px;
   text-align: center;
 }
@@ -3402,7 +3454,7 @@ body.is-resizing-pane-y * {
   flex: 0 0 auto;
   padding: 1px 5px;
   border-radius: 999px;
-  font-size: 9.5px;
+  font-size: 0.79rem;
   font-weight: 700;
   letter-spacing: 0.04em;
   background: color-mix(in srgb, var(--ps-border) 26%, transparent);
@@ -3417,7 +3469,11 @@ body.is-resizing-pane-y * {
 .ps-rich-session-title {
   flex: 1 1 auto;
   min-width: 0;
-  font-size: 12.5px;
+  font-size: 1rem;
+  /* The title is the row's identity; the id, model and ctx line beneath it are
+     metadata. Weight is what separates them — without it the row reads as one
+     undifferentiated block of small text. */
+  font-weight: 650;
   line-height: 1.35;
   white-space: nowrap;
   overflow: hidden;
@@ -3427,7 +3483,7 @@ body.is-resizing-pane-y * {
 .ps-rich-session-title.is-untitled {
   font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas,
     Liberation Mono, monospace;
-  font-size: 11.5px;
+  font-size: 0.93rem;
   color: var(--ps-muted);
 }
 
@@ -3436,7 +3492,7 @@ body.is-resizing-pane-y * {
   flex: 0 0 auto;
   padding: 0 5px;
   border-radius: 999px;
-  font-size: 9.5px;
+  font-size: 0.79rem;
   font-weight: 700;
   background: color-mix(in srgb, var(--ps-border) 22%, transparent);
 }
@@ -3445,7 +3501,7 @@ body.is-resizing-pane-y * {
   flex: 0 0 auto;
   margin-inline-start: auto;
   padding-inline-start: 6px;
-  font-size: 10.5px;
+  font-size: 0.86rem;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -3454,7 +3510,7 @@ body.is-resizing-pane-y * {
 .ps-rich-session-detail {
   font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas,
     Liberation Mono, monospace;
-  font-size: 10.5px;
+  font-size: 0.86rem;
   line-height: 1.3;
   padding-inline-start: 14px;
   opacity: 0.9;
@@ -3476,8 +3532,8 @@ body.ps-rich-ui {
 body.ps-rich-ui .portal-header {
   font-family: var(--ps-ui-font);
   padding: 12px 18px;
-  border-bottom: 1px solid color-mix(in srgb, var(--ps-border) 62%, transparent);
-  background: color-mix(in srgb, var(--ps-page-background) 92%, transparent);
+  border-bottom: 1px solid var(--ps-border-strong);
+  background: var(--ps-chrome-strong);
 }
 
 body.ps-rich-ui .portal-header-kicker {
@@ -3554,9 +3610,12 @@ body.ps-rich-ui .ps-send-button {
 
 body.ps-rich-ui .ps-panel {
   border-width: 1px;
-  border-color: color-mix(in srgb, var(--ps-border) 78%, transparent);
+  /* Opaque, not a mix with transparent: a pane must read as a card sitting ON
+     the canvas, which is impossible if it inherits the canvas through itself. */
+  background: var(--ps-surface);
+  border-color: var(--ps-border-strong);
   border-radius: 12px;
-  box-shadow: none;
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--ps-foreground) 8%, transparent);
 }
 
 body.ps-rich-ui .ps-panel.is-focused {
@@ -3569,8 +3628,19 @@ body.ps-rich-ui .ps-panel-header {
   font-family: var(--ps-ui-font);
   min-height: 34px;
   padding: 6px 12px;
-  background: transparent;
-  border-bottom: 1px solid color-mix(in srgb, var(--ps-border) 55%, transparent);
+  background: var(--ps-chrome);
+  border-bottom: 1px solid var(--ps-border-strong);
+}
+
+/* The composer is a footer, not a continuation of the transcript. */
+body.ps-rich-ui .ps-chat-composer {
+  background: var(--ps-chrome);
+  border-top: 1px solid var(--ps-border-strong);
+}
+
+/* Session list rows read against the pane, not against the page. */
+body.ps-rich-ui .ps-session-pane .ps-panel-body {
+  background: var(--ps-surface);
 }
 
 body.ps-rich-ui .ps-panel-title {
@@ -3612,7 +3682,7 @@ body.ps-rich-ui .ps-tab-row-icons .ps-toolbar-button.is-active {
 body.ps-rich-ui .ps-activity-pane .ps-scroll-panel,
 body.ps-rich-ui .ps-inspector-pane .ps-scroll-panel {
   padding: 8px 12px;
-  font-size: 11.5px;
+  font-size: 0.93rem;
   line-height: 1.5;
 }
 
@@ -3640,7 +3710,7 @@ body.ps-rich-ui .ps-icon-button {
 body.ps-rich-ui .ps-icon-button-glyph {
   font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas,
     Liberation Mono, monospace;
-  font-size: 15px;
+  font-size: 1.18rem;
   letter-spacing: 0;
 }
 
@@ -3796,7 +3866,7 @@ body.ps-rich-ui .ps-row-resizer.is-dragging .ps-row-resizer-handle {
 /* A mermaid block that fails to parse keeps its source and states why. */
 .ps-mermaid-error {
   margin-bottom: 4px;
-  font-size: 11.5px;
+  font-size: 0.93rem;
   color: color-mix(in srgb, var(--ps-muted) 82%, var(--ps-foreground));
 }
 
@@ -3887,7 +3957,7 @@ body:not(.ps-rich-ui) .ps-mermaid {
 .ps-mini-button.ps-overlay-close {
   min-width: 34px;
   padding: 6px 10px;
-  font-size: 14px;
+  font-size: 1.11rem;
   line-height: 1;
 }
 
@@ -3959,4 +4029,32 @@ body:not(.ps-rich-ui) .ps-mermaid {
 
 .ps-diff-line.is-meta {
   opacity: 0.85;
+}
+
+/* Detached artifact preview: the diff fills the pane and scrolls on its own. */
+.ps-diff-preview {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 10px 10px;
+}
+
+.ps-diff-preview .ps-md-code-pre.is-diff {
+  margin: 0;
+  border: 0;
+  background: transparent;
+}
+
+
+/* A panel with nothing in its header renders no header at all, so the body
+   must own the full box (and its rounding) instead of sitting under chrome. */
+.ps-panel.is-chromeless > .ps-panel-body {
+  border-radius: inherit;
+}
+
+/* Artifact list is no longer a nested panel — it fills the Files pane body. */
+.ps-files-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
 }
