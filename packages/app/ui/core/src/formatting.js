@@ -403,7 +403,14 @@ export function decorateArtifactLinksForChat(text) {
     const source = String(text || "");
     if (!source) return source;
     ARTIFACT_URI_RE.lastIndex = 0;
-    const withArtifacts = source.replace(ARTIFACT_URI_RE, (_match, sessionId, rawFilename) => {
+    const withArtifacts = source.replace(ARTIFACT_URI_RE, (_match, sessionId, rawFilename, offset, whole) => {
+        // IDEMPOTENCE. This runs from ~8 call sites and some paths decorate the
+        // same text twice. A bare `artifact://` becomes `[artifact: f](artifact://…)`,
+        // and on a second pass the URI now sitting inside the link TARGET matched
+        // again, producing a nested link whose href was `[artifact: f](artifact://…`.
+        // The browser then treated that as a relative URL and navigated away from
+        // the SPA entirely. Skip any URI already in a markdown link target.
+        if (whole.slice(Math.max(0, offset - 2), offset) === "](") return _match;
         const filename = normalizeArtifactFilename(rawFilename);
         if (!sessionId || !filename) return _match;
         return `[artifact: ${filename}](artifact://${sessionId}/${filename}) (press a to download)`;
