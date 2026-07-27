@@ -3927,18 +3927,22 @@ body:not(.ps-rich-ui) .ps-mermaid {
 }
 
 @media (min-width: 921px) {
-  body.ps-rich-ui .portal-header {
+  /* Three columns — brand | centred toolbar | identity — for EVERY desktop
+     chat view, not just rich. With the two-column grid the portalled toolbar
+     became an ordinary grid item, overflowed, and pushed the identity block
+     onto a second row: a whole row of header spent on nothing. */
+  .portal-header {
     grid-template-columns: auto minmax(0, 1fr) auto;
     padding: 8px 16px;
   }
 
-  body.ps-rich-ui .portal-header-slot {
+  .portal-header-slot {
     display: flex;
     justify-content: center;
     min-width: 0;
   }
 
-  body.ps-rich-ui .portal-header-slot .ps-toolbar {
+  .portal-header-slot .ps-toolbar {
     justify-content: center;
   }
 
