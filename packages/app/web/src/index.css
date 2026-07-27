@@ -4374,3 +4374,48 @@ body:not(.ps-rich-ui) .ps-mermaid {
   background:
     repeating-conic-gradient(var(--w95-face) 0% 25%, #dfdfdf 0% 50%) 0 0 / 2px 2px;
 }
+
+/* Header sits on the navy title-bar gradient, so its text must be title-bar
+   white. The base theme colours it for a light surface, which left the brand
+   and identity dark-on-navy and barely legible. */
+:root[data-ps-theme="win95"] .portal-header-kicker,
+:root[data-ps-theme="win95"] .portal-header-name,
+:root[data-ps-theme="win95"] .portal-header-identity,
+:root[data-ps-theme="win95"] .portal-header-email,
+:root[data-ps-theme="win95"] .portal-header-status,
+:root[data-ps-theme="win95"] .portal-header-meta,
+:root[data-ps-theme="win95"] .portal-header-version {
+  color: #ffffff;
+  opacity: 1;
+}
+
+/* The kicker is the window title — bold and fully opaque, as Win95 drew it. */
+:root[data-ps-theme="win95"] .portal-header-kicker {
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+/* Secondary header text: light enough to read on navy, still subordinate. */
+:root[data-ps-theme="win95"] .portal-header-email,
+:root[data-ps-theme="win95"] .portal-header-status,
+:root[data-ps-theme="win95"] .portal-header-version {
+  color: #d8e6f7;
+}
+
+/* The version chip needs its own surface — a transparent chip over the
+   gradient reads as neither raised nor recessed. */
+:root[data-ps-theme="win95"] .portal-header-version {
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 0;
+}
+
+/* The logo tile is a raised button face, so the mark reads against the navy
+   rather than dissolving into it. */
+:root[data-ps-theme="win95"] .portal-logo-frame {
+  background: var(--w95-face);
+  border: 2px solid;
+  border-color: var(--w95-light) var(--w95-dark) var(--w95-dark) var(--w95-light);
+  border-radius: 0;
+  color: #000080;
+}
