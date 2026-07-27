@@ -1099,6 +1099,8 @@ function isTabularArtifact(filename, contentType) {
  * inherit the active theme's chrome (Win95 bevels, MS-DOS reverse video), and
  * a drop-in viewer ships its own styling that cannot participate in that.
  */
+const TABULAR_MAX_ROWS = 2000;
+
 function TabularPreview({ content, filename }) {
     const [parsed, setParsed] = React.useState(null);
 
@@ -1131,16 +1133,33 @@ function TabularPreview({ content, filename }) {
     }
 
     const [header, ...body] = parsed.rows;
+
+    // Width is the WIDEST row, not the header's. A data row with more cells
+    // than the header is malformed but common (trailing delimiters, a short
+    // header), and papaparse reports no error for it — iterating the header
+    // would silently drop those cells, which is the one thing a data viewer
+    // must never do. Reduce, not Math.max(...rows): spreading tens of
+    // thousands of arguments overflows the stack.
+    const columnCount = body.reduce((max, row) => Math.max(max, row.length), header.length);
+    const columns = Array.from({ length: columnCount }, (_, i) => header[i] ?? "");
+
+    // Cap the DOM. A 1 MiB CSV (the artifact ceiling) can be ~20k rows, and
+    // 20k × N cells makes the pane unusable. Showing a bounded window and
+    // saying so is better than hanging the tab.
+    const truncated = body.length > TABULAR_MAX_ROWS;
+    const visible = truncated ? body.slice(0, TABULAR_MAX_ROWS) : body;
+
     return React.createElement("div", { className: "ps-csv-wrap" },
         React.createElement("table", { className: "ps-csv-table" },
             React.createElement("thead", null,
                 React.createElement("tr", null,
-                    header.map((cell, i) => React.createElement("th", { key: `h${i}` }, String(cell ?? ""))))),
+                    columns.map((cell, i) => React.createElement("th", { key: `h${i}` }, String(cell ?? ""))))),
             React.createElement("tbody", null,
-                body.map((row, r) => React.createElement("tr", { key: `r${r}` },
-                    header.map((_, c) => React.createElement("td", { key: `c${c}` }, String(row[c] ?? ""))))))),
+                visible.map((row, r) => React.createElement("tr", { key: `r${r}` },
+                    columns.map((_, c) => React.createElement("td", { key: `c${c}` }, String(row[c] ?? ""))))))),
         React.createElement("div", { className: "ps-csv-status" },
-            `${body.length} row${body.length === 1 ? "" : "s"} × ${header.length} column${header.length === 1 ? "" : "s"}`
+            `${body.length} row${body.length === 1 ? "" : "s"} × ${columnCount} column${columnCount === 1 ? "" : "s"}`
+            + (truncated ? ` · showing first ${TABULAR_MAX_ROWS}` : "")
             + (parsed.errors.length ? ` · ${parsed.errors.length} parse warning(s)` : "")));
 }
 
