@@ -389,10 +389,15 @@ function computeStateLayout(state) {
 }
 
 function getPortalInspectorContentWidth(paneWidth, inspectorTab) {
-    // Sequence uses preserved-width lines inside padded, scroll-synced containers.
-    // Reserve a few extra columns so content that fits visually does not trip a cosmetic x-scrollbar.
-    const overflowGuardColumns = inspectorTab === "sequence" ? 3 : 0;
-    return Math.max(20, paneWidth - 4 - overflowGuardColumns);
+    // The sequence view once reserved 3 extra columns here so that "content
+    // that fits visually does not trip a cosmetic x-scrollbar". That was a
+    // fudge for a real bug: every sequence line was padded to the full width,
+    // including the final column whose trailing spaces align nothing, so with
+    // white-space:pre the content box always measured exactly the pane width
+    // and any rounding tipped it into a permanent scrollbar. The padding is now
+    // trimmed at the source (see trimTrailingRunPad in ui-core selectors), so
+    // the guard would only throw away 3 usable columns.
+    return Math.max(20, paneWidth - 4);
 }
 
 function normalizeLines(lines) {
@@ -798,6 +803,20 @@ function Runs({ runs, theme }) {
             };
             const href = String(run?.href || "").trim();
             const isExternalHref = /^https?:\/\//i.test(href);
+            // artifact:// links used to render as an inert span — the only
+            // affordance was "press a to download", which is the wrong verb
+            // for a patch you want to READ. They now open the Files tab with
+            // the artifact selected and previewed.
+            const artifactRef = parseArtifactHref(href);
+
+            if (artifactRef) {
+                return React.createElement(ArtifactLink, {
+                    key: `${index}:${run.text || ""}`,
+                    label: run.text || "",
+                    artifactRef,
+                    style,
+                });
+            }
 
             return isExternalHref
                 ? React.createElement("a", {
@@ -920,6 +939,95 @@ const CODE_LANGUAGE_ALIASES = {
 
 const DIFF_LANGUAGES = new Set(["diff", "patch", "udiff"]);
 
+/**
+ * Diff-shaped artifacts. Recognized by extension AND by content type, because
+ * an agent may write either `.patch`/`.diff` or a text/x-patch blob under some
+ * other name.
+ */
+const DIFF_ARTIFACT_RE = /\.(patch|diff)$/i;
+const IMAGE_CONTENT_TYPE_RE = /^image\/(png|jpe?g|gif|webp|avif|bmp|svg\+xml|x-icon|vnd\.microsoft\.icon)$/i;
+const IMAGE_FILENAME_RE = /\.(png|jpe?g|gif|webp|avif|bmp|svg|ico)$/i;
+
+/** Map an artifact filename to a highlighter language, or null for plain text. */
+const CODE_ARTIFACT_LANGUAGES = {
+    js: "javascript", mjs: "javascript", cjs: "javascript", jsx: "javascript",
+    ts: "typescript", tsx: "typescript", json: "json", jsonl: "json",
+    py: "python", rs: "rust", go: "go", java: "java", rb: "ruby",
+    sh: "bash", bash: "bash", zsh: "bash", yml: "yaml", yaml: "yaml",
+    toml: "toml", sql: "sql", css: "css", html: "html", xml: "xml",
+};
+
+/**
+ * Strip a leading YAML frontmatter block from markdown.
+ *
+ * The renderer has no concept of frontmatter, so `---\ntitle: x\n---` was
+ * collapsed into a paragraph and rendered as prose above the document — which
+ * read as the title being duplicated, since the doc's own H1 follows it.
+ * Document viewers hide frontmatter; only strip a block that starts on line 1
+ * and closes, so a document opening with a thematic break is untouched.
+ */
+function stripYamlFrontmatter(content) {
+    const text = String(content || "");
+    if (!/^---[ \t]*\r?\n/.test(text)) return text;
+    const close = /\r?\n---[ \t]*(\r?\n|$)/.exec(text.slice(3));
+    if (!close) return text;
+    return text.slice(3 + close.index + close[0].length);
+}
+
+function codeLanguageForArtifact(filename) {
+    const ext = /\.([A-Za-z0-9]+)$/.exec(String(filename || ""));
+    if (!ext) return null;
+    return CODE_ARTIFACT_LANGUAGES[ext[1].toLowerCase()] || null;
+}
+
+function isDiffArtifact(filename, contentType) {
+    if (DIFF_ARTIFACT_RE.test(String(filename || ""))) return true;
+    return /^text\/x-(patch|diff)$/i.test(String(contentType || "").trim());
+}
+
+/** Parse an `artifact://<sessionId>/<filename>` href. */
+function parseArtifactHref(href) {
+    const match = /^artifact:\/\/([^/]+)\/(.+)$/i.exec(String(href || "").trim());
+    if (!match) return null;
+    try {
+        return { sessionId: match[1], filename: decodeURIComponent(match[2]) };
+    } catch {
+        return { sessionId: match[1], filename: match[2] };
+    }
+}
+
+/**
+ * Controller access for deeply-nested renderers.
+ *
+ * The markdown/run renderers are called from many places and never took a
+ * controller — threading one through every call site to make a single link
+ * type clickable would touch far more code than the feature is worth.
+ */
+const ControllerContext = React.createContext(null);
+
+function ArtifactLink({ label, artifactRef, style }) {
+    const controller = React.useContext(ControllerContext);
+    const diff = isDiffArtifact(artifactRef.filename);
+    const onOpen = React.useCallback((event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!controller?.revealArtifact) return;
+        Promise.resolve(controller.revealArtifact(artifactRef.sessionId, artifactRef.filename)).catch(() => {});
+    }, [controller, artifactRef.sessionId, artifactRef.filename]);
+
+    return React.createElement("button", {
+        type: "button",
+        className: `ps-artifact-link${diff ? " is-diff" : ""}`,
+        onClick: onOpen,
+        title: diff
+            ? `Open ${artifactRef.filename} as a diff`
+            : `Open ${artifactRef.filename} in Files`,
+        style,
+    },
+    diff ? React.createElement("span", { className: "ps-artifact-link-glyph", "aria-hidden": "true" }, "±") : null,
+    React.createElement("span", { className: "ps-artifact-link-label" }, label || artifactRef.filename));
+}
+
 function isDiffLanguage(language) {
     return DIFF_LANGUAGES.has(String(language || "").trim().toLowerCase());
 }
@@ -949,7 +1057,14 @@ function renderDiffCode(content, theme) {
         // instead of under the marker, and a copied selection yields clean
         // code — the gutter is user-select:none. Meta/hunk lines have no
         // marker but keep the empty gutter so every line stays aligned.
-        const hasMarker = kind === "add" || kind === "del" || kind === "context";
+        // Only strip column 1 when it really IS a marker. "context" is the
+        // fallback for every unrecognized line, so slicing it unconditionally
+        // ate the first real character of anything that is not a unified-diff
+        // body line — GIT binary patch payload ("delta 142", "zcmV;91Ru…"),
+        // format-patch commit prose, mbox headers. Real context lines start
+        // with a space; those still get their marker split off.
+        const hasMarker = kind === "add" || kind === "del"
+            || (kind === "context" && line.startsWith(" "));
         const marker = hasMarker ? line.slice(0, 1) : "";
         const text = hasMarker ? line.slice(1) : line;
         return React.createElement("span", {
@@ -1229,6 +1344,25 @@ function renderInlineMarkdown(source, theme, keyPrefix = "md") {
             return React.createElement("em", { key, className: "ps-md-em" }, renderInlineMarkdown(token.text, theme, `${key}:em`));
         }
         if (token.type === "link") {
+            const artifactRef = parseArtifactHref(token.href);
+            if (artifactRef) {
+                return React.createElement(ArtifactLink, {
+                    key,
+                    label: token.text,
+                    artifactRef,
+                    style: { color: resolveColor(theme, "cyan") },
+                });
+            }
+            // Only http(s) becomes a navigable anchor. Anything else — an
+            // unknown scheme, or a malformed href from a bad transform — would
+            // resolve RELATIVE to the portal and navigate the SPA away on
+            // click, losing all session state. Render it as inert text instead.
+            if (!/^https?:\/\//i.test(String(token.href || "").trim())) {
+                return React.createElement("span", {
+                    key,
+                    style: { color: resolveColor(theme, "cyan") },
+                }, token.text);
+            }
             return React.createElement("a", {
                 key,
                 className: "ps-md-link",
@@ -1609,7 +1743,38 @@ function MarkdownPreviewContent({ content, theme }) {
         }));
 }
 
+/**
+ * Preview panel for pre-rendered content (diff, highlighted code).
+ *
+ * Shares MarkdownPreviewPanel's scroll wiring rather than being a plain
+ * overflow:auto div: without the pane hookup the keyboard scroll commands
+ * have nothing to drive, so these previews could only ever be scrolled with
+ * the mouse — the global key handler swallows the arrows before the browser
+ * would scroll them natively.
+ */
+function RenderedPreviewPanel({ controller, title, color, focused, scrollOffset = 0, paneKey, theme, className = "", children }) {
+    const ref = React.useRef(null);
+    const onScroll = usePanePixelScroll(ref, scrollOffset, paneKey, controller);
+    const claimFocus = React.useCallback(() => {
+        const region = focusRegionForPaneKey(paneKey);
+        if (region && controller?.setFocus) controller.setFocus(region);
+    }, [controller, paneKey]);
+
+    return React.createElement(Panel, { title, color, focused, theme },
+        React.createElement("div", {
+            ref,
+            className: `ps-scroll-panel is-preview ${className}`.trim(),
+            onScroll,
+            onMouseDown: claimFocus,
+            onTouchStart: claimFocus,
+        }, children));
+}
+
 function MarkdownPreviewPanel({ controller, title, color, focused, scrollOffset = 0, paneKey, theme, content }) {
+    const claimMarkdownFocus = React.useCallback(() => {
+        const region = focusRegionForPaneKey(paneKey);
+        if (region && controller?.setFocus) controller.setFocus(region);
+    }, [controller, paneKey]);
     const ref = React.useRef(null);
     const onScroll = usePanePixelScroll(ref, scrollOffset, paneKey, controller);
 
@@ -1618,6 +1783,8 @@ function MarkdownPreviewPanel({ controller, title, color, focused, scrollOffset 
             ref,
             className: "ps-scroll-panel ps-markdown-scroll",
             onScroll,
+            onMouseDown: claimMarkdownFocus,
+            onTouchStart: claimMarkdownFocus,
         }, React.createElement(MarkdownPreviewContent, { content, theme })));
 }
 
@@ -1648,9 +1815,14 @@ function BinaryArtifactPreviewPanel({ title, color, focused, theme, filename, co
         })
         : "";
 
-    // Raster images render inline (authenticated fetch → object URL). Other
-    // binary types keep the download-only card.
-    const isRasterImage = /^image\/(png|jpeg|gif|webp)$/i.test(String(contentType || ""));
+    // Images render inline (authenticated fetch → object URL). Other binary
+    // types keep the download-only card.
+    //
+    // SVG goes through the SAME object-URL <img> path rather than being
+    // inlined as markup: an artifact is untrusted content, and <img> does not
+    // execute script inside an SVG the way inline markup would.
+    const isRasterImage = IMAGE_CONTENT_TYPE_RE.test(String(contentType || ""))
+        || IMAGE_FILENAME_RE.test(String(filename || ""));
     const [imageUrl, setImageUrl] = React.useState(null);
     React.useEffect(() => {
         setImageUrl(null);
@@ -2299,11 +2471,19 @@ function unbracketTitleRuns(runs) {
 
 function Panel({ title, titleRight = null, color = "gray", focused = false, actions = null, children, theme, className = "" }) {
     const accent = resolveColor(theme, color);
+    // A panel with nothing to put in its header should not render one. Nested
+    // panels (the artifact list and preview inside Files) were spending a full
+    // header row restating what the enclosing pane already said.
+    const hasHeader = Boolean(
+        (Array.isArray(title) ? title.length > 0 : String(title ?? "").trim())
+        || titleRight
+        || actions,
+    );
     return React.createElement("section", {
-        className: `ps-panel${focused ? " is-focused" : ""}${className ? ` ${className}` : ""}`,
+        className: `ps-panel${focused ? " is-focused" : ""}${hasHeader ? "" : " is-chromeless"}${className ? ` ${className}` : ""}`,
         style: { "--ps-panel-accent": accent || "var(--ps-border)" },
     },
-    React.createElement("header", { className: "ps-panel-header" },
+    hasHeader ? React.createElement("header", { className: "ps-panel-header" },
         React.createElement("div", { className: "ps-panel-title" },
             Array.isArray(title)
                 ? React.createElement(Runs, { runs: title, theme })
@@ -2319,7 +2499,7 @@ function Panel({ title, titleRight = null, color = "gray", focused = false, acti
                 actions ? React.createElement("div", { className: "ps-panel-actions" }, actions) : null,
             )
             : null,
-    ),
+    ) : null,
     React.createElement("div", { className: "ps-panel-body" }, children));
 }
 
@@ -2422,6 +2602,27 @@ function PortalSequenceLines({ lines, theme, completionByTurn }) {
 }
 
 
+/**
+ * Which focus region owns a scrollable pane.
+ *
+ * Keyboard scrolling already routes through focusRegion
+ * (controller.getScrollablePaneForFocus), but nothing set the focus when you
+ * CLICKED a pane — so the scroll keys kept acting on whatever was focused
+ * last. Clicking into a scrollable pane now claims the keys for it.
+ */
+const PANE_KEY_FOCUS_REGIONS = {
+    chat: "chat",
+    activity: "activity",
+    inspector: "inspector",
+    // The preview is reached through the inspector's Files tab, and the
+    // controller maps inspector-focus + files-tab back to filePreview.
+    filePreview: "inspector",
+};
+
+function focusRegionForPaneKey(paneKey) {
+    return PANE_KEY_FOCUS_REGIONS[String(paneKey || "")] || null;
+}
+
 function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, lines, stickyLines = [], bottomStickyLines = [], scrollOffset = 0, scrollMode = "top", paneKey, controller, className = "", panelClassName = "", topContent = null, bottomContent = null, structuredBlocks = false, stickyBottom = false, renderBody = null }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
@@ -2432,6 +2633,14 @@ function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, l
     const normalizedSticky = React.useMemo(() => normalizeLines(stickyLines), [stickyLines]);
     const normalizedBottomSticky = React.useMemo(() => normalizeLines(bottomStickyLines), [bottomStickyLines]);
     const preserveHorizontalScroll = className.includes("is-preserve") && panelClassName.includes("has-preserved-sticky");
+
+    // Clicking (or touching) a scrollable pane makes the keyboard scroll keys
+    // act on THAT pane. Fires on mousedown rather than click so a drag-select
+    // inside the pane claims focus too.
+    const claimFocus = React.useCallback(() => {
+        const region = focusRegionForPaneKey(paneKey);
+        if (region && controller?.setFocus) controller.setFocus(region);
+    }, [controller, paneKey]);
 
     const syncScrollLeft = React.useCallback((source, target) => {
         if (!source || !target) return;
@@ -2480,7 +2689,7 @@ function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, l
                 normalizedSticky.map((line, index) => React.createElement(Line, { key: `sticky:${index}`, line, theme })),
             )
             : null,
-        React.createElement("div", { ref, className: `ps-scroll-panel ${className}${scrollShadow.down ? " is-scrolled-down" : ""}${scrollShadow.up ? " is-scrolled-up" : ""}`.trim(), onScroll: handleBodyScroll, onWheel, onTouchStart, onTouchMove, onTouchEnd, onTouchCancel: onTouchEnd },
+        React.createElement("div", { ref, className: `ps-scroll-panel ${className}${scrollShadow.down ? " is-scrolled-down" : ""}${scrollShadow.up ? " is-scrolled-up" : ""}`.trim(), onScroll: handleBodyScroll, onMouseDown: claimFocus, onTouchStart: (event) => { claimFocus(); onTouchStart?.(event); }, onWheel, onTouchMove, onTouchEnd, onTouchCancel: onTouchEnd },
             typeof renderBody === "function"
                 ? renderBody(normalizedLines, theme)
                 : structuredBlocks
@@ -3491,7 +3700,11 @@ function InspectorTabs({ activeTab, controller }) {
         })));
 }
 
-function FilesPane({ controller, focused, mobile = false }) {
+// `previewOnly` renders JUST the artifact preview panel, so the desktop layout
+// can host it in the activity slot where it gets the existing row resizer.
+// Detached this way the preview is resizable; nested inside the inspector it
+// could only ever have half of a pane.
+function FilesPane({ controller, focused, mobile = false, previewOnly = false }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
     const fileInputRef = React.useRef(null);
@@ -3617,6 +3830,17 @@ function FilesPane({ controller, focused, mobile = false }) {
             onClick: () => controller.handleCommand(UI_COMMANDS.TOGGLE_FILE_PREVIEW_FULLSCREEN).catch(() => {}),
         }));
 
+    // Keyboard selection has to drag the viewport with it, exactly as the
+    // session list does — otherwise j/k walks the selection straight out of
+    // view and the list appears frozen.
+    const selectedItemRef = React.useRef(null);
+    React.useEffect(() => {
+        const node = selectedItemRef.current;
+        if (node && typeof node.scrollIntoView === "function") {
+            node.scrollIntoView({ block: "nearest" });
+        }
+    }, [filesView.selectedIndex, viewState.selectedArtifactId]);
+
     const listContent = items.length === 0
         ? normalizeLines(filesView.listBodyLines || []).map((line, index) => React.createElement(Line, {
             key: `empty:${index}`,
@@ -3626,6 +3850,7 @@ function FilesPane({ controller, focused, mobile = false }) {
         : items.map((item, index) => React.createElement("button", {
             key: item.id,
             type: "button",
+            ref: index === filesView.selectedIndex ? selectedItemRef : null,
             className: `ps-list-button${index === filesView.selectedIndex ? " is-selected" : ""}`,
             onClick: () => {
                 controller.setFocus("inspector");
@@ -3636,24 +3861,81 @@ function FilesPane({ controller, focused, mobile = false }) {
             theme,
         })));
 
-    const previewPane = filesView.previewRenderMode === "markdown"
+    // A .patch/.diff artifact is rendered AS a diff — gutter markers, add/remove
+    // tinting — rather than as undifferentiated grey text. This is the whole
+    // point of clicking through from the transcript.
+    const previewReady = !filesView.previewLoading && !filesView.previewError;
+    const previewIsDiff = previewReady
+        && isDiffArtifact(filesView.selectedFilename, filesView.previewContentType)
+        && !filesView.previewIsBinary
+        && Boolean(filesView.previewContent);
+
+    // Images are routed by content type OR extension, and go to the binary
+    // panel even when the payload is text (SVG) — it owns the authenticated
+    // fetch → object URL path that renders an artifact safely.
+    const previewIsImage = previewReady
+        && (IMAGE_CONTENT_TYPE_RE.test(String(filesView.previewContentType || ""))
+            || IMAGE_FILENAME_RE.test(String(filesView.selectedFilename || "")));
+
+    // Source files get real syntax highlighting instead of undifferentiated
+    // grey text — the same highlighter the chat code blocks use.
+    const previewCodeLanguage = previewReady
+        && !filesView.previewIsBinary
+        && !previewIsDiff
+        && filesView.previewRenderMode !== "markdown"
+        && Boolean(filesView.previewContent)
+        ? codeLanguageForArtifact(filesView.selectedFilename)
+        : null;
+
+    const previewPane = previewIsImage
+        ? React.createElement(BinaryArtifactPreviewPanel, {
+            title: null,
+            color: "cyan",
+            focused: false,
+            theme,
+            filename: filesView.selectedFilename,
+            contentType: filesView.previewContentType,
+            sizeBytes: filesView.previewSizeBytes,
+            source: filesView.previewSource,
+            uploadedAt: filesView.previewUploadedAt,
+            controller,
+            sessionId: filesView.selectedSessionId,
+        })
+        : previewCodeLanguage
+        ? React.createElement(RenderedPreviewPanel, {
+            controller, title: null, color: "cyan", focused: false, theme,
+            paneKey: "filePreview", scrollOffset: viewState.previewScroll,
+            className: "ps-diff-preview",
+        },
+            React.createElement("pre", { className: "ps-md-code-pre" },
+                React.createElement("code", null,
+                    renderHighlightedCode(filesView.previewContent, previewCodeLanguage, theme))))
+        : previewIsDiff
+        ? React.createElement(RenderedPreviewPanel, {
+            controller, title: null, color: "cyan", focused: false, theme,
+            paneKey: "filePreview", scrollOffset: viewState.previewScroll,
+            className: "ps-diff-preview",
+        },
+            React.createElement("pre", { className: "ps-md-code-pre is-diff" },
+                React.createElement("code", null, renderDiffCode(filesView.previewContent, theme))))
+        : filesView.previewRenderMode === "markdown"
         && !filesView.previewLoading
         && !filesView.previewError
         ? React.createElement(MarkdownPreviewPanel, {
             controller,
-            title: filesView.previewTitle,
+            title: null,
             color: "cyan",
             focused: false,
             scrollOffset: viewState.previewScroll,
             paneKey: "filePreview",
             theme,
-            content: filesView.previewContent || "",
+            content: stripYamlFrontmatter(filesView.previewContent || ""),
         })
         : filesView.previewIsBinary
             && !filesView.previewLoading
             && !filesView.previewError
             ? React.createElement(BinaryArtifactPreviewPanel, {
-                title: filesView.previewTitle,
+                title: null,
                 color: "cyan",
                 focused: false,
                 theme,
@@ -3667,7 +3949,7 @@ function FilesPane({ controller, focused, mobile = false }) {
             })
         : React.createElement(ScrollLinesPanel, {
             controller,
-            title: filesView.previewTitle,
+            title: null,
             color: "cyan",
             focused: false,
             lines: filesView.previewLines,
@@ -3677,6 +3959,8 @@ function FilesPane({ controller, focused, mobile = false }) {
             className: "is-preview is-wrapped",
         });
     const view = viewState;
+
+    if (previewOnly) return previewPane;
 
     return React.createElement(Panel, {
         title: view.fullscreen
@@ -3693,10 +3977,16 @@ function FilesPane({ controller, focused, mobile = false }) {
     // Fullscreen files mode shows only the preview pane; the list stays hidden.
     view.fullscreen
         ? previewPane
-        : React.createElement("div", { className: "ps-files-grid" },
-            React.createElement(Panel, { title: filesView.listTitle, color: "cyan", theme },
-                React.createElement("div", { className: "ps-action-list" }, listContent)),
-            previewPane,
+        : React.createElement("div", {
+            // On desktop the preview is detached into the activity slot, so the
+            // inspector shows the list alone and gives it the full pane.
+            className: `ps-files-grid${mobile ? "" : " is-list-only"}`,
+        },
+            // No nested panel: the enclosing Files pane is already the box, and
+            // a second border + header inside it only ate vertical space to
+            // restate what the pane title says.
+            React.createElement("div", { className: "ps-action-list ps-files-list" }, listContent),
+            mobile ? previewPane : null,
         ));
 }
 
@@ -5740,6 +6030,23 @@ function useKeyboardShortcuts(controller, mobile) {
                 controller.handleCommand(UI_COMMANDS.FOCUS_RIGHT).catch(() => {});
                 return;
             }
+            // The Files tab is a LIST, so arrows/j/k must move the selection
+            // there the same way they do in the session list — otherwise they
+            // fall through to the generic scroll below and the artifact list
+            // cannot be driven from the keyboard at all. Must precede the
+            // scroll fallback.
+            if (!mobile && focusRegion === "inspector" && currentInspectorTab === "files"
+                && (event.key === "ArrowUp" || event.key === "k")) {
+                event.preventDefault();
+                controller.handleCommand(UI_COMMANDS.MOVE_FILE_UP).catch(() => {});
+                return;
+            }
+            if (!mobile && focusRegion === "inspector" && currentInspectorTab === "files"
+                && (event.key === "ArrowDown" || event.key === "j")) {
+                event.preventDefault();
+                controller.handleCommand(UI_COMMANDS.MOVE_FILE_DOWN).catch(() => {});
+                return;
+            }
             if (!mobile && (event.key === "ArrowUp" || event.key === "k")) {
                 event.preventDefault();
                 controller.handleCommand(UI_COMMANDS.SCROLL_UP).catch(() => {});
@@ -5980,6 +6287,7 @@ export function PilotSwarmWebApp({ controller }) {
         focusRegion: rootState.ui.focusRegion,
         inspectorTab: rootState.ui.inspectorTab,
         filesFullscreen: Boolean(rootState.files.fullscreen),
+        selectedArtifactId: rootState.files.selectedArtifactId || null,
         adminVisible: Boolean(rootState.admin?.visible),
     }), shallowEqualObject);
     const profileSettingsHydratedRef = React.useRef(false);
@@ -6133,6 +6441,12 @@ export function PilotSwarmWebApp({ controller }) {
         [gridViewport, state.activityPaneAdjust, state.paneAdjust, effectivePromptRows, state.sessionPaneAdjust],
     );
     const filesFullscreenActive = state.filesFullscreen && state.inspectorTab === "files";
+    // Preview detaches into the activity slot only while the Files tab is open
+    // AND something is selected — otherwise Activity keeps the slot. Fullscreen
+    // is excluded because it already shows the preview alone.
+    const artifactPreviewDetached = state.inspectorTab === "files"
+        && Boolean(state.selectedArtifactId)
+        && !filesFullscreenActive;
 
     React.useEffect(() => {
         if (!filesFullscreenActive || !chatFocusMode) return;
@@ -6222,7 +6536,12 @@ export function PilotSwarmWebApp({ controller }) {
         className: "ps-workspace-pane-slot",
         style: { gridRow: "3" },
     },
-        !layout.activityHidden ? React.createElement(ActivityPane, { controller }) : null)));
+        // The artifact preview takes over the activity slot while an artifact
+        // is selected, so it inherits the row resizer and can be sized freely.
+        // It yields back to Activity the moment the selection clears.
+        artifactPreviewDetached
+            ? React.createElement(FilesPane, { controller, focused: false, previewOnly: true })
+            : (!layout.activityHidden ? React.createElement(ActivityPane, { controller }) : null))));
     const chatFocusWorkspace = React.createElement(ChatFocusWorkspace, {
         controller,
         openPane: chatFocusPane,
@@ -6242,7 +6561,8 @@ export function PilotSwarmWebApp({ controller }) {
         React.createElement(ActivityPane, { controller }));
     else mobileContent = React.createElement(MobileWorkspace, { controller });
 
-    return React.createElement("div", { ref: viewportRef, className: "ps-web-shell" },
+    return React.createElement(ControllerContext.Provider, { value: controller },
+        React.createElement("div", { ref: viewportRef, className: "ps-web-shell" },
         // Hide the top toolbar on mobile inspector/activity panes (and in
         // chat-focus mode). Those panes are pure read-only surfaces;
         // session/model/theme actions stay reachable from the Main pane,
@@ -6267,5 +6587,5 @@ export function PilotSwarmWebApp({ controller }) {
                         ? chatFocusWorkspace
                         : (mobile ? mobileContent : desktopWorkspace)))),
         mobile && !chatFocusMode ? React.createElement(MobileNav, { activePane: mobilePane, setActivePane: setMobilePane, controller }) : null,
-        React.createElement(ModalLayer, { controller }));
+        React.createElement(ModalLayer, { controller })));
 }

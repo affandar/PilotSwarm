@@ -4331,6 +4331,34 @@ export class PilotSwarmUiController {
         return created.sessionId;
     }
 
+    /**
+     * Reveal an artifact in the Files tab with its preview loaded.
+     *
+     * The entry point for artifact links in the chat transcript: the chat only
+     * ever offered "download", which is the wrong verb for a patch you want to
+     * READ. Switches the inspector to Files, selects the artifact, and warms
+     * the preview so the pane is populated by the time it renders.
+     */
+    async revealArtifact(sessionId, filename, { force = false } = {}) {
+        const resolvedSessionId = sessionId || this.getState().sessions.activeSessionId;
+        const name = String(filename || "").trim();
+        if (!resolvedSessionId || !name) return false;
+
+        if (this.getState().sessions.activeSessionId !== resolvedSessionId) {
+            await this.loadSession(resolvedSessionId).catch(() => null);
+        }
+        this.dispatch({ type: "ui/inspectorTab", inspectorTab: "files" });
+        // Focus the inspector, not just the tab. On desktop this makes j/k
+        // drive the artifact list immediately; on mobile the visible pane is
+        // derived from focusRegion, so without this the preview would open on
+        // a pane the user cannot see.
+        this.setFocus("inspector");
+        await this.ensureFilesForSession(resolvedSessionId, { force }).catch(() => null);
+        this.dispatch({ type: "files/select", sessionId: resolvedSessionId, filename: name });
+        await this.ensureFilePreview(resolvedSessionId, name, { force }).catch(() => null);
+        return true;
+    }
+
     async finalizeArtifactUpload(upload, { sessionId = null, suppressStatus = false } = {}) {
         const resolvedSessionId = sessionId || upload?.sessionId || await this.ensurePromptAttachmentSessionId();
         if (!resolvedSessionId || !upload?.filename) {
