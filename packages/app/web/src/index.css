@@ -4597,3 +4597,116 @@ body:not(.ps-rich-ui) .ps-mermaid {
   color: #000000;
   border-color: var(--dos-bright);
 }
+
+/* ── Reverse-video selection has to beat inline run colours ────────────────
+   Line runs carry their colour as an INLINE style (theme-resolved per run), and
+   an inline style beats any class rule. So the selection bar painted correctly
+   but its text kept the palette colours meant for a black background — the
+   session id, model and ctx figures stayed dark on light grey and became the
+   least readable thing on screen.
+
+   !important is the only lever that reaches an inline style, and it is scoped
+   to a selected row inside one theme, so its blast radius is exactly the rows
+   that need it. */
+:root[data-ps-theme="ms-dos"] .ps-list-button.is-selected,
+:root[data-ps-theme="ms-dos"] .ps-list-button.is-selected *,
+:root[data-ps-theme="ms-dos"] .ps-session-list-button.is-selected,
+:root[data-ps-theme="ms-dos"] .ps-session-list-button.is-selected * {
+  color: #000000 !important;
+  background-color: transparent;
+}
+
+:root[data-ps-theme="ms-dos"] .ps-list-button.is-selected,
+:root[data-ps-theme="ms-dos"] .ps-session-list-button.is-selected {
+  background-color: var(--dos-fg);
+}
+
+/* Win95 selection is Explorer's navy bar, so its text is white — same inline
+   -style problem, opposite direction. */
+:root[data-ps-theme="win95"] .ps-list-button.is-selected,
+:root[data-ps-theme="win95"] .ps-list-button.is-selected *,
+:root[data-ps-theme="win95"] .ps-session-list-button.is-selected,
+:root[data-ps-theme="win95"] .ps-session-list-button.is-selected * {
+  color: #ffffff !important;
+  background-color: transparent;
+}
+
+:root[data-ps-theme="win95"] .ps-list-button.is-selected,
+:root[data-ps-theme="win95"] .ps-session-list-button.is-selected {
+  background-color: #000080;
+}
+
+/* Pane title-right metadata ("idle · model · ctx …") is drawn in the muted
+   colour, which sat at the bottom of the legible range against black once the
+   surrounding chrome went monochrome. Lift it to body grey — it is information,
+   not decoration. */
+:root[data-ps-theme="ms-dos"] .ps-panel-title-right,
+:root[data-ps-theme="ms-dos"] .ps-panel-title-right * {
+  color: var(--dos-fg);
+  opacity: 1;
+}
+
+/* Same for the status strip and any run explicitly coloured "gray": in a
+   16-colour text mode the dim grey is #555555, which is unreadable on black. */
+:root[data-ps-theme="ms-dos"] .ps-status-left,
+:root[data-ps-theme="ms-dos"] .ps-status-right,
+:root[data-ps-theme="ms-dos"] .ps-line-dim {
+  color: var(--dos-dim);
+  opacity: 1;
+}
+
+/* ── Inspector segmented control, per theme ────────────────────────────────
+   The base rules are `body.ps-rich-ui .ps-tab-row-icons .ps-toolbar-button`
+   (0,3,1), which outranks `:root[data-ps-theme=…] .ps-toolbar-button` (0,3,0)
+   — so the tab row kept its rounded modern look while every other button was
+   themed. Including `body` in the theme selector takes it to (0,4,1). */
+:root[data-ps-theme="win95"] body .ps-tab-row-icons {
+  background: var(--w95-face);
+  border: 2px solid;
+  border-color: var(--w95-shadow) var(--w95-light) var(--w95-light) var(--w95-shadow);
+  border-radius: 0;
+  padding: 2px;
+  gap: 2px;
+}
+
+:root[data-ps-theme="win95"] body .ps-tab-row-icons .ps-toolbar-button {
+  background: var(--w95-face);
+  border: 2px solid;
+  border-color: var(--w95-light) var(--w95-dark) var(--w95-dark) var(--w95-light);
+  border-radius: 0;
+  color: var(--w95-dark);
+}
+
+/* The selected tab is a latched button: pressed in, dithered face. */
+:root[data-ps-theme="win95"] body .ps-tab-row-icons .ps-toolbar-button.is-active {
+  border-color: var(--w95-dark) var(--w95-light) var(--w95-light) var(--w95-dark);
+  background:
+    repeating-conic-gradient(var(--w95-face) 0% 25%, #dfdfdf 0% 50%) 0 0 / 2px 2px;
+  color: var(--w95-dark);
+}
+
+:root[data-ps-theme="ms-dos"] body .ps-tab-row-icons {
+  background: #000000;
+  border: 1px solid var(--dos-fg);
+  border-radius: 0;
+  padding: 2px;
+  gap: 2px;
+}
+
+:root[data-ps-theme="ms-dos"] body .ps-tab-row-icons .ps-toolbar-button {
+  background: #000000;
+  border: 1px solid var(--dos-dim);
+  border-radius: 0;
+  color: var(--dos-fg);
+}
+
+/* Latched tab in a text mode is reverse video — the only state it has. */
+:root[data-ps-theme="ms-dos"] body .ps-tab-row-icons .ps-toolbar-button.is-active {
+  background: var(--dos-fg);
+  border-color: var(--dos-bright);
+  color: #000000;
+}
+
+:root[data-ps-theme="ms-dos"] body .ps-tab-row-icons .ps-toolbar-button.is-active * {
+  color: #000000 !important;
+}
