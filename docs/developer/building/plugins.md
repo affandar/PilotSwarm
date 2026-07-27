@@ -154,6 +154,7 @@ Agents are defined as Markdown files with YAML frontmatter. The frontmatter decl
 | `description` | string | No | Short description shown in agent lists. |
 | `tools` | string[] | No | Tool names this agent can access. |
 | `skills` | string[] | No | Skill names to preload into this agent's context from the plugin skill directories. |
+| `inheritAppDefaults` | boolean | No | Defaults to `true`. Set `false` to compose this agent without the app's `default.agent.md` layer — neither its prompt nor its `tools:`. |
 | `system` | boolean | No | If `true`, agent is auto-started by the worker as a background session. |
 | `id` | string | No | Deterministic slug for system agents (e.g. `"sweeper"`). Used to derive a stable session UUID. |
 | `title` | string | No | Display name in session lists. Falls back to capitalized `name` + " Agent". |
@@ -200,6 +201,32 @@ The agent with `name: default` has unique behavior:
 - It is never listed as a selectable agent.
 - It defines app-wide rules that should apply to your app's sessions.
 - PilotSwarm management agents do not inherit app `default.agent.md` overlays.
+
+#### Opting a single agent out (`inheritAppDefaults: false`)
+
+The app default is normally force-merged into every session — both its prompt
+and its `tools:`. An individual agent can decline it:
+
+```yaml
+---
+name: reviewer
+inheritAppDefaults: false
+---
+```
+
+That agent is then composed from the framework base plus its own prompt and
+tools only. Nothing changes for the other agents in the deployment, so this is
+the way to add an agent on a clean slate without weakening an app default that
+other agents depend on.
+
+The flag is resolved from the agent definition on every turn rather than stored
+on the session, so editing an agent takes effect on its next turn. Omitting it
+inherits, which is the historical behavior. It is inert for management agents,
+which already bypass app overlays.
+
+> Note this is a *composition* choice, not a security boundary: if an app
+> default carries rules that must hold for every session without exception,
+> those belong in the framework base layer, which cannot be opted out of.
 
 ### System Agents (`system: true`)
 

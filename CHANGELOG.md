@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Agents can opt out of the app default layer** with `inheritAppDefaults: false`
+  in `.agent.md` frontmatter. An app's `default.agent.md` is otherwise
+  force-merged into every session — both its prompt and its `tools:` — so the
+  only way to author an agent that did not want those instructions was to
+  weaken the default for everyone. An opted-out agent is composed from the
+  framework base plus its own prompt and tools only; the rest of the deployment
+  is unaffected.
+
+  Omitting the field inherits, so existing agents are unchanged. The flag is
+  resolved from the agent definition at prompt-composition time rather than
+  persisted on the session, so redefining an agent takes effect on its next
+  turn and existing sessions need no migration. It is inert for management
+  agents, which already bypass app overlays.
+
+  This is a composition choice, not a security boundary — invariants that must
+  hold for every session still belong in the framework base layer, which cannot
+  be opted out of.
+
 ## 0.5.28 — 2026-07-28
 
 ### Portal performance
