@@ -2396,7 +2396,7 @@ export class PilotSwarmUiController {
             return;
         }
         if (targetTab === "files") {
-            await this.ensureFilesForScope(selectFilesScope(this.getState()));
+            await this.ensureFilesForScope(selectFilesScope(this.getState()), { force: true });
         }
         if (targetTab === "history") {
             const activeSessionId = this.getState().sessions.activeSessionId;
@@ -4430,7 +4430,7 @@ export class PilotSwarmUiController {
      * READ. Switches the inspector to Files, selects the artifact, and warms
      * the preview so the pane is populated by the time it renders.
      */
-    async revealArtifact(sessionId, filename, { force = false } = {}) {
+    async revealArtifact(sessionId, filename, { force = true } = {}) {
         const resolvedSessionId = sessionId || this.getState().sessions.activeSessionId;
         const name = String(filename || "").trim();
         if (!resolvedSessionId || !name) return false;
