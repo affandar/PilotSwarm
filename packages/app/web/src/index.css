@@ -4058,3 +4058,14 @@ body:not(.ps-rich-ui) .ps-mermaid {
   min-height: 0;
   overflow: auto;
 }
+
+/* Marked artifacts (bulk selection). Distinct from is-selected, which drives
+   the preview — a row can be marked without being previewed. */
+.ps-list-button.is-marked {
+  background: color-mix(in srgb, var(--ps-highlight-background) 22%, transparent);
+  box-shadow: inset 3px 0 0 var(--ps-highlight-background);
+}
+
+.ps-list-button.is-marked.is-selected {
+  background: color-mix(in srgb, var(--ps-highlight-background) 34%, transparent);
+}

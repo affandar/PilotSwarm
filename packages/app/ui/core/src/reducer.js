@@ -1999,6 +1999,27 @@ export function appReducer(state, action) {
             };
         }
 
+        case "files/toggleMark": {
+            const id = String(action.artifactId || "");
+            if (!id) return state;
+            const marked = new Set(state.files.markedIds || []);
+            if (marked.has(id)) marked.delete(id);
+            else marked.add(id);
+            return { ...state, files: { ...state.files, markedIds: [...marked] } };
+        }
+
+        case "files/setMarks":
+            return {
+                ...state,
+                files: {
+                    ...state.files,
+                    markedIds: Array.isArray(action.artifactIds) ? [...new Set(action.artifactIds.map(String))] : [],
+                },
+            };
+
+        case "files/clearMarks":
+            return { ...state, files: { ...state.files, markedIds: [] } };
+
         case "files/selectGlobal":
             return {
                 ...state,
@@ -2137,6 +2158,16 @@ export function appReducer(state, action) {
         }
 
         case "files/deleted": {
+            // Fall through to the existing handling, but drop the deleted id
+            // from the marks first so a bulk delete cannot leave phantoms.
+            state = {
+                ...state,
+                files: {
+                    ...state.files,
+                    markedIds: (state.files.markedIds || [])
+                        .filter((id) => id !== `${action.sessionId}/${action.filename}`),
+                },
+            };
             const bySessionId = cloneFilesBySessionId(state.files.bySessionId);
             const current = bySessionId[action.sessionId] || {
                 entries: [],

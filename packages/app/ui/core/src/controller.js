@@ -3024,6 +3024,97 @@ export class PilotSwarmUiController {
         return download;
     }
 
+    /**
+     * Bulk selection on the artifact list.
+     *
+     * Marking never moves selectedArtifactId, so the preview keeps showing the
+     * artifact it was already on while you mark others for deletion.
+     */
+    toggleArtifactMark(item) {
+        if (!item?.id) return;
+        this.dispatch({ type: "files/toggleMark", artifactId: item.id });
+    }
+
+    /** Shift-click: mark the contiguous run between the anchor and `item`. */
+    markArtifactRange(item) {
+        if (!item?.id) return;
+        const items = selectFileBrowserItems(this.getState());
+        const marked = this.getState().files.markedIds || [];
+        const anchorId = marked.length > 0 ? marked[marked.length - 1] : this.getState().files.selectedArtifactId;
+        const from = items.findIndex((entry) => entry.id === anchorId);
+        const to = items.findIndex((entry) => entry.id === item.id);
+        if (to < 0) return;
+        if (from < 0) {
+            this.dispatch({ type: "files/toggleMark", artifactId: item.id });
+            return;
+        }
+        const [lo, hi] = from <= to ? [from, to] : [to, from];
+        const range = items.slice(lo, hi + 1).map((entry) => entry.id);
+        this.dispatch({ type: "files/setMarks", artifactIds: [...new Set([...marked, ...range])] });
+    }
+
+    clearArtifactMarks() {
+        this.dispatch({ type: "files/clearMarks" });
+    }
+
+    /** Delete every marked artifact. Confirms once for the whole batch. */
+    async deleteMarkedArtifacts({ confirmed = false } = {}) {
+        const state = this.getState();
+        const markedIds = state.files.markedIds || [];
+        if (markedIds.length === 0) {
+            this.dispatch({ type: "ui/status", text: "No artifacts marked" });
+            return false;
+        }
+        if (typeof this.transport.deleteArtifact !== "function") {
+            this.dispatch({ type: "ui/status", text: "Artifact deletion is not supported by this transport" });
+            return false;
+        }
+        if (!confirmed) {
+            this.dispatch({
+                type: "ui/modal",
+                modal: {
+                    type: "confirm",
+                    title: "Delete Artifacts",
+                    message: `Delete ${markedIds.length} artifact${markedIds.length === 1 ? "" : "s"}? This action cannot be undone.`,
+                    confirmLabel: `Delete ${markedIds.length}`,
+                    action: "deleteMarkedArtifacts",
+                    previousFocus: state.ui.focusRegion,
+                },
+            });
+            return false;
+        }
+
+        const touchedSessions = new Set();
+        let deleted = 0;
+        const failures = [];
+        for (const id of markedIds) {
+            const slash = String(id).indexOf("/");
+            if (slash <= 0) continue;
+            const sessionId = id.slice(0, slash);
+            const filename = id.slice(slash + 1);
+            try {
+                await this.transport.deleteArtifact(sessionId, filename);
+                this.dispatch({ type: "files/deleted", sessionId, filename });
+                touchedSessions.add(sessionId);
+                deleted += 1;
+            } catch (error) {
+                // Keep going: one failure should not strand the rest of the batch.
+                failures.push(`${filename}: ${error?.message || String(error)}`);
+            }
+        }
+        for (const sessionId of touchedSessions) {
+            await this.ensureFilesForSession(sessionId, { force: true }).catch(() => null);
+        }
+        this.dispatch({ type: "files/clearMarks" });
+        this.dispatch({
+            type: "ui/status",
+            text: failures.length > 0
+                ? `Deleted ${deleted}, ${failures.length} failed — ${failures[0]}`
+                : `Deleted ${deleted} artifact${deleted === 1 ? "" : "s"}`,
+        });
+        return failures.length === 0;
+    }
+
     async deleteSelectedArtifact({ confirmed = false } = {}) {
         const state = this.getState();
         const selectedItem = selectSelectedFileBrowserItem(state);
@@ -5188,6 +5279,8 @@ export class PilotSwarmUiController {
                 await this.regenerateActiveSession({ confirmed: true, ...(modal.extras || {}) });
             } else if (modal.action === "deleteArtifact") {
                 await this.deleteSelectedArtifact({ confirmed: true });
+            } else if (modal.action === "deleteMarkedArtifacts") {
+                await this.deleteMarkedArtifacts({ confirmed: true });
             }
             return;
         }
@@ -6086,10 +6179,30 @@ export class PilotSwarmUiController {
         });
     }
 
+    /** True when the artifact preview has taken over the activity slot. */
+    artifactPreviewOwnsActivitySlot(state = this.getState()) {
+        return state.ui.inspectorTab === "files" && Boolean(state.files?.selectedArtifactId);
+    }
+
+    /** Inspector focus with the Files tab open = the artifact list is driving. */
+    focusIsArtifactList(state = this.getState()) {
+        return state.ui.focusRegion === FOCUS_REGIONS.INSPECTOR && state.ui.inspectorTab === "files";
+    }
+
     getScrollablePaneForFocus() {
-        const focus = this.getState().ui.focusRegion;
+        const state = this.getState();
+        const focus = state.ui.focusRegion;
         if (focus === FOCUS_REGIONS.CHAT) return "chat";
-        if (focus === FOCUS_REGIONS.ACTIVITY) return "activity";
+        if (focus === FOCUS_REGIONS.ACTIVITY) {
+            // The preview occupies the activity slot while an artifact is
+            // selected, so activity focus must scroll the PREVIEW. This is what
+            // lets clicking the list and clicking the preview mean different
+            // things: the list keeps inspector focus (arrows move the
+            // selection) while the preview claims activity focus (arrows
+            // scroll it).
+            if (this.artifactPreviewOwnsActivitySlot(state)) return "filePreview";
+            return "activity";
+        }
         if (focus === FOCUS_REGIONS.INSPECTOR) {
             if (this.getState().ui.inspectorTab === "files") return "filePreview";
             return "inspector";
@@ -7341,11 +7454,21 @@ export class PilotSwarmUiController {
                     await this.moveSessionPage(-1);
                     return;
                 }
+                // Focused on the artifact LIST: page the selection, not a
+                // scroll offset — the list is the thing being driven there.
+                if (this.focusIsArtifactList()) {
+                    await this.moveFileSelection(-10);
+                    return;
+                }
                 this.scrollCurrentPane(10);
                 return;
             case UI_COMMANDS.PAGE_DOWN:
                 if (this.getState().ui.focusRegion === FOCUS_REGIONS.SESSIONS) {
                     await this.moveSessionPage(1);
+                    return;
+                }
+                if (this.focusIsArtifactList()) {
+                    await this.moveFileSelection(10);
                     return;
                 }
                 this.scrollCurrentPane(-10);

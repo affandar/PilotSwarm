@@ -201,6 +201,10 @@ export function createInitialState({ mode = "local", branding = null, themeId = 
             bySessionId: {},
             fullscreen: false,
             selectedArtifactId: null,
+            // Bulk selection. Deliberately separate from selectedArtifactId:
+            // marking rows must not move the preview, which keeps showing the
+            // originally selected artifact.
+            markedIds: [],
             filter: {
                 scope: "selectedSession",
                 query: "",

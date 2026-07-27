@@ -1752,13 +1752,13 @@ function MarkdownPreviewContent({ content, theme }) {
  * the mouse — the global key handler swallows the arrows before the browser
  * would scroll them natively.
  */
-function RenderedPreviewPanel({ controller, title, color, focused, scrollOffset = 0, paneKey, theme, className = "", children }) {
+function RenderedPreviewPanel({ controller, title, color, focused, scrollOffset = 0, paneKey, theme, className = "", focusRegion = null, children }) {
     const ref = React.useRef(null);
     const onScroll = usePanePixelScroll(ref, scrollOffset, paneKey, controller);
     const claimFocus = React.useCallback(() => {
-        const region = focusRegionForPaneKey(paneKey);
+        const region = focusRegionForPaneKey(paneKey, focusRegion);
         if (region && controller?.setFocus) controller.setFocus(region);
-    }, [controller, paneKey]);
+    }, [controller, paneKey, focusRegion]);
 
     return React.createElement(Panel, { title, color, focused, theme },
         React.createElement("div", {
@@ -1770,11 +1770,11 @@ function RenderedPreviewPanel({ controller, title, color, focused, scrollOffset 
         }, children));
 }
 
-function MarkdownPreviewPanel({ controller, title, color, focused, scrollOffset = 0, paneKey, theme, content }) {
+function MarkdownPreviewPanel({ controller, title, color, focused, scrollOffset = 0, paneKey, theme, content, focusRegion = null }) {
     const claimMarkdownFocus = React.useCallback(() => {
-        const region = focusRegionForPaneKey(paneKey);
+        const region = focusRegionForPaneKey(paneKey, focusRegion);
         if (region && controller?.setFocus) controller.setFocus(region);
-    }, [controller, paneKey]);
+    }, [controller, paneKey, focusRegion]);
     const ref = React.useRef(null);
     const onScroll = usePanePixelScroll(ref, scrollOffset, paneKey, controller);
 
@@ -2619,11 +2619,16 @@ const PANE_KEY_FOCUS_REGIONS = {
     filePreview: "inspector",
 };
 
-function focusRegionForPaneKey(paneKey) {
+function focusRegionForPaneKey(paneKey, override = null) {
+    // The DETACHED preview sits in the activity slot, so clicking it must claim
+    // activity focus — that is what distinguishes "clicked the preview" from
+    // "clicked the artifact list", which keeps inspector focus and drives the
+    // selection with the same keys.
+    if (override) return override;
     return PANE_KEY_FOCUS_REGIONS[String(paneKey || "")] || null;
 }
 
-function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, lines, stickyLines = [], bottomStickyLines = [], scrollOffset = 0, scrollMode = "top", paneKey, controller, className = "", panelClassName = "", topContent = null, bottomContent = null, structuredBlocks = false, stickyBottom = false, renderBody = null }) {
+function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, lines, stickyLines = [], bottomStickyLines = [], scrollOffset = 0, scrollMode = "top", paneKey, controller, className = "", panelClassName = "", topContent = null, bottomContent = null, structuredBlocks = false, stickyBottom = false, renderBody = null, focusRegion = null }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
     const ref = React.useRef(null);
@@ -2638,9 +2643,9 @@ function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, l
     // act on THAT pane. Fires on mousedown rather than click so a drag-select
     // inside the pane claims focus too.
     const claimFocus = React.useCallback(() => {
-        const region = focusRegionForPaneKey(paneKey);
+        const region = focusRegionForPaneKey(paneKey, focusRegion);
         if (region && controller?.setFocus) controller.setFocus(region);
-    }, [controller, paneKey]);
+    }, [controller, paneKey, focusRegion]);
 
     const syncScrollLeft = React.useCallback((source, target) => {
         if (!source || !target) return;
@@ -3721,6 +3726,7 @@ function FilesPane({ controller, focused, mobile = false, previewOnly = false })
             filesBySessionId: state.files.bySessionId,
             filesFilter: state.files.filter,
             selectedArtifactId: state.files.selectedArtifactId,
+            markedIds: state.files.markedIds || [],
             focused,
             previewScroll: state.ui.scroll.filePreview,
             fullscreen: Boolean(state.files.fullscreen),
@@ -3783,6 +3789,28 @@ function FilesPane({ controller, focused, mobile = false, previewOnly = false })
     }, [controller, viewState.canBrowserUpload, viewState.canPathUpload]);
 
     const panelActions = React.createElement(React.Fragment, null,
+        // Bulk actions only appear once something is marked, so the header
+        // stays quiet in the common single-selection case.
+        markedSet.size > 0
+            ? React.createElement(React.Fragment, null,
+                React.createElement("span", {
+                    className: "ps-mini-button-label",
+                    style: { padding: "0 6px", opacity: 0.85 },
+                    title: "Cmd/Ctrl-click to mark, Shift-click for a range",
+                }, `${markedSet.size} marked`),
+                viewState.canDeleteArtifacts
+                    ? React.createElement(IconButton, {
+                        icon: "🗑",
+                        label: `Delete ${markedSet.size} marked`,
+                        onClick: () => controller.deleteMarkedArtifacts().catch(() => {}),
+                    })
+                    : null,
+                React.createElement(IconButton, {
+                    icon: "✕",
+                    label: "Clear marks",
+                    onClick: () => controller.clearArtifactMarks(),
+                }))
+            : null,
         React.createElement("input", {
             ref: fileInputRef,
             type: "file",
@@ -3833,6 +3861,7 @@ function FilesPane({ controller, focused, mobile = false, previewOnly = false })
     // Keyboard selection has to drag the viewport with it, exactly as the
     // session list does — otherwise j/k walks the selection straight out of
     // view and the list appears frozen.
+    const markedSet = React.useMemo(() => new Set(viewState.markedIds || []), [viewState.markedIds]);
     const selectedItemRef = React.useRef(null);
     React.useEffect(() => {
         const node = selectedItemRef.current;
@@ -3851,9 +3880,21 @@ function FilesPane({ controller, focused, mobile = false, previewOnly = false })
             key: item.id,
             type: "button",
             ref: index === filesView.selectedIndex ? selectedItemRef : null,
-            className: `ps-list-button${index === filesView.selectedIndex ? " is-selected" : ""}`,
-            onClick: () => {
+            className: `ps-list-button${index === filesView.selectedIndex ? " is-selected" : ""}`
+                + (markedSet.has(item.id) ? " is-marked" : ""),
+            onClick: (event) => {
                 controller.setFocus("inspector");
+                // Cmd/Ctrl toggles one, Shift extends a run, plain click
+                // selects and drops the marks — the usual list conventions.
+                if (event.metaKey || event.ctrlKey) {
+                    controller.toggleArtifactMark(item);
+                    return;
+                }
+                if (event.shiftKey) {
+                    controller.markArtifactRange(item);
+                    return;
+                }
+                controller.clearArtifactMarks();
                 controller.selectFileBrowserItem(item).catch(() => {});
             },
         }, React.createElement(Line, {
@@ -3887,6 +3928,11 @@ function FilesPane({ controller, focused, mobile = false, previewOnly = false })
         ? codeLanguageForArtifact(filesView.selectedFilename)
         : null;
 
+    // Detached (desktop) => the preview is its own pane in the activity slot and
+    // claims activity focus, so arrows/j/k/PgUp scroll IT. Inline (mobile) it is
+    // part of the inspector and keeps inspector focus.
+    const previewFocusRegion = previewOnly ? "activity" : null;
+
     const previewPane = previewIsImage
         ? React.createElement(BinaryArtifactPreviewPanel, {
             title: null,
@@ -3905,7 +3951,7 @@ function FilesPane({ controller, focused, mobile = false, previewOnly = false })
         ? React.createElement(RenderedPreviewPanel, {
             controller, title: null, color: "cyan", focused: false, theme,
             paneKey: "filePreview", scrollOffset: viewState.previewScroll,
-            className: "ps-diff-preview",
+            className: "ps-diff-preview", focusRegion: previewFocusRegion,
         },
             React.createElement("pre", { className: "ps-md-code-pre" },
                 React.createElement("code", null,
@@ -3914,7 +3960,7 @@ function FilesPane({ controller, focused, mobile = false, previewOnly = false })
         ? React.createElement(RenderedPreviewPanel, {
             controller, title: null, color: "cyan", focused: false, theme,
             paneKey: "filePreview", scrollOffset: viewState.previewScroll,
-            className: "ps-diff-preview",
+            className: "ps-diff-preview", focusRegion: previewFocusRegion,
         },
             React.createElement("pre", { className: "ps-md-code-pre is-diff" },
                 React.createElement("code", null, renderDiffCode(filesView.previewContent, theme))))
@@ -3929,6 +3975,7 @@ function FilesPane({ controller, focused, mobile = false, previewOnly = false })
             scrollOffset: viewState.previewScroll,
             paneKey: "filePreview",
             theme,
+            focusRegion: previewFocusRegion,
             content: stripYamlFrontmatter(filesView.previewContent || ""),
         })
         : filesView.previewIsBinary
@@ -3956,6 +4003,7 @@ function FilesPane({ controller, focused, mobile = false, previewOnly = false })
             scrollOffset: viewState.previewScroll,
             scrollMode: "top",
             paneKey: "filePreview",
+            focusRegion: previewFocusRegion,
             className: "is-preview is-wrapped",
         });
     const view = viewState;
