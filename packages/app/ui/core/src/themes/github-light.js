@@ -5,7 +5,11 @@ const githubLightTheme = createTheme({
     label: "GitHub Light",
     description: "GitHub light palette with crisp neutrals, blue actions, and high-contrast status colors.",
     page: {
-        background: "#ffffff",
+        // Canvas, deliberately NOT the same as tui.surface (#ffffff). When the
+        // page and the panes are both pure white there is nothing for a pane to
+        // sit on, and every surface-vs-transparent color-mix in the stylesheet
+        // collapses to white. GitHub's own light UI uses exactly this pairing.
+        background: "#f6f8fa",
         foreground: "#1f2328",
         overlayBackground: "#ffffff",
         overlayForeground: "#1f2328",

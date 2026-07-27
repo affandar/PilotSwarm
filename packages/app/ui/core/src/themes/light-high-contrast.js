@@ -8,7 +8,10 @@ const lightHighContrastTheme = createTheme({
     label: "Light High Contrast",
     description: "Pure black on white with maximum-contrast accents — nothing washes out, ever.",
     page: {
-        background: "#ffffff",
+        // Canvas only — panes stay pure #ffffff (tui.surface), so "black on
+        // white" still holds for every piece of text. Without this the panes,
+        // headers and composer were all the same white as the page.
+        background: "#eef0f2",
         foreground: "#000000",
         overlayBackground: "#ffffff",
         overlayForeground: "#000000",
