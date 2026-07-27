@@ -6956,20 +6956,36 @@ export class PilotSwarmUiController {
     async _loadDistillerModelOptions() {
         if (typeof this.transport.listModels !== "function") return [];
         try {
-            const groups = await this.transport.listModels({ groupByProvider: true });
-            const list = Array.isArray(groups) ? groups : [];
-            return list.flatMap((group) => (group.models || []).map((model) => ({
-                qualifiedName: model.qualifiedName,
+            // The web transport's listModels() takes no arguments and returns a
+            // FLAT model list, while the direct transport can return provider
+            // groups. Reading only `group.models` flatMapped the flat shape to
+            // nothing, so the portal offered "deployment default" and nothing
+            // else — with the catch below hiding it. Accept both shapes.
+            const raw = await this.transport.listModels({ groupByProvider: true });
+            const top = Array.isArray(raw)
+                ? raw
+                : (Array.isArray(raw?.providers) ? raw.providers
+                    : (Array.isArray(raw?.models) ? raw.models : []));
+            const list = top.flatMap((entry) => (
+                Array.isArray(entry?.models)
+                    ? entry.models.map((m) => ({ ...m, providerId: m.providerId || entry.providerId }))
+                    : [entry]
+            ));
+            return list.filter((model) => model && (model.qualifiedName || model.modelName)).map((model) => ({
+                qualifiedName: model.qualifiedName || model.modelName,
                 modelName: model.modelName || model.qualifiedName,
-                providerId: model.providerId || group.providerId,
+                providerId: model.providerId || "",
                 supportedReasoningEfforts: Array.isArray(model.supportedReasoningEfforts)
                     ? model.supportedReasoningEfforts
                     : [],
                 supportedContextTiers: Array.isArray(model.supportedContextTiers)
                     ? model.supportedContextTiers
                     : [],
-            })));
-        } catch {
+            }));
+        } catch (error) {
+            // Previously swallowed silently, which is how an empty picker
+            // looked like "no models configured" instead of a failed call.
+            this.dispatch({ type: "ui/status", text: `Could not load distiller models: ${error?.message || String(error)}` });
             return [];
         }
     }
