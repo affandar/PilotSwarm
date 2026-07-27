@@ -4710,3 +4710,72 @@ body:not(.ps-rich-ui) .ps-mermaid {
 :root[data-ps-theme="ms-dos"] body .ps-tab-row-icons .ps-toolbar-button.is-active * {
   color: #000000 !important;
 }
+
+/* ── Pane header height is FIXED, not content-derived ─────────────────────
+   Headers were sized by their contents: min-height 34px plus 6px block
+   padding, with action buttons that are themselves min-height 34px. A pane
+   with actions therefore rendered a ~46px header while a pane without them
+   rendered 34px — so side-by-side panes started their bodies at different
+   heights and nothing lined up. Themes with thicker borders (Win95) amplified
+   it but did not cause it.
+
+   The header now declares its own height and the buttons fit INSIDE it. */
+:root {
+  --ps-panel-header-h: 30px;
+}
+
+body.ps-rich-ui {
+  --ps-panel-header-h: 34px;
+}
+
+.ps-panel-header {
+  height: var(--ps-panel-header-h);
+  min-height: var(--ps-panel-header-h);
+  max-height: var(--ps-panel-header-h);
+  flex: 0 0 var(--ps-panel-header-h);
+  padding-block: 0;
+  box-sizing: border-box;
+}
+
+body.ps-rich-ui .ps-panel-header {
+  padding-block: 0;
+}
+
+/* Controls sit inside the header rather than defining it. Height is derived
+   from the header so a theme can change one value and keep both in step. */
+.ps-panel-header .ps-mini-button,
+.ps-panel-header .ps-toolbar-button,
+.ps-panel-header .ps-icon-button,
+.ps-panel-header .ps-modal-close,
+.ps-panel-header .ps-mini-button-label {
+  min-height: 0;
+  height: calc(var(--ps-panel-header-h) - 8px);
+  padding-block: 0;
+  display: inline-flex;
+  align-items: center;
+  box-sizing: border-box;
+}
+
+/* The actions group must not stretch the row either. */
+.ps-panel-header .ps-panel-actions,
+.ps-panel-header .ps-panel-header-right {
+  align-items: center;
+  min-height: 0;
+}
+
+/* Title and its right-hand metadata centre on the same baseline and never
+   push the row taller than it declares. */
+.ps-panel-header .ps-panel-title,
+.ps-panel-header .ps-panel-title-right {
+  min-height: 0;
+  line-height: 1.1;
+  align-self: center;
+}
+
+/* Win95 buttons carry 2px bevels on all four edges; without trimming the
+   inner height they would exceed the row they now have to fit. */
+:root[data-ps-theme="win95"] .ps-panel-header .ps-mini-button,
+:root[data-ps-theme="win95"] .ps-panel-header .ps-toolbar-button,
+:root[data-ps-theme="win95"] .ps-panel-header .ps-icon-button {
+  height: calc(var(--ps-panel-header-h) - 6px);
+}
