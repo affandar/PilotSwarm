@@ -2574,11 +2574,15 @@ export function selectOutboxOverlayLines(state, maxWidth = 80, options = {}) {
     if (rejectedCount > 0) parts.push(`${rejectedCount} rejected`);
     const label = parts.length > 0 ? parts.join(" · ") : "queued prompts";
     const labelText = ` queued prompts: ${label} `;
-    const rightRule = Math.max(1, safeWidth - labelText.length);
+    // The trailing rule is drawn by CSS, not by repeating "─" to a computed
+    // character count. That count is derived from a pane width measured in
+    // CHARACTERS, and when the estimate exceeds what actually fits — easily
+    // triggered by a font-size change, or by probing a pane whose font differs
+    // from this one — label + rule overflow and the rule wraps onto its own
+    // line. A flex rule fills whatever space is really left, at any font size.
     const lines = [
         [
-            { text: labelText, color: "gray" },
-            { text: "─".repeat(rightRule), color: "gray" },
+            { text: labelText, color: "gray", trailingRule: true },
         ],
     ];
 

@@ -4798,3 +4798,83 @@ body.ps-rich-ui .ps-panel-header {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ── Win95: code blocks, composer controls, title-bar metadata ────────────
+   .ps-md-code-pre carries NO background of its own — it is transparent and
+   shows whatever sits behind it. On every dark theme that is a dark pane, so
+   the hardcoded `#9fe3ff` code colour worked. Under Win95 the surface behind
+   it is the DESKTOP TEAL, and dark CGA syntax tokens on teal are unreadable.
+   Give code its own inset white well, which is what a Win95 text field was. */
+:root[data-ps-theme="win95"] .ps-md-code-pre,
+:root[data-ps-theme="win95"] pre.ps-md-code-pre {
+  background: #ffffff;
+  border: 2px solid;
+  border-color: var(--w95-shadow) var(--w95-light) var(--w95-light) var(--w95-shadow);
+}
+
+:root[data-ps-theme="win95"] .ps-md-code-pre code {
+  color: var(--w95-dark);
+}
+
+/* Inline code pills need the same treatment for the same reason. */
+:root[data-ps-theme="win95"] .ps-md-code-inline {
+  background: #ffffff;
+  color: var(--w95-dark);
+  border: 1px solid var(--w95-shadow);
+}
+
+/* Composer controls: the attach and stop buttons were washed out because the
+   base rules tint them from the surface, which is already button-face grey.
+   Give them the same raised bevel every other Win95 control has. */
+:root[data-ps-theme="win95"] .ps-attach-button,
+:root[data-ps-theme="win95"] .ps-stop-button {
+  background: var(--w95-face);
+  color: var(--w95-dark);
+  border: 2px solid;
+  border-color: var(--w95-light) var(--w95-dark) var(--w95-dark) var(--w95-light);
+  border-radius: 0;
+  box-shadow: inset 1px 1px 0 var(--w95-face), inset -1px -1px 0 var(--w95-shadow);
+  opacity: 1;
+}
+
+/* Stop is destructive, so it keeps a red face — but a Win95-era red with
+   white text, not a translucent tint that vanishes into the grey. */
+:root[data-ps-theme="win95"] .ps-stop-button {
+  background: #aa0000;
+  color: #ffffff;
+}
+
+:root[data-ps-theme="win95"] .ps-attach-button:active,
+:root[data-ps-theme="win95"] .ps-stop-button:active {
+  border-color: var(--w95-dark) var(--w95-light) var(--w95-light) var(--w95-dark);
+  box-shadow: none;
+}
+
+/* The chat pane's right-hand metadata sits on the navy title bar, so it needs
+   title-bar white like the title itself — it was inheriting a colour chosen
+   for a light pane and rendering nearly invisible. */
+:root[data-ps-theme="win95"] .ps-panel-title-right,
+:root[data-ps-theme="win95"] .ps-panel-title-right * {
+  color: #ffffff !important;
+  opacity: 0.95;
+}
+
+/* A label followed by a rule that fills the remaining width. Replaces a
+   box-drawing character repeated to a computed column count, which overflowed
+   and wrapped whenever the character estimate exceeded the real width. */
+.ps-line-trailing-rule {
+  display: flex;
+  align-items: center;
+  gap: 0.5ch;
+  width: 100%;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.ps-line-trailing-rule::after {
+  content: "";
+  flex: 1 1 auto;
+  min-width: 0;
+  border-top: 1px solid currentColor;
+  opacity: 0.55;
+}

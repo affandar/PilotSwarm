@@ -844,6 +844,16 @@ function Runs({ runs, theme }) {
                 fontWeight: run.bold ? 700 : 400,
                 textDecoration: run.underline ? "underline" : "none",
             };
+            // A run flagged trailingRule renders its text then a CSS rule that
+            // fills the remaining width — see selectors.js for why this is not
+            // a repeated box-drawing character.
+            if (run?.trailingRule) {
+                return React.createElement("span", {
+                    key: `${index}:rule`,
+                    className: "ps-line-trailing-rule",
+                    style,
+                }, run.text || "");
+            }
             const href = String(run?.href || "").trim();
             const isExternalHref = /^https?:\/\//i.test(href);
             // artifact:// links used to render as an inert span — the only
