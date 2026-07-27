@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.26 — 2026-07-27
+
+### Fixed
+
+- **Pane header controls no longer wrap out of the header.** The header
+  declares a fixed height, so a wrapped row escapes the box and lands on top of
+  the pane content below — a narrow session pane dropped its refresh button
+  onto the session list. Headers are now nowrap with a shrinkable title, which
+  is the right trade: the buttons are the only route to those actions, whereas
+  the title is duplicated on the selected session row and already ellipsizes.
+  Narrow panes also tighten icon padding so five buttons and a title fit one
+  row.
+
+Released immediately after 0.5.25, which is otherwise identical: npm packages
+are immutable once published, so a fix that lands after a tag needs its own
+version rather than a re-cut.
+
 ## 0.5.25 — 2026-07-27
 
 ### Portal performance

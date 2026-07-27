@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.25** — Portal performance: scroll and pane resize no longer dispatch on every input event, and transcript lines are memoized, so interaction stays responsive on long sessions. The terminal chat view now matches the rich view on desktop (toolbar centred in the header, panes flush under it, no duplicate chat title). Pane headers are a fixed height so panes stop misaligning. Windows 95 contrast fixes, plus a hermetic Playwright layout/theme gate and a Postgres headroom check in the test runner. New sessions use orchestration `1.0.68`.
+> **Latest release: v0.5.26** — Pane header controls no longer wrap out of the header and overlap pane content. Otherwise identical to 0.5.25: — Portal performance: scroll and pane resize no longer dispatch on every input event, and transcript lines are memoized, so interaction stays responsive on long sessions. The terminal chat view now matches the rich view on desktop (toolbar centred in the header, panes flush under it, no duplicate chat title). Pane headers are a fixed height so panes stop misaligning. Windows 95 contrast fixes, plus a hermetic Playwright layout/theme gate and a Postgres headroom check in the test runner. New sessions use orchestration `1.0.68`.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 
