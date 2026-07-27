@@ -12,6 +12,7 @@ import {
     extractHttpLinks,
     formatHumanDurationSeconds,
     formatTimestamp,
+    formatTimestampCompact,
     padRunsToDisplayWidth,
     parseMarkdownLines,
     shortModelName,
@@ -3739,7 +3740,9 @@ function isSequenceOrchestratorType(type) {
 }
 
 function mapEventToSequenceEntry(event) {
-    const time = formatTimestamp(event?.createdAt);
+    // Compact: the sequence TIME column is fixed-width, and the full form
+    // truncates any dated row to "26 Jul …", losing the time entirely.
+    const time = formatTimestampCompact(event?.createdAt);
     const nodeLabel = shortNodeLabel(event?.workerNodeId);
     const detailText = eventMessageText(event);
     const preview = summarizeEventPreview(detailText, 20);
@@ -3932,7 +3935,7 @@ function buildSessionStatusSequenceEntry(session) {
     const safeCreatedAtMs = Number.isFinite(createdAtMs) ? createdAtMs : Date.now();
 
     return {
-        time: formatTimestamp(safeCreatedAtMs),
+        time: formatTimestampCompact(safeCreatedAtMs),
         createdAtMs: safeCreatedAtMs,
         nodeLabel: "orch",
         color: errorKind === "failed" ? "red" : "yellow",
@@ -4236,7 +4239,13 @@ function buildSequenceViewForSession(state, session, maxWidth, options = {}) {
         .map((entry) => entry.nodeLabel)
         .filter((nodeLabel) => nodeLabel && nodeLabel !== "orch"))).sort((left, right) => left.localeCompare(right));
     const uniqueNodes = unionNodes.length > 0 ? unionNodes : activeSessionNodes;
-    const timeWidth = 8;
+    // Size the TIME column to what is actually in it. A fixed 8 fits "20:10:19"
+    // but silently truncates any dated row, which is precisely the row where
+    // the date matters. Capped so one odd stamp cannot starve the lanes.
+    const timeWidth = Math.min(13, Math.max(
+        8,
+        ...visibleEntries.map((entry) => displayLength(String(entry.time || ""))),
+    ));
     const availableWidth = Math.max(18, maxWidth);
     const maxNodes = Math.max(1, Math.floor((availableWidth - timeWidth - 1) / 6));
     let nodeLabels = ["orch", ...uniqueNodes];

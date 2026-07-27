@@ -76,3 +76,31 @@ test("no line ends in trailing whitespace", () => {
         assert.equal(text, text.replace(/\s+$/, ""), `trailing pad survived: ${JSON.stringify(text)}`);
     }
 });
+
+test("a dated timestamp is shown in full, not truncated", () => {
+    // The TIME column was a fixed 8 chars — enough for "20:10:19" but not for a
+    // dated stamp, so rows from an earlier day clipped to "26 Jul …" and lost
+    // the time entirely. That is the row where the date matters most.
+    const dayMs = 24 * 60 * 60 * 1000;
+    // BOTH events must be old: the view filters to a recent activity window and
+    // only falls back to the full set when nothing lands inside it, so a single
+    // fresh event would hide the dated row this test exists to check.
+    const events = [
+        { eventType: "session.turn_started", data: { iteration: 1 }, createdAt: new Date(Date.now() - dayMs).toISOString(), seq: 1 },
+        { eventType: "session.turn_started", data: { iteration: 2 }, createdAt: new Date(Date.now() - dayMs + 2000).toISOString(), seq: 2 },
+    ];
+    const view = selectInspector(stateWithEvents(events), { width: WIDTH });
+    assertRealView(view);
+
+    const text = (line) => {
+        const runs = Array.isArray(line?.runs) ? line.runs : (Array.isArray(line) ? line : null);
+        return runs ? runs.map((r) => String(r.text ?? "")).join("") : String(line?.text ?? "");
+    };
+    const body = (view.lines || []).map(text).filter(Boolean);
+    assert.ok(body.length > 0, "expected event lines");
+    for (const line of body) {
+        assert.ok(!line.includes("…"), `timestamp truncated: ${JSON.stringify(line)}`);
+    }
+    // And the dated row really is dated — otherwise this passes vacuously.
+    assert.ok(body.some((l) => /\d{1,2}[A-Z][a-z]{2}/.test(l)), "expected a dated stamp in the output");
+});

@@ -100,6 +100,44 @@ export function shortModelName(model) {
     return value.includes(":") ? value.split(":").slice(1).join(":") : value;
 }
 
+/**
+ * Compact timestamp for fixed-width columns (the sequence pane).
+ *
+ * formatTimestamp renders "26 Jul 20:10:19" once a row is older than today —
+ * 15 characters into a column sized for "20:10:19", so the date-bearing rows
+ * clipped to "26 Jul …" and the time was lost entirely. Dropping the seconds
+ * and the space inside the date gets a dated stamp to 11 characters, which
+ * fits alongside the same-day form without stealing width from the lanes.
+ */
+export function formatTimestampCompact(value, now = new Date()) {
+    if (!value) return "";
+    try {
+        const date = value instanceof Date ? value : new Date(value);
+        if (Number.isNaN(date.getTime())) return "";
+        const hhmm = date.toLocaleTimeString(undefined, {
+            hour: "2-digit", minute: "2-digit", hour12: false,
+        });
+        const sameLocalDay = date.getFullYear() === now.getFullYear()
+            && date.getMonth() === now.getMonth()
+            && date.getDate() === now.getDate();
+        if (sameLocalDay) {
+            return date.toLocaleTimeString(undefined, {
+                hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+            });
+        }
+        const day = String(date.getDate());
+        const month = date.toLocaleDateString("en-GB", { month: "short" });
+        // Year only when it differs — a two-digit suffix, since the column is
+        // shared with same-day rows and every extra char costs lane width.
+        const year = date.getFullYear() === now.getFullYear()
+            ? ""
+            : String(date.getFullYear()).slice(-2);
+        return `${day}${month}${year} ${hhmm}`;
+    } catch {
+        return "";
+    }
+}
+
 export function formatTimestamp(value, now = new Date()) {
     if (!value) return "";
     try {
