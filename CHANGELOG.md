@@ -1,5 +1,66 @@
 # Changelog
 
+## 0.5.25 — 2026-07-27
+
+### Portal performance
+
+- **Scroll and pane resize no longer dispatch on every input event.** Both
+  `pointermove` and `scroll` fire far more often than the browser paints, and
+  each dispatch notified every subscriber and re-rendered the transcript — so
+  most of that work was discarded before it was ever displayed, and the larger
+  the session the worse it got. Both paths now apply at most one dispatch per
+  animation frame; the end state is identical, since the last value in a frame
+  is the one actually seen.
+- **Transcript lines are memoized.** Render cost is proportional to transcript
+  length, so it must not repeat for state that does not change the lines —
+  scroll offset and pane split both notify every subscriber.
+
+### Desktop layout
+
+- **The terminal chat view now matches the rich view on desktop**: the toolbar
+  is centred in the portal header (reclaiming its own strip), panes rise to
+  just under the header, and the duplicate chat pane title bar is gone — the
+  session title, id, model and context are already on the selected session row.
+  Mobile and the TUI are unchanged.
+- **Pane headers are a fixed height**, so panes with action buttons no longer
+  render a taller header than panes without and start their bodies at
+  different heights. Long titles ellipsize rather than clipping against a
+  fixed row.
+- **Default type scale drops one step** (chat 13.5px), and the header toolbar
+  no longer pushes the identity block onto a second row.
+
+### Themes
+
+- **Windows 95 contrast fixes**: code blocks and inline pills get their own
+  inset white well — `.ps-md-code-pre` carries no background of its own, so
+  under Win95 it was showing the desktop teal behind dark CGA syntax tokens.
+  The attach and stop buttons get the raised bevel every other control has,
+  and title-bar metadata takes title-bar white.
+- Selection reverse-video now overrides inline run colours, which previously
+  left the selected row's id, model and context unreadable.
+
+### Testing and tooling
+
+- **Playwright layout and theme gate.** Cascade and layout outcomes are
+  invisible to reducer/selector tests and to jsdom, which has no layout
+  engine. 14 hermetic tests — dist served against a stubbed API, no database,
+  worker or LLM — assert that all pane headers share a height, no control
+  overflows its header, the page never scrolls sideways, and, across five
+  themes, that themed controls receive their theme and body text clears 4.5:1
+  against its real computed surface.
+- **`run-tests.sh` requires `max_connections >= 1500`.** Below that the
+  parallel suite exhausts the pool and reports "sorry, too many clients
+  already" in whichever tests happen to be running — which reads as product
+  flakiness and passes on isolated re-runs. Measured peak on a full run is 364
+  against pools that arithmetically imply 80.
+- **`portal-stop.sh` sweeps the port unconditionally.** It previously did so
+  only when the PID file was absent, so an instance started another way stayed
+  bound; `portal-start.sh` then probed that survivor and reported "ready" for a
+  server it had not started, silently serving a stale build. Start now requires
+  the port to be held by the process it launched.
+- **A server-render smoke test** runs every inspector tab, chat view and the
+  full-screen preview, catching render-time crashes that unit tests cannot see.
+
 ## 0.5.24 — 2026-07-27
 
 ### Session regeneration — correctness
