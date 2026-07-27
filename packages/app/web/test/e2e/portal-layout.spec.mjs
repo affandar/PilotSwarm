@@ -1,0 +1,114 @@
+// Portal layout and theming, in a real browser.
+//
+// WHY THESE EXIST: every one of the failures below shipped past a fully green
+// unit suite, because they are cascade and layout OUTCOMES — invisible to
+// tests that exercise reducers and selectors, and to jsdom, which has CSSOM
+// but no layout engine.
+//
+//   • pane headers sized by their contents, so panes misaligned
+//   • a theme rule losing a specificity contest to a base rule
+//   • selection text losing to an inline style, becoming unreadable
+//
+// Hermetic: served from dist against a stubbed API, so no database, no worker,
+// no LLM. That is what lets this gate every portal change.
+import { test, expect } from "@playwright/test";
+import { startStubServer } from "./stub-server.mjs";
+
+let stub;
+let base;
+
+test.beforeAll(async () => {
+    stub = await startStubServer(0);
+    base = `http://127.0.0.1:${stub.port}`;
+});
+
+test.afterAll(async () => {
+    await new Promise((r) => stub.server.close(r));
+});
+
+/** Relative luminance / contrast, per WCAG. */
+function contrastRatio(fg, bg) {
+    const parse = (c) => (c.match(/\d+(\.\d+)?/g) || []).slice(0, 3).map(Number);
+    const lum = (rgb) => {
+        const [r, g, b] = rgb.map((v) => {
+            const s = v / 255;
+            return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+        });
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const [a, b2] = [lum(parse(fg)), lum(parse(bg))].sort((x, y) => y - x);
+    return (a + 0.05) / (b2 + 0.05);
+}
+
+async function openPortal(page, { theme } = {}) {
+    await page.goto(base, { waitUntil: "networkidle" });
+    if (theme) {
+        await page.evaluate((id) => { document.documentElement.dataset.psTheme = id; }, theme);
+    }
+    await page.waitForSelector(".ps-panel", { timeout: 15_000 });
+}
+
+test("all pane headers are the same height", async ({ page }) => {
+    // The regression: headers were sized by their contents, so a pane WITH
+    // action buttons rendered ~46px while one without rendered 34px, and
+    // side-by-side panes started their bodies at different heights.
+    await openPortal(page);
+    const heights = await page.$$eval(".ps-panel-header", (els) =>
+        els.map((e) => Math.round(e.getBoundingClientRect().height)).filter((h) => h > 0));
+    expect(heights.length).toBeGreaterThan(1);
+    expect(new Set(heights).size, `header heights diverged: ${heights.join(", ")}`).toBe(1);
+});
+
+test("no pane header overflows its own controls", async ({ page }) => {
+    await openPortal(page);
+    const overflow = await page.$$eval(".ps-panel-header", (els) => els.flatMap((header) => {
+        const hb = header.getBoundingClientRect();
+        if (hb.height === 0) return [];
+        return [...header.querySelectorAll("button")]
+            .filter((b) => b.getBoundingClientRect().height > hb.height + 0.5)
+            .map((b) => `${b.className}: ${b.getBoundingClientRect().height} > ${hb.height}`);
+    }));
+    expect(overflow, `controls taller than their header:\n${overflow.join("\n")}`).toEqual([]);
+});
+
+test("the page never scrolls horizontally", async ({ page }) => {
+    await openPortal(page);
+    const overflows = await page.evaluate(() =>
+        document.documentElement.scrollWidth > document.documentElement.clientWidth + 1);
+    expect(overflows).toBe(false);
+});
+
+// Every theme, because nobody clicks through twenty of them by hand — and
+// that is exactly where these regressions hide.
+const THEMES = ["github-dark", "github-light", "light-high-contrast", "win95", "ms-dos"];
+
+for (const theme of THEMES) {
+    test(`[${theme}] themed controls actually receive the theme`, async ({ page }) => {
+        // The regression: base rules at specificity (0,3,1) outranked
+        // :root[data-ps-theme=…] at (0,3,0), so the inspector tab row silently
+        // kept its default styling while every other control was themed.
+        await openPortal(page, { theme });
+        const tab = await page.$(".ps-tab-row-icons .ps-toolbar-button");
+        test.skip(!tab, "no inspector tab row in this layout");
+        const bg = await tab.evaluate((el) => getComputedStyle(el).backgroundColor);
+        expect(bg, `tab button is fully transparent under ${theme}`).not.toBe("rgba(0, 0, 0, 0)");
+    });
+
+    test(`[${theme}] body text is readable against its surface`, async ({ page }) => {
+        await openPortal(page, { theme });
+        const { fg, bg } = await page.evaluate(() => {
+            const el = document.querySelector(".ps-panel-body") || document.body;
+            const s = getComputedStyle(el);
+            let bgEl = el;
+            let bgc = s.backgroundColor;
+            while (bgEl && (bgc === "rgba(0, 0, 0, 0)" || bgc === "transparent")) {
+                bgEl = bgEl.parentElement;
+                if (!bgEl) break;
+                bgc = getComputedStyle(bgEl).backgroundColor;
+            }
+            return { fg: s.color, bg: bgc || "rgb(0,0,0)" };
+        });
+        const ratio = contrastRatio(fg, bg);
+        expect(ratio, `${theme}: body text ${fg} on ${bg} is ${ratio.toFixed(2)}:1`).toBeGreaterThan(4.5);
+    });
+}

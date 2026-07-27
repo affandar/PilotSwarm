@@ -40,3 +40,8 @@ examples/horizon-harvester/graph.md
 .vscode/
 .mcp.json
 .copilot/mcp-config.json
+
+# Playwright
+/test-results/
+/playwright-report/
+/blob-report/

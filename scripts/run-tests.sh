@@ -703,6 +703,57 @@ if [ "$WITH_HORIZONDB" != "1" ]; then
 fi
 configure_provider_env
 
+# ── Postgres connection headroom ─────────────────────────────────────────
+#
+# The suite runs many forks in parallel, and the restart-heavy files
+# (chaos / reliability / fault-injection) deliberately kill and replace workers,
+# so each file can hold several workers' pools at once. Measured peak on a full
+# run is well past what the per-worker caps suggest — 364 live connections
+# against pools that arithmetically imply ~80.
+#
+# Below this ceiling the failure mode is "sorry, too many clients already"
+# scattered across unrelated suites, which reads as product flakiness: the
+# failures land in whichever tests happened to be running, isolated re-runs
+# pass, and the real cause is invisible. Fail loudly here instead.
+MIN_PG_MAX_CONNECTIONS="${MIN_PG_MAX_CONNECTIONS:-1500}"
+
+check_pg_max_connections() {
+    local url="${DATABASE_URL:-}"
+    [ -z "$url" ] && return 0
+    command -v node >/dev/null 2>&1 || return 0
+
+    local actual
+    actual="$(DB_URL="$url" node -e '
+        const pg = require("pg");
+        const c = new pg.Client({ connectionString: process.env.DB_URL });
+        c.connect()
+          .then(() => c.query("show max_connections"))
+          .then((r) => { console.log(r.rows[0].max_connections); return c.end(); })
+          .catch(() => { process.exit(1); });
+    ' 2>/dev/null)" || {
+        echo "⚠  Could not read max_connections (database unreachable?) — continuing."
+        return 0
+    }
+
+    if [ -z "$actual" ] || [ "$actual" -lt "$MIN_PG_MAX_CONNECTIONS" ] 2>/dev/null; then
+        echo ""
+        echo "ERROR: PostgreSQL max_connections is ${actual:-unknown}, need >= $MIN_PG_MAX_CONNECTIONS."
+        echo "  The parallel suite exhausts a smaller pool and fails with"
+        echo "  'sorry, too many clients already' in whichever tests happen to be"
+        echo "  running — which looks like flaky products, not a full connection table."
+        echo ""
+        echo "  Fix (test container):"
+        echo "    docker exec <pg-container> psql -U postgres -c \"ALTER SYSTEM SET max_connections = $MIN_PG_MAX_CONNECTIONS;\""
+        echo "    docker restart <pg-container>"
+        echo ""
+        echo "  Override the floor with MIN_PG_MAX_CONNECTIONS=<n> if you know what you are doing."
+        exit 1
+    fi
+    echo "✔ PostgreSQL max_connections=$actual (>= $MIN_PG_MAX_CONNECTIONS)"
+}
+
+check_pg_max_connections
+
 cleanup_test_state() {
     echo "🧹 Cleaning stale local test state..."
     node "$REPO_ROOT/scripts/cleanup-test-schemas.js"

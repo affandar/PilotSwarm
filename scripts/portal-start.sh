@@ -63,10 +63,12 @@ if [ ! -f "$ENV_FILE" ]; then
   exit 1
 fi
 
-# Kill any previous instances
-if [ -f "$PIDFILE" ]; then
-  echo "[portal] Stopping previous instance..."
-  ./scripts/portal-stop.sh 2>/dev/null || true
+# Kill any previous instances. Runs even without a PID file: an instance
+# started outside this script still holds the port, and the readiness probe
+# below cannot tell that server apart from the one we are about to start.
+if [ -f "$PIDFILE" ] || lsof -ti:"$PORT" >/dev/null 2>&1; then
+  echo "[portal] Stopping previous instance / clearing port $PORT..."
+  PORT="$PORT" ./scripts/portal-stop.sh 2>/dev/null || true
 fi
 
 # Local-dev auth bypass. Both are required: the `none` provider skips sign-in,
@@ -96,7 +98,11 @@ echo "$SERVER_PID" > "$PIDFILE"
 # Wait for server to be ready
 echo -n "[portal] Waiting for server..."
 for i in $(seq 1 30); do
-  if curl -s "http://localhost:$PORT/api/health" >/dev/null 2>&1; then
+  # Health alone is not proof: a survivor from an earlier run answers it too.
+  # Require the port to be held by the process WE started, so a stale server
+  # can never be reported as ready.
+  if curl -s "http://localhost:$PORT/api/health" >/dev/null 2>&1 \
+     && lsof -ti:"$PORT" 2>/dev/null | grep -qx "$SERVER_PID"; then
     echo " ready"
     break
   fi
