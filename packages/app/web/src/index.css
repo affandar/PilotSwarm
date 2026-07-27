@@ -4219,3 +4219,19 @@ body:not(.ps-rich-ui) .ps-mermaid {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+/* Diff tint must span the full SCROLLABLE width, not the visible box. With
+   white-space:pre the row background otherwise stops at the viewport edge, so
+   scrolling right revealed uncolored code — the same defect fixed earlier for
+   chat diff blocks, reappearing here because content-width mode reintroduces
+   horizontal scrolling. max-content makes every row as wide as the longest. */
+.ps-artifact-overlay-body.is-content-width .ps-md-code-pre code {
+  display: block;
+  min-width: max-content;
+}
+
+.ps-artifact-overlay-body.is-content-width .ps-diff-line {
+  /* Keep the grid — it owns the marker gutter — and just let the row grow to
+     the widest line so its tint covers the whole scrollable width. */
+  min-width: max-content;
+}

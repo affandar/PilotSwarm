@@ -6368,9 +6368,17 @@ function AdminConsolePanel({ controller }) {
 
 export function createWebPilotSwarmController({ transport, mode = "remote", branding = null } = {}) {
     clearBrowserPreferenceCache();
+    // Rich prose is the right default on a desktop transcript; on a phone the
+    // terminal view fits far more per screen and does not reflow wide content.
+    // This is only the DEFAULT — a stored profile preference still wins once
+    // settings load, so an explicit choice is never overridden.
+    const isNarrowViewport = typeof window !== "undefined"
+        && typeof window.matchMedia === "function"
+        && window.matchMedia("(max-width: 920px)").matches;
     const store = createStore(appReducer, createInitialState({
         mode,
         branding,
+        chatViewMode: isNarrowViewport ? "transcript" : "rich",
     }));
     return new PilotSwarmUiController({ store, transport });
 }
