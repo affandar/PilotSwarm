@@ -3870,20 +3870,24 @@ body.ps-rich-ui .ps-row-resizer.is-dragging .ps-row-resizer-handle {
   color: color-mix(in srgb, var(--ps-muted) 82%, var(--ps-foreground));
 }
 
-/* ── Rich UI: no chat pane title bar ───────────────────────────────────────
-   The session title, id, model and context are already on the selected row
-   in the session list, so the chat header was a second copy of all of it.
+/* ── Desktop: no chat pane title bar ───────────────────────────────────────
+   The session title, id, model and context are already on the selected row in
+   the session list, so the chat header was a second copy of all of it.
    Dropping it hands the space back to the transcript.
 
+   Applies to BOTH chat views. It was rich-only, which left the terminal view
+   carrying a duplicate title for no benefit.
+
    Kept below the mobile breakpoint: there the session list is collapsed, so
-   the header is the only thing naming the session you are in. */
+   the header is the only thing naming the session you are in. The TUI is a
+   separate renderer and is unaffected by any of this. */
 @media (min-width: 921px) {
-  body.ps-rich-ui .ps-chat-panel > .ps-panel-header {
+  .ps-chat-panel > .ps-panel-header {
     display: none;
   }
 
   /* Without a header the transcript starts flush against the panel edge. */
-  body.ps-rich-ui .ps-chat-panel > .ps-scroll-panel {
+  .ps-chat-panel > .ps-scroll-panel {
     padding-top: 6px;
   }
 }
