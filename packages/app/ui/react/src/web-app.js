@@ -884,7 +884,12 @@ function usePanePixelScroll(ref, scrollOffset, paneKey, controller) {
 
     React.useLayoutEffect(() => {
         const node = ref.current;
-        if (!node) return;
+        // No paneKey means nobody is driving this pane's offset, so leave the
+        // scroller entirely alone. Writing scrollTop back during a touch fling
+        // interrupts momentum every frame — which is why the preview felt
+        // stiff next to the transcript — and the SCROLL_ROW_HEIGHT
+        // quantization makes it snap as well.
+        if (!node || !paneKey) return;
         const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
         const nextScrollTop = Math.min(maxScroll, Math.max(0, Number(scrollOffset) || 0) * SCROLL_ROW_HEIGHT);
         if (Math.abs(node.scrollTop - nextScrollTop) > 2) {
@@ -894,12 +899,19 @@ function usePanePixelScroll(ref, scrollOffset, paneKey, controller) {
                 programmaticScrollRef.current = false;
             });
         }
-    }, [ref, scrollOffset]);
+    }, [ref, scrollOffset, paneKey]);
 
-    return React.useCallback(() => {
+    return React.useCallback((event) => {
         if (programmaticScrollRef.current) return;
         const node = ref.current;
         if (!node || !paneKey) return;
+        // React simulates bubbling for onScroll, so scrolling a code block or
+        // table INSIDE the document also fires this handler. Acting on it
+        // recorded the pane offset from an inner element's scroll state and
+        // then wrote it back to the outer scroller — horizontally scrolling a
+        // fenced code block snapped the whole markdown preview to the top.
+        // Only the pane's own scroller may drive the pane's offset.
+        if (event && event.target !== node) return;
         // See useScrollSync — ignore browser auto-clamp during a
         // transient empty/loading body.
         if (node.scrollHeight <= node.clientHeight) return;
@@ -1761,6 +1773,11 @@ function MarkdownPreviewContent({ content, theme }) {
 function RenderedPreviewPanel({ controller, title, color, focused, scrollOffset = 0, paneKey, theme, className = "", focusRegion = null, children }) {
     const ref = React.useRef(null);
     const onScroll = usePanePixelScroll(ref, scrollOffset, paneKey, controller);
+    // Mouse only. On touch this fired on every tap, and setFocus runs the
+    // region through normalizeFocusRegion, which rewrites a region missing
+    // from the current layout to order[0] — so tapping the chat on a phone
+    // was silently reassigning focus to the inspector and jumping to the
+    // artifact list. Keyboard scroll targeting is meaningless on touch anyway.
     const claimFocus = React.useCallback(() => {
         const region = focusRegionForPaneKey(paneKey, focusRegion);
         if (region && controller?.setFocus) controller.setFocus(region);
@@ -1772,7 +1789,6 @@ function RenderedPreviewPanel({ controller, title, color, focused, scrollOffset 
             className: `ps-scroll-panel is-preview ${className}`.trim(),
             onScroll,
             onMouseDown: claimFocus,
-            onTouchStart: claimFocus,
         }, children));
 }
 
@@ -1790,7 +1806,6 @@ function MarkdownPreviewPanel({ controller, title, color, focused, scrollOffset 
             className: "ps-scroll-panel ps-markdown-scroll",
             onScroll,
             onMouseDown: claimMarkdownFocus,
-            onTouchStart: claimMarkdownFocus,
         }, React.createElement(MarkdownPreviewContent, { content, theme })));
 }
 
@@ -2648,6 +2663,11 @@ function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, l
     // Clicking (or touching) a scrollable pane makes the keyboard scroll keys
     // act on THAT pane. Fires on mousedown rather than click so a drag-select
     // inside the pane claims focus too.
+    // Mouse only. On touch this fired on every tap, and setFocus runs the
+    // region through normalizeFocusRegion, which rewrites a region missing
+    // from the current layout to order[0] — so tapping the chat on a phone
+    // was silently reassigning focus to the inspector and jumping to the
+    // artifact list. Keyboard scroll targeting is meaningless on touch anyway.
     const claimFocus = React.useCallback(() => {
         const region = focusRegionForPaneKey(paneKey, focusRegion);
         if (region && controller?.setFocus) controller.setFocus(region);
@@ -2700,7 +2720,7 @@ function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, l
                 normalizedSticky.map((line, index) => React.createElement(Line, { key: `sticky:${index}`, line, theme })),
             )
             : null,
-        React.createElement("div", { ref, className: `ps-scroll-panel ${className}${scrollShadow.down ? " is-scrolled-down" : ""}${scrollShadow.up ? " is-scrolled-up" : ""}`.trim(), onScroll: handleBodyScroll, onMouseDown: claimFocus, onTouchStart: (event) => { claimFocus(); onTouchStart?.(event); }, onWheel, onTouchMove, onTouchEnd, onTouchCancel: onTouchEnd },
+        React.createElement("div", { ref, className: `ps-scroll-panel ${className}${scrollShadow.down ? " is-scrolled-down" : ""}${scrollShadow.up ? " is-scrolled-up" : ""}`.trim(), onScroll: handleBodyScroll, onMouseDown: claimFocus, onTouchStart, onWheel, onTouchMove, onTouchEnd, onTouchCancel: onTouchEnd },
             typeof renderBody === "function"
                 ? renderBody(normalizedLines, theme)
                 : structuredBlocks
@@ -3727,7 +3747,9 @@ function MobileArtifactOverlay({ controller }) {
             className: "ps-artifact-overlay-body",
             onTouchStart,
             onTouchEnd,
-        }, React.createElement(FilesPane, { controller, focused: true, mobile: true, previewOnly: true })));
+        }, React.createElement(FilesPane, {
+            controller, focused: true, mobile: true, previewOnly: true, nativeScroll: true,
+        })));
 }
 
 function MobileWorkspace({ controller }) {
@@ -3765,7 +3787,7 @@ function InspectorTabs({ activeTab, controller }) {
 // can host it in the activity slot where it gets the existing row resizer.
 // Detached this way the preview is resizable; nested inside the inspector it
 // could only ever have half of a pane.
-function FilesPane({ controller, focused, mobile = false, previewOnly = false }) {
+function FilesPane({ controller, focused, mobile = false, previewOnly = false, nativeScroll = false }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
     const fileInputRef = React.useRef(null);
@@ -3999,6 +4021,8 @@ function FilesPane({ controller, focused, mobile = false, previewOnly = false })
     // claims activity focus, so arrows/j/k/PgUp scroll IT. Inline (mobile) it is
     // part of the inspector and keeps inspector focus.
     const previewFocusRegion = previewOnly ? "activity" : null;
+    // In the mobile overlay the browser owns scrolling outright.
+    const previewPaneKey = nativeScroll ? null : "filePreview";
 
     const previewPane = previewIsImage
         ? React.createElement(BinaryArtifactPreviewPanel, {
@@ -4017,7 +4041,7 @@ function FilesPane({ controller, focused, mobile = false, previewOnly = false })
         : previewCodeLanguage
         ? React.createElement(RenderedPreviewPanel, {
             controller, title: null, color: "cyan", focused: false, theme,
-            paneKey: "filePreview", scrollOffset: viewState.previewScroll,
+            paneKey: previewPaneKey, scrollOffset: viewState.previewScroll,
             className: "ps-diff-preview", focusRegion: previewFocusRegion,
         },
             React.createElement("pre", { className: "ps-md-code-pre" },
@@ -4026,7 +4050,7 @@ function FilesPane({ controller, focused, mobile = false, previewOnly = false })
         : previewIsDiff
         ? React.createElement(RenderedPreviewPanel, {
             controller, title: null, color: "cyan", focused: false, theme,
-            paneKey: "filePreview", scrollOffset: viewState.previewScroll,
+            paneKey: previewPaneKey, scrollOffset: viewState.previewScroll,
             className: "ps-diff-preview", focusRegion: previewFocusRegion,
         },
             React.createElement("pre", { className: "ps-md-code-pre is-diff" },
@@ -4040,7 +4064,7 @@ function FilesPane({ controller, focused, mobile = false, previewOnly = false })
             color: "cyan",
             focused: false,
             scrollOffset: viewState.previewScroll,
-            paneKey: "filePreview",
+            paneKey: previewPaneKey,
             theme,
             focusRegion: previewFocusRegion,
             content: stripYamlFrontmatter(filesView.previewContent || ""),
@@ -4069,7 +4093,7 @@ function FilesPane({ controller, focused, mobile = false, previewOnly = false })
             lines: filesView.previewLines,
             scrollOffset: viewState.previewScroll,
             scrollMode: "top",
-            paneKey: "filePreview",
+            paneKey: previewPaneKey,
             focusRegion: previewFocusRegion,
             className: "is-preview is-wrapped",
         });
