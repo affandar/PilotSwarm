@@ -1,5 +1,87 @@
 # Changelog
 
+## 0.5.24 — 2026-07-27
+
+### Session regeneration — correctness
+
+The regen pipeline shipped in 0.5.22 had defects that only surfaced on real
+transcripts. All were found by adversarial review and are covered by
+regression tests that were each verified to fail without their fix.
+
+- **Oversized archives no longer abort regeneration.** A 1.8 MB transcript hit
+  the 1 MiB text-artifact ceiling and threw `ARTIFACT_TOO_LARGE` at the
+  `requested` stage — before the distiller, and before the deterministic
+  fallback that needs no archive at all. Archives are now written as chunks
+  under the cap, split only on line boundaries.
+- **Transcript selection keeps user turns and the newest messages.** Two
+  separate bugs: a comparator that subtracted `+Infinity` scores produced
+  `NaN`, which sort treats as "equal", silently dropping the END of a
+  user-dense conversation; and a head/tail split applied before reservation
+  let zero-score filler outrank user messages. Selection now reserves in
+  priority tiers — anchors, then users, then salience — before any positional
+  split.
+- **The distiller reads the archive's record shape.** It read `eventType`
+  while the archive writes `type`, so every archived message was classified
+  `system`, erasing the user/assistant structure selection exists to preserve.
+- **An empty transcript produces a real artifact** instead of an id naming an
+  artifact that was never uploaded.
+- **The deterministic package carries the session's opening** — the first ten
+  messages, bounded — not just the first user message. A mission is rarely
+  stated in one turn.
+- **Regeneration failures are surfaced inline** in the transcript with their
+  stage and error, instead of appearing to do nothing.
+- **Operators choose the distiller model, reasoning effort and context tier.**
+- **Compaction starts with no observed completion are reported as `unknown`,
+  not failed** — the previous derivation turned a metric artifact into a false
+  alarm.
+
+### Portal
+
+- **Artifacts open in place.** References in the transcript are clickable and
+  reveal the artifact with its preview loaded, rather than only offering a
+  download. Previews are type-aware: images (including SVG, via an
+  authenticated object URL so untrusted markup cannot execute), syntax-
+  highlighted source, real diff rendering, and markdown with frontmatter
+  stripped.
+- **Artifact multiselect with bulk delete**, and a preview that detaches into
+  its own resizable pane on desktop.
+- **A full-viewport artifact viewer on mobile**, with a close button, previous
+  and next controls, and a wrap toggle for code. Navigation follows the
+  conversation order when opened from a chat link and the list order when
+  opened from the list.
+- **One type scale.** Sixty hardcoded pixel sizes ignored the base variable, so
+  the chat sat at 14.5px while the rest of the UI was pinned at 9–12px. All are
+  now relative to a single root.
+- **Light themes get a canvas distinct from their surfaces.** Page, panes and
+  modals were all `#ffffff`, so nothing had a visible edge; elevation is now
+  derived from the palette and works in both polarities.
+- **Pane headers are a fixed height.** They were sized by their contents, so a
+  pane with action buttons rendered a taller header than one without and
+  side-by-side panes started their bodies at different heights.
+
+### Themes
+
+- **Windows 95** and **MS-DOS 2.0**, both with authentic palettes — CGA's
+  light-grey default attribute, the brown that dark yellow rendered as, the
+  `#c0c0c0` button face and navy title bars. Themes can now carry chrome as
+  well as colour: Win95 adds 3D bevels and buttons that press in, MS-DOS strips
+  every gradient and rounded corner and uses reverse video. Both are available
+  in the TUI (palette) and the portal (palette plus chrome).
+
+### Testing
+
+- **A render smoke test.** The UI suite exercised reducers and selectors only,
+  so a crash in a component's render body could reach production untouched —
+  which is how a temporal-dead-zone error blanked the Artifacts tab past a full
+  green suite. Server rendering now runs every inspector tab, chat view and the
+  full-screen preview.
+- **Transcript selection is tested by an LLM judge with mutation controls** —
+  deliberately broken selections the same judge must reject, so a judge that
+  passed everything could not be mistaken for a passing algorithm.
+- **`run-tests.sh` parses env files as data**, not as shell. A connection string
+  containing `&` was read as a command separator, so the variable never reached
+  the environment and the HorizonDB phase ran without a graph store.
+
 ## 0.5.23 — 2026-07-25
 
 ### Rich portal UI — a desktop-style chat view

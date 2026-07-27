@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.23** — A rich, desktop-style portal chat view (toolbar `Aa`): markdown-rendered replies, syntax-highlighted code, rendered mermaid diagrams, and a web-styled session list, single top bar, and frameless chat surface. The terminal transcript is unchanged and remains the default; the TUI is untouched. Also fixes owner chips showing in single-owner deployments (portal + TUI). New sessions use orchestration `1.0.68`.
+> **Latest release: v0.5.24** — Session regeneration correctness: oversized transcripts are archived in chunks instead of aborting the run, and selection now reserves user turns and both ends of the conversation before splitting. Artifacts open in place from the transcript with type-aware previews (images, syntax-highlighted source, real diffs), multiselect and bulk delete, and a full-viewport viewer on mobile. One type scale across the UI, light themes gain a canvas distinct from their surfaces, and two new themes — **Windows 95** and **MS-DOS 2.0** — which can carry chrome as well as colour. New sessions use orchestration `1.0.68`.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 
