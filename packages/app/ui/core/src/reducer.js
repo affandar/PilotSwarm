@@ -1922,6 +1922,8 @@ export function appReducer(state, action) {
                 downloads: {},
             };
             const entries = normalizeArtifactEntries(action.entries);
+            // Stamped by the caller, never Date.now() here — reducers stay pure.
+            const fetchedAt = Number(action.fetchedAt) || 0;
             const hasFilename = (filename) => entries.some((entry) => entry.filename === filename);
             const selectedFilename = current.selectedFilename && hasFilename(current.selectedFilename)
                 ? current.selectedFilename

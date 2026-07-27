@@ -1067,6 +1067,9 @@ function normalizePreviewPayload(filename, rawContent, contentType = "", metadat
     };
 }
 
+/** How long a fetched artifact list is trusted before a refetch. */
+const FILES_LIST_TTL_MS = 10_000;
+
 export class PilotSwarmUiController {
     constructor({ store, transport }) {
         this.store = store;
@@ -2396,7 +2399,7 @@ export class PilotSwarmUiController {
             return;
         }
         if (targetTab === "files") {
-            await this.ensureFilesForScope(selectFilesScope(this.getState()), { force: true });
+            await this.ensureFilesForScope(selectFilesScope(this.getState()));
         }
         if (targetTab === "history") {
             const activeSessionId = this.getState().sessions.activeSessionId;
@@ -2761,7 +2764,13 @@ export class PilotSwarmUiController {
 
         const current = this.getState().files.bySessionId[sessionId];
         if (!force && current?.loading) return current;
-        if (!force && current?.loaded) {
+        // A short TTL rather than force-on-every-call. Forcing unconditionally
+        // made the periodic inspector refresh refetch every cycle, which
+        // re-rendered the list and made it visibly flicker. Caching forever was
+        // the original bug. Ten seconds keeps a live agent's new artifacts
+        // appearing on their own without hammering the API.
+        const age = Date.now() - (Number(current?.fetchedAt) || 0);
+        if (!force && current?.loaded && age < FILES_LIST_TTL_MS) {
             if (current.selectedFilename) {
                 await this.ensureFilePreview(sessionId, current.selectedFilename).catch(() => {});
             }
@@ -2771,10 +2780,12 @@ export class PilotSwarmUiController {
         this.dispatch({ type: "files/sessionLoading", sessionId });
         try {
             const entries = await this.transport.listArtifacts(sessionId);
+            const fetchedAt = Date.now();
             this.dispatch({
                 type: "files/sessionLoaded",
                 sessionId,
                 entries,
+                fetchedAt,
             });
             const nextState = this.getState().files.bySessionId[sessionId];
             if (nextState?.selectedFilename) {

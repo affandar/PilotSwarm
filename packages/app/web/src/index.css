@@ -4072,3 +4072,20 @@ body:not(.ps-rich-ui) .ps-mermaid {
 .ps-list-button.is-marked.is-selected {
   background: color-mix(in srgb, var(--ps-highlight-background) 34%, transparent);
 }
+
+/* The image/binary preview card is not a scroll pane — a tall SVG plus its
+   metadata block simply overflowed the panel with no way to reach the bottom.
+   Scroll the body that contains it rather than every panel body, so the
+   line-based previews keep their own virtualized scrolling. */
+.ps-panel > .ps-panel-body:has(> .ps-binary-preview-card) {
+  overflow: auto;
+}
+
+/* Vector art has no intrinsic pixel size; without a floor an SVG can render
+   tiny, and without the cap a large one pushes the metadata off screen. */
+.ps-binary-preview-image {
+  width: auto;
+  height: auto;
+  min-height: 120px;
+  object-fit: contain;
+}
