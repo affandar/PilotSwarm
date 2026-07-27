@@ -4212,12 +4212,35 @@ body:not(.ps-rich-ui) .ps-mermaid {
   -webkit-overflow-scrolling: touch;
 }
 
-/* Default (mobile) mode: fold long lines so nothing needs sideways scrolling. */
-.ps-artifact-overlay-body:not(.is-content-width) .ps-md-code-pre,
-.ps-artifact-overlay-body:not(.is-content-width) .ps-md-code-pre code,
+/* Default (mobile) mode folds long lines — but only for files that ARE code.
+   Scoped to the code/diff preview so it cannot reach into markdown. */
+.ps-artifact-overlay-body:not(.is-content-width) .ps-diff-preview .ps-md-code-pre,
+.ps-artifact-overlay-body:not(.is-content-width) .ps-diff-preview .ps-md-code-pre code,
 .ps-artifact-overlay-body:not(.is-content-width) .ps-diff-text {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+/* Fenced blocks INSIDE a markdown document keep code shaped like code: real
+   line length with its own horizontal scrollbar. Folding a snippet to phone
+   width mangles indentation and makes it unreadable, and the prose around it
+   still wraps — which is the point of "markdown always shows mobile view,
+   except its code blocks". */
+.ps-artifact-overlay-body .ps-markdown-scroll .ps-md-code-pre {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.ps-artifact-overlay-body .ps-markdown-scroll .ps-md-code-pre,
+.ps-artifact-overlay-body .ps-markdown-scroll .ps-md-code-pre code {
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+.ps-artifact-overlay-body .ps-markdown-scroll .ps-md-code-pre code {
+  display: block;
+  min-width: max-content;
 }
 
 /* Diff tint must span the full SCROLLABLE width, not the visible box. With
