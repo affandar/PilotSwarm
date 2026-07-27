@@ -2019,6 +2019,18 @@ export function appReducer(state, action) {
                 },
             };
 
+        case "files/previewOrigin":
+            return {
+                ...state,
+                files: {
+                    ...state.files,
+                    previewOrigin: action.origin || null,
+                    restoreArtifactId: action.origin === "chat"
+                        ? (action.restoreArtifactId ?? state.files.restoreArtifactId ?? null)
+                        : null,
+                },
+            };
+
         case "files/clearMarks":
             return { ...state, files: { ...state.files, markedIds: [] } };
 

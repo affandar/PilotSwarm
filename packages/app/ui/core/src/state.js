@@ -205,6 +205,13 @@ export function createInitialState({ mode = "local", branding = null, themeId = 
             // marking rows must not move the preview, which keeps showing the
             // originally selected artifact.
             markedIds: [],
+            // How the preview was opened. "chat" must back out to the chat
+            // pane and leave the artifact list exactly as it was; "list" backs
+            // out to the list. One back button cannot serve both without this.
+            previewOrigin: null,
+            // Selection to restore when leaving a chat-opened preview, so
+            // following a chat link never disturbs the list.
+            restoreArtifactId: null,
             filter: {
                 scope: "selectedSession",
                 query: "",

@@ -3330,6 +3330,7 @@ export class PilotSwarmUiController {
 
     async selectFileBrowserItem(item) {
         if (!item?.sessionId || !item?.filename) return;
+        this.dispatch({ type: "files/previewOrigin", origin: "list" });
         const scope = selectFilesScope(this.getState());
         if (scope === "allSessions") {
             this.dispatch({
@@ -4441,10 +4442,18 @@ export class PilotSwarmUiController {
      * READ. Switches the inspector to Files, selects the artifact, and warms
      * the preview so the pane is populated by the time it renders.
      */
-    async revealArtifact(sessionId, filename, { force = true } = {}) {
+    async revealArtifact(sessionId, filename, { force = true, fullscreen = false } = {}) {
         const resolvedSessionId = sessionId || this.getState().sessions.activeSessionId;
         const name = String(filename || "").trim();
         if (!resolvedSessionId || !name) return false;
+
+        // Capture the list's current selection BEFORE we move it, so backing
+        // out of a chat-opened preview leaves the artifact list untouched.
+        this.dispatch({
+            type: "files/previewOrigin",
+            origin: "chat",
+            restoreArtifactId: this.getState().files.selectedArtifactId || null,
+        });
 
         if (this.getState().sessions.activeSessionId !== resolvedSessionId) {
             await this.loadSession(resolvedSessionId).catch(() => null);
@@ -4458,7 +4467,49 @@ export class PilotSwarmUiController {
         await this.ensureFilesForSession(resolvedSessionId, { force }).catch(() => null);
         this.dispatch({ type: "files/select", sessionId: resolvedSessionId, filename: name });
         await this.ensureFilePreview(resolvedSessionId, name, { force }).catch(() => null);
+        if (fullscreen) this.dispatch({ type: "files/fullscreen", fullscreen: true });
         return true;
+    }
+
+    /**
+     * Leave the artifact preview, returning wherever the user came FROM.
+     *
+     * A chat-opened preview backs out to the chat pane and restores the list's
+     * previous selection — following a link from the transcript must not
+     * reorganize the Files tab behind the user's back. A list-opened preview
+     * just drops out of full screen and stays on the list.
+     */
+    async closeArtifactPreview() {
+        const state = this.getState();
+        const origin = state.files.previewOrigin;
+        this.dispatch({ type: "files/fullscreen", fullscreen: false });
+
+        if (origin !== "chat") {
+            this.dispatch({ type: "files/previewOrigin", origin: null });
+            this.setFocus(FOCUS_REGIONS.INSPECTOR);
+            return;
+        }
+
+        const restoreId = state.files.restoreArtifactId;
+        if (restoreId) {
+            const slash = String(restoreId).indexOf("/");
+            if (slash > 0) {
+                this.dispatch({
+                    type: "files/select",
+                    sessionId: restoreId.slice(0, slash),
+                    filename: restoreId.slice(slash + 1),
+                });
+            }
+        } else {
+            this.dispatch({ type: "files/select", sessionId: null, filename: null });
+        }
+        this.dispatch({ type: "files/previewOrigin", origin: null });
+        this.setFocus(FOCUS_REGIONS.CHAT);
+    }
+
+    /** Step the preview to the next/previous artifact. Never wraps. */
+    async stepArtifactPreview(delta) {
+        await this.moveFileSelection(delta);
     }
 
     async finalizeArtifactUpload(upload, { sessionId = null, suppressStatus = false } = {}) {

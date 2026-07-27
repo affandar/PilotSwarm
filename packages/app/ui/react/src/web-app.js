@@ -1012,7 +1012,13 @@ function ArtifactLink({ label, artifactRef, style }) {
         event.preventDefault();
         event.stopPropagation();
         if (!controller?.revealArtifact) return;
-        Promise.resolve(controller.revealArtifact(artifactRef.sessionId, artifactRef.filename)).catch(() => {});
+        // On a phone the preview takes the whole pane — a list/detail split has
+        // no room to be useful at 390px.
+        const fullscreen = typeof window !== "undefined"
+            && typeof window.matchMedia === "function"
+            && window.matchMedia("(max-width: 920px)").matches;
+        Promise.resolve(controller.revealArtifact(artifactRef.sessionId, artifactRef.filename, { fullscreen }))
+            .catch(() => {});
     }, [controller, artifactRef.sessionId, artifactRef.filename]);
 
     return React.createElement("button", {
@@ -3727,6 +3733,7 @@ function FilesPane({ controller, focused, mobile = false, previewOnly = false })
             filesFilter: state.files.filter,
             selectedArtifactId: state.files.selectedArtifactId,
             markedIds: state.files.markedIds || [],
+            previewOrigin: state.files.previewOrigin || null,
             focused,
             previewScroll: state.ui.scroll.filePreview,
             fullscreen: Boolean(state.files.fullscreen),
@@ -3858,11 +3865,19 @@ function FilesPane({ controller, focused, mobile = false, previewOnly = false })
             label: "Filter",
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_FILES_FILTER).catch(() => {}),
         }),
-        React.createElement(IconButton, {
-            icon: viewState.fullscreen ? "⇱" : "⛶",
-            label: viewState.fullscreen ? "Exit fullscreen" : "Fullscreen",
-            onClick: () => controller.handleCommand(UI_COMMANDS.TOGGLE_FILE_PREVIEW_FULLSCREEN).catch(() => {}),
-        }));
+        viewState.fullscreen
+            ? React.createElement(IconButton, {
+                // Back, not "exit fullscreen": where it returns to depends on
+                // how the preview was opened, and the controller owns that.
+                icon: "←",
+                label: viewState.previewOrigin === "chat" ? "Back to chat" : "Back to artifacts",
+                onClick: () => controller.closeArtifactPreview().catch(() => {}),
+            })
+            : React.createElement(IconButton, {
+                icon: "⛶",
+                label: "Fullscreen",
+                onClick: () => controller.handleCommand(UI_COMMANDS.TOGGLE_FILE_PREVIEW_FULLSCREEN).catch(() => {}),
+            }));
 
     // Keyboard selection has to drag the viewport with it, exactly as the
     // session list does — otherwise j/k walks the selection straight out of
@@ -3900,7 +3915,9 @@ function FilesPane({ controller, focused, mobile = false, previewOnly = false })
                     return;
                 }
                 controller.clearArtifactMarks();
-                controller.selectFileBrowserItem(item).catch(() => {});
+                controller.selectFileBrowserItem(item)
+                    .then(() => { if (mobile) controller.handleCommand(UI_COMMANDS.TOGGLE_FILE_PREVIEW_FULLSCREEN).catch(() => {}); })
+                    .catch(() => {});
             },
         }, React.createElement(Line, {
             line: normalizeLines([filesView.listBodyLines?.[index]])[0],
@@ -4011,6 +4028,25 @@ function FilesPane({ controller, focused, mobile = false, previewOnly = false })
             focusRegion: previewFocusRegion,
             className: "is-preview is-wrapped",
         });
+    // Horizontal swipe steps the preview. Deliberately NOT wrapping: running off
+    // the end should feel like the end, not silently loop you back to the top.
+    // A vertical-dominant gesture is left alone so scrolling still works.
+    const swipeRef = React.useRef(null);
+    const onPreviewTouchStart = React.useCallback((event) => {
+        const t = event.touches?.[0];
+        swipeRef.current = t ? { x: t.clientX, y: t.clientY } : null;
+    }, []);
+    const onPreviewTouchEnd = React.useCallback((event) => {
+        const start = swipeRef.current;
+        swipeRef.current = null;
+        const t = event.changedTouches?.[0];
+        if (!start || !t) return;
+        const dx = t.clientX - start.x;
+        const dy = t.clientY - start.y;
+        if (Math.abs(dx) < 60 || Math.abs(dx) <= Math.abs(dy)) return;
+        controller.stepArtifactPreview(dx < 0 ? 1 : -1).catch(() => {});
+    }, [controller]);
+
     const view = viewState;
 
     if (previewOnly) return previewPane;
@@ -4029,7 +4065,11 @@ function FilesPane({ controller, focused, mobile = false, previewOnly = false })
     React.createElement(InspectorTabs, { activeTab: "files", controller }),
     // Fullscreen files mode shows only the preview pane; the list stays hidden.
     view.fullscreen
-        ? previewPane
+        ? React.createElement("div", {
+            className: "ps-fullscreen-preview",
+            onTouchStart: onPreviewTouchStart,
+            onTouchEnd: onPreviewTouchEnd,
+        }, previewPane)
         : React.createElement("div", {
             // On desktop the preview is detached into the activity slot, so the
             // inspector shows the list alone and gives it the full pane.
