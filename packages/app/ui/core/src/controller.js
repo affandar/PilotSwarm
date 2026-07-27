@@ -4504,7 +4504,12 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "files/select", sessionId: null, filename: null });
         }
         this.dispatch({ type: "files/previewOrigin", origin: null });
-        this.setFocus(FOCUS_REGIONS.CHAT);
+        // Dispatch the focus DIRECTLY rather than via setFocus: that runs the
+        // region through normalizeFocusRegion, which falls back to order[0]
+        // when the region is missing from the current layout's focus order —
+        // so "chat" was being clamped to the inspector and back-from-chat
+        // landed on the artifact list instead of the transcript.
+        this.dispatch({ type: "ui/focus", focusRegion: FOCUS_REGIONS.CHAT });
     }
 
     /** Step the preview to the next/previous artifact. Never wraps. */

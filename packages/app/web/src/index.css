@@ -4079,6 +4079,12 @@ body:not(.ps-rich-ui) .ps-mermaid {
    line-based previews keep their own virtualized scrolling. */
 .ps-panel > .ps-panel-body:has(> .ps-binary-preview-card) {
   overflow: auto;
+  /* Same scroll behavior the chat pane and every .ps-scroll-panel already use.
+     Without these the image/SVG preview scrolled without momentum or rubber
+     banding, which is what made it feel stiff next to the transcript. */
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  scroll-behavior: smooth;
 }
 
 /* Vector art has no intrinsic pixel size; without a floor an SVG can render
@@ -4169,4 +4175,11 @@ body:not(.ps-rich-ui) .ps-mermaid {
   border: 0;
   border-radius: 0;
   box-shadow: none;
+}
+
+/* Any scroller inside the mobile overlay behaves like the transcript does. */
+.ps-artifact-overlay-body .ps-scroll-panel,
+.ps-artifact-overlay-body .ps-panel-body {
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }

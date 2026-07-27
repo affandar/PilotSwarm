@@ -4093,15 +4093,15 @@ function FilesPane({ controller, focused, mobile = false, previewOnly = false })
     view.fullscreen
         ? previewPane
         : React.createElement("div", {
-            // On desktop the preview is detached into the activity slot, so the
-            // inspector shows the list alone and gives it the full pane.
-            className: `ps-files-grid${mobile ? "" : " is-list-only"}`,
+            // The pane is a LIST, full stop. Desktop detaches the preview into
+            // the activity slot; mobile opens the full-screen overlay on tap.
+            // Neither wants a cramped preview stacked under the list.
+            className: "ps-files-grid is-list-only",
         },
             // No nested panel: the enclosing Files pane is already the box, and
             // a second border + header inside it only ate vertical space to
             // restate what the pane title says.
             React.createElement("div", { className: "ps-action-list ps-files-list" }, listContent),
-            mobile ? previewPane : null,
         ));
 }
 
