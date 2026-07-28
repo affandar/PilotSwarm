@@ -2408,10 +2408,57 @@ export function selectLiveActivityLines(state, options = {}) {
     return [fitRuns(runs, maxWidth)];
 }
 
+// Recent selectChatLines results, compared by the IDENTITY of every input.
+//
+// This wraps the entire transcript to terminal lines, and it runs from
+// scrollPane / scrollPaneTo / the visual-offset helpers — i.e. on every scroll
+// action, to answer nothing more than "how many lines are there". Measured
+// 1.6ms at 300 messages and 5.1ms at 1500, per scroll.
+//
+// Keyed on identities rather than fields on purpose: selectActiveChat is NOT a
+// pure function of the chat array — it also appends a pending-question message,
+// an answered-question message and a session-error message, and branches on
+// ui.chatViewMode and branding. Anything derived from `session` therefore has
+// to invalidate when `session` does, which identity comparison gives for free.
+// The session object is rebuilt by the poll, so this caches within a burst of
+// scrolling (the hot case) and refreshes whenever anything real changes.
+const CHAT_LINES_MEMO_MAX = 4;
+let chatLinesMemo = [];
+
 export function selectChatLines(state, maxWidth = 80, options = {}) {
+    const memoSessionId = state?.sessions?.activeSessionId ?? null;
+    const memoKey = {
+        sessionId: memoSessionId,
+        session: memoSessionId ? state?.sessions?.byId?.[memoSessionId] ?? null : null,
+        chat: state?.history?.bySessionId?.get?.(memoSessionId)?.chat ?? null,
+        viewMode: state?.ui?.chatViewMode ?? null,
+        branding: state?.branding ?? null,
+        principal: state?.auth?.principal ?? null,
+        maxWidth,
+        tableMode: options?.tableMode ?? null,
+    };
+    for (const entry of chatLinesMemo) {
+        if (entry.sessionId === memoKey.sessionId
+            && entry.session === memoKey.session
+            && entry.chat === memoKey.chat
+            && entry.viewMode === memoKey.viewMode
+            && entry.branding === memoKey.branding
+            && entry.principal === memoKey.principal
+            && Object.is(entry.maxWidth, memoKey.maxWidth)
+            && entry.tableMode === memoKey.tableMode) {
+            return entry.lines;
+        }
+    }
+
+    const memoize = (lines) => {
+        chatLinesMemo.unshift({ ...memoKey, lines });
+        if (chatLinesMemo.length > CHAT_LINES_MEMO_MAX) chatLinesMemo.length = CHAT_LINES_MEMO_MAX;
+        return lines;
+    };
+
     const messages = selectActiveChat(state);
     if (!messages || messages.length === 0) {
-        return [{ text: "No messages yet.", color: "gray" }];
+        return memoize([{ text: "No messages yet.", color: "gray" }]);
     }
 
     // The current viewer's identity key — a user.message whose sender differs
@@ -2455,7 +2502,7 @@ export function selectChatLines(state, maxWidth = 80, options = {}) {
             lines.push(createBlankLine());
         }
     }
-    return lines.length > 0 ? lines : [{ text: "No messages yet.", color: "gray" }];
+    return memoize(lines.length > 0 ? lines : [{ text: "No messages yet.", color: "gray" }]);
 }
 
 // True when a chat message is plain user/assistant prose the rich (block)
