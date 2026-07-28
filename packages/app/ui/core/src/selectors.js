@@ -2420,8 +2420,24 @@ export function selectLiveActivityLines(state, options = {}) {
 // an answered-question message and a session-error message, and branches on
 // ui.chatViewMode and branding. Anything derived from `session` therefore has
 // to invalidate when `session` does, which identity comparison gives for free.
-// The session object is rebuilt by the poll, so this caches within a burst of
-// scrolling (the hot case) and refreshes whenever anything real changes.
+//
+// `byId` is in the key for two reasons found by adversarial review, both of
+// which produced visibly wrong output:
+//
+//   1. For a GROUP session, selectActiveChat ignores the group's own history
+//      entirely and builds a Members table by scanning every OTHER session in
+//      byId (title / status / shortSummary). Renaming a member changes none of
+//      the group row's own aggregate counters, and the reducer PRESERVES a
+//      session object's identity when nothing on it moved — so without byId the
+//      table froze on the old titles indefinitely. (An earlier version of this
+//      comment claimed the poll rebuilds the session object every time. It does
+//      not, and that wrong assumption is what made the bug possible.)
+//   2. This memo is module-level and shared by callers that pass DIFFERENT
+//      state shapes: the TUI's ChatPane passes a synthetic single-session byId
+//      while the controller's scroll math passes the real full state. Every
+//      other key field can match between them, so whichever missed first
+//      populated one entry for both, and the member list flipped depending on
+//      call order. Distinct byId objects now key them apart.
 const CHAT_LINES_MEMO_MAX = 4;
 let chatLinesMemo = [];
 
@@ -2430,6 +2446,7 @@ export function selectChatLines(state, maxWidth = 80, options = {}) {
     const memoKey = {
         sessionId: memoSessionId,
         session: memoSessionId ? state?.sessions?.byId?.[memoSessionId] ?? null : null,
+        byId: state?.sessions?.byId ?? null,
         chat: state?.history?.bySessionId?.get?.(memoSessionId)?.chat ?? null,
         viewMode: state?.ui?.chatViewMode ?? null,
         branding: state?.branding ?? null,
@@ -2440,6 +2457,7 @@ export function selectChatLines(state, maxWidth = 80, options = {}) {
     for (const entry of chatLinesMemo) {
         if (entry.sessionId === memoKey.sessionId
             && entry.session === memoKey.session
+            && entry.byId === memoKey.byId
             && entry.chat === memoKey.chat
             && entry.viewMode === memoKey.viewMode
             && entry.branding === memoKey.branding

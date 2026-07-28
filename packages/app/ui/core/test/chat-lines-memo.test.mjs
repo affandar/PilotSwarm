@@ -105,3 +105,58 @@ test("the memo is bounded and still serves the most recent widths", () => {
     // ...but a just-used width is still cached.
     assert.equal(selectChatLines(state, 100), again);
 });
+
+// ── Group sessions ───────────────────────────────────────────────────────────
+// Both of these were found by adversarial review AFTER the memo shipped, and
+// both produced visibly wrong output.
+
+const GROUP_ID = "group:g1";
+
+function groupState({ groupRow, members, byId = null }) {
+    const map = byId || { [GROUP_ID]: groupRow, ...members };
+    return {
+        sessions: { activeSessionId: GROUP_ID, byId: map },
+        history: { bySessionId: new Map() },
+        ui: {},
+        branding: null,
+        auth: { principal: null },
+    };
+}
+
+test("renaming a group member invalidates, even though the group row is untouched", () => {
+    // For a group, selectActiveChat ignores the group's own history and builds a
+    // Members table from every OTHER session in byId. The group row's own
+    // counters do not move on a rename, and the reducer preserves an unchanged
+    // session object's identity — so keying on the group row alone froze the
+    // table on the old titles.
+    const groupRow = { sessionId: GROUP_ID, isGroup: true, groupId: "g1", title: "My Group", memberCount: 1 };
+    const before = selectChatLines(groupState({
+        groupRow,
+        members: { m1: { sessionId: "m1", groupId: "g1", title: "Old title", status: "running" } },
+    }), 120);
+    // Same group row OBJECT, renamed member, fresh byId — exactly what a poll does.
+    const after = selectChatLines(groupState({
+        groupRow,
+        members: { m1: { sessionId: "m1", groupId: "g1", title: "New title", status: "running" } },
+    }), 120);
+
+    assert.notEqual(after, before, "a member rename was served from the memo");
+    assert.match(JSON.stringify(after), /New title/, "the renamed member never reached the members table");
+});
+
+test("two callers passing different byId shapes do not share a memo entry", () => {
+    // The memo is module-level. The TUI's chat pane passes a synthetic byId
+    // holding only the active session; the controller's scroll math passes the
+    // real one. Every other key field can match, so without byId in the key one
+    // caller's transcript was served to the other.
+    const groupRow = { sessionId: GROUP_ID, isGroup: true, groupId: "g1", title: "My Group", memberCount: 1 };
+    const members = { m1: { sessionId: "m1", groupId: "g1", title: "Member One", status: "running" } };
+
+    const full = selectChatLines(groupState({ groupRow, members }), 120);
+    // Synthetic single-session state, same group row identity, same width.
+    const synthetic = selectChatLines(groupState({ groupRow, members: {}, byId: { [GROUP_ID]: groupRow } }), 120);
+
+    assert.notEqual(synthetic, full, "a synthetic single-session state reused the full state's transcript");
+    assert.match(JSON.stringify(full), /Member One/, "the full state should list the member");
+    assert.doesNotMatch(JSON.stringify(synthetic), /Member One/, "the synthetic state has no member data to list");
+});
