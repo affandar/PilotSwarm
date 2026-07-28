@@ -509,7 +509,7 @@ function getCollapseBadge(sessionId, entry, totalDescendantCounts, visibleDescen
     return { text: `[+${badgeCount}]`, color: "cyan" };
 }
 
-function formatCronTimestampForClient(value) {
+export function formatCronTimestampForClient(value) {
     if (!value) return "scheduled";
     const date = value instanceof Date ? value : new Date(value);
     if (Number.isNaN(date.getTime())) return "scheduled";
@@ -771,6 +771,14 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
         badgeRuns: [],
         selectedMetaRuns: detailRuns,
         detailRuns,
+        // Total descendants, for renderers that want the real number rather
+        // than the collapse badge (which counts only HIDDEN children, so it is
+        // null whenever the subtree is expanded).
+        // NOTE: `detailRuns` above computes its own childCount by indexing this
+        // Map with brackets, which always yields undefined — so its "N children"
+        // segment has never rendered. Left alone deliberately: fixing it would
+        // change TUI and mobile output.
+        childCount: totalDescendantCounts?.get?.(session?.sessionId) || 0,
         // Structured row description for renderers that draw real chrome
         // instead of terminal runs (the portal's rich session list): status
         // becomes a dot, depth becomes indentation, the owner/child/cron
@@ -5320,7 +5328,7 @@ export function selectArtifactPickerModal(state, maxWidth = 88) {
 
 // ── Stats Inspector Pane ────────────────────────────────────────────
 
-function formatCompactNumber(n) {
+export function formatCompactNumber(n) {
     if (n == null || !Number.isFinite(n)) return "0";
     if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
     if (n >= 10_000) return `${(n / 1_000).toFixed(1)}K`;

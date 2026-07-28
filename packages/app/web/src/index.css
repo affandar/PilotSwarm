@@ -1594,7 +1594,8 @@ body.is-resizing-pane-y * {
   opacity: 0.96;
 }
 
-/* Expanded id · time · model · ctx, only under the selected row. */
+/* Expanded id · time · model · ctx, only under the selected row. Retained for
+   the mobile pane, which still unfolds detail inline. */
 .ps-session-row-detail {
   margin-top: 3px;
   padding-inline-start: 20px;
@@ -1602,6 +1603,76 @@ body.is-resizing-pane-y * {
   font-size: 0.94em;
   opacity: 0.9;
 }
+
+/* ── Selected-session detail box ──────────────────────────────────────────
+   Pinned to the bottom of the Sessions panel so the rows above can stay one
+   line each. The panel body becomes a column: list scrolls, box does not. */
+.ps-session-pane .ps-panel-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.ps-session-pane .ps-panel-body > .ps-session-list {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.ps-session-detail-box {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--ps-border-strong);
+  background: var(--ps-chrome);
+  padding: 6px 10px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 1px 10px;
+  font-size: var(--ps-font-size-dense);
+  line-height: 1.35;
+  /* Height is FIXED by construction: always the same eight rows, every value
+     clamped to one line. Nothing about the selection can change it, so the
+     list never shifts under the cursor while scrolling. */
+  align-content: start;
+}
+
+.ps-session-detail-field {
+  display: contents;
+}
+
+.ps-session-detail-label {
+  color: var(--ps-muted);
+  white-space: nowrap;
+  text-transform: uppercase;
+  font-size: 0.86em;
+  letter-spacing: 0.04em;
+  opacity: 0.85;
+}
+
+.ps-session-detail-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The id goes into kubectl and CLI commands, so it must stay copyable — but it
+   cannot wrap, or a narrow pane would make this row two lines and the box
+   would change height. Ellipsized and selectable: the DOM holds the full
+   value, so a double-click still copies all 36 characters. */
+.ps-session-detail-field.is-id .ps-session-detail-value {
+  user-select: text;
+  cursor: text;
+}
+
+/* Absent values stay dim so the eye skips them; the row still holds its line. */
+.ps-session-detail-field.is-none .ps-session-detail-value {
+  color: var(--ps-muted);
+  opacity: 0.65;
+}
+
+.ps-session-detail-field.is-warm .ps-session-detail-value { color: var(--ps-warning, #c08000); }
+.ps-session-detail-field.is-hot .ps-session-detail-value { color: var(--ps-danger, #c04040); }
+.ps-session-detail-field.is-armed .ps-session-detail-value { color: var(--ps-accent); }
 
 /* Compact column mode (narrow): rows lay out at max-content so the list
    scrolls horizontally as ONE unit (is-session-compact on the grid). */
@@ -1653,16 +1724,16 @@ body.is-resizing-pane-y * {
   max-width: 100%;
 }
 
-/* Wrap mode: the title wraps up to two lines then ellipsizes; the % stays
-   pinned right. Narrow enough and the grid flips to is-session-compact, where
-   the max-content rules above give the whole list one horizontal scrollbar. */
+/* Wrap mode: ONE line, ellipsized; the % stays pinned right. The details that
+   used to justify a second line now live in the panel's detail box, so a row
+   is a row. Mobile keeps two lines (below) — it has no detail box. Narrow
+   enough and the grid flips to is-session-compact, where the max-content rules
+   above give the whole list one horizontal scrollbar. */
 .ps-workspace-main-grid.is-session-wrap .ps-session-pane .ps-session-row-title {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  display: block;
   overflow: hidden;
-  overflow-wrap: anywhere;
-  white-space: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .ps-session-pane.ps-mobile-session-pane .ps-session-row-title {
   display: -webkit-box;

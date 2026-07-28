@@ -12,6 +12,9 @@ import {
     computeLegacyLayout,
     createInitialState,
     createStore,
+    formatCompactNumber,
+    formatCronTimestampForClient,
+    formatHumanDurationSeconds,
     getPromptInputRows,
     getTheme,
     isThemeLight,
@@ -3025,13 +3028,94 @@ function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, l
 // with a guide rail rather than an ASCII "└" prefix.
 const SESSION_KIND_GLYPHS = { group: "🗂", system: "⚙", service: "⚗" };
 
-function RichSessionRow({ row, theme }) {
+/**
+ * Selected-session details, pinned to the bottom of the Sessions panel.
+ *
+ * This exists so the ROWS can stay one clean line each. Everything that used
+ * to unfold under the selected row (and, in the rich list, under every row)
+ * lives here instead, at a fixed spot the eye can return to — so switching
+ * sessions no longer reflows the list.
+ *
+ * Web-only by construction: the TUI renders `row.detailRuns` itself and is
+ * untouched by this.
+ */
+const SESSION_DETAIL_NONE = "—";
+
+function SessionDetailBox({ session, childCount = 0 }) {
+    // EVERY field renders on EVERY selection, empty ones as an em dash. The box
+    // is a fixed grid of rows, so moving through the list cannot change its
+    // height — a box that grew and shrank would shove the list under the
+    // cursor mid-scroll. That is also why each value is a single clamped line.
+    const field = (label, value, extraClass = "") => {
+        const text = (value == null || value === "") ? SESSION_DETAIL_NONE : String(value);
+        const empty = text === SESSION_DETAIL_NONE;
+        return React.createElement("div", {
+            className: `ps-session-detail-field${extraClass ? ` ${extraClass}` : ""}${empty ? " is-none" : ""}`,
+            key: label,
+        },
+            React.createElement("span", { className: "ps-session-detail-label" }, label),
+            React.createElement("span", { className: "ps-session-detail-value", title: text }, text));
+    };
+
+    const usage = session?.contextUsage;
+    const hasUsage = usage && Number.isFinite(usage.currentTokens) && Number.isFinite(usage.tokenLimit) && usage.tokenLimit > 0;
+    const percent = hasUsage ? Math.round((usage.currentTokens / usage.tokenLimit) * 100) : null;
+    const context = hasUsage
+        ? `${formatCompactNumber(usage.currentTokens)} / ${formatCompactNumber(usage.tokenLimit)} · ${percent}%`
+        : null;
+
+    // "Cron vs not" is a question the list could only answer with a glyph, so
+    // spell it out — an unscheduled session says "off" rather than going blank,
+    // which would be indistinguishable from "unknown".
+    let cron = null;
+    if (session && !session.isGroup) {
+        cron = "off";
+        if (session.cronActive === true) {
+            cron = session.cronKind === "wall-clock"
+                ? `next ${formatCronTimestampForClient(session.cronNextFireAt)}`
+                : typeof session.cronInterval === "number"
+                    ? `every ${formatHumanDurationSeconds(session.cronInterval)}`
+                    : "on";
+        }
+    }
+
+    const model = session?.model
+        ? (session.reasoningEffort && !String(session.model).includes(String(session.reasoningEffort))
+            ? `${session.model}:${session.reasoningEffort}`
+            : session.model)
+        : null;
+
+    const access = !session ? null
+        : session.visibility === "shared_write" ? "shared · write"
+            : session.visibility === "shared_read" ? "shared · read"
+                : "private";
+
+    // Groups have members rather than descendants; both answer "how many are
+    // under this row", so they share the field.
+    const children = session?.isGroup
+        ? (session.memberCount == null ? null : String(session.memberCount))
+        : (childCount > 0 ? String(childCount) : null);
+
+    return React.createElement("div", { className: "ps-session-detail-box" },
+        field("ID", session?.sessionId, "is-id"),
+        field("Model", model),
+        field("Context", context, percent != null && percent >= 85 ? "is-hot" : percent != null && percent >= 70 ? "is-warm" : ""),
+        field("Cron", cron, session?.cronActive === true ? "is-armed" : ""),
+        field("Agent", session?.agentId),
+        field("Status", session?.status),
+        field("Children", children),
+        field("Access", access));
+}
+
+function RichSessionRow({ row, theme, showDetail = false }) {
     const chrome = row.chrome;
-    if (!chrome) return React.createElement(SessionRowContent, { row, theme, structured: true });
+    if (!chrome) return React.createElement(SessionRowContent, { row, theme, structured: true, showInlineDetail: showDetail });
 
     const kindGlyph = SESSION_KIND_GLYPHS[chrome.kind] || null;
     const accent = resolveColor(theme, chrome.accentColor) || undefined;
-    const detailRuns = Array.isArray(row.detailRuns) ? row.detailRuns : [];
+    // Mobile has no room for a detail box, so it keeps the inline detail line
+    // it always had. Desktop moves that content to the panel footer.
+    const detailRuns = showDetail && Array.isArray(row.detailRuns) ? row.detailRuns : [];
 
     return React.createElement("div", { className: "ps-rich-session-row" },
         React.createElement("div", { className: "ps-rich-session-main" },
@@ -3072,16 +3156,13 @@ function RichSessionRow({ row, theme }) {
                     style: { color: resolveColor(theme, chrome.ctx.color) || undefined },
                 }, chrome.ctx.text)
                 : null),
-        // The detail line is ALWAYS rendered, selected or not. Swapping row
-        // content on selection made the whole list jump; now the only things
-        // that reflow are expand/collapse and the highlight moving.
         detailRuns.length > 0
             ? React.createElement("div", { className: "ps-rich-session-detail" },
                 React.createElement(Runs, { runs: detailRuns, theme }))
             : null);
 }
 
-function SessionRowContent({ row, theme, structured = false }) {
+function SessionRowContent({ row, theme, structured = false, showInlineDetail = false }) {
     const hasStructuredRuns = structured && Array.isArray(row.titleRuns);
     if (!hasStructuredRuns) {
         return Array.isArray(row.runs)
@@ -3090,14 +3171,16 @@ function SessionRowContent({ row, theme, structured = false }) {
     }
 
     // Dense row: the title takes one line (clamped by CSS) and the context %
-    // is pinned to the right. The full id · time · model · ctx detail unfolds
-    // only under the selected row.
+    // is pinned to the right. id · time · model · ctx now live in the panel's
+    // detail box rather than unfolding under the row, so selecting a session
+    // no longer reflows the list.
     const ctxRuns = Array.isArray(row.ctxRuns) ? row.ctxRuns : [];
+    const hasCtx = ctxRuns.length > 0;
+    // Mobile keeps the inline unfold under the selected row (no detail box).
     const detailRuns = Array.isArray(row.detailRuns)
         ? row.detailRuns
         : (Array.isArray(row.selectedMetaRuns) ? row.selectedMetaRuns : []);
-    const hasCtx = ctxRuns.length > 0;
-    const hasDetail = row.active && detailRuns.length > 0;
+    const hasDetail = showInlineDetail && row.active && detailRuns.length > 0;
 
     return React.createElement(React.Fragment, null,
         React.createElement("div", { className: "ps-session-row-line" },
@@ -3144,6 +3227,9 @@ function useStableValue(value) {
 }
 
 function SessionPane({ controller, actions = null, panelClassName = "", structuredRows = false }) {
+    // Mobile keeps its inline detail line and gets no detail box — a reserved
+    // footer would eat a meaningful slice of a phone screen.
+    const isMobilePane = String(panelClassName).includes("ps-mobile-session-pane");
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
     const sessionButtonRefs = React.useRef(new Map());
@@ -3186,6 +3272,10 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     const rows = useStableValue(computedRows);
     const activeSession = viewState.activeSessionId
         ? viewState.sessionsById[viewState.activeSessionId] || null
+        : null;
+    // The row carries the computed child badge; the raw session does not.
+    const activeRow = viewState.activeSessionId
+        ? rows.find((r) => r.sessionId === viewState.activeSessionId) || null
         : null;
     // "Manage session" combines rename, model, and sharing in one tabbed modal
     // (opened from the toolbar so the composer chrome stays minimal, esp. on
@@ -3446,10 +3536,16 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                 },
             },
                 viewState.rich
-                    ? React.createElement(RichSessionRow, { row, theme })
-                    : React.createElement(SessionRowContent, { row, theme, structured: structuredRows })),
+                    ? React.createElement(RichSessionRow, { row, theme, showDetail: isMobilePane })
+                    : React.createElement(SessionRowContent, { row, theme, structured: structuredRows, showInlineDetail: isMobilePane })),
             )),
-    )),
+    ),
+    isMobilePane
+        ? null
+        : React.createElement(SessionDetailBox, {
+            session: activeSession,
+            childCount: activeRow?.childCount || 0,
+        })),
     (manageOpen && activeSession && !activeSession.isGroup)
         ? React.createElement(SessionModifyModal, {
             controller,
