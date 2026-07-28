@@ -77,3 +77,56 @@ test("dividers are not swallowed by the message fast path", () => {
     assert.equal(blocks[0].variant, "divider");
     assert.equal(blocks[1].kind, "message");
 });
+
+test("the cache notices a sender change (the header is derived from it)", () => {
+    // Found by adversarial review: the header reads message.sender and
+    // createdAt, and the chips read message.attachments — none of which were
+    // originally compared, so an in-place change to any of them served a stale
+    // block.
+    const m = { id: "s1:1", role: "user", text: "hi", sender: { kind: "user", subject: "a" } };
+    const state = stateWith([m]);
+    const before = selectChatBlocks(state, 100, { tableMode: "sentinel" })[0];
+
+    m.sender = { kind: "user", subject: "b" };
+    const after = selectChatBlocks(state, 100, { tableMode: "sentinel" })[0];
+    assert.notEqual(after, before, "a stale block survived a sender change");
+});
+
+test("the cache notices an attachments change", () => {
+    const m = { id: "s1:1", role: "user", text: "look", attachments: [] };
+    const state = stateWith([m]);
+    const before = selectChatBlocks(state, 100, { tableMode: "sentinel" })[0];
+    assert.equal(before.attachments, null);
+
+    m.attachments = [{ filename: "shot.png" }];
+    const after = selectChatBlocks(state, 100, { tableMode: "sentinel" })[0];
+    assert.ok(after.attachments, "a stale block hid a newly attached image");
+    assert.equal(after.attachments.attachments.length, 1);
+});
+
+test("the cache still hits when createdAt is NaN", () => {
+    // Found by adversarial review, and it had already bitten: comparing fields
+    // with === meant a message whose timestamp did not parse (createdAt = NaN)
+    // could never match itself, because NaN !== NaN. The cache went completely
+    // dead — silently, because every other test still passed. Effectiveness has
+    // to be asserted, not assumed.
+    const m = { id: "s1:1", role: "assistant", text: "hi", createdAt: NaN };
+    const state = stateWith([m]);
+
+    const first = selectChatBlocks(state, 100, { tableMode: "sentinel" })[0];
+    const second = selectChatBlocks(state, 40, { tableMode: "sentinel" })[0];
+    assert.equal(second, first, "cache missed on a NaN timestamp — every width step rebuilds");
+});
+
+test("the cache hits across a width change for a realistic transcript", () => {
+    // A blunt effectiveness check: nothing above would fail if the cache were
+    // removed entirely except the identity assertions, so keep one that is
+    // explicitly about hit rate.
+    const messages = Array.from({ length: 50 }, (_, i) => message(`m${i}`, `body ${i}`));
+    const state = stateWith(messages);
+
+    const a = selectChatBlocks(state, 200, { tableMode: "sentinel" });
+    const b = selectChatBlocks(state, 60, { tableMode: "sentinel" });
+    const hits = a.filter((block, i) => block === b[i]).length;
+    assert.equal(hits, messages.length, `only ${hits}/${messages.length} blocks were reused across a width change`);
+});

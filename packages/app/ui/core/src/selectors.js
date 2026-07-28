@@ -2523,17 +2523,30 @@ export function selectChatBlocks(state, maxWidth = 80, options = {}) {
         // it across the whole transcript per width step. A cache entry only
         // exists for a message already classified rich, and `kind` is part of
         // what is compared, so a hit is safe to take before classifying.
+        // Object.is, NOT ===: `createdAt` is NaN whenever the source event had
+        // no parseable timestamp, and NaN === NaN is false, so a plain equality
+        // check could never hit for those messages — the cache would silently
+        // do nothing while still costing a lookup. Same trap as comparing
+        // Infinity by subtraction.
         const cached = message ? chatMessageBlockCache.get(message) : null;
         if (cached
-            && cached.text === message.text
-            && cached.kind === message.kind
-            && cached.role === message.role
-            && cached.id === message.id
-            && cached.pendingPhase === message.pendingPhase
-            && cached.tableMode === buildOptions.tableMode
-            && cached.viewerKey === buildOptions.viewerKey
-            && cached.ownerKey === buildOptions.ownerKey
-            && cached.sharedContext === buildOptions.sharedContext) {
+            && Object.is(cached.text, message.text)
+            && Object.is(cached.kind, message.kind)
+            && Object.is(cached.role, message.role)
+            && Object.is(cached.id, message.id)
+            && Object.is(cached.pendingPhase, message.pendingPhase)
+            // The header is derived from these, and the chips from attachments.
+            // Messages are mutated in place (pendingPhase provably is), so every
+            // field the block is built from has to be compared — not just the
+            // obvious ones.
+            && Object.is(cached.createdAt, message.createdAt)
+            && Object.is(cached.time, message.time)
+            && Object.is(cached.sender, message.sender)
+            && Object.is(cached.attachments, message.attachments)
+            && Object.is(cached.tableMode, buildOptions.tableMode)
+            && Object.is(cached.viewerKey, buildOptions.viewerKey)
+            && Object.is(cached.ownerKey, buildOptions.ownerKey)
+            && Object.is(cached.sharedContext, buildOptions.sharedContext)) {
             blocks.push(cached.block);
             continue;
         }
@@ -2574,6 +2587,10 @@ export function selectChatBlocks(state, maxWidth = 80, options = {}) {
                 block,
                 text: message.text,
                 kind: message.kind,
+                createdAt: message.createdAt,
+                time: message.time,
+                sender: message.sender,
+                attachments: message.attachments,
                 role: message.role,
                 id: message.id,
                 pendingPhase: message.pendingPhase,
