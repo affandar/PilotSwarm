@@ -2582,6 +2582,7 @@ export function selectChatBlocks(state, maxWidth = 80, options = {}) {
             && Object.is(cached.role, message.role)
             && Object.is(cached.id, message.id)
             && Object.is(cached.pendingPhase, message.pendingPhase)
+            && Object.is(cached.stopped, message.stopped)
             // The header is derived from these, and the chips from attachments.
             // Messages are mutated in place (pendingPhase provably is), so every
             // field the block is built from has to be compared — not just the
@@ -2641,6 +2642,7 @@ export function selectChatBlocks(state, maxWidth = 80, options = {}) {
                 role: message.role,
                 id: message.id,
                 pendingPhase: message.pendingPhase,
+                stopped: message.stopped,
                 tableMode: buildOptions.tableMode,
                 viewerKey: buildOptions.viewerKey,
                 ownerKey: buildOptions.ownerKey,
@@ -2649,12 +2651,84 @@ export function selectChatBlocks(state, maxWidth = 80, options = {}) {
             blocks.push(block);
             continue;
         }
-        const lines = buildChatMessageLines(message, maxWidth, buildOptions);
-        if (lines.length > 0) {
-            blocks.push({ kind: "lines", variant: "event", lines });
-        }
+        const lineBlock = cachedLineBlock(message, maxWidth, buildOptions);
+        if (lineBlock) blocks.push(lineBlock);
     }
     return blocks;
+}
+
+/**
+ * Non-message blocks (thinking cards, system cards, splash, chrome-less
+ * summaries) go through the terminal line builders, which DO depend on width —
+ * so unlike message blocks these cannot be made width-independent. What they
+ * can avoid is being rebuilt when the width has not moved, which is every poll:
+ * the poll replaces `session`, the portal's useMemo sees a new selectorState,
+ * and the whole transcript is re-derived. Measured at 1500 messages with 10%
+ * line blocks that was 1.17ms a time, and 5.26ms at 50%.
+ *
+ * Only the LAST width is kept per message. A drag sweeps widths and will miss
+ * on every step — that work is genuinely required, since these lines are
+ * wrapped to a column count.
+ *
+ * The compared fields were enumerated from buildChatMessageLines and the
+ * builders it delegates to (message/thinking/system-notice cards). `stopped` is
+ * included because history.js sets it IN PLACE on an existing message.
+ */
+const chatLineBlockCache = new WeakMap();
+
+function cachedLineBlock(message, maxWidth, buildOptions) {
+    if (!message || typeof message !== "object") {
+        const lines = buildChatMessageLines(message, maxWidth, buildOptions);
+        return lines.length > 0 ? { kind: "lines", variant: "event", lines } : null;
+    }
+    const cached = chatLineBlockCache.get(message);
+    if (cached
+        && Object.is(cached.maxWidth, maxWidth)
+        && Object.is(cached.text, message.text)
+        && Object.is(cached.mobileText, message.mobileText)
+        && Object.is(cached.role, message.role)
+        && Object.is(cached.time, message.time)
+        && Object.is(cached.createdAt, message.createdAt)
+        && Object.is(cached.splash, message.splash)
+        && Object.is(cached.thinking, message.thinking)
+        && Object.is(cached.thinkingLabel, message.thinkingLabel)
+        && Object.is(cached.progressKind, message.progressKind)
+        && Object.is(cached.noChrome, message.noChrome)
+        && Object.is(cached.cardTitle, message.cardTitle)
+        && Object.is(cached.cardTitleColor, message.cardTitleColor)
+        && Object.is(cached.cardBorderColor, message.cardBorderColor)
+        && Object.is(cached.stopped, message.stopped)
+        && Object.is(cached.tableMode, buildOptions.tableMode)
+        && Object.is(cached.viewerKey, buildOptions.viewerKey)
+        && Object.is(cached.ownerKey, buildOptions.ownerKey)
+        && Object.is(cached.sharedContext, buildOptions.sharedContext)) {
+        return cached.block;
+    }
+    const lines = buildChatMessageLines(message, maxWidth, buildOptions);
+    const block = lines.length > 0 ? { kind: "lines", variant: "event", lines } : null;
+    chatLineBlockCache.set(message, {
+        block,
+        maxWidth,
+        text: message.text,
+        mobileText: message.mobileText,
+        role: message.role,
+        time: message.time,
+        createdAt: message.createdAt,
+        splash: message.splash,
+        thinking: message.thinking,
+        thinkingLabel: message.thinkingLabel,
+        progressKind: message.progressKind,
+        noChrome: message.noChrome,
+        cardTitle: message.cardTitle,
+        cardTitleColor: message.cardTitleColor,
+        cardBorderColor: message.cardBorderColor,
+        stopped: message.stopped,
+        tableMode: buildOptions.tableMode,
+        viewerKey: buildOptions.viewerKey,
+        ownerKey: buildOptions.ownerKey,
+        sharedContext: buildOptions.sharedContext,
+    });
+    return block;
 }
 
 // A centered inline rule ("──── label ────") for transcript markers. The dash

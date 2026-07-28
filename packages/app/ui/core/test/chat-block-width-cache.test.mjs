@@ -130,3 +130,61 @@ test("the cache hits across a width change for a realistic transcript", () => {
     const hits = a.filter((block, i) => block === b[i]).length;
     assert.equal(hits, messages.length, `only ${hits}/${messages.length} blocks were reused across a width change`);
 });
+
+test("the cache notices a turn being stopped", () => {
+    // `stopped` is set IN PLACE (history.js marks the message, it is not
+    // rebuilt) and describeChatMessageHeader renders a distinct glyph for it.
+    // Leaving it out of the comparison meant stopping a turn left the old glyph
+    // on screen until something unrelated invalidated the entry.
+    const m = { id: "s1:1", role: "assistant", text: "partial answer" };
+    const state = stateWith([m]);
+    const before = selectChatBlocks(state, 100, { tableMode: "sentinel" })[0];
+
+    m.stopped = true;
+    const after = selectChatBlocks(state, 100, { tableMode: "sentinel" })[0];
+    assert.notEqual(after, before, "a stopped turn kept its stale header");
+});
+
+// ── Non-message ("lines") blocks ─────────────────────────────────────────────
+// These DO depend on width, so they are cached per message with the last width
+// used. The win is repeat calls at an unchanged width — which is every poll,
+// since the poll replaces `session` and forces a full re-derive.
+const thinking = (id, text) => ({ id, role: "assistant", text, thinking: true });
+
+test("a line block is reused when nothing but the session object changed", () => {
+    const m = thinking("t1", "pondering");
+    const state = stateWith([m]);
+    const first = selectChatBlocks(state, 100, { tableMode: "sentinel" })[0];
+    assert.equal(first.kind, "lines");
+
+    // Same messages, same width, new state object — what a poll looks like.
+    const second = selectChatBlocks(stateWith([m]), 100, { tableMode: "sentinel" })[0];
+    assert.equal(second, first, "a poll rebuilt the line block at an unchanged width");
+});
+
+test("a line block IS rebuilt when the width changes", () => {
+    const m = thinking("t1", "pondering at length ".repeat(20));
+    const state = stateWith([m]);
+    const wide = selectChatBlocks(state, 200, { tableMode: "sentinel" })[0];
+    const narrow = selectChatBlocks(state, 30, { tableMode: "sentinel" })[0];
+    assert.notEqual(narrow, wide, "line blocks are width-dependent and must not be shared across widths");
+});
+
+test("a line block notices its text changing in place", () => {
+    const m = thinking("t1", "first");
+    const state = stateWith([m]);
+    const before = selectChatBlocks(state, 100, { tableMode: "sentinel" })[0];
+    m.text = "second";
+    const after = selectChatBlocks(state, 100, { tableMode: "sentinel" })[0];
+    assert.notEqual(after, before, "a stale line block survived a text change");
+    assert.match(JSON.stringify(after), /second/);
+});
+
+test("a line block notices a turn being stopped", () => {
+    const m = thinking("t1", "partial");
+    const state = stateWith([m]);
+    const before = selectChatBlocks(state, 100, { tableMode: "sentinel" })[0];
+    m.stopped = true;
+    const after = selectChatBlocks(state, 100, { tableMode: "sentinel" })[0];
+    assert.notEqual(after, before, "a stopped turn kept its stale line block");
+});
