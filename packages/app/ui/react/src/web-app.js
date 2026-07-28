@@ -2489,30 +2489,29 @@ function StructuredChatBlocks({ lines, theme, controller = null }) {
 // every other block (splash, thinking cards, system cards, epoch dividers)
 // reuses the structured line renderer so the terminal-era special cases
 // keep exactly one implementation.
-function RichChatBlocks({ blocks, theme, controller = null }) {
-    return React.createElement("div", { className: "ps-rich-chat" },
-        (blocks || []).map((block, index) => {
-            if (block.kind === "message") {
-                const header = block.header || {};
-                const roleClass = block.role === "user" ? " is-user" : " is-assistant";
-                const pendingClass = block.pendingPhase ? ` is-${block.pendingPhase}` : "";
-                const text = String(block.text || "");
-                // A speaker label only earns its place when it disambiguates:
-                // another human in a shared session. The viewer's own turns
-                // and the agent's are obvious from side and styling.
-                const showLabel = block.role === "user" && header.fromOtherPerson;
-                // Consecutive turns from the same speaker read as one
-                // continuous passage — no repeated header, tighter spacing.
-                const previous = blocks[index - 1];
-                const continued = previous
-                    && previous.kind === "message"
-                    && previous.role === block.role
-                    && !(previous.header && previous.header.fromOtherPerson)
-                    && !showLabel;
-                return React.createElement("article", {
-                    key: block.id != null ? `msg:${block.id}` : `msg:${index}`,
-                    className: `ps-rich-msg${roleClass}${pendingClass}${continued ? " is-continued" : ""}`,
-                },
+/**
+ * One rich message, memoized.
+ *
+ * The body runs markdown through MarkdownPreviewContent — the single most
+ * expensive thing in the transcript — and a pane resize used to re-run it for
+ * every loaded message. `selectChatBlocks` now returns identity-stable blocks,
+ * so this bails out instead. Every prop must stay referentially stable for
+ * that to hold: `theme` comes from a Map, `controller` is a singleton, and
+ * `continued` is hoisted to a boolean because it depends on the PREVIOUS block
+ * and would otherwise have to be recomputed inside.
+ */
+const RichChatMessage = React.memo(function RichChatMessage({ block, theme, controller, continued }) {
+    const header = block.header || {};
+    const roleClass = block.role === "user" ? " is-user" : " is-assistant";
+    const pendingClass = block.pendingPhase ? ` is-${block.pendingPhase}` : "";
+    const text = String(block.text || "");
+    // A speaker label only earns its place when it disambiguates: another human
+    // in a shared session. The viewer's own turns and the agent's are obvious
+    // from side and styling.
+    const showLabel = block.role === "user" && header.fromOtherPerson;
+    return React.createElement("article", {
+        className: `ps-rich-msg${roleClass}${pendingClass}${continued ? " is-continued" : ""}`,
+    },
                     React.createElement("header", { className: "ps-rich-msg-head" },
                         showLabel
                             ? React.createElement("span", {
@@ -2537,22 +2536,53 @@ function RichChatBlocks({ blocks, theme, controller = null }) {
                         ? React.createElement("div", { className: "ps-rich-msg-body" },
                             React.createElement(MarkdownPreviewContent, { content: text, theme }))
                         : null,
-                    block.attachments
-                        ? React.createElement(ArtifactImageStrip, {
-                            controller,
-                            sessionId: block.attachments.sessionId,
-                            attachments: block.attachments.attachments,
-                        })
-                        : null);
+        block.attachments
+            ? React.createElement(ArtifactImageStrip, {
+                controller,
+                sessionId: block.attachments.sessionId,
+                attachments: block.attachments.attachments,
+            })
+            : null);
+});
+
+/** A non-message block (splash, system card, divider), memoized the same way. */
+const RichChatLineBlock = React.memo(function RichChatLineBlock({ block, theme, controller }) {
+    const lines = React.useMemo(() => normalizeLines(block.lines || []), [block.lines]);
+    return React.createElement("div", {
+        className: `ps-rich-lineblock is-${block.variant || "event"}`,
+    }, React.createElement(StructuredChatBlocks, { lines, theme, controller }));
+});
+
+function RichChatBlocks({ blocks, theme, controller = null }) {
+    return React.createElement("div", { className: "ps-rich-chat" },
+        (blocks || []).map((block, index) => {
+            if (block.kind === "message") {
+                // Consecutive turns from the same speaker read as one
+                // continuous passage — no repeated header, tighter spacing.
+                // Computed here because it reads the previous block; passing it
+                // down as a boolean is what keeps the child memoizable.
+                const previous = blocks[index - 1];
+                const header = block.header || {};
+                const showLabel = block.role === "user" && header.fromOtherPerson;
+                const continued = Boolean(previous
+                    && previous.kind === "message"
+                    && previous.role === block.role
+                    && !(previous.header && previous.header.fromOtherPerson)
+                    && !showLabel);
+                return React.createElement(RichChatMessage, {
+                    key: block.id != null ? `msg:${block.id}` : `msg:${index}`,
+                    block,
+                    theme,
+                    controller,
+                    continued,
+                });
             }
-            return React.createElement("div", {
+            return React.createElement(RichChatLineBlock, {
                 key: `lines:${index}`,
-                className: `ps-rich-lineblock is-${block.variant || "event"}`,
-            }, React.createElement(StructuredChatBlocks, {
-                lines: normalizeLines(block.lines || []),
+                block,
                 theme,
                 controller,
-            }));
+            });
         }));
 }
 
