@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.27** — Portal performance on long sessions and large fleets: resizing a pane no longer re-lays-out the entire transcript, re-opening a session no longer re-fetches everything you paged back through, and moving through the session list no longer costs a network round trip per keypress. Selected-session details move into a fixed box at the foot of the Sessions panel so rows stay one line each. CSV/TSV artifacts render as a copy-friendly table. Windows 95 panel titles are readable on the title bar.
+> **Latest release: v0.5.28** — Portal performance on long sessions: resizing a pane no longer re-derives or re-parses the transcript, scrolling no longer wraps it to count lines, and moving through the session list no longer costs a network round trip per keypress. Older history is reachable again on sessions with long messages, and selected-session details now sit in a fixed box at the foot of the Sessions panel.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 

@@ -1,5 +1,57 @@
 # Changelog
 
+## 0.5.28 — 2026-07-28
+
+### Portal performance
+
+- **Resizing a pane no longer re-derives the transcript.** A rich message block
+  carries raw markdown and the browser wraps it, so its content cannot depend on
+  the pane width — yet every width step rebuilt the whole loaded transcript,
+  because the selector is shared with the TUI where a column count genuinely
+  does determine wrapping. Blocks are now cached on the message and returned by
+  identity: 4.2ms → 0.2ms per width step at 6000 messages.
+- **A resize no longer re-parses markdown for the whole transcript.** With block
+  identity stable, the renderer memoizes each message, so a width change
+  reconciles the container and skips the bodies. A 20-step splitter drag at 6x
+  CPU throttle went from ~1250ms to ~985ms.
+- **Scrolling no longer wraps the entire transcript to count its lines.**
+  selectChatLines ran from every scroll action, usually only to answer "how many
+  lines are there" for the scroll math: 1.6ms at 300 messages and 5.1ms at 1500,
+  per scroll. Now 0.00ms when only the scroll position moved.
+- **Thinking and system cards are no longer rebuilt on every poll.** These are
+  genuinely width-dependent, so they still re-wrap on a resize, but a poll at an
+  unchanged width now reuses them: 1.17ms → 0.30ms at 1500 messages with 10%
+  cards, 5.26ms → 0.14ms at 50%.
+- **Moving through the session list no longer costs a network round trip per
+  keypress**, and rows are no longer rebuilt wholesale on every move (0.59ms vs
+  5.16ms of work per move at 200 sessions; 61 API calls → 3 over 30 moves).
+
+### Fixed
+
+- **Older transcript history is reachable again on long sessions.** Scrolling to
+  the top gated on a comparison between a DOM-derived offset and the TERMINAL
+  wrapped-line count, which the rich renderer does not use. A session of long
+  messages inflates that count far past the rich DOM's scroll extent, so the
+  gate could never open — while a session of short messages worked. Both callers
+  already fire only when the scroller is at the top, so the gate is gone.
+- **The portal can load history past the automatic cap.** Beyond
+  AUTO_HISTORY_EVENT_SOFT_CAP the transcript told the user to press `e`, a key
+  bound only in the TUI, leaving older history unreachable in a browser. There
+  is now a control.
+- **The root system session shows the deployment's branding name.** The portal
+  built a synthetic state that omitted branding, so the row fell back to
+  "PilotSwarm" while other callers produced the branded name — and once rows
+  were memoized on a shared key the two alternated.
+- **Re-opening a session no longer re-fetches everything paged back through.**
+  The loaded-history window is sticky by design but was re-requested on every
+  switch-in; re-entry is now bounded to five pages.
+
+### Added
+
+- **Selected-session details at the foot of the Sessions panel** — title, id,
+  model, context window, cron, agent, status, children, access — with a fixed
+  height so scrolling the list cannot shift it, leaving rows one line each.
+
 ## 0.5.27 — 2026-07-28
 
 ### Portal performance
