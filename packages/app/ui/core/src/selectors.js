@@ -848,6 +848,23 @@ function collectFilterExceptionIds(sessions) {
     return ids;
 }
 
+// Per-row memo, keyed by the `flat` list so it survives selection changes but
+// resets whenever the tree itself is rebuilt.
+//
+// WHY: moving the selection re-runs this selector (once from moveSession, once
+// from the portal's useMemo) and used to rebuild EVERY row — including
+// flattenRunsText over each row's runs — to change one boolean on two of them.
+// At fleet scale that is the cost of a keypress. Now only rows whose inputs
+// actually moved are rebuilt, and the rest keep their previous object
+// identity, which also lets the renderer skip them.
+const sessionRowMemo = new WeakMap();
+
+function sameRowDeps(a, b) {
+    if (!a || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i += 1) if (a[i] !== b[i]) return false;
+    return true;
+}
+
 export function selectSessionRows(state) {
     const totalDescendantCounts = getTotalDescendantCounts(state.sessions.byId);
     const visibleDescendantCounts = getVisibleDescendantCounts(state.sessions.flat, state.sessions.byId);
@@ -858,25 +875,46 @@ export function selectSessionRows(state) {
     const selectedSet = new Set(Array.isArray(state.sessions?.selectedIds) ? state.sessions.selectedIds : []);
     const filterExceptionIds = collectFilterExceptionIds(state.sessions);
 
+    let memo = sessionRowMemo.get(state.sessions.flat);
+    if (!memo) {
+        memo = new Map();
+        sessionRowMemo.set(state.sessions.flat, memo);
+    }
+
     return state.sessions.flat.map((entry) => {
         const session = state.sessions.byId[entry.sessionId];
+        const active = entry.sessionId === state.sessions.activeSessionId;
+        const pinned = pinnedSet.has(entry.sessionId);
+        const selected = selectedSet.has(entry.sessionId);
+        // Every input the row below is derived from. Identity comparison is
+        // enough: the reducer replaces these objects rather than mutating them.
+        const deps = [
+            entry, session, active, pinned, selected, query, ownerFilter, auth,
+            state.connection?.mode, state.sessions.selectMode,
+            totalDescendantCounts, visibleDescendantCounts,
+        ];
+        const cached = memo.get(entry.sessionId);
+        if (cached && sameRowDeps(cached.deps, deps)) return cached.row;
+
         const rowView = buildSessionRowView(entry, session, state, totalDescendantCounts, visibleDescendantCounts);
-        return {
+        const row = {
             sessionId: entry.sessionId,
             text: flattenRunsText(rowView.runs),
             ...rowView,
             depth: entry.depth,
             status: session?.status,
             statusColor: sessionStatusColor(session, state.connection?.mode || "local"),
-            active: entry.sessionId === state.sessions.activeSessionId,
+            active,
             isSystem: Boolean(session?.isSystem),
             isGroup: Boolean(session?.isGroup),
             hasChildren: entry.hasChildren,
             collapsed: entry.collapsed,
-            pinned: pinnedSet.has(entry.sessionId),
-            selected: selectedSet.has(entry.sessionId),
+            pinned,
+            selected,
             canPin: canPinSessionRow(session),
         };
+        memo.set(entry.sessionId, { deps, row });
+        return row;
     }).filter((row) => {
         if (filterExceptionIds?.has(row.sessionId)) return true;
         const session = state.sessions.byId[row.sessionId];

@@ -1070,6 +1070,10 @@ function normalizePreviewPayload(filename, rawContent, contentType = "", metadat
 
 /** How long a fetched artifact list is trusted before a refetch. */
 const FILES_LIST_TTL_MS = 10_000;
+// How long keyboard navigation must rest on a session before it is fetched.
+// Long enough that scrolling past a row costs nothing, short enough that
+// landing on one feels immediate.
+const SESSION_NAV_SETTLE_MS = 140;
 
 export class PilotSwarmUiController {
     constructor({ store, transport }) {
@@ -6140,7 +6144,36 @@ export class PilotSwarmUiController {
         const currentIndex = Math.max(0, rows.findIndex((row) => row.sessionId === currentId));
         const nextIndex = Math.max(0, Math.min(rows.length - 1, currentIndex + delta));
         const nextId = rows[nextIndex].sessionId;
-        await this.loadSession(nextId);
+        this.navigateToSession(nextId);
+    }
+
+    /**
+     * Move the selection now; fetch the session once the movement settles.
+     *
+     * `loadSession` force-refetches history, syncs detail, re-attaches the live
+     * event stream and refreshes the inspector — four round trips. Driving that
+     * from every keypress meant scrolling a list of sessions fired a request
+     * pair per row, and against a remote deployment the UI ran behind the
+     * cursor by however long the network took. The highlight is local state and
+     * moves immediately; only the fetching waits for the user to stop.
+     *
+     * A CLICK still loads immediately — that is a deliberate choice of one
+     * session, not a scroll through many.
+     */
+    navigateToSession(sessionId) {
+        if (!sessionId) return;
+        if (this.getState().sessions.activeSessionId !== sessionId) {
+            this.dispatch({ type: "sessions/selected", sessionId });
+            // Same per-session reset loadSession does, so the sequence tab does
+            // not show another session's turn while the fetch is pending.
+            this.dispatch({ type: "ui/sequenceExpandedTurns", turns: [] });
+            this.dispatch({ type: "ui/sequenceSelectedTurn", turn: null });
+        }
+        if (this.sessionNavSettleTimer) clearTimeout(this.sessionNavSettleTimer);
+        this.sessionNavSettleTimer = setTimeout(() => {
+            this.sessionNavSettleTimer = null;
+            this.loadSession(sessionId).catch(() => {});
+        }, SESSION_NAV_SETTLE_MS);
     }
 
     getSessionPageSize() {

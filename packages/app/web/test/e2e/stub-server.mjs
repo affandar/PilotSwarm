@@ -22,7 +22,9 @@ const MIME = {
     ".ico": "image/x-icon",
 };
 
-const SESSIONS = Array.from({ length: 6 }, (_, i) => ({
+// Six by default — enough for the layout tests. The perf test asks for a
+// realistic fleet size, where per-row cost actually shows up.
+const makeSessions = (count) => Array.from({ length: count }, (_, i) => ({
     sessionId: `1111111${i}-2222-3333-4444-55555555555${i}`,
     title: i === 0
         // A deliberately long title: the pane header must ellipsize it rather
@@ -36,6 +38,9 @@ const SESSIONS = Array.from({ length: 6 }, (_, i) => ({
     parentSessionId: null,
     createdAt: 1785000000000,
     updatedAt: 1785000000000 + i,
+    // Real rows carry usage, so the ctx column and the detail box render the
+    // same work they do in production.
+    contextUsage: { currentTokens: 20_000 + (i * 977), tokenLimit: 200_000 },
 }));
 
 // A small but deliberately awkward CSV: a quoted field containing a comma
@@ -80,7 +85,7 @@ const API = {
     },
 };
 
-function rpc(method) {
+function rpc(method, SESSIONS) {
     switch (method) {
         case "listSessions": return { sessions: SESSIONS, hasMore: false };
         case "listModels": return [];
@@ -91,7 +96,8 @@ function rpc(method) {
     }
 }
 
-export function startStubServer(port = 0) {
+export function startStubServer(port = 0, { sessionCount = 6 } = {}) {
+    const SESSIONS = makeSessions(Math.max(1, sessionCount));
     const server = http.createServer((req, res) => {
         const url = new URL(req.url, "http://localhost");
         const pathname = url.pathname;
@@ -131,7 +137,7 @@ export function startStubServer(port = 0) {
             if (body === undefined) {
                 // Everything else: derive from the last path segment, which is
                 // enough for the read-only surfaces these tests exercise.
-                body = { ok: true, ...rpc(pathname.split("/").pop()) };
+                body = { ok: true, ...rpc(pathname.split("/").pop(), SESSIONS) };
             }
             res.writeHead(200, { "content-type": "application/json" });
             res.end(JSON.stringify(body));

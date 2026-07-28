@@ -139,6 +139,9 @@ function supportsLocalFileOpen(controller) {
 }
 
 const SESSION_LINK_COPIED_STATUS = "Session link copied to clipboard";
+// Mirrors SESSION_NAV_SETTLE_MS in the controller: the access probe rides the
+// same "wait for the selection to stop moving" rule as the session fetch.
+const SESSION_ACCESS_SETTLE_MS = 140;
 const SESSION_LINK_PRIVATE_WARNING = "Only people with access can open this link.";
 
 function buildSessionLinkUrl(sessionId) {
@@ -3107,6 +3110,42 @@ function SessionDetailBox({ session, childCount = 0 }) {
         field("Access", access));
 }
 
+/**
+ * One session row, memoized.
+ *
+ * The list re-renders whenever the selection moves, but `selectSessionRows`
+ * hands back the SAME row object for every row whose inputs did not change, so
+ * memoizing here means a keypress reconciles two rows instead of the whole
+ * fleet. That only holds while every prop is referentially stable — hence the
+ * hoisted click handler and ref setter rather than closures built per row.
+ */
+const SessionListRow = React.memo(function SessionListRow({
+    row, theme, rich, structuredRows, mobile, onRowClick, setRef,
+}) {
+    const ref = React.useCallback((node) => setRef(row.sessionId, node), [setRef, row.sessionId]);
+    const onClick = React.useCallback((event) => onRowClick(event, row), [onRowClick, row]);
+
+    return React.createElement("button", {
+        type: "button",
+        ref,
+        className: `ps-list-button ps-session-list-button${row.active ? " is-selected" : ""}${row.selected ? " is-multiselected" : ""}${row.pinned ? " is-pinned" : ""}`,
+        tabIndex: row.active ? 0 : -1,
+        "aria-selected": row.active ? "true" : "false",
+        onClick,
+    },
+        React.createElement("div", {
+            className: rich ? "ps-session-row-content is-rich" : "ps-line ps-session-row-content",
+            style: {
+                paddingInlineStart: rich
+                    ? `${Math.max(0, row.depth) * 14}px`
+                    : `${Math.max(0, row.depth) * 4}px`,
+            },
+        },
+            rich
+                ? React.createElement(RichSessionRow, { row, theme, showDetail: mobile })
+                : React.createElement(SessionRowContent, { row, theme, structured: structuredRows, showInlineDetail: mobile })));
+});
+
 function RichSessionRow({ row, theme, showDetail = false }) {
     const chrome = row.chrome;
     if (!chrome) return React.createElement(SessionRowContent, { row, theme, structured: true, showInlineDetail: showDetail });
@@ -3360,6 +3399,61 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         : (activeSession && !activeSession.isSystem && !activeSession.isGroup && !activeSession.parentSessionId ? [activeSession.sessionId] : []);
     const canMoveToGroup = groupableIds.length > 0;
     const combinedPanelClassName = `ps-session-pane${viewState.rich ? " is-rich" : ""}${panelClassName ? ` ${panelClassName}` : ""}`;
+    // The click handler must be referentially stable or every memoized row
+    // re-renders on each keypress, defeating the point. It reads the current
+    // rows/viewState from a ref that is refreshed on every render instead of
+    // closing over them.
+    const clickEnv = React.useRef(null);
+    clickEnv.current = { rows, viewState, controller };
+    const handleRowClick = React.useCallback((event, row) => {
+        const { rows: currentRows, viewState: current, controller: ctl } = clickEnv.current;
+        // Cmd/Ctrl-click toggles multi-selection (any row).
+        if (event.metaKey || event.ctrlKey) {
+            event.preventDefault();
+            if (!current.selectMode) {
+                ctl.dispatch({ type: "sessions/selectMode", enabled: true });
+            }
+            ctl.dispatch({ type: "sessions/selectToggle", sessionId: row.sessionId });
+            ctl.setFocus("sessions");
+            return;
+        }
+        // Shift-click selects a contiguous range from the active row.
+        if (event.shiftKey && current.activeSessionId) {
+            event.preventDefault();
+            const ids = currentRows.map((r) => r.sessionId);
+            const startIndex = ids.indexOf(current.activeSessionId);
+            const endIndex = ids.indexOf(row.sessionId);
+            if (startIndex >= 0 && endIndex >= 0) {
+                const [from, to] = startIndex <= endIndex
+                    ? [startIndex, endIndex]
+                    : [endIndex, startIndex];
+                const range = ids.slice(from, to + 1);
+                const merged = Array.from(new Set([...(current.selectedIds || []), ...range]));
+                ctl.setSessionSelection(merged);
+                ctl.setFocus("sessions");
+                return;
+            }
+        }
+        const shouldToggleChildren = row.hasChildren && row.active;
+        if (shouldToggleChildren) {
+            ctl.dispatch({
+                type: row.collapsed ? "sessions/expand" : "sessions/collapse",
+                sessionId: row.sessionId,
+            });
+            ctl.setFocus("sessions");
+            return;
+        }
+        // A normal click on a different row clears any multi-selection and
+        // switches the active session.
+        if (current.selectMode) {
+            ctl.dispatch({ type: "sessions/selectClear" });
+        }
+        ctl.setFocus("sessions");
+        if (!row.active) {
+            ctl.loadSession(row.sessionId).catch(() => {});
+        }
+    }, []);
+
     const setSessionButtonRef = React.useCallback((sessionId, node) => {
         if (!sessionId) return;
         if (node) {
@@ -3472,74 +3566,16 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             ? React.createElement("div", { className: "ps-empty-state" }, viewState.filterQuery
                 ? `No sessions matched "@@${viewState.filterQuery}".`
                 : "No sessions yet.")
-            : rows.map((row) => React.createElement("button", {
+            : rows.map((row) => React.createElement(SessionListRow, {
                 key: row.sessionId,
-                type: "button",
-                ref: (node) => setSessionButtonRef(row.sessionId, node),
-                className: `ps-list-button ps-session-list-button${row.active ? " is-selected" : ""}${row.selected ? " is-multiselected" : ""}${row.pinned ? " is-pinned" : ""}`,
-                tabIndex: row.active ? 0 : -1,
-                "aria-selected": row.active ? "true" : "false",
-                onClick: (event) => {
-                    // Cmd/Ctrl-click toggles multi-selection (any row).
-                    if (event.metaKey || event.ctrlKey) {
-                        event.preventDefault();
-                        if (!viewState.selectMode) {
-                            controller.dispatch({ type: "sessions/selectMode", enabled: true });
-                        }
-                        controller.dispatch({ type: "sessions/selectToggle", sessionId: row.sessionId });
-                        controller.setFocus("sessions");
-                        return;
-                    }
-                    // Shift-click selects a contiguous range from the active row.
-                    if (event.shiftKey && viewState.activeSessionId) {
-                        event.preventDefault();
-                        const ids = rows.map((r) => r.sessionId);
-                        const startIndex = ids.indexOf(viewState.activeSessionId);
-                        const endIndex = ids.indexOf(row.sessionId);
-                        if (startIndex >= 0 && endIndex >= 0) {
-                            const [from, to] = startIndex <= endIndex
-                                ? [startIndex, endIndex]
-                                : [endIndex, startIndex];
-                            const range = ids.slice(from, to + 1);
-                            const merged = Array.from(new Set([...(viewState.selectedIds || []), ...range]));
-                            controller.setSessionSelection(merged);
-                            controller.setFocus("sessions");
-                            return;
-                        }
-                    }
-                    const shouldToggleChildren = row.hasChildren && row.active;
-                    if (shouldToggleChildren) {
-                        controller.dispatch({
-                            type: row.collapsed ? "sessions/expand" : "sessions/collapse",
-                            sessionId: row.sessionId,
-                        });
-                        controller.setFocus("sessions");
-                        return;
-                    }
-                    // A normal click on a different row clears any
-                    // multi-selection and switches the active session.
-                    if (viewState.selectMode) {
-                        controller.dispatch({ type: "sessions/selectClear" });
-                    }
-                    controller.setFocus("sessions");
-                    if (!row.active) {
-                        controller.loadSession(row.sessionId).catch(() => {});
-                    }
-                },
-            },
-            React.createElement("div", {
-                className: viewState.rich ? "ps-session-row-content is-rich" : "ps-line ps-session-row-content",
-                style: {
-                    paddingInlineStart: viewState.rich
-                        ? `${Math.max(0, row.depth) * 14}px`
-                        : `${Math.max(0, row.depth) * 4}px`,
-                },
-            },
-                viewState.rich
-                    ? React.createElement(RichSessionRow, { row, theme, showDetail: isMobilePane })
-                    : React.createElement(SessionRowContent, { row, theme, structured: structuredRows, showInlineDetail: isMobilePane })),
-            )),
-    ),
+                row,
+                theme,
+                rich: viewState.rich,
+                structuredRows,
+                mobile: isMobilePane,
+                onRowClick: handleRowClick,
+                setRef: setSessionButtonRef,
+            }))),
     isMobilePane
         ? null
         : React.createElement(SessionDetailBox, {
@@ -3669,7 +3705,19 @@ function useActiveSessionAccess(controller, activeSessionId, isGroup) {
             .catch(() => { if (!cancelled) setState({ access: null, loading: false }); });
         return () => { cancelled = true; };
     }, [controller, activeSessionId, isGroup]);
-    React.useEffect(() => reload(), [reload]);
+    // Deferred for the same reason the session fetch is: this fires on every
+    // activeSessionId change, and scrolling the list changes that per keypress.
+    // Without the settle, moving through a list of sessions issued one access
+    // round trip per row. `reload` stays immediate for callers that ask for it
+    // explicitly (after a sharing change).
+    React.useEffect(() => {
+        let cancelInFlight;
+        const timer = setTimeout(() => { cancelInFlight = reload(); }, SESSION_ACCESS_SETTLE_MS);
+        return () => {
+            clearTimeout(timer);
+            if (typeof cancelInFlight === "function") cancelInFlight();
+        };
+    }, [reload]);
     return { access: state.access, loading: state.loading, reload };
 }
 
