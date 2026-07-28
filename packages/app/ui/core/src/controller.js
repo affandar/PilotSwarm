@@ -935,7 +935,12 @@ function movePromptCursorVertically(prompt, cursor, direction) {
     return getPromptCursorIndex(prompt, targetLine, position.column);
 }
 
-const AUTO_HISTORY_EVENT_SOFT_CAP = 3_000;
+// Automatic scroll-up expansion stops here; past it the user must ask for more
+// explicitly. Exported so a surface can SHOW that control — the portal had no
+// way to trigger EXPAND_HISTORY at all, so on a busy session (tens of thousands
+// of events) scrolling up simply died with a status line telling the user to
+// press a key that only exists in the TUI.
+export const AUTO_HISTORY_EVENT_SOFT_CAP = 3_000;
 const INSPECTOR_BOTTOM_ANCHORED_TABS = new Set(["logs", "sequence"]);
 const FILE_PREVIEW_CHAR_LIMIT = 200_000;
 const MARKDOWN_FILE_EXTENSIONS = new Set([

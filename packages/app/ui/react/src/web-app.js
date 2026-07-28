@@ -12,6 +12,7 @@ import {
     computeLegacyLayout,
     createInitialState,
     createStore,
+    AUTO_HISTORY_EVENT_SOFT_CAP,
     formatCompactNumber,
     formatCronTimestampForClient,
     formatHumanDurationSeconds,
@@ -3100,6 +3101,10 @@ function SessionDetailBox({ session, childCount = 0 }) {
         : (childCount > 0 ? String(childCount) : null);
 
     return React.createElement("div", { className: "ps-session-detail-box" },
+        // The row above ellipsizes to one line, so this is the only place the
+        // whole name is legible. Two lines are RESERVED whether or not they are
+        // used, so the box height still cannot move with the selection.
+        field("Title", session?.title, "is-title"),
         field("ID", session?.sessionId, "is-id"),
         field("Model", model),
         field("Context", context, percent != null && percent >= 85 ? "is-hot" : percent != null && percent >= 70 ? "is-warm" : ""),
@@ -3273,6 +3278,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     const theme = getTheme(themeId);
     const sessionButtonRefs = React.useRef(new Map());
     const viewState = useControllerSelector(controller, (state) => ({
+        branding: state.branding,
         activeSessionId: state.sessions.activeSessionId,
         sessionsById: state.sessions.byId,
         sessionsFlat: state.sessions.flat,
@@ -3306,7 +3312,12 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         connection: {
             mode: viewState.connectionMode,
         },
-    }), [viewState.activeSessionId, viewState.auth, viewState.connectionMode, viewState.filterQuery, viewState.ownerFilter, viewState.pinnedIds, viewState.selectedIds, viewState.selectMode, viewState.sessionsById, viewState.sessionsFlat]);
+        // The root system session renders as the deployment's branding title.
+        // Omitting this made the list fall back to "PilotSwarm" on a branded
+        // deployment, while the controller's own calls (which pass real state)
+        // produced the branded name.
+        branding: viewState.branding,
+    }), [viewState.activeSessionId, viewState.auth, viewState.branding, viewState.connectionMode, viewState.filterQuery, viewState.ownerFilter, viewState.pinnedIds, viewState.selectedIds, viewState.selectMode, viewState.sessionsById, viewState.sessionsFlat]);
     // Hold the previous rows when a poll produced identical output.
     const rows = useStableValue(computedRows);
     const activeSession = viewState.activeSessionId
@@ -4044,6 +4055,15 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         [animatedDots, chrome.animateTitleRight, chrome.titleRight],
     );
     const richMode = viewState.chatViewMode === "rich" && !viewState.activeSessionIsGroup;
+    const [loadingOlder, setLoadingOlder] = React.useState(false);
+    // Scroll-up expands the transcript automatically until the soft cap, then
+    // refuses — and the portal had no control to ask for more, so a busy
+    // session's history became unreachable from the browser. Surface the
+    // control exactly when the automatic path has given up.
+    const showLoadOlder = Boolean(
+        viewState.activeHistory?.hasOlderEvents
+        && Number(viewState.activeHistory?.loadedEventCount || 0) >= AUTO_HISTORY_EVENT_SOFT_CAP,
+    );
     const richBlocks = React.useMemo(
         () => (richMode ? selectChatBlocks(selectorState, viewState.contentWidth, { tableMode: "sentinel" }) : null),
         [richMode, selectorState, viewState.contentWidth],
@@ -4147,6 +4167,20 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         className: richMode ? "is-wrapped is-rich" : "is-wrapped",
         panelClassName: richMode ? "ps-chat-panel is-rich" : "ps-chat-panel",
         bottomContent: composer,
+        topContent: showLoadOlder
+            ? React.createElement("div", { className: "ps-load-older-bar" },
+                React.createElement("button", {
+                    type: "button",
+                    className: "ps-load-older-button",
+                    disabled: loadingOlder,
+                    onClick: () => {
+                        setLoadingOlder(true);
+                        controller.handleCommand(UI_COMMANDS.EXPAND_HISTORY)
+                            .catch(() => {})
+                            .finally(() => setLoadingOlder(false));
+                    },
+                }, loadingOlder ? "Loading older messages…" : "↑ Load older messages"))
+            : null,
         structuredBlocks: true,
         renderBody: richBlocks
             ? (_bodyLines, bodyTheme) => React.createElement(RichChatBlocks, {

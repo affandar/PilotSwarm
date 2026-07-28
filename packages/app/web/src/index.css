@@ -1664,6 +1664,50 @@ body.is-resizing-pane-y * {
   cursor: text;
 }
 
+/* Appears only when automatic scroll-up expansion has hit its cap — the point
+   at which the transcript would otherwise be a dead end in the browser. */
+.ps-load-older-bar {
+  display: flex;
+  justify-content: center;
+  padding: 4px 0 6px;
+  border-bottom: 1px solid color-mix(in srgb, var(--ps-border) 45%, transparent);
+}
+
+.ps-load-older-button {
+  font: inherit;
+  font-size: var(--ps-font-size-dense);
+  color: var(--ps-accent);
+  background: var(--ps-chrome);
+  border: 1px solid var(--ps-border-strong);
+  border-radius: 4px;
+  padding: 2px 12px;
+  cursor: pointer;
+}
+
+.ps-load-older-button:hover:not(:disabled) {
+  background: var(--ps-chrome-strong);
+}
+
+.ps-load-older-button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+/* The full session name — the row above only ever shows one ellipsized line.
+   Exactly two lines are reserved whether used or not, so the box keeps its
+   fixed height as the selection moves. */
+.ps-session-detail-field.is-title .ps-session-detail-value {
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  min-height: 2.7em;
+  font-weight: 600;
+}
+
 /* Absent values stay dim so the eye skips them; the row still holds its line. */
 .ps-session-detail-field.is-none .ps-session-detail-value {
   color: var(--ps-muted);

@@ -892,6 +892,12 @@ export function selectSessionRows(state) {
             entry, session, active, pinned, selected, query, ownerFilter, auth,
             state.connection?.mode, state.sessions.selectMode,
             totalDescendantCounts, visibleDescendantCounts,
+            // The root system row renders as the branding title, and this
+            // selector is called with two different state shapes (the portal
+            // builds a synthetic one). Without this the cache could hand a row
+            // built under one branding to a caller using another, and the root
+            // session's name would flip between them.
+            state.branding?.title,
         ];
         const cached = memo.get(entry.sessionId);
         if (cached && sameRowDeps(cached.deps, deps)) return cached.row;
