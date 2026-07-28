@@ -1074,6 +1074,15 @@ const FILES_LIST_TTL_MS = 10_000;
 // Long enough that scrolling past a row costs nothing, short enough that
 // landing on one feels immediate.
 const SESSION_NAV_SETTLE_MS = 140;
+// Ceiling on the window a session re-opens with, in events (5 history pages).
+//
+// `loadedEventLimit` is sticky: scrolling back through a long session escalates
+// it 300 -> 1000 -> 3000 -> 10000, and ensureSessionHistory then re-requested
+// that expanded size on EVERY switch-in, for the life of the tab. So one trip
+// through the history of a busy session made it permanently expensive to open —
+// 10k events re-fetched, re-derived and re-laid-out each time. Paging back
+// still expands freely while you are in the session; re-entering starts bounded.
+const HISTORY_REENTRY_MAX_EVENTS = 1_500;
 
 export class PilotSwarmUiController {
     constructor({ store, transport }) {
@@ -2296,9 +2305,12 @@ export class PilotSwarmUiController {
     async ensureSessionHistory(sessionId, { force = false } = {}) {
         if (!sessionId) return null;
         const existingHistory = this.getState().history.bySessionId.get(sessionId);
-        const requestedLimit = Math.max(
-            DEFAULT_HISTORY_EVENT_LIMIT,
-            Number(existingHistory?.loadedEventLimit ?? DEFAULT_HISTORY_EVENT_LIMIT) || DEFAULT_HISTORY_EVENT_LIMIT,
+        const requestedLimit = Math.min(
+            HISTORY_REENTRY_MAX_EVENTS,
+            Math.max(
+                DEFAULT_HISTORY_EVENT_LIMIT,
+                Number(existingHistory?.loadedEventLimit ?? DEFAULT_HISTORY_EVENT_LIMIT) || DEFAULT_HISTORY_EVENT_LIMIT,
+            ),
         );
         if (!force && existingHistory?.events) {
             return existingHistory;
