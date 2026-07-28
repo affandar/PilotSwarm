@@ -72,14 +72,20 @@ const PARA = "The CPG migration workflow renamed durably stored disk attach/deta
     + "Old state may not resume on new code, and new state may not survive rollback to old code. "
     + "Owner responded: migration overlap is rare; failures are recoverable by restarting.";
 
-const makeTranscript = (count) => Array.from({ length: count }, (_, i) => ({
+// `systemEvery`: every Nth assistant message carries an embedded [SYSTEM: …]
+// notice, which makes it NON-rich-renderable — so it renders through the
+// terminal line builders as a "lines" block. Those are the width-dependent
+// ones, and a transcript full of them is the worst case for a resize.
+const makeTranscript = (count, systemEvery = 0) => Array.from({ length: count }, (_, i) => ({
     seq: i + 1,
     eventType: i % 2 === 0 ? "user.message" : "assistant.message",
     timestamp: 1785000000000 + (i * 1000),
     data: {
-        content: i % 2 === 0
-            ? `Turn ${i}: please review PR ${2160000 + i} and summarise the blocking risk.`
-            : `**Assessment ${i}**\n\n${PARA}\n\n- point one\n- point two\n\n\`\`\`js\nconst x = ${i};\n\`\`\`\n\n${PARA}`,
+        content: (systemEvery && i % systemEvery === 0)
+            ? `[SYSTEM: notice ${i}] ${PARA}\n\n${PARA}`
+            : i % 2 === 0
+                ? `Turn ${i}: please review PR ${2160000 + i} and summarise the blocking risk.`
+                : `**Assessment ${i}**\n\n${PARA}\n\n- point one\n- point two\n\n\`\`\`js\nconst x = ${i};\n\`\`\`\n\n${PARA}`,
     },
 }));
 
@@ -114,9 +120,9 @@ function rpc(method, SESSIONS) {
     }
 }
 
-export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 0 } = {}) {
+export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 0, systemEvery = 0 } = {}) {
     const SESSIONS = makeSessions(Math.max(1, sessionCount));
-    const TRANSCRIPT = makeTranscript(Math.max(0, transcriptTurns));
+    const TRANSCRIPT = makeTranscript(Math.max(0, transcriptTurns), systemEvery);
     const server = http.createServer((req, res) => {
         const url = new URL(req.url, "http://localhost");
         const pathname = url.pathname;
