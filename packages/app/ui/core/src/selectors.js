@@ -2492,6 +2492,10 @@ function isRichRenderableChatMessage(message) {
  *
  * The TUI never calls this; selectChatLines remains the terminal path.
  */
+// Rich message blocks, cached on the message object. Keyed weakly so entries
+// die with the transcript they came from.
+const chatMessageBlockCache = new WeakMap();
+
 export function selectChatBlocks(state, maxWidth = 80, options = {}) {
     const messages = selectActiveChat(state);
     if (!messages || messages.length === 0) return [];
@@ -2513,6 +2517,27 @@ export function selectChatBlocks(state, maxWidth = 80, options = {}) {
 
     const blocks = [];
     for (const message of messages) {
+        // Fast path FIRST. Classifying a message as rich-renderable scans its
+        // text (asked-and-answered parsing, system-notice splitting), and that
+        // ran for every message on every call — so a pane-splitter drag paid
+        // it across the whole transcript per width step. A cache entry only
+        // exists for a message already classified rich, and `kind` is part of
+        // what is compared, so a hit is safe to take before classifying.
+        const cached = message ? chatMessageBlockCache.get(message) : null;
+        if (cached
+            && cached.text === message.text
+            && cached.kind === message.kind
+            && cached.role === message.role
+            && cached.id === message.id
+            && cached.pendingPhase === message.pendingPhase
+            && cached.tableMode === buildOptions.tableMode
+            && cached.viewerKey === buildOptions.viewerKey
+            && cached.ownerKey === buildOptions.ownerKey
+            && cached.sharedContext === buildOptions.sharedContext) {
+            blocks.push(cached.block);
+            continue;
+        }
+
         if (message?.kind === "epoch-divider") {
             blocks.push({ kind: "lines", variant: "divider", lines: [buildEpochDividerLine(message, maxWidth)] });
             continue;
@@ -2526,9 +2551,15 @@ export function selectChatBlocks(state, maxWidth = 80, options = {}) {
             continue;
         }
         if (isRichRenderableChatMessage(message)) {
+            // A rich message block does NOT depend on maxWidth — the browser
+            // wraps this text with CSS; only the terminal needs a column count.
+            // Rebuilding it on every width step meant dragging a pane splitter
+            // re-parsed artifact links and re-derived headers for the entire
+            // loaded transcript to produce byte-identical output. Cache on the
+            // message itself, keyed by the inputs that CAN change it.
             const attachmentLines = buildAttachmentChipLines(message, { tableMode: "sentinel" });
             const attachmentSentinel = attachmentLines.find((line) => line?.kind === "imageAttachments") || null;
-            blocks.push({
+            const block = {
                 kind: "message",
                 id: message?.id ?? null,
                 role: message.role,
@@ -2538,7 +2569,20 @@ export function selectChatBlocks(state, maxWidth = 80, options = {}) {
                 attachments: attachmentSentinel
                     ? { sessionId: attachmentSentinel.sessionId, attachments: attachmentSentinel.attachments }
                     : null,
+            };
+            chatMessageBlockCache.set(message, {
+                block,
+                text: message.text,
+                kind: message.kind,
+                role: message.role,
+                id: message.id,
+                pendingPhase: message.pendingPhase,
+                tableMode: buildOptions.tableMode,
+                viewerKey: buildOptions.viewerKey,
+                ownerKey: buildOptions.ownerKey,
+                sharedContext: buildOptions.sharedContext,
             });
+            blocks.push(block);
             continue;
         }
         const lines = buildChatMessageLines(message, maxWidth, buildOptions);
