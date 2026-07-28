@@ -91,6 +91,19 @@ export interface AgentConfig {
      * them.
      */
     inheritDefaultMcpServers?: boolean;
+    /**
+     * When `false`, sessions bound to this agent are composed WITHOUT the
+     * deployment's app default layer — neither the app `default.agent.md`
+     * prompt nor its `tools:` are inherited. The framework base layer and the
+     * agent's own prompt/tools still apply.
+     *
+     * Defaults to `true`, which is today's behavior: every app agent inherits
+     * the app default. Use `false` to author an agent on a clean slate without
+     * removing the app default for everyone else.
+     *
+     * Inert for system agents, which already bypass the app default layer.
+     */
+    inheritAppDefaults?: boolean;
     /** If true, this is a system agent started automatically by workers. */
     system?: boolean;
     /** Deterministic ID slug for system agents (e.g. "sweeper"). Used to derive a fixed session UUID. */
@@ -141,10 +154,10 @@ export interface AgentConfig {
  * Handles simple `key: value` pairs and YAML list syntax for `tools` and `skills`.
  */
 function parseAgentFrontmatter(content: string): {
-    meta: { name?: string; description?: string; tools?: string[]; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; splashMobile?: string; initialPrompt?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string };
+    meta: { name?: string; description?: string; tools?: string[]; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; inheritAppDefaults?: boolean; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; splashMobile?: string; initialPrompt?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string };
     body: string;
 } {
-    const meta: { name?: string; description?: string; tools?: string[]; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; splashMobile?: string; initialPrompt?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string } = {};
+    const meta: { name?: string; description?: string; tools?: string[]; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; inheritAppDefaults?: boolean; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; splashMobile?: string; initialPrompt?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string } = {};
 
     if (!content.startsWith("---")) {
         return { meta, body: content };
@@ -262,6 +275,8 @@ function parseAgentFrontmatter(content: string): {
             meta.mcpServers = [];
         } else if (key === "inheritDefaultMcpServers") {
             meta.inheritDefaultMcpServers = value === "true";
+        } else if (key === "inheritAppDefaults") {
+            meta.inheritAppDefaults = value !== "false";
         } else if ((key === "splash" || key === "splashMobile" || key === "initialPrompt") && (value === "|" || value === ">")) {
             // YAML block scalar (| literal, > folded)
             currentBlockStyle = value;
@@ -341,6 +356,7 @@ export function loadAgentFiles(agentsDir: string): AgentConfig[] {
                 skills: meta.skills && meta.skills.length > 0 ? meta.skills : undefined,
                 mcpServers: meta.mcpServers && meta.mcpServers.length > 0 ? meta.mcpServers : undefined,
                 inheritDefaultMcpServers: meta.inheritDefaultMcpServers,
+                inheritAppDefaults: meta.inheritAppDefaults,
                 system: meta.system,
                 id: meta.id,
                 title: meta.title,

@@ -153,7 +153,7 @@ export class PilotSwarmWorker {
     /** Loaded skills by name for agent-declared eager prompt injection. */
     private _loadedSkills = new Map<string, Skill>();
     /** Raw loaded user-creatable agent configs from plugins + direct config. */
-    private _rawLoadedAgents: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; namespace?: string; crawler?: boolean; harvester?: boolean; promptLayerKind?: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" }> = [];
+    private _rawLoadedAgents: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; inheritAppDefaults?: boolean; namespace?: string; crawler?: boolean; harvester?: boolean; promptLayerKind?: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" }> = [];
     /** Optional PilotSwarm-bundled user agents, loaded only when session policy opts in. */
     private _availableBundledAgents = new Map<string, AgentConfig>();
     /** Loaded agent configs from plugins + direct config, composed for SDK customAgents. */
@@ -186,7 +186,7 @@ export class PilotSwarmWorker {
     /** System agents loaded from plugins — started automatically on worker start. */
     private _loadedSystemAgents: AgentConfig[] = [];
     /** Prompt lookup used for direct named/system sessions. */
-    private _agentPromptLookup: Record<string, { prompt: string; kind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent"; descriptor?: import("./prompt-layers.js").PromptLayerDescriptor }> = {};
+    private _agentPromptLookup: Record<string, { prompt: string; kind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent"; descriptor?: import("./prompt-layers.js").PromptLayerDescriptor; inheritAppDefaults?: boolean }> = {};
     /** Descriptor for the PilotSwarm framework base layer (from system default.agent.md). */
     private _frameworkBaseDescriptor: import("./prompt-layers.js").PromptLayerDescriptor | null = null;
     /** Descriptor for the app default layer (from app default.agent.md or inline config). */
@@ -903,14 +903,16 @@ export class PilotSwarmWorker {
         this._resolveAgentMcpServers();
         this._loadedAgents = this._rawLoadedAgents.map((agent) => {
             // Replace the frontmatter's named MCP references with the
-            // resolved server map (and drop the inherit flag) so the SDK's
-            // CustomAgentConfig.mcpServers receives real server configs.
-            const { mcpServers: _refs, inheritDefaultMcpServers: _inherit, ...rest } = agent;
+            // resolved server map (and drop the inherit flags) so the SDK's
+            // CustomAgentConfig receives real server configs and no
+            // PilotSwarm-only layering fields.
+            const { mcpServers: _refs, inheritDefaultMcpServers: _inherit, inheritAppDefaults, ...rest } = agent;
             return {
                 ...rest,
                 prompt: composeSystemPrompt({
                     frameworkBase: this._frameworkBasePrompt,
                     appDefault: this._appDefaultPrompt,
+                    includeAppDefault: inheritAppDefaults !== false,
                     activeAgentPrompt: this._agentPromptLookup[agent.name]?.prompt ?? agent.prompt,
                 }) ?? agent.prompt,
                 ...(this._agentMcpServers[agent.name] ? { mcpServers: this._agentMcpServers[agent.name] } : {}),
@@ -1110,6 +1112,7 @@ export class PilotSwarmWorker {
                 prompt: agent.prompt,
                 kind: "app-agent",
                 descriptor,
+                inheritAppDefaults: agent.inheritAppDefaults,
             };
             this._rawLoadedAgents.push(agent);
             appAgentKeys.add(key);
@@ -1172,6 +1175,7 @@ export class PilotSwarmWorker {
                         prompt: agent.prompt,
                         kind: agent.promptLayerKind,
                         descriptor,
+                        inheritAppDefaults: agent.inheritAppDefaults,
                     };
                     this._loadedSystemAgents.push(agent);
                 } else {
@@ -1180,6 +1184,7 @@ export class PilotSwarmWorker {
                         prompt: agent.prompt,
                         kind: "app-agent",
                         descriptor,
+                        inheritAppDefaults: agent.inheritAppDefaults,
                     };
                     this._rawLoadedAgents.push(agent);
                 }

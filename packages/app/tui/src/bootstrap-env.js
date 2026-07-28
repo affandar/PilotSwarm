@@ -8,17 +8,17 @@ import { resolveTuiBranding } from "./plugin-config.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkgRoot = path.resolve(__dirname, "..");
 
-function resolvePluginDir(flags) {
-    if (flags.plugin) return path.resolve(flags.plugin);
+export function resolvePluginDirs(flags) {
+    const split = (value) => String(value).split(",").map((entry) => entry.trim()).filter(Boolean);
+    if (flags.plugin) return split(flags.plugin).map((entry) => path.resolve(entry));
     if (process.env.PLUGIN_DIRS) {
-        const dirs = process.env.PLUGIN_DIRS.split(",").map((value) => value.trim()).filter(Boolean);
-        return dirs[0] || null;
+        return split(process.env.PLUGIN_DIRS).map((entry) => path.resolve(entry));
     }
     const cwdPlugin = path.resolve("plugins");
-    if (fs.existsSync(cwdPlugin)) return cwdPlugin;
+    if (fs.existsSync(cwdPlugin)) return [cwdPlugin];
     const bundledPlugin = path.join(pkgRoot, "plugins");
-    if (fs.existsSync(bundledPlugin)) return bundledPlugin;
-    return null;
+    if (fs.existsSync(bundledPlugin)) return [bundledPlugin];
+    return [];
 }
 
 function resolveSystemMessage(flags) {
@@ -29,8 +29,8 @@ function resolveSystemMessage(flags) {
         return flags.system;
     }
 
-    const pluginDir = resolvePluginDir(flags);
-    if (pluginDir) {
+    // system.md is resolved across every plugin dir, first match wins.
+    for (const pluginDir of resolvePluginDirs(flags)) {
         const systemMd = path.join(pluginDir, "system.md");
         if (fs.existsSync(systemMd)) {
             return fs.readFileSync(systemMd, "utf-8").trim();
@@ -146,12 +146,14 @@ FLAGS
     process.env.K8S_NAMESPACE = flags.namespace || process.env.K8S_NAMESPACE || "copilot-runtime";
     process.env.K8S_POD_LABEL = flags.label || process.env.K8S_POD_LABEL || "app.kubernetes.io/component=worker";
 
-    const pluginDir = resolvePluginDir(flags);
-    if (pluginDir) {
-        process.env.PLUGIN_DIRS = pluginDir;
+    const pluginDirs = resolvePluginDirs(flags);
+    if (pluginDirs.length > 0) {
+        process.env.PLUGIN_DIRS = pluginDirs.join(",");
     }
 
-    const branding = resolveTuiBranding(pluginDir);
+    // Branding is single-sourced from the first plugin dir; later dirs are
+    // overlays (extra agents/skills) and do not restyle the shell.
+    const branding = resolveTuiBranding(pluginDirs[0] ?? null);
     process.env._TUI_TITLE = branding.title;
     process.env._TUI_SPLASH = branding.splash;
 

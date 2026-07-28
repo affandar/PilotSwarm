@@ -1,5 +1,40 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Agents can opt out of the app default layer** with `inheritAppDefaults: false`
+  in `.agent.md` frontmatter. An app's `default.agent.md` is otherwise
+  force-merged into every session — both its prompt and its `tools:` — so the
+  only way to author an agent that did not want those instructions was to
+  weaken the default for everyone. An opted-out agent is composed from the
+  framework base plus its own prompt and tools only; the rest of the deployment
+  is unaffected.
+
+  Omitting the field inherits, so existing agents are unchanged. The flag is
+  resolved from the agent definition at prompt-composition time rather than
+  persisted on the session, so redefining an agent takes effect on its next
+  turn and existing sessions need no migration. It is inert for management
+  agents, which already bypass app overlays.
+
+  This is a composition choice, not a security boundary — invariants that must
+  hold for every session still belong in the framework base layer, which cannot
+  be opted out of.
+
+### Fixed
+
+- **`PLUGIN_DIRS` no longer collapses to a single directory.** The variable has
+  always been documented and parsed as a comma-separated list, and the SDK
+  worker loads every entry — but the TUI/portal bootstrap resolved it down to
+  `dirs[0]` and then wrote that single path back over `process.env.PLUGIN_DIRS`.
+  Any deployment configuring two plugin dirs silently lost all but the first,
+  which for an overlay holding `default.agent.md` meant the app default layer
+  vanished with no error. `--plugin` now also accepts a comma-separated list,
+  and `system.md` is resolved across all plugin dirs (first match wins).
+  Branding still comes from the first dir only, so single-dir setups are
+  byte-identical.
+
 ## 0.5.28 — 2026-07-28
 
 ### Portal performance

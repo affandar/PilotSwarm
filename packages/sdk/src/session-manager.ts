@@ -88,7 +88,7 @@ export interface WorkerDefaults {
     /** Backward-compatible alias for older code paths/tests. */
     systemMessage?: string;
     /** Raw prompt lookup for named and system agents bound directly to sessions. */
-    agentPromptLookup?: Record<string, { prompt: string; kind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent"; descriptor?: import("./prompt-layers.js").PromptLayerDescriptor }>;
+    agentPromptLookup?: Record<string, { prompt: string; kind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent"; descriptor?: import("./prompt-layers.js").PromptLayerDescriptor; inheritAppDefaults?: boolean }>;
     /** Descriptor for the PilotSwarm framework base layer (from system default.agent.md). */
     frameworkBaseDescriptor?: import("./prompt-layers.js").PromptLayerDescriptor;
     /** Descriptor for the app default layer (from app default.agent.md or inline config). */
@@ -128,13 +128,30 @@ export interface WorkerDefaults {
     turnInactivityTimeoutMs?: number;
 }
 
-function buildEffectivePromptLayers(workerDefaults: WorkerDefaults, config: SerializableSessionConfig): PromptLayerDescriptor[] {
+/**
+ * Whether a session inherits the deployment's app default layer (prompt + tools).
+ *
+ * Resolved from the bound agent definition on every turn rather than read from
+ * the durable session row, so redefining an agent takes effect on the next turn
+ * and old sessions never carry a stale copy of the decision.
+ *
+ * PilotSwarm system agents have always bypassed the app default; an app agent
+ * opts out explicitly with `inheritAppDefaults: false` in its frontmatter.
+ * Unbound sessions and agents that say nothing inherit, which is today's behavior.
+ */
+export function inheritsAppDefaults(workerDefaults: WorkerDefaults, config: SerializableSessionConfig): boolean {
     const boundAgentName = config.boundAgentName;
     const layerKind = config.promptLayering?.kind ?? (boundAgentName ? "app-agent" : undefined);
-    const isPilotSwarmSystemAgent = layerKind === "pilotswarm-system-agent";
+    if (layerKind === "pilotswarm-system-agent") return false;
+    if (!boundAgentName) return true;
+    return workerDefaults.agentPromptLookup?.[boundAgentName]?.inheritAppDefaults !== false;
+}
+
+function buildEffectivePromptLayers(workerDefaults: WorkerDefaults, config: SerializableSessionConfig): PromptLayerDescriptor[] {
+    const boundAgentName = config.boundAgentName;
     const layers: PromptLayerDescriptor[] = [];
     if (workerDefaults.frameworkBaseDescriptor) layers.push(workerDefaults.frameworkBaseDescriptor);
-    if (!isPilotSwarmSystemAgent && workerDefaults.appDefaultDescriptor) layers.push(workerDefaults.appDefaultDescriptor);
+    if (inheritsAppDefaults(workerDefaults, config) && workerDefaults.appDefaultDescriptor) layers.push(workerDefaults.appDefaultDescriptor);
     if (boundAgentName) {
         const agentDescriptor = workerDefaults.agentPromptLookup?.[boundAgentName]?.descriptor;
         if (agentDescriptor) layers.push(agentDescriptor);
@@ -936,7 +953,9 @@ export class SessionManager {
         const epochStart = options?.epochStart === true;
         const inheritedToolNames = Array.from(new Set([
             ...(this.workerDefaults.frameworkBaseToolNames ?? []),
-            ...(this.workerDefaults.appDefaultToolNames ?? []),
+            ...(inheritsAppDefaults(this.workerDefaults, serializableConfig)
+                ? (this.workerDefaults.appDefaultToolNames ?? [])
+                : []),
             ...(serializableConfig.toolNames ?? []),
         ]));
         const effectiveSerializableConfig: SerializableSessionConfig = inheritedToolNames.length > 0
@@ -1892,22 +1911,19 @@ export class SessionManager {
         config: SerializableSessionConfig,
     ): SystemMessageConfig | undefined {
         const frameworkBase = this.workerDefaults.frameworkBasePrompt ?? this.workerDefaults.systemMessage;
-        const boundAgentName = config.boundAgentName;
-        const layerKind = config.promptLayering?.kind ?? (boundAgentName ? "app-agent" : undefined);
         const knowledgeToolInstructions = this._buildKnowledgeToolInstructionsSection(config.agentIdentity);
         const lastInstructions = this._buildLastInstructionsSection(sessionId, config);
         const additionalSections = knowledgeToolInstructions
             ? { tool_instructions: knowledgeToolInstructions, last_instructions: lastInstructions }
             : { last_instructions: lastInstructions };
 
-        const isPilotSwarmSystemAgent = layerKind === "pilotswarm-system-agent";
         const layerManifest = buildEffectivePromptLayers(this.workerDefaults, config);
 
         return composeStructuredSystemMessage({
             frameworkBase,
-            appDefault: isPilotSwarmSystemAgent
-                ? undefined
-                : this.workerDefaults.appDefaultPrompt,
+            appDefault: inheritsAppDefaults(this.workerDefaults, config)
+                ? this.workerDefaults.appDefaultPrompt
+                : undefined,
             additionalSections,
             layerManifest: layerManifest.length > 0 ? layerManifest : undefined,
         });
