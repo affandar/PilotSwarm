@@ -65,6 +65,24 @@ const ARTIFACT_ENTRIES = [{
     isBinary: false,
 }];
 
+// A long transcript, for the resize/scroll perf tests. Alternating turns with
+// enough prose per message to look like a real agent session — width-dependent
+// wrapping is exactly the work being measured.
+const PARA = "The CPG migration workflow renamed durably stored disk attach/detach properties. "
+    + "Old state may not resume on new code, and new state may not survive rollback to old code. "
+    + "Owner responded: migration overlap is rare; failures are recoverable by restarting.";
+
+const makeTranscript = (count) => Array.from({ length: count }, (_, i) => ({
+    seq: i + 1,
+    eventType: i % 2 === 0 ? "user.message" : "assistant.message",
+    timestamp: 1785000000000 + (i * 1000),
+    data: {
+        content: i % 2 === 0
+            ? `Turn ${i}: please review PR ${2160000 + i} and summarise the blocking risk.`
+            : `**Assessment ${i}**\n\n${PARA}\n\n- point one\n- point two\n\n\`\`\`js\nconst x = ${i};\n\`\`\`\n\n${PARA}`,
+    },
+}));
+
 const API = {
     "/api/health": { ok: true, started: true, mode: "remote" },
     "/api/auth-config": { enabled: false, provider: "none", displayName: "No auth", client: null },
@@ -96,13 +114,19 @@ function rpc(method, SESSIONS) {
     }
 }
 
-export function startStubServer(port = 0, { sessionCount = 6 } = {}) {
+export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 0 } = {}) {
     const SESSIONS = makeSessions(Math.max(1, sessionCount));
+    const TRANSCRIPT = makeTranscript(Math.max(0, transcriptTurns));
     const server = http.createServer((req, res) => {
         const url = new URL(req.url, "http://localhost");
         const pathname = url.pathname;
 
         if (pathname.startsWith("/api/")) {
+            if (/\/events$/.test(pathname)) {
+                res.writeHead(200, { "content-type": "application/json" });
+                res.end(JSON.stringify({ ok: true, result: TRANSCRIPT }));
+                return;
+            }
             // These routes are path-shaped, so the last-segment heuristic below
             // cannot answer them. The client unwraps `result`.
             if (/\/management\/sessions$/.test(pathname)) {
