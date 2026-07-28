@@ -6333,7 +6333,17 @@ export class PilotSwarmUiController {
 
         await this.maybeAutoExpandActiveHistory(requestedScrollOffset, {
             pages: AUTO_HISTORY_SCROLL_PAGE_COUNT,
-            force: Boolean(options.force),
+            // Always bypass the offset gate. Every caller of this method fires
+            // only when the DOM scroller is already AT the top — a direct
+            // measurement. The gate is a second, weaker guess that compares a
+            // DOM-derived offset against `selectChatLines` metrics, i.e. the
+            // TERMINAL wrapped-line count, which the rich renderer does not
+            // use. On a session whose messages are long (tables, code blocks)
+            // the terminal line count balloons far past the rich DOM's scroll
+            // extent, so the gate could never open and older history was
+            // unreachable — while a session of short messages worked fine.
+            // The arm/fire handshake above still debounces the wheel path.
+            force: true,
         });
     }
 
