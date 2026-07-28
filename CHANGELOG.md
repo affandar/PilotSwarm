@@ -22,6 +22,19 @@
   hold for every session still belong in the framework base layer, which cannot
   be opted out of.
 
+### Fixed
+
+- **`PLUGIN_DIRS` no longer collapses to a single directory.** The variable has
+  always been documented and parsed as a comma-separated list, and the SDK
+  worker loads every entry — but the TUI/portal bootstrap resolved it down to
+  `dirs[0]` and then wrote that single path back over `process.env.PLUGIN_DIRS`.
+  Any deployment configuring two plugin dirs silently lost all but the first,
+  which for an overlay holding `default.agent.md` meant the app default layer
+  vanished with no error. `--plugin` now also accepts a comma-separated list,
+  and `system.md` is resolved across all plugin dirs (first match wins).
+  Branding still comes from the first dir only, so single-dir setups are
+  byte-identical.
+
 ## 0.5.28 — 2026-07-28
 
 ### Portal performance

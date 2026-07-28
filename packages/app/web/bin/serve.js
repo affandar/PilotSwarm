@@ -44,7 +44,13 @@ const port = portFlag !== -1 ? parseInt(process.argv[portFlag + 1], 10) : 3001;
 
 const pluginFlag = process.argv.indexOf("--plugin");
 if (pluginFlag !== -1 && process.argv[pluginFlag + 1]) {
-  process.env.PLUGIN_DIRS = path.resolve(process.argv[pluginFlag + 1]);
+  // Accepts a comma-separated list; each entry is resolved independently.
+  process.env.PLUGIN_DIRS = String(process.argv[pluginFlag + 1])
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => path.resolve(entry))
+    .join(",");
 }
 
 const workersFlag = process.argv.indexOf("--workers");
