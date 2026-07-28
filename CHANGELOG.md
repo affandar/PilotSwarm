@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.5.27 — 2026-07-28
+
+### Portal performance
+
+- **Resizing a pane no longer re-lays-out the whole transcript.** The chat
+  transcript is not virtualised, so every loaded block re-wrapped on every
+  frame of a splitter drag — a cost linear in DOM size (~1.55ms per 1000
+  nodes), which on a long session turned resizing into a slideshow. Blocks now
+  opt out of offscreen layout: measured 49.6ms → 2.9ms per re-layout at 30k
+  nodes, 86.9ms → 8.2ms at 60k, 6.2ms → 0.6ms at a normal window.
+- **Re-opening a session no longer re-fetches everything you had paged back
+  through.** The loaded-history window is sticky by design, but it was also
+  re-requested on every switch-in, so one trip through a busy session's history
+  made it permanently expensive to open (10k events re-fetched, re-derived and
+  re-laid-out each time). Paging back still expands freely; re-entry is bounded
+  to five pages.
+- **Moving through the session list is no longer a network round trip per
+  keypress.** Selecting a session force-refetched its history, synced detail,
+  re-attached the event stream and re-probed access — so scrolling a list fired
+  two API calls per row, and on a remote deployment the highlight ran behind
+  the cursor. The highlight is local state and now moves immediately; fetching
+  waits for the selection to settle. A click still loads at once. Measured over
+  30 moves: 61 API calls → 3.
+- **The session list no longer rebuilds every row on every keypress.** Rows are
+  memoized against the inputs they derive from, so moving the selection touches
+  the two rows that changed: 5.16ms → 0.59ms of work per move at 200 sessions.
+
+### Added
+
+- **Selected-session details live at the foot of the Sessions panel.** Session
+  rows are one clean line each; id, model, context window, cron, agent, status,
+  children and access moved into a box with a fixed height, so scrolling the
+  list cannot shift it. Mobile and the TUI are unchanged.
+- **CSV and TSV artifacts render as a table.** Parsing is delegated to Papa
+  Parse, so quoted commas, embedded newlines and escaped quotes survive; rows
+  wider than the header keep their extra cells rather than silently losing
+  them. Ctrl/Cmd+A selects the table rather than the page, dragging selects
+  whole cells, and copying emits real TSV that pastes into a spreadsheet.
+
+### Fixed
+
+- **Windows 95 panel titles are readable on the title bar.** Titles are runs
+  with inline palette colours, which beat class rules — the same defect as the
+  selection bar, and it needs the same remedy.
+
 ## 0.5.26 — 2026-07-27
 
 ### Fixed
