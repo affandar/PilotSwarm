@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.5.29 — 2026-07-28
+
+### Changed
+
+- **Copilot runtime upgraded: `@github/copilot` 1.0.70 → 1.0.73,
+  `@github/copilot-sdk` 1.0.6 → 1.0.7.** The new SDK introduces tool search:
+  past a threshold (default 30 tools), external tools are deferred out of the
+  prompt behind a `tool_search_tool` the model must think to call. PilotSwarm
+  sessions declare 40+ tools, so every tool is now pinned `defer: "never"` at
+  the single point where declarations reach the CLI — a deferred workflow tool
+  (spawn_agent, store_fact, complete_agent) would be a silent no-op until the
+  model suspected it existed. An explicit `defer` on a tool definition is
+  respected, so individual long-tail tools can opt back in later without
+  touching the chokepoint.
+- The CLI's built-in toolset gained `write_agent` between 1.0.70 and 1.0.73;
+  the always-on toolset contract acknowledges it.
+
+### Portal performance
+
+- **Dragging a splitter no longer spends its frames building Intl date
+  formatters.** `toLocaleTimeString` constructs a fresh `Intl.DateTimeFormat`
+  on every call, and every session row and event line re-derives its timestamp
+  on every render — profiled at 91.8% of a resize drag's self time on a fleet
+  of 88 sessions. Four cached formatters replace the per-call path (311.8ms →
+  4.2ms for the profiled workload), and same-day rows no longer format an
+  hh:mm string only to throw it away.
+
+### Fixed
+
+- **Deleting an already-terminal session no longer orphans its subtree.** The
+  descendant cascade lived only in the delete handler of a session's running
+  orchestration, so deleting a finished session — the reaper's normal case —
+  was a single-row soft delete that left every descendant unreachable (the
+  descendant walk skips deleted rows at every level). Both client entry points
+  now cascade explicitly, enumerating descendants before the target is
+  deleted.
+
 ## 0.5.28 — 2026-07-28
 
 ### Portal performance

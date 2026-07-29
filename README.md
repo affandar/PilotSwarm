@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.28** — Portal performance on long sessions: resizing a pane no longer re-derives or re-parses the transcript, scrolling no longer wraps it to count lines, and moving through the session list no longer costs a network round trip per keypress. Older history is reachable again on sessions with long messages, and selected-session details now sit in a fixed box at the foot of the Sessions panel.
+> **Latest release: v0.5.29** — Copilot runtime upgraded (CLI 1.0.73, SDK 1.0.7) with every PilotSwarm tool pinned out of the new tool-search deferral, so the model always sees the full toolset. Deleting a finished session now cleans up its whole subtree instead of orphaning it. Splitter drags stop rebuilding Intl date formatters per row — the last big fixed cost in resize responsiveness.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 
