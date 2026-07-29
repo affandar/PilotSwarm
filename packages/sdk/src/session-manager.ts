@@ -6,6 +6,7 @@ import type { ModelProviderRegistry } from "./model-providers.js";
 import { createFactTools } from "./facts-tools.js";
 import { createGraphTools } from "./graph-tools.js";
 import { createInspectTools } from "./inspect-tools.js";
+import { pinToolsNeverDefer } from "./tool-pinning.js";
 import type { SessionCatalog } from "./cms.js";
 import { SYSTEM_USER_PRINCIPAL } from "./cms.js";
 import type { FactStore } from "./facts-store.js";
@@ -1208,7 +1209,12 @@ export class SessionManager {
 
         const sessionConfig: any = {
             sessionId,
-            tools: allTools,
+            // Sole chokepoint where tool DECLARATIONS reach the CLI (create and
+            // resume share this object; ManagedSession.registerTools only
+            // refreshes the client-side handler map). Pinned so tool search
+            // cannot defer PilotSwarm tools out of the prompt — see
+            // tool-pinning.ts for the why and the phase-2 opt-out path.
+            tools: pinToolsNeverDefer(allTools),
             model: sdkModelName,
             ...(config.reasoningEffort ? { reasoningEffort: config.reasoningEffort } : {}),
             ...(config.contextTier ? { contextTier: config.contextTier } : {}),

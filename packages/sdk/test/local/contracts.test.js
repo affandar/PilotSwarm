@@ -91,6 +91,10 @@ const EXPECTED_LLM_VISIBLE_TOOL_NAMES = [
     "stop_bash",
     "view",
     "web_fetch",
+    // write_agent joined the CLI's built-ins between 1.0.70 and 1.0.73
+    // (companion to read_agent, for custom-agent files). Not a PilotSwarm
+    // tool; delivered by the CLI to every session.
+    "write_agent",
 ];
 
 // Derive the expected enhanced tools from the SAME storage registry the SDK
