@@ -408,6 +408,34 @@ export class PilotSwarmClient {
             throw new Error("Cannot delete system session");
         }
 
+        // Cascade to descendants. Enumerate BEFORE deleting the target: the
+        // descendant walk skips soft-deleted rows, so once the target row is
+        // gone its subtree is unreachable from any ancestor (orphaned).
+        let descendants: string[] = [];
+        try {
+            descendants = await this._catalog.getDescendantSessionIds(sessionId);
+        } catch (err) {
+            console.error(`[PilotSwarmClient] descendant enumeration failed for ${sessionId}:`, err);
+        }
+        for (const descendantId of descendants) {
+            try {
+                await this._deleteOneSession(descendantId);
+            } catch (err) {
+                // Non-fatal (e.g. a system/service descendant): keep going so
+                // one refusal doesn't strand its siblings.
+                console.error(`[PilotSwarmClient] failed to delete descendant ${descendantId} of ${sessionId}:`, err);
+            }
+        }
+
+        await this._deleteOneSession(sessionId);
+    }
+
+    /**
+     * Delete a single session row: CMS soft-delete, session-fact cleanup,
+     * best-effort duroxide cancel. No descendant handling — deleteSession()
+     * cascades before calling this.
+     */
+    private async _deleteOneSession(sessionId: string): Promise<void> {
         this.sessionConfigs.delete(sessionId);
         this.parentSessionIds.delete(sessionId);
         this.nestingLevels.delete(sessionId);

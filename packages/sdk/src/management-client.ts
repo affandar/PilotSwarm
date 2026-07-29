@@ -1258,6 +1258,26 @@ export class PilotSwarmManagementClient {
             || session.status === "cancelled"
             || isTerminalOrchestrationStatus(session.orchestrationStatus)
         ) {
+            // Terminal fast path: there is no live orchestration to run the
+            // descendant cascade (the delete command handler), so cascade
+            // here. Enumerate BEFORE deleting the target — the descendant
+            // walk skips soft-deleted rows, so deleting the target first
+            // would orphan its subtree.
+            let descendants: string[] = [];
+            try {
+                descendants = await this._catalog!.getDescendantSessionIds(sessionId);
+            } catch (err) {
+                console.error(`[PilotSwarmManagementClient] descendant enumeration failed for ${sessionId}:`, err);
+            }
+            for (const descendantId of descendants) {
+                try {
+                    await this._forceDeleteSession(descendantId, `Ancestor ${sessionId} deleted: ${deleteReason}`);
+                } catch (err) {
+                    // Non-fatal (e.g. a system/service descendant): keep
+                    // going so one refusal doesn't strand its siblings.
+                    console.error(`[PilotSwarmManagementClient] failed to delete descendant ${descendantId} of ${sessionId}:`, err);
+                }
+            }
             await this._forceDeleteSession(sessionId, deleteReason);
             return;
         }
