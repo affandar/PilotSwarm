@@ -3595,7 +3595,7 @@ export function selectAdminConsole(state) {
     // Settings tree — the session-list-slot navigation. Rendered by both
     // hosts; `kind` drives affordances (section rows switch panes, package
     // rows select a package).
-    const section = admin.section === "packages" ? "packages" : "ghcp";
+    const section = ["packages", "workers"].includes(admin.section) ? admin.section : "ghcp";
     const settingsTree = [
         { id: "ghcp", kind: "section", depth: 0, label: "GitHub Keys", selected: section === "ghcp" },
         { id: "agents", kind: "section", depth: 0, label: "Agents", selected: section === "packages" && !pkgState.selectedName },
@@ -3603,6 +3603,9 @@ export function selectAdminConsole(state) {
         ...sharedRows.map((row) => ({ id: `pkg:${row.name}`, kind: "package", depth: 2, label: row.name, ...row })),
         { id: "group:user", kind: "group", depth: 1, label: "User", count: userRows.length },
         ...userRows.map((row) => ({ id: `pkg:${row.name}`, kind: "package", depth: 2, label: row.name, ...row })),
+        // The worker registry is a hard-gated admin read; hide the section
+        // entirely from non-admins rather than showing a doomed pane.
+        ...(isAdmin ? [{ id: "workers", kind: "section", depth: 0, label: "Workers", selected: section === "workers" }] : []),
     ];
 
     // Detail view-model for the selected package.
@@ -3736,6 +3739,76 @@ export function selectAdminConsole(state) {
         };
     }
 
+    // ── Worker registry (Admin → Workers) ────────────────────────
+    // Rows self-prune server-side after 1h; the UI additionally marks a
+    // worker live only when its heartbeat is younger than the same 90s
+    // window the fleet-adoption count uses.
+    const workersState = admin.workers || {};
+    const workerList = Array.isArray(workersState.list) ? workersState.list : [];
+    const WORKERS_LIVE_MS = 90_000;
+    const workersNow = Date.now();
+    const workerAgo = (ms) => {
+        if (!Number.isFinite(ms) || ms < 0) return "—";
+        if (ms < 60_000) return `${Math.round(ms / 1000)}s ago`;
+        if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m ago`;
+        return `${Math.round(ms / 3_600_000)}h ago`;
+    };
+    const workerUptime = (seconds) => {
+        if (!Number.isFinite(seconds) || seconds < 0) return null;
+        if (seconds < 60) return `${Math.round(seconds)}s`;
+        if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+        const h = Math.floor(seconds / 3600);
+        return h < 48 ? `${h}h ${Math.floor((seconds % 3600) / 60)}m` : `${Math.floor(h / 24)}d ${h % 24}h`;
+    };
+    const workerRegistryRows = workerList
+        .map((worker) => {
+            const at = worker?.updatedAt instanceof Date ? worker.updatedAt : new Date(worker?.updatedAt ?? 0);
+            const ageMs = Number.isNaN(at.getTime()) ? Number.NaN : workersNow - at.getTime();
+            const health = worker?.health || {};
+            const info = worker?.info || {};
+            const pkg = worker?.state?.["agent-packages"] || null;
+            const installed = pkg?.installed && typeof pkg.installed === "object" ? Object.values(pkg.installed) : [];
+            const pkgErrors = installed.filter((entry) => entry?.status === "error").length;
+            return {
+                id: String(worker?.workerNodeId ?? ""),
+                pool: String(worker?.pool ?? "default"),
+                phase: ["starting", "ready", "draining"].includes(worker?.phase) ? worker.phase : "ready",
+                live: Number.isFinite(ageMs) && ageMs <= WORKERS_LIVE_MS,
+                agoText: workerAgo(ageMs),
+                uptimeText: workerUptime(health.uptimeS),
+                rssText: adminPkgSize(health.rssBytes),
+                sessions: Number.isFinite(health.activeSessions) ? health.activeSessions : null,
+                eventLoopText: Number.isFinite(health.eventLoopDelayP99Ms) ? `${health.eventLoopDelayP99Ms}ms` : null,
+                sdkVersion: typeof info.sdkVersion === "string" ? info.sdkVersion : null,
+                substrate: typeof info.runtime?.substrate === "string" ? info.runtime.substrate : null,
+                consumes: Array.isArray(info.consumes) ? info.consumes : [],
+                owner: worker?.owner?.subject ? String(worker.owner.subject) : null,
+                pkgEpoch: Number.isFinite(pkg?.epoch) ? pkg.epoch : null,
+                pkgText: pkg
+                    ? `${installed.length - pkgErrors} ok${pkgErrors ? ` · ${pkgErrors} error` : ""}`
+                    : null,
+            };
+        })
+        .sort((a, b) => (a.pool === b.pool ? (a.id < b.id ? -1 : 1) : (a.pool < b.pool ? -1 : 1)));
+    const liveWorkerRows = workerRegistryRows.filter((row) => row.live);
+    const workersView = {
+        loading: Boolean(workersState.loading),
+        error: workersState.error || null,
+        empty: workerRegistryRows.length === 0 && !workersState.loading,
+        rows: workerRegistryRows,
+        counts: {
+            registered: workerRegistryRows.length,
+            live: liveWorkerRows.length,
+            ready: liveWorkerRows.filter((row) => row.phase === "ready").length,
+            starting: liveWorkerRows.filter((row) => row.phase === "starting").length,
+            draining: liveWorkerRows.filter((row) => row.phase === "draining").length,
+            pools: [...new Set(liveWorkerRows.map((row) => row.pool))].length,
+        },
+        summaryText: workerRegistryRows.length
+            ? `${liveWorkerRows.length} live / ${workerRegistryRows.length} registered`
+            : null,
+    };
+
     const packagesView = {
         loading: Boolean(pkgState.loading),
         error: pkgState.error || null,
@@ -3760,6 +3833,43 @@ export function selectAdminConsole(state) {
     };
 
     const actions = [];
+    if (section === "workers") {
+        actions.push({ id: "workersRefresh", label: "Refresh workers", key: "r" });
+        actions.push({ id: "showPackages", label: "Agents", key: "a" });
+        actions.push({ id: "showGhcp", label: "GitHub Keys", key: "g" });
+        actions.push({ id: "close", label: "Close console", key: "Esc" });
+        return {
+            visible: Boolean(admin.visible),
+            loading: Boolean(admin.loading),
+            loadError: admin.loadError || null,
+            principal,
+            isAdmin,
+            section,
+            settingsTree,
+            packages: packagesView,
+            workers: workersView,
+            ghcpKey: {
+                configured: Boolean(profile?.githubCopilotKeySet),
+                targetConfigured,
+                storeAsSystem,
+                editing: false,
+                draft: "",
+                cursorIndex: 0,
+                saving: false,
+                error: null,
+                statusText: ghcpStatusText,
+            },
+            systemGhcpKey: {
+                supported: Boolean(systemGhcpKey.supported),
+                loading: Boolean(systemGhcpKey.loading),
+                configured: Boolean(systemGhcpKey.configured),
+                changedBy: systemGhcpKey.changedBy || null,
+                changedAt: systemGhcpKey.changedAt || null,
+                error: systemGhcpKey.error || null,
+            },
+            actions,
+        };
+    }
     if (section === "packages") {
         actions.push({ id: "packagesRefresh", label: "Refresh packages", key: "r" });
         actions.push({ id: "packagesNext", label: "Next package", key: "j" });
@@ -3775,6 +3885,7 @@ export function selectAdminConsole(state) {
             section,
             settingsTree,
             packages: packagesView,
+            workers: workersView,
             ghcpKey: {
                 configured: Boolean(profile?.githubCopilotKeySet),
                 targetConfigured,
@@ -3821,6 +3932,7 @@ export function selectAdminConsole(state) {
         section,
         settingsTree,
         packages: packagesView,
+        workers: workersView,
         ghcpKey: {
             configured: Boolean(profile?.githubCopilotKeySet),
             targetConfigured,

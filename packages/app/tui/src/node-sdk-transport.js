@@ -857,6 +857,12 @@ export class NodeSdkTransport {
         return ctx.catalog.listAgentWorkerState();
     }
 
+    async listWorkers() {
+        const ctx = await this._agentPackagesContext();
+        if (!ctx) return [];
+        return ctx.catalog.listWorkers();
+    }
+
     async setAgentPackageScope(name, scope, owner, isAdmin) {
         const ctx = await this._agentPackagesContext();
         if (!ctx) throw new Error("agent packages are not available on this deployment");

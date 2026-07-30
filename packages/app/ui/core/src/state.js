@@ -317,6 +317,12 @@ export function createInitialState({ mode = "local", branding = null, themeId = 
                     error: null,
                 },
             },
+            workers: {
+                loading: false,
+                error: null,
+                list: [],
+                fetchedAt: 0,
+            },
         },
     };
 }

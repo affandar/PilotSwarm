@@ -1846,7 +1846,28 @@ export function appReducer(state, action) {
             };
         }
         case "admin/section": {
-            return { ...state, admin: { ...state.admin, section: action.section === "packages" ? "packages" : "ghcp" } };
+            const section = ["packages", "workers", "ghcp"].includes(action.section) ? action.section : "ghcp";
+            return { ...state, admin: { ...state.admin, section } };
+        }
+        case "admin/workers/loading": {
+            return { ...state, admin: { ...state.admin, workers: { ...state.admin.workers, loading: true, error: null } } };
+        }
+        case "admin/workers/loaded": {
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    workers: {
+                        loading: false,
+                        error: null,
+                        list: Array.isArray(action.list) ? action.list : [],
+                        fetchedAt: Date.now(),
+                    },
+                },
+            };
+        }
+        case "admin/workers/loadFailed": {
+            return { ...state, admin: { ...state.admin, workers: { ...state.admin.workers, loading: false, error: action.error || "Failed to load workers" } } };
         }
         case "admin/packages/loading": {
             return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, loading: true, error: null } } };

@@ -5418,3 +5418,66 @@ body.ps-rich-ui .ps-panel-header {
     .ps-admin-workspace { grid-template-columns: 200px minmax(0, 1fr); }
     .ps-admin-workspace .ps-admin-ws { display: none; }
 }
+
+/* ── Admin → Workers (worker registry, migration 0040) ─────────────── */
+.ps-admin-workers__head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+.ps-admin-workers__head h3 { margin: 0; }
+.ps-admin-workers__summary {
+    color: var(--ps-muted-foreground, #8b949e);
+    font-size: 12px;
+    flex: 1;
+}
+.ps-admin-workers__scroll { overflow-x: auto; }
+.ps-admin-workers__table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+}
+.ps-admin-workers__table th {
+    text-align: left;
+    font-weight: 600;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--ps-border, #30363d);
+    color: var(--ps-muted-foreground, #8b949e);
+    white-space: nowrap;
+}
+.ps-admin-workers__table td {
+    padding: 6px 10px;
+    border-bottom: 1px solid color-mix(in srgb, var(--ps-border, #30363d) 55%, transparent);
+    white-space: nowrap;
+}
+.ps-admin-workers__table tr.is-stale td { opacity: 0.5; }
+.ps-admin-workers__id { font-family: var(--ps-mono, ui-monospace, monospace); }
+.ps-admin-workers__substrate {
+    margin-left: 6px;
+    padding: 0 5px;
+    border: 1px solid var(--ps-border, #30363d);
+    border-radius: 8px;
+    font-size: 10px;
+    color: var(--ps-muted-foreground, #8b949e);
+}
+.ps-worker-dot {
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    margin-right: 7px;
+    background: var(--ps-muted-foreground, #8b949e);
+    opacity: 0.55;
+}
+.ps-worker-dot.is-live { background: #3fb950; opacity: 1; }
+.ps-worker-phase {
+    padding: 1px 7px;
+    border-radius: 9px;
+    border: 1px solid var(--ps-border, #30363d);
+    font-size: 11px;
+}
+.ps-worker-phase.is-ready { color: #3fb950; border-color: color-mix(in srgb, #3fb950 45%, transparent); }
+.ps-worker-phase.is-starting { color: #d29922; border-color: color-mix(in srgb, #d29922 50%, transparent); }
+.ps-worker-phase.is-draining { color: #f85149; border-color: color-mix(in srgb, #f85149 45%, transparent); }

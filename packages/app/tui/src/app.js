@@ -325,18 +325,30 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             return;
         }
         if (adminVisible) {
-            const adminSection = adminState?.section === "packages" ? "packages" : "ghcp";
+            const adminSection = ["packages", "workers"].includes(adminState?.section) ? adminState.section : "ghcp";
             if (key.escape) {
                 controller.handleCommand(UI_COMMANDS.CLOSE_ADMIN_CONSOLE).catch(() => {});
                 return;
             }
-            // Settings-tree section toggles (Admin → Agents ⟷ GitHub Keys).
+            // Settings-tree section toggles (Agents ⟷ GitHub Keys ⟷ Workers).
             if (plainShortcut && input === "a" && adminSection !== "packages") {
                 controller.handleCommand(UI_COMMANDS.ADMIN_SHOW_PACKAGES).catch(() => {});
                 return;
             }
-            if (plainShortcut && input === "g" && adminSection === "packages") {
+            if (plainShortcut && input === "g" && adminSection !== "ghcp") {
                 controller.handleCommand(UI_COMMANDS.ADMIN_SHOW_GHCP).catch(() => {});
+                return;
+            }
+            if (plainShortcut && input === "w" && adminSection !== "workers"
+                && adminState?.profile?.isAdmin) {
+                controller.handleCommand(UI_COMMANDS.ADMIN_SHOW_WORKERS).catch(() => {});
+                return;
+            }
+            if (adminSection === "workers") {
+                if (plainShortcut && input === "r") {
+                    controller.handleCommand(UI_COMMANDS.ADMIN_WORKERS_REFRESH).catch(() => {});
+                    return;
+                }
                 return;
             }
             if (adminSection === "packages") {

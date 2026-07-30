@@ -791,6 +791,8 @@ export class PortalRuntime {
                 return this.transport.deleteAgentSource(safeParams.sourceId, owner, isAdmin);
             case "listAgentWorkerState":
                 return this.transport.listAgentWorkerState();
+            case "listWorkers":
+                return this.transport.listWorkers();
             case "setAgentPackageScope":
                 return this.transport.setAgentPackageScope(safeParams.name, safeParams.scope, owner, isAdmin);
             case "setAgentPackageEnabled":

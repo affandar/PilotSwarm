@@ -85,6 +85,7 @@ export class HttpApiTransport {
     syncAgentSource(sourceId) { return this.api.call("syncAgentSource", { sourceId }); }
     deleteAgentSource(sourceId) { return this.api.call("deleteAgentSource", { sourceId }); }
     listAgentWorkerState() { return this.api.call("listAgentWorkerState"); }
+    listWorkers() { return this.api.call("listWorkers"); }
     setAgentPackageScope(name, scope) { return this.api.call("setAgentPackageScope", { name, scope }); }
     setAgentPackageEnabled(name, enabled) { return this.api.call("setAgentPackageEnabled", { name, enabled }); }
     pinAgentPackageVersion(name, semver) { return this.api.call("pinAgentPackageVersion", { name, semver }); }

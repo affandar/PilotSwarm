@@ -2639,6 +2639,25 @@ export class PilotSwarmUiController {
             const pkgs = this.getState().admin?.packages;
             if (!pkgs?.fetchedAt) void this.refreshAdminAgentPackages().catch(() => {});
         }
+        if (section === "workers") {
+            const workers = this.getState().admin?.workers;
+            if (!workers?.fetchedAt) void this.refreshAdminWorkers().catch(() => {});
+        }
+    }
+
+    /** Reload the worker registry (Admin → Workers). Admin-gated server-side. */
+    async refreshAdminWorkers() {
+        if (typeof this.transport.listWorkers !== "function") {
+            this.dispatch({ type: "admin/workers/loadFailed", error: "The worker registry is not available on this deployment." });
+            return;
+        }
+        this.dispatch({ type: "admin/workers/loading" });
+        try {
+            const list = await this.transport.listWorkers();
+            this.dispatch({ type: "admin/workers/loaded", list });
+        } catch (error) {
+            this.dispatch({ type: "admin/workers/loadFailed", error: error?.message || String(error) });
+        }
     }
 
     /** Reload the package list + sources (+ fleet state when permitted). */
@@ -7948,6 +7967,12 @@ export class PilotSwarmUiController {
                 return;
             case UI_COMMANDS.ADMIN_SHOW_PACKAGES:
                 this.setAdminSection("packages");
+                return;
+            case UI_COMMANDS.ADMIN_SHOW_WORKERS:
+                this.setAdminSection("workers");
+                return;
+            case UI_COMMANDS.ADMIN_WORKERS_REFRESH:
+                await this.refreshAdminWorkers();
                 return;
             case UI_COMMANDS.ADMIN_PACKAGES_REFRESH:
                 await this.refreshAdminAgentPackages();

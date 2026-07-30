@@ -49,9 +49,28 @@ export function registerSystemTools(server: McpServer, ctx: ServerContext) {
                     await grab("workers", async () => {
                         const w: any = await ctx.api!.call("getWorkerCount");
                         const count = typeof w === "number" ? w : (w?.count ?? null);
+                        // Worker registry (admin credentials only): live fleet
+                        // presence regardless of where workers run.
+                        let registry: Record<string, unknown> | undefined;
+                        if (ctx.admin) {
+                            try {
+                                const rows: any[] = (await ctx.api!.call("listWorkers")) ?? [];
+                                const liveCutoff = Date.now() - 90_000;
+                                const live = rows.filter((r) => new Date(r?.updatedAt ?? 0).getTime() >= liveCutoff);
+                                const byPhase: Record<string, number> = {};
+                                for (const r of live) byPhase[r.phase] = (byPhase[r.phase] ?? 0) + 1;
+                                registry = {
+                                    registered: rows.length,
+                                    live: live.length,
+                                    by_phase: byPhase,
+                                    pools: [...new Set(live.map((r) => r.pool))].sort(),
+                                };
+                            } catch { /* pre-0040 servers have no registry */ }
+                        }
                         return {
                             embedded_count: count,
-                            note: "Counts workers embedded in the portal process only. Deployments with dedicated worker pods report 0 here — use worker_claimed on create_session responses for per-run liveness.",
+                            ...(registry ? { registry } : {}),
+                            note: "embedded_count covers workers inside the portal process only; registry (admin) is the fleet-wide worker registry with a 90s liveness window.",
                         };
                     });
                 }
@@ -61,6 +80,35 @@ export function registerSystemTools(server: McpServer, ctx: ServerContext) {
 
                 if (Object.keys(errors).length > 0) result.errors = errors;
                 return jsonResult(result);
+            }),
+        );
+    }
+
+    // list_workers — [admin] the worker registry: fleet presence across
+    // substrates (AKS pods, VMs, laptops) with health and per-domain state.
+    if (ctx.admin) {
+        server.registerTool(
+            "list_workers",
+            {
+                title: "List Workers",
+                description:
+                    "Worker registry: every registered worker with pool, lifecycle phase (starting/ready/draining), "
+                    + "last-heartbeat liveness, build/capability info, health snapshot (memory, event loop, active "
+                    + "sessions), and per-domain state such as installed agent packages. Rows self-prune after 1h "
+                    + "of silence; treat a heartbeat older than ~90s as gone. [admin]",
+                inputSchema: {
+                    pool: z.string().optional().describe("Only workers in this pool"),
+                    live_only: z.boolean().optional().describe("Only workers with a heartbeat in the last 90s"),
+                },
+            },
+            withToolErrors(async ({ pool, live_only }) => {
+                let rows: any[] = ((await ctx.api!.call("listWorkers")) ?? []) as any[];
+                if (pool) rows = rows.filter((r) => r.pool === pool);
+                if (live_only) {
+                    const cutoff = Date.now() - 90_000;
+                    rows = rows.filter((r) => new Date(r?.updatedAt ?? 0).getTime() >= cutoff);
+                }
+                return jsonResult({ count: rows.length, workers: rows });
             }),
         );
     }

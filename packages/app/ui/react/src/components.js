@@ -2015,6 +2015,53 @@ function buildAdminPackagesLines(view) {
     return lines;
 }
 
+function buildAdminWorkersLines(view) {
+    // TUI parity for Admin → Workers: the worker-registry table as text.
+    const lines = [];
+    const workers = view.workers || {};
+    const counts = workers.counts || {};
+    lines.push([
+        { text: "Workers", color: "cyan", bold: true },
+        { text: workers.summaryText ? `  ${workers.summaryText}` : "", color: "gray" },
+    ]);
+    if (workers.loading) lines.push([{ text: "  loading workers...", color: "gray" }]);
+    if (workers.error) lines.push([{ text: `  ! ${workers.error}`, color: "red", bold: true }]);
+    if (workers.empty && !workers.loading) {
+        lines.push([{ text: "  No workers registered — workers appear on their first heartbeat.", color: "gray" }]);
+    }
+    let lastPool = null;
+    for (const row of workers.rows || []) {
+        if (row.pool !== lastPool) {
+            lastPool = row.pool;
+            lines.push([{ text: `  ${row.pool}`, color: "gray", bold: true }]);
+        }
+        const phaseColor = row.phase === "ready" ? "green" : row.phase === "draining" ? "red" : "yellow";
+        lines.push([
+            { text: row.live ? "   ● " : "   ○ ", color: row.live ? "green" : "gray" },
+            { text: row.id, color: row.live ? "white" : "gray", bold: row.live },
+            { text: `  ${row.phase}`, color: phaseColor },
+            { text: `  ${row.agoText}`, color: "gray" },
+            ...(row.uptimeText ? [{ text: `  up ${row.uptimeText}`, color: "gray" }] : []),
+            ...(row.rssText ? [{ text: `  ${row.rssText}`, color: "gray" }] : []),
+            ...(row.sessions != null ? [{ text: `  ${row.sessions} sess`, color: "gray" }] : []),
+            ...(row.pkgText ? [{ text: `  pkgs ${row.pkgText}`, color: row.pkgText.includes("error") ? "red" : "gray" }] : []),
+            ...(row.sdkVersion ? [{ text: `  v${row.sdkVersion}`, color: "gray" }] : []),
+        ]);
+    }
+    if (counts.draining) {
+        lines.push([{ text: `  ${counts.draining} draining`, color: "red" }]);
+    }
+    lines.push([{ text: "", color: "gray" }]);
+    lines.push([{ text: "Actions", color: "cyan", bold: true }]);
+    lines.push([
+        { text: " r ", color: "cyan", bold: true }, { text: "refresh  ", color: "gray" },
+        { text: "a ", color: "yellow", bold: true }, { text: "Agents  ", color: "gray" },
+        { text: "g ", color: "yellow", bold: true }, { text: "GitHub Keys  ", color: "gray" },
+        { text: "Esc ", color: "red", bold: true }, { text: "close", color: "gray" },
+    ]);
+    return lines;
+}
+
 function buildAdminConsoleLines(view) {
     const lines = [];
     lines.push([
@@ -2036,6 +2083,11 @@ function buildAdminConsoleLines(view) {
 
     if (view.section === "packages") {
         lines.push(...buildAdminPackagesLines(view));
+        return lines;
+    }
+
+    if (view.section === "workers") {
+        lines.push(...buildAdminWorkersLines(view));
         return lines;
     }
 

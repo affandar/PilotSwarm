@@ -6799,6 +6799,7 @@ function AdminConsolePanel({ controller, mobile = false }) {
     const draftRef = React.useRef(null);
     const packages = view.packages || {};
     const showPackages = view.section === "packages";
+    const showWorkers = view.section === "workers";
     // Workspace pane geometry: user-resizable (drag the pane's left edge for
     // width, the Preview header for the tree/preview split), persisted.
     const [wsLayout, setWsLayout] = React.useState(() => {
@@ -6887,6 +6888,9 @@ function AdminConsolePanel({ controller, mobile = false }) {
                 workspacePane);
         } else if (showPackages) {
             body = tree;
+        } else if (showWorkers) {
+            body = React.createElement("div", { className: "ps-admin-mobile-stack" }, tree,
+                React.createElement(AdminWorkersPane, { controller, view }));
         } else {
             body = React.createElement("div", { className: "ps-admin-mobile-stack" }, tree, ghcpSection);
         }
@@ -6908,9 +6912,58 @@ function AdminConsolePanel({ controller, mobile = false }) {
         },
             tree,
             React.createElement("div", { className: "ps-admin-main" },
-                showPackages ? detail : ghcpSection),
+                showPackages ? detail : showWorkers ? React.createElement(AdminWorkersPane, { controller, view }) : ghcpSection),
             workspacePane),
         dialog);
+}
+
+function AdminWorkersPane({ controller, view }) {
+    const workers = view.workers || {};
+    const rows = workers.rows || [];
+    const counts = workers.counts || {};
+    return React.createElement("div", { className: "ps-admin-detail ps-admin-workers" },
+        React.createElement("div", { className: "ps-admin-workers__head" },
+            React.createElement("h3", null, "Workers"),
+            workers.summaryText
+                ? React.createElement("span", { className: "ps-admin-workers__summary" },
+                    `${workers.summaryText}${counts.pools > 1 ? ` · ${counts.pools} pools` : ""}${counts.draining ? ` · ${counts.draining} draining` : ""}`)
+                : null,
+            React.createElement("button", {
+                type: "button", className: "ps-mini-button",
+                disabled: Boolean(workers.loading),
+                onClick: () => controller.refreshAdminWorkers(),
+            }, workers.loading ? "Refreshing…" : "Refresh")),
+        workers.error
+            ? React.createElement("div", { className: "ps-admin-console__error", role: "alert" }, workers.error)
+            : null,
+        workers.empty
+            ? React.createElement("p", { className: "ps-admin-console__hint" },
+                "No workers registered. Workers appear here on their first heartbeat and self-prune after an hour of silence.")
+            : React.createElement("div", { className: "ps-admin-workers__scroll" },
+                React.createElement("table", { className: "ps-admin-workers__table" },
+                    React.createElement("thead", null, React.createElement("tr", null,
+                        ["Worker", "Pool", "Phase", "Heartbeat", "Uptime", "RSS", "Sessions", "Loop p99", "Packages", "SDK"]
+                            .map((label) => React.createElement("th", { key: label }, label)))),
+                    React.createElement("tbody", null, rows.map((row) => React.createElement("tr", {
+                        key: row.id,
+                        className: row.live ? "is-live" : "is-stale",
+                    },
+                        React.createElement("td", { className: "ps-admin-workers__id", title: row.owner ? `owner: ${row.owner}` : undefined },
+                            React.createElement("span", { className: `ps-worker-dot${row.live ? " is-live" : ""}` }),
+                            row.id,
+                            row.substrate && row.substrate !== "kubernetes"
+                                ? React.createElement("span", { className: "ps-admin-workers__substrate" }, row.substrate)
+                                : null),
+                        React.createElement("td", null, row.pool),
+                        React.createElement("td", null,
+                            React.createElement("span", { className: `ps-worker-phase is-${row.phase}` }, row.phase)),
+                        React.createElement("td", null, row.agoText),
+                        React.createElement("td", null, row.uptimeText ?? "—"),
+                        React.createElement("td", null, row.rssText ?? "—"),
+                        React.createElement("td", null, row.sessions ?? "—"),
+                        React.createElement("td", null, row.eventLoopText ?? "—"),
+                        React.createElement("td", { title: row.pkgEpoch != null ? `epoch ${row.pkgEpoch}` : undefined }, row.pkgText ?? "—"),
+                        React.createElement("td", null, row.sdkVersion ?? "—")))))));
 }
 
 function AdminSettingsTree({ controller, view }) {
@@ -6924,7 +6977,7 @@ function AdminSettingsTree({ controller, view }) {
             }
             const onClick = row.kind === "package"
                 ? () => controller.selectAdminPackage(row.name)
-                : () => controller.setAdminSection(row.id === "agents" ? "packages" : "ghcp");
+                : () => controller.setAdminSection(row.id === "agents" ? "packages" : row.id === "workers" ? "workers" : "ghcp");
             return React.createElement("button", {
                 key: row.id,
                 type: "button",

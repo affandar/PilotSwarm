@@ -91,6 +91,8 @@ export const UI_COMMANDS = {
     ADMIN_REFRESH_PROFILE: "adminRefreshProfile",
     ADMIN_SHOW_GHCP: "adminShowGhcp",
     ADMIN_SHOW_PACKAGES: "adminShowPackages",
+    ADMIN_SHOW_WORKERS: "adminShowWorkers",
+    ADMIN_WORKERS_REFRESH: "adminWorkersRefresh",
     ADMIN_PACKAGES_REFRESH: "adminPackagesRefresh",
     ADMIN_PACKAGES_NEXT: "adminPackagesNext",
     ADMIN_PACKAGES_PREV: "adminPackagesPrev",
