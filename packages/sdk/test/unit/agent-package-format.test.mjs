@@ -15,6 +15,7 @@ import {
     packAgentPackage,
     readAgentPackageTarGz,
     extractAgentPackageTarGz,
+    stageAgentPackageDir,
     validateAgentPackageDir,
 } from "../../dist/agent-package-format.js";
 
@@ -478,4 +479,108 @@ test("vendored node_modules over the threshold warns, does not fail", async () =
     assert.ok(result.ok, JSON.stringify(result.errors));
     assert.ok(result.warnings.some((w) => w.code === "vendored_dependencies"));
     assert.equal(result.manifest.hasTools, true);
+});
+
+// ─── manifest-declared layout (plugin.json as THE manifest) ──────
+
+/** A package authored in a NON-conventional layout, declared via manifest. */
+function writeManifestLayoutPackage(dir, { version = "2.0.0" } = {}) {
+    fs.mkdirSync(path.join(dir, "src", "prompts"), { recursive: true });
+    fs.mkdirSync(path.join(dir, "kb", "ops"), { recursive: true });
+    fs.mkdirSync(path.join(dir, "src", "servers"), { recursive: true });
+    fs.mkdirSync(path.join(dir, "docs"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "plugin.json"), JSON.stringify({
+        name: "layout-kit", version, description: "Manifest-layout package",
+        agents: ["src/prompts/triager.agent.md"],
+        skills: ["kb/ops"],
+        mcpConfig: "src/mcp.config.json",
+        mcpServers: ["src/servers/ticket.js"],
+        tools: "src/worker-tools.js",
+        include: ["docs/README.md"],
+    }));
+    fs.writeFileSync(path.join(dir, "src", "prompts", "triager.agent.md"), [
+        "---", "name: triager", "description: Triage agent", "schemaVersion: 1", "version: 1.0.0", "---", "", "You triage things.",
+    ].join("\n"));
+    fs.writeFileSync(path.join(dir, "kb", "ops", "SKILL.md"), [
+        "---", "name: ops", "description: Ops knowledge", "---", "", "Do ops well.",
+    ].join("\n"));
+    fs.writeFileSync(path.join(dir, "src", "mcp.config.json"), JSON.stringify({
+        "ticket-api": { command: "node", args: ["./mcp-servers/ticket.js"], tools: ["*"] },
+    }));
+    fs.writeFileSync(path.join(dir, "src", "servers", "ticket.js"), "export default {};\n");
+    fs.writeFileSync(path.join(dir, "src", "worker-tools.js"), "export default { createTools: () => [] };\n");
+    fs.writeFileSync(path.join(dir, "docs", "README.md"), "# layout-kit\n");
+    // Deliberately unlisted: must NOT ship.
+    fs.writeFileSync(path.join(dir, "scratch.txt"), "not part of the package\n");
+    return dir;
+}
+
+test("manifest layout: validates, packs canonically, excludes unlisted files", async () => {
+    const dir = writeManifestLayoutPackage(tmpdir());
+    const validation = await validateAgentPackageDir(dir, { skipSyntaxCheck: true });
+    assert.equal(validation.ok, true, JSON.stringify(validation.errors));
+    assert.equal(validation.manifest.name, "layout-kit");
+    assert.equal(validation.manifest.agents[0].name, "triager");
+    assert.equal(validation.manifest.skills[0].name, "ops");
+    assert.deepEqual(validation.manifest.mcpServers, ["ticket-api"]);
+    assert.equal(validation.manifest.hasTools, true);
+
+    const staged = stageAgentPackageDir(dir);
+    assert.equal(staged.staged, true);
+    try {
+        const packed = packAgentPackage(staged.dir);
+        const names = readAgentPackageTarGz(packed.targz).map((e) => e.name).filter((n) => !n.endsWith("/"));
+        assert.deepEqual(names.sort(), [
+            ".mcp.json",
+            "agents/triager.agent.md",
+            "docs/README.md",
+            "mcp-servers/ticket.js",
+            "plugin.json",
+            "skills/ops/SKILL.md",
+            "tools/worker-module.js",
+        ], "canonical layout with include preserved; unlisted scratch.txt excluded");
+        // The packed plugin.json is the canonicalized manifest.
+        const packedManifest = JSON.parse(
+            readAgentPackageTarGz(packed.targz).find((e) => e.name === "plugin.json").body.toString("utf8"));
+        assert.deepEqual(packedManifest.agents, ["agents/triager.agent.md"]);
+        assert.equal(packedManifest.mcpConfig, ".mcp.json");
+        assert.equal(packedManifest.tools, "tools/worker-module.js");
+    } finally {
+        staged.cleanup();
+    }
+});
+
+test("manifest layout: staging is deterministic — same source, same sha", async () => {
+    const dir = writeManifestLayoutPackage(tmpdir());
+    const stage = () => {
+        const staged = stageAgentPackageDir(dir);
+        try { return packAgentPackage(staged.dir).sha256; } finally { staged.cleanup(); }
+    };
+    assert.equal(stage(), stage());
+});
+
+test("manifest layout: missing listed file and path escapes are hard errors", async () => {
+    const missing = writeManifestLayoutPackage(tmpdir());
+    fs.rmSync(path.join(missing, "kb", "ops"), { recursive: true });
+    const v1 = await validateAgentPackageDir(missing, { skipSyntaxCheck: true });
+    assert.equal(v1.ok, false);
+    assert.ok(errorCodes(v1).includes("layout_file_missing"), JSON.stringify(v1.errors));
+
+    const escape = writeManifestLayoutPackage(tmpdir());
+    const pj = JSON.parse(fs.readFileSync(path.join(escape, "plugin.json"), "utf8"));
+    pj.include = ["../outside.txt"];
+    fs.writeFileSync(path.join(escape, "plugin.json"), JSON.stringify(pj));
+    const v2 = await validateAgentPackageDir(escape, { skipSyntaxCheck: true });
+    assert.equal(v2.ok, false);
+    assert.ok(errorCodes(v2).includes("invalid_layout_path"), JSON.stringify(v2.errors));
+});
+
+test("convention packages stay byte-identical (no layout fields, no re-staging)", async () => {
+    const dir = writeValidPackage(tmpdir());
+    const staged = stageAgentPackageDir(dir);
+    assert.equal(staged.staged, false, "no layout declared → no staging copy");
+    assert.equal(staged.dir, dir);
+    const packedManifest = JSON.parse(
+        readAgentPackageTarGz(packAgentPackage(dir).targz).find((e) => e.name === "plugin.json").body.toString("utf8"));
+    assert.equal(packedManifest.agents, undefined, "convention plugin.json is not rewritten");
 });

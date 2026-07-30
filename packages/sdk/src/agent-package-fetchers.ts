@@ -316,9 +316,17 @@ export async function syncAgentSourceOnce(
         if (!fs.existsSync(resolvedPackageDir)) {
             throw new Error(`path "${source.path}" does not exist in the fetched ${source.kind} source`);
         }
+        // The registered path may point at the MANIFEST FILE itself
+        // (plugin.json) rather than its directory — the manifest is the
+        // package's anchor, so both spellings mean the same package.
+        const packageRoot = fs.statSync(resolvedPackageDir).isFile()
+            ? (path.basename(resolvedPackageDir) === "plugin.json"
+                ? path.dirname(resolvedPackageDir)
+                : (() => { throw new Error(`path "${source.path}" must be a package directory or its plugin.json manifest`); })())
+            : resolvedPackageDir;
 
         const outcome = await publishAgentPackageDir(ctx, {
-            dir: resolvedPackageDir,
+            dir: packageRoot,
             scope: source.scope,
             owner: source.owner,
             createdBy: source.createdBy,

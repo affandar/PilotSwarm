@@ -25,9 +25,11 @@ import {
     agentPackagesArtifactSessionId,
     agentPackageTarSha256,
     packAgentPackage,
+    stageAgentPackageDir,
     validateAgentPackageDir,
     type AgentPackageManifest,
     type AgentPackageValidation,
+    type PackedAgentPackage,
     type ValidateAgentPackageOptions,
 } from "./agent-package-format.js";
 
@@ -74,11 +76,24 @@ export async function publishAgentPackageDir(
     ctx: AgentPackagePublishContext,
     opts: PublishAgentPackageDirOptions,
 ): Promise<PublishOutcome> {
-    const validation = await validateAgentPackageDir(opts.dir, opts.validate);
-    if (!validation.ok || !validation.manifest) {
-        throw new AgentPackageValidationError(validation);
+    // Stage once: a manifest-declared layout is validated AND packed from
+    // the same canonical staging tree, so the published bytes are exactly
+    // the validated bytes. Convention-mode dirs pass through untouched.
+    const staged = stageAgentPackageDir(opts.dir);
+    if (!staged.staged && staged.issues.length > 0) {
+        throw new AgentPackageValidationError({ ok: false, errors: staged.issues, warnings: [] });
     }
-    const packed = packAgentPackage(opts.dir);
+    let validation: AgentPackageValidation;
+    let packed: PackedAgentPackage;
+    try {
+        validation = await validateAgentPackageDir(staged.dir, { ...(opts.validate ?? {}), preStaged: staged.staged });
+        if (!validation.ok || !validation.manifest) {
+            throw new AgentPackageValidationError(validation);
+        }
+        packed = packAgentPackage(staged.dir);
+    } finally {
+        staged.cleanup();
+    }
     return await publishPackedAgentPackage(ctx, {
         manifest: validation.manifest,
         warnings: validation.warnings,

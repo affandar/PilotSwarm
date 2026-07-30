@@ -12,11 +12,22 @@
  * spawn of system tar: GNU and bsdtar disagree on ordering, mtime, and header
  * details, and canonical bytes are a correctness property, not a convenience.
  * See docs/proposals/agent-packages.md.
+ *
+ * plugin.json IS the package manifest. Identity (name/version/description)
+ * is required; a package may ADDITIONALLY declare its artifact layout —
+ * agents/skills/mcpConfig/mcpServers/tools/include, every path relative to
+ * the manifest — and lay files out however it likes. Publishing stages the
+ * declared artifacts into the canonical layout (agents/, skills/, .mcp.json,
+ * mcp-servers/, tools/worker-module.js) and rewrites plugin.json with the
+ * canonicalized paths, so the runtime and every downstream consumer see one
+ * layout. Packages without layout fields keep today's convention scan,
+ * byte-for-byte (no silent sha changes for existing packages).
  */
 
 import * as fs from "fs";
 import * as path from "path";
 import * as zlib from "zlib";
+import * as os from "os";
 import * as crypto from "crypto";
 import { spawn } from "child_process";
 import { loadAgentFiles, type AgentConfig } from "./agent-loader.js";
@@ -377,6 +388,192 @@ export function agentPackageTarSha256(targz: Buffer): string {
     return crypto.createHash("sha256").update(tar).digest("hex");
 }
 
+// ─── Manifest layout (plugin.json as THE package manifest) ───────
+
+/** Artifact layout a plugin.json may declare; paths relative to the file. */
+export interface AgentPackageLayout {
+    /** Paths to .agent.md files. */
+    agents: string[];
+    /** Paths to skill DIRECTORIES (each must contain SKILL.md). */
+    skills: string[];
+    /** Path to the MCP servers config JSON (canonical: .mcp.json). */
+    mcpConfig: string | null;
+    /** Paths to MCP server code files or directories. */
+    mcpServers: string[];
+    /** Path to the worker tool module (canonical: tools/worker-module.js). */
+    tools: string | null;
+    /** Extra files/directories shipped verbatim at their relative paths. */
+    include: string[];
+}
+
+export const AGENT_PACKAGE_LAYOUT_FIELDS = ["agents", "skills", "mcpConfig", "mcpServers", "tools", "include"] as const;
+
+function normalizeLayoutPath(value: unknown, field: string, issues: AgentPackageIssue[]): string | null {
+    if (typeof value !== "string" || value.trim() === "") {
+        issues.push({ code: "invalid_layout_path", message: `plugin.json "${field}" entries must be non-empty strings (got ${JSON.stringify(value)})`, file: "plugin.json" });
+        return null;
+    }
+    const raw = value.trim().replace(/\\/g, "/");
+    const normalized = path.posix.normalize(raw);
+    if (path.posix.isAbsolute(normalized) || normalized === ".." || normalized.startsWith("../") || normalized === ".") {
+        issues.push({ code: "invalid_layout_path", message: `plugin.json "${field}": ${JSON.stringify(value)} must be a relative path inside the package (no "..", no absolute paths)`, file: "plugin.json" });
+        return null;
+    }
+    return normalized;
+}
+
+/**
+ * Parse the optional layout fields from a parsed plugin.json. Returns null
+ * (with no issues) when the manifest declares no layout — convention mode.
+ */
+export function parseAgentPackageLayout(pluginJson: any, issues: AgentPackageIssue[]): AgentPackageLayout | null {
+    if (!pluginJson || typeof pluginJson !== "object") return null;
+    if (!AGENT_PACKAGE_LAYOUT_FIELDS.some((field) => pluginJson[field] !== undefined)) return null;
+    const list = (field: string): string[] => {
+        const value = pluginJson[field];
+        if (value === undefined) return [];
+        if (!Array.isArray(value)) {
+            issues.push({ code: "invalid_layout_field", message: `plugin.json "${field}" must be an array of paths`, file: "plugin.json" });
+            return [];
+        }
+        return value.map((entry: unknown) => normalizeLayoutPath(entry, field, issues)).filter((entry): entry is string => entry !== null);
+    };
+    const single = (field: string): string | null => {
+        const value = pluginJson[field];
+        if (value === undefined || value === null) return null;
+        return normalizeLayoutPath(value, field, issues);
+    };
+    return {
+        agents: list("agents"),
+        skills: list("skills"),
+        mcpConfig: single("mcpConfig"),
+        mcpServers: list("mcpServers"),
+        tools: single("tools"),
+        include: list("include"),
+    };
+}
+
+export interface StagedAgentPackage {
+    /** Directory to validate + pack: rootDir itself in convention mode. */
+    dir: string;
+    /** True when a staging copy was produced from a declared layout. */
+    staged: boolean;
+    /** Layout issues; staging is aborted when any are errors. */
+    issues: AgentPackageIssue[];
+    /** Remove the staging copy (no-op in convention mode). */
+    cleanup: () => void;
+}
+
+/** Deterministic manifest serialization for the staged plugin.json. */
+function serializeCanonicalPluginJson(pluginJson: any, layout: {
+    agents: string[]; skills: string[]; mcpConfig: string | null;
+    mcpServers: string[]; tools: string | null; include: string[];
+}): string {
+    const out: Record<string, unknown> = {};
+    out.name = pluginJson.name;
+    out.version = pluginJson.version;
+    if (pluginJson.description !== undefined) out.description = pluginJson.description;
+    const layoutKeys = new Set<string>([...AGENT_PACKAGE_LAYOUT_FIELDS, "name", "version", "description"]);
+    for (const key of Object.keys(pluginJson).sort()) {
+        if (!layoutKeys.has(key)) out[key] = pluginJson[key];
+    }
+    if (layout.agents.length) out.agents = [...layout.agents].sort();
+    if (layout.skills.length) out.skills = [...layout.skills].sort();
+    if (layout.mcpConfig) out.mcpConfig = layout.mcpConfig;
+    if (layout.mcpServers.length) out.mcpServers = [...layout.mcpServers].sort();
+    if (layout.tools) out.tools = layout.tools;
+    if (layout.include.length) out.include = [...layout.include].sort();
+    return JSON.stringify(out, null, 2) + "\n";
+}
+
+/**
+ * Stage a package directory for validation + packing.
+ *
+ * Convention mode (no layout fields): returns rootDir untouched.
+ * Manifest mode: copies exactly the declared artifacts into a temp dir in
+ * the CANONICAL layout — agents/<basename>, skills/<dirname>/, .mcp.json,
+ * mcp-servers/<basename>, tools/worker-module.js, include verbatim — and
+ * writes plugin.json back with canonicalized layout paths. The staged tree
+ * is what gets validated, packed, hashed, and unpacked on workers, so the
+ * authored layout is a pure authoring convenience with one canonical truth.
+ */
+export function stageAgentPackageDir(rootDir: string): StagedAgentPackage {
+    const issues: AgentPackageIssue[] = [];
+    const noop: StagedAgentPackage = { dir: rootDir, staged: false, issues, cleanup: () => {} };
+    let pluginJson: any = null;
+    try {
+        pluginJson = JSON.parse(fs.readFileSync(path.join(rootDir, "plugin.json"), "utf8"));
+    } catch {
+        return noop; // validation reports missing/invalid plugin.json itself
+    }
+    const layout = parseAgentPackageLayout(pluginJson, issues);
+    if (!layout) return noop;
+    if (issues.length > 0) return { ...noop, issues };
+
+    const stagingDir = fs.mkdtempSync(path.join(os.tmpdir(), "ps-agent-pkg-stage-"));
+    const cleanup = () => { try { fs.rmSync(stagingDir, { recursive: true, force: true }); } catch { /* best-effort */ } };
+    const canonical = { agents: [] as string[], skills: [] as string[], mcpConfig: null as string | null, mcpServers: [] as string[], tools: null as string | null, include: [] as string[] };
+    const placed = new Set<string>();
+    const place = (sourceRel: string, destRel: string, opts: { dir?: boolean; field: string }): boolean => {
+        const source = path.resolve(rootDir, sourceRel);
+        if (!source.startsWith(path.resolve(rootDir) + path.sep)) {
+            issues.push({ code: "invalid_layout_path", message: `plugin.json "${opts.field}": ${sourceRel} escapes the package root`, file: "plugin.json" });
+            return false;
+        }
+        if (!fs.existsSync(source)) {
+            issues.push({ code: "layout_file_missing", message: `plugin.json "${opts.field}" lists ${sourceRel}, but it does not exist`, file: sourceRel });
+            return false;
+        }
+        const isDir = fs.statSync(source).isDirectory();
+        if (opts.dir === true && !isDir) {
+            issues.push({ code: "layout_not_a_directory", message: `plugin.json "${opts.field}" lists ${sourceRel}, which must be a directory`, file: sourceRel });
+            return false;
+        }
+        if (opts.dir === false && isDir) {
+            issues.push({ code: "layout_not_a_file", message: `plugin.json "${opts.field}" lists ${sourceRel}, which must be a file`, file: sourceRel });
+            return false;
+        }
+        if (placed.has(destRel)) {
+            issues.push({ code: "layout_collision", message: `two manifest entries land on ${destRel} — rename one (canonical paths use basenames)`, file: sourceRel });
+            return false;
+        }
+        placed.add(destRel);
+        const dest = path.join(stagingDir, destRel);
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        fs.cpSync(source, dest, { recursive: true });
+        return true;
+    };
+
+    for (const rel of layout.agents) {
+        const destRel = path.posix.join("agents", path.posix.basename(rel));
+        if (place(rel, destRel, { dir: false, field: "agents" })) canonical.agents.push(destRel);
+    }
+    for (const rel of layout.skills) {
+        const destRel = path.posix.join("skills", path.posix.basename(rel));
+        if (place(rel, destRel, { dir: true, field: "skills" })) canonical.skills.push(destRel);
+    }
+    if (layout.mcpConfig) {
+        if (place(layout.mcpConfig, ".mcp.json", { dir: false, field: "mcpConfig" })) canonical.mcpConfig = ".mcp.json";
+    }
+    for (const rel of layout.mcpServers) {
+        const destRel = path.posix.join("mcp-servers", path.posix.basename(rel));
+        if (place(rel, destRel, { field: "mcpServers" })) canonical.mcpServers.push(destRel);
+    }
+    if (layout.tools) {
+        if (place(layout.tools, "tools/worker-module.js", { dir: false, field: "tools" })) canonical.tools = "tools/worker-module.js";
+    }
+    for (const rel of layout.include) {
+        if (place(rel, rel, { field: "include" })) canonical.include.push(rel);
+    }
+
+    if (issues.some((issue) => issue.code !== "missing_description")) {
+        cleanup();
+        return { dir: rootDir, staged: false, issues, cleanup: () => {} };
+    }
+    fs.writeFileSync(path.join(stagingDir, "plugin.json"), serializeCanonicalPluginJson(pluginJson, canonical));
+    return { dir: stagingDir, staged: true, issues, cleanup };
+}
+
 // ─── Validation ──────────────────────────────────────────────────
 
 const DNS_LABEL_RE = /^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$/;
@@ -418,6 +615,8 @@ export interface ValidateAgentPackageOptions {
     reservedAgentNames?: string[];
     /** Skip `node --check` (used by pure-parse test paths). */
     skipSyntaxCheck?: boolean;
+    /** Internal: rootDir is already a staged canonical tree — do not re-stage. */
+    preStaged?: boolean;
 }
 
 function err(errors: AgentPackageIssue[], code: string, message: string, file?: string): void {
@@ -465,6 +664,24 @@ export async function validateAgentPackageDir(
     if (!fs.existsSync(rootDir) || !fs.statSync(rootDir).isDirectory()) {
         err(errors, "not_a_directory", `package path is not a directory: ${rootDir}`);
         return { ok: false, errors, warnings };
+    }
+
+    // A manifest-declared layout validates in its CANONICAL form: stage
+    // first, then run every check below against the staged tree — exactly
+    // the bytes that will be packed, hashed, and unpacked on workers.
+    if (!opts.preStaged) {
+        const staged = stageAgentPackageDir(rootDir);
+        if (staged.staged) {
+            try {
+                const result = await validateAgentPackageDir(staged.dir, { ...opts, preStaged: true });
+                return { ...result, warnings: [...staged.issues, ...result.warnings] };
+            } finally {
+                staged.cleanup();
+            }
+        }
+        if (staged.issues.length > 0) {
+            return { ok: false, errors: staged.issues, warnings };
+        }
     }
 
     // plugin.json — the manifest anchor.

@@ -29,6 +29,43 @@ my-agents/                        # any repo path, any ref — or a local folder
 
 `agents/`, `skills/`, `.mcp.json` load through the existing tiers untouched. `tools/worker-module.js` is the exact contract `embedded-workers.js` dynamic-imports for `--plugin/--worker` local apps and the image-deploy proposal specified for `/app/tools/*/worker-module.js` — this proposal extends that discovery to unpacked package dirs.
 
+### plugin.json is the manifest (as shipped)
+
+`plugin.json` is not just the identity anchor — it may declare the package's
+**artifact layout**, every path relative to the manifest file:
+
+```json
+{
+  "name": "demo-agent-kit",
+  "version": "0.2.0",
+  "description": "…",
+  "agents":     ["src/prompts/navigator.agent.md"],
+  "skills":     ["kb/fortune-craft"],
+  "mcpConfig":  "src/mcp.config.json",
+  "mcpServers": ["src/servers/fortune.js"],
+  "tools":      "src/worker-tools.js",
+  "include":    ["README.md"]
+}
+```
+
+- **Layout freedom, one canonical truth.** Authors lay files out however they
+  like; publishing STAGES the declared artifacts into the canonical layout
+  above (`agents/<basename>`, `skills/<dirname>/`, `.mcp.json`,
+  `mcp-servers/<basename>`, `tools/worker-module.js`, `include` verbatim) and
+  rewrites the packed `plugin.json` with the canonicalized paths. Validation,
+  the sha256, workers, and the workspace viewer all see the staged tree, so
+  the runtime loader is untouched.
+- **Manifest mode is explicit and exact**: declaring any layout field means
+  ONLY declared artifacts (plus the manifest) ship — a listed-but-missing
+  file is a hard error, unlisted files are excluded, `..`/absolute paths are
+  rejected.
+- **Convention mode is unchanged**: packages without layout fields keep the
+  directory-scan behavior byte-for-byte (existing packages re-publish with
+  identical hashes).
+- **The manifest is what the Add-package UX points at**: GitHub/ADO source
+  paths may name the `plugin.json` file itself or its folder — both mean the
+  same package.
+
 Validation (applied identically to every source at registration time):
 
 - `plugin.json` parses; `name` is a DNS label; `version` is a concrete semver.
