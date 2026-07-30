@@ -245,3 +245,46 @@ One scripted loop: `push` a fixture package → appears in catalog → create se
 - **Version retention/GC** — keep all versions forever, or retain last N + active + pinned? Default: keep all until it hurts; artifact-store bytes are cheap.
 - **`${VAR}` allowlist** — the concrete allowlist for package `.mcp.json` env expansion (hygiene, not security, in a trusted system).
 - **Multipart upload op** — needed the first time a real package exceeds the 2 MB envelope via Web API push; direct-store and repo/URL sources already cover it.
+
+## Implementation notes (v1, as shipped)
+
+Deltas from the design above, decided during implementation and its
+adversarial reviews:
+
+- **Identity sha is over the uncompressed canonical tar**, not the gzip
+  bytes — deflate output varies across zlib builds, and hashing it would
+  have made byte-identical content trip the immutability check after a
+  Node upgrade. Blob filenames carry a sha12 suffix
+  (`<name>@<semver>.<sha12>.tar.gz`), making them content-addressed so a
+  same-semver publish race can never clobber the winner's bytes.
+- **Non-ASCII paths are rejected** at validation and pack (ustar names are
+  byte-encoded; 7-bit masking corrupted and could collide names).
+  Package modules must not use bare imports (no node_modules above the
+  install cache) — validation warns; the runtime quarantines on import
+  failure. `session-policy.json` is forbidden in packages.
+- **Name collision guards use the runtime resolver's normalization**
+  (case/punctuation-insensitive + "agent"-suffix fallback), for both the
+  reserved built-in set (`listBundledAgentNames`) and intra-package
+  duplicates. Package names colliding with fixed route segments
+  (`sources`, `upload`, `worker-state`) are rejected.
+- **Publish rejects scope changes** (`AGENT_PACKAGE_SCOPE_MISMATCH` —
+  promote/demote are the only scope mutations), NULL-owner packages are
+  admin-managed, owner-less publish requires admin, and the first-publish
+  name race retries via unique-violation catch.
+- **Hot refresh lives inside PilotSwarmWorker** (`agentPackages` option:
+  cacheDir + refresh interval; the headless entrypoint enables it by
+  default, `PILOTSWARM_AGENT_PACKAGES=0` opts out). One code path serves
+  cold start and the epoch poll: async install to the sha-keyed cache,
+  then a fully synchronous in-place swap of every plugin-derived
+  structure — the structures SessionManager and the activity layer hold
+  BY REFERENCE are rebuilt in place, never reassigned (two adversarial
+  passes each caught a reassignment that stranded a consumer).
+- **Upload is inline files** (`[{path, contentBase64}]`, 2 MB envelope)
+  on both the portal op and the MCP `push_agent_package` tool — browser
+  and LLM clients cannot reasonably produce tarballs; the server
+  validates and canonically packs. The CLI is direct-store mode.
+- **`listAgentWorkerState` is `fleet:admin` (hard-gated)**: its installed
+  map enumerates every package name including user-scope ones.
+- Registry error prefixes (`AGENT_PACKAGE_FORBIDDEN` …) map to HTTP
+  403/404/409 with the structured validation payload in the error
+  envelope.
