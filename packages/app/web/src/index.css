@@ -5475,11 +5475,12 @@ body.ps-rich-ui .ps-panel-header {
 .ps-worker-phase.is-draining { color: #f85149; border-color: color-mix(in srgb, #f85149 45%, transparent); }
 
 /* ═══════════════════════════════════════════════════════════════════
-   Workspace Dark chrome — the flat admin-console language as a THEME.
+   Workspace chrome — the flat admin-console language as THEMES.
    Same pattern as win95: `applyDocumentTheme` stamps the theme id on
-   the root so a theme can carry chrome, not just colours. Every rule
-   is fenced under [data-ps-theme="workspace-dark"]; no other theme is
-   reachable from here. The TUI never loads this stylesheet.
+   the root so a theme can carry chrome, not just colours. One shared
+   structural layer serves BOTH workspace themes; only two tones vary
+   per ground (focus accent, raised-card surface). The TUI never loads
+   this stylesheet.
 
    Treatment rules (docs in the UX pitch artifact):
    - panels: no borders, tone surfaces; the chat pane is the CANVAS
@@ -5488,26 +5489,40 @@ body.ps-rich-ui .ps-panel-header {
    - focus: 2px inset accent edge, not a glowing frame
    - status color lives in content (dots, badges, card edges) only
    ═══════════════════════════════════════════════════════════════════ */
-:root[data-ps-theme="workspace-dark"] .ps-panel {
+:root[data-ps-theme="workspace-dark"] {
+  --ps-ws-accent: #2ea043;
+  --ps-ws-card: #1c2129;
+}
+:root[data-ps-theme="workspace-light"] {
+  --ps-ws-accent: #1a7f37;
+  --ps-ws-card: #eff1f4;
+}
+:root[data-ps-theme="workspace-dark"] .ps-panel,
+:root[data-ps-theme="workspace-light"] .ps-panel {
   border: none;
   border-radius: 10px;
   background: var(--ps-surface);
   box-shadow: none;
 }
-:root[data-ps-theme="workspace-dark"] .ps-panel.ps-chat-panel {
+:root[data-ps-theme="workspace-dark"] .ps-panel.ps-chat-panel,
+:root[data-ps-theme="workspace-light"] .ps-panel.ps-chat-panel {
   background: transparent;
 }
-:root[data-ps-theme="workspace-dark"] .ps-panel.is-focused {
-  box-shadow: inset 2px 0 0 #2ea043;
+:root[data-ps-theme="workspace-dark"] .ps-panel.is-focused,
+:root[data-ps-theme="workspace-light"] .ps-panel.is-focused {
+  box-shadow: inset 2px 0 0 var(--ps-ws-accent);
 }
-:root[data-ps-theme="workspace-dark"] .ps-panel-header {
+:root[data-ps-theme="workspace-dark"] .ps-panel-header,
+:root[data-ps-theme="workspace-light"] .ps-panel-header {
   background: transparent;
   border-bottom: none;
   min-height: 26px;
   padding: 8px 14px 0;
 }
 :root[data-ps-theme="workspace-dark"] .ps-panel-title,
-:root[data-ps-theme="workspace-dark"] .ps-panel-title span {
+:root[data-ps-theme="workspace-dark"] .ps-panel-title span,
+:root[data-ps-theme="workspace-light"] .ps-panel-title,
+:root[data-ps-theme="workspace-light"] .ps-panel-title span {
   color: var(--ps-muted) !important;
   font-size: 10px;
   font-weight: 600;
@@ -5515,24 +5530,29 @@ body.ps-rich-ui .ps-panel-header {
   text-transform: uppercase;
 }
 :root[data-ps-theme="workspace-dark"] .ps-panel-title-right,
-:root[data-ps-theme="workspace-dark"] .ps-panel-title-right span {
+:root[data-ps-theme="workspace-dark"] .ps-panel-title-right span,
+:root[data-ps-theme="workspace-light"] .ps-panel-title-right,
+:root[data-ps-theme="workspace-light"] .ps-panel-title-right span {
   color: var(--ps-muted) !important;
   font-size: 10px;
   letter-spacing: 0.06em;
 }
 /* Chat cards: full borders become a raised tone with a status edge. */
-:root[data-ps-theme="workspace-dark"] .ps-chat-card {
+:root[data-ps-theme="workspace-dark"] .ps-chat-card,
+:root[data-ps-theme="workspace-light"] .ps-chat-card {
   border: none;
   border-left: 2px solid color-mix(in srgb, var(--ps-chat-card-accent, var(--ps-border)) 85%, transparent);
   border-radius: 8px;
-  background: #1c2129;
+  background: var(--ps-ws-card);
 }
 /* Quiet buttons: hairline outline on the surface, no fills. */
-:root[data-ps-theme="workspace-dark"] .ps-mini-button {
+:root[data-ps-theme="workspace-dark"] .ps-mini-button,
+:root[data-ps-theme="workspace-light"] .ps-mini-button {
   background: transparent;
   border-color: var(--ps-border);
 }
-:root[data-ps-theme="workspace-dark"] .ps-mini-button:hover {
+:root[data-ps-theme="workspace-dark"] .ps-mini-button:hover,
+:root[data-ps-theme="workspace-light"] .ps-mini-button:hover {
   background: color-mix(in srgb, var(--ps-foreground) 8%, transparent);
 }
 

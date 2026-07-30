@@ -1,44 +1,36 @@
 import githubDarkTheme from "./github-dark.js";
 import githubLightTheme from "./github-light.js";
 import workspaceDarkTheme from "./workspace-dark.js";
-import daylightTheme from "./daylight.js";
-import paperInkTheme from "./paper-ink.js";
-import lightHighContrastTheme from "./light-high-contrast.js";
+import workspaceLightTheme from "./workspace-light.js";
 import cobalt2Theme from "./cobalt2.js";
 import draculaTheme from "./dracula.js";
 import catppuccinMochaTheme from "./catppuccin-mocha.js";
 import hackerXMatrixTheme from "./hacker-x-matrix.js";
 import hackerXOrionPrimeTheme from "./hacker-x-orion-prime.js";
-import tokyoNightTheme from "./tokyo-night.js";
 import gruvboxDarkTheme from "./gruvbox-dark.js";
 import noctisTheme from "./noctis.js";
 import noctisObscuroTheme from "./noctis-obscuro.js";
 import darkHighContrastTheme from "./dark-high-contrast.js";
 import terminalGreenTheme from "./terminal-green.js";
-import solarizedOpsTheme from "./solarized-ops.js";
 import highContrastMonoTheme from "./high-contrast-mono.js";
 import win95Theme from "./win95.js";
 import msDosTheme from "./ms-dos.js";
 
 const THEMES = Object.freeze([
     workspaceDarkTheme,
+    workspaceLightTheme,
     draculaTheme,
     githubDarkTheme,
     githubLightTheme,
-    daylightTheme,
-    paperInkTheme,
-    lightHighContrastTheme,
     cobalt2Theme,
     hackerXOrionPrimeTheme,
     hackerXMatrixTheme,
     catppuccinMochaTheme,
-    tokyoNightTheme,
     gruvboxDarkTheme,
     noctisTheme,
     noctisObscuroTheme,
     darkHighContrastTheme,
     terminalGreenTheme,
-    solarizedOpsTheme,
     highContrastMonoTheme,
     win95Theme,
     msDosTheme,
