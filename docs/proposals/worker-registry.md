@@ -133,6 +133,54 @@ No user-visible change: same ~20s convergence, same liveness display, same prune
 
 The image-control actuator (the `DeployProvider` wiring) ships with the image-deploy proposal, not here — this proposal only guarantees the directive row and the actual-state reporting it needs.
 
+## Test plan
+
+Layers map onto the existing suites: `packages/sdk/test/unit/*.test.mjs` (node:test, no infra), `packages/sdk/test/local/*.test.js` (live PG via `useSuiteEnv` + real workers via `withClient`), the transport-level portal-ops pattern, and `packages/app/ui/core/test/*.test.mjs`. The agent-packages suites double as the compat harness throughout.
+
+### 1. Migration 0040 + heartbeat proc (local, PG) — phase 1
+
+- Shape/idempotency via the `cms-migrations-shape` / `pg-migrator` patterns (all-new tables → single `sql` entry, re-runs clean).
+- `cms_worker_heartbeat` upsert split: `info`/`pool`/`owner` written on insert only; `health`/`state`/`phase`/`updated_at` replaced every beat — assert a second beat with different info does NOT overwrite it, and re-registration after a prune DOES (write-once resets with the row).
+- **Uniform prune**: rows with `updated_at` backdated > 1h (direct SQL, no clock mocking) vanish on the next heartbeat; fresh rows survive; the pruned worker's re-registration under the same id is clean.
+- Seeding + shims: `('agent-packages','*','*')` carries the 0038 epoch forward; `cms_agent_registry_bump`/`_epoch` re-pointed. **The ship gate for the shims is the existing agent-package registry suite passing verbatim on a 0040 database** — publish/pin/scope/delete still bump what workers observe, zero edits to those tests.
+
+### 2. Directive resolution (local, PG) — phase 1
+
+The subtle new logic gets its own suite:
+
+- Three-level union: fleet-only, fleet+pool, fleet+pool+worker fixtures — shallow-merge with worker > pool > fleet on conflicting keys; non-conflicting keys from all levels present.
+- **Epoch = SUM of contributing rows**: bump each level in turn → the effective epoch changes every time; construct the coincidentally-equal-epochs case explicitly (the scenario where `max` would miss a bump) and assert SUM catches it.
+- Re-targeting: the same worker heartbeating with a different `pool` receives a different effective set with a changed epoch.
+- Canonical worker rows: only `(domain, '*', worker_id)` contributes as the worker level — a non-canonical `(domain, pool, worker_id)` row is either rejected at write or provably inert (pin whichever the implementation picks).
+- Worker-scoped rows survive their worker's prune and re-apply on re-registration (the laptop case).
+- Actuation-uniformity convention: mixed `actuation` values within one domain are rejected at write.
+
+### 3. Worker registrar (local, real worker) — phase 2
+
+Extends `agent-package-worker-install.test.js` rather than replacing it:
+
+- `start()` registers: row exists with phase `ready`, `info.sdkVersion`/`consumes`/`capabilities` populated, `pool` from config.
+- Beats advance `updated_at` and carry sane health (`rssBytes > 0`, slot totals matching worker config, `activeSessions` consistent).
+- **Convergence rides the heartbeat**: publish a package → the registrar's returned epoch changes → the agent-packages handler installs — the existing cold-install/hot-refresh/quarantine assertions re-run through the new channel unchanged (THE regression guard for the fold-in).
+- Domain dispatch honors `consumes`; an unknown domain in the returned set is inert — no crash, no error state, no report entry.
+- `gracefulShutdown` lands a final `draining` beat.
+- Mixed fleet: an old-path worker (0038 upsert + epoch shim) and a new-path worker running side by side both surface in the compat projection with consistent agent-packages truth.
+
+### 4. Read-side: portal, UI, MCP — phase 3
+
+- `cms_list_workers` + the compat projection: the admin fleet-adoption selector's assertions pass with only the field-path change; the 90s liveness window test (fresh vs backdated rows) moves to the shared definition and is asserted ONCE.
+- `get_system_status` worker count = live registry rows (windowed), replacing embedded-only counts — the "0 workers on AKS" wart gets a regression test.
+- ui-core: Workers surface selectors — grouping by pool, phase badges, per-domain drift flags (actual epoch ≠ effective epoch for > N beats ⇒ stuck, carrying the domain's own error from `state`), owner labels on user workers. TUI lines-builder parity asserted like the agent-packages admin suite.
+- MCP: worker listing tool projections; `list_pools` capability aggregation (intersection = guarantee) when built.
+
+### 5. Invariant guards (cheap, permanent)
+
+Small tests that pin the capability-placement guarantees so refactors can't erode them silently: every heartbeat row carries a non-empty `pool`; `info.capabilities` and `info.consumes` survive the write-once path; the registry exposes no proc that assigns work (grep-level guard on the proc list — the describes-not-enforces boundary).
+
+### 6. End-to-end smoke — ship gate
+
+One loop on a real worker + PG: boot → registered `ready` → publish a package → converges via heartbeat within one beat → backdate + beat → stale peer pruned → SIGTERM → `draining` observed → silence → gone. Phases ship when their layers above are green; the smoke loop and the verbatim agent-packages suites gate every phase.
+
 ## Resolved decisions
 
 - **Pool naming** — free-form strings with conventions. No pools table unless pools ever grow policy of their own.
