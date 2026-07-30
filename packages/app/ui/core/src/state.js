@@ -131,7 +131,8 @@ export function createInitialState({ mode = "local", branding = null, themeId = 
             nodeMapSelectedNode: null,
             sequenceExpandedTurns: [],
             sequenceSelectedTurn: null,
-            chatViewMode: (chatViewMode === "summary" || chatViewMode === "rich") ? chatViewMode : "transcript",
+            // "rich" is a THEME property now (theme.richChat), not a view mode.
+            chatViewMode: chatViewMode === "summary" ? "summary" : "transcript",
             statsViewMode: "session",
             prompt: "",
             promptCursor: 0,

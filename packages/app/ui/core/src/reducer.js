@@ -637,9 +637,10 @@ export function appReducer(state, action) {
                 && settings.themeId.trim();
             const hasOwnerFilter = Object.prototype.hasOwnProperty.call(settings, "sessionOwnerFilter");
             const hasLayout = Object.prototype.hasOwnProperty.call(settings, "layoutAdjustments");
+            // "rich" retired as a view mode (now theme.richChat) — stored
+            // profiles that still say "rich" simply keep the transcript.
             const hasChatViewMode = Object.prototype.hasOwnProperty.call(settings, "chatViewMode")
-                && (settings.chatViewMode === "summary" || settings.chatViewMode === "transcript"
-                    || settings.chatViewMode === "rich");
+                && (settings.chatViewMode === "summary" || settings.chatViewMode === "transcript");
             const hasPins = Object.prototype.hasOwnProperty.call(settings, "pinnedSessionIds");
             const hasCollapsed = Object.prototype.hasOwnProperty.call(settings, "collapsedSessionIds");
             // A pending/resolved deep-link intent outranks the profile's
@@ -703,7 +704,7 @@ export function appReducer(state, action) {
         }
 
         case "ui/chatViewMode":
-            if (action.mode !== "summary" && action.mode !== "transcript" && action.mode !== "rich") {
+            if (action.mode !== "summary" && action.mode !== "transcript") {
                 return state;
             }
             return {

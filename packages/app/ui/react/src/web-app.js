@@ -3250,7 +3250,7 @@ function RichSessionRow({ row, theme, showDetail = false }) {
                 style: chrome.kind === "session" ? undefined : { color: accent },
                 title: chrome.title,
             }, chrome.title),
-            chrome.pinned ? React.createElement("span", { className: "ps-rich-session-pin", title: "Pinned" }, "📌") : null,
+            chrome.pinned ? React.createElement("span", { className: "ps-rich-session-pin", title: "Pinned" }, "⚲") : null,
             chrome.cron ? React.createElement("span", { className: "ps-rich-session-cron", title: "Scheduled" }, "⏱") : null,
             chrome.childBadge
                 ? React.createElement("span", {
@@ -3359,7 +3359,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         // reads as one product rather than half terminal / half desktop.
         // TODO: promote this to its own `ui.richUi` setting if the two are
         // ever wanted independently.
-        rich: state.ui.chatViewMode === "rich",
+        rich: Boolean(getTheme(state.ui.themeId)?.richChat),
     }), shallowEqualObject);
     const computedRows = React.useMemo(() => selectSessionRows({
         sessions: {
@@ -3571,7 +3571,8 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             })
             : React.createElement(IconButton, {
                 className: "ps-mini-button",
-                icon: "📌",
+                icon: "⚲",
+                className: "ps-toolbar-button ps-pin-icon",
                 onClick: () => controller.handleCommand(UI_COMMANDS.PIN_SESSION).catch(() => {}),
                 disabled: !canPinActiveSession,
                 active: isActivePinned,
@@ -4118,7 +4119,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         () => appendAnimatedDotsToRuns(chrome.titleRight, chrome.animateTitleRight ? animatedDots : ""),
         [animatedDots, chrome.animateTitleRight, chrome.titleRight],
     );
-    const richMode = viewState.chatViewMode === "rich" && !viewState.activeSessionIsGroup;
+    const richMode = Boolean(theme?.richChat) && !viewState.activeSessionIsGroup;
     const [loadingOlder, setLoadingOlder] = React.useState(false);
     // Scroll-up expands the transcript automatically until the soft cap, then
     // refuses — and the portal had no control to ask for more, so a busy
@@ -4817,6 +4818,17 @@ function InspectorPane({ controller, mobile = false, panelClassName = "", extraA
     const renderNodeMapBody = React.useCallback((lines, theme) => (
         React.createElement(PortalNodeMapLines, { lines, theme, controller })
     ), [controller]);
+    // The nodes tab owns its freshness: registry + history load on entry and
+    // every 10s while open, independent of any host sync loop. Errors keep
+    // fetchedAt unset, so each tick retries until the diagnosis line clears.
+    React.useEffect(() => {
+        if (viewState.inspectorTab !== "nodes") return undefined;
+        void controller.ensureInspectorData("nodes");
+        const timer = window.setInterval(() => {
+            void controller.ensureInspectorData("nodes");
+        }, 10_000);
+        return () => window.clearInterval(timer);
+    }, [controller, viewState.inspectorTab]);
 
     if (viewState.inspectorTab === "files" && !inspector.disabled) {
         return React.createElement(FilesPane, { controller, focused: viewState.focused, mobile });
@@ -5516,7 +5528,7 @@ function IconButton({ icon, label, onClick, disabled = false, active = false, cl
 }
 
 function Toolbar({ controller, mobile, chatFocusMode = false, onToggleChatFocus = null, chatFocusDisabled = false }) {
-    const richUi = useControllerSelector(controller, (state) => state.ui.chatViewMode === "rich");
+    const richUi = useControllerSelector(controller, (state) => Boolean(getTheme(state.ui.themeId)?.richChat));
     const [headerSlot, setHeaderSlot] = React.useState(null);
     React.useEffect(() => {
         if (typeof document === "undefined") return;
@@ -5558,16 +5570,6 @@ function Toolbar({ controller, mobile, chatFocusMode = false, onToggleChatFocus 
             icon: "◑",
             label: "Theme",
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_THEME_PICKER).catch(() => {}),
-        },
-        {
-            key: "rich",
-            icon: "Aa",
-            label: chatView.activeSessionIsGroup
-                ? "Groups show group details"
-                : (chatView.mode === "rich" ? "Show terminal transcript" : "Rich chat view (experimental)"),
-            onClick: () => controller.setChatViewMode(chatView.mode === "rich" ? "transcript" : "rich"),
-            disabled: chatView.activeSessionIsGroup,
-            active: chatView.mode === "rich",
         },
         {
             key: "summary",
@@ -7510,7 +7512,7 @@ export function PilotSwarmWebApp({ controller }) {
     // The rich UI restyles chrome that lives OUTSIDE this tree (the portal
     // header in App.jsx), so the flag rides on <body> and every surface
     // keys off `body.ps-rich-ui` in CSS rather than threading a prop.
-    const richUi = useControllerSelector(controller, (state) => state.ui.chatViewMode === "rich");
+    const richUi = useControllerSelector(controller, (state) => Boolean(getTheme(state.ui.themeId)?.richChat));
     React.useEffect(() => {
         if (typeof document === "undefined") return undefined;
         document.body.classList.toggle("ps-rich-ui", richUi);

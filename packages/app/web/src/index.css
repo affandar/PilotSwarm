@@ -5485,43 +5485,32 @@ body.ps-rich-ui .ps-panel-header {
 /* ═══════════════════════════════════════════════════════════════════
    Workspace chrome — the flat admin-console language as THEMES.
    Same pattern as win95: `applyDocumentTheme` stamps the theme id on
-   the root so a theme can carry chrome, not just colours. One shared
-   structural layer serves BOTH workspace themes; only two tones vary
-   per ground (focus accent, raised-card surface). The TUI never loads
-   this stylesheet.
-
-   Treatment rules (docs in the UX pitch artifact):
-   - panels: no borders, tone surfaces; the chat pane is the CANVAS
-     (transparent on the page), rails read as raised surfaces
-   - pane titles: quiet tracked uppercase labels, not colored bars
-   - focus: 2px inset accent edge, not a glowing frame
-   - status color lives in content (dots, badges, card edges) only
+   the root so a theme can carry chrome, not just colours. Workspace
+   Dark and its Rich Text variant share every rule. The TUI never
+   loads this stylesheet.
    ═══════════════════════════════════════════════════════════════════ */
-:root[data-ps-theme="workspace-dark"] {
+:root[data-ps-theme="workspace-dark"],
+:root[data-ps-theme="workspace-dark-rich"] {
   --ps-ws-accent: #2ea043;
   --ps-ws-card: #1c2129;
 }
-:root[data-ps-theme="workspace-light"] {
-  --ps-ws-accent: #0969da;
-  --ps-ws-card: #f4f6f8;
-}
 :root[data-ps-theme="workspace-dark"] .ps-panel,
-:root[data-ps-theme="workspace-light"] .ps-panel {
+:root[data-ps-theme="workspace-dark-rich"] .ps-panel {
   border: none;
   border-radius: 10px;
   background: var(--ps-surface);
   box-shadow: none;
 }
 :root[data-ps-theme="workspace-dark"] .ps-panel.ps-chat-panel,
-:root[data-ps-theme="workspace-light"] .ps-panel.ps-chat-panel {
+:root[data-ps-theme="workspace-dark-rich"] .ps-panel.ps-chat-panel {
   background: transparent;
 }
 :root[data-ps-theme="workspace-dark"] .ps-panel.is-focused,
-:root[data-ps-theme="workspace-light"] .ps-panel.is-focused {
+:root[data-ps-theme="workspace-dark-rich"] .ps-panel.is-focused {
   box-shadow: inset 2px 0 0 var(--ps-ws-accent);
 }
 :root[data-ps-theme="workspace-dark"] .ps-panel-header,
-:root[data-ps-theme="workspace-light"] .ps-panel-header {
+:root[data-ps-theme="workspace-dark-rich"] .ps-panel-header {
   background: transparent;
   border-bottom: none;
   min-height: 26px;
@@ -5529,8 +5518,8 @@ body.ps-rich-ui .ps-panel-header {
 }
 :root[data-ps-theme="workspace-dark"] .ps-panel-title,
 :root[data-ps-theme="workspace-dark"] .ps-panel-title span,
-:root[data-ps-theme="workspace-light"] .ps-panel-title,
-:root[data-ps-theme="workspace-light"] .ps-panel-title span {
+:root[data-ps-theme="workspace-dark-rich"] .ps-panel-title,
+:root[data-ps-theme="workspace-dark-rich"] .ps-panel-title span {
   color: var(--ps-muted) !important;
   font-size: 10px;
   font-weight: 600;
@@ -5539,71 +5528,27 @@ body.ps-rich-ui .ps-panel-header {
 }
 :root[data-ps-theme="workspace-dark"] .ps-panel-title-right,
 :root[data-ps-theme="workspace-dark"] .ps-panel-title-right span,
-:root[data-ps-theme="workspace-light"] .ps-panel-title-right,
-:root[data-ps-theme="workspace-light"] .ps-panel-title-right span {
+:root[data-ps-theme="workspace-dark-rich"] .ps-panel-title-right,
+:root[data-ps-theme="workspace-dark-rich"] .ps-panel-title-right span {
   color: var(--ps-muted) !important;
   font-size: 10px;
   letter-spacing: 0.06em;
 }
-/* Chat cards: full borders become a raised tone with a status edge. */
 :root[data-ps-theme="workspace-dark"] .ps-chat-card,
-:root[data-ps-theme="workspace-light"] .ps-chat-card {
+:root[data-ps-theme="workspace-dark-rich"] .ps-chat-card {
   border: none;
   border-left: 2px solid color-mix(in srgb, var(--ps-chat-card-accent, var(--ps-border)) 85%, transparent);
   border-radius: 8px;
   background: var(--ps-ws-card);
 }
-/* Quiet buttons: hairline outline on the surface, no fills. */
 :root[data-ps-theme="workspace-dark"] .ps-mini-button,
-:root[data-ps-theme="workspace-light"] .ps-mini-button {
+:root[data-ps-theme="workspace-dark-rich"] .ps-mini-button {
   background: transparent;
   border-color: var(--ps-border);
 }
 :root[data-ps-theme="workspace-dark"] .ps-mini-button:hover,
-:root[data-ps-theme="workspace-light"] .ps-mini-button:hover {
+:root[data-ps-theme="workspace-dark-rich"] .ps-mini-button:hover {
   background: color-mix(in srgb, var(--ps-foreground) 8%, transparent);
-}
-
-/* Workspace Light contrast details (win95-inspired): each panel is a white
-   surface on the cool gray page and wears a DEEP-BLUE TITLE BAND with light
-   text — colored title bars are what make win95 panels unmistakable, and
-   they translate cleanly to the flat structure. The chat pane stays the
-   band-less canvas. */
-:root[data-ps-theme="workspace-light"] .ps-panel {
-  background: #ffffff;
-  box-shadow: 0 1px 2px rgba(31, 35, 40, 0.08);
-}
-:root[data-ps-theme="workspace-light"] .ps-panel.ps-chat-panel {
-  background: transparent;
-  box-shadow: none;
-}
-:root[data-ps-theme="workspace-light"] .ps-panel-header {
-  background: linear-gradient(180deg, #1b4c8c 0%, #164074 100%);
-  border-radius: 10px 10px 0 0;
-  padding: 5px 14px 4px;
-  min-height: 24px;
-}
-:root[data-ps-theme="workspace-light"] .ps-panel.ps-chat-panel > .ps-panel-header {
-  background: transparent;
-  border-radius: 0;
-}
-:root[data-ps-theme="workspace-light"] .ps-panel-title,
-:root[data-ps-theme="workspace-light"] .ps-panel-title span {
-  color: #eaf1fb !important;
-}
-:root[data-ps-theme="workspace-light"] .ps-panel-title-right,
-:root[data-ps-theme="workspace-light"] .ps-panel-title-right span {
-  color: #b7cbe8 !important;
-}
-:root[data-ps-theme="workspace-light"] .ps-panel.ps-chat-panel .ps-panel-title,
-:root[data-ps-theme="workspace-light"] .ps-panel.ps-chat-panel .ps-panel-title span {
-  color: var(--ps-muted) !important;
-}
-:root[data-ps-theme="workspace-light"] .ps-panel.is-focused {
-  box-shadow: 0 0 0 1px #0969da, 0 1px 2px rgba(31, 35, 40, 0.08);
-}
-:root[data-ps-theme="workspace-light"] .ps-panel.ps-chat-panel.is-focused {
-  box-shadow: inset 2px 0 0 var(--ps-ws-accent);
 }
 
 
@@ -5666,3 +5611,7 @@ body.ps-rich-ui .ps-panel-header {
   background: color-mix(in srgb, var(--ps-selection-background, #268bd2) 22%, transparent);
   box-shadow: inset 2px 0 0 var(--ps-selection-background, #268bd2);
 }
+
+/* Pin markers: themed glyph weight, no emoji red. */
+.ps-pin-icon { font-size: 15px; }
+.ps-rich-session-pin { color: var(--ps-muted); }

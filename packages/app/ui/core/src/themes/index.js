@@ -1,7 +1,7 @@
 import githubDarkTheme from "./github-dark.js";
 import githubLightTheme from "./github-light.js";
 import workspaceDarkTheme from "./workspace-dark.js";
-import workspaceLightTheme from "./workspace-light.js";
+import workspaceDarkRichTheme from "./workspace-dark-rich.js";
 import cobalt2Theme from "./cobalt2.js";
 import draculaTheme from "./dracula.js";
 import catppuccinMochaTheme from "./catppuccin-mocha.js";
@@ -18,7 +18,7 @@ import msDosTheme from "./ms-dos.js";
 
 const THEMES = Object.freeze([
     workspaceDarkTheme,
-    workspaceLightTheme,
+    workspaceDarkRichTheme,
     draculaTheme,
     githubDarkTheme,
     githubLightTheme,
