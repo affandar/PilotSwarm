@@ -64,8 +64,31 @@ export class HttpApiTransport {
     }
 
     async listCreatableAgents() {
-        return this.bootstrap?.creatableAgents || this.api.call("listCreatableAgents");
+        // Always fetch: the server unions baked agents with viewer-scoped
+        // registry packages, so the bootstrap snapshot (baked-only, captured
+        // at page load) would hide packages and go stale across publishes.
+        try {
+            return await this.api.call("listCreatableAgents");
+        } catch {
+            return this.bootstrap?.creatableAgents || [];
+        }
     }
+
+    // ── Agent packages (docs/proposals/agent-packages.md) ────────
+    listAgentPackages() { return this.api.call("listAgentPackages"); }
+    getAgentPackage(name) { return this.api.call("getAgentPackage", { name }); }
+    getAgentPackageTree(name, semver) { return this.api.call("getAgentPackageTree", { name, ...(semver ? { semver } : {}) }); }
+    getAgentPackageFile(name, semver, filePath) { return this.api.call("getAgentPackageFile", { name, filePath, ...(semver ? { semver } : {}) }); }
+    uploadAgentPackage(files, scope) { return this.api.call("uploadAgentPackage", { files, scope }); }
+    listAgentSources() { return this.api.call("listAgentSources"); }
+    registerAgentSource(input) { return this.api.call("registerAgentSource", input); }
+    syncAgentSource(sourceId) { return this.api.call("syncAgentSource", { sourceId }); }
+    deleteAgentSource(sourceId) { return this.api.call("deleteAgentSource", { sourceId }); }
+    listAgentWorkerState() { return this.api.call("listAgentWorkerState"); }
+    setAgentPackageScope(name, scope) { return this.api.call("setAgentPackageScope", { name, scope }); }
+    setAgentPackageEnabled(name, enabled) { return this.api.call("setAgentPackageEnabled", { name, enabled }); }
+    pinAgentPackageVersion(name, semver) { return this.api.call("pinAgentPackageVersion", { name, semver }); }
+    deleteAgentPackage(name) { return this.api.call("deleteAgentPackage", { name }); }
 
     getSessionCreationPolicy() {
         return this.bootstrap?.sessionCreationPolicy || null;

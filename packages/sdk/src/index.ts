@@ -161,7 +161,7 @@ export {
 
 // Skills loader
 export { loadSkills, loadSkillsSync, composeDeclaredSkillsPrompt } from "./skills.js";
-export { loadAgentFiles, systemAgentUUID, systemChildAgentUUID } from "./agent-loader.js";
+export { loadAgentFiles, systemAgentUUID, systemChildAgentUUID, listBundledAgentNames } from "./agent-loader.js";
 export { loadMcpConfig } from "./mcp-loader.js";
 export type { Skill } from "./skills.js";
 // Local-mode user principal constant (Admin Console / per-user GitHub Copilot key)
@@ -245,8 +245,10 @@ export { SessionDumper } from "./session-dumper.js";
 export {
     agentPackagesArtifactSessionId,
     agentPackageArtifactFilename,
+    agentPackageTarSha256,
     isValidSemver,
     compareSemver,
+    normalizeAgentName,
     packAgentPackage,
     readAgentPackageTarGz,
     extractAgentPackageTarGz,

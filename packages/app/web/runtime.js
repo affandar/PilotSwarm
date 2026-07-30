@@ -494,7 +494,11 @@ export class PortalRuntime {
                 ? this.transport.getModelsByProvider()
                 : [],
             creatableAgents: typeof this.transport.listCreatableAgents === "function"
-                ? await this.transport.listCreatableAgents()
+                // Viewer-less bootstrap: baked + shared-scope only (null
+                // principal, non-admin) so no user-scope package ever rides
+                // the shared bootstrap payload. Pickers fetch the
+                // viewer-scoped union per open via the listCreatableAgents op.
+                ? await this.transport.listCreatableAgents(null, false)
                 : [],
             sessionCreationPolicy: typeof this.transport.getSessionCreationPolicy === "function"
                 ? this.transport.getSessionCreationPolicy()
@@ -744,14 +748,57 @@ export class PortalRuntime {
                     initialPrompt: safeParams.initialPrompt,
                     groupId: safeParams.groupId,
                     owner,
+                    isAdmin,
                     visibility: normalizeVisibility(safeParams.visibility, this.authz.defaultVisibility),
                 });
                 return this._ensureCreatedPlacement(created, safeParams.groupId, authContext, isAdmin);
             }
             case "listCreatableAgents":
-                return this.transport.listCreatableAgents();
+                return this.transport.listCreatableAgents(owner, isAdmin);
             case "getSessionCreationPolicy":
                 return this.transport.getSessionCreationPolicy();
+
+            // ── Agent packages (docs/proposals/agent-packages.md) ────
+            // access "authed" + creator-or-admin enforcement in the registry
+            // procs; viewer filtering in the catalog reads. `owner` is the
+            // authenticated principal, `isAdmin` the resolved role.
+            case "listAgentPackages":
+                return this.transport.listAgentPackages(owner, isAdmin);
+            case "getAgentPackage":
+                return this.transport.getAgentPackage(safeParams.name, owner, isAdmin);
+            case "getAgentPackageTree":
+                return this.transport.getAgentPackageTree(safeParams.name, safeParams.semver ?? null, owner, isAdmin);
+            case "getAgentPackageFile":
+                return this.transport.getAgentPackageFile(safeParams.name, safeParams.semver ?? null, safeParams.filePath, owner, isAdmin);
+            case "uploadAgentPackage":
+                return this.transport.uploadAgentPackage(safeParams.files, safeParams.scope, owner, isAdmin);
+            case "listAgentSources":
+                return this.transport.listAgentSources(owner, isAdmin);
+            case "registerAgentSource":
+                return this.transport.registerAgentSource({
+                    kind: safeParams.kind,
+                    scope: safeParams.scope,
+                    repoUrl: safeParams.repoUrl,
+                    ref: safeParams.ref,
+                    path: safeParams.path,
+                    url: safeParams.url,
+                    authToken: safeParams.authToken,
+                    autoSync: safeParams.autoSync,
+                }, owner, isAdmin);
+            case "syncAgentSource":
+                return this.transport.syncAgentSource(safeParams.sourceId, owner, isAdmin);
+            case "deleteAgentSource":
+                return this.transport.deleteAgentSource(safeParams.sourceId, owner, isAdmin);
+            case "listAgentWorkerState":
+                return this.transport.listAgentWorkerState();
+            case "setAgentPackageScope":
+                return this.transport.setAgentPackageScope(safeParams.name, safeParams.scope, owner, isAdmin);
+            case "setAgentPackageEnabled":
+                return this.transport.setAgentPackageEnabled(safeParams.name, safeParams.enabled, owner, isAdmin);
+            case "pinAgentPackageVersion":
+                return this.transport.pinAgentPackageVersion(safeParams.name, safeParams.semver, owner, isAdmin);
+            case "deleteAgentPackage":
+                return this.transport.deleteAgentPackage(safeParams.name, owner, isAdmin);
             case "sendMessage":
                 return this.transport.sendMessage(safeParams.sessionId, safeParams.prompt, {
                     ...(safeParams.options && typeof safeParams.options === "object" ? safeParams.options : {}),

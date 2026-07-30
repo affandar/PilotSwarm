@@ -181,6 +181,24 @@ export const OPERATIONS = [
     { name: "listCreatableAgents", access: "authed", method: "GET", path: "/agents", summary: "Agents sessions can be created for." },
     { name: "getSessionCreationPolicy", access: "authed", method: "GET", path: "/session-creation-policy", summary: "Session creation policy." },
 
+    // ── Agent packages (docs/proposals/agent-packages.md) ───────────────
+    // Fixed segments (sources / upload / worker-state) are registered BEFORE
+    // the :name routes — Express matches in table order.
+    { name: "listAgentPackages", access: "authed", method: "GET", path: "/agent-packages", summary: "Agent packages visible to the caller: shared + own user-scope (admins see all)." },
+    { name: "uploadAgentPackage", access: "authed", method: "POST", path: "/agent-packages/upload", params: { files: body(), scope: body() }, summary: "Publish a package from inline files ([{path, contentBase64}], ≤ 2 MB total); validates, canonically packs, and registers as the caller." },
+    { name: "listAgentSources", access: "authed", method: "GET", path: "/agent-packages/sources", summary: "Registered package sources visible to the caller (creator or admin). Tokens are never returned." },
+    { name: "registerAgentSource", access: "authed", method: "POST", path: "/agent-packages/sources", params: { kind: body(), scope: body(), repoUrl: body(), ref: body(), path: body(), url: body(), authToken: body(), autoSync: body() }, summary: "Register a github|ado|url package source. authToken is write-only." },
+    { name: "syncAgentSource", access: "authed", method: "POST", path: "/agent-packages/sources/:sourceId/sync", params: { sourceId: path("sourceId") }, summary: "Fetch, validate, and publish the source now. Creator or admin." },
+    { name: "deleteAgentSource", access: "authed", method: "DELETE", path: "/agent-packages/sources/:sourceId", params: { sourceId: path("sourceId") }, summary: "Delete a package source (does not delete published packages). Creator or admin." },
+    { name: "listAgentWorkerState", access: "fleet:read", method: "GET", path: "/agent-packages/worker-state", summary: "Per-worker installed package state (fleet adoption). [admin]" },
+    { name: "getAgentPackage", access: "authed", method: "GET", path: "/agent-packages/:name", params: { name: path("name") }, summary: "One package with its full version history." },
+    { name: "getAgentPackageTree", access: "authed", method: "GET", path: "/agent-packages/:name/tree", params: { name: path("name"), semver: query("string") }, summary: "File tree of the package tarball (workspace viewer). Defaults to the active version." },
+    { name: "getAgentPackageFile", access: "authed", method: "GET", path: "/agent-packages/:name/file", params: { name: path("name"), semver: query("string"), filePath: query("string") }, summary: "One file from the package tarball (preview; text size-capped, binary flagged)." },
+    { name: "setAgentPackageScope", access: "authed", method: "PUT", path: "/agent-packages/:name/scope", params: { name: path("name"), scope: body() }, summary: "Promote (shared) or demote (user). Creator or admin; running agents unaffected." },
+    { name: "setAgentPackageEnabled", access: "authed", method: "PUT", path: "/agent-packages/:name/enabled", params: { name: path("name"), enabled: body() }, summary: "Enable/disable a package fleet-wide. Creator or admin." },
+    { name: "pinAgentPackageVersion", access: "authed", method: "PUT", path: "/agent-packages/:name/active", params: { name: path("name"), semver: body() }, summary: "Pin the active version (rollback). Creator or admin; fleet converges on the next epoch poll." },
+    { name: "deleteAgentPackage", access: "authed", method: "DELETE", path: "/agent-packages/:name", params: { name: path("name") }, summary: "Delete a package: every version and its artifacts. Creator or admin. Live sessions using its agents fail resolution on their next turn." },
+
     // ── Current user profile ────────────────────────────────────────────
     { name: "getCurrentUserProfile", access: "authed", method: "GET", path: "/me/profile", summary: "Profile of the authenticated principal." },
     { name: "setCurrentUserProfileSettings", access: "authed", method: "PATCH", path: "/me/profile/settings", params: { settings: body() }, summary: "Replace profile settings." },
