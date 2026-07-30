@@ -189,6 +189,28 @@ describe("worker registry", () => {
             const row = (await catalog.getFleetDirectives()).find((r) => r.domain === domain);
             assertEqual(row.desired.x, 1, "doorbell bump keeps desired");
             assertEqual(row.actuation, "external");
+
+            // agent-packages converges via the fleet-row shim only: scoped
+            // rows would be silently dead + skew the summed epoch → rejected.
+            await expectError(
+                catalog.fleetDirectiveBump("agent-packages", { pool: "some-pool" }),
+                "FLEET_DIRECTIVE_BAD_SCOPE",
+            );
+
+            // Canonical form is structural, not proc-only: a direct-SQL row
+            // specializing BOTH pool and worker violates the table CHECK.
+            await expectError(
+                catalog.pool.query(
+                    `INSERT INTO "${env.cmsSchema}".fleet_directives (domain, pool, worker_node_id) VALUES ($1, 'p', 'w')`,
+                    [`d-nc-${env.runId}`],
+                ),
+                "fleet_directives_canonical_scope",
+            );
+
+            // Worker ids that would cross-match every worker-scoped
+            // directive (or match nothing) are rejected at the heartbeat.
+            await expectError(beat(catalog, "*"), "WORKER_ID_INVALID");
+            await expectError(beat(catalog, "  "), "WORKER_ID_INVALID");
         } finally {
             await catalog.close();
         }
@@ -247,6 +269,22 @@ describe("worker registry", () => {
             assertEqual(newRow.installed["pkg-x"].semver, "1.1.0", "new-path worker surfaces from workers.state");
             assertEqual(oldRow.installed["pkg-x"].semver, "1.0.0", "old-path worker surfaces from the legacy table");
             assertEqual(newRow.epoch, after);
+
+            // The seeded directive rides the worker-actuated protocol.
+            const seeded = (await catalog.getFleetDirectives())
+                .find((r) => r.domain === "agent-packages" && r.pool === "*" && r.workerNodeId === "*");
+            assertEqual(seeded.actuation, "worker", "seeded agent-packages directive is worker-actuated");
+
+            // One malformed state row (heterogeneous laptop builds) must not
+            // take down the whole fleet listing — it degrades to epoch 0.
+            const malformed = `wr-mixed-bad-${env.runId}`;
+            await beat(catalog, malformed, {
+                state: { "agent-packages": { epoch: "not-a-number", installed: { x: { status: "ok" } } } },
+            });
+            const unionWithBad = await catalog.listAgentWorkerState();
+            const badRow = unionWithBad.find((r) => r.workerNodeId === malformed);
+            assertEqual(badRow.epoch, 0, "malformed epoch degrades to 0 instead of throwing");
+            assert(unionWithBad.some((r) => r.workerNodeId === newWorker), "healthy rows unaffected");
         } finally {
             await catalog.close();
         }

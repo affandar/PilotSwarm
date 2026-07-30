@@ -264,6 +264,9 @@ CREATE TABLE IF NOT EXISTS ${s}.fleet_directives (
     desired        JSONB NOT NULL DEFAULT '{}'::jsonb,
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_by     TEXT,
+    -- Canonical form is structural: a row specializes pool OR worker, never
+    -- both, so even direct SQL cannot create an undefined-precedence row.
+    CONSTRAINT fleet_directives_canonical_scope CHECK (pool = '*' OR worker_node_id = '*'),
     PRIMARY KEY (domain, pool, worker_node_id)
 );
 
@@ -291,10 +294,20 @@ DECLARE
     v_existing_actuation TEXT;
     v_epoch BIGINT;
 BEGIN
+    -- One writer per domain: the actuation-uniformity check below is
+    -- read-then-write, and two first-bumps racing could persist a mixed
+    -- domain that wedges every later bump. Directive writes are admin-rate.
+    PERFORM pg_advisory_xact_lock(hashtext('fleet_directive:' || p_domain));
     -- Canonical worker-row form: worker-scoped rows use pool '*'; a triple
     -- with BOTH pool and worker specialized has no defined precedence.
     IF v_worker <> '*' AND v_pool <> '*' THEN
         RAISE EXCEPTION 'FLEET_DIRECTIVE_BAD_SCOPE: worker-scoped directives use pool ''*'' (canonical form)';
+    END IF;
+    -- agent-packages converges through the legacy epoch shim (fleet row
+    -- only) until the registrar consumes the heartbeat's directive set; a
+    -- scoped row would be silently dead while skewing the summed epoch.
+    IF p_domain = 'agent-packages' AND (v_pool <> '*' OR v_worker <> '*') THEN
+        RAISE EXCEPTION 'FLEET_DIRECTIVE_BAD_SCOPE: agent-packages directives are fleet-wide for now (workers converge on the fleet row only)';
     END IF;
     -- Actuation is a property of the DOMAIN, uniform across its rows.
     SELECT d.actuation INTO v_existing_actuation
@@ -337,8 +350,14 @@ CREATE OR REPLACE FUNCTION ${s}.cms_worker_heartbeat(
 ) RETURNS TABLE(domain TEXT, epoch BIGINT, actuation TEXT, desired JSONB) AS $$
 DECLARE
     v_pool TEXT := COALESCE(NULLIF(BTRIM(p_pool), ''), 'default');
-    v_phase TEXT := CASE WHEN p_phase IN ('starting', 'ready', 'draining') THEN p_phase ELSE 'ready' END;
+    -- Unknown phases coerce to 'starting' (never advertise garbage as
+    -- healthy); '*' or blank ids would cross-match every worker-scoped
+    -- directive at top specificity, so they are rejected outright.
+    v_phase TEXT := CASE WHEN p_phase IN ('starting', 'ready', 'draining') THEN p_phase ELSE 'starting' END;
 BEGIN
+    IF p_worker_node_id IS NULL OR BTRIM(p_worker_node_id) = '' OR p_worker_node_id = '*' THEN
+        RAISE EXCEPTION 'WORKER_ID_INVALID: worker_node_id must be a non-empty identifier';
+    END IF;
     INSERT INTO ${s}.workers (worker_node_id, pool, phase, owner_provider, owner_subject,
                               registered_at, updated_at, info, health, state)
     VALUES (p_worker_node_id, v_pool, v_phase,
@@ -409,7 +428,9 @@ RETURNS TABLE(worker_node_id TEXT, epoch BIGINT, installed JSONB, updated_at TIM
            u.worker_node_id, u.epoch, u.installed, u.updated_at
       FROM (
         SELECT w.worker_node_id,
-               COALESCE((w.state->'agent-packages'->>'epoch')::BIGINT, 0) AS epoch,
+               CASE WHEN jsonb_typeof(w.state->'agent-packages'->'epoch') = 'number'
+                    THEN (w.state->'agent-packages'->>'epoch')::BIGINT
+                    ELSE 0 END AS epoch,
                COALESCE(w.state->'agent-packages'->'installed', '{}'::jsonb) AS installed,
                w.updated_at
           FROM ${s}.workers w

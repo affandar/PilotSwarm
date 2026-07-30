@@ -219,6 +219,8 @@ export class PilotSwarmWorker {
     private _registrarInfo: Record<string, unknown> | null = null;
     /** Event-loop delay histogram for health reporting (reset each beat). */
     private _eventLoopHist: IntervalHistogram | null = null;
+    /** Last refresh failure — carried in heartbeat state until a clean pass. */
+    private _agentPackagesRefreshError: string | null = null;
 
     constructor(options: PilotSwarmWorkerOptions) {
         this.config = {
@@ -496,15 +498,6 @@ export class PilotSwarmWorker {
                 throw new Error(`CMS initialization failed after ${attempts} attempts — refusing to run a degraded worker without catalog-gated tools: ${String((lastErr as Error)?.message ?? lastErr)}`);
             }
         }
-        // ── Agent packages: initial install BEFORE the runtime exists so the
-        //    first session on a fresh pod already sees registry agents. A
-        //    registry problem degrades to zero packages, never a failed boot.
-        if (this._agentPackagesCacheDir) {
-            await this.refreshAgentPackages({ force: true });
-        }
-        // Registered + converged (or intentionally package-less): the next
-        // heartbeat advertises ready. Draining is set in gracefulShutdown.
-        this._workerPhase = "ready";
 
         // ── Facts store: base PgFactStore (default) or an EnhancedFactStore
         //    provider (enhancedfactstore 07 P3). Shared resolver keeps the
@@ -574,6 +567,19 @@ export class PilotSwarmWorker {
         );
         this.sessionManager.setFactStore(this.factStore);
         this.sessionManager.setGraphStore(this.graphStore);
+
+        // ── Agent packages: initial install AFTER the stores settle (the
+        //    first heartbeat writes the worker's write-once capability info,
+        //    which reads factStore/graphStore) but BEFORE the runtime exists
+        //    so the first session on a fresh pod already sees registry
+        //    agents. A registry problem degrades to zero packages, never a
+        //    failed boot.
+        if (this._agentPackagesCacheDir) {
+            await this.refreshAgentPackages({ force: true });
+        }
+        // Registered + converged (or intentionally package-less): the next
+        // heartbeat advertises ready. Draining is set in gracefulShutdown.
+        this._workerPhase = "ready";
         if (this._catalog) {
             this.sessionManager.setSessionCatalog(this._catalog);
             this.sessionManager.setLineageSessionLookup(async (sessionId) => (
@@ -875,9 +881,16 @@ export class PilotSwarmWorker {
         const drainBudgetMs = Number.isFinite(rawDrainMs) && rawDrainMs >= 0 ? rawDrainMs : 60_000;
 
         // Advertise draining before the runtime drain so operators see the
-        // phase for the duration of the drain window. Best-effort.
+        // phase for the duration of the drain window. Best-effort AND
+        // bounded: a black-holed CMS socket must not eat the drain budget
+        // (SIGKILL at grace-period expiry would crash in-flight turns).
         this._workerPhase = "draining";
-        if (this._agentPackagesCacheDir) await this._reportAgentWorkerState();
+        if (this._agentPackagesCacheDir) {
+            await Promise.race([
+                this._reportAgentWorkerState(),
+                new Promise<void>((resolve) => { setTimeout(resolve, 5_000).unref?.(); }),
+            ]);
+        }
 
         if (this.runtime) {
             console.error(`[PilotSwarmWorker] draining: waiting up to ${drainBudgetMs}ms for in-flight turns...`);
@@ -972,10 +985,6 @@ export class PilotSwarmWorker {
         try {
             const currentEpoch = await this._catalog.agentRegistryEpoch();
             if (!opts.force && currentEpoch === this._agentPackagesEpoch) {
-                // Heartbeat even when nothing changed: fleet liveness is
-                // updated_at recency (workers are ephemeral pods — the UI
-                // windows on freshness and the upsert prunes hour-stale rows).
-                await this._reportAgentWorkerState();
                 return;
             }
 
@@ -1022,12 +1031,20 @@ export class PilotSwarmWorker {
             for (const pkg of failed) {
                 console.warn(`[PilotSwarmWorker] agent package "${pkg.name}@${pkg.semver}" quarantined: ${pkg.error}`);
             }
-            // Awaited so fleet truth is durable once a refresh resolves; a
-            // failed report degrades to a warning, never a failed refresh.
-            await this._reportAgentWorkerState();
+            this._agentPackagesRefreshError = null;
         } catch (error: any) {
+            // Recorded into the heartbeat's state so a stuck worker is
+            // diagnosable from the registry (actual epoch lags + lastError),
+            // not just from this pod's logs.
+            this._agentPackagesRefreshError = String(error?.message ?? error);
             console.warn(`[PilotSwarmWorker] agent-package refresh failed (will retry on next poll): ${error?.message ?? error}`);
         } finally {
+            // The heartbeat is the worker's PRESENCE, not a success report:
+            // it must fire on the unchanged path, the converge path, and the
+            // install-failure path alike, or a worker becomes invisible
+            // exactly when it is unhealthy. Awaited so fleet truth is durable
+            // once a refresh resolves; never throws.
+            await this._reportAgentWorkerState();
             this._agentPackagesRefreshing = false;
         }
     }
@@ -1113,6 +1130,7 @@ export class PilotSwarmWorker {
                     "agent-packages": {
                         epoch: this._agentPackagesEpoch,
                         installed: this._agentPackagesInstalled,
+                        ...(this._agentPackagesRefreshError ? { lastError: this._agentPackagesRefreshError } : {}),
                     },
                 },
             });

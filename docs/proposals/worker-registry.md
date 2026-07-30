@@ -195,3 +195,39 @@ One loop on a real worker + PG: boot → registered `ready` → publish a packag
 - **Directive merge depth** — shallow key-level merge is specified; revisit only if a domain genuinely needs deep merging (none foreseen — keep payloads flat).
 - **Laptop trust envelope** — user-owned workers executing shared agent-package code, and serving whose sessions, is the deferred security track; the registry records owner + capabilities + consumed domains so that track has ground truth. Enforcement stays in duroxide tags and create/reschedule validation.
 - **Health depth** — keep it glanceable; resist becoming a metrics store.
+
+## Implementation notes (as shipped, migration 0040)
+
+Deltas between the sketches above and the landed implementation — the code is
+authoritative where they differ:
+
+- **Slot health carries totals only** (`orchestrationSlots: {total}`,
+  `workerSlots: {total}`): per-slot busy-ness isn't cheaply observable from
+  the worker loop; `activeSessions` is the live-load signal. `busy` can join
+  when duroxide exposes it.
+- **`cms_worker_heartbeat` returns `(domain, epoch, actuation, desired)`** —
+  no pool column; the worker knows the pool it sent.
+- **Presence is decoupled from convergence success**: the heartbeat fires in
+  the refresh's `finally`, so unchanged, converged, and install-failed ticks
+  all beat. An install failure lands in `state["agent-packages"].lastError`
+  next to the lagging epoch — the stuck-worker signature is visible in the
+  registry, not just pod logs.
+- **Write-once info is built after stores settle**: the initial converge (and
+  therefore the first heartbeat) runs after fact/graph store init so the
+  registered capability record is honest.
+- **agent-packages directives are fleet-wide for now** (`cms_fleet_directive_bump`
+  rejects pool/worker-scoped rows for that domain): the registrar still
+  converges through the legacy epoch shim, which reads the fleet row only; a
+  scoped row would be silently dead while skewing the summed epoch. Lift this
+  when convergence moves to the heartbeat's directive set.
+- **Hardening**: per-domain advisory lock serializes directive bumps (the
+  actuation-uniformity check is read-then-write); canonical scoping is a table
+  CHECK (`pool='*' OR worker_node_id='*'`); worker ids `'*'`/blank are
+  rejected at the heartbeat; unknown phases coerce to `starting`, never
+  `ready`; a malformed `state` JSON degrades that row to epoch 0 instead of
+  breaking the fleet listing; the draining beat is bounded (5s) so it can
+  never eat the drain budget.
+- **Registrar scope**: heartbeats currently ride agent-packages enablement
+  (on by default in the headless worker). Workers running with
+  `PILOTSWARM_AGENT_PACKAGES=0` don't register yet; the gate flips to
+  catalog-present when a second domain lands.
