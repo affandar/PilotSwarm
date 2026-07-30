@@ -5297,7 +5297,19 @@ body.ps-rich-ui .ps-panel-header {
 .ps-admin-detail__actions { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
 .ps-mini-button.is-danger { color: #f85149; border-color: color-mix(in srgb, #f85149 50%, transparent); }
 
-.ps-admin-ws { display: grid; grid-template-rows: auto minmax(0, 42%) auto minmax(0, 1fr); min-height: 0; }
+.ps-admin-ws { display: grid; grid-template-rows: auto minmax(0, 42%) auto minmax(0, 1fr); min-height: 0; position: relative; }
+.ps-admin-ws__vdivider {
+    position: absolute;
+    left: -3px;
+    top: 0;
+    bottom: 0;
+    width: 7px;
+    cursor: col-resize;
+    z-index: 2;
+}
+.ps-admin-ws__vdivider:hover { background: color-mix(in srgb, var(--ps-selection-background) 30%, transparent); }
+.ps-admin-ws__preview-head.is-resizable { cursor: row-resize; user-select: none; }
+.ps-admin-ws__preview-head.is-resizable:hover { background: color-mix(in srgb, var(--ps-selection-background) 12%, var(--ps-chrome)); }
 .ps-admin-ws__head, .ps-admin-ws__preview-head {
     padding: 7px 12px;
     font-size: 10.5px;

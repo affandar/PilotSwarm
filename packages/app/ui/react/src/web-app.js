@@ -6799,6 +6799,25 @@ function AdminConsolePanel({ controller, mobile = false }) {
     const draftRef = React.useRef(null);
     const packages = view.packages || {};
     const showPackages = view.section === "packages";
+    // Workspace pane geometry: user-resizable (drag the pane's left edge for
+    // width, the Preview header for the tree/preview split), persisted.
+    const [wsLayout, setWsLayout] = React.useState(() => {
+        const defaults = { wsWidth: 440, treePct: 44 };
+        try {
+            return { ...defaults, ...JSON.parse(window.localStorage.getItem("ps-admin-ws-layout") || "{}") };
+        } catch {
+            return defaults;
+        }
+    });
+    const updateWsLayout = React.useCallback((patch) => {
+        setWsLayout((prev) => {
+            const next = { ...prev, ...patch };
+            next.wsWidth = Math.min(900, Math.max(300, Math.round(next.wsWidth)));
+            next.treePct = Math.min(85, Math.max(15, next.treePct));
+            try { window.localStorage.setItem("ps-admin-ws-layout", JSON.stringify(next)); } catch { /* private mode */ }
+            return next;
+        });
+    }, []);
 
     React.useEffect(() => {
         if (view.ghcpKey.editing) {
@@ -6848,7 +6867,7 @@ function AdminConsolePanel({ controller, mobile = false }) {
     const tree = React.createElement(AdminSettingsTree, { controller, view });
     const detail = React.createElement(AdminPackageDetailPane, { controller, view });
     const workspacePane = showPackages && packages.selectedName
-        ? React.createElement(AdminPackageWorkspacePane, { controller, view })
+        ? React.createElement(AdminPackageWorkspacePane, { controller, view, layout: wsLayout, onLayout: updateWsLayout })
         : null;
     const dialog = packages.addDialog?.open
         ? React.createElement(AdminAddPackageDialog, { controller, dialog: packages.addDialog })
@@ -6881,7 +6900,12 @@ function AdminConsolePanel({ controller, mobile = false }) {
     return React.createElement("div", { className: "ps-admin-console is-workspace" },
         header,
         view.loadError ? React.createElement("div", { className: "ps-admin-console__error", role: "alert" }, view.loadError) : null,
-        React.createElement("div", { className: "ps-admin-workspace" },
+        React.createElement("div", {
+            className: "ps-admin-workspace",
+            style: workspacePane
+                ? { gridTemplateColumns: `240px minmax(0, 1fr) minmax(0, ${wsLayout.wsWidth}px)` }
+                : { gridTemplateColumns: "240px minmax(0, 1fr)" },
+        },
             tree,
             React.createElement("div", { className: "ps-admin-main" },
                 showPackages ? detail : ghcpSection),
@@ -7021,10 +7045,49 @@ function AdminPackageDetailPane({ controller, view }) {
             : null);
 }
 
-function AdminPackageWorkspacePane({ controller, view }) {
+function AdminPackageWorkspacePane({ controller, view, layout = null, onLayout = null }) {
     const workspace = view.packages?.workspace;
+    const paneRef = React.useRef(null);
+    // Shared pointer-drag: track from pointerdown, apply via onLayout, end on up.
+    const startDrag = React.useCallback((event, apply) => {
+        if (!onLayout) return;
+        event.preventDefault();
+        const startX = event.clientX;
+        const startY = event.clientY;
+        const startLayout = { ...layout };
+        const onMove = (move) => apply(startLayout, move.clientX - startX, move.clientY - startY);
+        const onUp = () => {
+            window.removeEventListener("pointermove", onMove);
+            window.removeEventListener("pointerup", onUp);
+            window.removeEventListener("pointercancel", onUp);
+            document.body.style.cursor = "";
+        };
+        window.addEventListener("pointermove", onMove);
+        window.addEventListener("pointerup", onUp);
+        window.addEventListener("pointercancel", onUp);
+    }, [layout, onLayout]);
+    const onWidthDrag = React.useCallback((event) => {
+        document.body.style.cursor = "col-resize";
+        startDrag(event, (start, dx) => onLayout({ wsWidth: start.wsWidth - dx }));
+    }, [startDrag, onLayout]);
+    const onSplitDrag = React.useCallback((event) => {
+        document.body.style.cursor = "row-resize";
+        const height = paneRef.current?.getBoundingClientRect().height || 600;
+        startDrag(event, (start, _dx, dy) => onLayout({ treePct: start.treePct + (dy / height) * 100 }));
+    }, [startDrag, onLayout]);
     if (!workspace) return null;
-    return React.createElement("div", { className: "ps-admin-ws" },
+    return React.createElement("div", {
+        className: "ps-admin-ws",
+        ref: paneRef,
+        style: layout ? { gridTemplateRows: `auto minmax(80px, ${layout.treePct}%) auto minmax(0, 1fr)` } : undefined,
+    },
+        onLayout
+            ? React.createElement("div", {
+                className: "ps-admin-ws__vdivider",
+                title: "Drag to resize the workspace",
+                onPointerDown: onWidthDrag,
+            })
+            : null,
         React.createElement("div", { className: "ps-admin-ws__head" },
             `Package workspace${workspace.semver ? ` · ${view.packages.selectedName}@${workspace.semver}` : ""}`),
         React.createElement("div", { className: "ps-admin-ws__tree" },
@@ -7043,7 +7106,11 @@ function AdminPackageWorkspacePane({ controller, view }) {
                     row.type === "dir" ? (row.expanded ? "▾" : "▸") : ""),
                 React.createElement("span", { className: "ps-admin-ws__name" }, row.label),
                 row.sizeText ? React.createElement("span", { className: "ps-admin-ws__size" }, row.sizeText) : null))),
-        React.createElement("div", { className: "ps-admin-ws__preview-head" },
+        React.createElement("div", {
+            className: `ps-admin-ws__preview-head${onLayout ? " is-resizable" : ""}`,
+            title: onLayout ? "Drag to resize file list vs preview" : undefined,
+            onPointerDown: onLayout ? onSplitDrag : undefined,
+        },
             workspace.selectedPath ? `Preview · ${workspace.selectedPath}` : "Preview"),
         React.createElement("div", { className: "ps-admin-ws__preview" },
             workspace.fileLoading ? React.createElement("div", { className: "ps-admin-tree__hint" }, "Loading…") : null,

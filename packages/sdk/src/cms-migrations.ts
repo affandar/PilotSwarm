@@ -205,7 +205,42 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "agent_packages",
             sql: migration_0038_agent_packages(schema),
         },
+        {
+            version: "0039",
+            name: "agent_worker_heartbeat_prune",
+            sql: migration_0039_agent_worker_heartbeat_prune(schema),
+        },
     ];
+}
+
+// ─── Migration 0039: agent_worker_state self-prune ───────────────
+//
+// Workers are EPHEMERAL (K8s pods; names change every rollout), so
+// agent_worker_state accumulated a row per pod that ever reported and
+// fleet adoption read "8/16 workers". Workers now heartbeat updated_at on
+// every poll; liveness is a display-side window (~90s), and this upsert
+// prunes rows silent for over an hour so the table stays the live fleet
+// plus a short tail. Same signature as 0038's version — CREATE OR REPLACE.
+function migration_0039_agent_worker_heartbeat_prune(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+CREATE OR REPLACE FUNCTION ${s}.cms_upsert_agent_worker_state(
+    p_worker_node_id TEXT, p_epoch BIGINT, p_installed JSONB
+) RETURNS VOID AS $$
+BEGIN
+    INSERT INTO ${s}.agent_worker_state (worker_node_id, epoch, installed, updated_at)
+    VALUES (p_worker_node_id, p_epoch, COALESCE(p_installed, '{}'::jsonb), now())
+    ON CONFLICT (worker_node_id) DO UPDATE
+        SET epoch = EXCLUDED.epoch,
+            installed = EXCLUDED.installed,
+            updated_at = now();
+    -- Ephemeral-fleet hygiene: a worker silent for an hour is gone (pods
+    -- report every ~20s; rollouts retire names forever).
+    DELETE FROM ${s}.agent_worker_state
+     WHERE updated_at < now() - interval '1 hour';
+END;
+$$ LANGUAGE plpgsql;
+`;
 }
 
 // ─── Migration 0038: agent packages registry ─────────────────────

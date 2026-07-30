@@ -111,8 +111,11 @@ function loadedPackagesState(store) {
             createdBy: "alice@test", createdAt: "2026-07-12T00:00:00Z",
         }],
         workerState: [
-            { workerNodeId: "w1", epoch: 4, installed: { "incident-kit": { semver: "1.4.0", status: "ok" } }, updatedAt: "2026-07-27T03:00:00Z" },
-            { workerNodeId: "w2", epoch: 4, installed: { "incident-kit": { semver: "1.3.2", status: "ok" } }, updatedAt: "2026-07-27T03:00:00Z" },
+            { workerNodeId: "w1", epoch: 4, installed: { "incident-kit": { semver: "1.4.0", status: "ok" } }, updatedAt: new Date().toISOString() },
+            { workerNodeId: "w2", epoch: 4, installed: { "incident-kit": { semver: "1.3.2", status: "ok" } }, updatedAt: new Date().toISOString() },
+            // Retired pod from a previous rollout — outside the liveness
+            // window, must NOT count toward fleet totals.
+            { workerNodeId: "w-old", epoch: 3, installed: { "incident-kit": { semver: "1.4.0", status: "ok" } }, updatedAt: "2026-07-27T03:00:00Z" },
         ],
     });
 }
@@ -163,7 +166,8 @@ test("package detail VM: versions, fleet adoption, source sync state", () => {
     assert.equal(detail.versions.length, 2);
     assert.equal(detail.versions[0].active, true);
     assert.equal(detail.versions[1].active, false);
-    assert.equal(detail.fleet.text, "1/2 workers current", "fleet counts only current+ok workers");
+    assert.equal(detail.fleet.text, "1/2 workers current",
+        "fleet counts only LIVE workers (fresh heartbeat) that are current+ok — the retired pod row is excluded");
     assert.equal(detail.source.kind, "github");
     assert.equal(detail.source.lastSyncStatus, "ok");
     assert.equal(detail.canManage, true);

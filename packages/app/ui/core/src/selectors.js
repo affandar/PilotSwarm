@@ -3614,7 +3614,16 @@ export function selectAdminConsole(state) {
         const manifest = activeVersion?.manifest || summary?.active?.manifest || {};
         const source = (Array.isArray(pkgState.sources) ? pkgState.sources : [])
             .find((candidate) => candidate.sourceId === detail?.sourceId) || null;
-        const workerRows = Array.isArray(pkgState.workerState) ? pkgState.workerState : [];
+        // Workers are ephemeral pods: rows for retired pod names linger until
+        // the server-side prune, so fleet adoption counts only workers whose
+        // heartbeat (updated_at, touched every ~20s poll) is fresh.
+        const FLEET_LIVENESS_MS = 90_000;
+        const liveCutoff = Date.now() - FLEET_LIVENESS_MS;
+        const workerRows = (Array.isArray(pkgState.workerState) ? pkgState.workerState : [])
+            .filter((worker) => {
+                const at = worker?.updatedAt instanceof Date ? worker.updatedAt : new Date(worker?.updatedAt ?? 0);
+                return !Number.isNaN(at.getTime()) && at.getTime() >= liveCutoff;
+            });
         const fleetTotal = workerRows.length;
         const fleetCurrent = activeVersion
             ? workerRows.filter((worker) => worker.installed?.[pkgState.selectedName]?.semver === activeVersion.semver

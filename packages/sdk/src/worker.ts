@@ -950,7 +950,13 @@ export class PilotSwarmWorker {
         this._agentPackagesRefreshing = true;
         try {
             const currentEpoch = await this._catalog.agentRegistryEpoch();
-            if (!opts.force && currentEpoch === this._agentPackagesEpoch) return;
+            if (!opts.force && currentEpoch === this._agentPackagesEpoch) {
+                // Heartbeat even when nothing changed: fleet liveness is
+                // updated_at recency (workers are ephemeral pods — the UI
+                // windows on freshness and the upsert prunes hour-stale rows).
+                await this._reportAgentWorkerState();
+                return;
+            }
 
             const result = await installAgentPackages({
                 catalog: this._catalog,
