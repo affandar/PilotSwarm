@@ -2681,6 +2681,9 @@ export class PilotSwarmUiController {
             (async () => {
                 try {
                     const tree = await this.transport.getAgentPackageTree(name);
+                    // A slower tree for a PREVIOUS selection must not clobber
+                    // the current package's workspace (stale-response race).
+                    if (this.getState().admin?.packages?.selectedName !== name) return;
                     this.dispatch({ type: "admin/packages/tree/loaded", name, tree });
                     // Default preview: plugin.json (always present in a valid package).
                     const first = tree?.files?.find((f) => f.path === "plugin.json") ?? tree?.files?.[0];
@@ -2696,7 +2699,12 @@ export class PilotSwarmUiController {
     async stepAdminPackageSelection(delta) {
         const pkgs = this.getState().admin?.packages;
         if (!pkgs?.list?.length) return;
-        const names = pkgs.list.map((p) => p.name);
+        // Same shared→user projection the settings tree renders, so j/k walks
+        // the list in VISUAL order regardless of transport ordering.
+        const names = [
+            ...pkgs.list.filter((p) => p.scope === "shared"),
+            ...pkgs.list.filter((p) => p.scope !== "shared"),
+        ].map((p) => p.name);
         const index = names.indexOf(pkgs.selectedName);
         const next = names[Math.min(names.length - 1, Math.max(0, (index < 0 ? (delta > 0 ? -1 : 0) : index) + delta))];
         if (next && next !== pkgs.selectedName) await this.selectAdminPackage(next);
@@ -2764,8 +2772,15 @@ export class PilotSwarmUiController {
         }
     }
 
+    /** Surface an add-dialog problem (used by the web layer's read phase). */
+    failAdminAddPackage(message) {
+        this.dispatch({ type: "admin/packages/addDialog/failed", error: message });
+    }
+
     /** Publish an uploaded folder ([{path, contentBase64}]) as a package. */
     async submitAdminUploadPackage(files, scope) {
+        const dialog = this.getState().admin?.packages?.addDialog;
+        if (!dialog?.open || dialog.submitting) return;
         if (typeof this.transport.uploadAgentPackage !== "function") {
             this.dispatch({ type: "admin/packages/addDialog/failed", error: "Folder upload is not available on this deployment." });
             return;

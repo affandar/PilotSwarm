@@ -3585,7 +3585,9 @@ export function selectAdminConsole(state) {
         sha7: pkg.active?.sha256 ? String(pkg.active.sha256).slice(0, 7) : null,
         agentCount: Array.isArray(pkg.active?.manifest?.agents) ? pkg.active.manifest.agents.length : 0,
         canManage: ownsPackage(pkg),
-        selected: pkgState.selectedName === pkg.name,
+        // Highlight only while the Agents section is active — otherwise the
+        // GitHub Keys screen shows a double selection.
+        selected: admin.section === "packages" && pkgState.selectedName === pkg.name,
     });
     const sharedRows = pkgList.filter((pkg) => pkg.scope === "shared").map(packageRow);
     const userRows = pkgList.filter((pkg) => pkg.scope !== "shared").map(packageRow);
@@ -3680,10 +3682,15 @@ export function selectAdminConsole(state) {
                 }
                 return true;
             };
+            const treeDirs = Array.isArray(tree.dirs) ? tree.dirs : [];
+            const treeFiles = Array.isArray(tree.files) ? tree.files : [];
+            // Segment-aware sort: "/" must sort before every sibling char or a
+            // dir separates from its children (agents/ vs agents-guide.md).
+            const sortKey = (value) => String(value).split("/").join("\u0000");
             const nodes = [
-                ...tree.dirs.map((dir) => ({ type: "dir", path: dir })),
-                ...tree.files.map((file) => ({ type: "file", path: file.path, size: file.size })),
-            ].sort((a, b) => (a.path < b.path ? -1 : 1));
+                ...treeDirs.map((dir) => ({ type: "dir", path: dir })),
+                ...treeFiles.map((file) => ({ type: "file", path: file.path, size: file.size })),
+            ].sort((a, b) => (sortKey(a.path) < sortKey(b.path) ? -1 : 1));
             for (const node of nodes) {
                 if (!visible(node.path)) continue;
                 const depth = node.path.split("/").length - 1;
@@ -5049,12 +5056,15 @@ export function selectSessionAgentPickerModal(state, maxWidth = 76) {
     // maps rendered rows back to item indexes (null = heading) — the same
     // mechanism the model picker uses.
     const GROUP_HEADINGS = { shared: "Shared", mine: "My agents", generic: "" };
+    // Package-scope vocabulary only makes sense when packages exist: a pure
+    // baked deployment keeps the classic flat list, no headings.
+    const hasPackageItems = items.some((item) => item?.packageName);
     const rows = [];
     const rowItemIndexes = [];
     let lastGroup = null;
     items.forEach((item, index) => {
         const group = item?.group || "shared";
-        if (group !== lastGroup) {
+        if (hasPackageItems && group !== lastGroup) {
             const heading = GROUP_HEADINGS[group] ?? "";
             rows.push([{ text: heading ? `── ${heading} ──` : "──", color: "gray" }]);
             rowItemIndexes.push(null);

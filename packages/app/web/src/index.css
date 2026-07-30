@@ -5329,9 +5329,7 @@ body.ps-rich-ui .ps-panel-header {
     white-space: nowrap;
 }
 .ps-admin-ws__row.is-dir { color: var(--ps-selection-background); }
-.ps-admin-ws__row.depth-1 { padding-left: 24px; }
-.ps-admin-ws__row.depth-2 { padding-left: 40px; }
-.ps-admin-ws__row.depth-3 { padding-left: 56px; }
+/* Depth indentation is inline (paddingLeft = 8 + depth*16) — unbounded. */
 .ps-admin-ws__row.is-selected {
     background: var(--ps-modal-selected-background);
     border-color: var(--ps-modal-selected-border);
@@ -5401,7 +5399,10 @@ body.ps-rich-ui .ps-panel-header {
 .ps-admin-mobile-stack .ps-admin-ws { grid-template-rows: auto auto auto minmax(160px, 1fr); }
 .ps-admin-back { margin: 8px 12px 0; align-self: flex-start; }
 
-@media (max-width: 960px) {
+/* Below the app's MOBILE_BREAKPOINT (920) the drill-in stack takes over and
+   carries the workspace pane — hide it only exactly there, or a 920-960px
+   desktop band would lose the file browser entirely. */
+@media (max-width: 919.98px) {
     .ps-admin-workspace { grid-template-columns: 200px minmax(0, 1fr); }
     .ps-admin-workspace .ps-admin-ws { display: none; }
 }

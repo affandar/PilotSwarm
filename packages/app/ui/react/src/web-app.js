@@ -6847,7 +6847,7 @@ function AdminConsolePanel({ controller, mobile = false }) {
 
     const tree = React.createElement(AdminSettingsTree, { controller, view });
     const detail = React.createElement(AdminPackageDetailPane, { controller, view });
-    const workspacePane = packages.selectedName
+    const workspacePane = showPackages && packages.selectedName
         ? React.createElement(AdminPackageWorkspacePane, { controller, view })
         : null;
     const dialog = packages.addDialog?.open
@@ -6935,12 +6935,6 @@ function AdminPackageDetailPane({ controller, view }) {
                     ? "No agent packages yet. Add one from a GitHub/ADO repo, a tarball URL, or upload a folder — or push from a terminal with `pilotswarm agents push ./my-agents`."
                     : "Select a package from the tree to see its detail, versions, and files."));
     }
-    if (!detail) {
-        return React.createElement("div", { className: "ps-admin-detail" },
-            React.createElement("h3", null, packages.selectedName),
-            React.createElement("p", { className: "ps-admin-console__hint" },
-                detailErrorText(packages) || "Loading package…"));
-    }
     const confirmDelete = () => {
         const ok = window.confirm(
             `Delete ${detail.name}? Every version and its artifacts are removed. Live sessions using its agents will fail on their next turn.`,
@@ -6950,6 +6944,13 @@ function AdminPackageDetailPane({ controller, view }) {
     const act = (kind, arg) => () => controller.runAdminPackageAction(kind, arg);
     const pending = detail.actionPending;
     return React.createElement("div", { className: "ps-admin-detail" },
+        detail.error
+            ? React.createElement("div", { className: "ps-admin-console__error", role: "alert" },
+                `Package load failed: ${detail.error}`)
+            : null,
+        detail.loading
+            ? React.createElement("p", { className: "ps-admin-console__hint" }, "Loading package…")
+            : null,
         React.createElement("div", { className: "ps-admin-detail__head" },
             React.createElement("h3", null, detail.name),
             React.createElement("span", { className: `ps-scope-badge is-${detail.scope}` }, detail.scope),
@@ -7020,10 +7021,6 @@ function AdminPackageDetailPane({ controller, view }) {
             : null);
 }
 
-function detailErrorText(packages) {
-    return packages?.detail?.error || packages?.detailError || null;
-}
-
 function AdminPackageWorkspacePane({ controller, view }) {
     const workspace = view.packages?.workspace;
     if (!workspace) return null;
@@ -7036,7 +7033,8 @@ function AdminPackageWorkspacePane({ controller, view }) {
             workspace.treeRows.map((row) => React.createElement("button", {
                 key: `${row.type}:${row.path}`,
                 type: "button",
-                className: `ps-admin-ws__row is-${row.type} depth-${row.depth}${row.selected ? " is-selected" : ""}`,
+                style: { paddingLeft: `${8 + (row.depth || 0) * 16}px` },
+                className: `ps-admin-ws__row is-${row.type}${row.selected ? " is-selected" : ""}`,
                 onClick: row.type === "dir"
                     ? () => controller.toggleAdminPackageDir(row.path)
                     : () => controller.selectAdminPackageFile(row.path),
@@ -7063,27 +7061,52 @@ function AdminAddPackageDialog({ controller, dialog }) {
     const kinds = [["github", "GitHub"], ["ado", "Azure DevOps"], ["url", "URL (.tar.gz)"], ["upload", "Upload folder"]];
     const isRepo = dialog.kind === "github" || dialog.kind === "ado";
     const folderRef = React.useRef(null);
+    const [reading, setReading] = React.useState(false);
+    const UPLOAD_LIMIT = 2 * 1024 * 1024;
     const onSubmit = (event) => {
         event.preventDefault();
+        if (reading || dialog.submitting) return;
         if (dialog.kind === "upload") {
             const input = folderRef.current;
             if (!input?.files?.length) {
-                controller.setAdminAddPackageField("url", dialog.url); // no-op keeps error surface simple
+                controller.failAdminAddPackage("Choose a package folder first.");
                 return;
             }
-            const files = [...input.files];
-            Promise.all(files.map((file) => new Promise((resolve, reject) => {
-                const reader = new FileReader();
-                reader.onerror = () => reject(new Error(`could not read ${file.name}`));
-                reader.onload = () => resolve({
+            // Filter and size-check BEFORE reading a single byte: a folder
+            // with node_modules must not freeze the tab base64-reading
+            // megabytes the server would reject anyway.
+            const picked = [...input.files]
+                .map((file) => ({
+                    file,
                     path: file.webkitRelativePath.split("/").slice(1).join("/") || file.name,
+                }))
+                .filter(({ path: rel }) => rel
+                    && !rel.split("/").includes("node_modules")
+                    && !rel.split("/").includes(".git"));
+            const totalBytes = picked.reduce((sum, { file }) => sum + file.size, 0);
+            if (picked.length === 0) {
+                controller.failAdminAddPackage("The chosen folder has no uploadable files.");
+                return;
+            }
+            if (totalBytes > UPLOAD_LIMIT) {
+                controller.failAdminAddPackage(
+                    `Folder is ${(totalBytes / (1024 * 1024)).toFixed(1)} MB after filtering — the upload envelope is 2 MB. Use a repo/URL source or 'pilotswarm agents push' for larger packages.`,
+                );
+                return;
+            }
+            setReading(true);
+            Promise.all(picked.map(({ file, path: rel }) => new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onerror = () => reject(new Error(`could not read ${rel}`));
+                reader.onload = () => resolve({
+                    path: rel,
                     contentBase64: String(reader.result).split(",", 2)[1] || "",
                 });
                 reader.readAsDataURL(file);
-            }))).then((payload) => controller.submitAdminUploadPackage(
-                payload.filter((entry) => entry.path && !entry.path.split("/").includes("node_modules")),
-                dialog.scope,
-            )).catch(() => {});
+            })))
+                .then((payload) => controller.submitAdminUploadPackage(payload, dialog.scope))
+                .catch((error) => controller.failAdminAddPackage(error?.message || "Could not read the chosen folder."))
+                .finally(() => setReading(false));
             return;
         }
         controller.submitAdminAddPackage().catch(() => {});
@@ -7140,8 +7163,8 @@ function AdminAddPackageDialog({ controller, dialog }) {
                     : null),
             React.createElement("div", { className: "ps-modal-footer" },
                 React.createElement("button", { type: "button", className: "ps-mini-button", onClick: () => controller.closeAdminAddPackage(), disabled: dialog.submitting }, "Cancel"),
-                React.createElement("button", { type: "submit", className: "ps-primary-button", disabled: dialog.submitting },
-                    dialog.submitting ? "Validating…" : "Validate & register"))));
+                React.createElement("button", { type: "submit", className: "ps-primary-button", disabled: dialog.submitting || reading },
+                    reading ? "Reading folder…" : (dialog.submitting ? "Validating…" : "Validate & register")))));
 }
 
 function AdminGhcpSection({ view, draftRef, onBeginEdit, onCancelEdit, onClear, onSubmit, onDraftChange, onRefresh, controller }) {

@@ -1939,6 +1939,8 @@ function buildAdminPackagesLines(view) {
             { text: detail.name, color: "white", bold: true },
             { text: `  ${detail.scope}${detail.enabled ? "" : "  disabled"}`, color: detail.scope === "shared" ? "cyan" : "yellow" },
         ]);
+        if (detail.loading) lines.push([{ text: "loading package...", color: "gray" }]);
+        if (detail.error) lines.push([{ text: `! ${detail.error}`, color: "red", bold: true }]);
         if (detail.description) lines.push([{ text: detail.description, color: "gray" }]);
         lines.push([
             { text: "Version ", color: "gray" },
@@ -1972,6 +1974,9 @@ function buildAdminPackagesLines(view) {
         }
         if (detail.actionError) lines.push([{ text: `! ${detail.actionError}`, color: "red" }]);
         const workspace = packages.workspace;
+        if (workspace?.loading) lines.push([{ text: "loading files...", color: "gray" }]);
+        if (workspace?.error) lines.push([{ text: `! files: ${workspace.error}`, color: "red" }]);
+        if (workspace?.fileError) lines.push([{ text: `! preview: ${workspace.fileError}`, color: "red" }]);
         if (workspace?.treeRows?.length) {
             lines.push([{ text: "", color: "gray" }]);
             lines.push([{ text: `Files · ${packages.selectedName}@${workspace.semver || "?"}`, color: "cyan", bold: true }]);
@@ -1994,8 +1999,6 @@ function buildAdminPackagesLines(view) {
                 }
             }
         }
-    } else if (packages.selectedName) {
-        lines.push([{ text: packages.detail?.error || "loading package...", color: "gray" }]);
     } else {
         lines.push([{ text: packages.empty
             ? "No agent packages yet — add one in the portal or `pilotswarm agents push ./dir`."
