@@ -2573,6 +2573,7 @@ export class PilotSwarmUiController {
     async openAdminConsole() {
         this.dispatch({ type: "admin/visibility", visible: true });
         await this.refreshAdminProfile().catch(() => {});
+        void this.refreshAdminAgentPackages().catch(() => {});
     }
 
     /** Close the Admin Console and return to the standard workspace. */
@@ -2628,6 +2629,202 @@ export class PilotSwarmUiController {
     setAdminGhcpKeyStoreAsSystem(value) {
         if (value && !this.getState().admin?.profile?.isAdmin) return;
         this.dispatch({ type: "admin/ghcpKey/setSystemTarget", value: Boolean(value) });
+    }
+
+    // ── Agent packages (Admin → Agents) ──────────────────────────
+
+    setAdminSection(section) {
+        this.dispatch({ type: "admin/section", section });
+        if (section === "packages") {
+            const pkgs = this.getState().admin?.packages;
+            if (!pkgs?.fetchedAt) void this.refreshAdminAgentPackages().catch(() => {});
+        }
+    }
+
+    /** Reload the package list + sources (+ fleet state when permitted). */
+    async refreshAdminAgentPackages() {
+        if (typeof this.transport.listAgentPackages !== "function") {
+            this.dispatch({ type: "admin/packages/loadFailed", error: "Agent packages are not available on this deployment." });
+            return;
+        }
+        this.dispatch({ type: "admin/packages/loading" });
+        try {
+            const [list, sources, workerState] = await Promise.all([
+                this.transport.listAgentPackages(),
+                typeof this.transport.listAgentSources === "function"
+                    ? this.transport.listAgentSources().catch(() => [])
+                    : [],
+                typeof this.transport.listAgentWorkerState === "function"
+                    ? this.transport.listAgentWorkerState().catch(() => [])
+                    : [],
+            ]);
+            this.dispatch({ type: "admin/packages/loaded", list, sources, workerState });
+        } catch (error) {
+            this.dispatch({ type: "admin/packages/loadFailed", error: error?.message || String(error) });
+        }
+    }
+
+    /** Select a package: loads its detail and workspace tree. */
+    async selectAdminPackage(name) {
+        this.dispatch({ type: "admin/packages/select", name });
+        if (!name) return;
+        await Promise.all([
+            (async () => {
+                try {
+                    const detail = await this.transport.getAgentPackage(name);
+                    if (!detail) throw new Error(`package "${name}" not found`);
+                    this.dispatch({ type: "admin/packages/detail/loaded", name, detail });
+                } catch (error) {
+                    this.dispatch({ type: "admin/packages/detail/loadFailed", name, error: error?.message || String(error) });
+                }
+            })(),
+            (async () => {
+                try {
+                    const tree = await this.transport.getAgentPackageTree(name);
+                    this.dispatch({ type: "admin/packages/tree/loaded", name, tree });
+                    // Default preview: plugin.json (always present in a valid package).
+                    const first = tree?.files?.find((f) => f.path === "plugin.json") ?? tree?.files?.[0];
+                    if (first) void this.selectAdminPackageFile(first.path);
+                } catch (error) {
+                    this.dispatch({ type: "admin/packages/tree/loadFailed", name, error: error?.message || String(error) });
+                }
+            })(),
+        ]);
+    }
+
+    /** TUI keyboard selection: move through the settings-tree package rows. */
+    async stepAdminPackageSelection(delta) {
+        const pkgs = this.getState().admin?.packages;
+        if (!pkgs?.list?.length) return;
+        const names = pkgs.list.map((p) => p.name);
+        const index = names.indexOf(pkgs.selectedName);
+        const next = names[Math.min(names.length - 1, Math.max(0, (index < 0 ? (delta > 0 ? -1 : 0) : index) + delta))];
+        if (next && next !== pkgs.selectedName) await this.selectAdminPackage(next);
+    }
+
+    toggleAdminPackageDir(dir) {
+        this.dispatch({ type: "admin/packages/toggleDir", dir });
+    }
+
+    async selectAdminPackageFile(filePath) {
+        const pkgs = this.getState().admin?.packages;
+        const name = pkgs?.selectedName;
+        if (!name || !filePath) return;
+        this.dispatch({ type: "admin/packages/file/loading", path: filePath });
+        try {
+            const file = await this.transport.getAgentPackageFile(name, null, filePath);
+            this.dispatch({ type: "admin/packages/file/loaded", file });
+        } catch (error) {
+            this.dispatch({ type: "admin/packages/file/loadFailed", path: filePath, error: error?.message || String(error) });
+        }
+    }
+
+    /**
+     * One entry point for package mutations so pending/error state stays
+     * uniform: kind = sync | promote | demote | pin | enable | disable | delete.
+     */
+    async runAdminPackageAction(kind, arg = null) {
+        const pkgs = this.getState().admin?.packages;
+        const name = pkgs?.selectedName;
+        if (!name) return;
+        this.dispatch({ type: "admin/packages/action/pending", action: kind });
+        try {
+            switch (kind) {
+                case "sync": {
+                    const sourceId = pkgs.detail?.sourceId;
+                    if (!sourceId) throw new Error("this package has no linked source — republish via upload or the CLI");
+                    const result = await this.transport.syncAgentSource(sourceId);
+                    if (result?.status === "error") throw new Error(result.error || "sync failed");
+                    break;
+                }
+                case "promote":
+                    await this.transport.setAgentPackageScope(name, "shared");
+                    break;
+                case "demote":
+                    await this.transport.setAgentPackageScope(name, "user");
+                    break;
+                case "pin":
+                    await this.transport.pinAgentPackageVersion(name, arg);
+                    break;
+                case "enable":
+                case "disable":
+                    await this.transport.setAgentPackageEnabled(name, kind === "enable");
+                    break;
+                case "delete":
+                    await this.transport.deleteAgentPackage(name);
+                    break;
+                default:
+                    throw new Error(`unknown package action: ${kind}`);
+            }
+            this.dispatch({ type: "admin/packages/action/done" });
+            await this.refreshAdminAgentPackages();
+            if (kind !== "delete") await this.selectAdminPackage(name);
+        } catch (error) {
+            this.dispatch({ type: "admin/packages/action/failed", error: error?.message || String(error) });
+        }
+    }
+
+    /** Publish an uploaded folder ([{path, contentBase64}]) as a package. */
+    async submitAdminUploadPackage(files, scope) {
+        if (typeof this.transport.uploadAgentPackage !== "function") {
+            this.dispatch({ type: "admin/packages/addDialog/failed", error: "Folder upload is not available on this deployment." });
+            return;
+        }
+        this.dispatch({ type: "admin/packages/addDialog/submitting" });
+        try {
+            const outcome = await this.transport.uploadAgentPackage(files, scope === "shared" ? "shared" : "user");
+            this.dispatch({ type: "admin/packages/addDialog/close" });
+            await this.refreshAdminAgentPackages();
+            if (outcome?.name) await this.selectAdminPackage(outcome.name);
+        } catch (error) {
+            const validation = Array.isArray(error?.validation?.errors)
+                ? `\n${error.validation.errors.map((e) => `[${e.code}] ${e.message}`).join("\n")}`
+                : "";
+            this.dispatch({ type: "admin/packages/addDialog/failed", error: `${error?.message || error}${validation}` });
+        }
+    }
+
+    openAdminAddPackage() {
+        this.dispatch({ type: "admin/packages/addDialog/open" });
+    }
+
+    closeAdminAddPackage() {
+        this.dispatch({ type: "admin/packages/addDialog/close" });
+    }
+
+    setAdminAddPackageField(field, value) {
+        this.dispatch({ type: "admin/packages/addDialog/setField", field, value });
+    }
+
+    /** Register the source and run the first sync in one motion. */
+    async submitAdminAddPackage() {
+        const dialog = this.getState().admin?.packages?.addDialog;
+        if (!dialog?.open || dialog.submitting) return;
+        if (typeof this.transport.registerAgentSource !== "function") {
+            this.dispatch({ type: "admin/packages/addDialog/failed", error: "Package sources are not available on this deployment." });
+            return;
+        }
+        this.dispatch({ type: "admin/packages/addDialog/submitting" });
+        try {
+            const { sourceId } = await this.transport.registerAgentSource({
+                kind: dialog.kind,
+                scope: dialog.scope,
+                repoUrl: dialog.repoUrl || null,
+                ref: dialog.ref || null,
+                path: dialog.path || null,
+                url: dialog.url || null,
+                authToken: dialog.authToken || null,
+            });
+            const result = await this.transport.syncAgentSource(sourceId);
+            if (result?.status === "error") {
+                throw new Error(result.error || "the first sync failed — check the repo URL, ref, and path");
+            }
+            this.dispatch({ type: "admin/packages/addDialog/close" });
+            await this.refreshAdminAgentPackages();
+            if (result?.outcome?.name) await this.selectAdminPackage(result.outcome.name);
+        } catch (error) {
+            this.dispatch({ type: "admin/packages/addDialog/failed", error: error?.message || String(error) });
+        }
     }
 
     beginAdminEditGhcpKey() {
@@ -4021,24 +4218,14 @@ export class PilotSwarmUiController {
             return;
         }
 
-        const items = [];
-        if (allowGeneric) {
-            items.push({
-                id: "__generic__",
-                kind: "generic",
-                title: "Generic Session",
-                description: "Open-ended session with no specialized agent boundary.",
-                tools: [],
-                splash: null,
-                splashMobile: null,
-                initialPrompt: null,
-            });
-        }
-
+        // Display order IS item order (Shared → My agents → Generic) so
+        // keyboard navigation walks the list visually; the selector only
+        // inserts non-clickable group headings between the segments.
+        const agentItems = [];
         for (const agent of agents) {
             const agentName = String(agent?.name || "").trim();
             if (!agentName) continue;
-            items.push({
+            agentItems.push({
                 id: agentName,
                 kind: "agent",
                 agentName,
@@ -4048,6 +4235,31 @@ export class PilotSwarmUiController {
                 splash: typeof agent?.splash === "string" && agent.splash.trim() ? agent.splash : null,
                 splashMobile: typeof agent?.splashMobile === "string" && agent.splashMobile.trim() ? agent.splashMobile : null,
                 initialPrompt: typeof agent?.initialPrompt === "string" && agent.initialPrompt.trim() ? agent.initialPrompt : null,
+                // Agent-package provenance (docs/proposals/agent-packages.md):
+                // "mine" = my user-scope package agents; everything else
+                // (baked/built-in + shared packages) groups under Shared.
+                group: agent?.source === "package" && agent?.scope === "user" ? "mine" : "shared",
+                packageName: agent?.packageName || null,
+                packageSemver: agent?.packageSemver || null,
+                packageScope: agent?.scope || null,
+                builtin: agent?.source !== "package",
+            });
+        }
+        const items = [
+            ...agentItems.filter((item) => item.group === "shared"),
+            ...agentItems.filter((item) => item.group === "mine"),
+        ];
+        if (allowGeneric) {
+            items.push({
+                id: "__generic__",
+                kind: "generic",
+                group: "generic",
+                title: "Generic Session",
+                description: "Open-ended session with no specialized agent boundary.",
+                tools: [],
+                splash: null,
+                splashMobile: null,
+                initialPrompt: null,
             });
         }
 
@@ -7715,6 +7927,21 @@ export class PilotSwarmUiController {
                 return;
             case UI_COMMANDS.ADMIN_REFRESH_PROFILE:
                 await this.refreshAdminProfile();
+                return;
+            case UI_COMMANDS.ADMIN_SHOW_GHCP:
+                this.setAdminSection("ghcp");
+                return;
+            case UI_COMMANDS.ADMIN_SHOW_PACKAGES:
+                this.setAdminSection("packages");
+                return;
+            case UI_COMMANDS.ADMIN_PACKAGES_REFRESH:
+                await this.refreshAdminAgentPackages();
+                return;
+            case UI_COMMANDS.ADMIN_PACKAGES_NEXT:
+                await this.stepAdminPackageSelection(1);
+                return;
+            case UI_COMMANDS.ADMIN_PACKAGES_PREV:
+                await this.stepAdminPackageSelection(-1);
                 return;
             case UI_COMMANDS.ADMIN_BEGIN_EDIT_GHCP_KEY:
                 this.beginAdminEditGhcpKey();

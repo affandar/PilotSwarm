@@ -22,6 +22,12 @@ import { spawn } from "child_process";
 import type { AgentSourceRow, SessionCatalog } from "./cms.js";
 import type { AgentPackagePublishContext, PublishOutcome } from "./agent-package-service.js";
 import { publishAgentPackageDir } from "./agent-package-service.js";
+import { AGENT_PACKAGE_MAX_COMPRESSED_BYTES } from "./agent-package-format.js";
+
+// Upstream archives are bigger than packed packages (whole repo vs one dir),
+// but still bounded: nothing legitimate needs more than this.
+const MAX_ARCHIVE_BYTES = 256 * 1024 * 1024;
+const MAX_INFLATED_ENTRY_BYTES = 128 * 1024 * 1024;
 
 const FETCH_TIMEOUT_MS = 60_000;
 
@@ -57,8 +63,31 @@ async function downloadToFile(url: string, headers: Record<string, string>, dest
     if (!res.ok) {
         throw new Error(`download failed: HTTP ${res.status} ${res.statusText} for ${url}`);
     }
-    const bytes = Buffer.from(await res.arrayBuffer());
-    fs.writeFileSync(destFile, bytes);
+    const declared = Number(res.headers.get("content-length") || 0);
+    if (declared > MAX_ARCHIVE_BYTES) {
+        throw new Error(`archive too large: ${declared} bytes (limit ${MAX_ARCHIVE_BYTES})`);
+    }
+    // Stream with a running cap — Content-Length is advisory, not a bound.
+    const reader = res.body?.getReader?.();
+    if (!reader) {
+        const bytes = Buffer.from(await res.arrayBuffer());
+        if (bytes.length > MAX_ARCHIVE_BYTES) throw new Error(`archive too large: ${bytes.length} bytes`);
+        fs.writeFileSync(destFile, bytes);
+        return;
+    }
+    const chunks: Buffer[] = [];
+    let total = 0;
+    for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > MAX_ARCHIVE_BYTES) {
+            await reader.cancel().catch(() => {});
+            throw new Error(`archive too large: exceeded ${MAX_ARCHIVE_BYTES} bytes while downloading`);
+        }
+        chunks.push(Buffer.from(value));
+    }
+    fs.writeFileSync(destFile, Buffer.concat(chunks));
 }
 
 // ─── tar.gz extraction (system tar + pre-scan) ───────────────────
@@ -136,7 +165,7 @@ export function extractZipArchive(zip: Buffer, destDir: string): void {
         const data = zip.subarray(dataStart, dataStart + compressedSize);
         let body: Buffer;
         if (method === 0) body = Buffer.from(data);
-        else if (method === 8) body = zlib.inflateRawSync(data);
+        else if (method === 8) body = zlib.inflateRawSync(data, { maxOutputLength: MAX_INFLATED_ENTRY_BYTES });
         else throw new Error(`zip: unsupported compression method ${method} for ${name}`);
         fs.mkdirSync(path.dirname(target), { recursive: true });
         fs.writeFileSync(target, body);
@@ -148,7 +177,9 @@ function collapseSingleRoot(dir: string): string {
     const entries = fs.readdirSync(dir).filter((n) => n !== "__MACOSX");
     if (entries.length === 1) {
         const only = path.join(dir, entries[0]);
-        if (fs.statSync(only).isDirectory()) return only;
+        // lstat: a lone root SYMLINK must never be followed — validation
+        // would otherwise walk (and name files from) its target directory.
+        if (fs.lstatSync(only).isDirectory()) return only;
     }
     return dir;
 }

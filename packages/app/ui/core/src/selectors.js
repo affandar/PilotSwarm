@@ -3510,6 +3510,28 @@ export function selectFilesView(state, options = {}) {
  * editing / saving / error), and a small set of "actions" describing
  * what keybindings or buttons are currently meaningful.
  */
+function adminPkgDate(value) {
+    if (!value) return "—";
+    const date = value instanceof Date ? value : new Date(value);
+    return Number.isNaN(date.getTime()) ? "—" : date.toISOString().slice(0, 10);
+}
+
+function adminPkgSize(bytes) {
+    const n = Number(bytes) || 0;
+    if (n <= 0) return "0 B";
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function adminPkgLanguage(filePath) {
+    const lower = String(filePath || "").toLowerCase();
+    if (lower.endsWith(".md")) return "markdown";
+    if (lower.endsWith(".json")) return "json";
+    if (/\.(mjs|cjs|js)$/.test(lower)) return "javascript";
+    return "text";
+}
+
 export function selectAdminConsole(state) {
     const admin = state.admin || {};
     const profile = admin.profile || null;
@@ -3546,7 +3568,219 @@ export function selectAdminConsole(state) {
                     ? "Configured (overrides env GITHUB_TOKEN for this user)"
                     : "Not configured (using env GITHUB_TOKEN fallback)");
 
+    // ── Agent packages view-model (Admin → Agents) ───────────────
+    const pkgState = admin.packages || {};
+    const pkgList = Array.isArray(pkgState.list) ? pkgState.list : [];
+    const ownsPackage = (pkg) => Boolean(
+        isAdmin
+        || (pkg?.owner && principal
+            && pkg.owner.provider === principal.provider
+            && pkg.owner.subject === principal.subject),
+    );
+    const packageRow = (pkg) => ({
+        name: pkg.name,
+        scope: pkg.scope === "shared" ? "shared" : "user",
+        enabled: Boolean(pkg.enabled),
+        semver: pkg.active?.semver || null,
+        sha7: pkg.active?.sha256 ? String(pkg.active.sha256).slice(0, 7) : null,
+        agentCount: Array.isArray(pkg.active?.manifest?.agents) ? pkg.active.manifest.agents.length : 0,
+        canManage: ownsPackage(pkg),
+        selected: pkgState.selectedName === pkg.name,
+    });
+    const sharedRows = pkgList.filter((pkg) => pkg.scope === "shared").map(packageRow);
+    const userRows = pkgList.filter((pkg) => pkg.scope !== "shared").map(packageRow);
+
+    // Settings tree — the session-list-slot navigation. Rendered by both
+    // hosts; `kind` drives affordances (section rows switch panes, package
+    // rows select a package).
+    const section = admin.section === "packages" ? "packages" : "ghcp";
+    const settingsTree = [
+        { id: "ghcp", kind: "section", depth: 0, label: "GitHub Keys", selected: section === "ghcp" },
+        { id: "agents", kind: "section", depth: 0, label: "Agents", selected: section === "packages" && !pkgState.selectedName },
+        { id: "group:shared", kind: "group", depth: 1, label: "Shared", count: sharedRows.length },
+        ...sharedRows.map((row) => ({ id: `pkg:${row.name}`, kind: "package", depth: 2, label: row.name, ...row })),
+        { id: "group:user", kind: "group", depth: 1, label: "User", count: userRows.length },
+        ...userRows.map((row) => ({ id: `pkg:${row.name}`, kind: "package", depth: 2, label: row.name, ...row })),
+    ];
+
+    // Detail view-model for the selected package.
+    const detail = pkgState.detail || null;
+    let packageDetail = null;
+    if (pkgState.selectedName) {
+        const summary = pkgList.find((pkg) => pkg.name === pkgState.selectedName) || null;
+        const activeVersion = detail?.versions?.find((v) => v.versionId === detail.activeVersionId) || null;
+        const manifest = activeVersion?.manifest || summary?.active?.manifest || {};
+        const source = (Array.isArray(pkgState.sources) ? pkgState.sources : [])
+            .find((candidate) => candidate.sourceId === detail?.sourceId) || null;
+        const workerRows = Array.isArray(pkgState.workerState) ? pkgState.workerState : [];
+        const fleetTotal = workerRows.length;
+        const fleetCurrent = activeVersion
+            ? workerRows.filter((worker) => worker.installed?.[pkgState.selectedName]?.semver === activeVersion.semver
+                && worker.installed?.[pkgState.selectedName]?.status === "ok").length
+            : 0;
+        const canManage = detail ? ownsPackage(detail) : (summary ? ownsPackage(summary) : false);
+        packageDetail = {
+            name: pkgState.selectedName,
+            loading: Boolean(pkgState.detailLoading),
+            error: pkgState.detailError || null,
+            scope: (detail?.scope || summary?.scope) === "shared" ? "shared" : "user",
+            enabled: detail ? Boolean(detail.enabled) : Boolean(summary?.enabled),
+            canManage,
+            createdBy: detail?.createdBy || summary?.createdBy || null,
+            createdAtText: adminPkgDate(detail?.createdAt || summary?.createdAt),
+            description: typeof manifest.description === "string" ? manifest.description : "",
+            activeSemver: activeVersion?.semver || summary?.active?.semver || null,
+            activeSha12: activeVersion?.sha256 ? String(activeVersion.sha256).slice(0, 12) : null,
+            sizeText: adminPkgSize(activeVersion?.sizeBytes ?? summary?.active?.sizeBytes),
+            agents: Array.isArray(manifest.agents)
+                ? manifest.agents.map((agent) => ({
+                    name: agent.name,
+                    description: agent.description || "",
+                    toolCount: Array.isArray(agent.tools) ? agent.tools.length : 0,
+                    skillCount: Array.isArray(agent.skills) ? agent.skills.length : 0,
+                }))
+                : [],
+            source: source
+                ? {
+                    kind: source.kind,
+                    location: source.repoUrl || source.url || "",
+                    ref: source.ref || null,
+                    path: source.path || null,
+                    lastSyncAtText: adminPkgDate(source.lastSyncAt),
+                    lastSyncStatus: source.lastSyncStatus || null,
+                    lastSyncError: source.lastSyncError || null,
+                }
+                : null,
+            versions: (detail?.versions || []).map((version) => ({
+                semver: version.semver,
+                sha12: String(version.sha256 || "").slice(0, 12),
+                dateText: adminPkgDate(version.createdAt),
+                active: version.versionId === detail?.activeVersionId,
+            })),
+            fleet: fleetTotal > 0 && activeVersion
+                ? { current: fleetCurrent, total: fleetTotal, text: `${fleetCurrent}/${fleetTotal} workers current` }
+                : null,
+            actionPending: pkgState.action?.pending || null,
+            actionError: pkgState.action?.error || null,
+        };
+    }
+
+    // Workspace view-model: nested tree rows honoring expandedDirs + preview.
+    const workspaceState = pkgState.workspace || {};
+    let workspace = null;
+    if (pkgState.selectedName) {
+        const tree = workspaceState.tree;
+        const expanded = new Set(workspaceState.expandedDirs || []);
+        const treeRows = [];
+        if (tree) {
+            const visible = (relPath) => {
+                const parts = relPath.split("/");
+                for (let i = 1; i < parts.length; i++) {
+                    if (!expanded.has(parts.slice(0, i).join("/"))) return false;
+                }
+                return true;
+            };
+            const nodes = [
+                ...tree.dirs.map((dir) => ({ type: "dir", path: dir })),
+                ...tree.files.map((file) => ({ type: "file", path: file.path, size: file.size })),
+            ].sort((a, b) => (a.path < b.path ? -1 : 1));
+            for (const node of nodes) {
+                if (!visible(node.path)) continue;
+                const depth = node.path.split("/").length - 1;
+                treeRows.push({
+                    type: node.type,
+                    path: node.path,
+                    label: node.path.split("/").pop() + (node.type === "dir" ? "/" : ""),
+                    depth,
+                    expanded: node.type === "dir" ? expanded.has(node.path) : undefined,
+                    sizeText: node.type === "file" ? adminPkgSize(node.size) : null,
+                    selected: workspaceState.selectedPath === node.path,
+                });
+            }
+        }
+        const file = workspaceState.file;
+        workspace = {
+            loading: Boolean(workspaceState.treeLoading),
+            error: workspaceState.treeError || null,
+            semver: workspaceState.tree?.semver || null,
+            treeRows,
+            file: file
+                ? {
+                    path: file.path,
+                    sizeText: adminPkgSize(file.size),
+                    truncated: Boolean(file.truncated),
+                    isBinary: file.encoding === "base64",
+                    text: file.encoding === "base64" ? null : String(file.content || ""),
+                    language: adminPkgLanguage(file.path),
+                }
+                : null,
+            fileLoading: Boolean(workspaceState.fileLoading),
+            fileError: workspaceState.fileError || null,
+            selectedPath: workspaceState.selectedPath || null,
+        };
+    }
+
+    const packagesView = {
+        loading: Boolean(pkgState.loading),
+        error: pkgState.error || null,
+        empty: pkgList.length === 0 && !pkgState.loading,
+        sharedCount: sharedRows.length,
+        userCount: userRows.length,
+        selectedName: pkgState.selectedName || null,
+        detail: packageDetail,
+        workspace,
+        addDialog: {
+            open: Boolean(pkgState.addDialog?.open),
+            kind: pkgState.addDialog?.kind || "github",
+            scope: pkgState.addDialog?.scope || "user",
+            repoUrl: pkgState.addDialog?.repoUrl || "",
+            ref: pkgState.addDialog?.ref || "",
+            path: pkgState.addDialog?.path || "",
+            url: pkgState.addDialog?.url || "",
+            authToken: pkgState.addDialog?.authToken || "",
+            submitting: Boolean(pkgState.addDialog?.submitting),
+            error: pkgState.addDialog?.error || null,
+        },
+    };
+
     const actions = [];
+    if (section === "packages") {
+        actions.push({ id: "packagesRefresh", label: "Refresh packages", key: "r" });
+        actions.push({ id: "packagesNext", label: "Next package", key: "j" });
+        actions.push({ id: "packagesPrev", label: "Previous package", key: "k" });
+        actions.push({ id: "showGhcp", label: "GitHub Keys", key: "g" });
+        actions.push({ id: "close", label: "Close console", key: "Esc" });
+        return {
+            visible: Boolean(admin.visible),
+            loading: Boolean(admin.loading),
+            loadError: admin.loadError || null,
+            principal,
+            isAdmin,
+            section,
+            settingsTree,
+            packages: packagesView,
+            ghcpKey: {
+                configured: Boolean(profile?.githubCopilotKeySet),
+                targetConfigured,
+                storeAsSystem,
+                editing: false,
+                draft: "",
+                cursorIndex: 0,
+                saving: false,
+                error: null,
+                statusText: ghcpStatusText,
+            },
+            systemGhcpKey: {
+                supported: Boolean(systemGhcpKey.supported),
+                loading: Boolean(systemGhcpKey.loading),
+                configured: Boolean(systemGhcpKey.configured),
+                changedBy: systemGhcpKey.changedBy || null,
+                changedAt: systemGhcpKey.changedAt || null,
+                error: systemGhcpKey.error || null,
+            },
+            actions,
+        };
+    }
     if (!ghcpKey.editing) {
         actions.push({ id: "edit", label: targetConfigured ? `Replace ${keyNoun}` : `Set ${keyNoun}`, key: "e" });
         if (targetConfigured) {
@@ -3559,12 +3793,18 @@ export function selectAdminConsole(state) {
     }
     actions.push({ id: "close", label: "Close console", key: ghcpKey.editing ? "Ctrl+Esc" : "Esc" });
 
+    if (section === "ghcp") {
+        actions.splice(actions.length - 1, 0, { id: "showPackages", label: "Agents", key: "a" });
+    }
     return {
         visible: Boolean(admin.visible),
         loading: Boolean(admin.loading),
         loadError: admin.loadError || null,
         principal,
         isAdmin,
+        section,
+        settingsTree,
+        packages: packagesView,
         ghcpKey: {
             configured: Boolean(profile?.githubCopilotKeySet),
             targetConfigured,
@@ -4804,18 +5044,37 @@ export function selectSessionAgentPickerModal(state, maxWidth = 76) {
     const items = Array.isArray(modal.items) ? modal.items : [];
     const selectedIndex = Math.max(0, Number(modal.selectedIndex) || 0);
     const contentWidth = Math.max(24, maxWidth - 4);
-    const rows = items.map((item, index) => {
+    // Items arrive pre-sorted Shared → My agents → Generic (controller);
+    // emit a non-clickable heading row at each group boundary. rowItemIndexes
+    // maps rendered rows back to item indexes (null = heading) — the same
+    // mechanism the model picker uses.
+    const GROUP_HEADINGS = { shared: "Shared", mine: "My agents", generic: "" };
+    const rows = [];
+    const rowItemIndexes = [];
+    let lastGroup = null;
+    items.forEach((item, index) => {
+        const group = item?.group || "shared";
+        if (group !== lastGroup) {
+            const heading = GROUP_HEADINGS[group] ?? "";
+            rows.push([{ text: heading ? `── ${heading} ──` : "──", color: "gray" }]);
+            rowItemIndexes.push(null);
+            lastGroup = group;
+        }
         const isSelected = index === selectedIndex;
+        const suffix = item?.kind === "generic"
+            ? " [generic]"
+            : item?.packageName
+                ? ` ${item.packageName} ${item.packageSemver || ""}`.trimEnd()
+                : ` (${item?.agentName || item?.id || "agent"})`;
         const labelRuns = fitRuns([
             { text: item?.kind === "generic" ? "○ " : "· ", color: "gray" },
             { text: item?.title || item?.agentName || item?.id || "Agent", color: "white", bold: true },
-            ...(item?.kind === "generic"
-                ? [{ text: " [generic]", color: "gray" }]
-                : [{ text: ` (${item?.agentName || item?.id || "agent"})`, color: "gray" }]),
+            { text: suffix, color: "gray" },
         ], contentWidth);
-        return isSelected
+        rows.push(isSelected
             ? buildActiveHighlightLine(labelRuns.map((run) => run.text).join("").padEnd(contentWidth, " "))
-            : labelRuns;
+            : labelRuns);
+        rowItemIndexes.push(index);
     });
 
     const selectedItem = items[selectedIndex] || null;
@@ -4831,6 +5090,9 @@ export function selectSessionAgentPickerModal(state, maxWidth = 76) {
             ...(selectedItem.kind === "generic"
                 ? [[{ text: "Open-ended session", color: "gray" }]]
                 : [[{ text: selectedItem.agentName || selectedItem.id || "agent", color: "gray" }]]),
+            ...(selectedItem.packageName
+                ? [[{ text: `Package: ${selectedItem.packageName}@${selectedItem.packageSemver || "?"} · ${selectedItem.packageScope || "shared"}`, color: "gray" }]]
+                : (selectedItem.kind === "agent" ? [[{ text: "Built-in agent", color: "gray" }]] : [])),
             ...(selectedModel ? [[{ text: `Model: ${selectedModel}`, color: "gray" }]] : []),
             ...(selectedReasoningEffort ? [[{ text: `Reasoning: ${selectedReasoningEffort}`, color: "gray" }]] : []),
             [{ text: "", color: "gray" }],
@@ -4852,10 +5114,12 @@ export function selectSessionAgentPickerModal(state, maxWidth = 76) {
         ]
         : [[{ text: "No agent selected.", color: "gray" }]];
 
+    const selectedRowIndex = rowItemIndexes.indexOf(selectedIndex);
     return {
         title: modal.title || "Select agent for new session",
         rows,
-        selectedRowIndex: selectedIndex,
+        rowItemIndexes,
+        selectedRowIndex: selectedRowIndex >= 0 ? selectedRowIndex : 0,
         detailsTitle: "Agent Details",
         detailsLines,
         idealWidth: Math.min(

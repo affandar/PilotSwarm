@@ -277,6 +277,46 @@ export function createInitialState({ mode = "local", branding = null, themeId = 
                 changedAt: null,
                 error: null,
             },
+            // Which settings-tree node is active: "ghcp" (GitHub Keys) or
+            // "packages" (Agents). The tree replaces the old flat panel.
+            section: "ghcp",
+            // Agent packages (docs/proposals/agent-packages.md) — registry
+            // list, selected package detail, and the workspace viewer.
+            packages: {
+                loading: false,
+                error: null,
+                list: [],
+                sources: [],
+                workerState: [],
+                fetchedAt: 0,
+                selectedName: null,
+                detail: null,
+                detailLoading: false,
+                detailError: null,
+                workspace: {
+                    tree: null,
+                    treeLoading: false,
+                    treeError: null,
+                    expandedDirs: [],
+                    selectedPath: null,
+                    file: null,
+                    fileLoading: false,
+                    fileError: null,
+                },
+                action: { pending: null, error: null },
+                addDialog: {
+                    open: false,
+                    kind: "github",
+                    scope: "user",
+                    repoUrl: "",
+                    ref: "",
+                    path: "",
+                    url: "",
+                    authToken: "",
+                    submitting: false,
+                    error: null,
+                },
+            },
         },
     };
 }

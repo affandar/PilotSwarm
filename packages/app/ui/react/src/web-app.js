@@ -6794,9 +6794,11 @@ function formatAdminPrincipalLabel(principal) {
     return [provider, subject].filter(Boolean).join(":") || "user";
 }
 
-function AdminConsolePanel({ controller }) {
+function AdminConsolePanel({ controller, mobile = false }) {
     const view = useControllerSelector(controller, selectAdminConsole, shallowEqualObject);
     const draftRef = React.useRef(null);
+    const packages = view.packages || {};
+    const showPackages = view.section === "packages";
 
     React.useEffect(() => {
         if (view.ghcpKey.editing) {
@@ -6834,22 +6836,316 @@ function AdminConsolePanel({ controller }) {
 
     const principalLabel = formatAdminPrincipalLabel(view.principal);
 
-    return React.createElement("div", { className: "ps-admin-console" },
-        React.createElement("header", { className: "ps-admin-console__header" },
-            React.createElement("h2", null, "Admin Console"),
-            React.createElement("button", {
+    const header = React.createElement("header", { className: "ps-admin-console__header" },
+        React.createElement("h2", null, "Admin Console"),
+        React.createElement("span", { className: "ps-admin-console__who" }, principalLabel),
+        React.createElement("button", { type: "button", className: "ps-mini-button", onClick: onClose }, "Close"));
+
+    const ghcpSection = React.createElement(AdminGhcpSection, {
+        view, draftRef, onBeginEdit, onCancelEdit, onClear, onSubmit, onDraftChange, onRefresh, controller,
+    });
+
+    const tree = React.createElement(AdminSettingsTree, { controller, view });
+    const detail = React.createElement(AdminPackageDetailPane, { controller, view });
+    const workspacePane = packages.selectedName
+        ? React.createElement(AdminPackageWorkspacePane, { controller, view })
+        : null;
+    const dialog = packages.addDialog?.open
+        ? React.createElement(AdminAddPackageDialog, { controller, dialog: packages.addDialog })
+        : null;
+
+    if (mobile) {
+        // Drill-in stack: settings list → section content; a selected package
+        // stacks detail + files + preview in one scroll with a back action.
+        let body;
+        if (showPackages && packages.selectedName) {
+            body = React.createElement("div", { className: "ps-admin-mobile-stack" },
+                React.createElement("button", {
+                    type: "button", className: "ps-mini-button ps-admin-back",
+                    onClick: () => controller.selectAdminPackage(null),
+                }, "← All packages"),
+                detail,
+                workspacePane);
+        } else if (showPackages) {
+            body = tree;
+        } else {
+            body = React.createElement("div", { className: "ps-admin-mobile-stack" }, tree, ghcpSection);
+        }
+        return React.createElement("div", { className: "ps-admin-console is-mobile" },
+            header,
+            view.loadError ? React.createElement("div", { className: "ps-admin-console__error", role: "alert" }, view.loadError) : null,
+            body,
+            dialog);
+    }
+
+    return React.createElement("div", { className: "ps-admin-console is-workspace" },
+        header,
+        view.loadError ? React.createElement("div", { className: "ps-admin-console__error", role: "alert" }, view.loadError) : null,
+        React.createElement("div", { className: "ps-admin-workspace" },
+            tree,
+            React.createElement("div", { className: "ps-admin-main" },
+                showPackages ? detail : ghcpSection),
+            workspacePane),
+        dialog);
+}
+
+function AdminSettingsTree({ controller, view }) {
+    const packages = view.packages || {};
+    return React.createElement("nav", { className: "ps-admin-tree" },
+        React.createElement("div", { className: "ps-admin-tree__label" }, "Settings"),
+        (view.settingsTree || []).map((row) => {
+            if (row.kind === "group") {
+                return React.createElement("div", { key: row.id, className: "ps-admin-tree__group" },
+                    `${row.label}`, React.createElement("span", { className: "ps-admin-tree__count" }, String(row.count ?? 0)));
+            }
+            const onClick = row.kind === "package"
+                ? () => controller.selectAdminPackage(row.name)
+                : () => controller.setAdminSection(row.id === "agents" ? "packages" : "ghcp");
+            return React.createElement("button", {
+                key: row.id,
                 type: "button",
-                className: "ps-mini-button",
-                onClick: onClose,
-            }, "Close")),
-        React.createElement("section", { className: "ps-admin-console__identity" },
-            React.createElement("dl", null,
-                React.createElement("dt", null, "Signed in as"),
-                React.createElement("dd", null, principalLabel))),
-        view.loadError
-            ? React.createElement("div", { className: "ps-admin-console__error", role: "alert" }, view.loadError)
+                className: `ps-admin-tree__row depth-${row.depth}${row.selected ? " is-selected" : ""}${row.kind === "package" && !row.enabled ? " is-disabled" : ""}`,
+                onClick,
+            },
+                row.kind === "package"
+                    ? React.createElement("span", { className: `ps-scope-badge is-${row.scope}` }, row.scope === "shared" ? "S" : "U")
+                    : null,
+                React.createElement("span", { className: "ps-admin-tree__name" }, row.label),
+                row.kind === "package" && row.semver
+                    ? React.createElement("span", { className: "ps-admin-tree__ver" }, row.semver)
+                    : null);
+        }),
+        packages.loading ? React.createElement("div", { className: "ps-admin-tree__hint" }, "Loading packages…") : null,
+        packages.error ? React.createElement("div", { className: "ps-admin-tree__hint is-error" }, packages.error) : null,
+        React.createElement("button", {
+            type: "button",
+            className: "ps-admin-tree__add",
+            onClick: () => controller.openAdminAddPackage(),
+        }, "+ Add package"));
+}
+
+function AdminPackageDetailPane({ controller, view }) {
+    const packages = view.packages || {};
+    const detail = packages.detail;
+    if (!packages.selectedName) {
+        return React.createElement("div", { className: "ps-admin-detail is-empty" },
+            React.createElement("h3", null, "Agents"),
+            React.createElement("p", { className: "ps-admin-console__hint" },
+                packages.empty
+                    ? "No agent packages yet. Add one from a GitHub/ADO repo, a tarball URL, or upload a folder — or push from a terminal with `pilotswarm agents push ./my-agents`."
+                    : "Select a package from the tree to see its detail, versions, and files."));
+    }
+    if (!detail) {
+        return React.createElement("div", { className: "ps-admin-detail" },
+            React.createElement("h3", null, packages.selectedName),
+            React.createElement("p", { className: "ps-admin-console__hint" },
+                detailErrorText(packages) || "Loading package…"));
+    }
+    const confirmDelete = () => {
+        const ok = window.confirm(
+            `Delete ${detail.name}? Every version and its artifacts are removed. Live sessions using its agents will fail on their next turn.`,
+        );
+        if (ok) controller.runAdminPackageAction("delete");
+    };
+    const act = (kind, arg) => () => controller.runAdminPackageAction(kind, arg);
+    const pending = detail.actionPending;
+    return React.createElement("div", { className: "ps-admin-detail" },
+        React.createElement("div", { className: "ps-admin-detail__head" },
+            React.createElement("h3", null, detail.name),
+            React.createElement("span", { className: `ps-scope-badge is-${detail.scope}` }, detail.scope),
+            !detail.enabled ? React.createElement("span", { className: "ps-scope-badge is-off" }, "disabled") : null),
+        detail.description ? React.createElement("p", { className: "ps-admin-detail__desc" }, detail.description) : null,
+        React.createElement("dl", { className: "ps-admin-detail__meta" },
+            React.createElement("dt", null, "Version"),
+            React.createElement("dd", null, detail.activeSemver
+                ? `${detail.activeSemver} · sha ${detail.activeSha12 || "?"} · ${detail.sizeText}`
+                : "no active version"),
+            detail.source
+                ? [
+                    React.createElement("dt", { key: "sk" }, "Source"),
+                    React.createElement("dd", { key: "sv" },
+                        `${detail.source.kind} · ${detail.source.location}${detail.source.ref ? ` @ ${detail.source.ref}` : ""}${detail.source.path ? ` · ${detail.source.path}` : ""}`),
+                    React.createElement("dt", { key: "yk" }, "Synced"),
+                    React.createElement("dd", { key: "yv", className: detail.source.lastSyncStatus === "error" ? "is-error" : "" },
+                        detail.source.lastSyncStatus === "error"
+                            ? `failed ${detail.source.lastSyncAtText}: ${detail.source.lastSyncError || "unknown error"}`
+                            : `${detail.source.lastSyncAtText}`),
+                ]
+                : null,
+            detail.fleet
+                ? [React.createElement("dt", { key: "fk" }, "Fleet"), React.createElement("dd", { key: "fv", className: "is-ok" }, detail.fleet.text)]
+                : null,
+            React.createElement("dt", null, "Created"),
+            React.createElement("dd", null, `${detail.createdBy || "unknown"} · ${detail.createdAtText}`)),
+        detail.agents.length
+            ? React.createElement("div", null,
+                React.createElement("div", { className: "ps-admin-detail__label" }, "Agents in this package"),
+                React.createElement("div", { className: "ps-admin-detail__chips" },
+                    detail.agents.map((agent) => React.createElement("span", { key: agent.name, className: "ps-agent-chip", title: agent.description },
+                        agent.name,
+                        agent.toolCount ? React.createElement("i", null, ` · ${agent.toolCount} tools`) : null))))
             : null,
-        React.createElement("section", { className: "ps-admin-console__section" },
+        detail.versions.length
+            ? React.createElement("div", null,
+                React.createElement("div", { className: "ps-admin-detail__label" }, "Versions"),
+                React.createElement("div", { className: "ps-admin-versions" },
+                    detail.versions.map((version) => React.createElement("div", {
+                        key: version.semver,
+                        className: `ps-admin-version${version.active ? " is-active" : ""}`,
+                    },
+                        React.createElement("b", null, version.semver),
+                        React.createElement("span", null, version.sha12),
+                        React.createElement("span", null, version.dateText),
+                        version.active
+                            ? React.createElement("span", { className: "is-ok" }, "● active")
+                            : (detail.canManage
+                                ? React.createElement("button", { type: "button", className: "ps-mini-button", onClick: act("pin", version.semver), disabled: Boolean(pending) }, "Pin")
+                                : null)))))
+            : null,
+        detail.canManage
+            ? React.createElement("div", { className: "ps-admin-detail__actions" },
+                detail.source
+                    ? React.createElement("button", { type: "button", className: "ps-primary-button", onClick: act("sync"), disabled: Boolean(pending) },
+                        pending === "sync" ? "Syncing…" : "Sync now")
+                    : null,
+                React.createElement("button", { type: "button", className: "ps-mini-button", onClick: act(detail.scope === "shared" ? "demote" : "promote"), disabled: Boolean(pending) },
+                    detail.scope === "shared" ? "Demote to user" : "Promote to shared"),
+                React.createElement("button", { type: "button", className: "ps-mini-button", onClick: act(detail.enabled ? "disable" : "enable"), disabled: Boolean(pending) },
+                    detail.enabled ? "Disable" : "Enable"),
+                React.createElement("button", { type: "button", className: "ps-mini-button is-danger", onClick: confirmDelete, disabled: Boolean(pending) }, "Delete"))
+            : React.createElement("p", { className: "ps-admin-console__hint" },
+                "Read-only: only the package creator or an admin can modify it."),
+        detail.actionError
+            ? React.createElement("div", { className: "ps-admin-console__error", role: "alert" }, detail.actionError)
+            : null);
+}
+
+function detailErrorText(packages) {
+    return packages?.detail?.error || packages?.detailError || null;
+}
+
+function AdminPackageWorkspacePane({ controller, view }) {
+    const workspace = view.packages?.workspace;
+    if (!workspace) return null;
+    return React.createElement("div", { className: "ps-admin-ws" },
+        React.createElement("div", { className: "ps-admin-ws__head" },
+            `Package workspace${workspace.semver ? ` · ${view.packages.selectedName}@${workspace.semver}` : ""}`),
+        React.createElement("div", { className: "ps-admin-ws__tree" },
+            workspace.loading ? React.createElement("div", { className: "ps-admin-tree__hint" }, "Loading files…") : null,
+            workspace.error ? React.createElement("div", { className: "ps-admin-tree__hint is-error" }, workspace.error) : null,
+            workspace.treeRows.map((row) => React.createElement("button", {
+                key: `${row.type}:${row.path}`,
+                type: "button",
+                className: `ps-admin-ws__row is-${row.type} depth-${row.depth}${row.selected ? " is-selected" : ""}`,
+                onClick: row.type === "dir"
+                    ? () => controller.toggleAdminPackageDir(row.path)
+                    : () => controller.selectAdminPackageFile(row.path),
+            },
+                React.createElement("span", { className: "ps-admin-ws__caret" },
+                    row.type === "dir" ? (row.expanded ? "▾" : "▸") : ""),
+                React.createElement("span", { className: "ps-admin-ws__name" }, row.label),
+                row.sizeText ? React.createElement("span", { className: "ps-admin-ws__size" }, row.sizeText) : null))),
+        React.createElement("div", { className: "ps-admin-ws__preview-head" },
+            workspace.selectedPath ? `Preview · ${workspace.selectedPath}` : "Preview"),
+        React.createElement("div", { className: "ps-admin-ws__preview" },
+            workspace.fileLoading ? React.createElement("div", { className: "ps-admin-tree__hint" }, "Loading…") : null,
+            workspace.fileError ? React.createElement("div", { className: "ps-admin-tree__hint is-error" }, workspace.fileError) : null,
+            workspace.file
+                ? (workspace.file.isBinary
+                    ? React.createElement("div", { className: "ps-admin-tree__hint" }, `Binary file · ${workspace.file.sizeText}`)
+                    : React.createElement("pre", { className: `ps-admin-ws__code lang-${workspace.file.language}` },
+                        workspace.file.text + (workspace.file.truncated ? "\n… (truncated preview)" : "")))
+                : null));
+}
+
+function AdminAddPackageDialog({ controller, dialog }) {
+    const setField = (field) => (event) => controller.setAdminAddPackageField(field, event.target.value);
+    const kinds = [["github", "GitHub"], ["ado", "Azure DevOps"], ["url", "URL (.tar.gz)"], ["upload", "Upload folder"]];
+    const isRepo = dialog.kind === "github" || dialog.kind === "ado";
+    const folderRef = React.useRef(null);
+    const onSubmit = (event) => {
+        event.preventDefault();
+        if (dialog.kind === "upload") {
+            const input = folderRef.current;
+            if (!input?.files?.length) {
+                controller.setAdminAddPackageField("url", dialog.url); // no-op keeps error surface simple
+                return;
+            }
+            const files = [...input.files];
+            Promise.all(files.map((file) => new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onerror = () => reject(new Error(`could not read ${file.name}`));
+                reader.onload = () => resolve({
+                    path: file.webkitRelativePath.split("/").slice(1).join("/") || file.name,
+                    contentBase64: String(reader.result).split(",", 2)[1] || "",
+                });
+                reader.readAsDataURL(file);
+            }))).then((payload) => controller.submitAdminUploadPackage(
+                payload.filter((entry) => entry.path && !entry.path.split("/").includes("node_modules")),
+                dialog.scope,
+            )).catch(() => {});
+            return;
+        }
+        controller.submitAdminAddPackage().catch(() => {});
+    };
+    return React.createElement("div", { className: "ps-modal-backdrop", onClick: () => controller.closeAdminAddPackage() },
+        React.createElement("form", {
+            className: "ps-modal ps-admin-add",
+            onClick: (event) => event.stopPropagation(),
+            onSubmit,
+        },
+            React.createElement("div", { className: "ps-modal-header" },
+                React.createElement("span", null, "Add agent package"),
+                React.createElement("button", { type: "button", className: "ps-mini-button", onClick: () => controller.closeAdminAddPackage() }, "✕")),
+            React.createElement("div", { className: "ps-admin-add__body" },
+                React.createElement("div", { className: "ps-admin-add__tabs" },
+                    kinds.map(([kind, label]) => React.createElement("button", {
+                        key: kind,
+                        type: "button",
+                        className: `ps-admin-add__tab${dialog.kind === kind ? " is-on" : ""}`,
+                        onClick: () => controller.setAdminAddPackageField("kind", kind),
+                    }, label))),
+                isRepo
+                    ? [
+                        React.createElement("label", { key: "u", className: "ps-admin-add__field" }, "Repository URL",
+                            React.createElement("input", { value: dialog.repoUrl, onChange: setField("repoUrl"), placeholder: dialog.kind === "github" ? "https://github.com/org/repo" : "https://dev.azure.com/org/project/_git/repo", autoFocus: true })),
+                        React.createElement("div", { key: "rp", className: "ps-admin-add__pair" },
+                            React.createElement("label", { className: "ps-admin-add__field" }, "Ref (branch / tag)",
+                                React.createElement("input", { value: dialog.ref, onChange: setField("ref"), placeholder: "main" })),
+                            React.createElement("label", { className: "ps-admin-add__field" }, "Path in repo",
+                                React.createElement("input", { value: dialog.path, onChange: setField("path"), placeholder: "/packages/my-agents" }))),
+                        React.createElement("label", { key: "t", className: "ps-admin-add__field" }, "Access token (optional for public repos — stored write-only)",
+                            React.createElement("input", { type: "password", value: dialog.authToken, onChange: setField("authToken"), autoComplete: "off" })),
+                    ]
+                    : dialog.kind === "url"
+                        ? [
+                            React.createElement("label", { key: "u2", className: "ps-admin-add__field" }, "Archive URL (.tar.gz or .zip)",
+                                React.createElement("input", { value: dialog.url, onChange: setField("url"), placeholder: "https://…/my-agents.tar.gz", autoFocus: true })),
+                            React.createElement("label", { key: "t2", className: "ps-admin-add__field" }, "Bearer token (optional)",
+                                React.createElement("input", { type: "password", value: dialog.authToken, onChange: setField("authToken"), autoComplete: "off" })),
+                        ]
+                        : React.createElement("label", { className: "ps-admin-add__field" }, "Package folder (≤ 2 MB; node_modules skipped)",
+                            React.createElement("input", { ref: folderRef, type: "file", webkitdirectory: "", directory: "", multiple: true })),
+                React.createElement("div", { className: "ps-admin-add__scope" },
+                    React.createElement("label", null,
+                        React.createElement("input", { type: "radio", name: "pkg-scope", checked: dialog.scope === "shared", onChange: () => controller.setAdminAddPackageField("scope", "shared") }),
+                        " Shared — everyone can use it"),
+                    React.createElement("label", null,
+                        React.createElement("input", { type: "radio", name: "pkg-scope", checked: dialog.scope === "user", onChange: () => controller.setAdminAddPackageField("scope", "user") }),
+                        " User — only you see it")),
+                React.createElement("p", { className: "ps-admin-console__hint" },
+                    "Same thing from a terminal: pilotswarm agents push ./my-agents --shared"),
+                dialog.error
+                    ? React.createElement("pre", { className: "ps-admin-add__error", role: "alert" }, dialog.error)
+                    : null),
+            React.createElement("div", { className: "ps-modal-footer" },
+                React.createElement("button", { type: "button", className: "ps-mini-button", onClick: () => controller.closeAdminAddPackage(), disabled: dialog.submitting }, "Cancel"),
+                React.createElement("button", { type: "submit", className: "ps-primary-button", disabled: dialog.submitting },
+                    dialog.submitting ? "Validating…" : "Validate & register"))));
+}
+
+function AdminGhcpSection({ view, draftRef, onBeginEdit, onCancelEdit, onClear, onSubmit, onDraftChange, onRefresh, controller }) {
+        return React.createElement("section", { className: "ps-admin-console__section" },
             React.createElement("h3", null, "GitHub Copilot key"),
             view.ghcpKey.storeAsSystem
                 ? React.createElement("p", { className: "ps-admin-console__hint" },
@@ -6917,7 +7213,7 @@ function AdminConsolePanel({ controller }) {
                         type: "button",
                         className: "ps-mini-button",
                         onClick: onRefresh,
-                    }, view.loading ? "Refreshing..." : "Refresh"))));
+                    }, view.loading ? "Refreshing..." : "Refresh")));
 }
 
 export function createWebPilotSwarmController({ transport, mode = "remote", branding = null } = {}) {
@@ -7330,7 +7626,7 @@ export function PilotSwarmWebApp({ controller }) {
         }),
         React.createElement("div", { className: "ps-workspace" },
             state.adminVisible
-                ? React.createElement(AdminConsolePanel, { controller })
+                ? React.createElement(AdminConsolePanel, { controller, mobile })
                 : (filesFullscreenActive
                     ? fullscreenWorkspace
                     : (chatFocusMode

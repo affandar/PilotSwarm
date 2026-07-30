@@ -116,11 +116,15 @@ test("New+Model opens the agent picker after model selection instead of fast-cre
     const modal = store.getState().ui.modal;
     assert.equal(modal?.type, "sessionAgentPicker");
     assert.equal(modal.sessionOptions.model, "openai:gpt-test");
-    assert.deepEqual(modal.items.map((item) => item.kind === "generic" ? "generic" : item.agentName), ["generic", "alpha"]);
+    // Display order: Shared agents first, Generic LAST under its separator
+    // (agent-packages picker contract).
+    assert.deepEqual(modal.items.map((item) => item.kind === "generic" ? "generic" : item.agentName), ["alpha", "generic"]);
 
+    // Default selection is the first agent; confirming creates FOR the agent.
     await controller.confirmModal();
-    assert.equal(calls.createSession.length, 1);
-    assert.equal(calls.createSession[0].model, "openai:gpt-test");
+    assert.equal(calls.createSessionForAgent.length, 1);
+    assert.equal(calls.createSessionForAgent[0].agentName, "alpha");
+    assert.equal(calls.createSessionForAgent[0].options.model, "openai:gpt-test");
 });
 
 test("New+Model with reasoning effort opens the agent picker with model and effort", async () => {
@@ -155,7 +159,8 @@ test("New+Model with reasoning effort opens the agent picker with model and effo
     assert.equal(modal.sessionOptions.model, "openai:gpt-reasoning");
     assert.equal(modal.sessionOptions.reasoningEffort, "high");
 
-    store.dispatch({ type: "ui/modal", modal: { ...modal, selectedIndex: 1 } });
+    // Item 0 is the agent (Shared first, Generic last).
+    store.dispatch({ type: "ui/modal", modal: { ...modal, selectedIndex: 0 } });
     await controller.confirmModal();
     assert.equal(calls.createSessionForAgent.length, 1);
     assert.equal(calls.createSessionForAgent[0].agentName, "alpha");

@@ -102,8 +102,19 @@ export async function installAgentPackages(opts: {
                         path.join(tmp, META_FILENAME),
                         JSON.stringify({ sha256: entry.sha256, semver: entry.semver, installedAt: new Date().toISOString() }),
                     );
-                    fs.rmSync(dir, { recursive: true, force: true });
-                    fs.renameSync(tmp, dir);
+                    try {
+                        fs.rmSync(dir, { recursive: true, force: true });
+                        fs.renameSync(tmp, dir);
+                    } catch (raceError) {
+                        // Shared-cache race (local multi-worker): if a
+                        // concurrent installer won and the dir now carries the
+                        // right sha, that IS success — content is identical.
+                        if (readMetaSha(dir) === entry.sha256) {
+                            fs.rmSync(tmp, { recursive: true, force: true });
+                        } else {
+                            throw raceError;
+                        }
+                    }
                 } catch (error) {
                     fs.rmSync(tmp, { recursive: true, force: true });
                     throw error;
@@ -117,6 +128,20 @@ export async function installAgentPackages(opts: {
         }
         packages.push(installed);
     }
+
+    // Prune cache dirs whose PACKAGE no longer exists in the manifest at all.
+    // Old-version dirs of live packages are kept deliberately: warm sessions'
+    // stdio MCP servers may still run from them; pods recycle the rest.
+    const liveNames = new Set(manifest.map((entry) => `${entry.name}@`));
+    try {
+        for (const dirName of fs.readdirSync(opts.cacheDir)) {
+            if (dirName.startsWith(".")) continue;
+            const owner = `${dirName.split("@")[0]}@`;
+            if (!liveNames.has(owner)) {
+                fs.rmSync(path.join(opts.cacheDir, dirName), { recursive: true, force: true });
+            }
+        }
+    } catch { /* best-effort GC */ }
 
     return {
         epoch,

@@ -125,6 +125,18 @@ describe("agent-package worker install", () => {
                 const upgraded = worker.loadedAgents.find((a) => a.name === "fixture-triager");
                 assert(upgraded.prompt.includes("UPGRADED"), "refresh swaps the live prompt catalog");
 
+                // REGRESSION (review B, HIGH): the refresh reset+reload must
+                // not strand SessionManager's by-reference copies of the
+                // framework/app base tool-name arrays — a reassignment during
+                // reload once emptied them, silently dropping ALL framework
+                // base tools from every cold session.
+                const smDefaults = worker.sessionManager.workerDefaults;
+                assert(
+                    Array.isArray(smDefaults.frameworkBaseToolNames)
+                    && smDefaults.frameworkBaseToolNames.includes("wait"),
+                    `framework base tools must survive a refresh (got: ${JSON.stringify(smDefaults.frameworkBaseToolNames)})`,
+                );
+
                 // Both versions cached; sha-keyed dirs mean no re-downloads.
                 const cached = fs.readdirSync(cacheDir).filter((n) => n.startsWith("fixture-kit@"));
                 assertEqual(cached.length, 2, "both versions live in the cache");

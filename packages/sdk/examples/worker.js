@@ -122,7 +122,11 @@ const worker = new PilotSwarmWorker({
         : {
             agentPackages: {
                 cacheDir: process.env.PILOTSWARM_AGENT_PACKAGES_DIR || undefined,
-                refreshIntervalMs: Number.parseInt(process.env.PILOTSWARM_AGENT_PACKAGES_REFRESH_MS || "", 10) || undefined,
+                // Number.isFinite (not ||) so REFRESH_MS=0 genuinely disables the poll.
+                refreshIntervalMs: (() => {
+                    const n = Number.parseInt(process.env.PILOTSWARM_AGENT_PACKAGES_REFRESH_MS || "", 10);
+                    return Number.isFinite(n) ? n : undefined;
+                })(),
             },
         }),
 });

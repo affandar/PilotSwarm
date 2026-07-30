@@ -71,12 +71,19 @@ async function makeContext(flags) {
         throw new Error("no store configured — pass --store <postgres-url> or set DATABASE_URL");
     }
     const catalog = await PgSessionCatalog.create(store, flags.schema || process.env.PILOTSWARM_CMS_SCHEMA || undefined);
-    await catalog.initialize();
-    const sessionStateDir = process.env.SESSION_STATE_DIR
-        || path.join(os.homedir(), ".copilot", "session-state");
-    const artifactStore = createSessionBlobStore(process.env, { sessionStateDir })
-        ?? new FilesystemArtifactStore(path.join(path.dirname(sessionStateDir), "artifacts"));
-    return { catalog, artifactStore, close: () => catalog.close() };
+    try {
+        await catalog.initialize();
+        const sessionStateDir = process.env.SESSION_STATE_DIR
+            || path.join(os.homedir(), ".copilot", "session-state");
+        const artifactStore = createSessionBlobStore(process.env, { sessionStateDir })
+            ?? new FilesystemArtifactStore(path.join(path.dirname(sessionStateDir), "artifacts"));
+        return { catalog, artifactStore, close: () => catalog.close() };
+    } catch (error) {
+        // Close the pool on init failure or the CLI hangs on idle pg clients
+        // instead of exiting non-zero.
+        await catalog.close().catch(() => {});
+        throw error;
+    }
 }
 
 function printIssues(issues, stream = console.error) {

@@ -1330,11 +1330,19 @@ export class PilotSwarmWorker {
                 if (agent.name === "default") {
                     if (layer === "system") {
                         this._frameworkBasePrompt = agent.prompt;
-                        this._frameworkBaseToolNames = agent.tools ?? [];
+                        // IN PLACE: SessionManager captured this exact array at
+                        // construction (workerDefaults.frameworkBaseToolNames);
+                        // reassigning would strand it EMPTY after the reset in
+                        // an agent-package refresh — every cold session would
+                        // lose the entire framework base tool set.
+                        this._frameworkBaseToolNames.length = 0;
+                        this._frameworkBaseToolNames.push(...(agent.tools ?? []));
                         this._frameworkBaseDescriptor = descriptor;
                     } else if (layer === "app") {
                         this._appDefaultPrompt = agent.prompt;
-                        this._appDefaultToolNames = agent.tools ?? [];
+                        // IN PLACE — same contract as the framework array above.
+                        this._appDefaultToolNames.length = 0;
+                        this._appDefaultToolNames.push(...(agent.tools ?? []));
                         this._appDefaultDescriptor = descriptor;
                     }
                     // Base (default) agents may opt sessions into MCP: their

@@ -1905,6 +1905,113 @@ function formatAdminPrincipalLabelTui(principal) {
     return [provider, subject].filter(Boolean).join(":") || "user";
 }
 
+function buildAdminPackagesLines(view) {
+    // TUI parity for Admin → Agents: the same selector view-model the web
+    // workspace renders, as text — settings tree, selected package detail,
+    // files, and a preview head. Keys: a/g switch sections, j/k select,
+    // r refresh (wired via the ADMIN_* commands).
+    const lines = [];
+    const packages = view.packages || {};
+    lines.push([{ text: "Settings", color: "cyan", bold: true }]);
+    for (const row of view.settingsTree || []) {
+        const indent = "  ".repeat(row.depth || 0);
+        if (row.kind === "group") {
+            lines.push([{ text: `${indent}${row.label} (${row.count ?? 0})`, color: "gray" }]);
+            continue;
+        }
+        const marker = row.selected ? "› " : "  ";
+        const badge = row.kind === "package" ? `[${row.scope === "shared" ? "S" : "U"}] ` : "";
+        const version = row.kind === "package" && row.semver ? `  ${row.semver}` : "";
+        lines.push([
+            { text: `${indent}${marker}`, color: row.selected ? "green" : "gray", bold: row.selected },
+            { text: `${badge}${row.label}${version}${row.kind === "package" && !row.enabled ? "  [disabled]" : ""}`,
+              color: row.selected ? "white" : (row.kind === "package" && !row.enabled ? "gray" : "white"),
+              bold: row.selected },
+        ]);
+    }
+    if (packages.loading) lines.push([{ text: "  loading packages...", color: "gray" }]);
+    if (packages.error) lines.push([{ text: `  ! ${packages.error}`, color: "red" }]);
+    lines.push([{ text: "", color: "gray" }]);
+
+    const detail = packages.detail;
+    if (detail) {
+        lines.push([
+            { text: detail.name, color: "white", bold: true },
+            { text: `  ${detail.scope}${detail.enabled ? "" : "  disabled"}`, color: detail.scope === "shared" ? "cyan" : "yellow" },
+        ]);
+        if (detail.description) lines.push([{ text: detail.description, color: "gray" }]);
+        lines.push([
+            { text: "Version ", color: "gray" },
+            { text: detail.activeSemver ? `${detail.activeSemver} · ${detail.activeSha12 || "?"} · ${detail.sizeText}` : "none", color: "white" },
+        ]);
+        if (detail.source) {
+            lines.push([
+                { text: "Source  ", color: "gray" },
+                { text: `${detail.source.kind} ${detail.source.location}${detail.source.ref ? ` @ ${detail.source.ref}` : ""}`, color: "white" },
+            ]);
+            lines.push([
+                { text: "Synced  ", color: "gray" },
+                { text: detail.source.lastSyncStatus === "error"
+                    ? `failed: ${detail.source.lastSyncError || "unknown"}`
+                    : detail.source.lastSyncAtText,
+                  color: detail.source.lastSyncStatus === "error" ? "red" : "white" },
+            ]);
+        }
+        if (detail.fleet) lines.push([{ text: "Fleet   ", color: "gray" }, { text: detail.fleet.text, color: "green" }]);
+        if (detail.agents.length) {
+            lines.push([{ text: "Agents  ", color: "gray" }, { text: detail.agents.map((a) => a.name).join(", "), color: "white" }]);
+        }
+        if (detail.versions.length) {
+            lines.push([{ text: "Versions", color: "cyan", bold: true }]);
+            for (const version of detail.versions.slice(0, 6)) {
+                lines.push([
+                    { text: version.active ? " ● " : "   ", color: "green" },
+                    { text: `${version.semver}  ${version.sha12}  ${version.dateText}`, color: version.active ? "white" : "gray" },
+                ]);
+            }
+        }
+        if (detail.actionError) lines.push([{ text: `! ${detail.actionError}`, color: "red" }]);
+        const workspace = packages.workspace;
+        if (workspace?.treeRows?.length) {
+            lines.push([{ text: "", color: "gray" }]);
+            lines.push([{ text: `Files · ${packages.selectedName}@${workspace.semver || "?"}`, color: "cyan", bold: true }]);
+            for (const row of workspace.treeRows.slice(0, 14)) {
+                const indent = "  ".repeat(row.depth || 0);
+                lines.push([
+                    { text: `  ${indent}${row.type === "dir" ? (row.expanded ? "▾ " : "▸ ") : "  "}`, color: "gray" },
+                    { text: row.label, color: row.selected ? "green" : (row.type === "dir" ? "cyan" : "white"), bold: row.selected },
+                    ...(row.sizeText ? [{ text: `  ${row.sizeText}`, color: "gray" }] : []),
+                ]);
+            }
+            if (workspace.treeRows.length > 14) {
+                lines.push([{ text: `  … ${workspace.treeRows.length - 14} more`, color: "gray" }]);
+            }
+            if (workspace.file && !workspace.file.isBinary && workspace.file.text) {
+                lines.push([{ text: "", color: "gray" }]);
+                lines.push([{ text: `Preview · ${workspace.file.path}`, color: "cyan", bold: true }]);
+                for (const textLine of workspace.file.text.split("\n").slice(0, 12)) {
+                    lines.push([{ text: `  ${textLine.slice(0, 100)}`, color: "gray" }]);
+                }
+            }
+        }
+    } else if (packages.selectedName) {
+        lines.push([{ text: packages.detail?.error || "loading package...", color: "gray" }]);
+    } else {
+        lines.push([{ text: packages.empty
+            ? "No agent packages yet — add one in the portal or `pilotswarm agents push ./dir`."
+            : "Select a package (j/k) to see detail and files.", color: "gray" }]);
+    }
+    lines.push([{ text: "", color: "gray" }]);
+    lines.push([{ text: "Actions", color: "cyan", bold: true }]);
+    lines.push([
+        { text: " j/k ", color: "green", bold: true }, { text: "select  ", color: "gray" },
+        { text: "r ", color: "cyan", bold: true }, { text: "refresh  ", color: "gray" },
+        { text: "g ", color: "yellow", bold: true }, { text: "GitHub Keys  ", color: "gray" },
+        { text: "Esc ", color: "red", bold: true }, { text: "close", color: "gray" },
+    ]);
+    return lines;
+}
+
 function buildAdminConsoleLines(view) {
     const lines = [];
     lines.push([
@@ -1922,6 +2029,11 @@ function buildAdminConsoleLines(view) {
     if (view.loadError) {
         lines.push([{ text: `! ${view.loadError}`, color: "red", bold: true }]);
         lines.push([{ text: "", color: "gray" }]);
+    }
+
+    if (view.section === "packages") {
+        lines.push(...buildAdminPackagesLines(view));
+        return lines;
     }
 
     lines.push([{ text: "GitHub Copilot key", color: "cyan", bold: true }]);
@@ -1957,7 +2069,9 @@ function buildAdminConsoleLines(view) {
             { text: view.loading ? "refreshing..." : "refresh", color: "gray" },
         ]);
         lines.push([
-            { text: " Esc ", color: "red", bold: true },
+            { text: " a ", color: "cyan", bold: true },
+            { text: "Agents (packages)  ", color: "gray" },
+            { text: "Esc ", color: "red", bold: true },
             { text: "close console and return to workspace", color: "gray" },
         ]);
     }

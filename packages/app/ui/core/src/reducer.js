@@ -11,6 +11,7 @@ import {
     normalizeStoredCollapsedSessionIds,
     normalizeStoredLayoutAdjustments,
     normalizeStoredPinnedSessionIds,
+    createInitialState,
 } from "./state.js";
 
 function cloneHistoryMap(historyMap) {
@@ -1843,6 +1844,140 @@ export function appReducer(state, action) {
                     },
                 },
             };
+        }
+        case "admin/section": {
+            return { ...state, admin: { ...state.admin, section: action.section === "packages" ? "packages" : "ghcp" } };
+        }
+        case "admin/packages/loading": {
+            return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, loading: true, error: null } } };
+        }
+        case "admin/packages/loaded": {
+            const previous = state.admin.packages;
+            const list = Array.isArray(action.list) ? action.list : [];
+            // Keep the selection when the package still exists; otherwise clear
+            // the dependent detail/workspace state with it.
+            const stillThere = previous.selectedName && list.some((p) => p.name === previous.selectedName);
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    packages: {
+                        ...previous,
+                        loading: false,
+                        error: null,
+                        list,
+                        sources: Array.isArray(action.sources) ? action.sources : [],
+                        workerState: Array.isArray(action.workerState) ? action.workerState : [],
+                        fetchedAt: Date.now(),
+                        selectedName: stillThere ? previous.selectedName : null,
+                        ...(stillThere ? {} : { detail: null, workspace: { ...previous.workspace, tree: null, selectedPath: null, file: null } }),
+                    },
+                },
+            };
+        }
+        case "admin/packages/loadFailed": {
+            return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, loading: false, error: action.error || "Failed to load agent packages" } } };
+        }
+        case "admin/packages/select": {
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    section: "packages",
+                    packages: {
+                        ...state.admin.packages,
+                        selectedName: action.name || null,
+                        detail: null,
+                        detailLoading: Boolean(action.name),
+                        detailError: null,
+                        action: { pending: null, error: null },
+                        workspace: {
+                            tree: null, treeLoading: Boolean(action.name), treeError: null,
+                            expandedDirs: [], selectedPath: null,
+                            file: null, fileLoading: false, fileError: null,
+                        },
+                    },
+                },
+            };
+        }
+        case "admin/packages/detail/loaded": {
+            if (state.admin.packages.selectedName !== action.name) return state;
+            return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, detail: action.detail, detailLoading: false, detailError: null } } };
+        }
+        case "admin/packages/detail/loadFailed": {
+            if (state.admin.packages.selectedName !== action.name) return state;
+            return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, detail: null, detailLoading: false, detailError: action.error || "Failed to load package" } } };
+        }
+        case "admin/packages/tree/loaded": {
+            if (state.admin.packages.selectedName !== action.name) return state;
+            const topDirs = Array.isArray(action.tree?.dirs)
+                ? action.tree.dirs.filter((dir) => !dir.includes("/"))
+                : [];
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    packages: {
+                        ...state.admin.packages,
+                        workspace: {
+                            ...state.admin.packages.workspace,
+                            tree: action.tree,
+                            treeLoading: false,
+                            treeError: null,
+                            // Top-level folders start expanded; deeper levels open on click.
+                            expandedDirs: topDirs,
+                        },
+                    },
+                },
+            };
+        }
+        case "admin/packages/tree/loadFailed": {
+            if (state.admin.packages.selectedName !== action.name) return state;
+            return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, workspace: { ...state.admin.packages.workspace, treeLoading: false, treeError: action.error || "Failed to load package files" } } } };
+        }
+        case "admin/packages/toggleDir": {
+            const workspace = state.admin.packages.workspace;
+            const expanded = new Set(workspace.expandedDirs);
+            if (expanded.has(action.dir)) expanded.delete(action.dir);
+            else expanded.add(action.dir);
+            return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, workspace: { ...workspace, expandedDirs: [...expanded] } } } };
+        }
+        case "admin/packages/file/loading": {
+            return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, workspace: { ...state.admin.packages.workspace, selectedPath: action.path, file: null, fileLoading: true, fileError: null } } } };
+        }
+        case "admin/packages/file/loaded": {
+            if (state.admin.packages.workspace.selectedPath !== action.file?.path) return state;
+            return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, workspace: { ...state.admin.packages.workspace, file: action.file, fileLoading: false, fileError: null } } } };
+        }
+        case "admin/packages/file/loadFailed": {
+            if (state.admin.packages.workspace.selectedPath !== action.path) return state;
+            return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, workspace: { ...state.admin.packages.workspace, fileLoading: false, fileError: action.error || "Failed to load file" } } } };
+        }
+        case "admin/packages/action/pending": {
+            return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, action: { pending: action.action, error: null } } } };
+        }
+        case "admin/packages/action/done": {
+            return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, action: { pending: null, error: null } } } };
+        }
+        case "admin/packages/action/failed": {
+            return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, action: { pending: null, error: action.error || "Action failed" } } } };
+        }
+        case "admin/packages/addDialog/open": {
+            return { ...state, admin: { ...state.admin, section: "packages", packages: { ...state.admin.packages, addDialog: { ...createInitialState().admin.packages.addDialog, open: true } } } };
+        }
+        case "admin/packages/addDialog/close": {
+            return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, addDialog: { ...createInitialState().admin.packages.addDialog, open: false } } } };
+        }
+        case "admin/packages/addDialog/setField": {
+            const dialog = state.admin.packages.addDialog;
+            if (!(action.field in dialog)) return state;
+            return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, addDialog: { ...dialog, [action.field]: action.value, error: null } } } };
+        }
+        case "admin/packages/addDialog/submitting": {
+            return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, addDialog: { ...state.admin.packages.addDialog, submitting: true, error: null } } } };
+        }
+        case "admin/packages/addDialog/failed": {
+            return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, addDialog: { ...state.admin.packages.addDialog, submitting: false, error: action.error || "Failed to add package source" } } } };
         }
         case "admin/systemGhcpKey/saved": {
             const status = action.status || {};
