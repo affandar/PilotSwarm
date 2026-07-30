@@ -31,6 +31,7 @@ import type { AgentConfig } from "./agent-loader.js";
 import { installAgentPackages, loadAgentPackageTools } from "./agent-package-installer.js";
 import fs from "node:fs";
 import os from "node:os";
+import { monitorEventLoopDelay, type IntervalHistogram } from "node:perf_hooks";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -210,8 +211,14 @@ export class PilotSwarmWorker {
     private _agentPackagesRefreshing = false;
     /** Tools contributed by installed packages, merged under static tools. */
     private _agentPackageTools = new Map<string, Tool<any>>();
-    /** Last install report — mirrored to agent_worker_state for fleet truth. */
+    /** Last install report — carried in the registry heartbeat's state. */
     private _agentPackagesInstalled: Record<string, { semver: string; sha256: string; status: string; error?: string }> = {};
+    /** Worker-registry lifecycle phase (docs/proposals/worker-registry.md). */
+    private _workerPhase: "starting" | "ready" | "draining" = "starting";
+    /** Write-once registration info; built on the first heartbeat. */
+    private _registrarInfo: Record<string, unknown> | null = null;
+    /** Event-loop delay histogram for health reporting (reset each beat). */
+    private _eventLoopHist: IntervalHistogram | null = null;
 
     constructor(options: PilotSwarmWorkerOptions) {
         this.config = {
@@ -225,6 +232,8 @@ export class PilotSwarmWorker {
         // runs in start() (needs the CMS catalog) and on every epoch refresh.
         this._basePluginDirs = [...(options.pluginDirs ?? [])];
         if (options.agentPackages) {
+            this._eventLoopHist = monitorEventLoopDelay({ resolution: 20 });
+            this._eventLoopHist.enable();
             this._agentPackagesCacheDir = options.agentPackages.cacheDir
                 ?? path.join(path.dirname(effectiveSessionStateDir), "agent-packages");
             const rawRefresh = options.agentPackages.refreshIntervalMs;
@@ -493,6 +502,9 @@ export class PilotSwarmWorker {
         if (this._agentPackagesCacheDir) {
             await this.refreshAgentPackages({ force: true });
         }
+        // Registered + converged (or intentionally package-less): the next
+        // heartbeat advertises ready. Draining is set in gracefulShutdown.
+        this._workerPhase = "ready";
 
         // ── Facts store: base PgFactStore (default) or an EnhancedFactStore
         //    provider (enhancedfactstore 07 P3). Shared resolver keeps the
@@ -805,6 +817,10 @@ export class PilotSwarmWorker {
             clearInterval(this._agentPackagesTimer);
             this._agentPackagesTimer = null;
         }
+        if (this._eventLoopHist) {
+            this._eventLoopHist.disable();
+            this._eventLoopHist = null;
+        }
         if (this.runtime) {
             const rawShutdownTimeoutMs = Number.parseInt(
                 process.env.PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS || "",
@@ -857,6 +873,11 @@ export class PilotSwarmWorker {
     async gracefulShutdown(): Promise<void> {
         const rawDrainMs = Number.parseInt(process.env.PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS || "", 10);
         const drainBudgetMs = Number.isFinite(rawDrainMs) && rawDrainMs >= 0 ? rawDrainMs : 60_000;
+
+        // Advertise draining before the runtime drain so operators see the
+        // phase for the duration of the drain window. Best-effort.
+        this._workerPhase = "draining";
+        if (this._agentPackagesCacheDir) await this._reportAgentWorkerState();
 
         if (this.runtime) {
             console.error(`[PilotSwarmWorker] draining: waiting up to ${drainBudgetMs}ms for in-flight turns...`);
@@ -1011,14 +1032,92 @@ export class PilotSwarmWorker {
         }
     }
 
-    /** Fleet-truth report (agent_worker_state). Never throws. */
-    private async _reportAgentWorkerState(): Promise<void> {
-        const workerNodeId = this.config.workerNodeId;
-        if (!workerNodeId || !this._catalog) return;
+    /** Stable registry identity: configured workerNodeId, else host#pid. */
+    private get _registryWorkerId(): string {
+        return this.config.workerNodeId || `${os.hostname()}#${process.pid}`;
+    }
+
+    private get _workerPool(): string {
+        return this.config.workerPool
+            || process.env.PILOTSWARM_WORKER_POOL
+            || (process.env.KUBERNETES_SERVICE_HOST ? "aks-default" : "default");
+    }
+
+    /** Write-once identity/build/capability record for the workers row. */
+    private _buildRegistrarInfo(): Record<string, unknown> {
+        if (this._registrarInfo) return this._registrarInfo;
+        let sdkVersion = "unknown";
         try {
-            await this._catalog.upsertAgentWorkerState(workerNodeId, this._agentPackagesEpoch, this._agentPackagesInstalled);
+            sdkVersion = require("../package.json").version ?? "unknown";
+        } catch { /* packed layouts without a reachable package.json */ }
+        this._registrarInfo = {
+            sdkVersion,
+            orchestrationVersions: DURABLE_SESSION_ORCHESTRATION_REGISTRY.map((r) => r.version),
+            consumes: this._agentPackagesCacheDir ? ["agent-packages"] : [],
+            capabilities: {
+                blobStore: Boolean(this.blobStore),
+                enhancedFacts: Boolean(this.factStore && isEnhancedFactStore(this.factStore)),
+                graph: Boolean(this.graphStore),
+            },
+            runtime: {
+                substrate: process.env.KUBERNETES_SERVICE_HOST ? "kubernetes" : "process",
+                hostname: os.hostname(),
+                pid: process.pid,
+                startedAt: new Date(Date.now() - Math.round(process.uptime() * 1000)).toISOString(),
+            },
+        };
+        return this._registrarInfo;
+    }
+
+    /** Glanceable health snapshot — last-known values, never a time series. */
+    private _collectWorkerHealth(): Record<string, unknown> {
+        const memory = process.memoryUsage();
+        const eventLoopDelayP99Ms = this._eventLoopHist
+            ? Math.round((this._eventLoopHist.percentile(99) / 1e6) * 100) / 100
+            : null;
+        this._eventLoopHist?.reset();
+        const slotTotal = (raw: string | undefined, fallback: number) => {
+            const n = Number.parseInt(raw || "", 10);
+            return Number.isFinite(n) && n > 0 ? n : fallback;
+        };
+        return {
+            uptimeS: Math.round(process.uptime()),
+            rssBytes: memory.rss,
+            heapUsedBytes: memory.heapUsed,
+            eventLoopDelayP99Ms,
+            activeSessions: this.sessionManager.activeSessionCount,
+            orchestrationSlots: { total: slotTotal(process.env.PILOTSWARM_ORCHESTRATION_CONCURRENCY, 2) },
+            workerSlots: { total: slotTotal(process.env.PILOTSWARM_WORKER_CONCURRENCY, 2) },
+        };
+    }
+
+    /**
+     * Worker-registry heartbeat (migration 0040): upsert this worker's row —
+     * presence, health, per-domain actual state — and receive the effective
+     * directive set. Agent-packages convergence stays driven by the refresh
+     * flow (its epoch read rides the seeded directive via the shim), so the
+     * returned directives are bookkeeping here; unknown or externally-
+     * actuated domains are inert by protocol. Never throws.
+     */
+    private async _reportAgentWorkerState(): Promise<void> {
+        if (!this._catalog) return;
+        try {
+            await this._catalog.workerHeartbeat({
+                workerNodeId: this._registryWorkerId,
+                pool: this._workerPool,
+                phase: this._workerPhase,
+                owner: this.config.workerOwner ?? null,
+                info: this._buildRegistrarInfo(),
+                health: this._collectWorkerHealth(),
+                state: {
+                    "agent-packages": {
+                        epoch: this._agentPackagesEpoch,
+                        installed: this._agentPackagesInstalled,
+                    },
+                },
+            });
         } catch (error: any) {
-            console.warn(`[PilotSwarmWorker] agent_worker_state report failed: ${error?.message ?? error}`);
+            console.warn(`[PilotSwarmWorker] worker-registry heartbeat failed: ${error?.message ?? error}`);
         }
     }
 

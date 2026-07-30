@@ -167,6 +167,21 @@ describe("agent-package worker install", () => {
                 assert(String(mine.installed["broken-kit"].error).includes("boom at import time"),
                     "quarantine reason lands in fleet truth");
 
+                // ── Worker registry (0040): the report above IS a heartbeat ──
+                const me = (await catalog.listWorkers())
+                    .find((w) => w.workerNodeId === `pkg-worker-${env.runId}`);
+                assert(me, "worker registered itself in the workers table");
+                assertEqual(me.phase, "ready", "post-start beats advertise ready");
+                assertEqual(me.pool, "default", "default pool outside kubernetes");
+                assert(typeof me.info.sdkVersion === "string" && me.info.sdkVersion.length > 0,
+                    "write-once info carries the sdk version");
+                assert(me.info.consumes.includes("agent-packages"), "consumed domains advertised");
+                assert(Number.isFinite(me.health.uptimeS) && me.health.uptimeS >= 0, "health uptime sane");
+                assert(Number.isFinite(me.health.rssBytes) && me.health.rssBytes > 0, "health rss sane");
+                assertEqual(me.health.activeSessions, 0, "no live sessions yet");
+                assertEqual(me.state["agent-packages"].epoch, mine.epoch,
+                    "heartbeat state IS the fleet-truth source (union shim reads it back)");
+
                 // ── Smoke: a real session binds to the package agent ─
                 // (no LLM turn — orchestration accepts the create and the
                 // CMS row carries the agent id; turn-level behavior is

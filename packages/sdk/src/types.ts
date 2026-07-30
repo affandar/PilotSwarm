@@ -703,9 +703,20 @@ export interface PilotSwarmWorkerOptions {
     agentPackages?: {
         /** Unpack cache. Default: <sessionStateDir>/../agent-packages */
         cacheDir?: string;
-        /** Epoch poll interval (ms). Default 20 000; 0 disables the poll. */
+        /**
+         * Registry heartbeat interval (ms) — the worker-registry beat that
+         * also converges agent packages. Default 20 000; 0 disables the
+         * timer (manual refreshAgentPackages only).
+         */
         refreshIntervalMs?: number;
     };
+    /**
+     * Worker-registry pool (docs/proposals/worker-registry.md): directive
+     * targeting + operator grouping. Default "default".
+     */
+    workerPool?: string;
+    /** Worker-registry owner principal — user-owned workers (laptops). */
+    workerOwner?: { provider: string; subject: string } | null;
     /** Azure Blob Storage connection string for the built-in blob-backed session store. */
     blobConnectionString?: string;
     /** Blob container name for the built-in blob-backed session store. */
