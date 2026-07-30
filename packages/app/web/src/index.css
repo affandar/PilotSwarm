@@ -5494,8 +5494,8 @@ body.ps-rich-ui .ps-panel-header {
   --ps-ws-card: #1c2129;
 }
 :root[data-ps-theme="workspace-light"] {
-  --ps-ws-accent: #1a7f37;
-  --ps-ws-card: #eff1f4;
+  --ps-ws-accent: #268bd2;
+  --ps-ws-card: #f6efdb;
 }
 :root[data-ps-theme="workspace-dark"] .ps-panel,
 :root[data-ps-theme="workspace-light"] .ps-panel {
@@ -5609,3 +5609,9 @@ body.ps-rich-ui .ps-panel-header {
   z-index: 2;
 }
 .ps-admin-nav__resize:hover { background: color-mix(in srgb, var(--ps-border) 45%, transparent); }
+
+/* Node Map: the selected node row is unmistakable. */
+.ps-nodemap__row.is-selected {
+  background: color-mix(in srgb, var(--ps-selection-background, #268bd2) 22%, transparent);
+  box-shadow: inset 2px 0 0 var(--ps-selection-background, #268bd2);
+}

@@ -2856,12 +2856,13 @@ function PortalNodeMapLines({ lines, theme, controller }) {
             // raw array/object shapes for direct (test) rendering.
             const runs = Array.isArray(line?.runs) ? line.runs : Array.isArray(line) ? line : [line];
             const nodeSelect = runs.find((run) => run?.nodeSelect)?.nodeSelect || null;
+            const nodeSelected = runs.some((run) => run?.nodeSelected);
             const content = React.createElement(Runs, { runs, theme });
             if (nodeSelect) {
                 return React.createElement("button", {
                     key: `line:${index}`,
                     type: "button",
-                    className: "ps-nodemap__row",
+                    className: `ps-nodemap__row${nodeSelected ? " is-selected" : ""}`,
                     onClick: () => controller.selectNodeMapNode(nodeSelect),
                 }, content);
             }

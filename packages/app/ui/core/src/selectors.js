@@ -5167,6 +5167,7 @@ export function selectNodeMapView(state) {
     return {
         windowLabel: recentWindow.label,
         degraded: registeredNodes.length === 0,
+        registryError: state.admin?.workers?.error || null,
         registered: registeredNodes.length,
         liveCount: registeredNodes.filter((node) => node.live).length,
         executingTotal: nodes.reduce((sum, node) => sum + node.executing.length, 0),
@@ -5194,6 +5195,9 @@ function buildNodeMapLines(state, maxWidth, options = {}) {
             : `Nodes · ${view.liveCount} live / ${view.registered} registered · window ${view.windowLabel}`,
         color: "gray",
     }]);
+    if (view.degraded && view.registryError) {
+        lines.push([{ text: `! worker registry unavailable: ${view.registryError}`, color: "red" }]);
+    }
     lines.push(plainInspectorLine("", "gray"));
 
     for (const node of view.nodes) {
@@ -5201,7 +5205,7 @@ function buildNodeMapLines(state, maxWidth, options = {}) {
         const dot = node.live ? "●" : "○";
         const dotColor = !node.live ? "gray" : node.phase === "draining" ? "red" : node.phase === "starting" ? "yellow" : "green";
         const runs = [
-            { text: isSelected ? "› " : "  ", color: "green", bold: isSelected, nodeSelect: node.label },
+            { text: isSelected ? "› " : "  ", color: "green", bold: isSelected, nodeSelect: node.label, nodeSelected: isSelected },
             { text: node.ordinal <= 9 ? `${node.ordinal} ` : "  ", color: "gray", nodeSelect: node.label },
             { text: `${dot} `, color: dotColor, nodeSelect: node.label },
             { text: node.label.padEnd(7), color: isSelected ? "white" : node.live ? "white" : "gray", bold: isSelected, nodeSelect: node.label },

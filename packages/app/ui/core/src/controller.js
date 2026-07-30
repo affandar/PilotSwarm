@@ -2672,6 +2672,9 @@ export class PilotSwarmUiController {
             const list = await this.transport.listWorkers();
             this.dispatch({ type: "admin/workers/loaded", list });
         } catch (error) {
+            // Loud on purpose: the Node Map silently degrading to
+            // activity-derived nodes hid a real fetch failure in prod.
+            console.warn(`[PilotSwarmUi] worker-registry fetch failed: ${error?.message || error}`);
             this.dispatch({ type: "admin/workers/loadFailed", error: error?.message || String(error) });
         }
     }
