@@ -2851,7 +2851,10 @@ function Panel({ title, titleRight = null, color = "gray", focused = false, acti
 function PortalNodeMapLines({ lines, theme, controller }) {
     return React.createElement("div", { className: "ps-nodemap" },
         (lines || []).map((line, index) => {
-            const runs = Array.isArray(line) ? line : [line];
+            // ScrollLinesPanel normalizes every line to {kind:"runs", runs}
+            // before renderBody — unwrap that shape first, then tolerate the
+            // raw array/object shapes for direct (test) rendering.
+            const runs = Array.isArray(line?.runs) ? line.runs : Array.isArray(line) ? line : [line];
             const nodeSelect = runs.find((run) => run?.nodeSelect)?.nodeSelect || null;
             const content = React.createElement(Runs, { runs, theme });
             if (nodeSelect) {
@@ -6831,7 +6834,7 @@ function AdminConsolePanel({ controller, mobile = false }) {
     // Workspace pane geometry: user-resizable (drag the pane's left edge for
     // width, the Preview header for the tree/preview split), persisted.
     const [wsLayout, setWsLayout] = React.useState(() => {
-        const defaults = { wsWidth: 440, treePct: 44 };
+        const defaults = { wsWidth: 440, treePct: 44, navWidth: 240 };
         try {
             return { ...defaults, ...JSON.parse(window.localStorage.getItem("ps-admin-ws-layout") || "{}") };
         } catch {
@@ -6843,10 +6846,29 @@ function AdminConsolePanel({ controller, mobile = false }) {
             const next = { ...prev, ...patch };
             next.wsWidth = Math.min(900, Math.max(300, Math.round(next.wsWidth)));
             next.treePct = Math.min(85, Math.max(15, next.treePct));
+            next.navWidth = Math.min(420, Math.max(170, Math.round(next.navWidth ?? 240)));
             try { window.localStorage.setItem("ps-admin-ws-layout", JSON.stringify(next)); } catch { /* private mode */ }
             return next;
         });
     }, []);
+    // Settings-tree column resize: drag the tree's right edge (persisted with
+    // the other pane geometry under the sanctioned ps-admin-ws-layout key).
+    const startNavDrag = React.useCallback((event) => {
+        event.preventDefault();
+        document.body.style.cursor = "col-resize";
+        const startX = event.clientX;
+        const startWidth = wsLayout.navWidth ?? 240;
+        const onMove = (move) => updateWsLayout({ navWidth: startWidth + (move.clientX - startX) });
+        const onUp = () => {
+            window.removeEventListener("pointermove", onMove);
+            window.removeEventListener("pointerup", onUp);
+            window.removeEventListener("pointercancel", onUp);
+            document.body.style.cursor = "";
+        };
+        window.addEventListener("pointermove", onMove);
+        window.addEventListener("pointerup", onUp);
+        window.addEventListener("pointercancel", onUp);
+    }, [wsLayout.navWidth, updateWsLayout]);
 
     React.useEffect(() => {
         if (view.ghcpKey.editing) {
@@ -6935,10 +6957,18 @@ function AdminConsolePanel({ controller, mobile = false }) {
         React.createElement("div", {
             className: "ps-admin-workspace",
             style: workspacePane
-                ? { gridTemplateColumns: `240px minmax(0, 1fr) minmax(0, ${wsLayout.wsWidth}px)` }
-                : { gridTemplateColumns: "240px minmax(0, 1fr)" },
+                ? { gridTemplateColumns: `${wsLayout.navWidth}px minmax(0, 1fr) minmax(0, ${wsLayout.wsWidth}px)` }
+                : { gridTemplateColumns: `${wsLayout.navWidth}px minmax(0, 1fr)` },
         },
-            tree,
+            React.createElement("div", { className: "ps-admin-nav" },
+                tree,
+                React.createElement("div", {
+                    className: "ps-admin-nav__resize",
+                    onPointerDown: startNavDrag,
+                    role: "separator",
+                    "aria-orientation": "vertical",
+                    "aria-label": "Resize settings column",
+                })),
             React.createElement("div", { className: "ps-admin-main" },
                 showPackages ? detail : showWorkers ? React.createElement(AdminWorkersPane, { controller, view }) : ghcpSection),
             workspacePane),

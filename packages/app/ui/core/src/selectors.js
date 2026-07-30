@@ -2976,20 +2976,57 @@ export function selectActivityPane(state, maxLines = 12) {
         const view = selectNodeMapView(state);
         if (view.selected) {
             const node = view.nodes.find((candidate) => candidate.label === view.selected);
-            const scopedTitle = buildPaneTitleRuns("Activity", "gray");
-            scopedTitle.push({ text: ` [node ${view.selected}]`, color: "cyan" });
-            const lines = [
-                { text: `${node.executing.length} session(s) executing on ${view.selected} · window ${view.windowLabel}`, color: "gray" },
-            ];
+            // The pane becomes a WORKER DETAILS panel: registry specs first,
+            // then the sessions executing on the node.
+            const scopedTitle = buildPaneTitleRuns("Worker", "gray");
+            scopedTitle.push({ text: ` ${view.selected}`, color: "cyan" });
+            const lines = [];
+            const spec = (label, value, color = "white") => {
+                if (value === null || value === undefined || value === "") return;
+                lines.push([{ text: `${label.padEnd(10)} `, color: "gray" }, { text: String(value), color }]);
+            };
+            if (node.registered) {
+                spec("Node", node.workerNodeId);
+                spec("Phase", node.phase, node.phase === "draining" ? "red" : node.phase === "starting" ? "yellow" : "green");
+                spec("Pool", node.pool);
+                if (node.owner) spec("Owner", node.owner);
+                spec("Heartbeat", node.live ? `${node.agoText ?? "now"} · live` : `${node.agoText ?? "unknown"} · stale`, node.live ? "green" : "red");
+                spec("Uptime", node.uptimeText);
+                spec("Memory", [node.rssText ? `rss ${node.rssText}` : null, node.heapText ? `heap ${node.heapText}` : null].filter(Boolean).join(" · ") || null);
+                spec("Loop p99", node.eventLoopText);
+                spec("SDK", node.sdkVersion);
+                spec("Runtime", node.substrate);
+                if (node.capabilities.length) spec("Caps", node.capabilities.join(", "));
+                if (node.consumes.length) spec("Consumes", node.consumes.join(", "));
+                if (node.pkgEpoch !== null) {
+                    const ok = node.pkgInstalled.filter((pkg) => pkg.status === "ok").length;
+                    const bad = node.pkgInstalled.length - ok;
+                    spec("Packages", `epoch ${node.pkgEpoch} · ${ok} ok${bad ? ` · ${bad} error` : ""}`, bad ? "red" : "white");
+                    for (const pkg of node.pkgInstalled) {
+                        lines.push([
+                            { text: "           ", color: "gray" },
+                            { text: `${pkg.status === "error" ? "✗" : "✓"} `, color: pkg.status === "error" ? "red" : "green" },
+                            { text: `${pkg.name}${pkg.semver ? `@${pkg.semver}` : ""}`, color: pkg.status === "error" ? "red" : "white" },
+                        ]);
+                        if (pkg.error) lines.push([{ text: `             ${pkg.error}`, color: "red" }]);
+                    }
+                    if (node.pkgLastError) lines.push([{ text: `           last refresh error: ${node.pkgLastError}`, color: "red" }]);
+                }
+            } else {
+                lines.push({ text: "Not in the worker registry — node derived from recent activity only.", color: "gray" });
+            }
+            lines.push({ text: "", color: "gray" });
+            lines.push([{ text: `EXECUTING (${node.executing.length})`, color: "cyan", bold: true }]);
             for (const entry of node.executing) {
                 lines.push(entry.active
                     ? buildActiveHighlightLine(entry.text)
                     : { text: entry.text, color: entry.color, bold: entry.bold });
             }
             if (node.executing.length === 0) {
-                lines.push({ text: "Nothing executing on this node right now.", color: "gray" });
+                lines.push({ text: `Nothing executing in the ${view.windowLabel} window.`, color: "gray" });
             }
-            lines.push({ text: "Select the node again in Node Map to clear this scope.", color: "gray" });
+            lines.push({ text: "", color: "gray" });
+            lines.push({ text: "Select the node again in Node Map to return to Activity.", color: "gray" });
             return { title: scopedTitle, lines };
         }
     }
@@ -5065,9 +5102,27 @@ export function selectNodeMapView(state) {
             pool: String(worker?.pool ?? "default"),
             agoText: nodeMapAgoText(ageMs),
             uptimeText: nodeMapUptimeText(health.uptimeS),
-            rssText: adminPkgSize(health.rssBytes),
+            rssText: Number.isFinite(health.rssBytes) ? adminPkgSize(health.rssBytes) : null,
+            heapText: Number.isFinite(health.heapUsedBytes) ? adminPkgSize(health.heapUsedBytes) : null,
+            eventLoopText: Number.isFinite(health.eventLoopDelayP99Ms) ? `${health.eventLoopDelayP99Ms}ms` : null,
             sessions: Number.isFinite(health.activeSessions) ? health.activeSessions : null,
             sdkVersion: typeof worker?.info?.sdkVersion === "string" ? worker.info.sdkVersion : null,
+            substrate: typeof worker?.info?.runtime?.substrate === "string" ? worker.info.runtime.substrate : null,
+            capabilities: worker?.info?.capabilities && typeof worker.info.capabilities === "object"
+                ? Object.entries(worker.info.capabilities).filter(([, on]) => Boolean(on)).map(([cap]) => cap).sort()
+                : [],
+            consumes: Array.isArray(worker?.info?.consumes) ? worker.info.consumes : [],
+            owner: worker?.owner?.subject ? String(worker.owner.subject) : null,
+            pkgEpoch: Number.isFinite(worker?.state?.["agent-packages"]?.epoch) ? worker.state["agent-packages"].epoch : null,
+            pkgInstalled: worker?.state?.["agent-packages"]?.installed && typeof worker.state["agent-packages"].installed === "object"
+                ? Object.entries(worker.state["agent-packages"].installed).map(([name, entry]) => ({
+                    name,
+                    semver: entry?.semver ?? null,
+                    status: entry?.status === "error" ? "error" : "ok",
+                    error: entry?.error ? String(entry.error) : null,
+                }))
+                : [],
+            pkgLastError: worker?.state?.["agent-packages"]?.lastError ? String(worker.state["agent-packages"].lastError) : null,
             executing: [],
         });
     }
@@ -5076,7 +5131,10 @@ export function selectNodeMapView(state) {
         byLabel.set(label, {
             label, workerNodeId: null, registered: false, live: true,
             phase: null, pool: null, agoText: null, uptimeText: null,
-            rssText: null, sessions: null, sdkVersion: null, executing: [],
+            rssText: null, heapText: null, eventLoopText: null, sessions: null,
+            sdkVersion: null, substrate: null, capabilities: [], consumes: [],
+            owner: null, pkgEpoch: null, pkgInstalled: [], pkgLastError: null,
+            executing: [],
         });
     }
 

@@ -103,11 +103,18 @@ test("selection toggles and scopes the Activity pane to the node's sessions", ()
     store.dispatch({ type: "ui/nodeMapSelect", label: "z6dcb" });
     assert.equal(selectNodeMapView(store.getState()).selected, "z6dcb");
 
+    // The pane becomes a WORKER DETAILS panel: registry specs, then the
+    // sessions executing on the node.
     const scoped = selectActivityPane(store.getState());
     const titleText = scoped.title.map((run) => run.text).join("");
-    assert.match(titleText, /node z6dcb/);
+    assert.match(titleText, /Worker z6dcb/);
     const lineText = scoped.lines.map((line) => (Array.isArray(line) ? line : [line]).map((run) => run.text).join("")).join("\n");
-    assert.match(lineText, /1 session\(s\) executing on z6dcb/);
+    assert.match(lineText, new RegExp(podA), "full worker node id shown");
+    assert.match(lineText, /Phase\s+ready/);
+    assert.match(lineText, /Pool\s+aks-default/);
+    assert.match(lineText, /rss 180\.0 MB/);
+    assert.equal(/heap/.test(lineText), false, "absent heap metric renders nothing, not 0 B");
+    assert.match(lineText, /EXECUTING \(1\)/);
     assert.match(lineText, /triage/);
 
     // Toggle off: same label clears; Activity returns to session scope.
