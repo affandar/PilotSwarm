@@ -164,8 +164,17 @@ describe("portal browser contracts", () => {
         assertIncludes(webApp, "clearBrowserPreferenceCache()", "portal should purge legacy browser preference cache at startup");
         assertIncludes(webApp, "LEGACY_BROWSER_PREFERENCE_STORAGE_KEYS", "portal should know the old localStorage preference keys to clear");
         assertIncludes(webApp, "LEGACY_BROWSER_PREFERENCE_COOKIE_NAMES", "portal should know the old preference cookies to clear");
-        assert(!webApp.includes("window.localStorage.getItem"), "portal should not read preferences from browser localStorage");
-        assert(!webApp.includes("window.localStorage.setItem"), "portal should not write preferences to browser localStorage");
+        // Roaming preferences live in DB profile settings. The ONE sanctioned
+        // localStorage use is device-local pane GEOMETRY (ps-admin-ws-layout):
+        // pixel widths belong to the physical screen and must not roam.
+        {
+            const reads = webApp.match(/window\.localStorage\.getItem\([^)]*\)/g) || [];
+            const writes = webApp.match(/window\.localStorage\.setItem\([^,]*,/g) || [];
+            assert(reads.every((use) => use.includes('"ps-admin-ws-layout"')),
+                `portal should not read preferences from browser localStorage (only device-local pane geometry; saw: ${reads.join(", ")})`);
+            assert(writes.every((use) => use.includes('"ps-admin-ws-layout"')),
+                `portal should not write preferences to browser localStorage (only device-local pane geometry; saw: ${writes.join(", ")})`);
+        }
         assertIncludes(webApp, "profileSettings/apply", "portal should hydrate user UI preferences from database profile settings");
         assertIncludes(webApp, "getCurrentUserProfile()", "portal should read the current user's database-backed profile settings");
         assertIncludes(webApp, "setCurrentUserProfileSettings", "portal should persist user UI preferences to database profile settings");
