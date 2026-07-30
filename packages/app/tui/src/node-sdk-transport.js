@@ -644,7 +644,12 @@ export class NodeSdkTransport {
         const taken = new Set(baked.map((agent) => normalizeAgentName(agent.name)));
         const merged = [...baked];
         for (const entry of registry) {
-            if (taken.has(normalizeAgentName(entry.name))) continue;
+            if (taken.has(normalizeAgentName(entry.name))) {
+                // Baked wins by design — but never silently: the package's
+                // agent is unreachable until it renames.
+                console.warn(`[transport] package agent "${entry.name}" (${entry.packageName}) collides with a baked agent and is hidden from the catalog`);
+                continue;
+            }
             taken.add(normalizeAgentName(entry.name));
             merged.push(entry);
         }
@@ -692,8 +697,8 @@ export class NodeSdkTransport {
      */
     async _authorizePackageAgentCreate(agentName, owner, isAdmin) {
         const normalized = normalizeAgentName(agentName);
-        const isBaked = this.creatableAgents.some((agent) => normalizeAgentName(agent.name) === normalized);
-        if (isBaked) return;
+        const baked = this.creatableAgents.find((agent) => normalizeAgentName(agent.name) === normalized);
+        if (baked) return baked.name;
         const registry = await this._listRegistryCreatableAgents(owner, isAdmin);
         const match = registry.find((entry) => normalizeAgentName(entry.name) === normalized);
         if (!match) {
@@ -708,6 +713,7 @@ export class NodeSdkTransport {
         if (this.allowedAgentNames.length > 0 && !this.allowedAgentNames.includes(match.name)) {
             this.allowedAgentNames.push(match.name);
         }
+        return match.name;
     }
 
     /** Lazy direct-store registry context; null in pure web/client setups. */
@@ -738,6 +744,28 @@ export class NodeSdkTransport {
 
     _createdByLabel(owner) {
         return owner?.email || owner?.displayName || (owner ? `${owner.provider}:${owner.subject}` : "system");
+    }
+
+    /**
+     * The registry raises typed failures as MESSAGE PREFIXES
+     * (AGENT_PACKAGE_FORBIDDEN: …). Attach the matching error.code so the
+     * router maps them to 403/404/409 instead of a generic 500 — without
+     * this, "you don't own this package" reaches the browser as
+     * "Internal server error".
+     */
+    async _mapAgentPackageErrors(run) {
+        try {
+            return await run();
+        } catch (error) {
+            const message = String(error?.message || "");
+            if (!error?.code) {
+                if (/AGENT_(?:PACKAGE|SOURCE)_[A-Z_]*FORBIDDEN/.test(message)) error.code = "FORBIDDEN";
+                else if (/AGENT_(?:PACKAGE|SOURCE)_[A-Z_]*NOT_FOUND/.test(message)) error.code = "NOT_FOUND";
+                else if (/AGENT_PACKAGE_(?:SEMVER_CONFLICT|SCOPE_MISMATCH)/.test(message)) error.code = "CONFLICT";
+                else if (/AGENT_PACKAGE_BAD_SCOPE/.test(message)) error.code = "INVALID_REQUEST";
+            }
+            throw error;
+        }
     }
 
     // ── Agent packages: registry CRUD (portal ops surface) ──────
@@ -789,13 +817,13 @@ export class NodeSdkTransport {
     async syncAgentSource(sourceId, owner, isAdmin) {
         const ctx = await this._agentPackagesContext();
         if (!ctx) throw new Error("agent packages are not available on this deployment");
-        // Creator-or-admin: the viewer-scoped get answers it (invisible = forbidden).
+        // Creator-or-admin, WITHOUT an existence oracle: a source that exists
+        // but isn't yours answers exactly like one that doesn't exist.
         const source = await ctx.catalog.getAgentSource(sourceId);
         const principal = this._requirePrincipal(owner, isAdmin);
-        if (!source) throw Object.assign(new Error(`source ${sourceId} not found`), { code: "NOT_FOUND" });
-        const owns = isAdmin || (source.owner && principal
-            && source.owner.provider === principal.provider && source.owner.subject === principal.subject);
-        if (!owns) throw Object.assign(new Error("only the source creator or an admin can sync it"), { code: "FORBIDDEN" });
+        const owns = source && (isAdmin || (source.owner && principal
+            && source.owner.provider === principal.provider && source.owner.subject === principal.subject));
+        if (!owns) throw Object.assign(new Error(`source ${sourceId} not found`), { code: "NOT_FOUND" });
         return syncAgentSourceOnce(ctx, sourceId, {
             isAdmin: Boolean(isAdmin),
             reservedAgentNames: this._reservedAgentNames(),
@@ -805,7 +833,7 @@ export class NodeSdkTransport {
     async deleteAgentSource(sourceId, owner, isAdmin) {
         const ctx = await this._agentPackagesContext();
         if (!ctx) throw new Error("agent packages are not available on this deployment");
-        await ctx.catalog.deleteAgentSource(sourceId, this._requirePrincipal(owner, isAdmin), Boolean(isAdmin));
+        await this._mapAgentPackageErrors(() => ctx.catalog.deleteAgentSource(sourceId, this._requirePrincipal(owner, isAdmin), Boolean(isAdmin)));
         return { ok: true };
     }
 
@@ -818,31 +846,31 @@ export class NodeSdkTransport {
     async setAgentPackageScope(name, scope, owner, isAdmin) {
         const ctx = await this._agentPackagesContext();
         if (!ctx) throw new Error("agent packages are not available on this deployment");
-        await ctx.catalog.setAgentPackageScope(name, scope === "shared" ? "shared" : "user",
-            this._requirePrincipal(owner, isAdmin), Boolean(isAdmin));
+        await this._mapAgentPackageErrors(() => ctx.catalog.setAgentPackageScope(name, scope === "shared" ? "shared" : "user",
+            this._requirePrincipal(owner, isAdmin), Boolean(isAdmin)));
         return { ok: true };
     }
 
     async setAgentPackageEnabled(name, enabled, owner, isAdmin) {
         const ctx = await this._agentPackagesContext();
         if (!ctx) throw new Error("agent packages are not available on this deployment");
-        await ctx.catalog.setAgentPackageEnabled(name, Boolean(enabled),
-            this._requirePrincipal(owner, isAdmin), Boolean(isAdmin));
+        await this._mapAgentPackageErrors(() => ctx.catalog.setAgentPackageEnabled(name, Boolean(enabled),
+            this._requirePrincipal(owner, isAdmin), Boolean(isAdmin)));
         return { ok: true };
     }
 
     async pinAgentPackageVersion(name, semver, owner, isAdmin) {
         const ctx = await this._agentPackagesContext();
         if (!ctx) throw new Error("agent packages are not available on this deployment");
-        await ctx.catalog.pinAgentPackageVersion(name, String(semver || ""),
-            this._requirePrincipal(owner, isAdmin), Boolean(isAdmin));
+        await this._mapAgentPackageErrors(() => ctx.catalog.pinAgentPackageVersion(name, String(semver || ""),
+            this._requirePrincipal(owner, isAdmin), Boolean(isAdmin)));
         return { ok: true };
     }
 
     async deleteAgentPackage(name, owner, isAdmin) {
         const ctx = await this._agentPackagesContext();
         if (!ctx) throw new Error("agent packages are not available on this deployment");
-        await deleteAgentPackageEverywhere(ctx, name, this._requirePrincipal(owner, isAdmin), Boolean(isAdmin));
+        await this._mapAgentPackageErrors(() => deleteAgentPackageEverywhere(ctx, name, this._requirePrincipal(owner, isAdmin), Boolean(isAdmin)));
         this._agentPkgTarCache?.clear?.();
         return { ok: true };
     }
@@ -874,14 +902,14 @@ export class NodeSdkTransport {
                 fs.mkdirSync(path.dirname(target), { recursive: true });
                 fs.writeFileSync(target, bytes);
             }
-            const outcome = await publishAgentPackageDir(ctx, {
+            const outcome = await this._mapAgentPackageErrors(() => publishAgentPackageDir(ctx, {
                 dir: tmp,
                 scope: scope === "shared" ? "shared" : "user",
                 owner: principal,
                 createdBy: this._createdByLabel(owner),
                 isAdmin: Boolean(isAdmin),
                 validate: { reservedAgentNames: this._reservedAgentNames() },
-            });
+            }));
             const { manifest: _m, ...summary } = outcome;
             return summary;
         } catch (err) {
@@ -900,6 +928,11 @@ export class NodeSdkTransport {
     _reservedAgentNames() {
         if (!this._reservedNamesCache) {
             const bundled = (() => { try { return listBundledAgentNames(); } catch { return []; } })();
+            if (bundled.length === 0) {
+                // System agent names (sweeper, resourcemgr, …) live ONLY here —
+                // an empty list means packages could shadow them silently.
+                console.warn("[transport] listBundledAgentNames returned nothing — bundled plugins/ missing from the SDK install? Reserved-name validation is degraded.");
+            }
             this._reservedNamesCache = [
                 ...bundled,
                 ...this.creatableAgents.map((agent) => agent.name),
@@ -923,11 +956,20 @@ export class NodeSdkTransport {
         this._agentPkgTarCache ??= new Map();
         let entries = this._agentPkgTarCache.get(cacheKey);
         if (!entries) {
-            const targz = await fetchAgentPackageTarGz(ctx.artifactStore, version.artifactFilename, version.sha256);
+            const targz = await this._mapAgentPackageErrors(
+                () => fetchAgentPackageTarGz(ctx.artifactStore, version.artifactFilename, version.sha256),
+            );
             entries = readAgentPackageTarGz(targz);
             this._agentPkgTarCache.set(cacheKey, entries);
-            while (this._agentPkgTarCache.size > 6) {
-                this._agentPkgTarCache.delete(this._agentPkgTarCache.keys().next().value);
+            // Bound by BYTES (the real resource), not just entry count.
+            const bytesOf = (list) => list.reduce((sum, e) => sum + e.body.length, 0);
+            let totalBytes = 0;
+            for (const cached of this._agentPkgTarCache.values()) totalBytes += bytesOf(cached);
+            while ((totalBytes > 64 * 1024 * 1024 || this._agentPkgTarCache.size > 6)
+                   && this._agentPkgTarCache.size > 1) {
+                const oldest = this._agentPkgTarCache.keys().next().value;
+                totalBytes -= bytesOf(this._agentPkgTarCache.get(oldest));
+                this._agentPkgTarCache.delete(oldest);
             }
         }
         return { entries, version };
@@ -1430,11 +1472,12 @@ export class NodeSdkTransport {
 
     async createSessionForAgent(agentName, { model, reasoningEffort, contextTier, title, splash, splashMobile, initialPrompt, owner, isAdmin, groupId, visibility } = {}) {
         // Registry (package) agents are not in the static baked allowlist —
-        // resolve the union, enforce user-scope ownership, then make the name
-        // visible to the client's live allowlist before delegating.
-        await this._authorizePackageAgentCreate(agentName, owner ?? null, isAdmin ?? false);
+        // resolve the union, enforce user-scope ownership, then delegate the
+        // CANONICAL catalog name (the client's allowlist and the CMS row use
+        // exact names; only the worker resolver is fuzzy).
+        const canonicalName = await this._authorizePackageAgentCreate(agentName, owner ?? null, isAdmin ?? false);
         const effectiveModel = await this.assertSessionModelCreatable({ model, owner });
-        const session = await this.client.createSessionForAgent(agentName, {
+        const session = await this.client.createSessionForAgent(canonicalName, {
             ...(effectiveModel ? { model: effectiveModel } : {}),
             ...(reasoningEffort ? { reasoningEffort } : {}),
             ...(contextTier ? { contextTier } : {}),

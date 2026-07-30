@@ -106,6 +106,12 @@ export interface PublishPackedOptions {
     commitSha: string | null;
 }
 
+/**
+ * Package names that collide with fixed /agent-packages/* route segments —
+ * a package named "sources" would make GET /agent-packages/sources ambiguous.
+ */
+const RESERVED_PACKAGE_NAMES = new Set(["sources", "upload", "worker-state"]);
+
 /** Publish already-validated, already-packed canonical bytes. */
 export async function publishPackedAgentPackage(
     ctx: AgentPackagePublishContext,
@@ -114,6 +120,9 @@ export async function publishPackedAgentPackage(
     const { manifest, targz, sha256 } = opts;
     const name = manifest.name;
     const semver = manifest.version;
+    if (RESERVED_PACKAGE_NAMES.has(name)) {
+        throw new Error(`AGENT_PACKAGE_BAD_NAME: "${name}" is a reserved name — pick another package name`);
+    }
     if (targz.length > AGENT_PACKAGE_MAX_COMPRESSED_BYTES) {
         throw new Error(`package exceeds compressed size limit: ${targz.length} bytes`);
     }
