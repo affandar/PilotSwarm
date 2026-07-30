@@ -2843,6 +2843,29 @@ function Panel({ title, titleRight = null, color = "gray", focused = false, acti
     React.createElement("div", { className: "ps-panel-body" }, children));
 }
 
+/**
+ * Node Map body: the shared lines, with node rows made clickable. A run
+ * carrying `nodeSelect` marks its whole line as a node row — clicking
+ * selects (or toggle-clears) that node, which also scopes the Activity pane.
+ */
+function PortalNodeMapLines({ lines, theme, controller }) {
+    return React.createElement("div", { className: "ps-nodemap" },
+        (lines || []).map((line, index) => {
+            const runs = Array.isArray(line) ? line : [line];
+            const nodeSelect = runs.find((run) => run?.nodeSelect)?.nodeSelect || null;
+            const content = React.createElement(Runs, { runs, theme });
+            if (nodeSelect) {
+                return React.createElement("button", {
+                    key: `line:${index}`,
+                    type: "button",
+                    className: "ps-nodemap__row",
+                    onClick: () => controller.selectNodeMapNode(nodeSelect),
+                }, content);
+            }
+            return React.createElement("div", { key: `line:${index}`, className: "ps-nodemap__line" }, content);
+        }));
+}
+
 function PortalSequenceLines({ lines, theme, completionByTurn }) {
     const [expanded, setExpanded] = React.useState(() => new Set());
     const toggle = React.useCallback((key) => {
@@ -4780,6 +4803,9 @@ function InspectorPane({ controller, mobile = false, panelClassName = "", extraA
     const renderSequenceBody = React.useCallback((lines, theme) => (
         React.createElement(PortalSequenceLines, { lines, theme, completionByTurn })
     ), [completionByTurn]);
+    const renderNodeMapBody = React.useCallback((lines, theme) => (
+        React.createElement(PortalNodeMapLines, { lines, theme, controller })
+    ), [controller]);
 
     if (viewState.inspectorTab === "files" && !inspector.disabled) {
         return React.createElement(FilesPane, { controller, focused: viewState.focused, mobile });
@@ -4839,7 +4865,9 @@ function InspectorPane({ controller, mobile = false, panelClassName = "", extraA
         topContent: React.createElement(InspectorTabs, { activeTab: inspector.activeTab, controller }),
         stickyLines: inspector.stickyLines || [],
         lines: inspector.lines,
-        renderBody: inspector.activeTab === "sequence" ? renderSequenceBody : null,
+        renderBody: inspector.activeTab === "sequence"
+            ? renderSequenceBody
+            : inspector.activeTab === "nodes" ? renderNodeMapBody : null,
         scrollOffset: viewState.scroll,
         scrollMode: inspector.activeTab === "sequence"
             ? "bottom"

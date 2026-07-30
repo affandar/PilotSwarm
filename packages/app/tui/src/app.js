@@ -1,7 +1,7 @@
 import React from "react";
 import { useInput, useStdin } from "ink";
 import { UiPlatformProvider, SharedPilotSwarmApp } from "pilotswarm/ui-react";
-import { UI_COMMANDS } from "pilotswarm/ui-core";
+import { UI_COMMANDS, selectNodeMapView } from "pilotswarm/ui-core";
 import { PILOTSWARM_CLI_VERSION_LABEL } from "./version.js";
 
 const MOUSE_INPUT_PATTERN = /\u001b\[<(\d+);(\d+);(\d+)([mM])/gu;
@@ -620,6 +620,12 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
         }
         if (focus === "inspector" && inspectorTab === "stats" && input === "f") {
             controller.handleCommand(UI_COMMANDS.TOGGLE_STATS_VIEW).catch(() => {});
+            return;
+        }
+        // Node Map: digits pick a node by its listed ordinal (toggle to clear).
+        if (focus === "inspector" && inspectorTab === "nodes" && plainShortcut && /^[1-9]$/.test(input || "")) {
+            const node = selectNodeMapView(controller.getState()).nodes[Number(input) - 1];
+            if (node) controller.selectNodeMapNode(node.label);
             return;
         }
         if (focus === "inspector" && inspectorTab === "files" && input === "f") {

@@ -127,6 +127,8 @@ export function createInitialState({ mode = "local", branding = null, themeId = 
         ui: {
             focusRegion: FOCUS_REGIONS.SESSIONS,
             inspectorTab: INSPECTOR_TABS[0],
+            /** Node Map selection: short node label, scopes the Activity pane. */
+            nodeMapSelectedNode: null,
             sequenceExpandedTurns: [],
             sequenceSelectedTurn: null,
             chatViewMode: (chatViewMode === "summary" || chatViewMode === "rich") ? chatViewMode : "transcript",

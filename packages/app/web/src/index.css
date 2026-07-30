@@ -5556,3 +5556,22 @@ body.ps-rich-ui .ps-panel-header {
 .ps-admin-ws__fm-row { display: contents; }
 .ps-admin-ws__fm-key { color: var(--ps-muted); }
 .ps-admin-ws__fm-val { color: var(--ps-foreground); overflow-wrap: anywhere; }
+
+/* ── Node Map (registry-first): clickable node rows ────────────────── */
+.ps-nodemap { display: flex; flex-direction: column; font-family: var(--ps-mono, ui-monospace, monospace); }
+.ps-nodemap__line { white-space: pre; min-height: 1.35em; line-height: 1.35; }
+.ps-nodemap__row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  white-space: pre;
+  line-height: 1.35;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.ps-nodemap__row:hover { background: color-mix(in srgb, var(--ps-foreground) 7%, transparent); }

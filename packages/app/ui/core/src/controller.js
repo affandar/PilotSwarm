@@ -2395,6 +2395,16 @@ export class PilotSwarmUiController {
             return;
         }
         if (targetTab === "nodes") {
+            // Registry-first: the node list leads with the worker registry
+            // (specs, phases, health). Refresh it on the same cadence the
+            // history loads ride, throttled to the ~20s heartbeat interval;
+            // non-admin transports fail quietly and the view degrades to
+            // history-derived nodes.
+            const workersState = this.getState().admin?.workers;
+            const workersFresh = workersState?.fetchedAt && (Date.now() - workersState.fetchedAt) < 20_000;
+            if (!workersFresh && typeof this.transport.listWorkers === "function") {
+                await this.refreshAdminWorkers().catch(() => {});
+            }
             // Only fetch history for visible session rows — not the entire catalog.
             // With hundreds of sessions, fetching all of them every 4s causes unbounded memory growth.
             const state = this.getState();
@@ -2644,6 +2654,11 @@ export class PilotSwarmUiController {
             // fetched minutes ago render as a dead fleet ("0 live").
             void this.refreshAdminWorkers().catch(() => {});
         }
+    }
+
+    /** Node Map: select a node (toggles off when re-selected). Scopes Activity. */
+    selectNodeMapNode(label) {
+        this.dispatch({ type: "ui/nodeMapSelect", label: label ? String(label) : null });
     }
 
     /** Reload the worker registry (Admin → Workers). Admin-gated server-side. */

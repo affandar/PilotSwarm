@@ -2970,6 +2970,29 @@ export function selectActiveActivity(state) {
 }
 
 export function selectActivityPane(state, maxLines = 12) {
+    // Node Map selection scopes this pane: instead of the active session's
+    // activity, list the sessions currently executing on the selected node.
+    if (state.ui?.nodeMapSelectedNode) {
+        const view = selectNodeMapView(state);
+        if (view.selected) {
+            const node = view.nodes.find((candidate) => candidate.label === view.selected);
+            const scopedTitle = buildPaneTitleRuns("Activity", "gray");
+            scopedTitle.push({ text: ` [node ${view.selected}]`, color: "cyan" });
+            const lines = [
+                { text: `${node.executing.length} session(s) executing on ${view.selected} · window ${view.windowLabel}`, color: "gray" },
+            ];
+            for (const entry of node.executing) {
+                lines.push(entry.active
+                    ? buildActiveHighlightLine(entry.text)
+                    : { text: entry.text, color: entry.color, bold: entry.bold });
+            }
+            if (node.executing.length === 0) {
+                lines.push({ text: "Nothing executing on this node right now.", color: "gray" });
+            }
+            lines.push({ text: "Select the node again in Node Map to clear this scope.", color: "gray" });
+            return { title: scopedTitle, lines };
+        }
+    }
     const activity = selectActiveActivity(state);
     const session = selectActiveSession(state);
     const title = buildPaneTitleRuns("Activity", "gray");
@@ -4979,92 +5002,189 @@ function buildNodeMapCell(session, brandingTitle, width, active) {
     };
 }
 
-function buildNodeMapLines(state, maxWidth, options = {}) {
-    const allowWideColumns = Boolean(options?.allowWideColumns);
-    const orderedSessionIds = buildOrderedSessionIds(state);
-    if (orderedSessionIds.length === 0) {
-        return [plainInspectorLine("No sessions available for the node map.", "gray")];
+function nodeMapAgoText(ms) {
+    if (!Number.isFinite(ms) || ms < 0) return null;
+    if (ms < 60_000) return `${Math.round(ms / 1000)}s ago`;
+    if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m ago`;
+    return `${Math.round(ms / 3_600_000)}h ago`;
+}
+
+function nodeMapUptimeText(seconds) {
+    if (!Number.isFinite(seconds) || seconds < 0) return null;
+    if (seconds < 60) return `${Math.round(seconds)}s`;
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+    const h = Math.floor(seconds / 3600);
+    return h < 48 ? `${h}h ${Math.floor((seconds % 3600) / 60)}m` : `${Math.floor(h / 24)}d ${h % 24}h`;
+}
+
+function nodeMapSessionEntry(session, brandingTitle, active) {
+    const label = session?.isSystem
+        ? canonicalSystemTitle(session, brandingTitle)
+        : (session?.title || shortSessionId(session?.sessionId));
+    const prefix = session?.isSystem ? "⚙ " : session?.serviceKind ? "⚗ " : `${sessionStatusIcon(session) || "."} `;
+    return {
+        sessionId: session?.sessionId || null,
+        text: `${prefix}${label}`,
+        color: session?.isSystem ? "yellow" : sessionStatusColor(session),
+        bold: Boolean(session?.isSystem),
+        active: Boolean(active),
+    };
+}
+
+/**
+ * Node Map view-model — registry-first (docs/proposals/worker-registry.md).
+ *
+ * Nodes lead with the WORKER REGISTRY: every registered worker with phase,
+ * pool, and health specs, unioned with any node seen in recent activity
+ * history (covers deployments/credentials without registry access — the view
+ * degrades to activity-derived nodes rather than going blank). Sessions map
+ * onto nodes exactly the way the legacy grid mapped them: last known
+ * workerNodeId in the recent window. Both hosts render from this one VM.
+ */
+export function selectNodeMapView(state) {
+    const recentWindow = getRecentActivityWindow(state);
+    const brandingTitle = state.branding?.title || "PilotSwarm";
+    const activeSessionId = state.sessions.activeSessionId;
+    const registry = Array.isArray(state.admin?.workers?.list) ? state.admin.workers.list : [];
+    const now = Date.now();
+    const NODE_LIVE_MS = 90_000;
+
+    const byLabel = new Map();
+    for (const worker of registry) {
+        const label = shortNodeLabel(worker?.workerNodeId);
+        if (!label) continue;
+        const at = worker?.updatedAt instanceof Date ? worker.updatedAt.getTime() : new Date(worker?.updatedAt ?? 0).getTime();
+        const ageMs = Number.isFinite(at) ? now - at : Number.NaN;
+        const health = worker?.health || {};
+        byLabel.set(label, {
+            label,
+            workerNodeId: String(worker?.workerNodeId ?? ""),
+            registered: true,
+            live: Number.isFinite(ageMs) && ageMs <= NODE_LIVE_MS,
+            phase: ["starting", "ready", "draining"].includes(worker?.phase) ? worker.phase : "ready",
+            pool: String(worker?.pool ?? "default"),
+            agoText: nodeMapAgoText(ageMs),
+            uptimeText: nodeMapUptimeText(health.uptimeS),
+            rssText: adminPkgSize(health.rssBytes),
+            sessions: Number.isFinite(health.activeSessions) ? health.activeSessions : null,
+            sdkVersion: typeof worker?.info?.sdkVersion === "string" ? worker.info.sdkVersion : null,
+            executing: [],
+        });
+    }
+    for (const label of buildNodeMapNodeUnionForWindow(state, recentWindow)) {
+        if (byLabel.has(label)) continue;
+        byLabel.set(label, {
+            label, workerNodeId: null, registered: false, live: true,
+            phase: null, pool: null, agoText: null, uptimeText: null,
+            rssText: null, sessions: null, sdkVersion: null, executing: [],
+        });
     }
 
-    const recentWindow = getRecentActivityWindow(state);
-    const nodeSessionMap = new Map();
-    const knownNodes = buildNodeMapNodeUnionForWindow(state, recentWindow);
+    // Sessions → nodes: last known workerNodeId inside the recent window.
     let missingHistoryCount = 0;
-    let inWindowSessionCount = 0;
-
-    for (const sessionId of orderedSessionIds) {
+    for (const sessionId of buildOrderedSessionIds(state)) {
         const session = state.sessions.byId[sessionId];
         if (!session) continue;
         const history = state.history.bySessionId.get(sessionId);
         if (!history?.events) missingHistoryCount += 1;
         const nodeLabel = getLastKnownSessionNode(history, recentWindow);
-        if (!nodeLabel || !knownNodes.includes(nodeLabel)) continue;
-        inWindowSessionCount += 1;
-        if (!nodeSessionMap.has(nodeLabel)) {
-            nodeSessionMap.set(nodeLabel, []);
+        const node = nodeLabel ? byLabel.get(nodeLabel) : null;
+        if (!node) continue;
+        node.executing.push(nodeMapSessionEntry(session, brandingTitle, sessionId === activeSessionId));
+    }
+
+    const nodes = Array.from(byLabel.values()).sort((a, b) => {
+        if (a.registered !== b.registered) return a.registered ? -1 : 1;
+        if (a.live !== b.live) return a.live ? -1 : 1;
+        const poolCmp = String(a.pool ?? "~").localeCompare(String(b.pool ?? "~"));
+        if (poolCmp !== 0) return poolCmp;
+        return a.label.localeCompare(b.label);
+    });
+    nodes.forEach((node, index) => { node.ordinal = index + 1; });
+
+    const registeredNodes = nodes.filter((node) => node.registered);
+    const selectedRaw = state.ui?.nodeMapSelectedNode;
+    const selected = selectedRaw && nodes.some((node) => node.label === selectedRaw) ? selectedRaw : null;
+
+    return {
+        windowLabel: recentWindow.label,
+        degraded: registeredNodes.length === 0,
+        registered: registeredNodes.length,
+        liveCount: registeredNodes.filter((node) => node.live).length,
+        executingTotal: nodes.reduce((sum, node) => sum + node.executing.length, 0),
+        missingHistoryCount,
+        selected,
+        nodes,
+    };
+}
+
+function buildNodeMapLines(state, maxWidth, options = {}) {
+    void options;
+    const view = selectNodeMapView(state);
+    if (view.nodes.length === 0) {
+        return [plainInspectorLine(
+            view.degraded
+                ? `No workers registered and no worker activity in the ${view.windowLabel} window.`
+                : `No worker activity in the ${view.windowLabel} window.`,
+            "gray")];
+    }
+
+    const lines = [];
+    lines.push([{
+        text: view.degraded
+            ? `Nodes (activity-derived) · window ${view.windowLabel}`
+            : `Nodes · ${view.liveCount} live / ${view.registered} registered · window ${view.windowLabel}`,
+        color: "gray",
+    }]);
+    lines.push(plainInspectorLine("", "gray"));
+
+    for (const node of view.nodes) {
+        const isSelected = node.label === view.selected;
+        const dot = node.live ? "●" : "○";
+        const dotColor = !node.live ? "gray" : node.phase === "draining" ? "red" : node.phase === "starting" ? "yellow" : "green";
+        const runs = [
+            { text: isSelected ? "› " : "  ", color: "green", bold: isSelected, nodeSelect: node.label },
+            { text: node.ordinal <= 9 ? `${node.ordinal} ` : "  ", color: "gray", nodeSelect: node.label },
+            { text: `${dot} `, color: dotColor, nodeSelect: node.label },
+            { text: node.label.padEnd(7), color: isSelected ? "white" : node.live ? "white" : "gray", bold: isSelected, nodeSelect: node.label },
+        ];
+        if (node.registered) {
+            runs.push({ text: ` ${(node.phase || "").padEnd(8)}`, color: dotColor, nodeSelect: node.label });
+            runs.push({ text: ` ${node.pool}`, color: "gray", nodeSelect: node.label });
+            const specs = [
+                node.executing.length ? `${node.executing.length} sess` : null,
+                node.rssText, node.uptimeText ? `up ${node.uptimeText}` : null, node.agoText,
+            ].filter(Boolean).join(" · ");
+            if (specs) runs.push({ text: `  ${specs}`, color: "gray", nodeSelect: node.label });
+        } else {
+            runs.push({ text: "  activity only", color: "gray", nodeSelect: node.label });
+            if (node.executing.length) runs.push({ text: ` · ${node.executing.length} sess`, color: "gray", nodeSelect: node.label });
         }
-        nodeSessionMap.get(nodeLabel).push(session);
+        lines.push(trimTrailingRunPad(runs));
     }
 
-    if (knownNodes.length === 0) {
-        return [plainInspectorLine(`No worker activity in the ${recentWindow.label} window.`, "gray")];
-    }
-
-    const availableWidth = Math.max(18, maxWidth);
-    const maxColumns = Math.max(1, Math.floor((availableWidth + 1) / 10));
-    let nodeLabels = knownNodes;
-    if (!allowWideColumns && knownNodes.length > maxColumns) {
-        const visibleCount = Math.max(0, maxColumns - 1);
-        const overflowSessions = [];
-        const visibleLabels = knownNodes.slice(0, visibleCount);
-        for (const hiddenLabel of knownNodes.slice(visibleCount)) {
-            overflowSessions.push(...(nodeSessionMap.get(hiddenLabel) || []));
+    if (view.selected) {
+        const node = view.nodes.find((candidate) => candidate.label === view.selected);
+        lines.push(plainInspectorLine("", "gray"));
+        lines.push([{ text: `EXECUTING ON ${view.selected} (${node.executing.length})`, color: "cyan", bold: true }]);
+        if (node.executing.length === 0) {
+            lines.push(plainInspectorLine(`  nothing executing on ${view.selected} in the ${view.windowLabel} window`, "gray"));
         }
-        nodeSessionMap.set("…", overflowSessions);
-        nodeLabels = [...visibleLabels, "…"];
-    }
-
-    const gapWidth = Math.max(0, nodeLabels.length - 1);
-    const colWidth = Math.max(8, Math.floor((availableWidth - gapWidth) / Math.max(1, nodeLabels.length)));
-    const maxRows = nodeLabels.reduce(
-        (max, nodeLabel) => Math.max(max, (nodeSessionMap.get(nodeLabel) || []).length),
-        0,
-    );
-
-    const lines = [
-        plainInspectorLine(`Window: ${recentWindow.label}`, "gray"),
-        buildNodeMapHeaderLine(nodeLabels, colWidth),
-        plainInspectorLine(nodeLabels.map(() => "─".repeat(colWidth)).join(" "), "gray"),
-    ];
-
-    for (let rowIndex = 0; rowIndex < maxRows; rowIndex += 1) {
-        const rowRuns = [];
-        nodeLabels.forEach((nodeLabel, columnIndex) => {
-            if (columnIndex > 0) rowRuns.push({ text: " ", color: null });
-            const session = (nodeSessionMap.get(nodeLabel) || [])[rowIndex];
-            if (!session) {
-                rowRuns.push({ text: " ".repeat(colWidth), color: null });
-                return;
-            }
-            rowRuns.push(buildNodeMapCell(
-                session,
-                state.branding?.title || "PilotSwarm",
-                colWidth,
-                session.sessionId === state.sessions.activeSessionId,
-            ));
-        });
-        lines.push(rowRuns);
-    }
-
-    if (missingHistoryCount > 0) {
+        for (const entry of node.executing) {
+            lines.push(entry.active
+                ? [buildActiveHighlightLine(`  ${entry.text}`)]
+                : [{ text: `  ${entry.text}`, color: entry.color, bold: entry.bold }]);
+        }
         lines.push(plainInspectorLine("", "gray"));
-        lines.push(plainInspectorLine(`Loading worker history for ${missingHistoryCount} session(s)…`, "gray"));
-    }
-    if (inWindowSessionCount === 0) {
+        lines.push(plainInspectorLine("Activity pane is scoped to this node — select it again to clear.", "gray"));
+    } else {
         lines.push(plainInspectorLine("", "gray"));
-        lines.push(plainInspectorLine(`No sessions mapped onto worker nodes in the ${recentWindow.label} window.`, "gray"));
+        lines.push(plainInspectorLine("Select a node (click, or keys 1-9) to list its sessions and scope Activity.", "gray"));
     }
 
+    if (view.missingHistoryCount > 0) {
+        lines.push(plainInspectorLine(`Loading worker history for ${view.missingHistoryCount} session(s)…`, "gray"));
+    }
     return lines;
 }
 
