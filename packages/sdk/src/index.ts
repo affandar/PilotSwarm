@@ -267,6 +267,16 @@ export {
     AgentPackageValidationError,
 } from "./agent-package-service.js";
 export type { PublishOutcome } from "./agent-package-service.js";
+export {
+    installAgentPackages,
+    loadAgentPackageTools,
+} from "./agent-package-installer.js";
+export type {
+    AgentPackageInstallResult,
+    InstalledAgentPackage,
+} from "./agent-package-installer.js";
+export { syncAgentSourceOnce, extractZipArchive } from "./agent-package-fetchers.js";
+export type { SyncSourceResult } from "./agent-package-fetchers.js";
 export type {
     AgentPackageScope,
     AgentPrincipal,

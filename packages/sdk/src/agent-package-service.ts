@@ -12,7 +12,6 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import * as crypto from "crypto";
 import type { ArtifactStore } from "./session-store.js";
 import type {
     AgentPackageScope,
@@ -24,6 +23,7 @@ import {
     AGENT_PACKAGE_MAX_COMPRESSED_BYTES,
     agentPackageArtifactFilename,
     agentPackagesArtifactSessionId,
+    agentPackageTarSha256,
     packAgentPackage,
     validateAgentPackageDir,
     type AgentPackageManifest,
@@ -124,6 +124,10 @@ export async function publishPackedAgentPackage(
     // and same-semver content changes or foreign-package publishes fail before
     // any bytes move. The publish proc re-checks all of it atomically — this
     // is purely to keep the common cases cheap and clean.
+    // isAdmin=true on this READ is deliberate: names are globally unique, so
+    // publish must see a same-named package owned by ANYONE to produce the
+    // right forbidden/conflict answer. Authorization uses opts.isAdmin below;
+    // nothing from the foreign package is returned to the caller.
     const existing = await ctx.catalog.getAgentPackage(name, opts.owner, true);
     if (existing) {
         const actorOwns = opts.isAdmin || (
@@ -213,10 +217,12 @@ export async function fetchAgentPackageTarGz(
     const body: Buffer = Buffer.isBuffer((result as any).body)
         ? (result as any).body
         : Buffer.from((result as any).body ?? []);
-    const actual = crypto.createHash("sha256").update(body).digest("hex");
+    // Identity is the sha of the UNCOMPRESSED canonical tar (gzip bytes are
+    // not stable across zlib builds) — verify by decompress-and-hash.
+    const actual = agentPackageTarSha256(body);
     if (actual !== expectedSha256) {
         throw new Error(
-            `AGENT_PACKAGE_SHA_MISMATCH: ${artifactFilename} downloaded with sha256 ${actual}, registry says ${expectedSha256}`,
+            `AGENT_PACKAGE_SHA_MISMATCH: ${artifactFilename} downloaded with tar sha256 ${actual}, registry says ${expectedSha256}`,
         );
     }
     return body;
@@ -232,6 +238,10 @@ export async function deleteAgentPackageEverywhere(
     const filenames = await ctx.catalog.deleteAgentPackage(name, actor, isAdmin);
     const artifactSessionId = agentPackagesArtifactSessionId();
     for (const filename of filenames) {
-        try { await ctx.artifactStore.deleteArtifact(artifactSessionId, filename); } catch { /* best-effort */ }
+        try {
+            await ctx.artifactStore.deleteArtifact(artifactSessionId, filename);
+        } catch (error: any) {
+            console.warn(`[agent-packages] blob cleanup failed for ${filename} (orphaned in the artifact store): ${error?.message ?? error}`);
+        }
     }
 }

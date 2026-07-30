@@ -102,6 +102,58 @@ describe("agent-package registry", () => {
         }
     });
 
+    it("scope changes ride promote/demote, never publish", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const catalog = await createCatalog(env);
+        try {
+            const name = `pkg-scope-${env.runId}`;
+            await catalog.publishAgentPackage(publishInput(name, "1.0.0"));
+            await expectRegistryError(
+                catalog.publishAgentPackage(publishInput(name, "1.1.0", { scope: "shared" })),
+                "AGENT_PACKAGE_SCOPE_MISMATCH",
+            );
+            await catalog.setAgentPackageScope(name, "shared", OWNER, false);
+            const bumped = await catalog.publishAgentPackage(publishInput(name, "1.1.0", { scope: "shared" }));
+            assertEqual(bumped.status, "published");
+        } finally {
+            await catalog.close();
+        }
+    });
+
+    it("null principals: owner-less publish is admin-only; NULL-owner packages are admin-managed", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const catalog = await createCatalog(env);
+        try {
+            const name = `pkg-null-${env.runId}`;
+            await expectRegistryError(
+                catalog.publishAgentPackage(publishInput(name, "1.0.0", { owner: null })),
+                "AGENT_PACKAGE_FORBIDDEN",
+            );
+            const adminPush = await catalog.publishAgentPackage(
+                publishInput(name, "1.0.0", { owner: null, isAdmin: true }),
+            );
+            assertEqual(adminPush.status, "published");
+
+            // A NULL-owner package rejects every non-admin mutation — including
+            // publish by a null principal (the asymmetry the review closed).
+            await expectRegistryError(
+                catalog.publishAgentPackage(publishInput(name, "1.1.0", { owner: null })),
+                "AGENT_PACKAGE_FORBIDDEN",
+            );
+            await expectRegistryError(
+                catalog.setAgentPackageScope(name, "shared", null, false),
+                "AGENT_PACKAGE_FORBIDDEN",
+            );
+            await catalog.setAgentPackageScope(name, "shared", null, true);
+
+            // And a null non-admin viewer sees only shared packages.
+            const names = (await catalog.listAgentPackages(null, false)).map((p) => p.name);
+            assert(names.includes(name), "shared NULL-owner package visible to all");
+        } finally {
+            await catalog.close();
+        }
+    });
+
     it("user-scope visibility is enforced in list and get", { timeout: TIMEOUT }, async () => {
         const env = await getEnv();
         const catalog = await createCatalog(env);

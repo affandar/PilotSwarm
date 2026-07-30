@@ -52,6 +52,24 @@ export function agentPackageArtifactFilename(name: string, semver: string, sha25
     return `${name}@${semver}.${sha256.slice(0, 12)}.tar.gz`;
 }
 
+// ─── Agent-name normalization (mirror of resolveAgentConfig) ─────
+
+/**
+ * The runtime resolver matches agents case/punctuation-insensitively and
+ * also tries a trailing-"agent"-stripped variant (session-proxy.ts
+ * resolveAgentConfig). Collision guards MUST use the same normalization or
+ * "Swee-per" shadows "sweeper" at runtime while validating clean.
+ */
+export function normalizeAgentName(value: string | undefined): string {
+    return (value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function agentNameVariants(value: string | undefined): string[] {
+    const normalized = normalizeAgentName(value);
+    const stripped = normalized.replace(/agent$/, "");
+    return stripped && stripped !== normalized ? [normalized, stripped] : [normalized];
+}
+
 // ─── Minimal semver (concrete versions only, full precedence) ────
 
 const SEMVER_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/;
@@ -119,6 +137,9 @@ function tarHeaderChecksum(header: Buffer): number {
 
 function writeOctal(header: Buffer, offset: number, length: number, value: number): void {
     const text = value.toString(8).padStart(length - 1, "0");
+    if (text.length > length - 1) {
+        throw new Error(`tar field overflow: ${value} does not fit ${length - 1} octal digits`);
+    }
     header.write(text, offset, "ascii");
     header[offset + length - 1] = 0;
 }
@@ -186,7 +207,8 @@ export interface ExtractedTarEntry {
  * extensions — canonical tars are produced exclusively by packAgentPackage.
  */
 export function readAgentPackageTarGz(targz: Buffer): ExtractedTarEntry[] {
-    const tar = zlib.gunzipSync(targz);
+    // Bounded decompression: a 16 MB gz of zeros must not OOM the process.
+    const tar = zlib.gunzipSync(targz, { maxOutputLength: AGENT_PACKAGE_MAX_RAW_BYTES + 64 * 1024 * 1024 });
     const files: ExtractedTarEntry[] = [];
     let offset = 0;
     while (offset + TAR_BLOCK <= tar.length) {
@@ -201,12 +223,18 @@ export function readAgentPackageTarGz(targz: Buffer): ExtractedTarEntry[] {
         const recorded = parseInt(header.subarray(148, 156).toString("ascii").replace(/[\0 ]*$/, ""), 8);
         if (recorded !== expected) throw new Error(`tar checksum mismatch at ${name || offset}`);
         if (!Number.isFinite(size) || size < 0) throw new Error(`tar invalid size at ${name}`);
-        if (typeflag !== "0" && typeflag !== "5" && typeflag !== "\0") {
-            throw new Error(`tar entry type '${typeflag}' not allowed in a package (${name})`);
+        if (typeflag !== "0" && typeflag !== "5") {
+            throw new Error(`tar entry type not allowed in a package (${name})`);
+        }
+        if (typeflag === "5" && size !== 0) {
+            throw new Error(`tar directory entry with nonzero size at ${name}`);
         }
         assertSafeRelativePath(name);
         offset += TAR_BLOCK;
         if (typeflag !== "5") {
+            if (offset + size > tar.length) {
+                throw new Error(`tar entry body truncated at ${name} (declares ${size} bytes)`);
+            }
             files.push({ name, body: Buffer.from(tar.subarray(offset, offset + size)) });
             offset += Math.ceil(size / TAR_BLOCK) * TAR_BLOCK;
         }
@@ -256,14 +284,19 @@ interface WalkedFile {
 }
 
 /** Sorted, symlink-rejecting walk. Returns POSIX-relative entries. */
-function walkPackageDir(rootDir: string): { files: WalkedFile[]; symlinks: string[] } {
+function walkPackageDir(rootDir: string): { files: WalkedFile[]; symlinks: string[]; nonAscii: string[] } {
     const files: WalkedFile[] = [];
     const symlinks: string[] = [];
+    const nonAscii: string[] = [];
     const visit = (dirAbs: string, dirRel: string) => {
         const names = fs.readdirSync(dirAbs).filter((n) => !PACK_IGNORES.has(n)).sort();
         for (const name of names) {
             const abs = path.join(dirAbs, name);
             const rel = dirRel ? `${dirRel}/${name}` : name;
+            // The ustar name field is written byte-per-char; non-ASCII names
+            // silently corrupt and can COLLIDE after 7-bit masking. Reject
+            // loudly instead of certifying garbage with a sha.
+            if (/[^\x20-\x7e]/.test(rel)) nonAscii.push(rel);
             const st = fs.lstatSync(abs);
             if (st.isSymbolicLink()) {
                 symlinks.push(rel);
@@ -281,11 +314,18 @@ function walkPackageDir(rootDir: string): { files: WalkedFile[]; symlinks: strin
     };
     visit(rootDir, "");
     files.sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
-    return { files, symlinks };
+    return { files, symlinks, nonAscii };
 }
 
 export interface PackedAgentPackage {
     targz: Buffer;
+    /**
+     * Identity hash — sha256 of the UNCOMPRESSED canonical tar, NOT the gz
+     * bytes. The deflate stream varies across zlib builds, so hashing the
+     * gz would make byte-identical content hash differently after a Node
+     * upgrade and trip the immutability check. The tar bytes are fully
+     * deterministic by construction.
+     */
     sha256: string;
     rawBytes: number;
     fileCount: number;
@@ -297,9 +337,12 @@ export interface PackedAgentPackage {
  * (0755 dirs, 0644 files), gzip level 9 with a normalized gzip header.
  */
 export function packAgentPackage(rootDir: string): PackedAgentPackage {
-    const { files, symlinks } = walkPackageDir(rootDir);
+    const { files, symlinks, nonAscii } = walkPackageDir(rootDir);
     if (symlinks.length > 0) {
         throw new Error(`symlinks are not allowed in agent packages: ${symlinks.join(", ")}`);
+    }
+    if (nonAscii.length > 0) {
+        throw new Error(`non-ASCII paths are not allowed in agent packages (rename to ASCII): ${nonAscii.join(", ")}`);
     }
     let rawBytes = 0;
     const entries: TarEntry[] = files.map((f) => {
@@ -324,8 +367,14 @@ export function packAgentPackage(rootDir: string): PackedAgentPackage {
             `package exceeds compressed size limit: ${targz.length} > ${AGENT_PACKAGE_MAX_COMPRESSED_BYTES} bytes`,
         );
     }
-    const sha256 = crypto.createHash("sha256").update(targz).digest("hex");
+    const sha256 = crypto.createHash("sha256").update(tar).digest("hex");
     return { targz, sha256, rawBytes, fileCount: files.filter((f) => !f.isDir).length };
+}
+
+/** sha256 of the canonical tar inside a package tar.gz (the identity hash). */
+export function agentPackageTarSha256(targz: Buffer): string {
+    const tar = zlib.gunzipSync(targz, { maxOutputLength: AGENT_PACKAGE_MAX_RAW_BYTES + 64 * 1024 * 1024 });
+    return crypto.createHash("sha256").update(tar).digest("hex");
 }
 
 // ─── Validation ──────────────────────────────────────────────────
@@ -382,7 +431,9 @@ function err(errors: AgentPackageIssue[], code: string, message: string, file?: 
 // cannot execute at validation time.
 const SYNTAX_CHECK_SNIPPET =
     'const fs=require("fs");const vm=require("vm");' +
-    'try{new vm.SourceTextModule(fs.readFileSync(process.argv[1],"utf8"),{identifier:process.argv[1]});}' +
+    'let src=fs.readFileSync(process.argv[1],"utf8");' +
+    'if(src.startsWith("#!"))src=src.slice(src.indexOf("\\n")+1);' +
+    'try{new vm.SourceTextModule(src,{identifier:process.argv[1]});}' +
     'catch(e){console.error(String(e&&e.message||e));process.exit(1)}';
 
 async function nodeSyntaxCheck(file: string): Promise<string | null> {
@@ -446,12 +497,21 @@ export async function validateAgentPackageDir(
         }
     }
 
-    // Symlinks and size — walk once.
-    let walk: { files: WalkedFile[]; symlinks: string[] } | null = null;
+    // Symlinks, charset, and forbidden files — walk once.
+    let walk: { files: WalkedFile[]; symlinks: string[]; nonAscii: string[] } | null = null;
     try {
         walk = walkPackageDir(rootDir);
         for (const link of walk.symlinks) {
             err(errors, "symlink", `symlinks are not allowed in agent packages: ${link}`, link);
+        }
+        for (const bad of walk.nonAscii) {
+            err(errors, "non_ascii_path",
+                `path contains non-ASCII characters: ${bad} — rename to ASCII (tar names are byte-encoded)`, bad);
+        }
+        if (walk.files.some((f) => f.rel === "session-policy.json")) {
+            err(errors, "session_policy_forbidden",
+                "session-policy.json is not allowed in packages — session policy belongs to the deployment's baked app, and a package must not override it",
+                "session-policy.json");
         }
     } catch (e: any) {
         err(errors, "walk_failed", `could not read package directory: ${e?.message ?? e}`);
@@ -464,14 +524,30 @@ export async function validateAgentPackageDir(
         const agentFiles = fs.readdirSync(agentsDir).filter((f) => f.endsWith(".agent.md")).sort();
         agents = loadAgentFiles(agentsDir);
         if (agents.length < agentFiles.length) {
+            // Name the ACTUAL skip reason — these messages are contractual UX
+            // and "failed to parse" for an empty body sends users editing the
+            // wrong thing.
             const loaded = new Set(agents.map((a) => path.basename(a.sourcePath ?? "")));
             for (const f of agentFiles) {
-                if (!loaded.has(f)) {
+                if (loaded.has(f)) continue;
+                let raw = "";
+                try { raw = fs.readFileSync(path.join(agentsDir, f), "utf8"); } catch { /* fallthrough */ }
+                const schemaMatch = /(?:^|\n)schemaVersion:\s*(\S+)/.exec(raw);
+                const body = raw.replace(/^---\n[\s\S]*?\n---\n?/, "").trim();
+                if (schemaMatch && !["1", "2"].includes(schemaMatch[1])) {
+                    err(errors, "unsupported_agent_schema_version",
+                        `agents/${f}: schemaVersion ${schemaMatch[1]} is not supported (use 1 or 2)`, `agents/${f}`);
+                } else if (!body) {
+                    err(errors, "empty_agent_body",
+                        `agents/${f}: the markdown body is empty — it becomes the agent's prompt and cannot be blank`, `agents/${f}`);
+                } else {
                     err(errors, "invalid_agent",
                         `agents/${f} failed to parse (check frontmatter and schemaVersion)`, `agents/${f}`);
                 }
             }
         }
+        const reserved = new Set((opts.reservedAgentNames ?? []).flatMap((n) => agentNameVariants(n)));
+        const seenNames = new Map<string, string>();
         for (const agent of agents) {
             const file = `agents/${path.basename(agent.sourcePath ?? `${agent.name}.agent.md`)}`;
             if (agent.system) {
@@ -482,9 +558,20 @@ export async function validateAgentPackageDir(
                 err(errors, "default_agent_forbidden",
                     `${file}: an agent named "default" is a prompt overlay, not a selectable agent, and is not allowed in packages`, file);
             }
-            if (opts.reservedAgentNames?.includes(agent.name)) {
+            // Collision checks use the RESOLVER's normalization: the runtime
+            // matches case/punctuation-insensitively with an "agent"-suffix
+            // fallback, so "Swee-per" genuinely shadows "sweeper".
+            if (agentNameVariants(agent.name).some((variant) => reserved.has(variant))) {
                 err(errors, "reserved_agent_name",
                     `${file}: agent name "${agent.name}" collides with a built-in agent`, file);
+            }
+            const normalized = normalizeAgentName(agent.name);
+            const previous = seenNames.get(normalized);
+            if (previous) {
+                err(errors, "duplicate_agent_name",
+                    `${file}: agent name "${agent.name}" duplicates "${previous}" (names are matched case/punctuation-insensitively) — one of them would be unreachable`, file);
+            } else {
+                seenNames.set(normalized, agent.name);
             }
         }
     }
@@ -549,12 +636,39 @@ export async function validateAgentPackageDir(
         const checkable = walk.files.filter((f) =>
             !f.isDir
             && /\.(mjs|cjs|js)$/.test(f.rel)
-            && (f.rel === "tools/worker-module.js" || f.rel.startsWith("mcp-servers/"))
+            && (f.rel.startsWith("tools/") || f.rel.startsWith("mcp-servers/"))
             && !f.rel.includes("node_modules/"));
         for (const f of checkable) {
             const failure = await nodeSyntaxCheck(f.abs);
             if (failure) {
                 err(errors, "syntax_error", `${f.rel} failed syntax check:\n${failure}`, f.rel);
+            }
+        }
+    }
+
+    // Bare-specifier heads-up: package modules load from the unpack cache,
+    // which has no node_modules above it — `import ... from "some-pkg"`
+    // fails at runtime (quarantining the package) unless deps are vendored.
+    // Tool modules should export plain tool objects and import nothing.
+    if (walk) {
+        const moduleFiles = walk.files.filter((f) =>
+            !f.isDir && /\.(mjs|cjs|js)$/.test(f.rel)
+            && (f.rel === "tools/worker-module.js" || f.rel.startsWith("mcp-servers/"))
+            && !f.rel.includes("node_modules/"));
+        const bareRe = /(?:from\s+|import\s*\(\s*|require\s*\(\s*)["']([^"'./][^"']*)["']/g;
+        for (const f of moduleFiles) {
+            let source = "";
+            try { source = fs.readFileSync(f.abs, "utf8"); } catch { continue; }
+            const bare = new Set<string>();
+            for (const match of source.matchAll(bareRe)) {
+                if (!match[1].startsWith("node:")) bare.add(match[1]);
+            }
+            if (bare.size > 0) {
+                warnings.push({
+                    code: "bare_imports",
+                    message: `${f.rel} imports bare specifier(s) ${[...bare].map((b) => `"${b}"`).join(", ")} — these fail to resolve from the install cache unless vendored inside the package; export plain tool objects instead`,
+                    file: f.rel,
+                });
             }
         }
     }

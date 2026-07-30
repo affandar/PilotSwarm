@@ -225,6 +225,7 @@ function migration_0038_agent_packages(schema: string): string {
 CREATE TABLE IF NOT EXISTS ${s}.agent_sources (
     source_id        TEXT PRIMARY KEY,
     kind             TEXT NOT NULL CHECK (kind IN ('github', 'ado', 'url', 'upload')),
+    scope            TEXT NOT NULL DEFAULT 'user' CHECK (scope IN ('shared', 'user')),
     repo_url         TEXT,
     ref              TEXT,
     path             TEXT,
@@ -300,17 +301,17 @@ $$ LANGUAGE sql;
 -- ── sources ──────────────────────────────────────────────────────
 
 CREATE OR REPLACE FUNCTION ${s}.cms_register_agent_source(
-    p_source_id TEXT, p_kind TEXT, p_repo_url TEXT, p_ref TEXT, p_path TEXT,
+    p_source_id TEXT, p_kind TEXT, p_scope TEXT, p_repo_url TEXT, p_ref TEXT, p_path TEXT,
     p_url TEXT, p_auth_token TEXT, p_auto_sync BOOLEAN,
     p_owner_provider TEXT, p_owner_subject TEXT, p_created_by TEXT
 ) RETURNS VOID AS $$
 BEGIN
     INSERT INTO ${s}.agent_sources
-        (source_id, kind, repo_url, ref, path, url, auth_token, auto_sync,
+        (source_id, kind, scope, repo_url, ref, path, url, auth_token, auto_sync,
          owner_provider, owner_subject, created_by)
-    VALUES (p_source_id, p_kind, p_repo_url, p_ref, p_path,
+    VALUES (p_source_id, p_kind, COALESCE(NULLIF(p_scope, ''), 'user'), p_repo_url, p_ref, p_path,
             NULLIF(p_url, ''), NULLIF(p_auth_token, ''), COALESCE(p_auto_sync, FALSE),
-            BTRIM(p_owner_provider), BTRIM(p_owner_subject), p_created_by);
+            NULLIF(BTRIM(p_owner_provider), ''), NULLIF(BTRIM(p_owner_subject), ''), p_created_by);
 END;
 $$ LANGUAGE plpgsql;
 
@@ -318,12 +319,12 @@ $$ LANGUAGE plpgsql;
 CREATE OR REPLACE FUNCTION ${s}.cms_list_agent_sources(
     p_viewer_provider TEXT, p_viewer_subject TEXT, p_is_admin BOOLEAN
 ) RETURNS TABLE(
-    source_id TEXT, kind TEXT, repo_url TEXT, ref TEXT, path TEXT, url TEXT,
+    source_id TEXT, kind TEXT, scope TEXT, repo_url TEXT, ref TEXT, path TEXT, url TEXT,
     auth_token_set BOOLEAN, auto_sync BOOLEAN, last_sync_at TIMESTAMPTZ,
     last_sync_status TEXT, last_sync_error TEXT, last_commit_sha TEXT,
     owner_provider TEXT, owner_subject TEXT, created_by TEXT, created_at TIMESTAMPTZ
 ) AS $$
-    SELECT source_id, kind, repo_url, ref, path, url,
+    SELECT source_id, kind, scope, repo_url, ref, path, url,
            (auth_token IS NOT NULL), auto_sync, last_sync_at,
            last_sync_status, last_sync_error, last_commit_sha,
            owner_provider, owner_subject, created_by, created_at
@@ -342,12 +343,12 @@ $$ LANGUAGE sql;
 
 CREATE OR REPLACE FUNCTION ${s}.cms_get_agent_source(p_source_id TEXT)
 RETURNS TABLE(
-    source_id TEXT, kind TEXT, repo_url TEXT, ref TEXT, path TEXT, url TEXT,
+    source_id TEXT, kind TEXT, scope TEXT, repo_url TEXT, ref TEXT, path TEXT, url TEXT,
     auth_token_set BOOLEAN, auto_sync BOOLEAN, last_sync_at TIMESTAMPTZ,
     last_sync_status TEXT, last_sync_error TEXT, last_commit_sha TEXT,
     owner_provider TEXT, owner_subject TEXT, created_by TEXT, created_at TIMESTAMPTZ
 ) AS $$
-    SELECT source_id, kind, repo_url, ref, path, url,
+    SELECT source_id, kind, scope, repo_url, ref, path, url,
            (auth_token IS NOT NULL), auto_sync, last_sync_at,
            last_sync_status, last_sync_error, last_commit_sha,
            owner_provider, owner_subject, created_by, created_at
@@ -378,8 +379,11 @@ BEGIN
     IF NOT FOUND THEN
         RAISE EXCEPTION 'AGENT_SOURCE_NOT_FOUND: source % does not exist', p_source_id;
     END IF;
-    IF NOT p_is_admin AND (v_src.owner_provider IS DISTINCT FROM BTRIM(p_actor_provider)
-                           OR v_src.owner_subject IS DISTINCT FROM BTRIM(p_actor_subject)) THEN
+    IF NOT p_is_admin AND (
+        v_src.owner_provider IS NULL
+        OR v_src.owner_provider IS DISTINCT FROM NULLIF(BTRIM(p_actor_provider), '')
+        OR v_src.owner_subject IS DISTINCT FROM NULLIF(BTRIM(p_actor_subject), '')
+    ) THEN
         RAISE EXCEPTION 'AGENT_PACKAGE_FORBIDDEN: only the source creator or an admin can delete it';
     END IF;
     DELETE FROM ${s}.agent_sources WHERE source_id = p_source_id;
@@ -403,26 +407,55 @@ CREATE OR REPLACE FUNCTION ${s}.cms_publish_agent_package(
 DECLARE
     v_pkg RECORD;
     v_ver RECORD;
+    v_owner_provider TEXT := NULLIF(BTRIM(p_owner_provider), '');
+    v_owner_subject  TEXT := NULLIF(BTRIM(p_owner_subject), '');
 BEGIN
-    SELECT * INTO v_pkg FROM ${s}.agent_packages p WHERE p.name = p_name FOR UPDATE;
-    IF NOT FOUND THEN
-        INSERT INTO ${s}.agent_packages
-            (package_id, source_id, name, scope, owner_provider, owner_subject, created_by)
-        VALUES (p_package_id, p_source_id, p_name, p_scope,
-                BTRIM(p_owner_provider), BTRIM(p_owner_subject), p_created_by);
-        INSERT INTO ${s}.agent_package_versions
-            (version_id, package_id, semver, sha256, size_bytes, artifact_filename, commit_sha, manifest, created_by)
-        VALUES (p_version_id, p_package_id, p_semver, p_sha256, p_size_bytes,
-                p_artifact_filename, p_commit_sha, p_manifest, p_created_by);
-        UPDATE ${s}.agent_packages SET active_version_id = p_version_id WHERE ${s}.agent_packages.package_id = p_package_id;
-        PERFORM ${s}.cms_agent_registry_bump();
-        RETURN QUERY SELECT 'published'::TEXT, p_package_id, p_version_id;
-        RETURN;
+    -- An owner-less publish is admin-only: a NULL-owner package would be
+    -- unmanageable by its (anonymous) creator afterwards, so reject the
+    -- combination up front instead of minting an orphan.
+    IF NOT p_is_admin AND (v_owner_provider IS NULL OR v_owner_subject IS NULL) THEN
+        RAISE EXCEPTION 'AGENT_PACKAGE_FORBIDDEN: publishing without an owner identity requires the admin role';
     END IF;
 
-    IF NOT p_is_admin AND (v_pkg.owner_provider IS DISTINCT FROM BTRIM(p_owner_provider)
-                           OR v_pkg.owner_subject IS DISTINCT FROM BTRIM(p_owner_subject)) THEN
+    <<retry>>
+    LOOP
+        SELECT * INTO v_pkg FROM ${s}.agent_packages p WHERE p.name = p_name FOR UPDATE;
+        IF NOT FOUND THEN
+            -- First publish. FOR UPDATE on a missing row takes no lock, so a
+            -- concurrent first publish can beat this INSERT — catch the
+            -- unique violation and loop back to lock the winner's row.
+            BEGIN
+                INSERT INTO ${s}.agent_packages
+                    (package_id, source_id, name, scope, owner_provider, owner_subject, created_by)
+                VALUES (p_package_id, p_source_id, p_name, p_scope,
+                        v_owner_provider, v_owner_subject, p_created_by);
+            EXCEPTION WHEN unique_violation THEN
+                CONTINUE retry;
+            END;
+            INSERT INTO ${s}.agent_package_versions
+                (version_id, package_id, semver, sha256, size_bytes, artifact_filename, commit_sha, manifest, created_by)
+            VALUES (p_version_id, p_package_id, p_semver, p_sha256, p_size_bytes,
+                    p_artifact_filename, p_commit_sha, p_manifest, p_created_by);
+            UPDATE ${s}.agent_packages SET active_version_id = p_version_id WHERE ${s}.agent_packages.package_id = p_package_id;
+            PERFORM ${s}.cms_agent_registry_bump();
+            RETURN QUERY SELECT 'published'::TEXT, p_package_id, p_version_id;
+            RETURN;
+        END IF;
+        EXIT retry;
+    END LOOP;
+
+    -- A NULL-owner package (no-auth or system provenance) is admin-managed:
+    -- publish must not be the one mutation left open to null principals.
+    IF NOT p_is_admin AND (
+        v_pkg.owner_provider IS NULL
+        OR v_pkg.owner_provider IS DISTINCT FROM v_owner_provider
+        OR v_pkg.owner_subject IS DISTINCT FROM v_owner_subject
+    ) THEN
         RAISE EXCEPTION 'AGENT_PACKAGE_FORBIDDEN: only the package creator or an admin can publish new versions of "%"', p_name;
+    END IF;
+
+    IF p_scope IS DISTINCT FROM v_pkg.scope THEN
+        RAISE EXCEPTION 'AGENT_PACKAGE_SCOPE_MISMATCH: "%" is scope %, not %; change scope with promote/demote, not publish', p_name, v_pkg.scope, p_scope;
     END IF;
 
     SELECT * INTO v_ver FROM ${s}.agent_package_versions v
@@ -439,7 +472,9 @@ BEGIN
         (version_id, package_id, semver, sha256, size_bytes, artifact_filename, commit_sha, manifest, created_by)
     VALUES (p_version_id, v_pkg.package_id, p_semver, p_sha256, p_size_bytes,
             p_artifact_filename, p_commit_sha, p_manifest, p_created_by);
-    UPDATE ${s}.agent_packages SET active_version_id = p_version_id
+    UPDATE ${s}.agent_packages
+       SET active_version_id = p_version_id,
+           source_id = COALESCE(p_source_id, ${s}.agent_packages.source_id)
      WHERE ${s}.agent_packages.package_id = v_pkg.package_id;
     PERFORM ${s}.cms_agent_registry_bump();
     RETURN QUERY SELECT 'published'::TEXT, v_pkg.package_id, p_version_id;
@@ -460,13 +495,13 @@ CREATE OR REPLACE FUNCTION ${s}.cms_list_agent_packages(
     enabled BOOLEAN, created_by TEXT, created_at TIMESTAMPTZ,
     active_version_id TEXT, semver TEXT, sha256 TEXT, size_bytes BIGINT,
     artifact_filename TEXT, commit_sha TEXT, manifest JSONB,
-    version_created_at TIMESTAMPTZ
+    version_created_at TIMESTAMPTZ, version_created_by TEXT
 ) AS $$
     SELECT p.package_id, p.source_id, p.name, p.scope,
            p.owner_provider, p.owner_subject,
            p.enabled, p.created_by, p.created_at,
            v.version_id, v.semver, v.sha256, v.size_bytes,
-           v.artifact_filename, v.commit_sha, v.manifest, v.created_at
+           v.artifact_filename, v.commit_sha, v.manifest, v.created_at, v.created_by
       FROM ${s}.agent_packages p
       LEFT JOIN ${s}.agent_package_versions v ON v.version_id = p.active_version_id
      WHERE p.scope = 'shared'
@@ -525,8 +560,11 @@ BEGIN
     IF NOT FOUND THEN
         RAISE EXCEPTION 'AGENT_PACKAGE_NOT_FOUND: package "%" does not exist', p_name;
     END IF;
-    IF NOT p_is_admin AND (v_pkg.owner_provider IS DISTINCT FROM BTRIM(p_actor_provider)
-                           OR v_pkg.owner_subject IS DISTINCT FROM BTRIM(p_actor_subject)) THEN
+    IF NOT p_is_admin AND (
+        v_pkg.owner_provider IS NULL
+        OR v_pkg.owner_provider IS DISTINCT FROM NULLIF(BTRIM(p_actor_provider), '')
+        OR v_pkg.owner_subject IS DISTINCT FROM NULLIF(BTRIM(p_actor_subject), '')
+    ) THEN
         RAISE EXCEPTION 'AGENT_PACKAGE_FORBIDDEN: only the package creator or an admin can modify "%"', p_name;
     END IF;
     RETURN v_pkg;

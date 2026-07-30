@@ -721,6 +721,7 @@ export interface AgentPrincipal {
 export interface AgentSourceRow {
     sourceId: string;
     kind: "github" | "ado" | "url" | "upload";
+    scope: AgentPackageScope;
     repoUrl: string | null;
     ref: string | null;
     path: string | null;
@@ -817,6 +818,7 @@ export interface SessionCatalog {
     registerAgentSource(source: {
         sourceId: string;
         kind: "github" | "ado" | "url" | "upload";
+        scope: AgentPackageScope;
         repoUrl?: string | null;
         ref?: string | null;
         path?: string | null;
@@ -2533,6 +2535,7 @@ export class PgSessionCatalog implements SessionCatalog {
     async registerAgentSource(source: {
         sourceId: string;
         kind: "github" | "ado" | "url" | "upload";
+        scope: AgentPackageScope;
         repoUrl?: string | null;
         ref?: string | null;
         path?: string | null;
@@ -2543,9 +2546,9 @@ export class PgSessionCatalog implements SessionCatalog {
         createdBy?: string | null;
     }): Promise<void> {
         await this.pool.query(
-            `SELECT ${this.sql.fn.registerAgentSource}($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+            `SELECT ${this.sql.fn.registerAgentSource}($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
             [
-                source.sourceId, source.kind, source.repoUrl ?? null, source.ref ?? null,
+                source.sourceId, source.kind, source.scope, source.repoUrl ?? null, source.ref ?? null,
                 source.path ?? null, source.url ?? null, source.authToken ?? null,
                 source.autoSync ?? false, source.owner?.provider ?? null,
                 source.owner?.subject ?? null, source.createdBy ?? null,
@@ -2556,7 +2559,7 @@ export class PgSessionCatalog implements SessionCatalog {
     async listAgentSources(viewer: AgentPrincipal | null, isAdmin: boolean): Promise<AgentSourceRow[]> {
         const { rows } = await this.pool.query(
             `SELECT * FROM ${this.sql.fn.listAgentSources}($1, $2, $3)`,
-            [viewer?.provider ?? "", viewer?.subject ?? "", isAdmin],
+            [viewer?.provider ?? null, viewer?.subject ?? null, isAdmin],
         );
         return rows.map(rowToAgentSourceRow);
     }
@@ -2587,7 +2590,7 @@ export class PgSessionCatalog implements SessionCatalog {
     async deleteAgentSource(sourceId: string, actor: AgentPrincipal | null, isAdmin: boolean): Promise<void> {
         await this.pool.query(
             `SELECT ${this.sql.fn.deleteAgentSource}($1, $2, $3, $4)`,
-            [sourceId, actor?.provider ?? "", actor?.subject ?? "", isAdmin],
+            [sourceId, actor?.provider ?? null, actor?.subject ?? null, isAdmin],
         );
     }
 
@@ -2615,7 +2618,7 @@ export class PgSessionCatalog implements SessionCatalog {
     async listAgentPackages(viewer: AgentPrincipal | null, isAdmin: boolean): Promise<AgentPackageSummary[]> {
         const { rows } = await this.pool.query(
             `SELECT * FROM ${this.sql.fn.listAgentPackages}($1, $2, $3)`,
-            [viewer?.provider ?? "", viewer?.subject ?? "", isAdmin],
+            [viewer?.provider ?? null, viewer?.subject ?? null, isAdmin],
         );
         return rows.map(rowToAgentPackageSummary);
     }
@@ -2623,7 +2626,7 @@ export class PgSessionCatalog implements SessionCatalog {
     async getAgentPackage(name: string, viewer: AgentPrincipal | null, isAdmin: boolean): Promise<AgentPackageDetail | null> {
         const { rows } = await this.pool.query(
             `SELECT * FROM ${this.sql.fn.getAgentPackage}($1, $2, $3, $4)`,
-            [name, viewer?.provider ?? "", viewer?.subject ?? "", isAdmin],
+            [name, viewer?.provider ?? null, viewer?.subject ?? null, isAdmin],
         );
         if (rows.length === 0) return null;
         const first = rows[0];
@@ -2663,28 +2666,28 @@ export class PgSessionCatalog implements SessionCatalog {
     async setAgentPackageScope(name: string, scope: AgentPackageScope, actor: AgentPrincipal | null, isAdmin: boolean): Promise<void> {
         await this.pool.query(
             `SELECT ${this.sql.fn.setAgentPackageScope}($1, $2, $3, $4, $5)`,
-            [name, scope, actor?.provider ?? "", actor?.subject ?? "", isAdmin],
+            [name, scope, actor?.provider ?? null, actor?.subject ?? null, isAdmin],
         );
     }
 
     async setAgentPackageEnabled(name: string, enabled: boolean, actor: AgentPrincipal | null, isAdmin: boolean): Promise<void> {
         await this.pool.query(
             `SELECT ${this.sql.fn.setAgentPackageEnabled}($1, $2, $3, $4, $5)`,
-            [name, enabled, actor?.provider ?? "", actor?.subject ?? "", isAdmin],
+            [name, enabled, actor?.provider ?? null, actor?.subject ?? null, isAdmin],
         );
     }
 
     async pinAgentPackageVersion(name: string, semver: string, actor: AgentPrincipal | null, isAdmin: boolean): Promise<void> {
         await this.pool.query(
             `SELECT ${this.sql.fn.pinAgentPackageVersion}($1, $2, $3, $4, $5)`,
-            [name, semver, actor?.provider ?? "", actor?.subject ?? "", isAdmin],
+            [name, semver, actor?.provider ?? null, actor?.subject ?? null, isAdmin],
         );
     }
 
     async deleteAgentPackage(name: string, actor: AgentPrincipal | null, isAdmin: boolean): Promise<string[]> {
         const { rows } = await this.pool.query(
             `SELECT * FROM ${this.sql.fn.deleteAgentPackage}($1, $2, $3, $4)`,
-            [name, actor?.provider ?? "", actor?.subject ?? "", isAdmin],
+            [name, actor?.provider ?? null, actor?.subject ?? null, isAdmin],
         );
         return rows.map((r: any) => String(r.artifact_filename)).filter(Boolean);
     }
@@ -3038,6 +3041,7 @@ function rowToAgentSourceRow(row: any): AgentSourceRow {
     return {
         sourceId: row.source_id,
         kind: row.kind,
+        scope: row.scope === "shared" ? "shared" : "user",
         repoUrl: row.repo_url ?? null,
         ref: row.ref ?? null,
         path: row.path ?? null,
@@ -3088,7 +3092,7 @@ function rowToAgentPackageSummary(row: any): AgentPackageSummary {
                 commitSha: row.commit_sha ?? null,
                 manifest: row.manifest ?? {},
                 createdAt: new Date(row.version_created_at ?? row.created_at),
-                createdBy: row.created_by ?? null,
+                createdBy: row.version_created_by ?? null,
             }
             : null,
     };

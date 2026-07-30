@@ -115,6 +115,16 @@ const worker = new PilotSwarmWorker({
     // Optional EnhancedFactStore + knowledge graph (HorizonDB). Empty unless
     // HORIZON_DATABASE_URL is set, so default deployments keep plain PgFactStore.
     ...horizonConfigFromEnv(),
+    // Registry agent packages (docs/proposals/agent-packages.md): on by
+    // default for the headless worker; PILOTSWARM_AGENT_PACKAGES=0 opts out.
+    ...(["0", "false", "off", "no"].includes((process.env.PILOTSWARM_AGENT_PACKAGES || "").trim().toLowerCase())
+        ? {}
+        : {
+            agentPackages: {
+                cacheDir: process.env.PILOTSWARM_AGENT_PACKAGES_DIR || undefined,
+                refreshIntervalMs: Number.parseInt(process.env.PILOTSWARM_AGENT_PACKAGES_REFRESH_MS || "", 10) || undefined,
+            },
+        }),
 });
 
 await worker.start();

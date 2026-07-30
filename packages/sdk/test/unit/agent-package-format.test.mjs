@@ -4,11 +4,14 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as zlib from "node:zlib";
+import * as crypto from "node:crypto";
 import {
     agentPackagesArtifactSessionId,
     agentPackageArtifactFilename,
+    agentPackageTarSha256,
     isValidSemver,
     compareSemver,
+    normalizeAgentName,
     packAgentPackage,
     readAgentPackageTarGz,
     extractAgentPackageTarGz,
@@ -152,6 +155,23 @@ test("pack → read roundtrip preserves files, ignores cruft", () => {
     assert.ok(fs.existsSync(path.join(dest, "skills", "ops", "SKILL.md")));
 });
 
+test("identity sha is over the uncompressed tar, not the gzip bytes", () => {
+    const dir = writeValidPackage(tmpdir());
+    const packed = packAgentPackage(dir);
+    const tar = zlib.gunzipSync(packed.targz);
+    const tarSha = crypto.createHash("sha256").update(tar).digest("hex");
+    assert.equal(packed.sha256, tarSha, "sha256 must equal hash(gunzip(targz))");
+    assert.notEqual(packed.sha256, crypto.createHash("sha256").update(packed.targz).digest("hex"),
+        "and must NOT be the gz-byte hash (zlib output is not version-stable)");
+    assert.equal(agentPackageTarSha256(packed.targz), packed.sha256);
+});
+
+test("packing rejects non-ASCII paths loudly (ustar names are byte-encoded)", () => {
+    const dir = writeValidPackage(tmpdir());
+    fs.writeFileSync(path.join(dir, "agents", "café-triager.agent.md"), "---\nname: cafe\nschemaVersion: 1\nversion: 1.0.0\n---\nx");
+    assert.throws(() => packAgentPackage(dir), /non-ASCII paths are not allowed/);
+});
+
 test("packing rejects symlinks", () => {
     const dir = writeValidPackage(tmpdir());
     fs.symlinkSync("/etc/hosts", path.join(dir, "evil-link"));
@@ -220,6 +240,28 @@ test("extract refuses entries that escape the destination", () => {
     assert.throws(() => extractAgentPackageTarGz(nested, tmpdir()), /escapes package root/);
 });
 
+test("reader rejects truncated bodies, dir-with-size desync, and old-style typeflags", () => {
+    // Header declares 9999 bytes but the archive ends — must throw, not
+    // silently write a truncated file.
+    const truncated = (() => {
+        const header = rawTarHeader({ name: "big.txt", size: 9999 });
+        return zlib.gzipSync(Buffer.concat([header, Buffer.from("xx"), Buffer.alloc(TAR_BLOCK * 2)]));
+    })();
+    assert.throws(() => readAgentPackageTarGz(truncated), /truncated/);
+
+    // A directory entry declaring a body would desync the parser.
+    assert.throws(
+        () => readAgentPackageTarGz(evilTarGz({ name: "dir/", typeflag: "5", size: 100 }, Buffer.alloc(100))),
+        /directory entry with nonzero size/,
+    );
+
+    // Old-style "\0" typeflag is outside the canonical contract.
+    assert.throws(
+        () => readAgentPackageTarGz(evilTarGz({ name: "old.txt", typeflag: "\0" }, Buffer.from("x"))),
+        /not allowed in a package/,
+    );
+});
+
 // ─── validation matrix ───────────────────────────────────────────
 // Every case asserts the exact user-facing behavior: the error code AND that
 // the message names the rule. The CLI prints these verbatim.
@@ -284,14 +326,73 @@ test("an agent named default is rejected", async () => {
     assert.deepEqual(errorCodes(result), ["default_agent_forbidden"]);
 });
 
-test("baked-name collisions are rejected", async () => {
+test("baked-name collisions are rejected — including the resolver's fuzzy variants", async () => {
     const dir = writeValidPackage(tmpdir());
-    const result = await validateAgentPackageDir(dir, {
+    const exact = await validateAgentPackageDir(dir, {
         skipSyntaxCheck: true,
         reservedAgentNames: ["triager"],
     });
-    assert.deepEqual(errorCodes(result), ["reserved_agent_name"]);
-    assert.match(result.errors[0].message, /built-in agent/);
+    assert.deepEqual(errorCodes(exact), ["reserved_agent_name"]);
+    assert.match(exact.errors[0].message, /built-in agent/);
+
+    // The runtime matches case/punctuation-insensitively with an "agent"
+    // suffix fallback — every spelling variant must be caught too.
+    for (const alias of ["Swee-per", "SWEEPER", "sweeper-agent", "swee_per"]) {
+        const aliased = writeValidPackage(tmpdir());
+        fs.writeFileSync(path.join(aliased, "agents", "alias.agent.md"), [
+            "---", `name: ${alias}`, "description: alias", "schemaVersion: 1",
+            "version: 1.0.0", "---", "", "Alias body.",
+        ].join("\n"));
+        const result = await validateAgentPackageDir(aliased, {
+            skipSyntaxCheck: true,
+            reservedAgentNames: ["sweeper"],
+        });
+        assert.ok(
+            result.errors.some((e) => e.code === "reserved_agent_name"),
+            `variant ${alias} must be rejected (normalize: ${normalizeAgentName(alias)})`,
+        );
+    }
+});
+
+test("duplicate agent names within a package are rejected (normalized)", async () => {
+    const dir = writeValidPackage(tmpdir());
+    fs.writeFileSync(path.join(dir, "agents", "dup.agent.md"), [
+        "---", "name: Tri-Ager", "description: dup", "schemaVersion: 1",
+        "version: 1.0.0", "---", "", "Dup body.",
+    ].join("\n"));
+    const result = await validateAgentPackageDir(dir, { skipSyntaxCheck: true });
+    assert.deepEqual(errorCodes(result), ["duplicate_agent_name"]);
+    assert.match(result.errors[0].message, /unreachable/);
+});
+
+test("agent skip reasons are named honestly", async () => {
+    const dir = writeValidPackage(tmpdir());
+    fs.writeFileSync(path.join(dir, "agents", "empty.agent.md"), [
+        "---", "name: empty", "description: no body", "schemaVersion: 1", "version: 1.0.0", "---", "",
+    ].join("\n"));
+    fs.writeFileSync(path.join(dir, "agents", "future.agent.md"), [
+        "---", "name: future", "description: v3", "schemaVersion: 3", "version: 1.0.0", "---", "", "Body.",
+    ].join("\n"));
+    const result = await validateAgentPackageDir(dir, { skipSyntaxCheck: true });
+    assert.deepEqual(errorCodes(result), ["empty_agent_body", "unsupported_agent_schema_version"]);
+    assert.match(result.errors.find((e) => e.code === "empty_agent_body").message, /cannot be blank/);
+    assert.match(result.errors.find((e) => e.code === "unsupported_agent_schema_version").message, /use 1 or 2/);
+});
+
+test("session-policy.json is forbidden in packages", async () => {
+    const dir = writeValidPackage(tmpdir());
+    fs.writeFileSync(path.join(dir, "session-policy.json"), JSON.stringify({ version: 1, creation: { mode: "open" } }));
+    const result = await validateAgentPackageDir(dir, { skipSyntaxCheck: true });
+    assert.deepEqual(errorCodes(result), ["session_policy_forbidden"]);
+    assert.match(result.errors[0].message, /must not override/);
+});
+
+test("non-ASCII paths are a validation error", async () => {
+    const dir = writeValidPackage(tmpdir());
+    fs.writeFileSync(path.join(dir, "skills", "ops", "café.md"), "notes");
+    const result = await validateAgentPackageDir(dir, { skipSyntaxCheck: true });
+    assert.deepEqual(errorCodes(result), ["non_ascii_path"]);
+    assert.match(result.errors[0].message, /rename to ASCII/);
 });
 
 test("skill directory without SKILL.md is loud", async () => {
@@ -334,6 +435,13 @@ test("worker-module syntax errors are caught by the compile-only check", async (
     );
     const ok = await validateAgentPackageDir(dir);
     assert.deepEqual(ok.errors, []);
+
+    // Helpers under tools/ are gated too — a broken import target must not
+    // slip through to fail at worker import time.
+    fs.writeFileSync(path.join(dir, "tools", "helper.js"), "const oops = {{{");
+    const helperBroken = await validateAgentPackageDir(dir);
+    assert.deepEqual(errorCodes(helperBroken), ["syntax_error"]);
+    assert.match(helperBroken.errors[0].message, /helper\.js/);
 });
 
 test("symlinks are a validation error too", async () => {
@@ -341,6 +449,23 @@ test("symlinks are a validation error too", async () => {
     fs.symlinkSync("/etc/hosts", path.join(dir, "sneaky"));
     const result = await validateAgentPackageDir(dir, { skipSyntaxCheck: true });
     assert.deepEqual(errorCodes(result), ["symlink"]);
+});
+
+test("bare imports in tool modules warn about cache-dir resolution", async () => {
+    const dir = writeValidPackage(tmpdir());
+    fs.mkdirSync(path.join(dir, "tools"));
+    fs.writeFileSync(
+        path.join(dir, "tools", "worker-module.js"),
+        'import { defineTool } from "pilotswarm-sdk";\nimport * as fs from "node:fs";\nimport { x } from "./local.js";\nexport default { tools: [] };\n',
+    );
+    fs.writeFileSync(path.join(dir, "tools", "local.js"), "export const x = 1;");
+    const result = await validateAgentPackageDir(dir, { skipSyntaxCheck: true });
+    assert.ok(result.ok);
+    const warning = result.warnings.find((w) => w.code === "bare_imports");
+    assert.ok(warning, "bare import must warn");
+    assert.match(warning.message, /"pilotswarm-sdk"/);
+    assert.ok(!warning.message.includes("node:fs"), "node: builtins are fine");
+    assert.ok(!warning.message.includes("./local.js"), "relative imports are fine");
 });
 
 test("vendored node_modules over the threshold warns, does not fail", async () => {
