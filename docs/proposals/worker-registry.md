@@ -1,8 +1,8 @@
 # Worker Registry — Fleet Identity, Health, and Desired-State Convergence
 
-> **Status:** Proposal (rev 3 — uniform gone-ness)
+> **Status:** Proposal (rev 4 — worker-scoped directives, placement invariants)
 > **Date:** 2026-07-30
-> **Scope:** a first-class CMS registry of workers (identity, heartbeat, health, actual-state) plus a scoped desired-state channel (`fleet_directives`) that workers and external actuators converge against. Generalizes the agent-packages epoch/heartbeat machinery (migrations 0038/0039). **Workers are substrate-neutral and uniformly ephemeral** — AKS pods today, VMs and user laptops later — with substrate variation expressed only in metadata and in which directive domains a worker consumes, never in the lifecycle model or schema.
+> **Scope:** a first-class CMS registry of workers (identity, heartbeat, health, actual-state) plus a scoped desired-state channel (`fleet_directives`, resolvable fleet-wide, per pool, or per worker) that workers and external actuators converge against. Generalizes the agent-packages epoch/heartbeat machinery (migrations 0038/0039). **Workers are substrate-neutral and uniformly ephemeral** — AKS pods today, VMs and user laptops later — with substrate variation expressed only in metadata and in which directive domains a worker consumes, never in the lifecycle model or schema.
 
 ## Direction this serves
 
@@ -44,22 +44,24 @@ workers (
 
 Workers declare `pool`, `consumes`, and owner at registration from config/env (`PILOTSWARM_WORKER_POOL`, defaults: AKS deploy sets `aks-default`, `pilotswarm local` sets `local`, a future laptop join flow sets `laptop` + owner).
 
-### `fleet_directives` — desired state, scoped by pool
+### `fleet_directives` — desired state, scoped fleet-wide, per pool, or per worker
 
 ```sql
 fleet_directives (
-    domain     TEXT NOT NULL,            -- 'agent-packages' | 'model-providers' | 'worker-image' | …
-    pool       TEXT NOT NULL DEFAULT '*',
-    PRIMARY KEY (domain, pool),
+    domain         TEXT NOT NULL,        -- 'agent-packages' | 'model-providers' | 'worker-image' | …
+    pool           TEXT NOT NULL DEFAULT '*',
+    worker_node_id TEXT NOT NULL DEFAULT '*',   -- '*' = no worker specialization
+    PRIMARY KEY (domain, pool, worker_node_id),
     epoch      BIGINT NOT NULL,          -- bumped on every desired-state mutation of THIS row
-    actuation  TEXT NOT NULL DEFAULT 'worker',  -- worker | external
+    actuation  TEXT NOT NULL DEFAULT 'worker',  -- worker | external (uniform per domain by convention)
     desired    JSONB NOT NULL,           -- small payload or doorbell-only ({} + truth elsewhere)
     updated_at TIMESTAMPTZ NOT NULL,
     updated_by TEXT
 )
 ```
 
-- **Resolution**: a worker's effective directive per domain is the `(domain, its-pool)` row if present, else `(domain, '*')`. The heartbeat returns the winning row (domain, pool, epoch, actuation, desired) so workers key convergence on `(domain)` and detect both epoch bumps and re-targeting. Two-level only — no label-selector algebra; pools are the segmentation primitive and stay human-legible.
+- **Resolution — three levels, union with precedence.** Per domain, a worker's contributing rows are `(domain, '*', '*')` (fleet), `(domain, its-pool, '*')` (pool), and `(domain, '*', its-worker-id)` (worker — canonical form for worker-scoped rows). The effective `desired` is the **shallow-merge union** of the three, more specific overriding on conflicting keys: worker > pool > fleet. The effective **epoch is the SUM of contributing rows' epochs** — each row's epoch is monotonic, so the sum changes on any contributing bump (max would miss coincidentally-equal bumps). The heartbeat returns the merged result per domain `(domain, epoch, actuation, desired)`; workers key convergence on the combined epoch and never see the level structure. No label-selector algebra — fleet/pool/worker is the whole hierarchy, human-legible.
+- **Worker-scoped rows may outlive their worker** — deliberately. Directives are desired state, not messages: a laptop that re-registers tomorrow under the same id reacquires its worker-scoped rows. Operators manage them; a later GC can sweep rows whose worker has been absent for weeks.
 - **Actuation**:
   - `worker` — the worker converges in-process and reports `state[domain]` (agent-packages, model-providers, log-level, feature flags).
   - `external` — the worker **cannot** act (image swaps, VM re-provisioning); an external actuator reconciles the substrate while workers merely report actuals. Workers skip external domains entirely.
@@ -74,7 +76,9 @@ cms_worker_heartbeat(p_worker_node_id, p_pool, p_phase,
     RETURNS TABLE(domain TEXT, pool TEXT, epoch BIGINT, actuation TEXT, desired JSONB)
 ```
 
-Upserts the row (info/pool/owner on insert; health/state/phase/updated_at always), applies the uniform prune, and returns the worker's effective directive set. Worker-side, a small `WorkerRegistrar` owned by `PilotSwarmWorker` runs register → initial converge-all → `ready` → beat loop, dispatching changed epochs to pluggable domain handlers; `gracefulShutdown` sends a final `draining` beat. The protocol is **transport-neutral by shape**: v1 rides the proc (workers hold store creds today), and the same operation lands verbatim as a portal op (`POST /api/v1/workers/heartbeat`) when remote workers arrive — worker-over-Web-API auth is its own future track (laptops can't reach PG, as prod's firewall already demonstrates), and nothing here precludes it.
+Upserts the row (info/pool/owner on insert; health/state/phase/updated_at always), applies the uniform prune, and returns the worker's effective directive set — the merged fleet/pool/worker resolution above, one row per domain. Worker-side, a small `WorkerRegistrar` owned by `PilotSwarmWorker` runs register → initial converge-all → `ready` → beat loop, dispatching changed epochs to pluggable domain handlers; `gracefulShutdown` sends a final `draining` beat. The protocol is **transport-neutral by shape**: v1 rides the proc (workers hold store creds today — and near-term remote/laptop workers will simply run with real credentials too), and the same operation lands verbatim as a portal op (`POST /api/v1/workers/heartbeat`) when credential-less remote workers arrive.
+
+**Filed for later — the credential-less remote worker:** the clean end-state is a **duroxide proxy provider that rides the Web API** — an implementation of the existing duroxide storage-provider seam (`duroxideStorageProviders` is already a registry) whose backend is authenticated portal endpoints instead of Postgres: work-item fetch/ack, timers, and history proxied over HTTP, with CMS/facts/blob access riding the Web surfaces that already exist for clients. Duroxide's poll-based dispatch tolerates the added latency, the provider interface is the narrow waist that makes it a drop-in, and the missing piece is worker identity tokens (the same auth track the heartbeat op needs). Nothing to build now; the seam is named so nothing grows across it.
 
 ## Specialization worked example: AKS image control
 
@@ -85,6 +89,17 @@ The substrate specialization the design must eventually carry, end to end:
 3. Workers report `info.image.digest` every beat (from `/etc/pilotswarm-app.json` or injected env).
 4. The fleet page renders, per pool: desired digest vs each worker's actual → rollout progress, stragglers, drift — the "Fleet Truth" section of the image-deploy proposal, materialized on generic machinery.
 5. VM/laptop pools simply have no `worker-image` row. Their future equivalent is a *worker-actuated* `worker-update` domain (self-download + restart) or a notify-the-owner flow — same channel, different domain and actuation.
+
+## Future: capability-aware placement (recorded now, built later)
+
+The stated direction: worker tags will eventually **restrict agents and tools to certain pools + owners**, pools will **advertise capabilities**, and an LLM mid-session will be able to *ask to be rescheduled* onto a pool with the capabilities or privileges its task needs. None of that is built now — but the present design must not preclude it. Four invariants, all already satisfied, are therefore promoted to guarantees this proposal will not break:
+
+1. **Pool and owner are stable, worker-declared identities present on every registry row.** They are the future tag alphabet: when placement lands, a worker's duroxide claim tags derive mechanically from `(pool, owner)`; a session reschedule is then just a tag change on its work — claimed only by matching workers. Nothing today writes competing tag semantics.
+2. **Capabilities are honestly worker-reported in `info.capabilities` and aggregate per pool without new schema.** A pool's advertisement is derived from its live workers — the *intersection* of their capability sets is what a pool can guarantee (union shows what it might offer). `list_pools` (portal/MCP, and eventually a session tool) is a read over the registry, nothing more.
+3. **Placement constraints attach to the things being placed, not to this registry.** Agent/package manifests and tool metadata are open JSONB/frontmatter — a future `placement: { pools, capabilities }` field slots in without touching workers or directives; enforcement happens at create/reschedule validation, which maps constraints to tags.
+4. **The registry describes; duroxide enforces; relocation already exists.** Reschedule = validate → set the session's tag → dehydrate; any eligible worker rehydrates (the blob-relocation path in production today). The registry never arbitrates — the boundary that keeps this proposal out of the scheduler business is exactly the boundary that makes the scheduler buildable later.
+
+The one genuine prerequisite this surfaces early: capability-restricted pools only work if their workers can reach the session state (store/blob) — which for laptops is the credential-less transport track above. The two future features converge on the same seam, which is a good sign it is the right seam.
 
 ## Folding agent packages in (first tenant)
 
@@ -111,18 +126,24 @@ No user-visible change: same ~20s convergence, same liveness display, same prune
 
 ## Migration plan
 
-1. **0040** — `workers` + `fleet_directives`; `cms_worker_heartbeat` / `cms_list_workers` / `cms_fleet_directive_bump` / `cms_get_fleet_directives`; seed `('agent-packages','*')` from `agent_registry_state.epoch`; re-point the 0038 bump/epoch procs at it (shims — mixed fleets stay safe: old workers keep the 0038 paths, new workers heartbeat, both write compatible truth).
+1. **0040** — `workers` + `fleet_directives` (with the full domain/pool/worker key from day one); `cms_worker_heartbeat` / `cms_list_workers` / `cms_fleet_directive_bump` / `cms_get_fleet_directives`; seed `('agent-packages','*','*')` from `agent_registry_state.epoch`; re-point the 0038 bump/epoch procs at it (shims — mixed fleets stay safe: old workers keep the 0038 paths, new workers heartbeat, both write compatible truth).
 2. **Worker registrar** — absorb the agent-packages timer; health collection (`process.memoryUsage`, `perf_hooks.monitorEventLoopDelay`, session/slot counts); pool/consumes/owner from config; `draining` on graceful shutdown.
 3. **Read-side** — portal/MCP/UI onto `cms_list_workers`; `get_system_status` from the registry; Workers admin surface.
 4. **0041** — drop `agent_worker_state` + `agent_registry_state` once the fleet is upgraded.
 
 The image-control actuator (the `DeployProvider` wiring) ships with the image-deploy proposal, not here — this proposal only guarantees the directive row and the actual-state reporting it needs.
 
+## Resolved decisions
+
+- **Pool naming** — free-form strings with conventions. No pools table unless pools ever grow policy of their own.
+- **Enrollment inventory** — later, if ever; layered above the registry, never a second liveness mode. Not a concern now.
+- **Worker-scoped directives** — in from day one via the `worker_node_id` dimension (union with fleet/pool, worker precedence on conflict) rather than a v2 mailbox.
+- **Remote workers** — near-term they run with real credentials; the credential-less path is the filed duroxide Web-API proxy provider (above), gated on worker identity tokens.
+
 ## Open questions
 
-- **Pool naming/ownership** — free-form strings with conventions, or a `pools` table with metadata? Start free-form; add the table when pools grow policy.
-- **Laptop trust envelope** — user-owned workers executing shared agent-package code, and serving whose sessions, is the deferred security track; the registry deliberately only *records* owner + capabilities + consumed domains so that track has ground truth to build on. Routing restrictions stay in duroxide (`workerTagFilter`), with the registry describing tags, never enforcing them.
-- **Enrollment inventory** — if "my registered devices" (known-but-absent laptops) is ever wanted, it is a separate enrollment table layered above this registry; presence semantics here stay uniform regardless.
-- **Remote worker transport/auth** — the Web-API heartbeat and worker identity tokens; a prerequisite for laptops, out of scope here beyond keeping the protocol shape transport-neutral.
-- **Per-worker mailbox (v2)** — targeted directives (drain this pod, dump diagnostics) as `(worker_node_id, domain)` rows consumed on heartbeat, when a real consumer appears.
+- **One-shot operations** — worker-scoped *directives* are desired state; imperative one-shots (dump diagnostics now) don't fit the epoch model and would need a consumed-on-read mailbox if ever wanted.
+- **Pool capability advertisement details** — intersection for guarantees is the proposal; whether the UI also shows the union ("some workers here can…") is a display call for when `list_pools` is built.
+- **Directive merge depth** — shallow key-level merge is specified; revisit only if a domain genuinely needs deep merging (none foreseen — keep payloads flat).
+- **Laptop trust envelope** — user-owned workers executing shared agent-package code, and serving whose sessions, is the deferred security track; the registry records owner + capabilities + consumed domains so that track has ground truth. Enforcement stays in duroxide tags and create/reschedule validation.
 - **Health depth** — keep it glanceable; resist becoming a metrics store.
