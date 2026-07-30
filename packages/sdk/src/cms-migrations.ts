@@ -200,7 +200,423 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "service_sessions",
             sql: migration_0037_service_sessions(schema),
         },
+        {
+            version: "0038",
+            name: "agent_packages",
+            sql: migration_0038_agent_packages(schema),
+        },
     ];
+}
+
+// ─── Migration 0038: agent packages registry ─────────────────────
+//
+// User-uploadable agent packages (docs/proposals/agent-packages.md).
+// All-new tables, so a single transactional migration is safe — no hot-table
+// ALTERs, no steps shape needed. Identity is (name, semver); sha256 is a
+// verifier. agent_registry_state.epoch is bumped by EVERY mutating proc that
+// changes what workers should run — workers poll it to converge without
+// restarts. auth_token follows the users.github_copilot_key posture: status
+// procs return a boolean, the raw read is internal-only.
+function migration_0038_agent_packages(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- 0038_agent_packages: registry for user-uploadable agent packages.
+
+CREATE TABLE IF NOT EXISTS ${s}.agent_sources (
+    source_id        TEXT PRIMARY KEY,
+    kind             TEXT NOT NULL CHECK (kind IN ('github', 'ado', 'url', 'upload')),
+    repo_url         TEXT,
+    ref              TEXT,
+    path             TEXT,
+    url              TEXT,
+    auth_token       TEXT,
+    auto_sync        BOOLEAN NOT NULL DEFAULT FALSE,
+    last_sync_at     TIMESTAMPTZ,
+    last_sync_status TEXT,
+    last_sync_error  TEXT,
+    last_commit_sha  TEXT,
+    owner_provider   TEXT,
+    owner_subject    TEXT,
+    created_by       TEXT,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS ${s}.agent_packages (
+    package_id        TEXT PRIMARY KEY,
+    source_id         TEXT REFERENCES ${s}.agent_sources(source_id) ON DELETE SET NULL,
+    name              TEXT NOT NULL UNIQUE,
+    scope             TEXT NOT NULL CHECK (scope IN ('shared', 'user')),
+    owner_provider    TEXT,
+    owner_subject     TEXT,
+    enabled           BOOLEAN NOT NULL DEFAULT TRUE,
+    active_version_id TEXT,
+    created_by        TEXT,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS agent_packages_owner_idx ON ${s}.agent_packages (owner_provider, owner_subject);
+
+CREATE TABLE IF NOT EXISTS ${s}.agent_package_versions (
+    version_id        TEXT PRIMARY KEY,
+    package_id        TEXT NOT NULL REFERENCES ${s}.agent_packages(package_id) ON DELETE CASCADE,
+    semver            TEXT NOT NULL,
+    sha256            TEXT NOT NULL,
+    size_bytes        BIGINT NOT NULL,
+    artifact_filename TEXT NOT NULL,
+    commit_sha        TEXT,
+    manifest          JSONB NOT NULL,
+    created_by        TEXT,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (package_id, semver)
+);
+
+CREATE TABLE IF NOT EXISTS ${s}.agent_registry_state (
+    id         INTEGER PRIMARY KEY CHECK (id = 1),
+    epoch      BIGINT NOT NULL DEFAULT 1,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+INSERT INTO ${s}.agent_registry_state (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS ${s}.agent_worker_state (
+    worker_node_id TEXT PRIMARY KEY,
+    epoch          BIGINT NOT NULL DEFAULT 0,
+    installed      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- ── epoch ────────────────────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION ${s}.cms_agent_registry_epoch() RETURNS BIGINT AS $$
+    SELECT epoch FROM ${s}.agent_registry_state WHERE id = 1;
+$$ LANGUAGE sql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_agent_registry_bump() RETURNS BIGINT AS $$
+    UPDATE ${s}.agent_registry_state
+       SET epoch = epoch + 1, updated_at = now()
+     WHERE id = 1
+    RETURNING epoch;
+$$ LANGUAGE sql;
+
+-- ── sources ──────────────────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION ${s}.cms_register_agent_source(
+    p_source_id TEXT, p_kind TEXT, p_repo_url TEXT, p_ref TEXT, p_path TEXT,
+    p_url TEXT, p_auth_token TEXT, p_auto_sync BOOLEAN,
+    p_owner_provider TEXT, p_owner_subject TEXT, p_created_by TEXT
+) RETURNS VOID AS $$
+BEGIN
+    INSERT INTO ${s}.agent_sources
+        (source_id, kind, repo_url, ref, path, url, auth_token, auto_sync,
+         owner_provider, owner_subject, created_by)
+    VALUES (p_source_id, p_kind, p_repo_url, p_ref, p_path,
+            NULLIF(p_url, ''), NULLIF(p_auth_token, ''), COALESCE(p_auto_sync, FALSE),
+            BTRIM(p_owner_provider), BTRIM(p_owner_subject), p_created_by);
+END;
+$$ LANGUAGE plpgsql;
+
+-- Listing never returns auth_token — only whether one is set.
+CREATE OR REPLACE FUNCTION ${s}.cms_list_agent_sources(
+    p_viewer_provider TEXT, p_viewer_subject TEXT, p_is_admin BOOLEAN
+) RETURNS TABLE(
+    source_id TEXT, kind TEXT, repo_url TEXT, ref TEXT, path TEXT, url TEXT,
+    auth_token_set BOOLEAN, auto_sync BOOLEAN, last_sync_at TIMESTAMPTZ,
+    last_sync_status TEXT, last_sync_error TEXT, last_commit_sha TEXT,
+    owner_provider TEXT, owner_subject TEXT, created_by TEXT, created_at TIMESTAMPTZ
+) AS $$
+    SELECT source_id, kind, repo_url, ref, path, url,
+           (auth_token IS NOT NULL), auto_sync, last_sync_at,
+           last_sync_status, last_sync_error, last_commit_sha,
+           owner_provider, owner_subject, created_by, created_at
+      FROM ${s}.agent_sources s
+     WHERE p_is_admin
+        OR (s.owner_provider = BTRIM(p_viewer_provider) AND s.owner_subject = BTRIM(p_viewer_subject))
+     ORDER BY created_at DESC;
+$$ LANGUAGE sql;
+
+-- Internal-only raw token read for the sync fetchers. Never expose through
+-- the public management API (github_copilot_key precedent, migration 0010).
+CREATE OR REPLACE FUNCTION ${s}.cms_get_agent_source_token(p_source_id TEXT)
+RETURNS TEXT AS $$
+    SELECT auth_token FROM ${s}.agent_sources WHERE source_id = p_source_id;
+$$ LANGUAGE sql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_get_agent_source(p_source_id TEXT)
+RETURNS TABLE(
+    source_id TEXT, kind TEXT, repo_url TEXT, ref TEXT, path TEXT, url TEXT,
+    auth_token_set BOOLEAN, auto_sync BOOLEAN, last_sync_at TIMESTAMPTZ,
+    last_sync_status TEXT, last_sync_error TEXT, last_commit_sha TEXT,
+    owner_provider TEXT, owner_subject TEXT, created_by TEXT, created_at TIMESTAMPTZ
+) AS $$
+    SELECT source_id, kind, repo_url, ref, path, url,
+           (auth_token IS NOT NULL), auto_sync, last_sync_at,
+           last_sync_status, last_sync_error, last_commit_sha,
+           owner_provider, owner_subject, created_by, created_at
+      FROM ${s}.agent_sources
+     WHERE source_id = p_source_id;
+$$ LANGUAGE sql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_update_agent_source_sync(
+    p_source_id TEXT, p_status TEXT, p_error TEXT, p_commit_sha TEXT
+) RETURNS VOID AS $$
+BEGIN
+    UPDATE ${s}.agent_sources
+       SET last_sync_at = now(),
+           last_sync_status = p_status,
+           last_sync_error = p_error,
+           last_commit_sha = COALESCE(p_commit_sha, last_commit_sha)
+     WHERE source_id = p_source_id;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_delete_agent_source(
+    p_source_id TEXT, p_actor_provider TEXT, p_actor_subject TEXT, p_is_admin BOOLEAN
+) RETURNS VOID AS $$
+DECLARE
+    v_src RECORD;
+BEGIN
+    SELECT * INTO v_src FROM ${s}.agent_sources WHERE source_id = p_source_id;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'AGENT_SOURCE_NOT_FOUND: source % does not exist', p_source_id;
+    END IF;
+    IF NOT p_is_admin AND (v_src.owner_provider IS DISTINCT FROM BTRIM(p_actor_provider)
+                           OR v_src.owner_subject IS DISTINCT FROM BTRIM(p_actor_subject)) THEN
+        RAISE EXCEPTION 'AGENT_PACKAGE_FORBIDDEN: only the source creator or an admin can delete it';
+    END IF;
+    DELETE FROM ${s}.agent_sources WHERE source_id = p_source_id;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── publish (the atomic heart) ───────────────────────────────────
+--
+-- Row-locks the package by name, enforces creator-or-admin, treats an
+-- identical (semver, sha256) republish as a no-op, rejects same-semver
+-- different-content outright (bump the version — no replace), inserts the
+-- version, activates it, and bumps the registry epoch. status is one of
+-- 'published' | 'noop'.
+
+CREATE OR REPLACE FUNCTION ${s}.cms_publish_agent_package(
+    p_package_id TEXT, p_version_id TEXT, p_name TEXT, p_scope TEXT,
+    p_owner_provider TEXT, p_owner_subject TEXT, p_source_id TEXT,
+    p_semver TEXT, p_sha256 TEXT, p_size_bytes BIGINT, p_artifact_filename TEXT,
+    p_commit_sha TEXT, p_manifest JSONB, p_created_by TEXT, p_is_admin BOOLEAN
+) RETURNS TABLE(status TEXT, package_id TEXT, version_id TEXT) AS $$
+DECLARE
+    v_pkg RECORD;
+    v_ver RECORD;
+BEGIN
+    SELECT * INTO v_pkg FROM ${s}.agent_packages p WHERE p.name = p_name FOR UPDATE;
+    IF NOT FOUND THEN
+        INSERT INTO ${s}.agent_packages
+            (package_id, source_id, name, scope, owner_provider, owner_subject, created_by)
+        VALUES (p_package_id, p_source_id, p_name, p_scope,
+                BTRIM(p_owner_provider), BTRIM(p_owner_subject), p_created_by);
+        INSERT INTO ${s}.agent_package_versions
+            (version_id, package_id, semver, sha256, size_bytes, artifact_filename, commit_sha, manifest, created_by)
+        VALUES (p_version_id, p_package_id, p_semver, p_sha256, p_size_bytes,
+                p_artifact_filename, p_commit_sha, p_manifest, p_created_by);
+        UPDATE ${s}.agent_packages SET active_version_id = p_version_id WHERE ${s}.agent_packages.package_id = p_package_id;
+        PERFORM ${s}.cms_agent_registry_bump();
+        RETURN QUERY SELECT 'published'::TEXT, p_package_id, p_version_id;
+        RETURN;
+    END IF;
+
+    IF NOT p_is_admin AND (v_pkg.owner_provider IS DISTINCT FROM BTRIM(p_owner_provider)
+                           OR v_pkg.owner_subject IS DISTINCT FROM BTRIM(p_owner_subject)) THEN
+        RAISE EXCEPTION 'AGENT_PACKAGE_FORBIDDEN: only the package creator or an admin can publish new versions of "%"', p_name;
+    END IF;
+
+    SELECT * INTO v_ver FROM ${s}.agent_package_versions v
+     WHERE v.package_id = v_pkg.package_id AND v.semver = p_semver;
+    IF FOUND THEN
+        IF v_ver.sha256 = p_sha256 THEN
+            RETURN QUERY SELECT 'noop'::TEXT, v_pkg.package_id, v_ver.version_id;
+            RETURN;
+        END IF;
+        RAISE EXCEPTION 'AGENT_PACKAGE_SEMVER_CONFLICT: %@% is already published with different content — published versions are immutable, bump the version', p_name, p_semver;
+    END IF;
+
+    INSERT INTO ${s}.agent_package_versions
+        (version_id, package_id, semver, sha256, size_bytes, artifact_filename, commit_sha, manifest, created_by)
+    VALUES (p_version_id, v_pkg.package_id, p_semver, p_sha256, p_size_bytes,
+            p_artifact_filename, p_commit_sha, p_manifest, p_created_by);
+    UPDATE ${s}.agent_packages SET active_version_id = p_version_id
+     WHERE ${s}.agent_packages.package_id = v_pkg.package_id;
+    PERFORM ${s}.cms_agent_registry_bump();
+    RETURN QUERY SELECT 'published'::TEXT, v_pkg.package_id, p_version_id;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── package reads ────────────────────────────────────────────────
+--
+-- Visibility: shared packages are visible to everyone; user packages only to
+-- their owner (or an admin). This filter is THE user-scope privacy boundary —
+-- every listing path goes through one of these two procs.
+
+CREATE OR REPLACE FUNCTION ${s}.cms_list_agent_packages(
+    p_viewer_provider TEXT, p_viewer_subject TEXT, p_is_admin BOOLEAN
+) RETURNS TABLE(
+    package_id TEXT, source_id TEXT, name TEXT, scope TEXT,
+    owner_provider TEXT, owner_subject TEXT,
+    enabled BOOLEAN, created_by TEXT, created_at TIMESTAMPTZ,
+    active_version_id TEXT, semver TEXT, sha256 TEXT, size_bytes BIGINT,
+    artifact_filename TEXT, commit_sha TEXT, manifest JSONB,
+    version_created_at TIMESTAMPTZ
+) AS $$
+    SELECT p.package_id, p.source_id, p.name, p.scope,
+           p.owner_provider, p.owner_subject,
+           p.enabled, p.created_by, p.created_at,
+           v.version_id, v.semver, v.sha256, v.size_bytes,
+           v.artifact_filename, v.commit_sha, v.manifest, v.created_at
+      FROM ${s}.agent_packages p
+      LEFT JOIN ${s}.agent_package_versions v ON v.version_id = p.active_version_id
+     WHERE p.scope = 'shared'
+        OR p_is_admin
+        OR (p.owner_provider = BTRIM(p_viewer_provider) AND p.owner_subject = BTRIM(p_viewer_subject))
+     ORDER BY p.scope, p.name;
+$$ LANGUAGE sql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_get_agent_package(
+    p_name TEXT, p_viewer_provider TEXT, p_viewer_subject TEXT, p_is_admin BOOLEAN
+) RETURNS TABLE(
+    package_id TEXT, source_id TEXT, name TEXT, scope TEXT,
+    owner_provider TEXT, owner_subject TEXT,
+    enabled BOOLEAN, created_by TEXT, created_at TIMESTAMPTZ,
+    active_version_id TEXT, version_id TEXT, semver TEXT, sha256 TEXT,
+    size_bytes BIGINT, artifact_filename TEXT, commit_sha TEXT, manifest JSONB,
+    version_created_at TIMESTAMPTZ, version_created_by TEXT
+) AS $$
+    SELECT p.package_id, p.source_id, p.name, p.scope,
+           p.owner_provider, p.owner_subject,
+           p.enabled, p.created_by, p.created_at, p.active_version_id,
+           v.version_id, v.semver, v.sha256, v.size_bytes,
+           v.artifact_filename, v.commit_sha, v.manifest, v.created_at, v.created_by
+      FROM ${s}.agent_packages p
+      LEFT JOIN ${s}.agent_package_versions v ON v.package_id = p.package_id
+     WHERE p.name = p_name
+       AND (p.scope = 'shared' OR p_is_admin
+            OR (p.owner_provider = BTRIM(p_viewer_provider) AND p.owner_subject = BTRIM(p_viewer_subject)))
+     ORDER BY v.created_at DESC;
+$$ LANGUAGE sql;
+
+-- Worker-facing install manifest: every enabled package's active version.
+-- Workers are trusted infrastructure — no viewer filter here by design.
+CREATE OR REPLACE FUNCTION ${s}.cms_get_agent_packages_install_manifest()
+RETURNS TABLE(
+    name TEXT, scope TEXT, owner_provider TEXT, owner_subject TEXT,
+    semver TEXT, sha256 TEXT, size_bytes BIGINT, artifact_filename TEXT, manifest JSONB
+) AS $$
+    SELECT p.name, p.scope, p.owner_provider, p.owner_subject, v.semver, v.sha256,
+           v.size_bytes, v.artifact_filename, v.manifest
+      FROM ${s}.agent_packages p
+      JOIN ${s}.agent_package_versions v ON v.version_id = p.active_version_id
+     WHERE p.enabled
+     ORDER BY p.name;
+$$ LANGUAGE sql;
+
+-- ── package mutations (all creator-or-admin, all epoch-bumping) ──
+
+CREATE OR REPLACE FUNCTION ${s}.cms_agent_package_authz(
+    p_name TEXT, p_actor_provider TEXT, p_actor_subject TEXT, p_is_admin BOOLEAN
+) RETURNS ${s}.agent_packages AS $$
+DECLARE
+    v_pkg ${s}.agent_packages;
+BEGIN
+    SELECT * INTO v_pkg FROM ${s}.agent_packages WHERE name = p_name FOR UPDATE;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'AGENT_PACKAGE_NOT_FOUND: package "%" does not exist', p_name;
+    END IF;
+    IF NOT p_is_admin AND (v_pkg.owner_provider IS DISTINCT FROM BTRIM(p_actor_provider)
+                           OR v_pkg.owner_subject IS DISTINCT FROM BTRIM(p_actor_subject)) THEN
+        RAISE EXCEPTION 'AGENT_PACKAGE_FORBIDDEN: only the package creator or an admin can modify "%"', p_name;
+    END IF;
+    RETURN v_pkg;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_set_agent_package_scope(
+    p_name TEXT, p_scope TEXT, p_actor_provider TEXT, p_actor_subject TEXT, p_is_admin BOOLEAN
+) RETURNS VOID AS $$
+DECLARE
+    v_pkg ${s}.agent_packages;
+BEGIN
+    v_pkg := ${s}.cms_agent_package_authz(p_name, p_actor_provider, p_actor_subject, p_is_admin);
+    IF p_scope NOT IN ('shared', 'user') THEN
+        RAISE EXCEPTION 'AGENT_PACKAGE_BAD_SCOPE: scope must be shared or user, got "%"', p_scope;
+    END IF;
+    UPDATE ${s}.agent_packages SET scope = p_scope WHERE package_id = v_pkg.package_id;
+    PERFORM ${s}.cms_agent_registry_bump();
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_set_agent_package_enabled(
+    p_name TEXT, p_enabled BOOLEAN, p_actor_provider TEXT, p_actor_subject TEXT, p_is_admin BOOLEAN
+) RETURNS VOID AS $$
+DECLARE
+    v_pkg ${s}.agent_packages;
+BEGIN
+    v_pkg := ${s}.cms_agent_package_authz(p_name, p_actor_provider, p_actor_subject, p_is_admin);
+    UPDATE ${s}.agent_packages SET enabled = p_enabled WHERE package_id = v_pkg.package_id;
+    PERFORM ${s}.cms_agent_registry_bump();
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_pin_agent_package_version(
+    p_name TEXT, p_semver TEXT, p_actor_provider TEXT, p_actor_subject TEXT, p_is_admin BOOLEAN
+) RETURNS VOID AS $$
+DECLARE
+    v_pkg ${s}.agent_packages;
+    v_version_id TEXT;
+BEGIN
+    v_pkg := ${s}.cms_agent_package_authz(p_name, p_actor_provider, p_actor_subject, p_is_admin);
+    SELECT version_id INTO v_version_id FROM ${s}.agent_package_versions
+     WHERE package_id = v_pkg.package_id AND semver = p_semver;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'AGENT_PACKAGE_VERSION_NOT_FOUND: %@% is not a published version', p_name, p_semver;
+    END IF;
+    UPDATE ${s}.agent_packages SET active_version_id = v_version_id WHERE package_id = v_pkg.package_id;
+    PERFORM ${s}.cms_agent_registry_bump();
+END;
+$$ LANGUAGE plpgsql;
+
+-- Returns the artifact filenames of every deleted version so the caller can
+-- clean up the artifact store after the transaction commits.
+CREATE OR REPLACE FUNCTION ${s}.cms_delete_agent_package(
+    p_name TEXT, p_actor_provider TEXT, p_actor_subject TEXT, p_is_admin BOOLEAN
+) RETURNS TABLE(artifact_filename TEXT) AS $$
+DECLARE
+    v_pkg ${s}.agent_packages;
+BEGIN
+    v_pkg := ${s}.cms_agent_package_authz(p_name, p_actor_provider, p_actor_subject, p_is_admin);
+    RETURN QUERY
+        SELECT v.artifact_filename FROM ${s}.agent_package_versions v
+         WHERE v.package_id = v_pkg.package_id;
+    DELETE FROM ${s}.agent_packages WHERE package_id = v_pkg.package_id;
+    PERFORM ${s}.cms_agent_registry_bump();
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── worker fleet state ───────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION ${s}.cms_upsert_agent_worker_state(
+    p_worker_node_id TEXT, p_epoch BIGINT, p_installed JSONB
+) RETURNS VOID AS $$
+BEGIN
+    INSERT INTO ${s}.agent_worker_state (worker_node_id, epoch, installed, updated_at)
+    VALUES (p_worker_node_id, p_epoch, COALESCE(p_installed, '{}'::jsonb), now())
+    ON CONFLICT (worker_node_id) DO UPDATE
+        SET epoch = EXCLUDED.epoch,
+            installed = EXCLUDED.installed,
+            updated_at = now();
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_list_agent_worker_state()
+RETURNS TABLE(worker_node_id TEXT, epoch BIGINT, installed JSONB, updated_at TIMESTAMPTZ) AS $$
+    SELECT worker_node_id, epoch, installed, updated_at
+      FROM ${s}.agent_worker_state
+     ORDER BY worker_node_id;
+$$ LANGUAGE sql;
+`;
 }
 
 // ─── Migration 0037: service sessions (tree-scoped system sessions) ─────

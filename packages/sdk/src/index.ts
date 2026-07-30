@@ -241,5 +241,44 @@ export type {
 
 export { SessionDumper } from "./session-dumper.js";
 
+// ─── Agent packages (docs/proposals/agent-packages.md) ───────────
+export {
+    agentPackagesArtifactSessionId,
+    agentPackageArtifactFilename,
+    isValidSemver,
+    compareSemver,
+    packAgentPackage,
+    readAgentPackageTarGz,
+    extractAgentPackageTarGz,
+    validateAgentPackageDir,
+    AGENT_PACKAGE_MAX_COMPRESSED_BYTES,
+} from "./agent-package-format.js";
+export type {
+    AgentPackageIssue,
+    AgentPackageManifest,
+    AgentPackageValidation,
+    PackedAgentPackage,
+} from "./agent-package-format.js";
+export {
+    publishAgentPackageDir,
+    publishPackedAgentPackage,
+    fetchAgentPackageTarGz,
+    deleteAgentPackageEverywhere,
+    AgentPackageValidationError,
+} from "./agent-package-service.js";
+export type { PublishOutcome } from "./agent-package-service.js";
+export type {
+    AgentPackageScope,
+    AgentPrincipal,
+    AgentSourceRow,
+    AgentPackageSummary,
+    AgentPackageDetail,
+    AgentPackageVersionRow,
+    AgentPackageInstallEntry,
+    AgentWorkerStateRow,
+    PublishAgentPackageInput,
+    PublishAgentPackageResult,
+} from "./cms.js";
+
 // Re-export defineTool from Copilot SDK for convenience
 export { defineTool } from "@github/copilot-sdk";
