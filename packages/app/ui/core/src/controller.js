@@ -2640,8 +2640,9 @@ export class PilotSwarmUiController {
             if (!pkgs?.fetchedAt) void this.refreshAdminAgentPackages().catch(() => {});
         }
         if (section === "workers") {
-            const workers = this.getState().admin?.workers;
-            if (!workers?.fetchedAt) void this.refreshAdminWorkers().catch(() => {});
+            // Always refetch on entry: liveness is heartbeat recency, so rows
+            // fetched minutes ago render as a dead fleet ("0 live").
+            void this.refreshAdminWorkers().catch(() => {});
         }
     }
 

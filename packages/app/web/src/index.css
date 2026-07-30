@@ -805,16 +805,14 @@ button {
   background: color-mix(in srgb, var(--ps-border) 52%, transparent);
 }
 
+/* Resize grips are bare dots — no pill/bezel chrome in any theme; the
+   gutter itself is the affordance and the dots brighten on hover. */
 .ps-column-resizer-handle {
   position: relative;
   z-index: 1;
   display: grid;
   gap: 4px;
   padding: 10px 4px;
-  border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--ps-modal-border) 78%, transparent);
-  background: color-mix(in srgb, var(--ps-surface) 94%, transparent);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
 }
 
 .ps-row-resizer-handle {
@@ -823,10 +821,6 @@ button {
   display: flex;
   gap: 4px;
   padding: 4px 10px;
-  border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--ps-modal-border) 78%, transparent);
-  background: color-mix(in srgb, var(--ps-surface) 94%, transparent);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
 }
 
 .ps-column-resizer-dot {
@@ -843,18 +837,13 @@ button {
   background: color-mix(in srgb, var(--ps-modal-selected-border) 84%, var(--ps-page-foreground));
 }
 
-.ps-column-resizer:hover .ps-column-resizer-handle,
-.ps-column-resizer.is-dragging .ps-column-resizer-handle,
-.ps-column-resizer:focus-visible .ps-column-resizer-handle {
-  border-color: color-mix(in srgb, var(--ps-modal-selected-border) 72%, var(--ps-modal-border));
-  background: color-mix(in srgb, var(--ps-modal-selected-background) 72%, var(--ps-surface));
-}
-
-.ps-row-resizer:hover .ps-row-resizer-handle,
-.ps-row-resizer.is-dragging .ps-row-resizer-handle,
-.ps-row-resizer:focus-visible .ps-row-resizer-handle {
-  border-color: color-mix(in srgb, var(--ps-modal-selected-border) 72%, var(--ps-modal-border));
-  background: color-mix(in srgb, var(--ps-modal-selected-background) 72%, var(--ps-surface));
+.ps-column-resizer:hover .ps-column-resizer-dot,
+.ps-column-resizer.is-dragging .ps-column-resizer-dot,
+.ps-column-resizer:focus-visible .ps-column-resizer-dot,
+.ps-row-resizer:hover .ps-row-resizer-dot,
+.ps-row-resizer.is-dragging .ps-row-resizer-dot,
+.ps-row-resizer:focus-visible .ps-row-resizer-dot {
+  background: var(--ps-modal-selected-border);
 }
 
 .ps-column-resizer:focus-visible {
@@ -5420,6 +5409,9 @@ body.ps-rich-ui .ps-panel-header {
 }
 
 /* ── Admin → Workers (worker registry, migration 0040) ─────────────── */
+/* The fleet table earns the full main pane — the 72ch prose cap on
+   .ps-admin-detail is for the package form, not tabular data. */
+.ps-admin-workers { max-width: none; }
 .ps-admin-workers__head {
     display: flex;
     align-items: center;
@@ -5481,3 +5473,86 @@ body.ps-rich-ui .ps-panel-header {
 .ps-worker-phase.is-ready { color: #3fb950; border-color: color-mix(in srgb, #3fb950 45%, transparent); }
 .ps-worker-phase.is-starting { color: #d29922; border-color: color-mix(in srgb, #d29922 50%, transparent); }
 .ps-worker-phase.is-draining { color: #f85149; border-color: color-mix(in srgb, #f85149 45%, transparent); }
+
+/* ═══════════════════════════════════════════════════════════════════
+   Workspace Dark chrome — the flat admin-console language as a THEME.
+   Same pattern as win95: `applyDocumentTheme` stamps the theme id on
+   the root so a theme can carry chrome, not just colours. Every rule
+   is fenced under [data-ps-theme="workspace-dark"]; no other theme is
+   reachable from here. The TUI never loads this stylesheet.
+
+   Treatment rules (docs in the UX pitch artifact):
+   - panels: no borders, tone surfaces; the chat pane is the CANVAS
+     (transparent on the page), rails read as raised surfaces
+   - pane titles: quiet tracked uppercase labels, not colored bars
+   - focus: 2px inset accent edge, not a glowing frame
+   - status color lives in content (dots, badges, card edges) only
+   ═══════════════════════════════════════════════════════════════════ */
+:root[data-ps-theme="workspace-dark"] .ps-panel {
+  border: none;
+  border-radius: 10px;
+  background: var(--ps-surface);
+  box-shadow: none;
+}
+:root[data-ps-theme="workspace-dark"] .ps-panel.ps-chat-panel {
+  background: transparent;
+}
+:root[data-ps-theme="workspace-dark"] .ps-panel.is-focused {
+  box-shadow: inset 2px 0 0 #2ea043;
+}
+:root[data-ps-theme="workspace-dark"] .ps-panel-header {
+  background: transparent;
+  border-bottom: none;
+  min-height: 26px;
+  padding: 8px 14px 0;
+}
+:root[data-ps-theme="workspace-dark"] .ps-panel-title,
+:root[data-ps-theme="workspace-dark"] .ps-panel-title span {
+  color: var(--ps-muted) !important;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+:root[data-ps-theme="workspace-dark"] .ps-panel-title-right,
+:root[data-ps-theme="workspace-dark"] .ps-panel-title-right span {
+  color: var(--ps-muted) !important;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+}
+/* Chat cards: full borders become a raised tone with a status edge. */
+:root[data-ps-theme="workspace-dark"] .ps-chat-card {
+  border: none;
+  border-left: 2px solid color-mix(in srgb, var(--ps-chat-card-accent, var(--ps-border)) 85%, transparent);
+  border-radius: 8px;
+  background: #1c2129;
+}
+/* Quiet buttons: hairline outline on the surface, no fills. */
+:root[data-ps-theme="workspace-dark"] .ps-mini-button {
+  background: transparent;
+  border-color: var(--ps-border);
+}
+:root[data-ps-theme="workspace-dark"] .ps-mini-button:hover {
+  background: color-mix(in srgb, var(--ps-foreground) 8%, transparent);
+}
+
+/* ── Package workspace preview: content-aware formatting ───────────── */
+.ps-admin-ws__doc { min-width: 0; }
+.ps-admin-ws__doc .ps-markdown-preview { font-size: 13px; padding: 4px 2px 8px; }
+.ps-admin-ws__doc .ps-md-heading.is-h1 { font-size: 17px; }
+.ps-admin-ws__doc .ps-md-heading.is-h2 { font-size: 15px; }
+.ps-admin-ws__doc .ps-md-heading.is-h3 { font-size: 13.5px; }
+.ps-admin-ws__frontmatter {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 2px 14px;
+  margin: 4px 0 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--ps-foreground) 5%, transparent);
+  font-size: 12px;
+  font-family: var(--ps-mono, ui-monospace, monospace);
+}
+.ps-admin-ws__fm-row { display: contents; }
+.ps-admin-ws__fm-key { color: var(--ps-muted); }
+.ps-admin-ws__fm-val { color: var(--ps-foreground); overflow-wrap: anywhere; }

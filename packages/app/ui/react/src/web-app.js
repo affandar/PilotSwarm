@@ -6921,6 +6921,15 @@ function AdminWorkersPane({ controller, view }) {
     const workers = view.workers || {};
     const rows = workers.rows || [];
     const counts = workers.counts || {};
+    // Liveness is heartbeat recency (~20s beats, 90s window): a static
+    // snapshot rots into "0 live" while the pane sits open. Poll while
+    // mounted; the TUI refreshes on `r`.
+    React.useEffect(() => {
+        const timer = window.setInterval(() => {
+            void controller.refreshAdminWorkers();
+        }, 25_000);
+        return () => window.clearInterval(timer);
+    }, [controller]);
     return React.createElement("div", { className: "ps-admin-detail ps-admin-workers" },
         React.createElement("div", { className: "ps-admin-workers__head" },
             React.createElement("h3", null, "Workers"),
@@ -7099,6 +7108,8 @@ function AdminPackageDetailPane({ controller, view }) {
 }
 
 function AdminPackageWorkspacePane({ controller, view, layout = null, onLayout = null }) {
+    const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
+    const theme = getTheme(themeId);
     const workspace = view.packages?.workspace;
     const paneRef = React.useRef(null);
     // Shared pointer-drag: track from pointerdown, apply via onLayout, end on up.
@@ -7171,9 +7182,62 @@ function AdminPackageWorkspacePane({ controller, view, layout = null, onLayout =
             workspace.file
                 ? (workspace.file.isBinary
                     ? React.createElement("div", { className: "ps-admin-tree__hint" }, `Binary file · ${workspace.file.sizeText}`)
-                    : React.createElement("pre", { className: `ps-admin-ws__code lang-${workspace.file.language}` },
-                        workspace.file.text + (workspace.file.truncated ? "\n… (truncated preview)" : "")))
+                    : React.createElement(AdminWorkspacePreviewBody, { file: workspace.file, theme }))
                 : null));
+}
+
+/** Split leading `--- … ---` frontmatter off a markdown document. */
+function splitFrontmatter(text) {
+    const match = /^---\n([\s\S]*?)\n---\n?/.exec(text || "");
+    if (!match) return { meta: null, body: text || "" };
+    const rows = match[1].split("\n")
+        .map((line) => /^([A-Za-z0-9_-]+):\s*(.*)$/.exec(line))
+        .filter(Boolean)
+        .map(([, key, value]) => ({ key, value }));
+    // Only claim it as frontmatter when it parses as simple key: value
+    // metadata; anything else stays part of the document verbatim.
+    if (rows.length === 0) return { meta: null, body: text || "" };
+    return { meta: rows, body: (text || "").slice(match[0].length) };
+}
+
+/**
+ * Content-aware package-file preview: markdown renders as a document
+ * (frontmatter as a meta strip), JSON pretty-prints, code highlights.
+ * The TUI keeps its plain-text preview — this is portal presentation only.
+ */
+function AdminWorkspacePreviewBody({ file, theme }) {
+    const language = file.language || "text";
+    const truncatedNote = file.truncated
+        ? React.createElement("div", { className: "ps-admin-tree__hint" }, "… truncated preview")
+        : null;
+    if (language === "markdown") {
+        const { meta, body } = splitFrontmatter(file.text || "");
+        return React.createElement("div", { className: "ps-admin-ws__doc" },
+            meta
+                ? React.createElement("div", { className: "ps-admin-ws__frontmatter" },
+                    meta.map((row) => React.createElement("div", { key: row.key, className: "ps-admin-ws__fm-row" },
+                        React.createElement("span", { className: "ps-admin-ws__fm-key" }, row.key),
+                        React.createElement("span", { className: "ps-admin-ws__fm-val" }, row.value))))
+                : null,
+            React.createElement(MarkdownPreviewContent, { content: body, theme }),
+            truncatedNote);
+    }
+    if (language === "json") {
+        let pretty = file.text || "";
+        if (!file.truncated) {
+            // Re-indent only complete documents; a truncated tail would
+            // just throw and fall back to the raw text anyway.
+            try { pretty = JSON.stringify(JSON.parse(pretty), null, 2); } catch { /* show as-is */ }
+        }
+        return React.createElement("div", { className: "ps-admin-ws__doc" },
+            React.createElement("pre", { className: "ps-admin-ws__code lang-json" },
+                React.createElement("code", null, renderHighlightedCode(pretty, "json", theme))),
+            truncatedNote);
+    }
+    return React.createElement("div", { className: "ps-admin-ws__doc" },
+        React.createElement("pre", { className: `ps-admin-ws__code lang-${language}` },
+            React.createElement("code", null, renderHighlightedCode(file.text || "", language, theme))),
+        truncatedNote);
 }
 
 function AdminAddPackageDialog({ controller, dialog }) {
@@ -7255,8 +7319,8 @@ function AdminAddPackageDialog({ controller, dialog }) {
                         React.createElement("div", { key: "rp", className: "ps-admin-add__pair" },
                             React.createElement("label", { className: "ps-admin-add__field" }, "Ref (branch / tag)",
                                 React.createElement("input", { value: dialog.ref, onChange: setField("ref"), placeholder: "main" })),
-                            React.createElement("label", { className: "ps-admin-add__field" }, "Path in repo",
-                                React.createElement("input", { value: dialog.path, onChange: setField("path"), placeholder: "/packages/my-agents" }))),
+                            React.createElement("label", { className: "ps-admin-add__field" }, "Path to plugin.json (or its folder)",
+                                React.createElement("input", { value: dialog.path, onChange: setField("path"), placeholder: "/packages/my-agents/plugin.json" }))),
                         React.createElement("label", { key: "t", className: "ps-admin-add__field" }, "Access token (optional for public repos — stored write-only)",
                             React.createElement("input", { type: "password", value: dialog.authToken, onChange: setField("authToken"), autoComplete: "off" })),
                     ]
@@ -7267,7 +7331,7 @@ function AdminAddPackageDialog({ controller, dialog }) {
                             React.createElement("label", { key: "t2", className: "ps-admin-add__field" }, "Bearer token (optional)",
                                 React.createElement("input", { type: "password", value: dialog.authToken, onChange: setField("authToken"), autoComplete: "off" })),
                         ]
-                        : React.createElement("label", { className: "ps-admin-add__field" }, "Package folder (≤ 2 MB; node_modules skipped)",
+                        : React.createElement("label", { className: "ps-admin-add__field" }, "Package folder with plugin.json — the manifest (≤ 2 MB; node_modules skipped)",
                             React.createElement("input", { ref: folderRef, type: "file", webkitdirectory: "", directory: "", multiple: true })),
                 React.createElement("div", { className: "ps-admin-add__scope" },
                     React.createElement("label", null,

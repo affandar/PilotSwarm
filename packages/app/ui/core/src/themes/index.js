@@ -1,5 +1,6 @@
 import githubDarkTheme from "./github-dark.js";
 import githubLightTheme from "./github-light.js";
+import workspaceDarkTheme from "./workspace-dark.js";
 import daylightTheme from "./daylight.js";
 import paperInkTheme from "./paper-ink.js";
 import lightHighContrastTheme from "./light-high-contrast.js";
@@ -20,6 +21,7 @@ import win95Theme from "./win95.js";
 import msDosTheme from "./ms-dos.js";
 
 const THEMES = Object.freeze([
+    workspaceDarkTheme,
     draculaTheme,
     githubDarkTheme,
     githubLightTheme,
