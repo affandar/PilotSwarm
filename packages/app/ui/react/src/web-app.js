@@ -2863,7 +2863,14 @@ function PortalNodeMapLines({ lines, theme, controller }) {
                     key: `line:${index}`,
                     type: "button",
                     className: `ps-nodemap__row${nodeSelected ? " is-selected" : ""}`,
-                    onClick: () => controller.selectNodeMapNode(nodeSelect),
+                    // pointerdown, not click: the pane claims focus on
+                    // mousedown, and any resulting re-render must not be able
+                    // to eat the click before mouseup lands.
+                    onPointerDown: (event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        controller.selectNodeMapNode(nodeSelect);
+                    },
                 }, content);
             }
             return React.createElement("div", { key: `line:${index}`, className: "ps-nodemap__line" }, content);

@@ -3933,7 +3933,15 @@ body.ps-rich-ui .ps-prompt-shell {
    the rule brightens and the grip appears on hover. */
 
 body.ps-rich-ui {
-  --ps-resizer-track: 7px;
+  --ps-resizer-track: 9px;
+}
+
+/* The bezel is gone (all themes) — so the grid's 8px gaps AROUND the
+   resizer tracks are pure dead air (~23px between panes). The track is
+   the whole gap now: panels sit 9px apart with the full strip draggable. */
+body.ps-rich-ui .ps-workspace-grid,
+body.ps-rich-ui .ps-workspace-column {
+  gap: 0;
 }
 
 body.ps-rich-ui .ps-column-resizer {
@@ -5494,8 +5502,8 @@ body.ps-rich-ui .ps-panel-header {
   --ps-ws-card: #1c2129;
 }
 :root[data-ps-theme="workspace-light"] {
-  --ps-ws-accent: #268bd2;
-  --ps-ws-card: #f6efdb;
+  --ps-ws-accent: #0969da;
+  --ps-ws-card: #f4f6f8;
 }
 :root[data-ps-theme="workspace-dark"] .ps-panel,
 :root[data-ps-theme="workspace-light"] .ps-panel {
@@ -5555,6 +5563,49 @@ body.ps-rich-ui .ps-panel-header {
 :root[data-ps-theme="workspace-light"] .ps-mini-button:hover {
   background: color-mix(in srgb, var(--ps-foreground) 8%, transparent);
 }
+
+/* Workspace Light contrast details (win95-inspired): each panel is a white
+   surface on the cool gray page and wears a DEEP-BLUE TITLE BAND with light
+   text — colored title bars are what make win95 panels unmistakable, and
+   they translate cleanly to the flat structure. The chat pane stays the
+   band-less canvas. */
+:root[data-ps-theme="workspace-light"] .ps-panel {
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(31, 35, 40, 0.08);
+}
+:root[data-ps-theme="workspace-light"] .ps-panel.ps-chat-panel {
+  background: transparent;
+  box-shadow: none;
+}
+:root[data-ps-theme="workspace-light"] .ps-panel-header {
+  background: linear-gradient(180deg, #1b4c8c 0%, #164074 100%);
+  border-radius: 10px 10px 0 0;
+  padding: 5px 14px 4px;
+  min-height: 24px;
+}
+:root[data-ps-theme="workspace-light"] .ps-panel.ps-chat-panel > .ps-panel-header {
+  background: transparent;
+  border-radius: 0;
+}
+:root[data-ps-theme="workspace-light"] .ps-panel-title,
+:root[data-ps-theme="workspace-light"] .ps-panel-title span {
+  color: #eaf1fb !important;
+}
+:root[data-ps-theme="workspace-light"] .ps-panel-title-right,
+:root[data-ps-theme="workspace-light"] .ps-panel-title-right span {
+  color: #b7cbe8 !important;
+}
+:root[data-ps-theme="workspace-light"] .ps-panel.ps-chat-panel .ps-panel-title,
+:root[data-ps-theme="workspace-light"] .ps-panel.ps-chat-panel .ps-panel-title span {
+  color: var(--ps-muted) !important;
+}
+:root[data-ps-theme="workspace-light"] .ps-panel.is-focused {
+  box-shadow: 0 0 0 1px #0969da, 0 1px 2px rgba(31, 35, 40, 0.08);
+}
+:root[data-ps-theme="workspace-light"] .ps-panel.ps-chat-panel.is-focused {
+  box-shadow: inset 2px 0 0 var(--ps-ws-accent);
+}
+
 
 /* ── Package workspace preview: content-aware formatting ───────────── */
 .ps-admin-ws__doc { min-width: 0; }

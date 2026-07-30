@@ -1,68 +1,66 @@
 import { createTheme } from "./helpers.js";
 
 /**
- * Workspace Light — the flat workspace chrome on a Solarized-Light-inspired
- * ground. The dark theme separates surfaces by darkness; a light theme needs
- * the same hierarchy with actual CONTRAST, and Solarized's warm two-tone
- * ground (paper `#fdf6e3` canvas over parchment `#eee8d5` rails) plus its
- * saturated accent set is purpose-built for that: panels read as distinctly
- * colored surfaces, hairlines stay visible, and status colors (blue actions,
- * green ok, red draining) carry on cream without washing out. Structure
- * comes from the shared `[data-ps-theme]` workspace chrome layer.
+ * Workspace Light — the flat workspace structure on a light ground, with
+ * win95-style CONTRAST DETAILS: panels are white surfaces on a cool gray
+ * page, and every pane wears a deep-blue title band with light text (the
+ * chrome layer's workspace-light overrides), the way Win95's colored title
+ * bars make each panel unmistakable. Palette is GitHub-Light-derived so
+ * status colors stay crisp on white.
  */
 const workspaceLightTheme = createTheme({
     id: "workspace-light",
     label: "Workspace Light",
-    description: "Flat workspace chrome on a warm Solarized ground: paper canvas, parchment panels, saturated accents.",
+    description: "Flat workspace chrome on a light ground with deep-blue title bands — win95-grade panel contrast.",
     page: {
-        background: "#fdf6e3",
-        foreground: "#073642",
-        overlayBackground: "#fdf6e3",
-        overlayForeground: "#073642",
-        hintColor: "#657b83",
-        modalBackdrop: "rgba(0, 43, 54, 0.38)",
-        modalBackground: "#fdf6e3",
-        modalBorder: "#d9cfb2",
-        modalForeground: "#073642",
-        modalMuted: "#657b83",
-        modalSelectedBackground: "#e3ecf0",
-        modalSelectedBorder: "#268bd2",
-        modalSelectedForeground: "#0f5a8c",
+        background: "#e9edf2",
+        foreground: "#1f2328",
+        overlayBackground: "#ffffff",
+        overlayForeground: "#1f2328",
+        hintColor: "#57606a",
+        modalBackdrop: "rgba(31, 35, 40, 0.34)",
+        modalBackground: "#ffffff",
+        modalBorder: "#c8d1db",
+        modalForeground: "#1f2328",
+        modalMuted: "#57606a",
+        modalSelectedBackground: "#ddf4ff",
+        modalSelectedBorder: "#0969da",
+        modalSelectedForeground: "#0550ae",
     },
     terminal: {
-        background: "#fdf6e3",
-        foreground: "#073642",
-        cursor: "#268bd2",
-        cursorAccent: "#fdf6e3",
-        selectionBackground: "#e3ecf0",
-        black: "#073642",
-        red: "#dc322f",
-        green: "#859900",
-        yellow: "#b58900",
-        blue: "#268bd2",
-        magenta: "#d33682",
-        cyan: "#2aa198",
-        white: "#93a1a1",
-        brightBlack: "#586e75",
-        brightRed: "#cb4b16",
-        brightGreen: "#657b83",
-        brightYellow: "#8a6d00",
-        brightBlue: "#0f5a8c",
-        brightMagenta: "#a82963",
-        brightCyan: "#1e7d78",
-        brightWhite: "#002b36",
+        background: "#ffffff",
+        foreground: "#1f2328",
+        cursor: "#0969da",
+        cursorAccent: "#ffffff",
+        selectionBackground: "#ddf4ff",
+        black: "#24292f",
+        red: "#cf222e",
+        green: "#1a7f37",
+        yellow: "#9a6700",
+        blue: "#0969da",
+        magenta: "#8250df",
+        cyan: "#1b7c83",
+        white: "#6e7781",
+        brightBlack: "#57606a",
+        brightRed: "#a40e26",
+        brightGreen: "#116329",
+        brightYellow: "#7d4e00",
+        brightBlue: "#0550ae",
+        brightMagenta: "#6639ba",
+        brightCyan: "#0f6f78",
+        brightWhite: "#1f2328",
     },
     tui: {
-        surface: "#eee8d5",
-        border: "#d9cfb2",
-        userChat: "#b58900",
-        userChatLabel: "#8a6d00",
-        activeHighlightBackground: "#268bd2",
-        activeHighlightForeground: "#fdf6e3",
-        selectionBackground: "#268bd2",
-        selectionForeground: "#fdf6e3",
-        promptCursorBackground: "#268bd2",
-        promptCursorForeground: "#fdf6e3",
+        surface: "#ffffff",
+        border: "#c8d1db",
+        userChat: "#0969da",
+        userChatLabel: "#0550ae",
+        activeHighlightBackground: "#ddf4ff",
+        activeHighlightForeground: "#0550ae",
+        selectionBackground: "#0969da",
+        selectionForeground: "#ffffff",
+        promptCursorBackground: "#0969da",
+        promptCursorForeground: "#ffffff",
     },
 });
 

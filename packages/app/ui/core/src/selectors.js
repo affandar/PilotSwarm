@@ -5168,6 +5168,7 @@ export function selectNodeMapView(state) {
         windowLabel: recentWindow.label,
         degraded: registeredNodes.length === 0,
         registryError: state.admin?.workers?.error || null,
+        registryFetchedAt: state.admin?.workers?.fetchedAt || 0,
         registered: registeredNodes.length,
         liveCount: registeredNodes.filter((node) => node.live).length,
         executingTotal: nodes.reduce((sum, node) => sum + node.executing.length, 0),
@@ -5195,8 +5196,16 @@ function buildNodeMapLines(state, maxWidth, options = {}) {
             : `Nodes · ${view.liveCount} live / ${view.registered} registered · window ${view.windowLabel}`,
         color: "gray",
     }]);
-    if (view.degraded && view.registryError) {
-        lines.push([{ text: `! worker registry unavailable: ${view.registryError}`, color: "red" }]);
+    if (view.degraded) {
+        // Say WHY the registry is absent — three different failures used to
+        // collapse into one silent "(activity-derived)" header.
+        if (view.registryError) {
+            lines.push([{ text: `! worker registry unavailable: ${view.registryError}`, color: "red" }]);
+        } else if (view.registryFetchedAt) {
+            lines.push([{ text: "registry reachable but EMPTY — no worker has heartbeated in the last hour", color: "yellow" }]);
+        } else {
+            lines.push([{ text: "registry not fetched yet (or this build predates the registry read) — hard-refresh if this persists", color: "yellow" }]);
+        }
     }
     lines.push(plainInspectorLine("", "gray"));
 
