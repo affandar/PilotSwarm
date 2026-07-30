@@ -716,10 +716,20 @@ export class NodeSdkTransport {
         return match.name;
     }
 
-    /** Lazy direct-store registry context; null in pure web/client setups. */
+    /**
+     * Lazy direct-store registry context; null in pure web/client setups AND
+     * on init failure. A failed init is NEVER cached — the portal boots
+     * alongside 8 workers all polling the migration advisory lock, and one
+     * transient contention loss must not permanently reduce the catalog to
+     * baked agents (observed live: a cached rejection made every later
+     * listCreatableAgents union silently registry-less until pod restart).
+     */
     async _agentPackagesContext() {
         if (!this.store || !this.artifactStore) return null;
-        if (!this._agentPkgCatalog) {
+        if (this._agentPkgCatalog) {
+            return { catalog: this._agentPkgCatalog, artifactStore: this.artifactStore };
+        }
+        try {
             this._agentPkgCatalogPromise ??= (async () => {
                 const catalog = await PgSessionCatalog.create(this.store, process.env.PILOTSWARM_CMS_SCHEMA || undefined, {
                     ...(this.useManagedIdentity !== undefined ? { useManagedIdentity: this.useManagedIdentity } : {}),
@@ -730,6 +740,10 @@ export class NodeSdkTransport {
                 return catalog;
             })();
             await this._agentPkgCatalogPromise;
+        } catch (err) {
+            this._agentPkgCatalogPromise = null;
+            console.warn(`[transport] agent-package registry init failed (will retry on next call): ${err?.message || err}`);
+            return null;
         }
         return { catalog: this._agentPkgCatalog, artifactStore: this.artifactStore };
     }
