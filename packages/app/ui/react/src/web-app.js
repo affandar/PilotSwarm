@@ -7310,8 +7310,8 @@ function AdminWorkspacePreviewBody({ file, theme }) {
 
 function AdminAddPackageDialog({ controller, dialog }) {
     const setField = (field) => (event) => controller.setAdminAddPackageField(field, event.target.value);
-    const kinds = [["github", "GitHub"], ["ado", "Azure DevOps"], ["url", "URL (.tar.gz)"], ["upload", "Upload folder"]];
-    const isRepo = dialog.kind === "github" || dialog.kind === "ado";
+    const kinds = [["repo", "GitHub / Azure DevOps"], ["url", "URL (.tar.gz)"], ["upload", "Upload folder"]];
+    const isRepo = dialog.kind === "repo" || dialog.kind === "github" || dialog.kind === "ado";
     const folderRef = React.useRef(null);
     const [reading, setReading] = React.useState(false);
     const UPLOAD_LIMIT = 2 * 1024 * 1024;
@@ -7382,14 +7382,11 @@ function AdminAddPackageDialog({ controller, dialog }) {
                     }, label))),
                 isRepo
                     ? [
-                        React.createElement("label", { key: "u", className: "ps-admin-add__field" }, "Repository URL",
-                            React.createElement("input", { value: dialog.repoUrl, onChange: setField("repoUrl"), placeholder: dialog.kind === "github" ? "https://github.com/org/repo" : "https://dev.azure.com/org/project/_git/repo", autoFocus: true })),
-                        React.createElement("div", { key: "rp", className: "ps-admin-add__pair" },
-                            React.createElement("label", { className: "ps-admin-add__field" }, "Ref (branch / tag)",
-                                React.createElement("input", { value: dialog.ref, onChange: setField("ref"), placeholder: "main" })),
-                            React.createElement("label", { className: "ps-admin-add__field" }, "Path to plugin.json (or its folder)",
-                                React.createElement("input", { value: dialog.path, onChange: setField("path"), placeholder: "/packages/my-agents/plugin.json" }))),
-                        React.createElement("label", { key: "t", className: "ps-admin-add__field" }, "Access token (optional for public repos — stored write-only)",
+                        React.createElement("label", { key: "u", className: "ps-admin-add__field" }, "Link to plugin.json (or the folder containing it)",
+                            React.createElement("input", { value: dialog.repoUrl, onChange: setField("repoUrl"), placeholder: "https://github.com/org/repo/blob/main/my-agents/plugin.json", autoFocus: true })),
+                        React.createElement("div", { key: "h", className: "ps-admin-add__hint" },
+                            "Paste the browser URL — branch and path are read from the link (GitHub blob/tree links, Azure DevOps ?path= links, or a bare repo URL)."),
+                        React.createElement("label", { key: "t", className: "ps-admin-add__field" }, "PAT (optional — your identity is used when omitted; stored write-only)",
                             React.createElement("input", { type: "password", value: dialog.authToken, onChange: setField("authToken"), autoComplete: "off" })),
                     ]
                     : dialog.kind === "url"

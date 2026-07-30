@@ -1,4 +1,5 @@
 import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./commands.js";
+import { parseAgentSourceLink } from "./repo-links.js";
 import {
     appendEventToHistory,
     buildHistoryModel,
@@ -2402,8 +2403,10 @@ export class PilotSwarmUiController {
             // history-derived nodes.
             const workersState = this.getState().admin?.workers;
             const workersFresh = workersState?.fetchedAt && (Date.now() - workersState.fetchedAt) < 20_000;
-            if (!workersFresh && typeof this.transport.listWorkers === "function") {
-                await this.refreshAdminWorkers().catch(() => {});
+            if (!workersFresh && !workersState?.loading && typeof this.transport.listWorkers === "function") {
+                // Fire-and-forget: the registry read must never gate the
+                // history loads below (a wedged fetch starved them for good).
+                void this.refreshAdminWorkers().catch(() => {});
             }
             // Only fetch history for visible session rows — not the entire catalog.
             // With hundreds of sessions, fetching all of them every 4s causes unbounded memory growth.
@@ -2669,7 +2672,16 @@ export class PilotSwarmUiController {
         }
         this.dispatch({ type: "admin/workers/loading" });
         try {
-            const list = await this.transport.listWorkers();
+            // Bounded on purpose: a request that neither resolves nor rejects
+            // (wedged token refresh, dead socket) left the Node Map in a
+            // permanent "not fetched yet" limbo. Ten seconds is an answer.
+            const list = await Promise.race([
+                this.transport.listWorkers(),
+                new Promise((_, reject) => {
+                    const t = setTimeout(() => reject(new Error("request timed out after 10s (connection or auth renewal wedged — try a hard refresh)")), 10_000);
+                    if (typeof t?.unref === "function") t.unref();
+                }),
+            ]);
             this.dispatch({ type: "admin/workers/loaded", list });
         } catch (error) {
             // Loud on purpose: the Node Map silently degrading to
@@ -2857,14 +2869,27 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "admin/packages/addDialog/failed", error: "Package sources are not available on this deployment." });
             return;
         }
+        // The repo form takes ONE deep link (to plugin.json or its folder)
+        // and derives kind/repoUrl/ref/path from it client-side.
+        let source = {
+            kind: dialog.kind,
+            repoUrl: dialog.repoUrl || null,
+            ref: dialog.ref || null,
+            path: dialog.path || null,
+        };
+        if (dialog.kind === "repo") {
+            const parsed = parseAgentSourceLink(dialog.repoUrl);
+            if (parsed.error) {
+                this.dispatch({ type: "admin/packages/addDialog/failed", error: parsed.error });
+                return;
+            }
+            source = { kind: parsed.kind, repoUrl: parsed.repoUrl, ref: parsed.ref, path: parsed.path };
+        }
         this.dispatch({ type: "admin/packages/addDialog/submitting" });
         try {
             const { sourceId } = await this.transport.registerAgentSource({
-                kind: dialog.kind,
+                ...source,
                 scope: dialog.scope,
-                repoUrl: dialog.repoUrl || null,
-                ref: dialog.ref || null,
-                path: dialog.path || null,
                 url: dialog.url || null,
                 authToken: dialog.authToken || null,
             });

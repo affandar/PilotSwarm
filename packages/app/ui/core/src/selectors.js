@@ -3880,7 +3880,7 @@ export function selectAdminConsole(state) {
         workspace,
         addDialog: {
             open: Boolean(pkgState.addDialog?.open),
-            kind: pkgState.addDialog?.kind || "github",
+            kind: pkgState.addDialog?.kind || "repo",
             scope: pkgState.addDialog?.scope || "user",
             repoUrl: pkgState.addDialog?.repoUrl || "",
             ref: pkgState.addDialog?.ref || "",
@@ -5169,6 +5169,7 @@ export function selectNodeMapView(state) {
         degraded: registeredNodes.length === 0,
         registryError: state.admin?.workers?.error || null,
         registryFetchedAt: state.admin?.workers?.fetchedAt || 0,
+        registryLoading: Boolean(state.admin?.workers?.loading),
         registered: registeredNodes.length,
         liveCount: registeredNodes.filter((node) => node.live).length,
         executingTotal: nodes.reduce((sum, node) => sum + node.executing.length, 0),
@@ -5203,8 +5204,10 @@ function buildNodeMapLines(state, maxWidth, options = {}) {
             lines.push([{ text: `! worker registry unavailable: ${view.registryError}`, color: "red" }]);
         } else if (view.registryFetchedAt) {
             lines.push([{ text: "registry reachable but EMPTY — no worker has heartbeated in the last hour", color: "yellow" }]);
+        } else if (view.registryLoading) {
+            lines.push([{ text: "registry request in flight… (times out red after 10s)", color: "yellow" }]);
         } else {
-            lines.push([{ text: "registry not fetched yet (or this build predates the registry read) — hard-refresh if this persists", color: "yellow" }]);
+            lines.push([{ text: "registry not fetched yet — it retries every 10s while this tab is open", color: "yellow" }]);
         }
     }
     lines.push(plainInspectorLine("", "gray"));

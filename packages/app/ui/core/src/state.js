@@ -309,7 +309,7 @@ export function createInitialState({ mode = "local", branding = null, themeId = 
                 action: { pending: null, error: null },
                 addDialog: {
                     open: false,
-                    kind: "github",
+                    kind: "repo",
                     scope: "user",
                     repoUrl: "",
                     ref: "",

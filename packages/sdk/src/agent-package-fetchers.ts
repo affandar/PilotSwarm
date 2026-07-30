@@ -192,6 +192,29 @@ function parseGitHubRepo(repoUrl: string): { owner: string; repo: string } {
     return { owner: match[1], repo: match[2] };
 }
 
+/**
+ * Entra access token for Azure DevOps (resource 499b84ac-…) from the
+ * deployment's ambient identity (workload identity / managed identity /
+ * az login in dev). Bounded and best-effort: null means "no ambient
+ * identity here" and the caller falls through to anonymous.
+ */
+async function acquireAdoIdentityToken(): Promise<string | null> {
+    try {
+        const { DefaultAzureCredential } = await import("@azure/identity");
+        const credential = new DefaultAzureCredential();
+        const token = await Promise.race([
+            credential.getToken("499b84ac-1321-427f-aa17-267ca6975798/.default"),
+            new Promise<null>((resolve) => {
+                const timer = setTimeout(() => resolve(null), 8_000);
+                timer.unref?.();
+            }),
+        ]);
+        return token && typeof token === "object" && "token" in token ? (token as { token: string }).token : null;
+    } catch {
+        return null;
+    }
+}
+
 async function fetchGitHub(source: AgentSourceRow, token: string | null, tmpDir: string): Promise<FetchedSource> {
     const { owner, repo } = parseGitHubRepo(source.repoUrl ?? "");
     const headers: Record<string, string> = {
@@ -226,14 +249,27 @@ function parseAdoRepo(repoUrl: string): { org: string; project: string; repo: st
 async function fetchAdo(source: AgentSourceRow, token: string | null, tmpDir: string): Promise<FetchedSource> {
     const { org, project, repo } = parseAdoRepo(source.repoUrl ?? "");
     const base = `https://dev.azure.com/${org}/${encodeURIComponent(project)}/_apis/git/repositories/${encodeURIComponent(repo)}`;
+    // A PAT authenticates as Basic; an Entra access token (three dot-joined
+    // JWT segments — the workload-identity fallback) authenticates as Bearer.
+    const isJwt = Boolean(token && token.split(".").length === 3);
     const headers: Record<string, string> = {
         "user-agent": "pilotswarm-agent-packages",
-        ...(token ? { authorization: `Basic ${Buffer.from(`:${token}`).toString("base64")}` } : {}),
+        ...(token
+            ? { authorization: isJwt ? `Bearer ${token}` : `Basic ${Buffer.from(`:${token}`).toString("base64")}` }
+            : {}),
     };
     const ref = source.ref || "main";
     const refRes = await fetchWithTimeout(
         `${base}/refs?filter=heads/${encodeURIComponent(ref)}&api-version=7.1`, { headers },
     );
+    if (refRes.status === 401 || refRes.status === 203) {
+        throw new Error(
+            `Azure DevOps rejected the request for ${repo}@${ref}`
+            + (token
+                ? " — the supplied credential lacks repo read access"
+                : " — supply a PAT, or grant this deployment's workload identity read access to the repo"),
+        );
+    }
     if (!refRes.ok) throw new Error(`ADO ref resolution failed: HTTP ${refRes.status} for ${repo}@${ref}`);
     const refBody: any = await refRes.json();
     const commitSha: string | null = refBody?.value?.[0]?.objectId ?? null;
@@ -289,7 +325,17 @@ export async function syncAgentSourceOnce(
 
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ps-agent-sync-"));
     try {
-        const token = await ctx.catalog.getAgentSourceToken(sourceId);
+        // Credential chain: stored PAT → (GitHub) the registering user's
+        // stored GitHub key → (ADO) the deployment's Entra workload identity
+        // → anonymous. "PAT optional" means the user's identity does the work
+        // when one is not supplied.
+        let token = await ctx.catalog.getAgentSourceToken(sourceId);
+        if (!token && source.kind === "github" && source.owner) {
+            token = await ctx.catalog.getUserGitHubCopilotKey(source.owner).catch(() => null);
+        }
+        if (!token && source.kind === "ado") {
+            token = await acquireAdoIdentityToken();
+        }
         let fetched: FetchedSource;
         switch (source.kind) {
             case "github": fetched = await fetchGitHub(source, token, tmpDir); break;

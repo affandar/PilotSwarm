@@ -68,7 +68,16 @@ export class ApiClient {
     // ── HTTP ────────────────────────────────────────────────────────────
 
     async authHeaders(extra = {}) {
-        const token = await this.getAccessToken();
+        // Bounded: a token getter that neither resolves nor rejects (wedged
+        // silent renewal) must not hang every REST call behind it — proceed
+        // tokenless after 12s and let the server's 401 drive re-auth.
+        const token = await Promise.race([
+            Promise.resolve().then(() => this.getAccessToken()).catch(() => null),
+            new Promise((resolve) => {
+                const t = setTimeout(() => resolve(null), 12_000);
+                if (typeof t?.unref === "function") t.unref();
+            }),
+        ]);
         const headers = { ...extra };
         if (token) headers.authorization = `Bearer ${token}`;
         return headers;
