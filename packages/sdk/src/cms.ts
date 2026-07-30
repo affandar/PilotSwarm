@@ -807,9 +807,79 @@ export interface PublishAgentPackageResult {
     versionId: string;
 }
 
+// ─── Worker registry (migration 0040) ────────────────────────────
+
+export type WorkerPhase = "starting" | "ready" | "draining";
+
+export interface WorkerRow {
+    workerNodeId: string;
+    pool: string;
+    phase: WorkerPhase;
+    owner: AgentPrincipal | null;
+    registeredAt: Date;
+    updatedAt: Date;
+    info: Record<string, unknown>;
+    health: Record<string, unknown>;
+    state: Record<string, unknown>;
+}
+
+export interface WorkerHeartbeatInput {
+    workerNodeId: string;
+    pool?: string | null;
+    phase?: WorkerPhase;
+    owner?: AgentPrincipal | null;
+    info?: Record<string, unknown>;
+    health?: Record<string, unknown>;
+    state?: Record<string, unknown>;
+}
+
+/** Effective (merged) directive returned to a worker by the heartbeat. */
+export interface EffectiveDirective {
+    domain: string;
+    /** SUM of contributing rows' epochs — changes on any contributing bump. */
+    epoch: number;
+    actuation: "worker" | "external";
+    desired: Record<string, unknown>;
+}
+
+export interface FleetDirectiveRow {
+    domain: string;
+    pool: string;
+    workerNodeId: string;
+    epoch: number;
+    actuation: "worker" | "external";
+    desired: Record<string, unknown>;
+    updatedAt: Date;
+    updatedBy: string | null;
+}
+
 export interface SessionCatalog {
     /** Create schema and tables if they don't exist. */
     initialize(): Promise<void>;
+
+    // ── Worker registry (migration 0040) ─────────────────────
+
+    /**
+     * The one round-trip: upsert this worker's row (info/owner insert-only;
+     * pool/phase/health/state every beat), prune hour-silent rows, and
+     * return the effective directive set (fleet/pool/worker shallow-merge,
+     * epoch = SUM of contributing rows).
+     */
+    workerHeartbeat(input: WorkerHeartbeatInput): Promise<EffectiveDirective[]>;
+    listWorkers(): Promise<WorkerRow[]>;
+    /**
+     * Upsert-and-bump a directive row. pool/workerNodeId default '*';
+     * worker-scoped rows must use pool '*' (canonical form); desired null
+     * keeps the existing payload (doorbell bump). Returns the row's epoch.
+     */
+    fleetDirectiveBump(domain: string, opts?: {
+        pool?: string | null;
+        workerNodeId?: string | null;
+        desired?: Record<string, unknown> | null;
+        actuation?: "worker" | "external";
+        updatedBy?: string | null;
+    }): Promise<number>;
+    getFleetDirectives(): Promise<FleetDirectiveRow[]>;
 
     // ── Agent packages (migration 0038) ──────────────────────
 
@@ -1231,6 +1301,10 @@ function sqlForSchema(schema: string) {
             deleteAgentPackage:         `${s}.cms_delete_agent_package`,
             upsertAgentWorkerState:     `${s}.cms_upsert_agent_worker_state`,
             listAgentWorkerState:       `${s}.cms_list_agent_worker_state`,
+            workerHeartbeat:            `${s}.cms_worker_heartbeat`,
+            listWorkers:                `${s}.cms_list_workers`,
+            fleetDirectiveBump:         `${s}.cms_fleet_directive_bump`,
+            getFleetDirectives:         `${s}.cms_get_fleet_directives`,
         },
     };
 }
@@ -2526,6 +2600,78 @@ export class PgSessionCatalog implements SessionCatalog {
     }
 
     // ── Agent packages (migration 0038) ──────────────────────
+
+    async workerHeartbeat(input: WorkerHeartbeatInput): Promise<EffectiveDirective[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.workerHeartbeat}($1, $2, $3, $4, $5, $6, $7, $8)`,
+            [
+                input.workerNodeId,
+                input.pool ?? null,
+                input.phase ?? "ready",
+                input.owner?.provider ?? null,
+                input.owner?.subject ?? null,
+                JSON.stringify(input.info ?? {}),
+                JSON.stringify(input.health ?? {}),
+                JSON.stringify(input.state ?? {}),
+            ],
+        );
+        return rows.map((row: any) => ({
+            domain: row.domain,
+            epoch: Number(row.epoch) || 0,
+            actuation: row.actuation === "external" ? "external" as const : "worker" as const,
+            desired: row.desired ?? {},
+        }));
+    }
+
+    async listWorkers(): Promise<WorkerRow[]> {
+        const { rows } = await this.pool.query(`SELECT * FROM ${this.sql.fn.listWorkers}()`);
+        return rows.map((row: any) => ({
+            workerNodeId: row.worker_node_id,
+            pool: row.pool,
+            phase: (["starting", "ready", "draining"].includes(row.phase) ? row.phase : "ready") as WorkerPhase,
+            owner: rowToAgentPrincipal(row),
+            registeredAt: new Date(row.registered_at),
+            updatedAt: new Date(row.updated_at),
+            info: row.info ?? {},
+            health: row.health ?? {},
+            state: row.state ?? {},
+        }));
+    }
+
+    async fleetDirectiveBump(domain: string, opts: {
+        pool?: string | null;
+        workerNodeId?: string | null;
+        desired?: Record<string, unknown> | null;
+        actuation?: "worker" | "external";
+        updatedBy?: string | null;
+    } = {}): Promise<number> {
+        const { rows } = await this.pool.query(
+            `SELECT ${this.sql.fn.fleetDirectiveBump}($1, $2, $3, $4, $5, $6) AS epoch`,
+            [
+                domain,
+                opts.pool ?? null,
+                opts.workerNodeId ?? null,
+                opts.desired == null ? null : JSON.stringify(opts.desired),
+                opts.actuation ?? null,
+                opts.updatedBy ?? null,
+            ],
+        );
+        return Number(rows[0]?.epoch) || 0;
+    }
+
+    async getFleetDirectives(): Promise<FleetDirectiveRow[]> {
+        const { rows } = await this.pool.query(`SELECT * FROM ${this.sql.fn.getFleetDirectives}()`);
+        return rows.map((row: any) => ({
+            domain: row.domain,
+            pool: row.pool,
+            workerNodeId: row.worker_node_id,
+            epoch: Number(row.epoch) || 0,
+            actuation: row.actuation === "external" ? "external" as const : "worker" as const,
+            desired: row.desired ?? {},
+            updatedAt: new Date(row.updated_at),
+            updatedBy: row.updated_by ?? null,
+        }));
+    }
 
     async agentRegistryEpoch(): Promise<number> {
         const { rows } = await this.pool.query(`SELECT ${this.sql.fn.agentRegistryEpoch}() AS epoch`);

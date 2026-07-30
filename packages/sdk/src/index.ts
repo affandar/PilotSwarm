@@ -280,6 +280,11 @@ export type {
 export { syncAgentSourceOnce, extractZipArchive } from "./agent-package-fetchers.js";
 export type { SyncSourceResult } from "./agent-package-fetchers.js";
 export type {
+    WorkerRow,
+    WorkerPhase,
+    WorkerHeartbeatInput,
+    EffectiveDirective,
+    FleetDirectiveRow,
     AgentPackageScope,
     AgentPrincipal,
     AgentSourceRow,

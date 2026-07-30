@@ -210,7 +210,216 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "agent_worker_heartbeat_prune",
             sql: migration_0039_agent_worker_heartbeat_prune(schema),
         },
+        {
+            version: "0040",
+            name: "worker_registry",
+            sql: migration_0040_worker_registry(schema),
+        },
     ];
+}
+
+// ─── Migration 0040: worker registry ─────────────────────────────
+//
+// docs/proposals/worker-registry.md (rev 4). Substrate-neutral, uniformly
+// ephemeral workers (presence, not enrollment) + fleet_directives, the
+// scoped desired-state channel (fleet/pool/worker, shallow-merge union,
+// epoch = SUM of contributing rows). The heartbeat IS the convergence poll:
+// one proc upserts the worker row, prunes hour-silent rows, and returns the
+// effective directive set.
+//
+// Agent packages fold in as the first tenant VIA SHIMS with unchanged
+// signatures: cms_agent_registry_bump/_epoch ride the
+// ('agent-packages','*','*') directive row (seeded from
+// agent_registry_state so epochs continue monotonically — old workers see
+// no spurious change), and cms_list_agent_worker_state unions the legacy
+// table with workers.state so mixed fleets display correctly during a
+// rolling upgrade. Legacy tables are dropped later (0041) once the fleet
+// is upgraded.
+function migration_0040_worker_registry(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- 0040_worker_registry: workers + fleet_directives + heartbeat + shims.
+
+CREATE TABLE IF NOT EXISTS ${s}.workers (
+    worker_node_id TEXT PRIMARY KEY,
+    pool           TEXT NOT NULL DEFAULT 'default',
+    phase          TEXT NOT NULL DEFAULT 'starting' CHECK (phase IN ('starting', 'ready', 'draining')),
+    owner_provider TEXT,
+    owner_subject  TEXT,
+    registered_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    info           JSONB NOT NULL DEFAULT '{}'::jsonb,
+    health         JSONB NOT NULL DEFAULT '{}'::jsonb,
+    state          JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS workers_pool_idx ON ${s}.workers (pool);
+
+CREATE TABLE IF NOT EXISTS ${s}.fleet_directives (
+    domain         TEXT NOT NULL,
+    pool           TEXT NOT NULL DEFAULT '*',
+    worker_node_id TEXT NOT NULL DEFAULT '*',
+    epoch          BIGINT NOT NULL DEFAULT 1,
+    actuation      TEXT NOT NULL DEFAULT 'worker' CHECK (actuation IN ('worker', 'external')),
+    desired        JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by     TEXT,
+    PRIMARY KEY (domain, pool, worker_node_id)
+);
+
+-- Seed the agent-packages directive from the legacy epoch so old and new
+-- workers observe ONE continuous monotonic counter. Idempotent; the second
+-- insert covers schemas where agent_registry_state was never populated.
+INSERT INTO ${s}.fleet_directives (domain, pool, worker_node_id, epoch, actuation, desired, updated_by)
+SELECT 'agent-packages', '*', '*', GREATEST(st.epoch, 1), 'worker', '{}'::jsonb, 'migration-0040'
+  FROM ${s}.agent_registry_state st WHERE st.id = 1
+ON CONFLICT (domain, pool, worker_node_id) DO NOTHING;
+INSERT INTO ${s}.fleet_directives (domain, pool, worker_node_id, epoch, actuation, desired, updated_by)
+VALUES ('agent-packages', '*', '*', 1, 'worker', '{}'::jsonb, 'migration-0040')
+ON CONFLICT (domain, pool, worker_node_id) DO NOTHING;
+
+-- ── directive mutation ───────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION ${s}.cms_fleet_directive_bump(
+    p_domain TEXT, p_pool TEXT, p_worker_node_id TEXT,
+    p_desired JSONB, p_actuation TEXT, p_updated_by TEXT
+) RETURNS BIGINT AS $$
+DECLARE
+    v_pool TEXT := COALESCE(NULLIF(BTRIM(p_pool), ''), '*');
+    v_worker TEXT := COALESCE(NULLIF(BTRIM(p_worker_node_id), ''), '*');
+    v_actuation TEXT := COALESCE(NULLIF(p_actuation, ''), 'worker');
+    v_existing_actuation TEXT;
+    v_epoch BIGINT;
+BEGIN
+    -- Canonical worker-row form: worker-scoped rows use pool '*'; a triple
+    -- with BOTH pool and worker specialized has no defined precedence.
+    IF v_worker <> '*' AND v_pool <> '*' THEN
+        RAISE EXCEPTION 'FLEET_DIRECTIVE_BAD_SCOPE: worker-scoped directives use pool ''*'' (canonical form)';
+    END IF;
+    -- Actuation is a property of the DOMAIN, uniform across its rows.
+    SELECT d.actuation INTO v_existing_actuation
+      FROM ${s}.fleet_directives d WHERE d.domain = p_domain LIMIT 1;
+    IF v_existing_actuation IS NOT NULL AND v_existing_actuation <> v_actuation THEN
+        RAISE EXCEPTION 'FLEET_DIRECTIVE_ACTUATION_MISMATCH: domain "%" is %-actuated; all rows of a domain share one actuation', p_domain, v_existing_actuation;
+    END IF;
+    INSERT INTO ${s}.fleet_directives (domain, pool, worker_node_id, epoch, actuation, desired, updated_at, updated_by)
+    VALUES (p_domain, v_pool, v_worker, 1, v_actuation, COALESCE(p_desired, '{}'::jsonb), now(), p_updated_by)
+    ON CONFLICT (domain, pool, worker_node_id) DO UPDATE
+        SET epoch = ${s}.fleet_directives.epoch + 1,
+            desired = COALESCE(p_desired, ${s}.fleet_directives.desired),
+            updated_at = now(),
+            updated_by = COALESCE(p_updated_by, ${s}.fleet_directives.updated_by)
+    RETURNING epoch INTO v_epoch;
+    RETURN v_epoch;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_get_fleet_directives()
+RETURNS TABLE(domain TEXT, pool TEXT, worker_node_id TEXT, epoch BIGINT,
+              actuation TEXT, desired JSONB, updated_at TIMESTAMPTZ, updated_by TEXT) AS $$
+    SELECT domain, pool, worker_node_id, epoch, actuation, desired, updated_at, updated_by
+      FROM ${s}.fleet_directives
+     ORDER BY domain, pool, worker_node_id;
+$$ LANGUAGE sql;
+
+-- ── the one round-trip ───────────────────────────────────────────
+--
+-- Upsert the worker row (info/owner insert-only; pool/phase/health/state/
+-- updated_at every beat), apply the uniform prune, and return the worker's
+-- effective directive set: per domain, the shallow-merge union of the
+-- fleet/pool/worker rows (worker > pool > fleet on conflicting keys) with
+-- epoch = SUM of contributing epochs (monotonic under any single-row bump).
+
+CREATE OR REPLACE FUNCTION ${s}.cms_worker_heartbeat(
+    p_worker_node_id TEXT, p_pool TEXT, p_phase TEXT,
+    p_owner_provider TEXT, p_owner_subject TEXT,
+    p_info JSONB, p_health JSONB, p_state JSONB
+) RETURNS TABLE(domain TEXT, epoch BIGINT, actuation TEXT, desired JSONB) AS $$
+DECLARE
+    v_pool TEXT := COALESCE(NULLIF(BTRIM(p_pool), ''), 'default');
+    v_phase TEXT := CASE WHEN p_phase IN ('starting', 'ready', 'draining') THEN p_phase ELSE 'ready' END;
+BEGIN
+    INSERT INTO ${s}.workers (worker_node_id, pool, phase, owner_provider, owner_subject,
+                              registered_at, updated_at, info, health, state)
+    VALUES (p_worker_node_id, v_pool, v_phase,
+            NULLIF(BTRIM(p_owner_provider), ''), NULLIF(BTRIM(p_owner_subject), ''),
+            now(), now(),
+            COALESCE(p_info, '{}'::jsonb), COALESCE(p_health, '{}'::jsonb), COALESCE(p_state, '{}'::jsonb))
+    ON CONFLICT (worker_node_id) DO UPDATE
+        SET pool = EXCLUDED.pool,
+            phase = EXCLUDED.phase,
+            health = EXCLUDED.health,
+            state = EXCLUDED.state,
+            updated_at = now();
+
+    -- Uniform gone-ness: silent for an hour = gone, whatever the substrate.
+    DELETE FROM ${s}.workers w WHERE w.updated_at < now() - interval '1 hour';
+
+    RETURN QUERY
+    WITH contrib AS (
+        SELECT d.domain AS c_domain, d.epoch AS c_epoch,
+               d.actuation AS c_actuation, d.desired AS c_desired,
+               CASE WHEN d.worker_node_id = p_worker_node_id THEN 3
+                    WHEN d.pool = v_pool THEN 2
+                    ELSE 1 END AS specificity
+          FROM ${s}.fleet_directives d
+         WHERE (d.pool = '*' AND d.worker_node_id = '*')
+            OR (d.pool = v_pool AND d.worker_node_id = '*')
+            OR (d.worker_node_id = p_worker_node_id)
+    )
+    SELECT c.c_domain,
+           SUM(c.c_epoch)::BIGINT,
+           (array_agg(c.c_actuation ORDER BY c.specificity DESC))[1],
+           COALESCE((array_agg(c.c_desired ORDER BY c.specificity ASC))[1], '{}'::jsonb)
+           || COALESCE((array_agg(c.c_desired ORDER BY c.specificity ASC))[2], '{}'::jsonb)
+           || COALESCE((array_agg(c.c_desired ORDER BY c.specificity ASC))[3], '{}'::jsonb)
+      FROM contrib c
+     GROUP BY c.c_domain;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_list_workers()
+RETURNS TABLE(worker_node_id TEXT, pool TEXT, phase TEXT,
+              owner_provider TEXT, owner_subject TEXT,
+              registered_at TIMESTAMPTZ, updated_at TIMESTAMPTZ,
+              info JSONB, health JSONB, state JSONB) AS $$
+    SELECT worker_node_id, pool, phase, owner_provider, owner_subject,
+           registered_at, updated_at, info, health, state
+      FROM ${s}.workers
+     ORDER BY pool, worker_node_id;
+$$ LANGUAGE sql;
+
+-- ── agent-packages fold-in shims (signatures unchanged) ──────────
+
+CREATE OR REPLACE FUNCTION ${s}.cms_agent_registry_bump() RETURNS BIGINT AS $$
+    SELECT ${s}.cms_fleet_directive_bump('agent-packages', '*', '*', NULL, 'worker', 'agent-packages');
+$$ LANGUAGE sql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_agent_registry_epoch() RETURNS BIGINT AS $$
+    SELECT COALESCE((SELECT d.epoch FROM ${s}.fleet_directives d
+                      WHERE d.domain = 'agent-packages' AND d.pool = '*' AND d.worker_node_id = '*'), 0);
+$$ LANGUAGE sql;
+
+-- Mixed-fleet display: union legacy agent_worker_state (old workers still
+-- write it) with workers.state->'agent-packages' (new workers), newest row
+-- per worker wins. Read paths (portal fleet adoption, MCP) stay untouched.
+CREATE OR REPLACE FUNCTION ${s}.cms_list_agent_worker_state()
+RETURNS TABLE(worker_node_id TEXT, epoch BIGINT, installed JSONB, updated_at TIMESTAMPTZ) AS $$
+    SELECT DISTINCT ON (u.worker_node_id)
+           u.worker_node_id, u.epoch, u.installed, u.updated_at
+      FROM (
+        SELECT w.worker_node_id,
+               COALESCE((w.state->'agent-packages'->>'epoch')::BIGINT, 0) AS epoch,
+               COALESCE(w.state->'agent-packages'->'installed', '{}'::jsonb) AS installed,
+               w.updated_at
+          FROM ${s}.workers w
+        UNION ALL
+        SELECT a.worker_node_id, a.epoch, a.installed, a.updated_at
+          FROM ${s}.agent_worker_state a
+      ) u
+     ORDER BY u.worker_node_id, u.updated_at DESC;
+$$ LANGUAGE sql;
+`;
 }
 
 // ─── Migration 0039: agent_worker_state self-prune ───────────────
