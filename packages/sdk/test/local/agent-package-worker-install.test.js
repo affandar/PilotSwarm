@@ -167,6 +167,17 @@ describe("agent-package worker install", () => {
                 assert(String(mine.installed["broken-kit"].error).includes("boom at import time"),
                     "quarantine reason lands in fleet truth");
 
+                // ── Smoke: a real session binds to the package agent ─
+                // (no LLM turn — orchestration accepts the create and the
+                // CMS row carries the agent id; turn-level behavior is
+                // covered by prompt/tool assertions above).
+                const session = await _client.createSessionForAgent("fixture-triager", {
+                    title: "pkg-smoke",
+                });
+                assert(session?.sessionId, "createSessionForAgent accepts a package agent");
+                const row = await catalog.getSession(session.sessionId);
+                assertEqual(row.agentId, "fixture-triager", "CMS row is bound to the package agent");
+
                 // ── Disable converges out ────────────────────────────
                 await catalog.setAgentPackageEnabled("fixture-kit", false, OWNER, false);
                 await worker.refreshAgentPackages();

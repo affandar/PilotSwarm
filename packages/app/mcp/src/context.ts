@@ -53,6 +53,8 @@ export interface ServerContext {
      * [admin]-tagged tools register iff true.
      */
     admin: boolean;
+    /** Agent-package management tool tier ("off" | "read" | "full"). */
+    agentMgmt: "off" | "read" | "full";
     /**
      * The caller's normalized role (`admin` | `user` | `anonymous` | null),
      * and the deployment's ownership/visibility posture. Web mode reads these
@@ -97,6 +99,12 @@ export interface CreateContextOptions {
     apiUrl?: string;
     modelProvidersPath?: string;
     pluginDirs?: string[];
+    /**
+     * Agent-package management surface (docs/proposals/agent-packages.md):
+     * "off" registers nothing, "read" only listing/inspection, "full" (the
+     * default) adds publish/sync/scope/pin/delete.
+     */
+    agentMgmt?: "off" | "read" | "full";
 }
 
 export async function createContext(opts: CreateContextOptions): Promise<ServerContext> {
@@ -283,6 +291,7 @@ export async function createContext(opts: CreateContextOptions): Promise<ServerC
         graph,
         api,
         admin,
+        agentMgmt: opts.agentMgmt ?? "full",
         role: ctxRole,
         authz: ctxAuthz,
         webMode: Boolean(opts.apiUrl),
