@@ -108,17 +108,33 @@ export function registerAgentTools(server: McpServer, ctx: ServerContext) {
         },
         async ({ include_system }) => {
             try {
+                // Web mode: fetch LIVE — agent packages change the catalog at
+                // runtime (publish/promote/delete), so the boot snapshot goes
+                // stale. Direct mode keeps the boot snapshot (plugin dirs are
+                // static for the process lifetime). Fall back to the snapshot
+                // when the live call fails so a portal blip degrades, not errors.
                 let agents = ctx.registeredAgents;
+                if (ctx.api) {
+                    try {
+                        const live = await ctx.api.call("listCreatableAgents");
+                        if (Array.isArray(live)) agents = live as typeof agents;
+                    } catch { /* keep boot snapshot */ }
+                }
                 if (!include_system) {
                     agents = agents.filter((a) => !a.system);
                 }
 
-                const data = agents.map((a) => ({
+                const data = agents.map((a: any) => ({
                     name: a.name,
                     title: a.title ?? null,
                     description: a.description ?? null,
                     system: Boolean(a.system),
                     parent: a.parent ?? null,
+                    ...(a.packageName ? {
+                        package: a.packageName,
+                        packageSemver: a.packageSemver ?? null,
+                        scope: a.scope ?? null,
+                    } : {}),
                 }));
 
                 return {
