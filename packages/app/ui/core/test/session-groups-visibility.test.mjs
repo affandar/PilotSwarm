@@ -85,8 +85,50 @@ test("a session inside a folder is never listed at top level, even mid-refresh",
     store.dispatch({ type: "sessions/groupsLoaded", groups: [groupRow] });
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "child", title: "in folder", status: "idle", groupId: "g1" }] });
     // Folder removed from the tree for a beat (the old flicker): its member
-    // must NOT pop out to the root level.
+    // must NOT pop out to the root level — but it must not vanish either. A
+    // stand-in folder holds it until the real row returns.
     store.dispatch({ type: "sessions/groupsLoaded", groups: [] });
-    const rows = selectSessionRows(store.getState()).map((row) => row.sessionId);
-    assert.equal(rows.includes("child"), false, "a grouped session never appears outside its folder");
+    const rows = selectSessionRows(store.getState());
+    const child = rows.find((row) => row.sessionId === "child");
+    assert.ok(child, "the member stays visible");
+    assert.ok(child.depth > 0, "a grouped session never appears at top level");
+    assert.ok(rows.some((row) => row.sessionId === "group:g1" && row.depth === 0),
+        "a stand-in folder holds it");
+});
+
+test("members never vanish when their folder row is missing", () => {
+    const store = createStore(appReducer, createInitialState());
+    store.dispatch({ type: "auth/principal", principal: me });
+    // Sessions arrive already filed into a folder we have NOT fetched yet —
+    // the state right after a move, or any tick where the group fetch lags.
+    store.dispatch({
+        type: "sessions/loaded",
+        sessions: [
+            { sessionId: "a", title: "filed one", status: "idle", groupId: "g-unknown", owner: me },
+            { sessionId: "b", title: "filed two", status: "idle", groupId: "g-unknown", owner: me },
+            { sessionId: "loose", title: "loose", status: "idle", owner: me },
+        ],
+    });
+
+    const ids = selectSessionRows(store.getState()).map((row) => row.sessionId);
+    assert.ok(ids.includes("group:g-unknown"), "a stand-in folder appears for the unknown group");
+    assert.ok(ids.includes("a") && ids.includes("b"), "its members stay visible instead of disappearing");
+    assert.ok(ids.includes("loose"));
+
+    // Depth proves containment still holds: members sit UNDER the folder.
+    const rows = selectSessionRows(store.getState());
+    const folder = rows.find((row) => row.sessionId === "group:g-unknown");
+    const member = rows.find((row) => row.sessionId === "a");
+    assert.equal(folder.depth, 0);
+    assert.ok(member.depth > folder.depth, "members render inside the folder, not beside it");
+
+    // The real folder arrives and replaces the stand-in, title and all.
+    store.dispatch({
+        type: "sessions/groupsLoaded",
+        groups: [{ sessionId: "group:g-unknown", groupId: "g-unknown", isGroup: true, title: "Real Name", status: "group", memberCount: 2, createdAt: 1, updatedAt: 2 }],
+    });
+    const after = selectSessionRows(store.getState());
+    const real = after.find((row) => row.sessionId === "group:g-unknown");
+    assert.match(real.text || real.runs?.map((r) => r.text).join("") || "", /Real Name/);
+    assert.equal(after.filter((row) => row.sessionId === "group:g-unknown").length, 1, "no duplicate folder row");
 });

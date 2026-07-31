@@ -109,18 +109,18 @@ const API = {
     },
 };
 
-function rpc(method, SESSIONS) {
+function rpc(method, SESSIONS, PROFILE_SETTINGS = {}) {
     switch (method) {
         case "listSessions": return { sessions: SESSIONS, hasMore: false };
         case "listModels": return [];
         case "listArtifacts": return [];
         case "getSessionEvents": return [];
-        case "getCurrentUserProfile": return { ok: true, profileSettings: {} };
+        case "getCurrentUserProfile": return { ok: true, profileSettings: PROFILE_SETTINGS };
         default: return {};
     }
 }
 
-export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 0, systemEvery = 0, groups = [] } = {}) {
+export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 0, systemEvery = 0, groups = [], themeId = null } = {}) {
     const SESSIONS = makeSessions(Math.max(1, sessionCount));
     const TRANSCRIPT = makeTranscript(Math.max(0, transcriptTurns), systemEvery);
     // Placement calls the drag tests assert against: [{ sessionIds, groupId }].
@@ -147,6 +147,14 @@ export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 
                     res.writeHead(200, { "content-type": "application/json" });
                     res.end(JSON.stringify({ ok: true, result: (parsed.sessionIds || []).map((id) => ({ rootSessionId: id, placed: true, reason: null })) }));
                 });
+                return;
+            }
+            // /me/profile — the last-segment heuristic maps it to "profile",
+            // not the op name, so it needs its own route. This is where the
+            // viewer's themeId comes from.
+            if (/\/me\/profile$/.test(pathname)) {
+                res.writeHead(200, { "content-type": "application/json" });
+                res.end(JSON.stringify({ ok: true, result: { profileSettings: themeId ? { themeId } : {} } }));
                 return;
             }
             if (/\/events$/.test(pathname)) {
@@ -188,7 +196,7 @@ export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 
             if (body === undefined) {
                 // Everything else: derive from the last path segment, which is
                 // enough for the read-only surfaces these tests exercise.
-                body = { ok: true, ...rpc(pathname.split("/").pop(), SESSIONS) };
+                body = { ok: true, ...rpc(pathname.split("/").pop(), SESSIONS, themeId ? { themeId } : {}) };
             }
             res.writeHead(200, { "content-type": "application/json" });
             res.end(JSON.stringify(body));

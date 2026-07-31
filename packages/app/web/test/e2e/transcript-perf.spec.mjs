@@ -12,11 +12,15 @@
 import { test, expect } from "@playwright/test";
 import { startStubServer } from "./stub-server.mjs";
 
+// The rich transcript is a THEME now (Workspace Dark - Rich Text), not a
+// toolbar toggle, so these tests ask the stub to serve that theme; otherwise
+// the portal renders the terminal transcript and .ps-rich-chat never appears.
+
 let stub;
 let base;
 
 test.beforeAll(async () => {
-    stub = await startStubServer(0, { sessionCount: 6, transcriptTurns: 600 });
+    stub = await startStubServer(0, { sessionCount: 6, transcriptTurns: 600, themeId: "workspace-dark-rich" });
     base = `http://127.0.0.1:${stub.port}`;
 });
 

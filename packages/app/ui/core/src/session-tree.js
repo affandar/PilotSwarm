@@ -106,6 +106,31 @@ export function buildSessionTree(sessions = [], collapsedIds = new Set(), orderS
         byId.set(session.sessionId, session);
     }
 
+    // A session that names a folder we have not loaded would be attached to
+    // nothing and vanish from the list entirely — the containment invariant
+    // must never cost visibility. Stand in a placeholder folder so its members
+    // stay reachable under it; the real row replaces it on the next group
+    // fetch (which also restores the real title and counts).
+    const standIns = [];
+    for (const session of sessions) {
+        if (session.isGroup || !session.groupId || session.parentSessionId) continue;
+        const key = `group:${session.groupId}`;
+        if (byId.has(key)) continue;
+        const standIn = {
+            sessionId: key,
+            groupId: session.groupId,
+            isGroup: true,
+            title: "Group",
+            status: "group",
+            shortSummary: "reconnecting…",
+            createdAt: 0,
+            updatedAt: 0,
+        };
+        byId.set(key, standIn);
+        standIns.push(standIn);
+    }
+    if (standIns.length > 0) sessions = [...sessions, ...standIns];
+
     for (const session of sessions) {
         const groupParentId = !session.isGroup && session.groupId && !session.parentSessionId && byId.has(`group:${session.groupId}`)
             ? `group:${session.groupId}`
