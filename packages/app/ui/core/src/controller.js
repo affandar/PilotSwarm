@@ -2052,6 +2052,10 @@ export class PilotSwarmUiController {
     }
 
     async refreshSessions() {
+        // FIRST, above every early return below (a selected group or a
+        // navigation-intent branch returns before the tail): the worker
+        // registry must refresh on every tick of the loop that provably runs.
+        this.refreshWorkerRegistryIfStale().catch(() => {});
         const preRefreshState = this.getState();
         const recoveringConnection = !preRefreshState.connection.connected || Boolean(preRefreshState.connection.error);
         const shouldClearRefreshFailureBanner = preRefreshState.ui.statusText === SESSION_REFRESH_FAILED_STATUS;
@@ -2163,18 +2167,26 @@ export class PilotSwarmUiController {
         }
         await this.syncVisibleSessionDetails(syncedIds).catch(() => {});
         this.ensureInspectorData().catch(() => {});
-        // The worker registry rides THIS loop, not the inspector's: the Node
-        // Map must not depend on a pane being mounted, a tab being active, or
-        // an effect having fired. Throttled to the heartbeat interval.
-        this.refreshWorkerRegistryIfStale().catch(() => {});
         this.evictStaleSessionState();
     }
 
-    /** Refresh the worker registry at most every 20s. Never throws. */
+    /**
+     * Refresh the worker registry at most every 20s. Never throws.
+     * Records EVERY attempt (including skips and why) so the Node Map can
+     * distinguish "the refresh never ran" from "the fetch failed" — the two
+     * used to look identical in the UI.
+     */
     async refreshWorkerRegistryIfStale() {
         const workers = this.getState().admin?.workers;
-        if (workers?.loading) return;
-        if (workers?.fetchedAt && (Date.now() - workers.fetchedAt) < 20_000) return;
+        if (workers?.loading) {
+            this.dispatch({ type: "admin/workers/attempt", skip: "already in flight" });
+            return;
+        }
+        if (workers?.fetchedAt && (Date.now() - workers.fetchedAt) < 20_000) {
+            this.dispatch({ type: "admin/workers/attempt", skip: "fresh" });
+            return;
+        }
+        this.dispatch({ type: "admin/workers/attempt", skip: null });
         await this.refreshAdminWorkers();
     }
 

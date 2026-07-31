@@ -5158,6 +5158,9 @@ export function selectNodeMapView(state) {
         registryError: state.admin?.workers?.error || null,
         registryFetchedAt: state.admin?.workers?.fetchedAt || 0,
         registryLoading: Boolean(state.admin?.workers?.loading),
+        registryAttempts: state.admin?.workers?.attempts || 0,
+        registryLastAttemptAt: state.admin?.workers?.lastAttemptAt || 0,
+        registryLastSkip: state.admin?.workers?.lastSkip || null,
         registered: registeredNodes.length,
         liveCount: registeredNodes.filter((node) => node.live).length,
         executingTotal: nodes.reduce((sum, node) => sum + node.executing.length, 0),
@@ -5194,8 +5197,17 @@ function buildNodeMapLines(state, maxWidth, options = {}) {
             lines.push([{ text: "registry reachable but EMPTY — no worker has heartbeated in the last hour", color: "yellow" }]);
         } else if (view.registryLoading) {
             lines.push([{ text: "registry request in flight… (times out red after 10s)", color: "yellow" }]);
+        } else if (view.registryAttempts === 0) {
+            // No attempt has EVER been recorded: the refresh call is not
+            // reaching the controller at all (host wiring), which used to be
+            // indistinguishable from "the fetch failed".
+            lines.push([{ text: "registry refresh has NEVER been attempted in this tab — reload; if it persists the refresh call is not reaching the controller", color: "red" }]);
         } else {
-            lines.push([{ text: "registry not fetched yet — it retries every 10s while this tab is open", color: "yellow" }]);
+            const ago = view.registryLastAttemptAt ? Math.round((Date.now() - view.registryLastAttemptAt) / 1000) : null;
+            lines.push([{
+                text: `registry attempted ${view.registryAttempts}× (last ${ago === null ? "?" : `${ago}s`} ago${view.registryLastSkip ? `, skipped: ${view.registryLastSkip}` : ""}) but no rows and no error — reload if this persists`,
+                color: "yellow",
+            }]);
         }
     }
     lines.push(plainInspectorLine("", "gray"));

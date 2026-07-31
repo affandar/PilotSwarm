@@ -760,7 +760,9 @@ button {
    ~32px of dead air between panes. The track is now the entire gap, and
    it is the full hit area — panels sit 8px apart everywhere. */
 :root {
-  --ps-resizer-track: 8px;
+  /* One number for EVERY divider — the column resizer, the row resizer and
+     the workspace grid all read it, so all gaps match exactly. */
+  --ps-resizer-track: 12px;
 }
 .ps-workspace-grid,
 .ps-workspace-column {

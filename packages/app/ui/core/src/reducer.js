@@ -1856,6 +1856,10 @@ export function appReducer(state, action) {
             const section = ["packages", "workers", "ghcp"].includes(action.section) ? action.section : "ghcp";
             return { ...state, admin: { ...state.admin, section } };
         }
+        case "admin/workers/attempt": {
+            const workers = state.admin.workers || {};
+            return { ...state, admin: { ...state.admin, workers: { ...workers, attempts: (workers.attempts || 0) + 1, lastAttemptAt: Date.now(), lastSkip: action.skip || null } } };
+        }
         case "admin/workers/loading": {
             return { ...state, admin: { ...state.admin, workers: { ...state.admin.workers, loading: true, error: null } } };
         }

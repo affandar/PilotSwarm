@@ -325,6 +325,11 @@ export function createInitialState({ mode = "local", branding = null, themeId = 
                 error: null,
                 list: [],
                 fetchedAt: 0,
+                // Refresh-attempt telemetry (surfaced in the Node Map): tells
+                // "never called" apart from "called and failed".
+                attempts: 0,
+                lastAttemptAt: 0,
+                lastSkip: null,
             },
         },
     };
