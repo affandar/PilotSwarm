@@ -121,8 +121,13 @@ test("admin settings tree groups packages by scope with badges and counts", () =
     assert.deepEqual(tree.filter((r) => r.kind === "section").map((r) => r.label), ["GitHub Keys", "Agents"]);
     const shared = tree.find((r) => r.id === "group:shared");
     const user = tree.find((r) => r.id === "group:user");
+    const others = tree.find((r) => r.id === "group:others");
     assert.equal(shared.count, 1);
-    assert.equal(user.count, 1);
+    // "User" is the VIEWER's own private packages. Someone else's private
+    // package (bob's) is not part of alice's workspace — it is listed under
+    // "Other users" instead of cluttering her own section.
+    assert.equal(user.count, 0, "alice owns no user-scope packages");
+    assert.equal(others.count, 1, "bob's private package is grouped separately");
     const pkgRow = tree.find((r) => r.id === "pkg:incident-kit");
     assert.equal(pkgRow.scope, "shared");
     assert.equal(pkgRow.semver, "1.4.0");

@@ -3662,8 +3662,21 @@ export function selectAdminConsole(state) {
         // GitHub Keys screen shows a double selection.
         selected: admin.section === "packages" && pkgState.selectedName === pkg.name,
     });
+    // Admins are served every user-scope package, but another person's private
+    // agents are not part of YOUR workspace — keep them out of the main tree
+    // and behind an explicit "Other users" group so the list stays yours.
+    const isMinePackage = (pkg) => Boolean(
+        pkg?.owner && principal
+        && pkg.owner.provider === principal.provider
+        && pkg.owner.subject === principal.subject,
+    );
     const sharedRows = pkgList.filter((pkg) => pkg.scope === "shared").map(packageRow);
-    const userRows = pkgList.filter((pkg) => pkg.scope !== "shared").map(packageRow);
+    const userRows = pkgList
+        .filter((pkg) => pkg.scope !== "shared" && isMinePackage(pkg))
+        .map(packageRow);
+    const otherUserRows = pkgList
+        .filter((pkg) => pkg.scope !== "shared" && !isMinePackage(pkg))
+        .map((pkg) => ({ ...packageRow(pkg), ownerLabel: pkg?.createdBy || pkg?.owner?.subject || "another user" }));
 
     // Settings tree — the session-list-slot navigation. Rendered by both
     // hosts; `kind` drives affordances (section rows switch panes, package
@@ -3676,6 +3689,12 @@ export function selectAdminConsole(state) {
         ...sharedRows.map((row) => ({ id: `pkg:${row.name}`, kind: "package", depth: 2, label: row.name, ...row })),
         { id: "group:user", kind: "group", depth: 1, label: "User", count: userRows.length },
         ...userRows.map((row) => ({ id: `pkg:${row.name}`, kind: "package", depth: 2, label: row.name, ...row })),
+        ...(otherUserRows.length > 0
+            ? [
+                { id: "group:others", kind: "group", depth: 1, label: "Other users", count: otherUserRows.length },
+                ...otherUserRows.map((row) => ({ id: `pkg:${row.name}`, kind: "package", depth: 2, label: row.name, ...row })),
+            ]
+            : []),
         // The worker registry is a hard-gated admin read; hide the section
         // entirely from non-admins rather than showing a doomed pane.
         ...(isAdmin ? [{ id: "workers", kind: "section", depth: 0, label: "Workers", selected: section === "workers" }] : []),

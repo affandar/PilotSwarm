@@ -7573,6 +7573,11 @@ function AdminAddPackageDialog({ controller, dialog }) {
         React.createElement("form", {
             className: "ps-modal ps-admin-add",
             onClick: (event) => event.stopPropagation(),
+            // A form containing a type=password input is treated as a SIGN-IN
+            // form by Safari/Chrome, which then offer saved credentials on the
+            // nearest text input — the link box. These opt the whole form (and
+            // the password managers) out of that heuristic.
+            autoComplete: "off",
             onSubmit,
         },
             React.createElement("div", { className: "ps-modal-header" },
@@ -7589,13 +7594,37 @@ function AdminAddPackageDialog({ controller, dialog }) {
                 isRepo
                     ? [
                         React.createElement("label", { key: "u", className: "ps-admin-add__field" }, "Link to plugin.json (or the folder containing it)",
-                            React.createElement("input", { value: dialog.repoUrl, onChange: setField("repoUrl"), placeholder: "https://github.com/org/repo/blob/main/my-agents/plugin.json", autoFocus: true })),
+                            React.createElement("input", {
+                                value: dialog.repoUrl,
+                                onChange: setField("repoUrl"),
+                                placeholder: "https://github.com/org/repo/blob/main/my-agents/plugin.json",
+                                autoFocus: true,
+                                type: "url",
+                                name: "agent-package-link",
+                                autoComplete: "off",
+                                spellCheck: false,
+                                "data-1p-ignore": "true",
+                                "data-lpignore": "true",
+                                "data-bwignore": "true",
+                            })),
                         React.createElement("div", { key: "h", className: "ps-admin-add__hint" },
                             "Paste the browser URL — branch and path are read from the link. The files are read "
                             + "by THIS BROWSER with your access (public GitHub needs nothing; Azure DevOps uses your "
                             + "signed-in account) and uploaded as a package artifact."),
                         React.createElement("label", { key: "t", className: "ps-admin-add__field" }, "PAT (only for private GitHub repos, or to override — used here, never stored)",
-                            React.createElement("input", { type: "password", value: dialog.authToken, onChange: setField("authToken"), autoComplete: "off" })),
+                            React.createElement("input", {
+                                type: "password",
+                                value: dialog.authToken,
+                                onChange: setField("authToken"),
+                                name: "agent-package-pat",
+                                // "new-password" is what actually suppresses the
+                                // saved-credential prompt; "off" is ignored for
+                                // password inputs in Safari.
+                                autoComplete: "new-password",
+                                "data-1p-ignore": "true",
+                                "data-lpignore": "true",
+                                "data-bwignore": "true",
+                            })),
                     ]
                     : React.createElement("label", { className: "ps-admin-add__field" }, "Package folder with plugin.json — the manifest (≤ 2 MB; node_modules skipped)",
                             React.createElement("input", { ref: folderRef, type: "file", webkitdirectory: "", directory: "", multiple: true })),
