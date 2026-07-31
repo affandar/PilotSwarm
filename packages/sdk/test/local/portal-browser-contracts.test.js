@@ -159,6 +159,16 @@ describe("portal browser contracts", () => {
         assertIncludes(webApp, "modalOpen: Boolean(state.ui.modal)", "portal focus-managed panes should know when a modal is open");
         assertIncludes(webApp, "if (viewState.modalOpen || !viewState.focused || !viewState.activeSessionId) return;", "session-pane focus management should stand down while modals are open");
         assertIncludes(webApp, "if (!active || promptState.modalOpen || !promptState.focused || !inputNode) return;", "prompt focus management should stand down while modals are open");
+        // The portal panes hand shared selectors a RECONSTRUCTED state object.
+        // Anything a selector reads but the reconstruction omits is invisible
+        // forever — that is exactly how the Node Map stayed empty while the
+        // worker registry was loading fine (state.admin was never passed).
+        assertIncludes(webApp, "admin: { workers: viewState.adminWorkers }",
+            "inspector/activity selector state must carry the worker registry");
+        assertIncludes(webApp, "nodeMapSelectedNode: viewState.nodeMapSelectedNode",
+            "inspector selector state must carry the Node Map selection");
+        assertIncludes(webApp, "ui: { nodeMapSelectedNode: viewState.nodeMapSelectedNode }",
+            "activity selector state must carry the Node Map selection (worker-details panel)");
         assertIncludes(webApp, "controller.uploadArtifactFiles(nextFiles)", "portal uploads should flow through the shared artifact-upload controller path");
         assert(!webApp.includes("controller.uploadPromptAttachmentFiles(nextFiles)"), "prompt composer should no longer own browser artifact uploads");
         assertIncludes(webApp, "clearBrowserPreferenceCache()", "portal should purge legacy browser preference cache at startup");

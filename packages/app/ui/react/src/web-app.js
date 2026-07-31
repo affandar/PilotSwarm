@@ -4731,6 +4731,10 @@ function InspectorPane({ controller, mobile = false, panelClassName = "", extraA
         return {
             inspectorTab,
             statsViewMode: state.ui.statsViewMode,
+            // The Node Map renders from the worker registry: subscribe to it
+            // here or the pane never re-renders when rows arrive.
+            adminWorkers: state.admin?.workers,
+            nodeMapSelectedNode: state.ui.nodeMapSelectedNode,
             activeSessionId: state.sessions.activeSessionId,
             sessionsById: state.sessions.byId,
             sessionsFlat: state.sessions.flat,
@@ -4763,9 +4767,14 @@ function InspectorPane({ controller, mobile = false, panelClassName = "", extraA
         sessionStats: viewState.sessionStats,
         fleetStats: viewState.fleetStats,
         connection: viewState.connection,
+        // selectInspector → buildNodeMapLines reads the registry from here.
+        // Omitting it made the Node Map permanently blind to worker rows
+        // (and to every refresh attempt) no matter what the controller did.
+        admin: { workers: viewState.adminWorkers },
         ui: {
             inspectorTab: viewState.inspectorTab,
             statsViewMode: viewState.statsViewMode,
+            nodeMapSelectedNode: viewState.nodeMapSelectedNode,
             scroll: {
                 inspector: viewState.scroll,
             },
@@ -4781,10 +4790,12 @@ function InspectorPane({ controller, mobile = false, panelClassName = "", extraA
         },
     }), [
         viewState.activeSessionId,
+        viewState.adminWorkers,
         viewState.connection,
         viewState.executionHistoryBySessionId,
         viewState.executionHistoryFormat,
         viewState.fleetStats,
+        viewState.nodeMapSelectedNode,
         viewState.files,
         viewState.historyBySessionId,
         viewState.inspectorTab,
@@ -4917,21 +4928,42 @@ function ActivityPane({ controller, panelClassName = "", extraActions = null }) 
             scroll: state.ui.scroll.activity,
             followBottom: state.ui.followBottom?.activity !== false,
             maxLines,
+            // Node-scoped mode (a node picked in the Node Map) turns this pane
+            // into the WORKER DETAILS panel, which needs the registry, the
+            // selection, and every session/history — not just the active one.
+            nodeMapSelectedNode: state.ui.nodeMapSelectedNode,
+            adminWorkers: state.admin?.workers,
+            branding: state.branding,
+            sessionsById: state.sessions.byId,
+            sessionsFlat: state.sessions.flat,
+            historyBySessionId: state.history.bySessionId,
         };
     }, shallowEqualObject);
     const selectorState = React.useMemo(() => ({
+        branding: viewState.branding,
+        admin: { workers: viewState.adminWorkers },
+        ui: { nodeMapSelectedNode: viewState.nodeMapSelectedNode },
         sessions: {
             activeSessionId: viewState.activeSessionId,
-            byId: viewState.activeSessionId && viewState.activeSession
-                ? { [viewState.activeSessionId]: viewState.activeSession }
-                : {},
+            byId: viewState.nodeMapSelectedNode
+                ? viewState.sessionsById
+                : (viewState.activeSessionId && viewState.activeSession
+                    ? { [viewState.activeSessionId]: viewState.activeSession }
+                    : {}),
+            flat: viewState.sessionsFlat,
         },
         history: {
-            bySessionId: viewState.activeSessionId && viewState.activeHistory
-                ? new Map([[viewState.activeSessionId, viewState.activeHistory]])
-                : new Map(),
+            bySessionId: viewState.nodeMapSelectedNode
+                ? viewState.historyBySessionId
+                : (viewState.activeSessionId && viewState.activeHistory
+                    ? new Map([[viewState.activeSessionId, viewState.activeHistory]])
+                    : new Map()),
         },
-    }), [viewState.activeHistory, viewState.activeSession, viewState.activeSessionId]);
+    }), [
+        viewState.activeHistory, viewState.activeSession, viewState.activeSessionId,
+        viewState.adminWorkers, viewState.branding, viewState.historyBySessionId,
+        viewState.nodeMapSelectedNode, viewState.sessionsById, viewState.sessionsFlat,
+    ]);
     const activity = React.useMemo(
         () => selectActivityPane(selectorState, viewState.maxLines),
         [selectorState, viewState.maxLines],

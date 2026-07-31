@@ -765,6 +765,7 @@ button {
   --ps-resizer-track: 12px;
 }
 .ps-workspace-grid,
+.ps-workspace-main-grid,
 .ps-workspace-column {
   gap: 0;
 }
