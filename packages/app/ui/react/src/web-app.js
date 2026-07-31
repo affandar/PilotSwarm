@@ -3211,6 +3211,10 @@ const SessionListRow = React.memo(function SessionListRow({
         "aria-selected": row.active ? "true" : "false",
         "data-session-id": row.sessionId,
         "data-group-row": row.isGroup ? "1" : undefined,
+        // The RAW group id: row ids are prefixed ("group:<uuid>") and the
+        // placement API takes the bare uuid. Passing the row id silently
+        // targeted a group that does not exist.
+        "data-group-id": row.isGroup ? (row.groupId || "") : undefined,
         onPointerDown,
         onClick,
         // macOS turns Ctrl+click into a context-menu event, so the click
@@ -3512,8 +3516,11 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         setDragState({ dragging: false, ids: [], titles: [], overGroupId: null, x: 0, y: 0 });
         if (!commit || !pending?.started || pending.ids.length === 0) return;
         // Dropped on a folder → file there; dropped anywhere else in the list
-        // → take them out of whatever folder they were in.
-        controller.moveSessionsToGroup(pending.overGroupId, pending.ids).catch(() => {});
+        // → take them out of whatever folder they were in. Failures surface in
+        // the status line instead of vanishing into a swallowed catch.
+        controller.moveSessionsToGroup(pending.overGroupId, pending.ids).catch((error) => {
+            controller.dispatch({ type: "ui/status", text: `Move failed: ${error?.message || error}` });
+        });
     }, [controller]);
 
     React.useEffect(() => {
@@ -3523,7 +3530,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             if (!pending) return;
             const el = document.elementFromPoint(event.clientX, event.clientY);
             const groupEl = el?.closest?.("[data-group-row='1']") || null;
-            const overGroupId = groupEl?.getAttribute("data-session-id") || null;
+            const overGroupId = groupEl?.getAttribute("data-group-id") || null;
             pending.overGroupId = overGroupId;
             setDragState((cur) => ({ ...cur, overGroupId, x: event.clientX, y: event.clientY }));
         };
@@ -3762,6 +3769,14 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     },
     React.createElement("div", {
         className: `ps-action-list ps-session-list${dragState.dragging ? " is-dragging" : ""}`,
+        // Clicking empty space below the rows clears the list selection while
+        // the other panes keep showing the session. With nothing selected the
+        // folder button offers a new, empty group.
+        onClick: (event) => {
+            if (event.target !== event.currentTarget) return;
+            controller.dispatch({ type: "sessions/listDeselect" });
+            controller.setFocus("sessions");
+        },
     },
         rows.length === 0
             ? React.createElement("div", { className: "ps-empty-state" }, viewState.filterQuery

@@ -1226,6 +1226,7 @@ export function appReducer(state, action) {
         }
 
         case "sessions/selected": {
+            state = { ...state, sessions: { ...state.sessions, listDeselected: false } };
             // Per-session chat scroll memory: stash the outgoing session's
             // offset and restore the incoming one's. If new chat arrives on
             // re-entry, history/set's activeChatUpdated reset still snaps to
@@ -1393,6 +1394,14 @@ export function appReducer(state, action) {
             };
         }
 
+        case "sessions/listDeselect": {
+            // Purely a list affordance: activeSessionId is untouched so the
+            // chat, inspector and activity panes carry on unchanged.
+            return {
+                ...state,
+                sessions: { ...state.sessions, listDeselected: true, selectedIds: [], selectMode: false },
+            };
+        }
         case "sessions/selectClear": {
             if (state.sessions.selectedIds.length === 0 && !state.sessions.selectMode) return state;
             return {

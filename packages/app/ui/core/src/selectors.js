@@ -887,7 +887,10 @@ export function selectSessionRows(state) {
 
     return state.sessions.flat.map((entry) => {
         const session = state.sessions.byId[entry.sessionId];
-        const active = entry.sessionId === state.sessions.activeSessionId;
+        // The LIST highlight can be cleared (click empty space) without
+        // detaching the session — the chat and inspector panes keep it.
+        const active = entry.sessionId === state.sessions.activeSessionId
+            && !state.sessions.listDeselected;
         const pinned = pinnedSet.has(entry.sessionId);
         const selected = selectedSet.has(entry.sessionId);
         // Every input the row below is derived from. Identity comparison is

@@ -184,6 +184,9 @@ export function createInitialState({ mode = "local", branding = null, themeId = 
             pinnedIds: normalizeStoredPinnedSessionIds(pinnedSessionIds),
             selectedIds: [],
             selectMode: false,
+            // Clicking empty space in the list clears the LIST highlight while
+            // the chat/inspector panes keep showing the session.
+            listDeselected: false,
             orderById: {},
             nextOrderOrdinal: 0,
             filterQuery: "",

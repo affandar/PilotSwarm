@@ -125,8 +125,14 @@ export function buildSessionTree(sessions = [], collapsedIds = new Set(), orderS
 
     const roots = sessions
         .filter((session) => {
-            if (session.parentSessionId && byId.has(session.parentSessionId)) return false;
-            if (!session.isGroup && session.groupId && !session.parentSessionId && byId.has(`group:${session.groupId}`)) return false;
+            // INVARIANT: a session that belongs to something is never shown
+            // outside it. These used to be conditioned on the container being
+            // loaded, so a momentarily missing parent or folder promoted its
+            // children to top level — sessions visibly jumping out of their
+            // folder and back. Unattached children stay hidden until their
+            // container arrives instead.
+            if (session.parentSessionId) return false;
+            if (!session.isGroup && session.groupId) return false;
             return true;
         })
         .sort((a, b) => sortSessions(a, b, stableOrderMap, pinSet));

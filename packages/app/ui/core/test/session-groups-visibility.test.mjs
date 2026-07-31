@@ -63,3 +63,30 @@ test("a session refresh that carries no folders does not delete them", () => {
     assert.equal(selectSessionRows(store.getState()).map((r) => r.sessionId).includes("group:g1"), false,
         "deleting the folder server-side does remove it");
 });
+
+test("clicking empty space clears the list highlight but keeps the session attached", () => {
+    const store = createStore(appReducer, createInitialState());
+    store.dispatch({ type: "sessions/loaded", sessions: [mine] });
+    store.dispatch({ type: "sessions/selected", sessionId: "s1" });
+    assert.equal(selectSessionRows(store.getState())[0].active, true);
+
+    store.dispatch({ type: "sessions/listDeselect" });
+    assert.equal(selectSessionRows(store.getState())[0].active, false, "no row is highlighted");
+    assert.equal(store.getState().sessions.activeSessionId, "s1",
+        "the session stays attached so chat/inspector keep rendering it");
+
+    // Selecting a row re-arms the highlight.
+    store.dispatch({ type: "sessions/selected", sessionId: "s1" });
+    assert.equal(selectSessionRows(store.getState())[0].active, true);
+});
+
+test("a session inside a folder is never listed at top level, even mid-refresh", () => {
+    const store = createStore(appReducer, createInitialState());
+    store.dispatch({ type: "sessions/groupsLoaded", groups: [groupRow] });
+    store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "child", title: "in folder", status: "idle", groupId: "g1" }] });
+    // Folder removed from the tree for a beat (the old flicker): its member
+    // must NOT pop out to the root level.
+    store.dispatch({ type: "sessions/groupsLoaded", groups: [] });
+    const rows = selectSessionRows(store.getState()).map((row) => row.sessionId);
+    assert.equal(rows.includes("child"), false, "a grouped session never appears outside its folder");
+});

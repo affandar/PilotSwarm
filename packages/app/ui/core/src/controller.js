@@ -4046,8 +4046,9 @@ export class PilotSwarmUiController {
         const eligible = this.getMovableGroupSessionSelection();
 
         if (eligible.length === 0) {
-            this.dispatch({ type: "ui/status", text: "Select a top-level non-system session to move" });
-            return null;
+            // Nothing selected is a legitimate intent: make an empty folder to
+            // drag sessions into, rather than scolding the user.
+            return this.openCreateEmptyGroupModal();
         }
         if (typeof this.transport.listSessionGroups !== "function") {
             this.dispatch({ type: "ui/status", text: "Session groups are not supported by this transport" });
@@ -4111,6 +4112,29 @@ export class PilotSwarmUiController {
 
     async createSessionGroupFromSelection() {
         return this.openMoveToGroupModal();
+    }
+
+    /** Name-and-create an EMPTY group (no sessions), ready to drag into. */
+    async openCreateEmptyGroupModal() {
+        if (typeof this.transport.createSessionGroup !== "function") {
+            this.dispatch({ type: "ui/status", text: "Session grouping is not supported by this transport" });
+            return null;
+        }
+        const state = this.getState();
+        this.dispatch({
+            type: "ui/modal",
+            modal: {
+                type: "sessionGroupName",
+                title: "New Group",
+                previousFocus: state.ui.focusRegion,
+                sessionIds: [],
+                value: "",
+                cursorIndex: 0,
+                maxLength: 80,
+            },
+        });
+        this.dispatch({ type: "ui/status", text: "Name the new group and press Enter" });
+        return null;
     }
 
     async moveSessionsToGroup(groupId, sessionIds, { statusTitle = null } = {}) {
@@ -4259,7 +4283,15 @@ export class PilotSwarmUiController {
                 description: `${(modal.sessionIds || []).length} grouped session${(modal.sessionIds || []).length === 1 ? "" : "s"}`,
                 sessionIds: modal.sessionIds || [],
             });
-            await this.moveSessionsToGroup(group.groupId, modal.sessionIds || [], { statusTitle: group.title || title });
+            const ids = modal.sessionIds || [];
+            if (ids.length === 0) {
+                // An empty folder is the point — refresh so it appears, and
+                // say so instead of reporting "nothing to move".
+                this.dispatch({ type: "ui/status", text: `Created group "${group.title || title}"` });
+                await this.refreshSessions().catch(() => {});
+            } else {
+                await this.moveSessionsToGroup(group.groupId, ids, { statusTitle: group.title || title });
+            }
         } catch (error) {
             this.dispatch({ type: "ui/status", text: `Move failed: ${error?.message || String(error)}` });
         }
