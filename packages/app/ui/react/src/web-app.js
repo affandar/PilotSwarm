@@ -3200,6 +3200,11 @@ const SessionListRow = React.memo(function SessionListRow({
     const isDropTarget = Boolean(row.isGroup) && drag?.dragging && drag.overGroupId === row.sessionId;
     const onPointerDown = React.useCallback((event) => {
         if (event.button !== 0) return;
+        // Claim the gesture: without this the browser can start a native
+        // selection/element drag on the button and never deliver pointermove.
+        if (event.currentTarget?.setPointerCapture && event.pointerId != null) {
+            try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* not capturable */ }
+        }
         drag?.onPointerDown?.(event, row);
     }, [drag, row]);
 
@@ -3773,7 +3778,9 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         // the other panes keep showing the session. With nothing selected the
         // folder button offers a new, empty group.
         onClick: (event) => {
-            if (event.target !== event.currentTarget) return;
+            // Empty space only: a click that lands on a row bubbles here too.
+            const onRow = event.target instanceof Element && event.target.closest(".ps-session-list-button");
+            if (onRow) return;
             controller.dispatch({ type: "sessions/listDeselect" });
             controller.setFocus("sessions");
         },
@@ -6235,6 +6242,10 @@ function ModalLayer({ controller }) {
     const renameInputRef = React.useRef(null);
     const groupNameInputRef = React.useRef(null);
     const listModalRef = React.useRef(null);
+    // Full-text search for the people list in the session filter.
+    const [ownerFilterQuery, setOwnerFilterQuery] = React.useState("");
+    const ownerFilterOpen = modal?.type === "sessionOwnerFilter";
+    React.useEffect(() => { if (!ownerFilterOpen) setOwnerFilterQuery(""); }, [ownerFilterOpen]);
 
     React.useEffect(() => {
         if (modal?.type !== "renameSession" || !modalState.renameSession) return;
@@ -6454,15 +6465,42 @@ function ModalLayer({ controller }) {
     if (modal.type === "sessionOwnerFilter" && modalState.sessionOwnerFilter) {
         const presentation = modalState.sessionOwnerFilter;
         const rows = Array.isArray(presentation.rows) ? presentation.rows : [];
+        // Full-text match over the row's rendered text, so typing "sean" or
+        // part of an email narrows the list. Indexes stay ORIGINAL so toggling
+        // still targets the right filter entry.
+        const needle = ownerFilterQuery.trim().toLowerCase();
+        const rowText = (index) => {
+            const row = rows?.[index];
+            const runs = Array.isArray(row) ? row : normalizeLines([row])[0]?.runs || [];
+            return runs.map((run) => run?.text || "").join("") || String(row?.text || "");
+        };
+        const visibleIndexes = (modal.items || [])
+            .map((item, index) => index)
+            .filter((index) => {
+                if (!needle) return true;
+                const item = (modal.items || [])[index] || {};
+                return `${rowText(index)} ${item.label || ""} ${item.description || ""}`.toLowerCase().includes(needle);
+            });
         return React.createElement("div", { className: "ps-modal-backdrop", onClick: close },
-            React.createElement("div", { className: "ps-modal", onClick: (event) => event.stopPropagation() },
+            React.createElement("div", { className: "ps-modal is-list", onClick: (event) => event.stopPropagation() },
                 React.createElement("div", { className: "ps-modal-header" },
                     React.createElement("div", { className: "ps-modal-title" }, presentation.title),
                     React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close, "aria-label": "Close", title: "Close" }, "✕"),
                 ),
+                React.createElement("input", {
+                    className: "ps-modal-input ps-modal-search",
+                    value: ownerFilterQuery,
+                    placeholder: "Search people…",
+                    autoFocus: true,
+                    onChange: (event) => setOwnerFilterQuery(event.currentTarget.value),
+                    onKeyDown: (event) => { if (event.key === "Escape" && ownerFilterQuery) { event.stopPropagation(); setOwnerFilterQuery(""); } },
+                }),
                 React.createElement("div", { className: "ps-modal-grid" },
                     React.createElement("div", { ref: listModalRef, className: "ps-modal-list" },
-                        (modal.items || []).map((item, index) => React.createElement("button", {
+                        visibleIndexes.length === 0
+                            ? React.createElement("div", { className: "ps-empty-state" }, `No one matches "${ownerFilterQuery}".`)
+                            : null,
+                        visibleIndexes.map((index) => ((item) => React.createElement("button", {
                             key: item.id || index,
                             type: "button",
                             className: `ps-list-button ps-modal-list-button${index === modal.selectedIndex ? " is-selected" : ""}`,
@@ -6474,7 +6512,7 @@ function ModalLayer({ controller }) {
                                     ? rows[index]
                                     : normalizeLines([rows?.[index]])[0]?.runs || [{ text: rows?.[index]?.text || "", color: rows?.[index]?.color }],
                                 theme,
-                            })))),
+                            }))))((modal.items || [])[index] || {})),
                     ),
                     React.createElement("div", { className: "ps-modal-details" },
                         React.createElement("div", { className: "ps-modal-details-title" }, presentation.detailsTitle || "Details"),

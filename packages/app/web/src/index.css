@@ -5790,3 +5790,9 @@ body.ps-dragging-sessions, body.ps-dragging-sessions * { cursor: grabbing !impor
   padding-top: 10px;
   border-top: 1px solid var(--ps-modal-border);
 }
+
+/* Session-filter search: part of the frame, above the scrolling people list. */
+.ps-modal-search { flex: 0 0 auto; margin: 12px 0 0; }
+/* Rows own their pointer gestures so a drag is never stolen by the browser's
+   native text selection or scroll chaining. */
+.ps-session-list-button { touch-action: none; }
