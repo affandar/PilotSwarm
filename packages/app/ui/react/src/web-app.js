@@ -3190,17 +3190,42 @@ function SessionDetailBox({ session, childCount = 0 }) {
  * hoisted click handler and ref setter rather than closures built per row.
  */
 const SessionListRow = React.memo(function SessionListRow({
-    row, theme, rich, structuredRows, mobile, onRowClick, setRef,
+    row, theme, rich, structuredRows, mobile, onRowClick, setRef, drag,
 }) {
     const ref = React.useCallback((node) => setRef(row.sessionId, node), [setRef, row.sessionId]);
     const onClick = React.useCallback((event) => onRowClick(event, row), [onRowClick, row]);
+    // Drag the selection (or just this row) onto a group to file it there;
+    // drop it on the pane background to take it out of its group.
+    const onDragStart = React.useCallback((event) => {
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", row.sessionId);
+        drag?.onStart?.(row);
+    }, [drag, row]);
+    const isDropTarget = Boolean(row.isGroup) && drag?.dragging && drag.overGroupId === row.sessionId;
+    const onDragOver = React.useCallback((event) => {
+        if (!row.isGroup || !drag?.dragging) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        drag.onOverGroup?.(row.sessionId);
+    }, [drag, row.isGroup, row.sessionId]);
+    const onDrop = React.useCallback((event) => {
+        if (!row.isGroup || !drag?.dragging) return;
+        event.preventDefault();
+        event.stopPropagation();
+        drag.onDropOnGroup?.(row.sessionId);
+    }, [drag, row.isGroup, row.sessionId]);
 
     return React.createElement("button", {
         type: "button",
         ref,
-        className: `ps-list-button ps-session-list-button${row.active ? " is-selected" : ""}${row.selected ? " is-multiselected" : ""}${row.pinned ? " is-pinned" : ""}`,
+        className: `ps-list-button ps-session-list-button${row.active ? " is-selected" : ""}${row.selected ? " is-multiselected" : ""}${row.pinned ? " is-pinned" : ""}${isDropTarget ? " is-drop-target" : ""}`,
         tabIndex: row.active ? 0 : -1,
         "aria-selected": row.active ? "true" : "false",
+        draggable: !row.isGroup && !row.isSystem,
+        onDragStart,
+        onDragEnd: () => drag?.onEnd?.(),
+        onDragOver,
+        onDrop,
         onClick,
     },
         React.createElement("div", {
@@ -3251,7 +3276,7 @@ function RichSessionRow({ row, theme, showDetail = false }) {
                 style: chrome.kind === "session" ? undefined : { color: accent },
                 title: chrome.title,
             }, chrome.title),
-            chrome.pinned ? React.createElement("span", { className: "ps-rich-session-pin", title: "Pinned" }, "⚲") : null,
+            chrome.pinned ? React.createElement("span", { className: "ps-rich-session-pin", title: "Pinned" }, React.createElement(PinGlyph)) : null,
             chrome.cron ? React.createElement("span", { className: "ps-rich-session-cron", title: "Scheduled" }, "⏱") : null,
             chrome.childBadge
                 ? React.createElement("span", {
@@ -3481,6 +3506,28 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     // closing over them.
     const clickEnv = React.useRef(null);
     clickEnv.current = { rows, viewState, controller };
+    // Drag-and-drop filing: drag the multi-selection (or a single row) onto a
+    // group row to move it in, or onto the list background to move it out.
+    const [dragState, setDragState] = React.useState({ dragging: false, ids: [], overGroupId: null });
+    const dropOnGroup = React.useCallback((groupId) => {
+        const ids = dragState.ids;
+        setDragState({ dragging: false, ids: [], overGroupId: null });
+        if (ids.length === 0) return;
+        controller.moveSessionsToGroup(groupId, ids).catch(() => {});
+    }, [controller, dragState.ids]);
+    const dragHandlers = React.useMemo(() => ({
+        dragging: dragState.dragging,
+        overGroupId: dragState.overGroupId,
+        onStart: (row) => {
+            const selected = clickEnv.current.viewState.selectedIds || [];
+            const ids = selected.includes(row.sessionId) && selected.length > 0 ? selected : [row.sessionId];
+            setDragState({ dragging: true, ids, overGroupId: null });
+        },
+        onOverGroup: (groupId) => setDragState((cur) => (cur.overGroupId === groupId ? cur : { ...cur, overGroupId: groupId })),
+        onDropOnGroup: dropOnGroup,
+        onEnd: () => setDragState({ dragging: false, ids: [], overGroupId: null }),
+    }), [dragState.dragging, dragState.overGroupId, dropOnGroup]);
+
     const handleRowClick = React.useCallback((event, row) => {
         const { rows: currentRows, viewState: current, controller: ctl } = clickEnv.current;
         // Cmd/Ctrl-click toggles multi-selection (any row).
@@ -3571,9 +3618,8 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                 onClick: () => controller.handleCommand(UI_COMMANDS.CLEAR_SESSION_SELECTION).catch(() => {}),
             })
             : React.createElement(IconButton, {
-                className: "ps-mini-button",
-                icon: "⚲",
-                className: "ps-toolbar-button ps-pin-icon",
+                className: "ps-mini-button ps-pin-icon",
+                icon: React.createElement(PinGlyph),
                 onClick: () => controller.handleCommand(UI_COMMANDS.PIN_SESSION).catch(() => {}),
                 disabled: !canPinActiveSession,
                 active: isActivePinned,
@@ -3583,7 +3629,11 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             }),
         React.createElement(IconButton, {
             className: "ps-mini-button",
-            icon: groupableIds.length > 1 ? `⊞${groupableIds.length}` : "⊞",
+            icon: groupableIds.length > 1
+                ? React.createElement("span", { className: "ps-icon-badge" },
+                    React.createElement(FolderGlyph),
+                    React.createElement("span", { className: "ps-icon-badge__count" }, String(groupableIds.length)))
+                : React.createElement(FolderGlyph),
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_MOVE_TO_GROUP).catch(() => {}),
             disabled: !canMoveToGroup,
             label: canMoveToGroup
@@ -3616,7 +3666,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         }),
         React.createElement(IconButton, {
             className: "ps-mini-button",
-            icon: activeSession?.isSystem ? "↻" : activeSession?.isGroup ? "⊗" : React.createElement(LifecycleGlyph),
+            icon: activeSession?.isSystem ? "↻" : React.createElement(TerminateGlyph),
             onClick: () => controller.handleCommand(activeSession?.isGroup ? UI_COMMANDS.DELETE_SESSION : UI_COMMANDS.OPEN_TERMINATE_PICKER).catch(() => {}),
             disabled: !canTerminate,
             label: isBulkSelection
@@ -3625,7 +3675,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                     ? (activeGroupCanDelete ? "Delete this empty group" : "This group cannot be deleted yet")
                     : activeSession?.isSystem
                         ? "Restart this system session (complete, terminate, or hard delete)"
-                        : "Lifecycle — regenerate context, mark completed, cancel, or delete",
+                        : "Terminate — mark completed, cancel, or delete this session",
         }),
         actions);
 
@@ -3638,7 +3688,13 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         actions: panelActions,
         className: combinedPanelClassName,
     },
-    React.createElement("div", { className: "ps-action-list ps-session-list" },
+    React.createElement("div", {
+        className: `ps-action-list ps-session-list${dragState.dragging ? " is-dragging" : ""}`,
+        // Dropping on the list background (not on a group row) takes the
+        // dragged sessions OUT of their group.
+        onDragOver: (event) => { if (dragState.dragging) { event.preventDefault(); setDragState((cur) => ({ ...cur, overGroupId: null })); } },
+        onDrop: (event) => { if (dragState.dragging) { event.preventDefault(); dropOnGroup(null); } },
+    },
         rows.length === 0
             ? React.createElement("div", { className: "ps-empty-state" }, viewState.filterQuery
                 ? `No sessions matched "@@${viewState.filterQuery}".`
@@ -3652,6 +3708,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                 mobile: isMobilePane,
                 onRowClick: handleRowClick,
                 setRef: setSessionButtonRef,
+                drag: dragHandlers,
             }))),
     isMobilePane
         ? null
@@ -3744,6 +3801,43 @@ function LinkGlyph() {
     },
     React.createElement("path", { d: "M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" }),
     React.createElement("path", { d: "M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" }));
+}
+
+// Terminate — a trash can. The terminal dispositions live behind it
+// (complete / cancel / delete); regenerate moved to Manage session.
+function TerminateGlyph() {
+    return React.createElement("svg", {
+        className: "ps-share-glyph", viewBox: "0 0 24 24", fill: "none",
+        stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round",
+        "aria-hidden": "true",
+    },
+    React.createElement("path", { d: "M3 6h18" }),
+    React.createElement("path", { d: "M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" }),
+    React.createElement("path", { d: "M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" }),
+    React.createElement("line", { x1: "10", y1: "11", x2: "10", y2: "17" }),
+    React.createElement("line", { x1: "14", y1: "11", x2: "14", y2: "17" }));
+}
+
+// A folder — session groups ARE folders; say so.
+function FolderGlyph() {
+    return React.createElement("svg", {
+        className: "ps-share-glyph", viewBox: "0 0 24 24", fill: "none",
+        stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round",
+        "aria-hidden": "true",
+    },
+    React.createElement("path", { d: "M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" }));
+}
+
+// An actual push-pin (head, shaft, point) — pinned sessions sort to the top.
+function PinGlyph() {
+    return React.createElement("svg", {
+        className: "ps-share-glyph", viewBox: "0 0 24 24", fill: "none",
+        stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round",
+        "aria-hidden": "true",
+    },
+    React.createElement("path", { d: "M9 3h6" }),
+    React.createElement("path", { d: "M10 3v6l-3 3v2h10v-2l-3-3V3" }),
+    React.createElement("line", { x1: "12", y1: "14", x2: "12", y2: "21" }));
 }
 
 // The "lifecycle" glyph (two curved arrows forming a cycle). Fronts the session
@@ -3943,6 +4037,9 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
         ...(canManage ? [{ id: "access", label: "Access" }] : []),
     ];
     const activeTab = tabs.some((t) => t.id === tab) ? tab : "general";
+    // Regenerate is a change-this-session action, so it belongs here rather
+    // than in the terminal picker. Service sessions (⚗ machinery) never regen.
+    const canRegenerate = typeof controller.transport?.regenerateSession === "function";
     const stop = (e) => e.stopPropagation();
     return React.createElement("div", { className: "ps-share-overlay", onClick: onClose },
         React.createElement("div", { className: "ps-share-modal", onClick: stop },
@@ -3976,7 +4073,19 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
                 React.createElement("div", { className: "ps-share-section-sub" }, "The model this session uses on its next turn."),
                 React.createElement("div", { className: "ps-share-add-row" },
                     React.createElement("span", { className: "ps-manage-model-current" }, modelLabel),
-                    React.createElement("button", { className: "ps-mini-button", disabled: busy, onClick: switchModel }, "Switch model…")))
+                    React.createElement("button", { className: "ps-mini-button", disabled: busy, onClick: switchModel }, "Switch model…")),
+                canRegenerate ? React.createElement(React.Fragment, null,
+                    React.createElement("div", { className: "ps-share-section-label" }, "Context"),
+                    React.createElement("div", { className: "ps-share-section-sub" },
+                        "Rebuild this session's working context from its summary. The transcript is archived and the session keeps running — it is not a terminal action."),
+                    React.createElement("div", { className: "ps-share-add-row" },
+                        React.createElement("button", {
+                            className: "ps-mini-button ps-manage-regenerate",
+                            disabled: busy,
+                            onClick: () => { onClose(); controller.handleCommand(UI_COMMANDS.REGENERATE_SESSION).catch(() => {}); },
+                        },
+                        React.createElement(LifecycleGlyph),
+                        React.createElement("span", null, "Regenerate context…")))) : null)
                 : null,
 
             // ── Access (owner / admin only) ───────────────────────────

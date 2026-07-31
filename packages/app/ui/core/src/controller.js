@@ -5210,16 +5210,15 @@ export class PilotSwarmUiController {
             type: "ui/modal",
             modal: {
                 type: "terminatePicker",
-                title: `Lifecycle (${shortSessionIdValue(sessionId)})`,
+                title: `Terminate (${shortSessionIdValue(sessionId)})`,
                 sessionId,
                 previousFocus: state.ui.focusRegion,
                 sessionTitle: String(session.title || "").trim(),
                 state: String(session.state || "").trim(),
-                // Regenerate (epoch rebirth) is a single-session, non-system,
-                // non-group action; the picker surfaces it above the terminal
-                // dispositions when the transport supports it. Service sessions
-                // (⚗ machinery, e.g. the distiller itself) are never regenerated.
-                canRegenerate: typeof this.transport.regenerateSession === "function" && !session.serviceKind,
+                // Regenerate is NOT a terminal disposition — it lives in
+                // Manage session (General) where the rest of the "change this
+                // session" actions are. This picker is purely terminal.
+                canRegenerate: false,
             },
         });
     }

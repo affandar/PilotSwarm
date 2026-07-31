@@ -604,12 +604,11 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
     const isSelected = selectedSet.has(entry.sessionId);
     const isPinned = pinnedSet.has(entry.sessionId);
 
-    if (selectMode) {
-        prefixRuns.push({
-            text: isSelected ? "[x] " : "[ ] ",
-            color: isSelected ? "cyan" : "gray",
-            bold: isSelected,
-        });
+    // Multi-selection reads as a selection BAR on the chosen rows (plus the
+    // host's own row styling) — not a checkbox column that shifts every row
+    // the moment selection mode turns on.
+    if (isSelected) {
+        prefixRuns.push({ text: "▌", color: "cyan", bold: true });
     }
 
     // Pin column renders first on top-level non-system rows so pinned and

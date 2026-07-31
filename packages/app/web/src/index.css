@@ -5632,3 +5632,30 @@ body.ps-rich-ui .ps-panel-header {
 .portal-header-refresh:hover { background: color-mix(in srgb, #d29922 30%, transparent); }
 @keyframes ps-build-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.62; } }
 @media (prefers-reduced-motion: reduce) { .portal-header-refresh { animation: none; } }
+
+/* Toolbar icon with a count (e.g. folder + number of selected sessions). */
+.ps-icon-badge { position: relative; display: inline-flex; align-items: center; }
+.ps-icon-badge__count {
+  position: absolute;
+  right: -6px;
+  bottom: -4px;
+  min-width: 13px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: var(--ps-selection-background, #2f81f7);
+  color: var(--ps-selection-foreground, #fff);
+  font-size: 9px;
+  line-height: 13px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.ps-manage-regenerate { display: inline-flex; align-items: center; gap: 6px; }
+.ps-rich-session-pin .ps-share-glyph { width: 12px; height: 12px; vertical-align: -2px; }
+
+/* Drag sessions into a group row, or onto the list background to take them out. */
+.ps-session-list.is-dragging .ps-session-list-button { cursor: grabbing; }
+.ps-session-list-button.is-drop-target {
+  outline: 2px dashed var(--ps-selection-background, #2f81f7);
+  outline-offset: -2px;
+  background: color-mix(in srgb, var(--ps-selection-background, #2f81f7) 18%, transparent);
+}
