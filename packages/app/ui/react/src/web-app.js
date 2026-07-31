@@ -3227,6 +3227,14 @@ const SessionListRow = React.memo(function SessionListRow({
         onDragOver,
         onDrop,
         onClick,
+        // macOS turns Ctrl+click into a context-menu event, so the click
+        // handler never sees it. Treat it as the multi-select modifier the
+        // user actually pressed.
+        onContextMenu: (event) => {
+            if (!event.ctrlKey) return;
+            event.preventDefault();
+            onRowClick(event, row);
+        },
     },
         React.createElement("div", {
             className: rich ? "ps-session-row-content is-rich" : "ps-line ps-session-row-content",

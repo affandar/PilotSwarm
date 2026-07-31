@@ -381,6 +381,11 @@ function buildSessionTitle(session, brandingTitle) {
 
 function matchesOwnerFilterDirect(session, ownerFilter = {}, auth = {}, ownerOverride = undefined) {
     if (!ownerFilter || ownerFilter.all === true) return true;
+    // A group is the VIEWER'S OWN private organization — the server lists only
+    // your groups, and the row itself carries no owner. Owner filters are about
+    // whose sessions to show, so they must never hide your own folders (the
+    // group's members are still filtered on their own merits).
+    if (session?.isGroup) return true;
     if (session?.isSystem) return ownerFilter.includeSystem === true;
     const ownerKey = ownerKeyForOwner(ownerOverride !== undefined ? ownerOverride : session?.owner);
     if (!ownerKey) return ownerFilter.includeUnowned === true;
