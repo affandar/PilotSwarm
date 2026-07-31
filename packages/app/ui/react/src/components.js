@@ -12,6 +12,7 @@ import {
     selectChatLines,
     selectOutboxOverlayLines,
     selectActivityPane,
+    selectWorkerDetailsPane,
     selectArtifactUploadModal,
     selectArtifactPickerModal,
     selectFilesFilterModal,
@@ -870,24 +871,44 @@ const ActivityPane = React.memo(function ActivityPane({ controller, width, heigh
             scroll: state.ui.scroll.activity,
             followBottom: state.ui.followBottom?.activity !== false,
             focused: state.ui.focusRegion === "activity",
+            // On the Node Map tab this pane IS the worker-details pane, so it
+            // needs the registry, the selection, and every session/history.
+            inspectorTab: state.ui.inspectorTab,
+            nodeMapSelectedNode: state.ui.nodeMapSelectedNode,
+            adminWorkers: state.admin?.workers,
+            branding: state.branding,
+            historyBySessionId: state.history.bySessionId,
+            sessionsFlat: state.sessions.flat,
         };
     }, shallowEqualObject);
+    const nodeMode = activityState.inspectorTab === "nodes";
     const selectorState = React.useMemo(() => {
         const historyMap = new Map();
         if (activityState.activeSessionId && activityState.activeHistory) {
             historyMap.set(activityState.activeSessionId, activityState.activeHistory);
         }
         return {
+            branding: activityState.branding,
+            admin: { workers: activityState.adminWorkers },
+            ui: { nodeMapSelectedNode: activityState.nodeMapSelectedNode },
             sessions: {
                 activeSessionId: activityState.activeSessionId,
                 byId: activityState.sessionsById,
+                flat: activityState.sessionsFlat,
             },
             history: {
-                bySessionId: historyMap,
+                bySessionId: nodeMode ? activityState.historyBySessionId : historyMap,
             },
         };
-    }, [activityState.activeHistory, activityState.activeSessionId, activityState.sessionsById]);
-    const activity = React.useMemo(() => selectActivityPane(selectorState, maxLines), [maxLines, selectorState]);
+    }, [
+        activityState.activeHistory, activityState.activeSessionId, activityState.sessionsById,
+        activityState.adminWorkers, activityState.branding, activityState.historyBySessionId,
+        activityState.nodeMapSelectedNode, activityState.sessionsFlat, nodeMode,
+    ]);
+    const activity = React.useMemo(
+        () => (nodeMode ? selectWorkerDetailsPane(selectorState) : selectActivityPane(selectorState, maxLines)),
+        [maxLines, nodeMode, selectorState],
+    );
 
     return React.createElement(platform.Panel, {
         title: activity.title,

@@ -2969,67 +2969,76 @@ export function selectActiveActivity(state) {
     return history?.activity || [];
 }
 
-export function selectActivityPane(state, maxLines = 12) {
-    // Node Map selection scopes this pane: instead of the active session's
-    // activity, list the sessions currently executing on the selected node.
-    if (state.ui?.nodeMapSelectedNode) {
-        const view = selectNodeMapView(state);
-        if (view.selected) {
-            const node = view.nodes.find((candidate) => candidate.label === view.selected);
-            // The pane becomes a WORKER DETAILS panel: registry specs first,
-            // then the sessions executing on the node.
-            const scopedTitle = buildPaneTitleRuns("Worker", "gray");
-            scopedTitle.push({ text: ` ${view.selected}`, color: "cyan" });
-            const lines = [];
-            const spec = (label, value, color = "white") => {
-                if (value === null || value === undefined || value === "") return;
-                lines.push([{ text: `${label.padEnd(10)} `, color: "gray" }, { text: String(value), color }]);
-            };
-            if (node.registered) {
-                spec("Node", node.workerNodeId);
-                spec("Phase", node.phase, node.phase === "draining" ? "red" : node.phase === "starting" ? "yellow" : "green");
-                spec("Pool", node.pool);
-                if (node.owner) spec("Owner", node.owner);
-                spec("Heartbeat", node.live ? `${node.agoText ?? "now"} · live` : `${node.agoText ?? "unknown"} · stale`, node.live ? "green" : "red");
-                spec("Uptime", node.uptimeText);
-                spec("Memory", [node.rssText ? `rss ${node.rssText}` : null, node.heapText ? `heap ${node.heapText}` : null].filter(Boolean).join(" · ") || null);
-                spec("Loop p99", node.eventLoopText);
-                spec("SDK", node.sdkVersion);
-                spec("Runtime", node.substrate);
-                if (node.capabilities.length) spec("Caps", node.capabilities.join(", "));
-                if (node.consumes.length) spec("Consumes", node.consumes.join(", "));
-                if (node.pkgEpoch !== null) {
-                    const ok = node.pkgInstalled.filter((pkg) => pkg.status === "ok").length;
-                    const bad = node.pkgInstalled.length - ok;
-                    spec("Packages", `epoch ${node.pkgEpoch} · ${ok} ok${bad ? ` · ${bad} error` : ""}`, bad ? "red" : "white");
-                    for (const pkg of node.pkgInstalled) {
-                        lines.push([
-                            { text: "           ", color: "gray" },
-                            { text: `${pkg.status === "error" ? "✗" : "✓"} `, color: pkg.status === "error" ? "red" : "green" },
-                            { text: `${pkg.name}${pkg.semver ? `@${pkg.semver}` : ""}`, color: pkg.status === "error" ? "red" : "white" },
-                        ]);
-                        if (pkg.error) lines.push([{ text: `             ${pkg.error}`, color: "red" }]);
-                    }
-                    if (node.pkgLastError) lines.push([{ text: `           last refresh error: ${node.pkgLastError}`, color: "red" }]);
-                }
-            } else {
-                lines.push({ text: "Not in the worker registry — node derived from recent activity only.", color: "gray" });
-            }
-            lines.push({ text: "", color: "gray" });
-            lines.push([{ text: `EXECUTING (${node.executing.length})`, color: "cyan", bold: true }]);
-            for (const entry of node.executing) {
-                lines.push(entry.active
-                    ? buildActiveHighlightLine(entry.text)
-                    : { text: entry.text, color: entry.color, bold: entry.bold });
-            }
-            if (node.executing.length === 0) {
-                lines.push({ text: `Nothing executing in the ${view.windowLabel} window.`, color: "gray" });
-            }
-            lines.push({ text: "", color: "gray" });
-            lines.push({ text: "Select the node again in Node Map to return to Activity.", color: "gray" });
-            return { title: scopedTitle, lines };
-        }
+/**
+ * Worker details — the pane that REPLACES Activity while the Node Map is up.
+ * Registry specs for the selected node, then the sessions executing on it.
+ */
+export function selectWorkerDetailsPane(state) {
+    const view = selectNodeMapView(state);
+    const node = view.selected ? view.nodes.find((candidate) => candidate.label === view.selected) : null;
+    const title = buildPaneTitleRuns("Worker", "gray");
+    if (!node) {
+        title.push({ text: " none", color: "gray" });
+        return {
+            title,
+            lines: [{
+                text: view.degraded && view.registryError
+                    ? `No worker selected — ${view.registryError}`
+                    : "No workers to show yet.",
+                color: "gray",
+            }],
+        };
     }
+    title.push({ text: ` ${node.label}`, color: "cyan" });
+    const lines = [];
+    const spec = (label, value, color = "white") => {
+        if (value === null || value === undefined || value === "") return;
+        lines.push([{ text: `${label.padEnd(10)} `, color: "gray" }, { text: String(value), color }]);
+    };
+    if (node.registered) {
+        spec("Node", node.workerNodeId);
+        spec("Phase", node.phase, node.phase === "draining" ? "red" : node.phase === "starting" ? "yellow" : "green");
+        spec("Pool", node.pool);
+        if (node.owner) spec("Owner", node.owner);
+        spec("Heartbeat", node.live ? `${node.agoText ?? "now"} · live` : `${node.agoText ?? "unknown"} · stale`, node.live ? "green" : "red");
+        spec("Uptime", node.uptimeText);
+        spec("Memory", [node.rssText ? `rss ${node.rssText}` : null, node.heapText ? `heap ${node.heapText}` : null].filter(Boolean).join(" · ") || null);
+        spec("Loop p99", node.eventLoopText);
+        spec("SDK", node.sdkVersion);
+        spec("Runtime", node.substrate);
+        if (node.capabilities.length) spec("Caps", node.capabilities.join(", "));
+        if (node.consumes.length) spec("Consumes", node.consumes.join(", "));
+        if (node.pkgEpoch !== null) {
+            const ok = node.pkgInstalled.filter((pkg) => pkg.status === "ok").length;
+            const bad = node.pkgInstalled.length - ok;
+            spec("Packages", `epoch ${node.pkgEpoch} · ${ok} ok${bad ? ` · ${bad} error` : ""}`, bad ? "red" : "white");
+            for (const pkg of node.pkgInstalled) {
+                lines.push([
+                    { text: "           ", color: "gray" },
+                    { text: `${pkg.status === "error" ? "✗" : "✓"} `, color: pkg.status === "error" ? "red" : "green" },
+                    { text: `${pkg.name}${pkg.semver ? `@${pkg.semver}` : ""}`, color: pkg.status === "error" ? "red" : "white" },
+                ]);
+                if (pkg.error) lines.push([{ text: `             ${pkg.error}`, color: "red" }]);
+            }
+            if (node.pkgLastError) lines.push([{ text: `           last refresh error: ${node.pkgLastError}`, color: "red" }]);
+        }
+    } else {
+        lines.push({ text: "Not in the worker registry — derived from recent activity only.", color: "gray" });
+    }
+    lines.push({ text: "", color: "gray" });
+    lines.push([{ text: `EXECUTING (${node.executing.length})`, color: "cyan", bold: true }]);
+    for (const entry of node.executing) {
+        lines.push(entry.active
+            ? buildActiveHighlightLine(entry.text)
+            : { text: entry.text, color: entry.color, bold: entry.bold });
+    }
+    if (node.executing.length === 0) {
+        lines.push({ text: `Nothing executing in the ${view.windowLabel} window.`, color: "gray" });
+    }
+    return { title, lines };
+}
+
+export function selectActivityPane(state, maxLines = 12) {
     const activity = selectActiveActivity(state);
     const session = selectActiveSession(state);
     const title = buildPaneTitleRuns("Activity", "gray");
@@ -5149,8 +5158,14 @@ export function selectNodeMapView(state) {
     nodes.forEach((node, index) => { node.ordinal = index + 1; });
 
     const registeredNodes = nodes.filter((node) => node.registered);
-    const selectedRaw = state.ui?.nodeMapSelectedNode;
-    const selected = selectedRaw && nodes.some((node) => node.label === selectedRaw) ? selectedRaw : null;
+    // A node is always selected while the Node Map is up: the remembered
+    // choice when it is still in the fleet, otherwise the first row. The
+    // remembered value is never cleared, so switching away and back restores
+    // it — and a worker that vanishes falls back instead of blanking.
+    const remembered = state.ui?.nodeMapSelectedNode;
+    const selected = (remembered && nodes.some((node) => node.label === remembered))
+        ? remembered
+        : (nodes[0]?.label ?? null);
 
     return {
         windowLabel: recentWindow.label,
@@ -5237,24 +5252,8 @@ function buildNodeMapLines(state, maxWidth, options = {}) {
         lines.push(trimTrailingRunPad(runs));
     }
 
-    if (view.selected) {
-        const node = view.nodes.find((candidate) => candidate.label === view.selected);
-        lines.push(plainInspectorLine("", "gray"));
-        lines.push([{ text: `EXECUTING ON ${view.selected} (${node.executing.length})`, color: "cyan", bold: true }]);
-        if (node.executing.length === 0) {
-            lines.push(plainInspectorLine(`  nothing executing on ${view.selected} in the ${view.windowLabel} window`, "gray"));
-        }
-        for (const entry of node.executing) {
-            lines.push(entry.active
-                ? [buildActiveHighlightLine(`  ${entry.text}`)]
-                : [{ text: `  ${entry.text}`, color: entry.color, bold: entry.bold }]);
-        }
-        lines.push(plainInspectorLine("", "gray"));
-        lines.push(plainInspectorLine("Activity pane is scoped to this node — select it again to clear.", "gray"));
-    } else {
-        lines.push(plainInspectorLine("", "gray"));
-        lines.push(plainInspectorLine("Select a node (click, or keys 1-9) to list its sessions and scope Activity.", "gray"));
-    }
+    lines.push(plainInspectorLine("", "gray"));
+    lines.push(plainInspectorLine("Click a node (or press 1-9) — its details fill the pane below.", "gray"));
 
     if (view.missingHistoryCount > 0) {
         lines.push(plainInspectorLine(`Loading worker history for ${view.missingHistoryCount} session(s)…`, "gray"));

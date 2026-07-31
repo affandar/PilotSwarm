@@ -957,10 +957,10 @@ export function appReducer(state, action) {
         }
 
         case "ui/nodeMapSelect": {
-            // Toggle semantics: re-selecting the active node clears the
-            // selection (and with it the Activity pane's node scope).
-            const label = action.label && action.label !== state.ui.nodeMapSelectedNode ? action.label : null;
-            return { ...state, ui: { ...state.ui, nodeMapSelectedNode: label } };
+            // Set, never toggle: a node is always selected while the Node Map
+            // is up, and the remembered choice survives leaving the tab.
+            if (!action.label) return state;
+            return { ...state, ui: { ...state.ui, nodeMapSelectedNode: String(action.label) } };
         }
         case "ui/inspectorTab":
             return {

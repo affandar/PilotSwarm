@@ -16,6 +16,7 @@ import {
     createStore,
     selectNodeMapView,
     selectActivityPane,
+    selectWorkerDetailsPane,
 } from "../src/index.js";
 
 function workerRow(id, overrides = {}) {
@@ -92,40 +93,68 @@ test("registry-first: registered nodes lead with specs; history-only nodes appen
     assert.equal(ghost.executing.length, 1);
 });
 
-test("selection toggles and scopes the Activity pane to the node's sessions", () => {
+test("a node is always selected: first by default, remembered, falls back when gone", () => {
     const store = createStore(appReducer, createInitialState());
     seedState(store, {
-        workers: [workerRow(podA)],
+        workers: [workerRow(podA), workerRow(podB)],
         sessions: [{ sessionId: "s1", title: "triage", state: "running" }],
         histories: { s1: [{ createdAt: new Date(NOW - 10_000), workerNodeId: podA }] },
     });
 
+    // Nothing clicked yet → the first row is selected, never "none".
+    const first = selectNodeMapView(store.getState());
+    assert.equal(first.selected, first.nodes[0].label);
+    assert.equal(store.getState().ui.nodeMapSelectedNode, null, "the default costs no state");
+
+    // An explicit pick sticks, and re-picking it does NOT clear it.
     store.dispatch({ type: "ui/nodeMapSelect", label: "z6dcb" });
     assert.equal(selectNodeMapView(store.getState()).selected, "z6dcb");
-
-    // The pane becomes a WORKER DETAILS panel: registry specs, then the
-    // sessions executing on the node.
-    const scoped = selectActivityPane(store.getState());
-    const titleText = scoped.title.map((run) => run.text).join("");
-    assert.match(titleText, /Worker z6dcb/);
-    const lineText = scoped.lines.map((line) => (Array.isArray(line) ? line : [line]).map((run) => run.text).join("")).join("\n");
-    assert.match(lineText, new RegExp(podA), "full worker node id shown");
-    assert.match(lineText, /Phase\s+ready/);
-    assert.match(lineText, /Pool\s+aks-default/);
-    assert.match(lineText, /rss 180\.0 MB/);
-    assert.equal(/heap/.test(lineText), false, "absent heap metric renders nothing, not 0 B");
-    assert.match(lineText, /EXECUTING \(1\)/);
-    assert.match(lineText, /triage/);
-
-    // Toggle off: same label clears; Activity returns to session scope.
     store.dispatch({ type: "ui/nodeMapSelect", label: "z6dcb" });
-    assert.equal(store.getState().ui.nodeMapSelectedNode, null);
-    const unscoped = selectActivityPane(store.getState());
-    assert.equal(unscoped.title.map((run) => run.text).join("").includes("node"), false);
+    assert.equal(selectNodeMapView(store.getState()).selected, "z6dcb", "selection is set, never toggled off");
 
-    // A selection for a node that no longer exists resolves to none.
-    store.dispatch({ type: "ui/nodeMapSelect", label: "gone9" });
-    assert.equal(selectNodeMapView(store.getState()).selected, null);
+    // The remembered choice survives leaving and re-entering the tab.
+    store.dispatch({ type: "ui/inspectorTab", inspectorTab: "logs" });
+    store.dispatch({ type: "ui/inspectorTab", inspectorTab: "nodes" });
+    assert.equal(selectNodeMapView(store.getState()).selected, "z6dcb", "remembered across tab switches");
+
+    // Still listed as an activity-derived node ⇒ still a valid selection.
+    store.dispatch({ type: "admin/workers/loaded", list: [workerRow(podB)] });
+    assert.equal(selectNodeMapView(store.getState()).selected, "z6dcb",
+        "a de-registered node that is still in the list stays selected");
+
+    // Gone from BOTH the registry and recent activity → fall back to the first.
+    store.getState().history.bySessionId.set("s1", { events: [{ createdAt: new Date(NOW - 10_000), workerNodeId: podB }] });
+    const after = selectNodeMapView(store.getState());
+    assert.equal(after.selected, after.nodes[0].label);
+    assert.equal(after.selected, "chl82", "falls back instead of blanking");
+});
+
+test("worker details pane replaces Activity with the selected node's specs and sessions", () => {
+    const store = createStore(appReducer, createInitialState());
+    seedState(store, {
+        workers: [workerRow(podA, {
+            state: { "agent-packages": { epoch: 12, installed: { "demo-kit": { semver: "0.2.0", status: "ok" } } } },
+        })],
+        sessions: [{ sessionId: "s1", title: "triage", state: "running" }],
+        histories: { s1: [{ createdAt: new Date(NOW - 10_000), workerNodeId: podA }] },
+    });
+
+    const pane = selectWorkerDetailsPane(store.getState());
+    const titleText = pane.title.map((run) => run.text).join("");
+    assert.match(titleText, /Worker z6dcb/, "the pane is titled for the worker, not 'Activity'");
+    const text = pane.lines.map((line) => (Array.isArray(line) ? line : [line]).map((run) => run.text).join("")).join("\n");
+    assert.match(text, new RegExp(podA), "full node id");
+    assert.match(text, /Phase\s+ready/);
+    assert.match(text, /Pool\s+aks-default/);
+    assert.match(text, /Packages\s+epoch 12 · 1 ok/);
+    assert.match(text, /demo-kit@0\.2\.0/);
+    assert.match(text, /EXECUTING \(1\)/);
+    assert.match(text, /triage/);
+
+    // Activity itself is no longer node-aware: it stays session activity.
+    const activityTitle = selectActivityPane(store.getState()).title.map((run) => run.text).join("");
+    assert.match(activityTitle, /Activity/);
+    assert.equal(/Worker/.test(activityTitle), false);
 });
 
 test("degraded mode: no registry data still yields activity-derived nodes", () => {

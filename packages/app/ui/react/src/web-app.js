@@ -23,6 +23,7 @@ import {
     PilotSwarmUiController,
     tokenizeInlineMarkdown,
     selectActivityPane,
+    selectWorkerDetailsPane,
     selectAdminConsole,
     selectArtifactPickerModal,
     selectArtifactUploadModal,
@@ -4937,15 +4938,19 @@ function ActivityPane({ controller, panelClassName = "", extraActions = null }) 
             sessionsById: state.sessions.byId,
             sessionsFlat: state.sessions.flat,
             historyBySessionId: state.history.bySessionId,
+            inspectorTab: state.ui.inspectorTab,
         };
     }, shallowEqualObject);
+    // On the Node Map tab this pane IS the worker-details pane; Activity
+    // returns the moment the inspector shows anything else.
+    const nodeMode = viewState.inspectorTab === "nodes";
     const selectorState = React.useMemo(() => ({
         branding: viewState.branding,
         admin: { workers: viewState.adminWorkers },
         ui: { nodeMapSelectedNode: viewState.nodeMapSelectedNode },
         sessions: {
             activeSessionId: viewState.activeSessionId,
-            byId: viewState.nodeMapSelectedNode
+            byId: nodeMode
                 ? viewState.sessionsById
                 : (viewState.activeSessionId && viewState.activeSession
                     ? { [viewState.activeSessionId]: viewState.activeSession }
@@ -4953,20 +4958,23 @@ function ActivityPane({ controller, panelClassName = "", extraActions = null }) 
             flat: viewState.sessionsFlat,
         },
         history: {
-            bySessionId: viewState.nodeMapSelectedNode
+            bySessionId: nodeMode
                 ? viewState.historyBySessionId
                 : (viewState.activeSessionId && viewState.activeHistory
                     ? new Map([[viewState.activeSessionId, viewState.activeHistory]])
                     : new Map()),
         },
     }), [
+        nodeMode,
         viewState.activeHistory, viewState.activeSession, viewState.activeSessionId,
         viewState.adminWorkers, viewState.branding, viewState.historyBySessionId,
         viewState.nodeMapSelectedNode, viewState.sessionsById, viewState.sessionsFlat,
     ]);
     const activity = React.useMemo(
-        () => selectActivityPane(selectorState, viewState.maxLines),
-        [selectorState, viewState.maxLines],
+        () => (nodeMode
+            ? selectWorkerDetailsPane(selectorState)
+            : selectActivityPane(selectorState, viewState.maxLines)),
+        [nodeMode, selectorState, viewState.maxLines],
     );
 
     return React.createElement(ScrollLinesPanel, {
