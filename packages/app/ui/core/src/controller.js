@@ -2062,8 +2062,19 @@ export class PilotSwarmUiController {
         const previousActive = this.getState().sessions.activeSessionId;
         let sessions = (await loadSessionCatalogPageWindow(this.transport)).map(normalizeSessionListRow);
         if (typeof this.transport.listSessionGroups === "function") {
-            const groups = await this.transport.listSessionGroups().catch(() => []);
-            const groupRows = (Array.isArray(groups) ? groups : []).map(sessionGroupToRow).filter(Boolean);
+            // A FAILED group fetch is "no news", not "no groups". Swallowing
+            // the error and merging [] made every folder blink out of the list
+            // for a cycle and reappear on the next one.
+            let groupRows = null;
+            try {
+                const groups = await this.transport.listSessionGroups();
+                groupRows = (Array.isArray(groups) ? groups : []).map(sessionGroupToRow).filter(Boolean);
+                this._lastKnownGroupRows = groupRows;
+            } catch (error) {
+                console.warn(`[PilotSwarmUi] session-group fetch failed, keeping the last known folders: ${error?.message || error}`);
+                groupRows = this._lastKnownGroupRows
+                    ?? Object.values(preRefreshState.sessions.byId || {}).filter((row) => row?.isGroup);
+            }
             if (groupRows.length > 0) {
                 sessions = [...groupRows, ...sessions];
             }

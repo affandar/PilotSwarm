@@ -5704,3 +5704,76 @@ body.ps-rich-ui .ps-panel-header {
   overflow-y: auto;
   scrollbar-gutter: stable;
 }
+
+/* ── Dragging sessions into folders ────────────────────────────────── */
+body.ps-dragging-sessions, body.ps-dragging-sessions * { cursor: grabbing !important; user-select: none; }
+
+.ps-drag-ghost {
+  position: fixed;
+  z-index: 90;
+  pointer-events: none;
+  transform: translate(14px, 10px);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.ps-drag-ghost__stack {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  border-radius: 7px;
+  border: 1px solid var(--ps-modal-selected-border, #58a6ff);
+  background: var(--ps-modal-background, #161b22);
+  color: var(--ps-foreground);
+  font-size: 12px;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.4);
+  max-width: 260px;
+}
+/* A multi-selection reads as a STACK of cards, not one row. */
+.ps-drag-ghost__stack.is-collection::before,
+.ps-drag-ghost__stack.is-collection::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 7px;
+  border: 1px solid var(--ps-modal-selected-border, #58a6ff);
+  background: var(--ps-modal-background, #161b22);
+  z-index: -1;
+}
+.ps-drag-ghost__stack.is-collection::before { transform: translate(4px, 4px); opacity: 0.75; }
+.ps-drag-ghost__stack.is-collection::after { transform: translate(8px, 8px); opacity: 0.5; }
+.ps-drag-ghost__count {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--ps-selection-background, #2f81f7);
+  color: var(--ps-selection-foreground, #fff);
+  font-size: 11px;
+  line-height: 17px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.ps-drag-ghost__title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ps-drag-ghost__hint {
+  align-self: flex-start;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ps-modal-background, #161b22) 92%, transparent);
+  color: var(--ps-muted);
+  font-size: 10.5px;
+}
+
+/* The destination folder announces itself while hovered. */
+.ps-session-list-button.is-drop-target {
+  outline: 2px solid var(--ps-selection-background, #2f81f7);
+  outline-offset: -2px;
+  background: color-mix(in srgb, var(--ps-selection-background, #2f81f7) 26%, transparent) !important;
+}
+.ps-session-list-button.is-drop-target::after {
+  content: "▾ drop here";
+  margin-left: 8px;
+  font-size: 10px;
+  color: var(--ps-selection-background, #2f81f7);
+}

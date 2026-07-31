@@ -3194,26 +3194,14 @@ const SessionListRow = React.memo(function SessionListRow({
 }) {
     const ref = React.useCallback((node) => setRef(row.sessionId, node), [setRef, row.sessionId]);
     const onClick = React.useCallback((event) => onRowClick(event, row), [onRowClick, row]);
-    // Drag the selection (or just this row) onto a group to file it there;
-    // drop it on the pane background to take it out of its group.
-    const onDragStart = React.useCallback((event) => {
-        event.dataTransfer.effectAllowed = "move";
-        event.dataTransfer.setData("text/plain", row.sessionId);
-        drag?.onStart?.(row);
-    }, [drag, row]);
+    // Pointer-based dragging: HTML5 drag never fired reliably from these
+    // <button> rows, and it cannot render the "N sessions" collection ghost
+    // or a live destination highlight. Pointer events give both.
     const isDropTarget = Boolean(row.isGroup) && drag?.dragging && drag.overGroupId === row.sessionId;
-    const onDragOver = React.useCallback((event) => {
-        if (!row.isGroup || !drag?.dragging) return;
-        event.preventDefault();
-        event.dataTransfer.dropEffect = "move";
-        drag.onOverGroup?.(row.sessionId);
-    }, [drag, row.isGroup, row.sessionId]);
-    const onDrop = React.useCallback((event) => {
-        if (!row.isGroup || !drag?.dragging) return;
-        event.preventDefault();
-        event.stopPropagation();
-        drag.onDropOnGroup?.(row.sessionId);
-    }, [drag, row.isGroup, row.sessionId]);
+    const onPointerDown = React.useCallback((event) => {
+        if (event.button !== 0) return;
+        drag?.onPointerDown?.(event, row);
+    }, [drag, row]);
 
     return React.createElement("button", {
         type: "button",
@@ -3221,11 +3209,9 @@ const SessionListRow = React.memo(function SessionListRow({
         className: `ps-list-button ps-session-list-button${row.active ? " is-selected" : ""}${row.selected ? " is-multiselected" : ""}${row.pinned ? " is-pinned" : ""}${isDropTarget ? " is-drop-target" : ""}`,
         tabIndex: row.active ? 0 : -1,
         "aria-selected": row.active ? "true" : "false",
-        draggable: !row.isGroup && !row.isSystem,
-        onDragStart,
-        onDragEnd: () => drag?.onEnd?.(),
-        onDragOver,
-        onDrop,
+        "data-session-id": row.sessionId,
+        "data-group-row": row.isGroup ? "1" : undefined,
+        onPointerDown,
         onClick,
         // macOS turns Ctrl+click into a context-menu event, so the click
         // handler never sees it. Treat it as the multi-select modifier the
@@ -3514,27 +3500,85 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     // closing over them.
     const clickEnv = React.useRef(null);
     clickEnv.current = { rows, viewState, controller };
-    // Drag-and-drop filing: drag the multi-selection (or a single row) onto a
-    // group row to move it in, or onto the list background to move it out.
-    const [dragState, setDragState] = React.useState({ dragging: false, ids: [], overGroupId: null });
-    const dropOnGroup = React.useCallback((groupId) => {
-        const ids = dragState.ids;
-        setDragState({ dragging: false, ids: [], overGroupId: null });
-        if (ids.length === 0) return;
-        controller.moveSessionsToGroup(groupId, ids).catch(() => {});
-    }, [controller, dragState.ids]);
+    // ── Drag sessions into / out of groups ────────────────────────────
+    // Pointer-driven so it works from <button> rows, can render a collection
+    // ghost for a multi-selection, and can highlight the destination folder.
+    const [dragState, setDragState] = React.useState({ dragging: false, ids: [], titles: [], overGroupId: null, x: 0, y: 0 });
+    const dragRef = React.useRef(null);
+
+    const finishDrag = React.useCallback((commit) => {
+        const pending = dragRef.current;
+        dragRef.current = null;
+        setDragState({ dragging: false, ids: [], titles: [], overGroupId: null, x: 0, y: 0 });
+        if (!commit || !pending?.started || pending.ids.length === 0) return;
+        // Dropped on a folder → file there; dropped anywhere else in the list
+        // → take them out of whatever folder they were in.
+        controller.moveSessionsToGroup(pending.overGroupId, pending.ids).catch(() => {});
+    }, [controller]);
+
+    React.useEffect(() => {
+        if (!dragState.dragging) return undefined;
+        const onMove = (event) => {
+            const pending = dragRef.current;
+            if (!pending) return;
+            const el = document.elementFromPoint(event.clientX, event.clientY);
+            const groupEl = el?.closest?.("[data-group-row='1']") || null;
+            const overGroupId = groupEl?.getAttribute("data-session-id") || null;
+            pending.overGroupId = overGroupId;
+            setDragState((cur) => ({ ...cur, overGroupId, x: event.clientX, y: event.clientY }));
+        };
+        const onUp = () => finishDrag(true);
+        const onKey = (event) => { if (event.key === "Escape") finishDrag(false); };
+        window.addEventListener("pointermove", onMove);
+        window.addEventListener("pointerup", onUp);
+        window.addEventListener("pointercancel", () => finishDrag(false));
+        window.addEventListener("keydown", onKey);
+        document.body.classList.add("ps-dragging-sessions");
+        return () => {
+            window.removeEventListener("pointermove", onMove);
+            window.removeEventListener("pointerup", onUp);
+            window.removeEventListener("keydown", onKey);
+            document.body.classList.remove("ps-dragging-sessions");
+        };
+    }, [dragState.dragging, finishDrag]);
+
     const dragHandlers = React.useMemo(() => ({
         dragging: dragState.dragging,
         overGroupId: dragState.overGroupId,
-        onStart: (row) => {
-            const selected = clickEnv.current.viewState.selectedIds || [];
-            const ids = selected.includes(row.sessionId) && selected.length > 0 ? selected : [row.sessionId];
-            setDragState({ dragging: true, ids, overGroupId: null });
+        // Arm on pointerdown, but only BECOME a drag past a small threshold so
+        // ordinary clicks (and Cmd/Shift multi-select) still work untouched.
+        onPointerDown: (event, row) => {
+            if (row.isGroup || row.isSystem) return;
+            const startX = event.clientX;
+            const startY = event.clientY;
+            const armed = { row, startX, startY, started: false, ids: [], overGroupId: null };
+            const onMove = (moveEvent) => {
+                if (armed.started) return;
+                if (Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY) < 5) return;
+                armed.started = true;
+                const current = clickEnv.current.viewState;
+                const selected = Array.isArray(current.selectedIds) ? current.selectedIds : [];
+                const ids = selected.includes(row.sessionId) && selected.length > 1 ? selected : [row.sessionId];
+                const byId = current.sessionsById || {};
+                armed.ids = ids;
+                dragRef.current = armed;
+                setDragState({
+                    dragging: true,
+                    ids,
+                    titles: ids.map((id) => byId[id]?.title || String(id).slice(0, 8)).slice(0, 3),
+                    overGroupId: null,
+                    x: moveEvent.clientX,
+                    y: moveEvent.clientY,
+                });
+            };
+            const onUp = () => {
+                window.removeEventListener("pointermove", onMove);
+                window.removeEventListener("pointerup", onUp);
+            };
+            window.addEventListener("pointermove", onMove);
+            window.addEventListener("pointerup", onUp);
         },
-        onOverGroup: (groupId) => setDragState((cur) => (cur.overGroupId === groupId ? cur : { ...cur, overGroupId: groupId })),
-        onDropOnGroup: dropOnGroup,
-        onEnd: () => setDragState({ dragging: false, ids: [], overGroupId: null }),
-    }), [dragState.dragging, dragState.overGroupId, dropOnGroup]);
+    }), [dragState.dragging, dragState.overGroupId]);
 
     const handleRowClick = React.useCallback((event, row) => {
         const { rows: currentRows, viewState: current, controller: ctl } = clickEnv.current;
@@ -3687,7 +3731,27 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         }),
         actions);
 
+    // The drag ghost: a single card for one session, a stacked "collection"
+    // for a multi-selection, plus what it will do when released.
+    const dragGhost = dragState.dragging
+        ? React.createElement("div", {
+            className: "ps-drag-ghost",
+            style: { left: `${dragState.x}px`, top: `${dragState.y}px` },
+        },
+            React.createElement("div", { className: `ps-drag-ghost__stack${dragState.ids.length > 1 ? " is-collection" : ""}` },
+                dragState.ids.length > 1
+                    ? React.createElement("span", { className: "ps-drag-ghost__count" }, String(dragState.ids.length))
+                    : null,
+                React.createElement("span", { className: "ps-drag-ghost__title" },
+                    dragState.ids.length > 1
+                        ? `${dragState.ids.length} sessions`
+                        : (dragState.titles[0] || "session"))),
+            React.createElement("div", { className: "ps-drag-ghost__hint" },
+                dragState.overGroupId ? "Release to file here" : "Release to remove from folder"))
+        : null;
+
     return React.createElement(React.Fragment, null,
+    dragGhost,
     React.createElement(Panel, {
         title: [{ text: "Sessions", color: "yellow", bold: true }],
         color: "yellow",
@@ -3698,10 +3762,6 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     },
     React.createElement("div", {
         className: `ps-action-list ps-session-list${dragState.dragging ? " is-dragging" : ""}`,
-        // Dropping on the list background (not on a group row) takes the
-        // dragged sessions OUT of their group.
-        onDragOver: (event) => { if (dragState.dragging) { event.preventDefault(); setDragState((cur) => ({ ...cur, overGroupId: null })); } },
-        onDrop: (event) => { if (dragState.dragging) { event.preventDefault(); dropOnGroup(null); } },
     },
         rows.length === 0
             ? React.createElement("div", { className: "ps-empty-state" }, viewState.filterQuery
