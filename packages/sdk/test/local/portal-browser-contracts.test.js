@@ -163,6 +163,11 @@ describe("portal browser contracts", () => {
         // Anything a selector reads but the reconstruction omits is invisible
         // forever — that is exactly how the Node Map stayed empty while the
         // worker registry was loading fine (state.admin was never passed).
+        // Same class of bug, third occurrence: a pane reconstructs partial
+        // state for a shared selector and omits a field the selector reads,
+        // so the feature is invisible no matter what the controller does.
+        assertIncludes(webApp, "listDeselected: viewState.listDeselected",
+            "session-list selector state must carry the list-deselect flag");
         assertIncludes(webApp, "admin: { workers: viewState.adminWorkers }",
             "inspector/activity selector state must carry the worker registry");
         assertIncludes(webApp, "nodeMapSelectedNode: viewState.nodeMapSelectedNode",

@@ -120,14 +120,35 @@ function rpc(method, SESSIONS) {
     }
 }
 
-export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 0, systemEvery = 0 } = {}) {
+export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 0, systemEvery = 0, groups = [] } = {}) {
     const SESSIONS = makeSessions(Math.max(1, sessionCount));
     const TRANSCRIPT = makeTranscript(Math.max(0, transcriptTurns), systemEvery);
+    // Placement calls the drag tests assert against: [{ sessionIds, groupId }].
+    const placements = [];
     const server = http.createServer((req, res) => {
         const url = new URL(req.url, "http://localhost");
         const pathname = url.pathname;
 
         if (pathname.startsWith("/api/")) {
+            // Session groups: list them, and RECORD placement calls so a test
+            // can prove a drag reached the API with the right group id.
+            if (/\/management\/session-groups$/.test(pathname) && req.method === "GET") {
+                res.writeHead(200, { "content-type": "application/json" });
+                res.end(JSON.stringify({ ok: true, result: groups }));
+                return;
+            }
+            if (/\/management\/session-groups\/place$/.test(pathname)) {
+                let raw = "";
+                req.on("data", (chunk) => { raw += chunk; });
+                req.on("end", () => {
+                    let parsed = {};
+                    try { parsed = JSON.parse(raw || "{}"); } catch { /* record the attempt anyway */ }
+                    placements.push(parsed);
+                    res.writeHead(200, { "content-type": "application/json" });
+                    res.end(JSON.stringify({ ok: true, result: (parsed.sessionIds || []).map((id) => ({ rootSessionId: id, placed: true, reason: null })) }));
+                });
+                return;
+            }
             if (/\/events$/.test(pathname)) {
                 res.writeHead(200, { "content-type": "application/json" });
                 res.end(JSON.stringify({ ok: true, result: TRANSCRIPT }));
@@ -188,7 +209,7 @@ export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 
 
     return new Promise((resolve) => {
         server.listen(port, "127.0.0.1", () => {
-            resolve({ server, port: server.address().port });
+            resolve({ server, port: server.address().port, placements });
         });
     });
 }

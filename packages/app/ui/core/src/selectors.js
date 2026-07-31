@@ -918,6 +918,9 @@ export function selectSessionRows(state) {
             status: session?.status,
             statusColor: sessionStatusColor(session, state.connection?.mode || "local"),
             active,
+            // The RAW group id (rows are keyed "group:<uuid>"); the placement
+            // API and drag hit-testing both need the bare id.
+            groupId: session?.groupId || entry?.groupId || null,
             isSystem: Boolean(session?.isSystem),
             isGroup: Boolean(session?.isGroup),
             hasChildren: entry.hasChildren,

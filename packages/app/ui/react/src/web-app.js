@@ -3389,6 +3389,10 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         // TODO: promote this to its own `ui.richUi` setting if the two are
         // ever wanted independently.
         rich: Boolean(getTheme(state.ui.themeId)?.richChat),
+        // Clicking empty space clears the list highlight; the row VM reads it,
+        // so the reconstruction below must carry it or the click does nothing
+        // visible (the same omission that blinded the Node Map).
+        listDeselected: Boolean(state.sessions.listDeselected),
     }), shallowEqualObject);
     const computedRows = React.useMemo(() => selectSessionRows({
         sessions: {
@@ -3400,6 +3404,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             pinnedIds: viewState.pinnedIds,
             selectedIds: viewState.selectedIds,
             selectMode: viewState.selectMode,
+            listDeselected: viewState.listDeselected,
         },
         auth: viewState.auth,
         connection: {
@@ -3410,7 +3415,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         // deployment, while the controller's own calls (which pass real state)
         // produced the branded name.
         branding: viewState.branding,
-    }), [viewState.activeSessionId, viewState.auth, viewState.branding, viewState.connectionMode, viewState.filterQuery, viewState.ownerFilter, viewState.pinnedIds, viewState.selectedIds, viewState.selectMode, viewState.sessionsById, viewState.sessionsFlat]);
+    }), [viewState.activeSessionId, viewState.auth, viewState.branding, viewState.connectionMode, viewState.filterQuery, viewState.listDeselected, viewState.ownerFilter, viewState.pinnedIds, viewState.selectedIds, viewState.selectMode, viewState.sessionsById, viewState.sessionsFlat]);
     // Hold the previous rows when a poll produced identical output.
     const rows = useStableValue(computedRows);
     const activeSession = viewState.activeSessionId
@@ -3539,16 +3544,34 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             pending.overGroupId = overGroupId;
             setDragState((cur) => ({ ...cur, overGroupId, x: event.clientX, y: event.clientY }));
         };
-        const onUp = () => finishDrag(true);
+        // Resolve the target from the RELEASE coordinates. Relying on the last
+        // pointermove the effect happened to process made the drop depend on
+        // event timing: a fast drag committed with a stale (usually null)
+        // target, which the API then read as "remove from folder" — the drag
+        // appeared to do nothing at all.
+        const onUp = (event) => {
+            const pending = dragRef.current;
+            if (pending && typeof event?.clientX === "number") {
+                const el = document.elementFromPoint(event.clientX, event.clientY);
+                const groupEl = el?.closest?.("[data-group-row='1']") || null;
+                pending.overGroupId = groupEl?.getAttribute("data-group-id") || null;
+            }
+            finishDrag(true);
+        };
+        // Named + removed: an anonymous pointercancel listener leaked one stale
+        // closure PER DRAG, and the next drag's cancel event fired all of them,
+        // aborting it. First drag worked, every one after it died.
+        const onCancel = () => finishDrag(false);
         const onKey = (event) => { if (event.key === "Escape") finishDrag(false); };
         window.addEventListener("pointermove", onMove);
         window.addEventListener("pointerup", onUp);
-        window.addEventListener("pointercancel", () => finishDrag(false));
+        window.addEventListener("pointercancel", onCancel);
         window.addEventListener("keydown", onKey);
         document.body.classList.add("ps-dragging-sessions");
         return () => {
             window.removeEventListener("pointermove", onMove);
             window.removeEventListener("pointerup", onUp);
+            window.removeEventListener("pointercancel", onCancel);
             window.removeEventListener("keydown", onKey);
             document.body.classList.remove("ps-dragging-sessions");
         };
@@ -3782,7 +3805,6 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             const onRow = event.target instanceof Element && event.target.closest(".ps-session-list-button");
             if (onRow) return;
             controller.dispatch({ type: "sessions/listDeselect" });
-            controller.setFocus("sessions");
         },
     },
         rows.length === 0
