@@ -106,7 +106,10 @@ test("members never vanish when their folder row is missing", () => {
         sessions: [
             { sessionId: "a", title: "filed one", status: "idle", groupId: "g-unknown", owner: me },
             { sessionId: "b", title: "filed two", status: "idle", groupId: "g-unknown", owner: me },
-            { sessionId: "loose", title: "loose", status: "idle", owner: me },
+            // A second owner so rows carry owner chips - that is the form the
+            // bug took: a stand-in the row builder could not resolve rendered
+            // as a bare "[?]" chip with no title and no glyph.
+            { sessionId: "loose", title: "loose", status: "idle", owner: { provider: "github", subject: "someone-else", displayName: "Someone Else" } },
         ],
     });
 
@@ -121,6 +124,14 @@ test("members never vanish when their folder row is missing", () => {
     const member = rows.find((row) => row.sessionId === "a");
     assert.equal(folder.depth, 0);
     assert.ok(member.depth > folder.depth, "members render inside the folder, not beside it");
+
+    // And it must LOOK like a folder. The stand-in lives only in the tree, not
+    // in sessions.byId, so the row builder's lookup found nothing and drew an
+    // identity-less "[?]" line: no glyph, no title, just an unknown-owner chip.
+    const folderText = folder.text || (folder.runs || []).map((run) => run.text).join("");
+    assert.equal(folder.isGroup, true, "the stand-in row is a group row");
+    assert.ok(folderText.includes("🗂"), `stand-in renders as a folder, got: ${JSON.stringify(folderText)}`);
+    assert.ok(!folderText.includes("[?]"), `stand-in must not render as an unknown ghost, got: ${JSON.stringify(folderText)}`);
 
     // The real folder arrives and replaces the stand-in, title and all.
     store.dispatch({

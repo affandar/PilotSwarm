@@ -129,6 +129,7 @@ export function buildSessionTree(sessions = [], collapsedIds = new Set(), orderS
         byId.set(key, standIn);
         standIns.push(standIn);
     }
+    const standInIds = new Set(standIns.map((row) => row.sessionId));
     if (standIns.length > 0) sessions = [...sessions, ...standIns];
 
     for (const session of sessions) {
@@ -171,6 +172,10 @@ export function buildSessionTree(sessions = [], collapsedIds = new Set(), orderS
             depth,
             hasChildren: childList.length > 0,
             collapsed: collapsedIds.has(session.sessionId),
+            // A stand-in is a view artifact of THIS tree, not state: it is not
+            // in sessions.byId, so the row builder's lookup finds nothing and
+            // renders an identity-less "[?]" line. Carry it on the entry.
+            ...(standInIds.has(session.sessionId) ? { standIn: session } : {}),
         });
         if (collapsedIds.has(session.sessionId)) return;
         for (const child of childList) visit(child, depth + 1);

@@ -885,8 +885,12 @@ export function selectSessionRows(state) {
         sessionRowMemo.set(state.sessions.flat, memo);
     }
 
-    return state.sessions.flat.map((entry) => {
-        const session = state.sessions.byId[entry.sessionId];
+    return state.sessions.flat.filter((entry) => (
+        // A row whose session is in neither place can render nothing but an
+        // owner chip and a dash - the "[?]" ghost. Drop it rather than show it.
+        Boolean(state.sessions.byId[entry.sessionId] || entry.standIn)
+    )).map((entry) => {
+        const session = state.sessions.byId[entry.sessionId] || entry.standIn;
         // The LIST highlight can be cleared (click empty space) without
         // detaching the session — the chat and inspector panes keep it.
         const active = entry.sessionId === state.sessions.activeSessionId
