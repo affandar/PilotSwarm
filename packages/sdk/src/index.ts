@@ -277,8 +277,6 @@ export type {
     AgentPackageInstallResult,
     InstalledAgentPackage,
 } from "./agent-package-installer.js";
-export { syncAgentSourceOnce, extractZipArchive } from "./agent-package-fetchers.js";
-export type { SyncSourceResult } from "./agent-package-fetchers.js";
 export type {
     WorkerRow,
     WorkerPhase,
@@ -287,7 +285,6 @@ export type {
     FleetDirectiveRow,
     AgentPackageScope,
     AgentPrincipal,
-    AgentSourceRow,
     AgentPackageSummary,
     AgentPackageDetail,
     AgentPackageVersionRow,

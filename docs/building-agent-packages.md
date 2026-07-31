@@ -271,12 +271,17 @@ pilotswarm agents validate ./my-kit
 
 1. **CLI**: `pilotswarm agents push ./my-kit --shared` (or `--user`).
 2. **Portal**: Admin Console → **Agents** → **+ Add package**:
-   - **GitHub / Azure DevOps** — repo URL, ref, and the path to the
-     package's `plugin.json` (or its folder). Register once; **Sync** pulls
-     new commits, and auto-sync can poll for you. Private repos take an
-     access token (stored write-only).
-   - **URL** — a `.tar.gz`/`.zip` whose root contains the package.
+   - **GitHub / Azure DevOps** — paste the browser link to `plugin.json`
+     (or the folder containing it); the branch and path are read from the
+     link. **Your browser** reads the repo with **your** access — public
+     GitHub needs no credential, Azure DevOps uses your signed-in account,
+     and a PAT is only needed for private GitHub (used for that import
+     only, never stored). The files are then published through the normal
+     package-artifact upload, so nothing about the repo is kept server-side.
    - **Upload folder** — pick the folder in the browser (≤ 2 MB).
+
+   Both portal paths are a point-in-time **import**, not a subscription: to
+   ship an update, bump the version and import again (or use the CLI).
 3. **MCP** (for assistants driving PilotSwarm): the `push_agent_package`
    tool takes inline base64 files, ≤ 2 MB total.
 
@@ -297,6 +302,9 @@ never affected by scope changes.
   as the agent's namespace.
 - Disabling or deleting a package removes its agents fleet-wide on the next
   poll; sessions already running fail their next turn's agent resolution.
+- Every publish path — CLI, portal import, portal folder upload, MCP —
+  converges on the same mechanism: files are validated, canonically packed,
+  and stored as a package artifact. There is no server-side repo polling.
 
 ## 11. Complete worked example
 

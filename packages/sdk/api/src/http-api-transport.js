@@ -80,10 +80,6 @@ export class HttpApiTransport {
     getAgentPackageTree(name, semver) { return this.api.call("getAgentPackageTree", { name, ...(semver ? { semver } : {}) }); }
     getAgentPackageFile(name, semver, filePath) { return this.api.call("getAgentPackageFile", { name, filePath, ...(semver ? { semver } : {}) }); }
     uploadAgentPackage(files, scope) { return this.api.call("uploadAgentPackage", { files, scope }); }
-    listAgentSources() { return this.api.call("listAgentSources"); }
-    registerAgentSource(input) { return this.api.call("registerAgentSource", input); }
-    syncAgentSource(sourceId) { return this.api.call("syncAgentSource", { sourceId }); }
-    deleteAgentSource(sourceId) { return this.api.call("deleteAgentSource", { sourceId }); }
     listAgentWorkerState() { return this.api.call("listAgentWorkerState"); }
     listWorkers() { return this.api.call("listWorkers"); }
     setAgentPackageScope(name, scope) { return this.api.call("setAgentPackageScope", { name, scope }); }

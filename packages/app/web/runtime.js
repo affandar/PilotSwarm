@@ -772,23 +772,6 @@ export class PortalRuntime {
                 return this.transport.getAgentPackageFile(safeParams.name, safeParams.semver ?? null, safeParams.filePath, owner, isAdmin);
             case "uploadAgentPackage":
                 return this.transport.uploadAgentPackage(safeParams.files, safeParams.scope, owner, isAdmin);
-            case "listAgentSources":
-                return this.transport.listAgentSources(owner, isAdmin);
-            case "registerAgentSource":
-                return this.transport.registerAgentSource({
-                    kind: safeParams.kind,
-                    scope: safeParams.scope,
-                    repoUrl: safeParams.repoUrl,
-                    ref: safeParams.ref,
-                    path: safeParams.path,
-                    url: safeParams.url,
-                    authToken: safeParams.authToken,
-                    autoSync: safeParams.autoSync,
-                }, owner, isAdmin);
-            case "syncAgentSource":
-                return this.transport.syncAgentSource(safeParams.sourceId, owner, isAdmin);
-            case "deleteAgentSource":
-                return this.transport.deleteAgentSource(safeParams.sourceId, owner, isAdmin);
             case "listAgentWorkerState":
                 return this.transport.listAgentWorkerState();
             case "listWorkers":

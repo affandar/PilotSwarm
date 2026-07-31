@@ -1,5 +1,6 @@
 import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./commands.js";
 import { parseAgentSourceLink } from "./repo-links.js";
+import { importPackageFilesFromLink } from "./repo-import.js";
 import {
     appendEventToHistory,
     buildHistoryModel,
@@ -2699,16 +2700,13 @@ export class PilotSwarmUiController {
         }
         this.dispatch({ type: "admin/packages/loading" });
         try {
-            const [list, sources, workerState] = await Promise.all([
+            const [list, workerState] = await Promise.all([
                 this.transport.listAgentPackages(),
-                typeof this.transport.listAgentSources === "function"
-                    ? this.transport.listAgentSources().catch(() => [])
-                    : [],
                 typeof this.transport.listAgentWorkerState === "function"
                     ? this.transport.listAgentWorkerState().catch(() => [])
                     : [],
             ]);
-            this.dispatch({ type: "admin/packages/loaded", list, sources, workerState });
+            this.dispatch({ type: "admin/packages/loaded", list, workerState });
         } catch (error) {
             this.dispatch({ type: "admin/packages/loadFailed", error: error?.message || String(error) });
         }
@@ -2779,7 +2777,9 @@ export class PilotSwarmUiController {
 
     /**
      * One entry point for package mutations so pending/error state stays
-     * uniform: kind = sync | promote | demote | pin | enable | disable | delete.
+     * uniform: kind = promote | demote | pin | enable | disable | delete.
+     * (No "sync": packages are imported client-side and published as
+     * artifacts — re-import from the link to update.)
      */
     async runAdminPackageAction(kind, arg = null) {
         const pkgs = this.getState().admin?.packages;
@@ -2788,13 +2788,6 @@ export class PilotSwarmUiController {
         this.dispatch({ type: "admin/packages/action/pending", action: kind });
         try {
             switch (kind) {
-                case "sync": {
-                    const sourceId = pkgs.detail?.sourceId;
-                    if (!sourceId) throw new Error("this package has no linked source — republish via upload or the CLI");
-                    const result = await this.transport.syncAgentSource(sourceId);
-                    if (result?.status === "error") throw new Error(result.error || "sync failed");
-                    break;
-                }
                 case "promote":
                     await this.transport.setAgentPackageScope(name, "shared");
                     break;
@@ -2861,47 +2854,53 @@ export class PilotSwarmUiController {
         this.dispatch({ type: "admin/packages/addDialog/setField", field, value });
     }
 
-    /** Register the source and run the first sync in one motion. */
+    /**
+     * Import a package from a pasted repo link — IN THIS BROWSER, as the
+     * signed-in user — and publish it through the standard upload path.
+     * Nothing about the repo is stored server-side: no source row, no token.
+     * A pasted PAT is used for this import only and never leaves the tab.
+     */
     async submitAdminAddPackage() {
         const dialog = this.getState().admin?.packages?.addDialog;
         if (!dialog?.open || dialog.submitting) return;
-        if (typeof this.transport.registerAgentSource !== "function") {
-            this.dispatch({ type: "admin/packages/addDialog/failed", error: "Package sources are not available on this deployment." });
+        if (typeof this.transport.uploadAgentPackage !== "function") {
+            this.dispatch({ type: "admin/packages/addDialog/failed", error: "Package upload is not available on this deployment." });
             return;
         }
-        // The repo form takes ONE deep link (to plugin.json or its folder)
-        // and derives kind/repoUrl/ref/path from it client-side.
-        let source = {
-            kind: dialog.kind,
-            repoUrl: dialog.repoUrl || null,
-            ref: dialog.ref || null,
-            path: dialog.path || null,
-        };
-        if (dialog.kind === "repo") {
-            const parsed = parseAgentSourceLink(dialog.repoUrl);
-            if (parsed.error) {
-                this.dispatch({ type: "admin/packages/addDialog/failed", error: parsed.error });
-                return;
-            }
-            source = { kind: parsed.kind, repoUrl: parsed.repoUrl, ref: parsed.ref, path: parsed.path };
+        const link = String(dialog.repoUrl || "").trim();
+        const parsed = parseAgentSourceLink(link);
+        if (parsed.error) {
+            this.dispatch({ type: "admin/packages/addDialog/failed", error: parsed.error });
+            return;
         }
         this.dispatch({ type: "admin/packages/addDialog/submitting" });
         try {
-            const { sourceId } = await this.transport.registerAgentSource({
-                ...source,
-                scope: dialog.scope,
-                url: dialog.url || null,
-                authToken: dialog.authToken || null,
-            });
-            const result = await this.transport.syncAgentSource(sourceId);
-            if (result?.status === "error") {
-                throw new Error(result.error || "the first sync failed — check the repo URL, ref, and path");
+            const pat = String(dialog.authToken || "").trim();
+            let token = pat || null;
+            let tokenKind = "pat";
+            if (!token && parsed.kind === "ado") {
+                // No PAT: read the repo with the viewer's own Entra token.
+                this.dispatch({ type: "admin/packages/addDialog/progress", message: "getting an Azure DevOps token for your account…" });
+                token = typeof this.transport.getRepoAccessToken === "function"
+                    ? await this.transport.getRepoAccessToken("ado")
+                    : null;
+                tokenKind = "bearer";
             }
+            const { files } = await importPackageFilesFromLink(link, {
+                token,
+                tokenKind,
+                onProgress: (message) => this.dispatch({ type: "admin/packages/addDialog/progress", message }),
+            });
+            this.dispatch({ type: "admin/packages/addDialog/progress", message: `publishing ${files.length} file(s)…` });
+            const outcome = await this.transport.uploadAgentPackage(files, dialog.scope === "shared" ? "shared" : "user");
             this.dispatch({ type: "admin/packages/addDialog/close" });
             await this.refreshAdminAgentPackages();
-            if (result?.outcome?.name) await this.selectAdminPackage(result.outcome.name);
+            if (outcome?.name) await this.selectAdminPackage(outcome.name);
         } catch (error) {
-            this.dispatch({ type: "admin/packages/addDialog/failed", error: error?.message || String(error) });
+            const validation = Array.isArray(error?.validation?.errors)
+                ? `\n${error.validation.errors.map((issue) => `[${issue.code}] ${issue.message}`).join("\n")}`
+                : "";
+            this.dispatch({ type: "admin/packages/addDialog/failed", error: `${error?.message || error}${validation}` });
         }
     }
 

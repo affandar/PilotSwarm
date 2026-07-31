@@ -72,19 +72,6 @@ export function registerAgentPackageTools(server: McpServer, ctx: ServerContext)
         }),
     );
 
-    server.registerTool(
-        "list_agent_sources",
-        {
-            title: "List Agent Package Sources",
-            description: "Registered package sources (github/ado/url) visible to this credential. Tokens are never returned.",
-            inputSchema: {},
-        },
-        withToolErrors(async () => {
-            const sources = await api.call("listAgentSources");
-            return jsonResult({ count: Array.isArray(sources) ? sources.length : 0, sources });
-        }),
-    );
-
     if (ctx.agentMgmt !== "full") return;
 
     server.registerTool(
@@ -111,46 +98,6 @@ export function registerAgentPackageTools(server: McpServer, ctx: ServerContext)
                 scope: scope ?? "user",
             });
             return jsonResult(outcome);
-        }),
-    );
-
-    server.registerTool(
-        "register_agent_source",
-        {
-            title: "Register Agent Package Source",
-            description:
-                "Register a package source: kind github ({repo_url, ref, path}), ado (dev.azure.com _git URL), "
-                + "or url (a .tar.gz/.zip archive). auth_token is stored write-only. Follow with sync_agent_source "
-                + "to fetch and publish.",
-            inputSchema: {
-                kind: z.enum(["github", "ado", "url"]),
-                scope: z.enum(["shared", "user"]).optional(),
-                repo_url: z.string().optional(),
-                ref: z.string().optional(),
-                path: z.string().optional(),
-                url: z.string().optional(),
-                auth_token: z.string().optional(),
-            },
-        },
-        withToolErrors(async ({ kind, scope, repo_url, ref, path, url, auth_token }) => {
-            const result = await api.call("registerAgentSource", {
-                kind, scope: scope ?? "user",
-                repoUrl: repo_url, ref, path, url, authToken: auth_token,
-            });
-            return jsonResult({ ...result, next: "call sync_agent_source with this sourceId to fetch and publish" });
-        }),
-    );
-
-    server.registerTool(
-        "sync_agent_source",
-        {
-            title: "Sync Agent Package Source",
-            description: "Fetch the source now, validate, and publish. Returns published | noop | unchanged | error (with the reason). Creator or admin.",
-            inputSchema: { source_id: z.string().min(1) },
-        },
-        withToolErrors(async ({ source_id }) => {
-            const result = await api.call("syncAgentSource", { sourceId: source_id });
-            return jsonResult(result);
         }),
     );
 

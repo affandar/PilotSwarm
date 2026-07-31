@@ -417,9 +417,10 @@ function PortalMobileStatus({ statusText, onDismiss }) {
 function PortalWorkspace({ auth, portal, shellStyle }) {
     const transport = React.useMemo(() => new BrowserPortalTransport({
         getAccessToken: auth.getAccessToken,
+        getResourceToken: auth.getResourceToken,
         onUnauthorized: auth.handleUnauthorized,
         onForbidden: auth.handleForbidden,
-    }), [auth.getAccessToken, auth.handleForbidden, auth.handleUnauthorized]);
+    }), [auth.getAccessToken, auth.getResourceToken, auth.handleForbidden, auth.handleUnauthorized]);
     const controller = React.useMemo(() => createWebPilotSwarmController({
         transport,
         mode: "remote",

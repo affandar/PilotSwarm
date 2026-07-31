@@ -7115,18 +7115,6 @@ function AdminPackageDetailPane({ controller, view }) {
             React.createElement("dd", null, detail.activeSemver
                 ? `${detail.activeSemver} · sha ${detail.activeSha12 || "?"} · ${detail.sizeText}`
                 : "no active version"),
-            detail.source
-                ? [
-                    React.createElement("dt", { key: "sk" }, "Source"),
-                    React.createElement("dd", { key: "sv" },
-                        `${detail.source.kind} · ${detail.source.location}${detail.source.ref ? ` @ ${detail.source.ref}` : ""}${detail.source.path ? ` · ${detail.source.path}` : ""}`),
-                    React.createElement("dt", { key: "yk" }, "Synced"),
-                    React.createElement("dd", { key: "yv", className: detail.source.lastSyncStatus === "error" ? "is-error" : "" },
-                        detail.source.lastSyncStatus === "error"
-                            ? `failed ${detail.source.lastSyncAtText}: ${detail.source.lastSyncError || "unknown error"}`
-                            : `${detail.source.lastSyncAtText}`),
-                ]
-                : null,
             detail.fleet
                 ? [React.createElement("dt", { key: "fk" }, "Fleet"), React.createElement("dd", { key: "fv", className: "is-ok" }, detail.fleet.text)]
                 : null,
@@ -7310,7 +7298,7 @@ function AdminWorkspacePreviewBody({ file, theme }) {
 
 function AdminAddPackageDialog({ controller, dialog }) {
     const setField = (field) => (event) => controller.setAdminAddPackageField(field, event.target.value);
-    const kinds = [["repo", "GitHub / Azure DevOps"], ["url", "URL (.tar.gz)"], ["upload", "Upload folder"]];
+    const kinds = [["repo", "GitHub / Azure DevOps"], ["upload", "Upload folder"]];
     const isRepo = dialog.kind === "repo" || dialog.kind === "github" || dialog.kind === "ado";
     const folderRef = React.useRef(null);
     const [reading, setReading] = React.useState(false);
@@ -7385,18 +7373,13 @@ function AdminAddPackageDialog({ controller, dialog }) {
                         React.createElement("label", { key: "u", className: "ps-admin-add__field" }, "Link to plugin.json (or the folder containing it)",
                             React.createElement("input", { value: dialog.repoUrl, onChange: setField("repoUrl"), placeholder: "https://github.com/org/repo/blob/main/my-agents/plugin.json", autoFocus: true })),
                         React.createElement("div", { key: "h", className: "ps-admin-add__hint" },
-                            "Paste the browser URL — branch and path are read from the link (GitHub blob/tree links, Azure DevOps ?path= links, or a bare repo URL)."),
-                        React.createElement("label", { key: "t", className: "ps-admin-add__field" }, "PAT (optional — your identity is used when omitted; stored write-only)",
+                            "Paste the browser URL — branch and path are read from the link. The files are read "
+                            + "by THIS BROWSER with your access (public GitHub needs nothing; Azure DevOps uses your "
+                            + "signed-in account) and uploaded as a package artifact."),
+                        React.createElement("label", { key: "t", className: "ps-admin-add__field" }, "PAT (only for private GitHub repos, or to override — used here, never stored)",
                             React.createElement("input", { type: "password", value: dialog.authToken, onChange: setField("authToken"), autoComplete: "off" })),
                     ]
-                    : dialog.kind === "url"
-                        ? [
-                            React.createElement("label", { key: "u2", className: "ps-admin-add__field" }, "Archive URL (.tar.gz or .zip)",
-                                React.createElement("input", { value: dialog.url, onChange: setField("url"), placeholder: "https://…/my-agents.tar.gz", autoFocus: true })),
-                            React.createElement("label", { key: "t2", className: "ps-admin-add__field" }, "Bearer token (optional)",
-                                React.createElement("input", { type: "password", value: dialog.authToken, onChange: setField("authToken"), autoComplete: "off" })),
-                        ]
-                        : React.createElement("label", { className: "ps-admin-add__field" }, "Package folder with plugin.json — the manifest (≤ 2 MB; node_modules skipped)",
+                    : React.createElement("label", { className: "ps-admin-add__field" }, "Package folder with plugin.json — the manifest (≤ 2 MB; node_modules skipped)",
                             React.createElement("input", { ref: folderRef, type: "file", webkitdirectory: "", directory: "", multiple: true })),
                 React.createElement("div", { className: "ps-admin-add__scope" },
                     React.createElement("label", null,
@@ -7407,13 +7390,16 @@ function AdminAddPackageDialog({ controller, dialog }) {
                         " User — only you see it")),
                 React.createElement("p", { className: "ps-admin-console__hint" },
                     "Same thing from a terminal: pilotswarm agents push ./my-agents --shared"),
+                dialog.progress && !dialog.error
+                    ? React.createElement("p", { className: "ps-admin-add__progress" }, dialog.progress)
+                    : null,
                 dialog.error
                     ? React.createElement("pre", { className: "ps-admin-add__error", role: "alert" }, dialog.error)
                     : null),
             React.createElement("div", { className: "ps-modal-footer" },
                 React.createElement("button", { type: "button", className: "ps-mini-button", onClick: () => controller.closeAdminAddPackage(), disabled: dialog.submitting }, "Cancel"),
                 React.createElement("button", { type: "submit", className: "ps-primary-button", disabled: dialog.submitting || reading },
-                    reading ? "Reading folder…" : (dialog.submitting ? "Validating…" : "Validate & register")))));
+                    reading ? "Reading folder…" : (dialog.submitting ? "Importing…" : "Import & publish")))));
 }
 
 function AdminGhcpSection({ view, draftRef, onBeginEdit, onCancelEdit, onClear, onSubmit, onDraftChange, onRefresh, controller }) {

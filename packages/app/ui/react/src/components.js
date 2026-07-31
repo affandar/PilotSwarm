@@ -1946,19 +1946,6 @@ function buildAdminPackagesLines(view) {
             { text: "Version ", color: "gray" },
             { text: detail.activeSemver ? `${detail.activeSemver} · ${detail.activeSha12 || "?"} · ${detail.sizeText}` : "none", color: "white" },
         ]);
-        if (detail.source) {
-            lines.push([
-                { text: "Source  ", color: "gray" },
-                { text: `${detail.source.kind} ${detail.source.location}${detail.source.ref ? ` @ ${detail.source.ref}` : ""}`, color: "white" },
-            ]);
-            lines.push([
-                { text: "Synced  ", color: "gray" },
-                { text: detail.source.lastSyncStatus === "error"
-                    ? `failed: ${detail.source.lastSyncError || "unknown"}`
-                    : detail.source.lastSyncAtText,
-                  color: detail.source.lastSyncStatus === "error" ? "red" : "white" },
-            ]);
-        }
         if (detail.fleet) lines.push([{ text: "Fleet   ", color: "gray" }, { text: detail.fleet.text, color: "green" }]);
         if (detail.agents.length) {
             lines.push([{ text: "Agents  ", color: "gray" }, { text: detail.agents.map((a) => a.name).join(", "), color: "white" }]);

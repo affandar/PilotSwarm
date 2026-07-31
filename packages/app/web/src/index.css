@@ -5615,3 +5615,5 @@ body.ps-rich-ui .ps-panel-header {
 /* Pin markers: themed glyph weight, no emoji red. */
 .ps-pin-icon { font-size: 15px; }
 .ps-rich-session-pin { color: var(--ps-muted); }
+
+.ps-admin-add__progress { color: var(--ps-muted); font-size: 12px; margin: 6px 0 0; font-family: var(--ps-mono, ui-monospace, monospace); }

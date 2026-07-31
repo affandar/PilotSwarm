@@ -409,11 +409,18 @@ export function usePortalAuth(authConfig) {
         return providerRef.current.getAccessToken();
     }, [state.authEnabled, state.provider]);
 
+    /** Token for a non-portal resource (Azure DevOps) — client-side repo reads. */
+    const getResourceToken = React.useCallback(async (resource) => {
+        if (!state.authEnabled || !providerRef.current?.getResourceToken) return null;
+        return providerRef.current.getResourceToken(resource);
+    }, [state.authEnabled]);
+
     return {
         ...state,
         signIn,
         signOut,
         getAccessToken,
+        getResourceToken,
         handleUnauthorized,
         handleForbidden,
     };

@@ -1894,7 +1894,6 @@ export function appReducer(state, action) {
                         loading: false,
                         error: null,
                         list,
-                        sources: Array.isArray(action.sources) ? action.sources : [],
                         workerState: Array.isArray(action.workerState) ? action.workerState : [],
                         fetchedAt: Date.now(),
                         selectedName: stillThere ? previous.selectedName : null,
@@ -2002,10 +2001,15 @@ export function appReducer(state, action) {
             return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, addDialog: { ...dialog, [action.field]: action.value, error: null } } } };
         }
         case "admin/packages/addDialog/submitting": {
-            return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, addDialog: { ...state.admin.packages.addDialog, submitting: true, error: null } } } };
+            return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, addDialog: { ...state.admin.packages.addDialog, submitting: true, progress: null, error: null } } } };
+        }
+        case "admin/packages/addDialog/progress": {
+            // Client-side import is a multi-request walk (tree, then blobs) —
+            // the dialog narrates it so a slow repo never looks hung.
+            return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, addDialog: { ...state.admin.packages.addDialog, progress: action.message || null } } } };
         }
         case "admin/packages/addDialog/failed": {
-            return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, addDialog: { ...state.admin.packages.addDialog, submitting: false, error: action.error || "Failed to add package source" } } } };
+            return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, addDialog: { ...state.admin.packages.addDialog, submitting: false, progress: null, error: action.error || "Failed to import package" } } } };
         }
         case "admin/systemGhcpKey/saved": {
             const status = action.status || {};

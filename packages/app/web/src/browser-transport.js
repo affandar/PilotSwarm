@@ -48,8 +48,11 @@ async function openUrlInDefaultBrowser(targetUrl) {
     return { url: parsedUrl.toString() };
 }
 
+/** Azure DevOps' first-party resource id — the audience for repo reads. */
+const ADO_RESOURCE_ID = "499b84ac-1321-427f-aa17-267ca6975798";
+
 export class BrowserPortalTransport extends HttpApiTransport {
-    constructor({ getAccessToken, onUnauthorized, onForbidden } = {}) {
+    constructor({ getAccessToken, getResourceToken, onUnauthorized, onForbidden } = {}) {
         super({
             apiUrl: window.location.origin,
             getAccessToken,
@@ -61,6 +64,17 @@ export class BrowserPortalTransport extends HttpApiTransport {
                 artifactExportDirectory: "Browser downloads",
             },
         });
+        this.getResourceTokenImpl = typeof getResourceToken === "function" ? getResourceToken : null;
+    }
+
+    /**
+     * Access token for reading a code host AS THE SIGNED-IN USER, so package
+     * import happens in this browser with the viewer's own permissions.
+     * GitHub needs none for public repos (a PAT covers private ones).
+     */
+    async getRepoAccessToken(kind) {
+        if (kind !== "ado" || typeof this.getResourceTokenImpl !== "function") return null;
+        return this.getResourceTokenImpl(ADO_RESOURCE_ID);
     }
 
     async uploadArtifactFromFile(sessionId, file, filenameOverride = null) {

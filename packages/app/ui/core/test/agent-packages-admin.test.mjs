@@ -102,14 +102,6 @@ function loadedPackagesState(store) {
                 active: null,
             },
         ],
-        sources: [{
-            sourceId: "src-1", kind: "github", scope: "shared",
-            repoUrl: "https://github.com/acme/agents", ref: "main", path: "/kit",
-            authTokenSet: true, autoSync: false,
-            lastSyncAt: "2026-07-27T02:00:00Z", lastSyncStatus: "ok", lastSyncError: null,
-            lastCommitSha: "abc", owner: { provider: "test", subject: "alice" },
-            createdBy: "alice@test", createdAt: "2026-07-12T00:00:00Z",
-        }],
         workerState: [
             { workerNodeId: "w1", epoch: 4, installed: { "incident-kit": { semver: "1.4.0", status: "ok" } }, updatedAt: new Date().toISOString() },
             { workerNodeId: "w2", epoch: 4, installed: { "incident-kit": { semver: "1.3.2", status: "ok" } }, updatedAt: new Date().toISOString() },
@@ -140,7 +132,7 @@ test("admin settings tree groups packages by scope with badges and counts", () =
     assert.equal(foreign.enabled, false);
 });
 
-test("package detail VM: versions, fleet adoption, source sync state", () => {
+test("package detail VM: versions and fleet adoption", () => {
     const store = createStore(appReducer, createInitialState());
     loadedPackagesState(store);
     store.dispatch({ type: "admin/packages/select", name: "incident-kit" });
@@ -168,8 +160,9 @@ test("package detail VM: versions, fleet adoption, source sync state", () => {
     assert.equal(detail.versions[1].active, false);
     assert.equal(detail.fleet.text, "1/2 workers current",
         "fleet counts only LIVE workers (fresh heartbeat) that are current+ok — the retired pod row is excluded");
-    assert.equal(detail.source.kind, "github");
-    assert.equal(detail.source.lastSyncStatus, "ok");
+    // Packages are imported client-side and published as artifacts — there
+    // is no server-side source row to display any more.
+    assert.equal(detail.source, undefined);
     assert.equal(detail.canManage, true);
 });
 

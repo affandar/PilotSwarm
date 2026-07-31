@@ -3675,8 +3675,6 @@ export function selectAdminConsole(state) {
         const summary = pkgList.find((pkg) => pkg.name === pkgState.selectedName) || null;
         const activeVersion = detail?.versions?.find((v) => v.versionId === detail.activeVersionId) || null;
         const manifest = activeVersion?.manifest || summary?.active?.manifest || {};
-        const source = (Array.isArray(pkgState.sources) ? pkgState.sources : [])
-            .find((candidate) => candidate.sourceId === detail?.sourceId) || null;
         // Workers are ephemeral pods: rows for retired pod names linger until
         // the server-side prune, so fleet adoption counts only workers whose
         // heartbeat (updated_at, touched every ~20s poll) is fresh.
@@ -3714,17 +3712,6 @@ export function selectAdminConsole(state) {
                     skillCount: Array.isArray(agent.skills) ? agent.skills.length : 0,
                 }))
                 : [],
-            source: source
-                ? {
-                    kind: source.kind,
-                    location: source.repoUrl || source.url || "",
-                    ref: source.ref || null,
-                    path: source.path || null,
-                    lastSyncAtText: adminPkgDate(source.lastSyncAt),
-                    lastSyncStatus: source.lastSyncStatus || null,
-                    lastSyncError: source.lastSyncError || null,
-                }
-                : null,
             versions: (detail?.versions || []).map((version) => ({
                 semver: version.semver,
                 sha12: String(version.sha256 || "").slice(0, 12),
@@ -3888,6 +3875,7 @@ export function selectAdminConsole(state) {
             url: pkgState.addDialog?.url || "",
             authToken: pkgState.addDialog?.authToken || "",
             submitting: Boolean(pkgState.addDialog?.submitting),
+            progress: pkgState.addDialog?.progress || null,
             error: pkgState.addDialog?.error || null,
         },
     };

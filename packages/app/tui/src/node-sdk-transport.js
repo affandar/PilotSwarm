@@ -20,7 +20,6 @@ import {
     PgSessionCatalog,
     publishAgentPackageDir,
     deleteAgentPackageEverywhere,
-    syncAgentSourceOnce,
     fetchAgentPackageTarGz,
     readAgentPackageTarGz,
     listBundledAgentNames,
@@ -796,60 +795,9 @@ export class NodeSdkTransport {
         return ctx.catalog.getAgentPackage(name, this._requirePrincipal(owner, isAdmin), Boolean(isAdmin));
     }
 
-    async listAgentSources(owner, isAdmin) {
-        const ctx = await this._agentPackagesContext();
-        if (!ctx) return [];
-        return ctx.catalog.listAgentSources(this._requirePrincipal(owner, isAdmin), Boolean(isAdmin));
-    }
 
-    async registerAgentSource(input, owner, isAdmin) {
-        const ctx = await this._agentPackagesContext();
-        if (!ctx) throw new Error("agent packages are not available on this deployment");
-        const principal = this._requirePrincipal(owner, isAdmin);
-        const kind = String(input?.kind || "");
-        if (!["github", "ado", "url"].includes(kind)) {
-            throw new Error(`source kind must be github, ado, or url (got "${kind}")`);
-        }
-        const scope = input?.scope === "shared" ? "shared" : "user";
-        const sourceId = `src-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-        await ctx.catalog.registerAgentSource({
-            sourceId,
-            kind,
-            scope,
-            repoUrl: input?.repoUrl || null,
-            ref: input?.ref || null,
-            path: input?.path || null,
-            url: input?.url || null,
-            authToken: input?.authToken || null,
-            autoSync: Boolean(input?.autoSync),
-            owner: principal,
-            createdBy: this._createdByLabel(owner),
-        });
-        return { sourceId };
-    }
 
-    async syncAgentSource(sourceId, owner, isAdmin) {
-        const ctx = await this._agentPackagesContext();
-        if (!ctx) throw new Error("agent packages are not available on this deployment");
-        // Creator-or-admin, WITHOUT an existence oracle: a source that exists
-        // but isn't yours answers exactly like one that doesn't exist.
-        const source = await ctx.catalog.getAgentSource(sourceId);
-        const principal = this._requirePrincipal(owner, isAdmin);
-        const owns = source && (isAdmin || (source.owner && principal
-            && source.owner.provider === principal.provider && source.owner.subject === principal.subject));
-        if (!owns) throw Object.assign(new Error(`source ${sourceId} not found`), { code: "NOT_FOUND" });
-        return syncAgentSourceOnce(ctx, sourceId, {
-            isAdmin: Boolean(isAdmin),
-            reservedAgentNames: this._reservedAgentNames(),
-        });
-    }
 
-    async deleteAgentSource(sourceId, owner, isAdmin) {
-        const ctx = await this._agentPackagesContext();
-        if (!ctx) throw new Error("agent packages are not available on this deployment");
-        await this._mapAgentPackageErrors(() => ctx.catalog.deleteAgentSource(sourceId, this._requirePrincipal(owner, isAdmin), Boolean(isAdmin)));
-        return { ok: true };
-    }
 
     async listAgentWorkerState() {
         const ctx = await this._agentPackagesContext();
