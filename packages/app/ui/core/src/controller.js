@@ -2163,7 +2163,19 @@ export class PilotSwarmUiController {
         }
         await this.syncVisibleSessionDetails(syncedIds).catch(() => {});
         this.ensureInspectorData().catch(() => {});
+        // The worker registry rides THIS loop, not the inspector's: the Node
+        // Map must not depend on a pane being mounted, a tab being active, or
+        // an effect having fired. Throttled to the heartbeat interval.
+        this.refreshWorkerRegistryIfStale().catch(() => {});
         this.evictStaleSessionState();
+    }
+
+    /** Refresh the worker registry at most every 20s. Never throws. */
+    async refreshWorkerRegistryIfStale() {
+        const workers = this.getState().admin?.workers;
+        if (workers?.loading) return;
+        if (workers?.fetchedAt && (Date.now() - workers.fetchedAt) < 20_000) return;
+        await this.refreshAdminWorkers();
     }
 
     /**
@@ -2402,13 +2414,10 @@ export class PilotSwarmUiController {
             // history loads ride, throttled to the ~20s heartbeat interval;
             // non-admin transports fail quietly and the view degrades to
             // history-derived nodes.
-            const workersState = this.getState().admin?.workers;
-            const workersFresh = workersState?.fetchedAt && (Date.now() - workersState.fetchedAt) < 20_000;
-            if (!workersFresh && !workersState?.loading && typeof this.transport.listWorkers === "function") {
-                // Fire-and-forget: the registry read must never gate the
-                // history loads below (a wedged fetch starved them for good).
-                void this.refreshAdminWorkers().catch(() => {});
-            }
+            // No silent skip here: refreshAdminWorkers itself reports every
+            // outcome (missing method, error, empty) so the pane can never sit
+            // on a pristine "not fetched yet" state with nothing explaining it.
+            void this.refreshWorkerRegistryIfStale().catch(() => {});
             // Only fetch history for visible session rows — not the entire catalog.
             // With hundreds of sessions, fetching all of them every 4s causes unbounded memory growth.
             const state = this.getState();
@@ -2677,12 +2686,13 @@ export class PilotSwarmUiController {
             // (wedged token refresh, dead socket) left the Node Map in a
             // permanent "not fetched yet" limbo. Ten seconds is an answer.
             const list = await Promise.race([
-                this.transport.listWorkers(),
+                Promise.resolve().then(() => this.transport.listWorkers()),
                 new Promise((_, reject) => {
                     const t = setTimeout(() => reject(new Error("request timed out after 10s (connection or auth renewal wedged — try a hard refresh)")), 10_000);
                     if (typeof t?.unref === "function") t.unref();
                 }),
             ]);
+            console.info(`[PilotSwarmUi] worker registry: ${Array.isArray(list) ? list.length : 0} row(s)`);
             this.dispatch({ type: "admin/workers/loaded", list });
         } catch (error) {
             // Loud on purpose: the Node Map silently degrading to

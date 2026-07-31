@@ -755,9 +755,21 @@ button {
   min-height: 0;
 }
 
+/* ── Pane spacing, ALL themes ──────────────────────────────────────
+   The grid used to put an 8px gap on BOTH sides of a 16px resizer track:
+   ~32px of dead air between panes. The track is now the entire gap, and
+   it is the full hit area — panels sit 8px apart everywhere. */
+:root {
+  --ps-resizer-track: 8px;
+}
+.ps-workspace-grid,
+.ps-workspace-column {
+  gap: 0;
+}
+
 .ps-column-resizer {
   align-self: stretch;
-  width: 16px;
+  width: var(--ps-resizer-track);
   min-height: 0;
   padding: 0;
   border: 0;
@@ -771,7 +783,7 @@ button {
 
 .ps-row-resizer {
   justify-self: stretch;
-  height: 16px;
+  height: var(--ps-resizer-track);
   min-width: 0;
   padding: 0;
   border: 0;
@@ -791,7 +803,7 @@ button {
   left: 50%;
   width: 1px;
   transform: translateX(-50%);
-  background: color-mix(in srgb, var(--ps-border) 52%, transparent);
+  background: var(--ps-border);
 }
 
 .ps-row-resizer::before {
@@ -802,7 +814,7 @@ button {
   top: 50%;
   height: 1px;
   transform: translateY(-50%);
-  background: color-mix(in srgb, var(--ps-border) 52%, transparent);
+  background: var(--ps-border);
 }
 
 /* Resize grips are bare dots — no pill/bezel chrome in any theme; the
@@ -823,18 +835,13 @@ button {
   padding: 4px 10px;
 }
 
-.ps-column-resizer-dot {
-  width: 3px;
-  height: 3px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--ps-modal-selected-border) 84%, var(--ps-page-foreground));
-}
-
+.ps-column-resizer-dot,
 .ps-row-resizer-dot {
-  width: 3px;
-  height: 3px;
+  width: 4px;
+  height: 4px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--ps-modal-selected-border) 84%, var(--ps-page-foreground));
+  background: var(--ps-page-foreground);
+  opacity: 0.75;
 }
 
 .ps-column-resizer:hover .ps-column-resizer-dot,
@@ -3932,17 +3939,6 @@ body.ps-rich-ui .ps-prompt-shell {
    gutter and the hit area together. The drag affordance stays discoverable:
    the rule brightens and the grip appears on hover. */
 
-body.ps-rich-ui {
-  --ps-resizer-track: 9px;
-}
-
-/* The bezel is gone (all themes) — so the grid's 8px gaps AROUND the
-   resizer tracks are pure dead air (~23px between panes). The track is
-   the whole gap now: panels sit 9px apart with the full strip draggable. */
-body.ps-rich-ui .ps-workspace-grid,
-body.ps-rich-ui .ps-workspace-column {
-  gap: 0;
-}
 
 body.ps-rich-ui .ps-column-resizer {
   width: var(--ps-resizer-track);
@@ -3954,7 +3950,6 @@ body.ps-rich-ui .ps-row-resizer {
 
 body.ps-rich-ui .ps-column-resizer::before,
 body.ps-rich-ui .ps-row-resizer::before {
-  background: color-mix(in srgb, var(--ps-border) 30%, transparent);
   transition: background 120ms ease;
 }
 
