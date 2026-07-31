@@ -5612,3 +5612,20 @@ body.ps-rich-ui .ps-panel-header {
 .ps-rich-session-pin { color: var(--ps-muted); }
 
 .ps-admin-add__progress { color: var(--ps-muted); font-size: 12px; margin: 6px 0 0; font-family: var(--ps-mono, ui-monospace, monospace); }
+
+/* A deploy is invisible to an open tab until it reloads — say so, loudly. */
+.portal-header-refresh {
+  margin-left: 10px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, #d29922 60%, transparent);
+  background: color-mix(in srgb, #d29922 18%, transparent);
+  color: #d29922;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  animation: ps-build-pulse 2.4s ease-in-out infinite;
+}
+.portal-header-refresh:hover { background: color-mix(in srgb, #d29922 30%, transparent); }
+@keyframes ps-build-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.62; } }
+@media (prefers-reduced-motion: reduce) { .portal-header-refresh { animation: none; } }
