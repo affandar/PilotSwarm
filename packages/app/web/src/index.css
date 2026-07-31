@@ -27,6 +27,10 @@
   --ps-font-size-dense: 11.5px;
   --ps-line-height-base: 1.28;
   --ps-line-height-dense: 1.18;
+  /* The one monospace stack, named. Several rules asked for it by variable
+     and every one of them carried its own inline fallback, so "the mono face"
+     was really four slightly different lists. */
+  --ps-mono: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
   /* ── Elevation ──────────────────────────────────────────────────────────
      Derived from the palette rather than declared per theme. Light themes
      were white-on-white-on-white: page, panes, panel headers and the composer
@@ -1106,7 +1110,7 @@ body.is-resizing-pane-y * {
   border-bottom: 1px solid color-mix(in srgb, var(--ps-sequence-divider) 42%, transparent);
   border-radius: 0;
   background: transparent;
-  color: color-mix(in srgb, var(--ps-sequence-divider) 78%, var(--ps-text-muted));
+  color: color-mix(in srgb, var(--ps-sequence-divider) 78%, var(--ps-muted));
   font: inherit;
   text-align: center;
   cursor: pointer;
@@ -1114,8 +1118,8 @@ body.is-resizing-pane-y * {
 
 .ps-sequence-turn-divider:hover,
 .ps-sequence-turn-divider:focus-visible {
-  color: var(--ps-text);
-  background: color-mix(in srgb, var(--ps-surface-raised) 72%, transparent);
+  color: var(--ps-foreground);
+  background: color-mix(in srgb, var(--ps-surface) 72%, transparent);
   outline: none;
 }
 
@@ -1124,15 +1128,15 @@ body.is-resizing-pane-y * {
 }
 
 .ps-sequence-turn-rule {
-  color: color-mix(in srgb, var(--ps-sequence-divider) 76%, var(--ps-text-muted));
+  color: color-mix(in srgb, var(--ps-sequence-divider) 76%, var(--ps-muted));
 }
 
 .ps-sequence-turn-key {
-  color: var(--ps-text-muted);
+  color: var(--ps-muted);
 }
 
 .ps-sequence-turn-model {
-  color: var(--ps-text);
+  color: var(--ps-foreground);
 }
 
 .ps-sequence-turn-tokens {
@@ -1147,7 +1151,7 @@ body.is-resizing-pane-y * {
   margin: 0 12px 8px;
   padding: 8px 10px;
   border-left: 2px solid var(--ps-accent);
-  color: var(--ps-text-muted);
+  color: var(--ps-muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.96rem;
   line-height: 1.5;
@@ -1713,8 +1717,8 @@ body.is-resizing-pane-y * {
   opacity: 0.65;
 }
 
-.ps-session-detail-field.is-warm .ps-session-detail-value { color: var(--ps-warning, #c08000); }
-.ps-session-detail-field.is-hot .ps-session-detail-value { color: var(--ps-danger, #c04040); }
+.ps-session-detail-field.is-warm .ps-session-detail-value { color: var(--ps-warning); }
+.ps-session-detail-field.is-hot .ps-session-detail-value { color: var(--ps-danger); }
 .ps-session-detail-field.is-armed .ps-session-detail-value { color: var(--ps-accent); }
 
 /* Compact column mode (narrow): rows lay out at max-content so the list
@@ -2826,7 +2830,7 @@ body.is-resizing-pane-y * {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  background: var(--ps-panel-background, var(--ps-background));
+  background: var(--ps-background);
   border: 1px solid var(--ps-border);
   border-radius: 6px;
   margin: 8px;
@@ -2860,13 +2864,13 @@ body.is-resizing-pane-y * {
 .ps-admin-console__section h3 { margin: 0; font-size: 1.11rem; }
 .ps-admin-console__hint { margin: 0; color: var(--ps-muted); font-size: 0.96rem; }
 .ps-admin-console__status { margin: 0; font-size: 0.96rem; color: var(--ps-muted); }
-.ps-admin-console__system-toggle { display: flex; align-items: center; gap: 8px; margin: 2px 0; font-size: 0.96rem; color: var(--ps-fg); cursor: pointer; user-select: none; }
-.ps-admin-console__system-toggle input { accent-color: var(--ps-accent, #4a9eff); }
-.ps-admin-console__status.is-error { color: var(--ps-error, #d33); }
+.ps-admin-console__system-toggle { display: flex; align-items: center; gap: 8px; margin: 2px 0; font-size: 0.96rem; color: var(--ps-foreground); cursor: pointer; user-select: none; }
+.ps-admin-console__system-toggle input { accent-color: var(--ps-accent); }
+.ps-admin-console__status.is-error { color: var(--ps-danger); }
 .ps-admin-console__error {
-  border: 1px solid var(--ps-error, #d33);
-  background: color-mix(in srgb, var(--ps-error, #d33) 10%, transparent);
-  color: var(--ps-error, #d33);
+  border: 1px solid var(--ps-danger);
+  background: color-mix(in srgb, var(--ps-danger) 10%, transparent);
+  color: var(--ps-danger);
   padding: 8px 10px;
   border-radius: 4px;
   font-size: 0.96rem;
@@ -2877,7 +2881,7 @@ body.is-resizing-pane-y * {
   gap: 8px;
 }
 .ps-admin-console__form input {
-  font-family: var(--ps-font-mono, monospace);
+  font-family: var(--ps-mono, ui-monospace, monospace);
   padding: 6px 8px;
   border: 1px solid var(--ps-border);
   border-radius: 4px;
@@ -3097,8 +3101,8 @@ body.is-resizing-pane-y * {
   padding: 8px 10px;
   font-size: 0.96rem;
   color: var(--ps-foreground);
-  background: color-mix(in srgb, var(--ps-warning, #d0a215) 16%, transparent);
-  border: 1px solid color-mix(in srgb, var(--ps-warning, #d0a215) 45%, transparent);
+  background: color-mix(in srgb, var(--ps-warning) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ps-warning) 45%, transparent);
   border-radius: var(--ps-radius-sm);
 }
 
@@ -5444,39 +5448,43 @@ body.ps-rich-ui .ps-panel-header {
 }
 .ps-admin-workers__head h3 { margin: 0; }
 .ps-admin-workers__summary {
-    color: var(--ps-muted-foreground, #8b949e);
-    font-size: 12px;
+    color: var(--ps-muted);
+    font-size: var(--ps-font-size-dense);
     flex: 1;
 }
 .ps-admin-workers__scroll { overflow-x: auto; }
+/* On the console's own type scale rather than a private set of px values:
+   this table sat at 12/11/10px beside a 12.5px console, which is the sort of
+   half-step that reads as "a different app" without being nameable. */
 .ps-admin-workers__table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 12px;
+    font-size: var(--ps-font-size-base);
+    line-height: var(--ps-line-height-base);
     font-variant-numeric: tabular-nums;
 }
 .ps-admin-workers__table th {
     text-align: left;
     font-weight: 600;
     padding: 6px 10px;
-    border-bottom: 1px solid var(--ps-border, #30363d);
-    color: var(--ps-muted-foreground, #8b949e);
+    border-bottom: 1px solid var(--ps-border);
+    color: var(--ps-muted);
     white-space: nowrap;
 }
 .ps-admin-workers__table td {
     padding: 6px 10px;
-    border-bottom: 1px solid color-mix(in srgb, var(--ps-border, #30363d) 55%, transparent);
+    border-bottom: 1px solid color-mix(in srgb, var(--ps-border) 55%, transparent);
     white-space: nowrap;
 }
 .ps-admin-workers__table tr.is-stale td { opacity: 0.5; }
-.ps-admin-workers__id { font-family: var(--ps-mono, ui-monospace, monospace); }
+.ps-admin-workers__id { font-family: var(--ps-mono); }
 .ps-admin-workers__substrate {
     margin-left: 6px;
     padding: 0 5px;
-    border: 1px solid var(--ps-border, #30363d);
-    border-radius: 8px;
-    font-size: 10px;
-    color: var(--ps-muted-foreground, #8b949e);
+    border: 1px solid var(--ps-border);
+    border-radius: var(--ps-radius-sm);
+    font-size: var(--ps-font-size-dense);
+    color: var(--ps-muted);
 }
 .ps-worker-dot {
     display: inline-block;
@@ -5484,19 +5492,21 @@ body.ps-rich-ui .ps-panel-header {
     height: 7px;
     border-radius: 50%;
     margin-right: 7px;
-    background: var(--ps-muted-foreground, #8b949e);
+    background: var(--ps-muted);
     opacity: 0.55;
 }
-.ps-worker-dot.is-live { background: #3fb950; opacity: 1; }
+/* Status reads from the THEME palette - the same green/yellow/red the session
+   rows use - instead of three GitHub hexes that ignored it. */
+.ps-worker-dot.is-live { background: var(--ps-success); opacity: 1; }
 .ps-worker-phase {
     padding: 1px 7px;
-    border-radius: 9px;
-    border: 1px solid var(--ps-border, #30363d);
-    font-size: 11px;
+    border-radius: var(--ps-radius-md);
+    border: 1px solid var(--ps-border);
+    font-size: var(--ps-font-size-dense);
 }
-.ps-worker-phase.is-ready { color: #3fb950; border-color: color-mix(in srgb, #3fb950 45%, transparent); }
-.ps-worker-phase.is-starting { color: #d29922; border-color: color-mix(in srgb, #d29922 50%, transparent); }
-.ps-worker-phase.is-draining { color: #f85149; border-color: color-mix(in srgb, #f85149 45%, transparent); }
+.ps-worker-phase.is-ready { color: var(--ps-success); border-color: color-mix(in srgb, var(--ps-success) 45%, transparent); }
+.ps-worker-phase.is-starting { color: var(--ps-warning); border-color: color-mix(in srgb, var(--ps-warning) 50%, transparent); }
+.ps-worker-phase.is-draining { color: var(--ps-danger); border-color: color-mix(in srgb, var(--ps-danger) 45%, transparent); }
 
 /* ═══════════════════════════════════════════════════════════════════
    Workspace chrome — the flat admin-console language as THEMES.

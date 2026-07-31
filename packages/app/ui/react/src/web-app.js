@@ -601,6 +601,14 @@ function applyDocumentTheme(themeId) {
     root.style.setProperty("--ps-modal-selected-background", theme.page.modalSelectedBackground);
     root.style.setProperty("--ps-modal-selected-border", theme.page.modalSelectedBorder);
     root.style.setProperty("--ps-modal-selected-foreground", theme.page.modalSelectedForeground);
+    // Semantic status colours, from the SAME palette the terminal rows read
+    // through resolveColor(). The stylesheet already referenced these names in
+    // a dozen rules; nothing published them, so those rules either fell back to
+    // a hardcoded GitHub hex in every theme or were invalid and did nothing.
+    root.style.setProperty("--ps-accent", theme.tui.cyan);
+    root.style.setProperty("--ps-success", theme.tui.green);
+    root.style.setProperty("--ps-warning", theme.tui.yellow);
+    root.style.setProperty("--ps-danger", theme.tui.red);
     // Expose the theme id so a theme can carry CHROME, not just colours. Win95
     // is defined by its bevels — raised faces, inset wells, square corners —
     // and none of that is expressible as a palette entry.

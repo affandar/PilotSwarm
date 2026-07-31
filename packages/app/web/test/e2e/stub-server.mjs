@@ -130,6 +130,25 @@ const makeTranscript = (count, systemEvery = 0) => Array.from({ length: count },
     },
 }));
 
+// Worker registry rows (migration 0040), shaped exactly as cms_list_workers
+// returns them: write-once `info`, a `health` snapshot, and per-domain `state`.
+// `nowMs` is passed in so heartbeats read as seconds old rather than years.
+const makeWorkers = (count, nowMs) => Array.from({ length: count }, (_, i) => ({
+    workerNodeId: `copilot-runtime-worker-66f68f955c-${"abcdefgh"[i % 8]}${i}lvb`,
+    pool: "aks-default",
+    phase: i === 0 ? "starting" : "ready",
+    updatedAt: new Date(nowMs - ((i % 3) * 9_000)).toISOString(),
+    owner: null,
+    info: { sdkVersion: "0.5.29", runtime: { substrate: "aks" }, consumes: ["agent-packages"] },
+    health: {
+        uptimeS: 96_600 + i,
+        rssBytes: (208 + (i * 6)) * 1024 * 1024,
+        activeSessions: 0,
+        eventLoopDelayP99Ms: 20.12 + (i / 100),
+    },
+    state: { "agent-packages": { epoch: 13, installed: { a: { status: "ok" }, b: { status: "ok" }, c: { status: "ok" } } } },
+}));
+
 const API = {
     "/api/health": { ok: true, started: true, mode: "remote" },
     "/api/auth-config": { enabled: false, provider: "none", displayName: "No auth", client: null },
@@ -161,9 +180,10 @@ function rpc(method, SESSIONS, PROFILE_SETTINGS = {}) {
     }
 }
 
-export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 0, systemEvery = 0, groups = [], themeId = null, groupMembers = {} } = {}) {
+export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 0, systemEvery = 0, groups = [], themeId = null, groupMembers = {}, admin = false } = {}) {
     assertFreshBundle();
     const SESSIONS = makeSessions(Math.max(1, sessionCount), groupMembers);
+    const WORKERS = admin ? makeWorkers(8, Date.now()) : [];
     const TRANSCRIPT = makeTranscript(Math.max(0, transcriptTurns), systemEvery);
     // Placement calls the drag tests assert against: [{ sessionIds, groupId }].
     const placements = [];
@@ -196,7 +216,15 @@ export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 
             // viewer's themeId comes from.
             if (/\/me\/profile$/.test(pathname)) {
                 res.writeHead(200, { "content-type": "application/json" });
-                res.end(JSON.stringify({ ok: true, result: { profileSettings: themeId ? { themeId } : {} } }));
+                res.end(JSON.stringify({ ok: true, result: { isAdmin: admin, profileSettings: themeId ? { themeId } : {} } }));
+                return;
+            }
+            // GET /workers — the worker registry (migration 0040). Admin-gated
+            // in production; here it simply answers when the stub was started
+            // with { admin: true }.
+            if (/\/workers$/.test(pathname)) {
+                res.writeHead(200, { "content-type": "application/json" });
+                res.end(JSON.stringify({ ok: true, result: WORKERS }));
                 return;
             }
             if (/\/events$/.test(pathname)) {
