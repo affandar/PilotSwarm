@@ -111,6 +111,7 @@ test("the folder's WHOLE region is the drop zone, and it lights up", async ({ pa
     const row = page.locator(".ps-session-list-button", { hasText: "Session 1" }).first();
     const from = await row.boundingBox();
     const to = await member.boundingBox();
+    const restingY = to.y;
     await page.mouse.move(from.x + 40, from.y + from.height / 2);
     await page.mouse.down();
     await page.mouse.move(from.x + 60, from.y + from.height / 2 - 10, { steps: 4 });
@@ -122,6 +123,11 @@ test("the folder's WHOLE region is the drop zone, and it lights up", async ({ pa
     await expect(page.locator(".ps-session-list-button.is-drop-target")).toHaveCount(1);
     await expect(page.locator(".ps-session-list-button[data-group-row='1'].is-drop-target")).toHaveCount(1);
     expect(await page.evaluate(() => document.body.classList.contains("ps-drop-ok"))).toBe(true);
+
+    // Lighting up must not RESIZE anything. A "drop here" badge on the folder
+    // row wrapped to a second line in a narrow list, growing the folder and
+    // sliding every row below it out from under the cursor mid-drag.
+    expect(Math.abs((await member.boundingBox()).y - restingY)).toBeLessThan(1);
 
     await page.mouse.up();
     await expect.poll(() => stub.placements.length).toBe(before + 1);

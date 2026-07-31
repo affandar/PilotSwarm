@@ -5670,13 +5670,11 @@ body.ps-rich-ui .ps-panel-header {
 .ps-manage-regenerate { display: inline-flex; align-items: center; gap: 6px; }
 .ps-rich-session-pin .ps-share-glyph { width: 12px; height: 12px; vertical-align: -2px; }
 
-/* Drag sessions into a group row, or onto the list background to take them out. */
+/* Drag sessions into a group row, or onto the list background to take them out.
+   (The .is-drop-target / .is-drop-zone appearance lives further down, in the
+   drag block — an earlier duplicate of it here was dead weight, fully
+   overridden, and read as if two different highlights were in play.) */
 .ps-session-list.is-dragging .ps-session-list-button { cursor: grabbing; }
-.ps-session-list-button.is-drop-target {
-  outline: 2px dashed var(--ps-selection-background, #2f81f7);
-  outline-offset: -2px;
-  background: color-mix(in srgb, var(--ps-selection-background, #2f81f7) 18%, transparent);
-}
 
 /* Stepped dialogs (Manage session, Add package): the head stays put and only
    the step's content scrolls, so the buttons never move between steps. */
@@ -5770,7 +5768,7 @@ body.ps-dragging-sessions.ps-drop-ok, body.ps-dragging-sessions.ps-drop-ok * { c
 
 /* The destination is the folder's whole expanded block, so the eye reads one
    highlighted REGION rather than a single 20px row it has to hit exactly.
-   Members take a wash; the folder row itself takes the outline and label. */
+   Members take a wash; the folder row itself takes the outline. */
 .ps-session-list-button.is-drop-zone {
   background: color-mix(in srgb, var(--ps-selection-background, #2f81f7) 12%, transparent);
   box-shadow: inset 2px 0 0 color-mix(in srgb, var(--ps-selection-background, #2f81f7) 60%, transparent);
@@ -5782,12 +5780,10 @@ body.ps-dragging-sessions.ps-drop-ok, body.ps-dragging-sessions.ps-drop-ok * { c
   outline-offset: -2px;
   background: color-mix(in srgb, var(--ps-selection-background, #2f81f7) 26%, transparent) !important;
 }
-.ps-session-list-button.is-drop-target::after {
-  content: "▾ drop here";
-  margin-left: 8px;
-  font-size: 10px;
-  color: var(--ps-selection-background, #2f81f7);
-}
+/* No text badge on the destination row: it wrapped onto a second line in a
+   narrow list, so the folder GREW mid-drag and pushed every row below it out
+   from under the cursor. The region wash, the copy cursor and the ghost's
+   "Release to file here" already say it, without moving the target. */
 
 /* Manage session: tab bar and the Apply row are frame, not content. */
 .ps-share-modal > .ps-manage-tabs { flex: 0 0 auto; }
