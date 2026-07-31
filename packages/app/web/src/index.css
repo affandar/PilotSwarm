@@ -2408,11 +2408,15 @@ body.is-resizing-pane-y * {
 
 .ps-modal {
   width: min(900px, 100%);
+  /* The FRAME never scrolls: header and footer are pinned by construction and
+     only the list/details regions scroll. A dialog whose title scrolls away
+     and whose buttons drift with the content is disorienting. */
   max-height: min(86vh, 900px);
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   -webkit-overflow-scrolling: touch;
   touch-action: pan-y;
-  scrollbar-gutter: stable both-edges;
   border: 1px solid var(--ps-modal-border);
   border-radius: var(--ps-radius-md);
   background: var(--ps-modal-background);
@@ -2463,6 +2467,12 @@ body.is-resizing-pane-y * {
   background: transparent;
 }
 
+/* Pickers (theme, model, agent, users, sessions) hold a steady size so the
+   dialog does not resize as the list grows, shrinks, or filters. */
+.ps-modal.is-list {
+  height: min(70vh, 680px);
+}
+
 .ps-modal.is-narrow {
   width: min(560px, 100%);
 }
@@ -2477,6 +2487,7 @@ body.is-resizing-pane-y * {
 
 .ps-modal-header,
 .ps-modal-footer {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -2495,6 +2506,10 @@ body.is-resizing-pane-y * {
   grid-template-columns: minmax(280px, 1fr) minmax(260px, 0.9fr);
   gap: 16px;
   margin: 16px 0;
+  /* The scrolling region. min-height:0 is what lets a flex child actually
+     shrink and scroll instead of stretching its parent. */
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .ps-modal-list,
@@ -2502,6 +2517,9 @@ body.is-resizing-pane-y * {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 
 .ps-modal-list-heading-line,
@@ -3024,7 +3042,7 @@ body.is-resizing-pane-y * {
   height: min(540px, 85vh);
   display: flex;
   flex-direction: column;
-  overflow-y: auto;
+  overflow: hidden;
   background: var(--ps-modal-background, var(--ps-surface));
   border: 1px solid var(--ps-modal-border);
   border-radius: var(--ps-radius-md);
@@ -5658,4 +5676,31 @@ body.ps-rich-ui .ps-panel-header {
   outline: 2px dashed var(--ps-selection-background, #2f81f7);
   outline-offset: -2px;
   background: color-mix(in srgb, var(--ps-selection-background, #2f81f7) 18%, transparent);
+}
+
+/* Stepped dialogs (Manage session, Add package): the head stays put and only
+   the step's content scrolls, so the buttons never move between steps. */
+.ps-share-modal-head { flex: 0 0 auto; }
+.ps-share-modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  display: flex;
+  flex-direction: column;
+}
+.ps-share-modal > .ps-modal-footer,
+.ps-share-modal > .ps-share-error { flex: 0 0 auto; }
+
+/* Add package: a steady frame across its steps (link vs folder upload) —
+   only the step's fields scroll, the tabs and buttons never move. */
+.ps-modal.ps-admin-add {
+  width: min(560px, 100%);
+  height: min(520px, 86vh);
+}
+.ps-modal.ps-admin-add .ps-admin-add__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
 }

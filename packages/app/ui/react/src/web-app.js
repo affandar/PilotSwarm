@@ -4055,6 +4055,7 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
                 React.createElement("span", null, "Manage session"),
                 React.createElement("button", { className: "ps-modal-close", onClick: onClose, "aria-label": "Close", title: "Close" }, "✕")),
 
+            React.createElement("div", { className: "ps-share-modal-body" },
             // ── Tab bar ───────────────────────────────────────────────
             React.createElement("div", { className: "ps-manage-tabs", role: "tablist" },
                 tabs.map((t) => React.createElement("button", {
@@ -4157,7 +4158,7 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
                         disabled: busy || !accessDirty,
                         onClick: applyAccess,
                     }, "Apply")))
-                : null,
+                : null),
             error ? React.createElement("div", { className: "ps-share-error" }, error) : null));
 }
 
@@ -6269,7 +6270,7 @@ function ModalLayer({ controller }) {
                 }))));
 
         return React.createElement("div", { className: "ps-modal-backdrop", onClick: close },
-        React.createElement("div", { className: `ps-modal${modal.type === "themePicker" ? " is-theme-picker" : ""}`, onClick: (event) => event.stopPropagation() },
+        React.createElement("div", { className: `ps-modal is-list${modal.type === "themePicker" ? " is-theme-picker" : ""}`, onClick: (event) => event.stopPropagation() },
             React.createElement("div", { className: "ps-modal-header" },
                 React.createElement("div", { className: "ps-modal-title" }, presentation.title),
                 React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close, "aria-label": "Close", title: "Close" }, "✕"),
