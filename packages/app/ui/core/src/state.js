@@ -172,6 +172,11 @@ export function createInitialState({ mode = "local", branding = null, themeId = 
         },
         sessions: {
             byId: {},
+            // Folders live in their OWN slice: a session-list refresh rebuilds
+            // byId from its payload, so anything that only exists there gets
+            // deleted whenever the payload lacks it. Groups are re-seeded from
+            // here on every rebuild and only change when the group fetch says so.
+            groupRows: [],
             flat: [],
             activeSessionId: normalizeStoredActiveSessionId(activeSessionId),
             collapsedIds: normalizeStoredCollapsedSessionIds(collapsedSessionIds),

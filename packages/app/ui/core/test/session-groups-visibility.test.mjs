@@ -41,3 +41,25 @@ test("the filter still applies to the group's members", () => {
     const shown = rowsWith({ all: false, ownerKeys: ["entra:someone-else"] });
     assert.equal(shown.includes("s1"), false, "a session owned by someone else is still filtered out");
 });
+
+test("a session refresh that carries no folders does not delete them", () => {
+    const store = createStore(appReducer, createInitialState());
+    store.dispatch({ type: "auth/principal", principal: me });
+    store.dispatch({ type: "sessions/groupsLoaded", groups: [groupRow] });
+    store.dispatch({ type: "sessions/loaded", sessions: [mine] });
+
+    // This is the flicker: the catalog refresh rebuilds byId from its payload,
+    // which never contains folders. They must survive it.
+    assert.ok(selectSessionRows(store.getState()).map((r) => r.sessionId).includes("group:g1"),
+        "folder survives a session refresh that omits it");
+
+    // Repeated refreshes keep it — the state slice is the source of truth.
+    store.dispatch({ type: "sessions/loaded", sessions: [mine] });
+    store.dispatch({ type: "sessions/loaded", sessions: [mine] });
+    assert.ok(selectSessionRows(store.getState()).map((r) => r.sessionId).includes("group:g1"));
+
+    // Only a successful group fetch removes a folder.
+    store.dispatch({ type: "sessions/groupsLoaded", groups: [] });
+    assert.equal(selectSessionRows(store.getState()).map((r) => r.sessionId).includes("group:g1"), false,
+        "deleting the folder server-side does remove it");
+});

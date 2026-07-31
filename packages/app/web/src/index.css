@@ -5777,3 +5777,16 @@ body.ps-dragging-sessions, body.ps-dragging-sessions * { cursor: grabbing !impor
   font-size: 10px;
   color: var(--ps-selection-background, #2f81f7);
 }
+
+/* Manage session: tab bar and the Apply row are frame, not content. */
+.ps-share-modal > .ps-manage-tabs { flex: 0 0 auto; }
+.ps-manage-apply-bar.is-footer {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--ps-modal-border);
+}

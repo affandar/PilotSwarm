@@ -4115,8 +4115,7 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
                 React.createElement("span", null, "Manage session"),
                 React.createElement("button", { className: "ps-modal-close", onClick: onClose, "aria-label": "Close", title: "Close" }, "✕")),
 
-            React.createElement("div", { className: "ps-share-modal-body" },
-            // ── Tab bar ───────────────────────────────────────────────
+            // ── Tab bar (part of the frame: it must not scroll away) ──
             React.createElement("div", { className: "ps-manage-tabs", role: "tablist" },
                 tabs.map((t) => React.createElement("button", {
                     key: t.id,
@@ -4127,6 +4126,7 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
                     onClick: () => setTab(t.id),
                 }, t.label))),
 
+            React.createElement("div", { className: "ps-share-modal-body" },
             // ── General: rename + model ───────────────────────────────
             activeTab === "general" ? React.createElement(React.Fragment, null,
                 React.createElement("div", { className: "ps-share-section-label" }, "Name"),
@@ -4210,15 +4210,19 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
                     "Sharing applies to this session and its sub-agents. Suggestions are people who have "
                     + "signed in before — you can also grant by email to someone who hasn't; it takes effect "
                     + "when they first sign in."),
-                React.createElement("div", { className: "ps-manage-apply-bar" },
+                )
+                : null),
+            // Pinned footer: the commit action never scrolls out of reach.
+            (activeTab === "access" && canManage)
+                ? React.createElement("div", { className: "ps-manage-apply-bar is-footer" },
                     React.createElement("span", { className: "ps-share-section-sub" },
                         accessDirty ? "Unsaved access changes." : "No changes to apply."),
                     React.createElement("button", {
                         className: "ps-mini-button ps-manage-apply",
                         disabled: busy || !accessDirty,
                         onClick: applyAccess,
-                    }, "Apply")))
-                : null),
+                    }, "Apply"))
+                : null,
             error ? React.createElement("div", { className: "ps-share-error" }, error) : null));
 }
 

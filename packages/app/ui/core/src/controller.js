@@ -2061,22 +2061,16 @@ export class PilotSwarmUiController {
         const shouldClearRefreshFailureBanner = preRefreshState.ui.statusText === SESSION_REFRESH_FAILED_STATUS;
         const previousActive = this.getState().sessions.activeSessionId;
         let sessions = (await loadSessionCatalogPageWindow(this.transport)).map(normalizeSessionListRow);
+        // Folders are NOT merged into the session payload any more: they live
+        // in their own state slice, so a session refresh cannot drop them. A
+        // failed fetch is "no news" and simply leaves the slice alone.
         if (typeof this.transport.listSessionGroups === "function") {
-            // A FAILED group fetch is "no news", not "no groups". Swallowing
-            // the error and merging [] made every folder blink out of the list
-            // for a cycle and reappear on the next one.
-            let groupRows = null;
             try {
                 const groups = await this.transport.listSessionGroups();
-                groupRows = (Array.isArray(groups) ? groups : []).map(sessionGroupToRow).filter(Boolean);
-                this._lastKnownGroupRows = groupRows;
+                const groupRows = (Array.isArray(groups) ? groups : []).map(sessionGroupToRow).filter(Boolean);
+                this.dispatch({ type: "sessions/groupsLoaded", groups: groupRows });
             } catch (error) {
-                console.warn(`[PilotSwarmUi] session-group fetch failed, keeping the last known folders: ${error?.message || error}`);
-                groupRows = this._lastKnownGroupRows
-                    ?? Object.values(preRefreshState.sessions.byId || {}).filter((row) => row?.isGroup);
-            }
-            if (groupRows.length > 0) {
-                sessions = [...groupRows, ...sessions];
+                console.warn(`[PilotSwarmUi] session-group fetch failed, keeping the known folders: ${error?.message || error}`);
             }
         }
         // A pending deep-link target may be readable but absent from the

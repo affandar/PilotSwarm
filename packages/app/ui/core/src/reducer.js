@@ -1066,6 +1066,14 @@ export function appReducer(state, action) {
             const byId = {};
             let anyChanged = false;
             const nowMs = Date.now();
+            // Folders first: this case rebuilds byId from the payload, so a
+            // session refresh that carries no groups would otherwise delete
+            // every folder until the next group fetch — the "flickers in and
+            // out" bug. They are re-seeded from their own slice and can only
+            // be removed by sessions/groupsLoaded.
+            for (const groupRow of (state.sessions.groupRows || [])) {
+                byId[groupRow.sessionId] = state.sessions.byId[groupRow.sessionId] || groupRow;
+            }
             for (const session of action.sessions) {
                 const previous = state.sessions.byId[session.sessionId];
                 const merged = mergeSessionRowVisualStatus(
@@ -1149,6 +1157,35 @@ export function appReducer(state, action) {
             };
         }
 
+        case "sessions/groupsLoaded": {
+            // The ONLY writer of folder rows. A successful fetch is the whole
+            // truth: folders it omits are gone, folders it names are kept.
+            const groups = Array.isArray(action.groups) ? action.groups : [];
+            const byId = { ...state.sessions.byId };
+            for (const key of Object.keys(byId)) {
+                if (byId[key]?.isGroup && !groups.some((row) => row.sessionId === key)) delete byId[key];
+            }
+            for (const row of groups) {
+                byId[row.sessionId] = { ...(byId[row.sessionId] || {}), ...row };
+            }
+            const survivingPins = prunePinnedIds(state.sessions.pinnedIds, byId);
+            const { orderById, nextOrderOrdinal } = assignStableSessionOrder(
+                state.sessions.orderById,
+                state.sessions.nextOrderOrdinal,
+                Object.values(byId),
+            );
+            const nextSessions = {
+                ...state.sessions,
+                groupRows: groups,
+                byId,
+                pinnedIds: survivingPins,
+                orderById,
+                nextOrderOrdinal,
+                flat: buildSessionTree(Object.values(byId), state.sessions.collapsedIds, orderById, survivingPins),
+            };
+            const groupSelection = applyVisibleSessionSelection(state, nextSessions);
+            return { ...state, sessions: groupSelection.sessions, ui: groupSelection.ui };
+        }
         case "sessions/merged": {
             if (!action.session?.sessionId) return state;
             const previousSession = state.sessions.byId[action.session.sessionId];
