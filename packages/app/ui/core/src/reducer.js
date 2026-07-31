@@ -1394,6 +1394,15 @@ export function appReducer(state, action) {
             };
         }
 
+        // Re-arm the list highlight WITHOUT re-running session selection. A
+        // plain click on the still-active row after an empty-space deselect
+        // cannot go through loadSession (it short-circuits on the active id),
+        // so without this the row could never be selected again.
+        case "sessions/listReselect": {
+            if (!state.sessions.listDeselected) return state;
+            return { ...state, sessions: { ...state.sessions, listDeselected: false } };
+        }
+
         case "sessions/listDeselect": {
             // Purely a list affordance: activeSessionId is untouched so the
             // chat, inspector and activity panes carry on unchanged.

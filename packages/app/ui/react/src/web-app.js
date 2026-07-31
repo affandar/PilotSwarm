@@ -3197,7 +3197,17 @@ const SessionListRow = React.memo(function SessionListRow({
     // Pointer-based dragging: HTML5 drag never fired reliably from these
     // <button> rows, and it cannot render the "N sessions" collection ghost
     // or a live destination highlight. Pointer events give both.
-    const isDropTarget = Boolean(row.isGroup) && drag?.dragging && drag.overGroupId === row.sessionId;
+    // A folder's drop zone is its WHOLE expanded region — the folder row and
+    // every row nested under it — so releasing over a member files alongside
+    // that member rather than falling through to "remove from folder".
+    //
+    // Both sides of this comparison must be the BARE group id: row.sessionId
+    // for a folder is the prefixed row id ("group:<uuid>") while overGroupId
+    // comes off the DOM as the raw uuid, so matching on sessionId meant the
+    // destination highlight never once rendered.
+    const dropGroupId = row.groupId || null;
+    const inDropZone = Boolean(drag?.dragging && drag.overGroupId && dropGroupId === drag.overGroupId);
+    const isDropTarget = inDropZone && Boolean(row.isGroup);
     const onPointerDown = React.useCallback((event) => {
         if (event.button !== 0) return;
         // Claim the gesture: without this the browser can start a native
@@ -3211,7 +3221,7 @@ const SessionListRow = React.memo(function SessionListRow({
     return React.createElement("button", {
         type: "button",
         ref,
-        className: `ps-list-button ps-session-list-button${row.active ? " is-selected" : ""}${row.selected ? " is-multiselected" : ""}${row.pinned ? " is-pinned" : ""}${isDropTarget ? " is-drop-target" : ""}`,
+        className: `ps-list-button ps-session-list-button${row.active ? " is-selected" : ""}${row.selected ? " is-multiselected" : ""}${row.pinned ? " is-pinned" : ""}${inDropZone ? " is-drop-zone" : ""}${isDropTarget ? " is-drop-target" : ""}`,
         tabIndex: row.active ? 0 : -1,
         "aria-selected": row.active ? "true" : "false",
         "data-session-id": row.sessionId,
@@ -3220,6 +3230,9 @@ const SessionListRow = React.memo(function SessionListRow({
         // placement API takes the bare uuid. Passing the row id silently
         // targeted a group that does not exist.
         "data-group-id": row.isGroup ? (row.groupId || "") : undefined,
+        // Every row that BELONGS to a folder advertises it too, so the hit
+        // test can resolve a destination from anywhere in the folder's region.
+        "data-drop-group": dropGroupId || undefined,
         onPointerDown,
         onClick,
         // macOS turns Ctrl+click into a context-menu event, so the click
@@ -3500,13 +3513,21 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         })
         : activeSession?.isGroup ? true : Boolean(activeSession);
     const hasExplicitSelection = selectedCount > 0;
+    // Mirrors getMovableGroupSessionSelection: after an empty-space click the
+    // active session still drives chat and the inspector, but it is no longer
+    // a LIST selection, so the folder button must not act on it.
+    const activeIsGroupable = Boolean(
+        activeSession && !viewState.listDeselected
+        && !activeSession.isSystem && !activeSession.isGroup && !activeSession.parentSessionId,
+    );
     const groupableIds = hasExplicitSelection
         ? viewState.selectedIds.filter((id) => {
             const session = viewState.sessionsById[id];
             return session && !session.isSystem && !session.isGroup && !session.parentSessionId;
         })
-        : (activeSession && !activeSession.isSystem && !activeSession.isGroup && !activeSession.parentSessionId ? [activeSession.sessionId] : []);
-    const canMoveToGroup = groupableIds.length > 0;
+        : (activeIsGroupable ? [activeSession.sessionId] : []);
+    // The folder button is never disabled: with nothing to move it makes an
+    // empty folder to drag into, which is the natural way to get one at all.
     const combinedPanelClassName = `ps-session-pane${viewState.rich ? " is-rich" : ""}${panelClassName ? ` ${panelClassName}` : ""}`;
     // The click handler must be referentially stable or every memoized row
     // re-renders on each keypress, defeating the point. It reads the current
@@ -3533,15 +3554,27 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         });
     }, [controller]);
 
+    // Resolve a destination folder from a point. Any row inside the folder's
+    // expanded region answers, not just the folder row itself: aiming at a
+    // single 20px row to file something is needlessly fiddly, and releasing
+    // over a member obviously means "put it in there too".
+    const resolveDropGroup = React.useCallback((x, y) => {
+        if (typeof x !== "number" || typeof y !== "number") return null;
+        const el = document.elementFromPoint(x, y);
+        const zone = el?.closest?.("[data-drop-group]") || null;
+        return zone?.getAttribute("data-drop-group") || null;
+    }, []);
+
     React.useEffect(() => {
         if (!dragState.dragging) return undefined;
         const onMove = (event) => {
             const pending = dragRef.current;
             if (!pending) return;
-            const el = document.elementFromPoint(event.clientX, event.clientY);
-            const groupEl = el?.closest?.("[data-group-row='1']") || null;
-            const overGroupId = groupEl?.getAttribute("data-group-id") || null;
+            const overGroupId = resolveDropGroup(event.clientX, event.clientY);
             pending.overGroupId = overGroupId;
+            // The cursor answers the question the highlight also answers, at
+            // the one place the eye already is.
+            document.body.classList.toggle("ps-drop-ok", Boolean(overGroupId));
             setDragState((cur) => ({ ...cur, overGroupId, x: event.clientX, y: event.clientY }));
         };
         // Resolve the target from the RELEASE coordinates. Relying on the last
@@ -3552,9 +3585,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         const onUp = (event) => {
             const pending = dragRef.current;
             if (pending && typeof event?.clientX === "number") {
-                const el = document.elementFromPoint(event.clientX, event.clientY);
-                const groupEl = el?.closest?.("[data-group-row='1']") || null;
-                pending.overGroupId = groupEl?.getAttribute("data-group-id") || null;
+                pending.overGroupId = resolveDropGroup(event.clientX, event.clientY);
             }
             finishDrag(true);
         };
@@ -3574,8 +3605,9 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             window.removeEventListener("pointercancel", onCancel);
             window.removeEventListener("keydown", onKey);
             document.body.classList.remove("ps-dragging-sessions");
+            document.body.classList.remove("ps-drop-ok");
         };
-    }, [dragState.dragging, finishDrag]);
+    }, [dragState.dragging, finishDrag, resolveDropGroup]);
 
     const dragHandlers = React.useMemo(() => ({
         dragging: dragState.dragging,
@@ -3659,7 +3691,13 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             ctl.dispatch({ type: "sessions/selectClear" });
         }
         ctl.setFocus("sessions");
-        if (!row.active) {
+        // A plain click always re-arms the highlight. On the still-active row
+        // (after an empty-space deselect) loadSession would short-circuit and
+        // leave the list looking permanently deselected, so re-arm directly
+        // rather than re-running selection and disturbing chat scroll memory.
+        if (row.sessionId === current.activeSessionId) {
+            ctl.dispatch({ type: "sessions/listReselect" });
+        } else if (!row.active) {
             ctl.loadSession(row.sessionId).catch(() => {});
         }
     }, []);
@@ -3722,10 +3760,11 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                     React.createElement("span", { className: "ps-icon-badge__count" }, String(groupableIds.length)))
                 : React.createElement(FolderGlyph),
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_MOVE_TO_GROUP).catch(() => {}),
-            disabled: !canMoveToGroup,
-            label: canMoveToGroup
-                ? (groupableIds.length > 1 ? `Move ${groupableIds.length} selected sessions to a group` : "Move this session to a group")
-                : "Select a top-level non-system session to move to a group",
+            label: groupableIds.length > 1
+                ? `Move ${groupableIds.length} selected sessions to a group`
+                : groupableIds.length === 1
+                    ? "Move this session to a group"
+                    : "New group",
         }),
         React.createElement(IconButton, {
             className: "ps-mini-button",

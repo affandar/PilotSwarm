@@ -5707,6 +5707,9 @@ body.ps-rich-ui .ps-panel-header {
 
 /* ── Dragging sessions into folders ────────────────────────────────── */
 body.ps-dragging-sessions, body.ps-dragging-sessions * { cursor: grabbing !important; user-select: none; }
+/* Over a folder's region the cursor stops saying "carrying" and starts
+   saying "this will land here". */
+body.ps-dragging-sessions.ps-drop-ok, body.ps-dragging-sessions.ps-drop-ok * { cursor: copy !important; }
 
 .ps-drag-ghost {
   position: fixed;
@@ -5763,6 +5766,14 @@ body.ps-dragging-sessions, body.ps-dragging-sessions * { cursor: grabbing !impor
   background: color-mix(in srgb, var(--ps-modal-background, #161b22) 92%, transparent);
   color: var(--ps-muted);
   font-size: 10.5px;
+}
+
+/* The destination is the folder's whole expanded block, so the eye reads one
+   highlighted REGION rather than a single 20px row it has to hit exactly.
+   Members take a wash; the folder row itself takes the outline and label. */
+.ps-session-list-button.is-drop-zone {
+  background: color-mix(in srgb, var(--ps-selection-background, #2f81f7) 12%, transparent);
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--ps-selection-background, #2f81f7) 60%, transparent);
 }
 
 /* The destination folder announces itself while hovered. */

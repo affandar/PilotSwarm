@@ -12,6 +12,42 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST = path.resolve(__dirname, "../../dist");
 
+// These tests run against the BUILT bundle, so a stale dist means every one of
+// them passes against the previous build - silently, and with total conviction.
+// That happened: a run reported four passes for an interaction whose code was
+// not in the bundle at all. `npm run test:e2e` builds first; this catches a
+// bare `npx playwright test`.
+const SOURCE_DIRS = [
+    path.resolve(__dirname, "../../src"),
+    path.resolve(__dirname, "../../../ui/core/src"),
+    path.resolve(__dirname, "../../../ui/react/src"),
+];
+
+function newestMtime(dir) {
+    let newest = 0;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) newest = Math.max(newest, newestMtime(full));
+        else newest = Math.max(newest, fs.statSync(full).mtimeMs);
+    }
+    return newest;
+}
+
+function assertFreshBundle() {
+    if (!fs.existsSync(DIST)) {
+        throw new Error("packages/app/web/dist is missing — run `npm run build:web` (or `npm run test:e2e`, which builds first).");
+    }
+    const built = newestMtime(DIST);
+    const source = Math.max(...SOURCE_DIRS.filter((dir) => fs.existsSync(dir)).map(newestMtime));
+    if (source > built) {
+        const age = Math.round((source - built) / 1000);
+        throw new Error(
+            `packages/app/web/dist is ${age}s older than the sources it is built from. `
+            + "These tests would assert against the PREVIOUS build. Run `npm run test:e2e` (it builds first).",
+        );
+    }
+}
+
 const MIME = {
     ".html": "text/html; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
@@ -24,7 +60,12 @@ const MIME = {
 
 // Six by default — enough for the layout tests. The perf test asks for a
 // realistic fleet size, where per-row cost actually shows up.
-const makeSessions = (count) => Array.from({ length: count }, (_, i) => ({
+// `groupMembers` files chosen sessions into a folder up front (index -> groupId),
+// so a test can drag onto a folder's MEMBERS and not just its header row.
+const makeSessions = (count, groupMembers = {}) => Array.from({ length: count }, (_, i) => ({
+    // The WIRE field is viewerGroupId (placement is viewer-private); the
+    // client deliberately ignores a raw groupId on the session DTO.
+    viewerGroupId: groupMembers[i] || null,
     sessionId: `1111111${i}-2222-3333-4444-55555555555${i}`,
     title: i === 0
         // A deliberately long title: the pane header must ellipsize it rather
@@ -120,8 +161,9 @@ function rpc(method, SESSIONS, PROFILE_SETTINGS = {}) {
     }
 }
 
-export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 0, systemEvery = 0, groups = [], themeId = null } = {}) {
-    const SESSIONS = makeSessions(Math.max(1, sessionCount));
+export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 0, systemEvery = 0, groups = [], themeId = null, groupMembers = {} } = {}) {
+    assertFreshBundle();
+    const SESSIONS = makeSessions(Math.max(1, sessionCount), groupMembers);
     const TRANSCRIPT = makeTranscript(Math.max(0, transcriptTurns), systemEvery);
     // Placement calls the drag tests assert against: [{ sessionIds, groupId }].
     const placements = [];

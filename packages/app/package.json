@@ -68,8 +68,8 @@
         "test:mcp:integration:horizondb": "MCP_PARITY_REQUIRE=search,graph node --env-file=../../.env.horizondb mcp/test/integration/parity.live.mjs",
         "test:mcp:integration:all": "node mcp/test/integration/smoke.live.mjs && node mcp/test/integration/tools.live.mjs && node mcp/test/integration/edge-cases.live.mjs && node mcp/test/integration/verify.live.mjs && node mcp/test/integration/parity.live.mjs",
         "clean": "rm -rf web/dist mcp/dist",
-        "test:e2e": "playwright test --config=web/playwright.config.mjs",
-        "test:e2e:ui": "playwright test --config=web/playwright.config.mjs --ui"
+        "test:e2e": "npm run build:web && playwright test --config=web/playwright.config.mjs",
+        "test:e2e:ui": "npm run build:web && playwright test --config=web/playwright.config.mjs --ui"
     },
     "dependencies": {
         "@azure/msal-browser": "^4.26.1",

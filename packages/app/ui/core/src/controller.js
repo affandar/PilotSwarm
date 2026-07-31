@@ -4033,9 +4033,16 @@ export class PilotSwarmUiController {
 
     getMovableGroupSessionSelection() {
         const state = this.getState();
+        // Deselected means deselected. The active session still drives the
+        // chat and inspector panes after an empty-space click, but it is no
+        // longer a LIST selection — so list actions must not silently act on
+        // it. With nothing selected the folder button offers only "New Group".
+        const activeIds = state.sessions.activeSessionId && !state.sessions.listDeselected
+            ? [state.sessions.activeSessionId]
+            : [];
         const selectedIds = Array.isArray(state.sessions.selectedIds) && state.sessions.selectedIds.length > 0
             ? state.sessions.selectedIds
-            : (state.sessions.activeSessionId ? [state.sessions.activeSessionId] : []);
+            : activeIds;
         return selectedIds
             .map((id) => state.sessions.byId[id])
             .filter((session) => session && !session.isSystem && !session.isGroup && !session.parentSessionId);
