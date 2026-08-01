@@ -1,0 +1,17 @@
+2026-08-01T23:13:13.564Z [ERROR] Failed to shut down shell processes: Error: unknown taskRegistry handle 1
+2026-08-01T23:13:13.565Z [ERROR] Unhandled Rejection: TaskRegistryHandle has been disposed
+Error: TaskRegistryHandle has been disposed
+    at t.get (file:///Users/affandar/workshop/drox/pilotswarm/node_modules/@github/copilot-darwin-arm64/app.js:135:9346)
+    at file:///Users/affandar/workshop/drox/pilotswarm/node_modules/@github/copilot-darwin-arm64/app.js:135:17792
+2026-08-01T23:13:13.565Z [ERROR] Unhandled Rejection (suppressed, within error cooldown): TaskRegistryHandle has been disposed
+Error: TaskRegistryHandle has been disposed
+    at t.get (file:///Users/affandar/workshop/drox/pilotswarm/node_modules/@github/copilot-darwin-arm64/app.js:135:9346)
+    at file:///Users/affandar/workshop/drox/pilotswarm/node_modules/@github/copilot-darwin-arm64/app.js:135:17792
+2026-08-01T23:13:13.565Z [ERROR] Unhandled Rejection (suppressed, within error cooldown): TaskRegistryHandle has been disposed
+Error: TaskRegistryHandle has been disposed
+    at t.get (file:///Users/affandar/workshop/drox/pilotswarm/node_modules/@github/copilot-darwin-arm64/app.js:135:9346)
+    at file:///Users/affandar/workshop/drox/pilotswarm/node_modules/@github/copilot-darwin-arm64/app.js:135:17792
+2026-08-01T23:13:13.565Z [ERROR] Unhandled Rejection (suppressed, within error cooldown): TaskRegistryHandle has been disposed
+Error: TaskRegistryHandle has been disposed
+    at t.get (file:///Users/affandar/workshop/drox/pilotswarm/node_modules/@github/copilot-darwin-arm64/app.js:135:9346)
+    at file:///Users/affandar/workshop/drox/pilotswarm/node_modules/@github/copilot-darwin-arm64/app.js:135:17792

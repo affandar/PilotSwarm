@@ -1,0 +1,284 @@
+[
+  {
+    "arm": "on3",
+    "model": "sonnet",
+    "errors": [],
+    "markerInvocations": [],
+    "turns": [
+      {
+        "id": "t1-tool-sweep",
+        "correct": true,
+        "wallMs": 12449,
+        "parentInput": 215152,
+        "parentOutput": 1061,
+        "subInput": 0,
+        "subOutput": 0,
+        "parentCtxEnd": 28558,
+        "taskUsed": false,
+        "subagents": [],
+        "parentToolCalls": 2,
+        "subToolCalls": 0
+      },
+      {
+        "id": "t2-warm-discard",
+        "correct": true,
+        "wallMs": 90277,
+        "parentInput": 164186,
+        "parentOutput": 1139,
+        "subInput": 615165,
+        "subOutput": 5537,
+        "parentCtxEnd": 32070,
+        "taskUsed": true,
+        "subagents": [
+          "swarm-explore"
+        ],
+        "parentToolCalls": 1,
+        "subToolCalls": 16
+      },
+      {
+        "id": "t3-noisy-cmd",
+        "correct": true,
+        "wallMs": 15918,
+        "parentInput": 263626,
+        "parentOutput": 597,
+        "subInput": 32650,
+        "subOutput": 417,
+        "parentCtxEnd": 33581,
+        "taskUsed": true,
+        "subagents": [
+          "swarm-task"
+        ],
+        "parentToolCalls": 2,
+        "subToolCalls": 2
+      },
+      {
+        "id": "t4-copilot-home",
+        "correct": true,
+        "wallMs": 25121,
+        "parentInput": 181668,
+        "parentOutput": 626,
+        "subInput": 26734,
+        "subOutput": 1185,
+        "parentCtxEnd": 35047,
+        "taskUsed": true,
+        "subagents": [
+          "swarm-explore"
+        ],
+        "parentToolCalls": 1,
+        "subToolCalls": 1
+      },
+      {
+        "id": "t5-spawn-params",
+        "correct": true,
+        "wallMs": 8701,
+        "parentInput": 190222,
+        "parentOutput": 420,
+        "subInput": 0,
+        "subOutput": 0,
+        "parentCtxEnd": 36917,
+        "taskUsed": false,
+        "subagents": [],
+        "parentToolCalls": 1,
+        "subToolCalls": 0
+      },
+      {
+        "id": "t6-provider-azure",
+        "correct": true,
+        "wallMs": 47486,
+        "parentInput": 199638,
+        "parentOutput": 997,
+        "subInput": 159514,
+        "subOutput": 2331,
+        "parentCtxEnd": 38844,
+        "taskUsed": true,
+        "subagents": [
+          "swarm-explore"
+        ],
+        "parentToolCalls": 1,
+        "subToolCalls": 8
+      },
+      {
+        "id": "t7-search-paths",
+        "correct": true,
+        "wallMs": 7529,
+        "parentInput": 212398,
+        "parentOutput": 498,
+        "subInput": 0,
+        "subOutput": 0,
+        "parentCtxEnd": 41698,
+        "taskUsed": false,
+        "subagents": [],
+        "parentToolCalls": 1,
+        "subToolCalls": 0
+      },
+      {
+        "id": "t8-count-files",
+        "correct": true,
+        "wallMs": 4310,
+        "parentInput": 221932,
+        "parentOutput": 249,
+        "subInput": 0,
+        "subOutput": 0,
+        "parentCtxEnd": 42630,
+        "taskUsed": false,
+        "subagents": [],
+        "parentToolCalls": 1,
+        "subToolCalls": 0
+      }
+    ],
+    "totals": {
+      "correct": 8,
+      "n": 8,
+      "taskUsedTurns": 4,
+      "parentInput": 1648822,
+      "subInput": 834063,
+      "finalParentCtx": 42630,
+      "wallMs": 211791
+    }
+  },
+  {
+    "arm": "on3",
+    "model": "gpt",
+    "errors": [],
+    "markerInvocations": [],
+    "turns": [
+      {
+        "id": "t1-tool-sweep",
+        "correct": true,
+        "wallMs": 9976,
+        "parentInput": 62072,
+        "parentOutput": 165,
+        "subInput": 19176,
+        "subOutput": 182,
+        "parentCtxEnd": 21491,
+        "taskUsed": true,
+        "subagents": [
+          "swarm-explore"
+        ],
+        "parentToolCalls": 1,
+        "subToolCalls": 2
+      },
+      {
+        "id": "t2-warm-discard",
+        "correct": true,
+        "wallMs": 17824,
+        "parentInput": 84182,
+        "parentOutput": 286,
+        "subInput": 141859,
+        "subOutput": 964,
+        "parentCtxEnd": 22174,
+        "taskUsed": true,
+        "subagents": [
+          "swarm-explore"
+        ],
+        "parentToolCalls": 1,
+        "subToolCalls": 8
+      },
+      {
+        "id": "t3-noisy-cmd",
+        "correct": true,
+        "wallMs": 10013,
+        "parentInput": 87072,
+        "parentOutput": 131,
+        "subInput": 23885,
+        "subOutput": 341,
+        "parentCtxEnd": 22632,
+        "taskUsed": true,
+        "subagents": [
+          "swarm-task"
+        ],
+        "parentToolCalls": 1,
+        "subToolCalls": 3
+      },
+      {
+        "id": "t4-copilot-home",
+        "correct": true,
+        "wallMs": 10271,
+        "parentInput": 66239,
+        "parentOutput": 172,
+        "subInput": 21870,
+        "subOutput": 216,
+        "parentCtxEnd": 22962,
+        "taskUsed": true,
+        "subagents": [
+          "swarm-explore"
+        ],
+        "parentToolCalls": 1,
+        "subToolCalls": 2
+      },
+      {
+        "id": "t5-spawn-params",
+        "correct": true,
+        "wallMs": 14273,
+        "parentInput": 89046,
+        "parentOutput": 260,
+        "subInput": 84631,
+        "subOutput": 452,
+        "parentCtxEnd": 23420,
+        "taskUsed": true,
+        "subagents": [
+          "swarm-explore"
+        ],
+        "parentToolCalls": 1,
+        "subToolCalls": 5
+      },
+      {
+        "id": "t6-provider-azure",
+        "correct": true,
+        "wallMs": 32411,
+        "parentInput": 91994,
+        "parentOutput": 328,
+        "subInput": 434073,
+        "subOutput": 1645,
+        "parentCtxEnd": 24343,
+        "taskUsed": true,
+        "subagents": [
+          "swarm-explore"
+        ],
+        "parentToolCalls": 1,
+        "subToolCalls": 17
+      },
+      {
+        "id": "t7-search-paths",
+        "correct": true,
+        "wallMs": 10825,
+        "parentInput": 95389,
+        "parentOutput": 198,
+        "subInput": 47121,
+        "subOutput": 293,
+        "parentCtxEnd": 24888,
+        "taskUsed": true,
+        "subagents": [
+          "swarm-explore"
+        ],
+        "parentToolCalls": 1,
+        "subToolCalls": 3
+      },
+      {
+        "id": "t8-count-files",
+        "correct": false,
+        "wallMs": 6700,
+        "parentInput": 97025,
+        "parentOutput": 138,
+        "subInput": 13874,
+        "subOutput": 90,
+        "parentCtxEnd": 25239,
+        "taskUsed": true,
+        "subagents": [
+          "swarm-task"
+        ],
+        "parentToolCalls": 1,
+        "subToolCalls": 1
+      }
+    ],
+    "totals": {
+      "correct": 7,
+      "n": 8,
+      "taskUsedTurns": 8,
+      "parentInput": 673019,
+      "subInput": 786489,
+      "finalParentCtx": 25239,
+      "wallMs": 112293
+    }
+  }
+]

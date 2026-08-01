@@ -119,6 +119,24 @@ function jobConfig(arm, modelKey, markerTools) {
     if (arm === "off") {
         return { sessionConfig: { ...common, systemMessage: { content: BASE_PROMPT }, excludedTools: ["task"] } };
     }
+    // on3: identical to on2 EXCEPT the custom agents pin a cheaper model one
+    // tier down on the same provider (haiku under github, gpt-5.4-mini under
+    // azure). Isolates the pin variable; prompts (incl. call budget) unchanged.
+    if (arm === "on3") {
+        const cheap = modelKey === "sonnet" ? "claude-haiku-4.5" : "gpt-5.4-mini";
+        const delineation2 = DELINEATION.replaceAll("'explore'", "'swarm-explore'");
+        return {
+            homeFiles: { "settings.json": LOCKED_SETTINGS_2 },
+            sessionConfig: {
+                ...common,
+                systemMessage: { content: BASE_PROMPT + delineation2 },
+                customAgents: [
+                    { ...SWARM_EXPLORE_AGENT, model: cheap },
+                    { ...SWARM_TASK_AGENT, model: cheap },
+                ],
+            },
+        };
+    }
     if (arm === "on2") {
         const delineation2 = DELINEATION.replaceAll("'explore'", "'swarm-explore'");
         return {
@@ -202,7 +220,7 @@ async function runJob({ arm, modelKey }) {
 }
 
 const concurrency = Number(process.argv[process.argv.indexOf("--concurrency") + 1]) || 2;
-const jobArgs = process.argv.slice(2).filter((a) => /^(off|on|on2)-(sonnet|gpt)$/.test(a));
+const jobArgs = process.argv.slice(2).filter((a) => /^(off|on|on2|on3)-(sonnet|gpt)$/.test(a));
 const jobs = jobArgs.length
     ? jobArgs.map((a) => { const [arm, modelKey] = a.split("-"); return { arm, modelKey }; })
     : [

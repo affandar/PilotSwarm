@@ -211,6 +211,36 @@ Same 8-turn protocol; ALL built-ins disabled (explore included), custom
 - sonnet still nets +15% cost and 2.6× wall clock — its own direct
   exploration is simply cheaper than delegation on this workload.
 
+## Phase 1e: on3 arm — cheap-pinned subagents (the pricing question)
+
+Identical to on2 except both custom agents pin one tier down on the same
+provider (haiku-4.5 under github, gpt-5.4-mini under azure). Same prompts,
+same ~6-call budget — isolates the pin variable.
+
+| | on2 sub-lane (inherit) | on3 sub-lane (cheap pin) | token inflation | price gap needed to break even |
+|---|---|---|---|---|
+| gpt: gpt-5.4 → mini | 221,848 units | 490,143 units | 2.21× | mini must be >2.21× cheaper (it is, typically 4–6×) |
+| sonnet → haiku | 365,111 units | 559,391 units | 1.53× | haiku must be >1.53× cheaper (it is, ~3×) |
+
+- **With a call budget in the prompt, cheap models did NOT spiral.** The
+  earlier 559K-token haiku disaster was the *built-in* explore (different
+  prompt, no budget). Our budgeted swarm agents stayed bounded.
+- **Cheap pins are dollar-rational**: ~2× cheaper subagent lane for both
+  providers after price adjustment. Since the subagent lane is ~35% of
+  total spend, that's roughly a further 15–18% off the total.
+- **Costs of cheap pins**: gpt-5.4-mini dropped one answer (7/8, a
+  file-count task via swarm-task); wall clock is the slowest of all arms
+  (sonnet/haiku 212s). Quality wobble is real but small.
+- Parent-lane costs and the flat context curve are unchanged by pinning —
+  the big win never depended on subagent pricing.
+
+**Pinning recommendation:** registry-driven policy per agent —
+`cheap-tier same provider` as the default for `swarm-task`, deployment
+choice between `cheap-tier` (dollars) and `inherit` (latency/quality) for
+`swarm-explore`; always ship the call-budget line in agent prompts; rely
+on CustomAgentConfig's verified fallback-to-parent when a provider lacks
+the pinned model.
+
 ## Leak guarantee
 
 Across all 40 experiment/eval sessions, the only subagent-lane `ps_*`
