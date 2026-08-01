@@ -45,8 +45,7 @@ const CATALOG = [
 // An ADMIN sees every user's user-scoped packages, so "scope is user" is not
 // "mine". The transport knows the viewer and says so; grouping on scope alone
 // filed other people's agents onto the caller's shelf.
-test("another user's user-scoped agent is Shared, not My agents", async () => {
-    const { controller, store } = makeController({
+test("another user's user-scoped agent is Shared, not My agents", async () => {    const { controller, store } = makeController({
         listCreatableAgents: async () => [
             { name: "mine-bot", title: "Mine Bot", source: "package", scope: "user", mine: true, packageName: "my-kit", packageSemver: "1.0.0" },
             { name: "theirs-bot", title: "Theirs Bot", source: "package", scope: "user", mine: false, packageName: "their-kit", packageSemver: "1.0.0" },
@@ -312,3 +311,30 @@ test("Update opens the add dialog bound to one package", () => {
     controller.openAdminAddPackage();
     assert.equal(store.getState().admin.packages.addDialog.updateName, null);
 });
+
+/**
+ * The Admin Console REPLACES the workspace, so selecting the new session is
+ * not enough: creating from the console left it selected behind a pane that
+ * cannot show it, and the create looked like it had done nothing.
+ */
+for (const [label, run] of [
+    ["createSession", (c) => c.createSession({})],
+    ["createSessionForAgent", (c) => c.createSessionForAgent("greeter", {})],
+]) {
+    test(`${label} returns to the workspace when the Admin Console is open`, async () => {
+        const { controller, store } = makeController({
+            createSession: async () => ({ sessionId: "new-1" }),
+            createSessionForAgent: async () => ({ sessionId: "new-1" }),
+            getSession: async () => ({ sessionId: "new-1", title: "New", status: "idle" }),
+            getSessionEvents: async () => [],
+        });
+
+        store.dispatch({ type: "admin/visibility", visible: true });
+        assert.equal(store.getState().admin.visible, true, "console is open before the create");
+
+        await run(controller);
+
+        assert.equal(store.getState().admin.visible, false, "the console must step aside for the new session");
+        assert.equal(store.getState().sessions.activeSessionId, "new-1", "and the new session is the active one");
+    });
+}

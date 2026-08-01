@@ -2664,6 +2664,18 @@ export class PilotSwarmUiController {
     }
 
     /**
+     * Land on a freshly created session. Selecting it is not enough: the
+     * Admin Console REPLACES the workspace, so creating from there left the
+     * new session selected behind a pane that does not show it — the create
+     * appeared to do nothing but print a status line. Any workspace-replacing
+     * surface has to be dismissed here, not just the focus moved.
+     */
+    revealCreatedSession() {
+        if (this.getState().admin?.visible) this.closeAdminConsole();
+        this.setFocus(FOCUS_REGIONS.PROMPT);
+    }
+
+    /**
      * Re-fetch the current user's profile (settings + ghcp key-set
      * flag). Safe to call repeatedly; updates state in place.
      */
@@ -4056,7 +4068,7 @@ export class PilotSwarmUiController {
             await this.placeCreatedSessionInGroup(created, requestOptions.groupId ?? null);
             await this.refreshSessions();
             await this.loadSession(created.sessionId);
-            this.setFocus(FOCUS_REGIONS.PROMPT);
+            this.revealCreatedSession();
             this.dispatch({ type: "ui/status", text: `Created session ${created.sessionId.slice(0, 8)}` });
             return created;
         } catch (error) {
@@ -4075,7 +4087,7 @@ export class PilotSwarmUiController {
             await this.placeCreatedSessionInGroup(created, requestOptions.groupId ?? null);
             await this.refreshSessions();
             await this.loadSession(created.sessionId);
-            this.setFocus(FOCUS_REGIONS.PROMPT);
+            this.revealCreatedSession();
             this.dispatch({
                 type: "ui/status",
                 text: `Created ${formatAgentDisplayTitle(agentName, options.title)} session ${created.sessionId.slice(0, 8)}`,

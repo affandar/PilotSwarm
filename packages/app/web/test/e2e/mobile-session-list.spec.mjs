@@ -62,3 +62,47 @@ test("the page never scrolls sideways, in or out of focus mode", async ({ page }
         }
     }
 });
+
+// Mobile Safari zooms the WHOLE page when a focused control's font-size is
+// under 16px, and the dense terminal scale is 11.5px. The prompt had opted out
+// with its own 1.25rem, so the composer looked fine while the session-filter
+// search and the copy-link field silently zoomed the layout and scrolled it
+// sideways. Only a real mobile viewport can catch this.
+//
+// Probing the CLASSES rather than tapping each surface open: most of these
+// fields live behind a modal the stub cannot always reach, and the contract
+// under test is the stylesheet's, not any one dialog's.
+test("no field is small enough to make iOS zoom the page", async ({ page }) => {
+    await page.goto(base);
+    await page.locator(".ps-session-list-button").first().waitFor();
+
+    const small = await page.evaluate(() => {
+        const PROBES = [
+            ["input", "ps-modal-input"],
+            ["input", "ps-modal-input ps-modal-search"],
+            ["input", "ps-link-input"],
+            ["input", "ps-share-add-input"],
+            ["select", "ps-share-add-select"],
+            ["textarea", "ps-prompt-input"],
+            ["input", ""],
+        ];
+        const out = [];
+        for (const [tag, className] of PROBES) {
+            const el = document.createElement(tag);
+            el.className = className;
+            document.body.appendChild(el);
+            const px = parseFloat(getComputedStyle(el).fontSize);
+            el.remove();
+            if (px < 16) out.push(`${className || tag}=${px}px`);
+        }
+        // Plus every field actually on screen right now.
+        for (const node of document.querySelectorAll("input, textarea, select")) {
+            if (node.type === "file" || node.offsetParent === null) continue;
+            const px = parseFloat(getComputedStyle(node).fontSize);
+            if (px < 16) out.push(`${node.className || node.tagName}=${px}px`);
+        }
+        return out;
+    });
+
+    expect(small, `these fields would zoom the page on focus: ${small.join(", ")}`).toEqual([]);
+});

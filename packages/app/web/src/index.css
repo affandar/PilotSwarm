@@ -470,8 +470,16 @@ button {
 
 .ps-toolbar.is-mobile {
   flex-direction: column;
-  align-items: stretch;
+  align-items: center;
   justify-content: flex-start;
+}
+
+/* The action strip is the whole toolbar on a phone, so centre it rather than
+   letting it hang off the leading edge. It still scrolls when it overflows. */
+.ps-toolbar.is-mobile .ps-toolbar-row,
+.ps-toolbar.is-mobile .ps-toolbar-row-actions {
+  justify-content: center;
+  width: 100%;
 }
 
 .ps-toolbar-row {
@@ -784,8 +792,11 @@ button {
    it is the full hit area — panels sit 8px apart everywhere. */
 :root {
   /* One number for EVERY divider — the column resizer, the row resizer and
-     the workspace grid all read it, so all gaps match exactly. */
-  --ps-resizer-track: 12px;
+     the workspace grid all read it, so all gaps match exactly. Widened from
+     12px: panes read as one crowded surface when the gutter is that tight.
+     The old layout's ~32px (an 8px grid gap on both sides of a 16px track)
+     was dead air, so this stays comfortably under it. */
+  --ps-resizer-track: 18px;
 }
 .ps-workspace-grid,
 .ps-workspace-main-grid,
@@ -5542,9 +5553,13 @@ body.ps-rich-ui .ps-panel-header {
   --ps-ws-accent: #2ea043;
   --ps-ws-card: #1c2129;
 }
+/* A hairline, not a full border: "no panel borders" left neighbouring panes
+   reading as one continuous surface, so it was genuinely hard to tell where a
+   pane ended — worse now that the panes sit further apart. The tone-separated
+   background stays the primary language; this only draws the edge. */
 :root[data-ps-theme="workspace-dark"] .ps-panel,
 :root[data-ps-theme="workspace-dark-rich"] .ps-panel {
-  border: none;
+  border: 1px solid color-mix(in srgb, var(--ps-border) 55%, transparent);
   border-radius: 10px;
   background: var(--ps-surface);
   box-shadow: none;
@@ -5553,9 +5568,12 @@ body.ps-rich-ui .ps-panel-header {
 :root[data-ps-theme="workspace-dark-rich"] .ps-panel.ps-chat-panel {
   background: transparent;
 }
+/* No focus accent in this theme. With every pane now outlined, the green
+   inset rail was a second, competing edge treatment that read as decoration
+   rather than state. Focus still shows in the pane's own content. */
 :root[data-ps-theme="workspace-dark"] .ps-panel.is-focused,
 :root[data-ps-theme="workspace-dark-rich"] .ps-panel.is-focused {
-  box-shadow: inset 2px 0 0 var(--ps-ws-accent);
+  box-shadow: none;
 }
 :root[data-ps-theme="workspace-dark"] .ps-panel-header,
 :root[data-ps-theme="workspace-dark-rich"] .ps-panel-header {
@@ -5886,4 +5904,67 @@ body.ps-dragging-sessions.ps-drop-ok, body.ps-dragging-sessions.ps-drop-ok * { c
    stays a fine-pointer gesture. */
 @media (pointer: fine) {
   .ps-session-list-button { touch-action: none; }
+}
+
+/* ── Touch: a focused field must never zoom the page ───────────────────────
+   Mobile Safari zooms the WHOLE page whenever a focused control's font-size
+   is under 16px, and the dense terminal scale (--ps-font-size-dense, 11.5px)
+   is far under it. The prompt had already opted out with its own 1.25rem, so
+   the main composer looked fine — but every OTHER field (the session-filter
+   search, the modal/share/link inputs) still tripped it, leaving the layout
+   zoomed in and scrolled sideways with no obvious way back.
+
+   Raising the font is the only fix that keeps pinch-zoom working. The usual
+   shortcut — `maximum-scale=1` on the viewport — suppresses the zoom by
+   disabling zoom for everyone, which fails WCAG 1.4.4.
+
+   `max()` leaves anything already larger alone, and this block sits last in
+   the file so it wins the specificity tie against the class rules above that
+   set the dense size. The prompt needs its FULL selector repeated: the root
+   font-size is 12.5px, so the composer's `1.25rem` is 15.625px — it looked
+   like an opt-out and was actually a hair under the threshold. */
+@media (pointer: coarse) {
+  input,
+  textarea,
+  select,
+  .ps-modal-input,
+  .ps-link-input,
+  .ps-share-add-input,
+  .ps-share-add-select,
+  .ps-admin-add__scope,
+  .ps-prompt-input,
+  .ps-prompt-shell.is-mobile .ps-prompt-input {
+    font-size: max(16px, 1em);
+  }
+
+  /* Session rows are the most-tapped target in the app and were sized for a
+     mouse: 1.55rem of row against a ~44px fingertip. Both selectors are
+     repeated at the specificity of the desktop rules they override, and this
+     block is last in the file, so the taller target wins on touch only. */
+  .ps-session-pane .ps-session-list-button,
+  .ps-session-pane:not(.ps-mobile-session-pane) .ps-session-list-button {
+    min-height: 36px;
+    padding: 6px 10px;
+  }
+
+  /* Pack them tighter: a 4px inter-row gap plus the list's own padding costs
+     nearly a row of vertical space per screen, which is the scarcest thing on
+     a phone. The row itself stays a comfortable target. */
+  .ps-session-pane .ps-action-list {
+    gap: 2px;
+    padding: 4px 8px 8px;
+  }
+
+  /* Selection was a full 1px inset ring AND a 3px left bar — at phone width
+     that reads as a heavy box drawn around the row. The bar alone carries the
+     same signal without the weight. */
+  .ps-session-pane .ps-session-list-button.is-selected {
+    box-shadow: inset 2px 0 0 color-mix(in srgb, var(--ps-panel-accent, var(--ps-border)) 90%, transparent);
+  }
+
+  /* Taller rows in a fixed-height strip would just show fewer sessions, so
+     the compact strip grows to keep roughly the same number visible. */
+  .ps-mobile-session-pane {
+    max-height: min(22vh, 160px);
+  }
 }
