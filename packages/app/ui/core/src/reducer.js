@@ -2049,7 +2049,16 @@ export function appReducer(state, action) {
             return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, action: { pending: null, error: action.error || "Action failed" } } } };
         }
         case "admin/packages/addDialog/open": {
-            return { ...state, admin: { ...state.admin, section: "packages", packages: { ...state.admin.packages, addDialog: { ...createInitialState().admin.packages.addDialog, open: true } } } };
+            // Update mode reuses this dialog wholesale — the work is identical
+            // (point at a repo folder, import it here, publish) and only the
+            // destination is already decided.
+            const seeded = {
+                ...createInitialState().admin.packages.addDialog,
+                open: true,
+                updateName: action.updateName || null,
+                scope: action.scope === "shared" ? "shared" : "user",
+            };
+            return { ...state, admin: { ...state.admin, section: "packages", packages: { ...state.admin.packages, addDialog: seeded } } };
         }
         case "admin/packages/addDialog/close": {
             return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, addDialog: { ...createInitialState().admin.packages.addDialog, open: false } } } };

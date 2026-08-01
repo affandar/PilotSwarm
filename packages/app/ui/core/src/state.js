@@ -111,7 +111,7 @@ export function normalizeStoredActiveSessionId(value) {
     return id ? id : null;
 }
 
-export function createInitialState({ mode = "local", branding = null, themeId = null, chatViewMode = null, sessionOwnerFilter = null, layoutAdjustments = null, pinnedSessionIds = null, collapsedSessionIds = null, activeSessionId = null } = {}) {
+export function createInitialState({ mode = "local", branding = null, docs = null, themeId = null, chatViewMode = null, sessionOwnerFilter = null, layoutAdjustments = null, pinnedSessionIds = null, collapsedSessionIds = null, activeSessionId = null } = {}) {
     const hasStoredSessionOwnerFilter = sessionOwnerFilter != null;
     const hasStoredCollapsedSessionIds = collapsedSessionIds != null;
     const initialLayoutAdjustments = normalizeStoredLayoutAdjustments(layoutAdjustments);
@@ -119,6 +119,14 @@ export function createInitialState({ mode = "local", branding = null, themeId = 
         branding: branding || {
             title: "PilotSwarm",
             splash: "{bold}{cyan-fg}PilotSwarm{/cyan-fg}{/bold}",
+        },
+        // Deployment documentation links. A layered app (waldemort) ships its
+        // own agent-authoring guide - the base instructions PLUS the skills,
+        // tools and MCP servers that exist only on that fleet - so the portal
+        // links to whatever that deployment configured, not a fixed URL.
+        docs: {
+            agentPackageGuideUrl: docs?.agentPackageGuideUrl
+                || "https://github.com/affandar/PilotSwarm/blob/main/docs/building-agent-packages.md",
         },
         auth: {
             principal: null,
@@ -318,6 +326,10 @@ export function createInitialState({ mode = "local", branding = null, themeId = 
                     open: false,
                     kind: "repo",
                     scope: "user",
+                    // Set => the dialog is updating THIS package rather than
+                    // adding one: same fields, same import, but the publish is
+                    // refused unless the manifest names the same package.
+                    updateName: null,
                     repoUrl: "",
                     ref: "",
                     path: "",

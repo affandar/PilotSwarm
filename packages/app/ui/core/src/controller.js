@@ -1,6 +1,6 @@
 import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./commands.js";
 import { parseAgentSourceLink } from "./repo-links.js";
-import { importPackageFilesFromLink } from "./repo-import.js";
+import { importPackageFilesFromLink, readImportedPackageName } from "./repo-import.js";
 import {
     appendEventToHistory,
     buildHistoryModel,
@@ -2873,6 +2873,17 @@ export class PilotSwarmUiController {
         this.dispatch({ type: "admin/packages/addDialog/open" });
     }
 
+    /**
+     * Publish a new version of an existing package. Same dialog, same import
+     * path — the only difference is that the destination is already chosen, so
+     * the scope is inherited and the manifest name is checked on submit.
+     */
+    openAdminUpdatePackage(name, scope = "user") {
+        const packageName = String(name || "").trim();
+        if (!packageName) return;
+        this.dispatch({ type: "admin/packages/addDialog/open", updateName: packageName, scope });
+    }
+
     closeAdminAddPackage() {
         this.dispatch({ type: "admin/packages/addDialog/close" });
     }
@@ -2918,6 +2929,21 @@ export class PilotSwarmUiController {
                 tokenKind,
                 onProgress: (message) => this.dispatch({ type: "admin/packages/addDialog/progress", message }),
             });
+            // Updating names its target up front, and a package's identity is
+            // its manifest name — so a folder that builds a DIFFERENT package
+            // would quietly create a second one instead of updating this. Say
+            // so rather than publishing the surprise.
+            if (dialog.updateName) {
+                const manifestName = readImportedPackageName(files);
+                if (manifestName && manifestName !== dialog.updateName) {
+                    this.dispatch({
+                        type: "admin/packages/addDialog/failed",
+                        error: `That folder builds "${manifestName}", not "${dialog.updateName}". `
+                            + "Use Add package to publish it as its own package.",
+                    });
+                    return;
+                }
+            }
             this.dispatch({ type: "admin/packages/addDialog/progress", message: `publishing ${files.length} file(s)…` });
             const outcome = await this.transport.uploadAgentPackage(files, dialog.scope === "shared" ? "shared" : "user");
             this.dispatch({ type: "admin/packages/addDialog/close" });

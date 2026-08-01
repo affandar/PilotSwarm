@@ -35,6 +35,15 @@ function bytesToBase64(bytes) {
     return btoa(binary);
 }
 
+function base64ToBytes(content) {
+    const compact = String(content || "").replace(/\s+/gu, "");
+    if (typeof Buffer !== "undefined") return new Uint8Array(Buffer.from(compact, "base64"));
+    const binary = atob(compact);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    return bytes;
+}
+
 function isSkippedPath(relativePath) {
     return relativePath.split("/").some((segment) => SKIP_SEGMENTS.has(segment));
 }
@@ -168,11 +177,7 @@ async function fetchGitHubBlobViaApi(fetchImpl, api, owner, repo, sha, headers) 
     if (blob?.encoding && blob.encoding !== "base64") {
         throw new Error(`unexpected blob encoding "${blob.encoding}" from api.github.com`);
     }
-    if (typeof Buffer !== "undefined") return new Uint8Array(Buffer.from(content, "base64"));
-    const binary = atob(content);
-    const bytes = new Uint8Array(binary.length);
-    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-    return bytes;
+    return base64ToBytes(content);
 }
 
 // ─── Azure DevOps ────────────────────────────────────────────────
@@ -268,4 +273,26 @@ export async function importPackageFilesFromLink(link, {
         : await collectAdoFiles(parsed, options);
     if (files.length === 0) throw new Error("the package folder is empty");
     return { kind: parsed.kind, files };
+}
+
+/**
+ * The package name from an imported file set's manifest, or null when the
+ * manifest is missing or unreadable. A package's IDENTITY is its manifest
+ * name, so "update this package" has to check it: pointing the update dialog
+ * at a folder that builds something else would otherwise publish a second
+ * package under a different name and report success.
+ */
+export function readImportedPackageName(files = []) {
+    const manifest = (Array.isArray(files) ? files : []).find((file) => file?.path === "plugin.json");
+    if (!manifest?.contentBase64) return null;
+    try {
+        const bytes = base64ToBytes(manifest.contentBase64);
+        const parsed = JSON.parse(new TextDecoder().decode(bytes));
+        const name = String(parsed?.name || "").trim();
+        return name || null;
+    } catch {
+        // Unreadable here is not the update path's problem to report: the
+        // server validates the manifest and says so precisely.
+        return null;
+    }
 }

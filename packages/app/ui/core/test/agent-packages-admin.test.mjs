@@ -19,6 +19,9 @@ import {
 
 const ALICE = { provider: "test", subject: "alice", email: "alice@test", isAdmin: false };
 
+// Owner keys join provider and subject with U+0001 (see ownerKeyForOwner).
+const ownerKey = (subject) => `test${subject}`;
+
 function makeController(transportOverrides = {}) {
     const transport = {
         listSessions: async () => [],
@@ -216,4 +219,73 @@ test("workspace VM honors expandedDirs and file preview state", () => {
     });
     view = selectAdminConsole(store.getState());
     assert.equal(view.packages.workspace.file, null, "stale load is dropped while the new file loads");
+});
+
+test("the owner filter hides other people's private agents, never yours or shared", () => {
+    const store = createStore(appReducer, createInitialState());
+    loadedPackagesState(store);
+    store.dispatch({ type: "auth/principal", principal: { provider: "test", subject: "alice", displayName: "Alice Anderson" } });
+
+    const idsFor = () => selectAdminConsole(store.getState()).settingsTree.map((row) => row.id);
+    // The reducer reads `filter`, not `ownerFilter`.
+    const setFilter = (filter) => store.dispatch({ type: "sessions/ownerFilter", filter });
+
+    // Narrowed to Alice: Bob's private package is not part of her workspace.
+    // The deployment's SHARED package still is - it belongs to no one person.
+    setFilter({ all: false, includeMe: true, includeShared: true, ownerKeys: [] });
+    assert.ok(!idsFor().includes("pkg:other-kit"), "bob's private package is filtered out");
+    assert.ok(idsFor().includes("pkg:incident-kit"), "a shared package is the deployment's, never filtered");
+    assert.equal(idsFor().includes("group:others"), false, "the Other users group goes with it");
+
+    // Asking for Bob brings his back - that is what the filter means.
+    setFilter({ all: false, includeMe: true, includeShared: true, ownerKeys: [ownerKey("bob")] });
+    assert.ok(idsFor().includes("pkg:other-kit"), "asking for bob shows bob's package");
+
+    // `all` is the unfiltered view.
+    setFilter({ all: true });
+    assert.ok(idsFor().includes("pkg:other-kit"));
+});
+
+test("user-scope packages carry the owner's initials; shared ones keep the scope badge", () => {
+    const store = createStore(appReducer, createInitialState());
+    store.dispatch({
+        type: "admin/packages/loaded",
+        list: [
+            {
+                packageId: "p1", name: "incident-kit", scope: "shared", enabled: true,
+                owner: { provider: "test", subject: "alice", displayName: "Alice Anderson" },
+                active: { semver: "1.4.0", sha256: "a".repeat(64), manifest: { agents: [] } },
+            },
+            {
+                packageId: "p2", name: "other-kit", scope: "user", enabled: true,
+                owner: { provider: "test", subject: "bob", displayName: "Bob Brown" },
+                createdBy: "bob@test", active: null,
+            },
+        ],
+    });
+    store.dispatch({ type: "sessions/ownerFilter", filter: { all: true } });
+
+    const tree = selectAdminConsole(store.getState()).settingsTree;
+    const shared = tree.find((row) => row.id === "pkg:incident-kit");
+    const bobs = tree.find((row) => row.id === "pkg:other-kit");
+    // The same two-letter chip the session rows use, so it reads identically
+    // on both sides of the app.
+    assert.equal(bobs.ownerInitials, "bb");
+    assert.equal(bobs.ownerName, "Bob Brown");
+    // A shared package belongs to the deployment, not a person.
+    assert.equal(shared.ownerInitials, null);
+});
+
+test("Update opens the add dialog bound to one package", () => {
+    const { controller, store } = makeController();
+    controller.openAdminUpdatePackage("incident-kit", "shared");
+
+    const dialog = store.getState().admin.packages.addDialog;
+    assert.equal(dialog.open, true);
+    assert.equal(dialog.updateName, "incident-kit");
+    assert.equal(dialog.scope, "shared", "an update never silently re-scopes the package");
+
+    // Adding is still the unbound form.
+    controller.openAdminAddPackage();
+    assert.equal(store.getState().admin.packages.addDialog.updateName, null);
 });

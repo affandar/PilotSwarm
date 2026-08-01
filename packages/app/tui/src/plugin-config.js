@@ -176,6 +176,15 @@ export function resolvePortalConfigBundleFromPluginDirs(pluginDirs = []) {
             loadingMessage: "Preparing your workspace",
             loadingCopy: "Connecting the shared workspace and live session feeds...",
         },
+        // Where "how do I build an agent package?" points. A layered
+        // deployment ships its OWN guide - the base instructions plus the
+        // skills, tools and MCP servers that exist only on that fleet - so
+        // this is config, not a constant. Public repo by default because the
+        // link is meant to be handed to a coding assistant, which cannot
+        // reach an intranet-only portal.
+        docs: {
+            agentPackageGuideUrl: "https://github.com/affandar/PilotSwarm/blob/main/docs/building-agent-packages.md",
+        },
         auth: {
             provider: null,
             providers: {},
@@ -193,6 +202,7 @@ export function resolvePortalConfigBundleFromPluginDirs(pluginDirs = []) {
         const portal = getObject(pluginMeta?.portal);
         const portalBranding = getObject(portal.branding);
         const portalUi = getObject(portal.ui);
+        const portalDocs = getObject(portal.docs);
         const portalAuth = getObject(portal.auth);
         const tui = getObject(pluginMeta?.tui);
 
@@ -249,6 +259,13 @@ export function resolvePortalConfigBundleFromPluginDirs(pluginDirs = []) {
                 ui: {
                     loadingMessage: firstNonEmptyString(portalUi.loadingMessage, portal.loadingMessage, defaults.ui.loadingMessage) || defaults.ui.loadingMessage,
                     loadingCopy: firstNonEmptyString(portalUi.loadingCopy, portal.loadingCopy, defaults.ui.loadingCopy) || defaults.ui.loadingCopy,
+                },
+                docs: {
+                    agentPackageGuideUrl: firstNonEmptyString(
+                        portalDocs.agentPackageGuideUrl,
+                        portal.agentPackageGuideUrl,
+                        defaults.docs.agentPackageGuideUrl,
+                    ) || defaults.docs.agentPackageGuideUrl,
                 },
                 auth: {
                     provider: firstNonEmptyString(portalAuth.provider, portal.provider),

@@ -481,7 +481,10 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
             splash: portal?.branding?.splash || "{bold}{cyan-fg}PilotSwarm{/cyan-fg}{/bold}",
             splashMobile: portal?.branding?.splashMobile || null,
         },
-    }), [portal?.branding?.splash, portal?.branding?.splashMobile, portal?.branding?.title, transport]);
+        // A layered deployment ships its own agent-authoring guide; the link
+        // in the Add/Update package dialog follows it.
+        docs: portal?.docs || null,
+    }), [portal?.branding?.splash, portal?.branding?.splashMobile, portal?.branding?.title, portal?.docs, transport]);
     const statusText = usePortalControllerStatusText(controller);
     // Dismissing hides the mobile status row until a *different* message
     // arrives (a repeat of the same text stays dismissed).

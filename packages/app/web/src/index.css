@@ -71,6 +71,18 @@ body,
   line-height: var(--ps-line-height-base);
 }
 
+/* Links had NO style anywhere in the portal, so every one of them rendered in
+   the user-agent's #0000EE on whatever ground the theme painted — effectively
+   invisible on the dark themes. They read from the palette now, like the rest
+   of the chrome. */
+a {
+  color: var(--ps-accent);
+  text-decoration-color: color-mix(in srgb, var(--ps-accent) 45%, transparent);
+  text-underline-offset: 2px;
+}
+a:hover { text-decoration-color: currentColor; }
+a:focus-visible { outline: 2px solid var(--ps-accent); outline-offset: 2px; }
+
 body {
   overflow: hidden;
   -webkit-text-size-adjust: 100%;
@@ -5239,7 +5251,9 @@ body.ps-rich-ui .ps-panel-header {
 .ps-admin-tree__hint { padding: 6px 8px; color: var(--ps-muted); font-size: var(--ps-font-size-dense); }
 .ps-admin-tree__hint.is-error { color: #f85149; white-space: normal; }
 .ps-admin-tree__add {
-    margin: 10px 8px 4px;
+    /* Set apart from the tree above it: this is a new-thing action, not the
+       next row of the list, and at 10px it read as one. */
+    margin: 26px 8px 4px;
     padding: 5px 0;
     border: 1px dashed var(--ps-border-strong);
     border-radius: var(--ps-radius-sm);
@@ -5261,7 +5275,8 @@ body.ps-rich-ui .ps-panel-header {
     color: var(--ps-muted);
 }
 .ps-scope-badge.is-shared { color: var(--ps-selection-background); border-color: color-mix(in srgb, var(--ps-selection-background) 45%, transparent); }
-.ps-scope-badge.is-user { color: #d29922; border-color: color-mix(in srgb, #d29922 50%, transparent); }
+/* Owner initials are a name, not an abbreviation to shout. */
+.ps-scope-badge.is-user { color: var(--ps-warning); border-color: color-mix(in srgb, var(--ps-warning) 50%, transparent); text-transform: lowercase; letter-spacing: 0.02em; }
 .ps-scope-badge.is-off { color: var(--ps-muted); }
 
 .ps-admin-detail { padding: 14px 18px; max-width: 72ch; }

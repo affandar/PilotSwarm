@@ -3668,6 +3668,11 @@ export function selectAdminConsole(state) {
         sha7: pkg.active?.sha256 ? String(pkg.active.sha256).slice(0, 7) : null,
         agentCount: Array.isArray(pkg.active?.manifest?.agents) ? pkg.active.manifest.agents.length : 0,
         canManage: ownsPackage(pkg),
+        // A user-scope package belongs to a PERSON, so it carries the same
+        // owner-initials chip the session rows use. Shared packages belong to
+        // the deployment and keep the scope badge instead.
+        ownerInitials: pkg.scope === "shared" ? null : ownerInitials(pkg.owner),
+        ownerName: pkg.scope === "shared" ? null : ownerDisplayName(pkg.owner, pkg.createdBy || "unknown user"),
         // Highlight only while the Agents section is active — otherwise the
         // GitHub Keys screen shows a double selection.
         selected: admin.section === "packages" && pkgState.selectedName === pkg.name,
@@ -3680,12 +3685,31 @@ export function selectAdminConsole(state) {
         && pkg.owner.provider === principal.provider
         && pkg.owner.subject === principal.subject,
     );
+    // The owner filter is a statement about WHOSE work you want to see, and it
+    // means the same thing here: with Sean filtered out, Sean's private agents
+    // are not part of your workspace either.
+    //
+    // NOT matchesOwnerFilterDirect: for sessions, `includeShared` means "things
+    // other people shared WITH me", a real relation that earns them a place in
+    // your list. Another person's private package has no such relation — you
+    // only see it because you are an admin — so reusing that rule would let
+    // every other user's package through and the filter would do nothing.
+    // Someone else's agents appear only when you asked for that someone (or
+    // for everyone). Your own and the deployment's shared packages are always
+    // yours to see, exactly as session groups are exempt.
+    const ownerFilter = state.sessions?.ownerFilter;
+    const passesOwnerFilter = (pkg) => {
+        if (!ownerFilter || ownerFilter.all === true) return true;
+        const ownerKey = ownerKeyForOwner(pkg?.owner);
+        if (!ownerKey) return ownerFilter.includeUnowned === true;
+        return Array.isArray(ownerFilter.ownerKeys) && ownerFilter.ownerKeys.includes(ownerKey);
+    };
     const sharedRows = pkgList.filter((pkg) => pkg.scope === "shared").map(packageRow);
     const userRows = pkgList
         .filter((pkg) => pkg.scope !== "shared" && isMinePackage(pkg))
         .map(packageRow);
     const otherUserRows = pkgList
-        .filter((pkg) => pkg.scope !== "shared" && !isMinePackage(pkg))
+        .filter((pkg) => pkg.scope !== "shared" && !isMinePackage(pkg) && passesOwnerFilter(pkg))
         .map((pkg) => ({ ...packageRow(pkg), ownerLabel: pkg?.createdBy || pkg?.owner?.subject || "another user" }));
 
     // Settings tree — the session-list-slot navigation. Rendered by both

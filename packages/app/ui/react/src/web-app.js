@@ -7405,8 +7405,15 @@ function AdminSettingsTree({ controller, view }) {
                 className: `ps-admin-tree__row depth-${row.depth}${row.selected ? " is-selected" : ""}${row.kind === "package" && !row.enabled ? " is-disabled" : ""}`,
                 onClick,
             },
+                // A user-scope package shows WHOSE it is, using the same
+                // owner-initials chip the session rows use, so "[ad]" means
+                // the same thing on both sides of the app. Shared packages
+                // belong to the deployment, so they keep the scope badge.
                 row.kind === "package"
-                    ? React.createElement("span", { className: `ps-scope-badge is-${row.scope}` }, row.scope === "shared" ? "S" : "U")
+                    ? React.createElement("span", {
+                        className: `ps-scope-badge is-${row.scope}`,
+                        title: row.ownerName ? `owner: ${row.ownerName}` : "shared with the whole deployment",
+                    }, row.scope === "shared" ? "S" : (row.ownerInitials || "U"))
                     : null,
                 React.createElement("span", { className: "ps-admin-tree__name" }, row.label),
                 row.kind === "package" && row.semver
@@ -7495,6 +7502,15 @@ function AdminPackageDetailPane({ controller, view }) {
                     ? React.createElement("button", { type: "button", className: "ps-primary-button", onClick: act("sync"), disabled: Boolean(pending) },
                         pending === "sync" ? "Syncing…" : "Sync now")
                     : null,
+                // Publishing a new version is the same job as adding one, so it
+                // is the same dialog with the destination already chosen.
+                React.createElement("button", {
+                    type: "button",
+                    className: "ps-primary-button",
+                    onClick: () => controller.openAdminUpdatePackage(detail.name, detail.scope),
+                    disabled: Boolean(pending),
+                    title: `Publish a new version of ${detail.name} from a repo folder`,
+                }, "Update"),
                 React.createElement("button", { type: "button", className: "ps-mini-button", onClick: act(detail.scope === "shared" ? "demote" : "promote"), disabled: Boolean(pending) },
                     detail.scope === "shared" ? "Demote to user" : "Promote to shared"),
                 React.createElement("button", { type: "button", className: "ps-mini-button", onClick: act(detail.enabled ? "disable" : "enable"), disabled: Boolean(pending) },
@@ -7641,6 +7657,10 @@ function AdminWorkspacePreviewBody({ file, theme }) {
 }
 
 function AdminAddPackageDialog({ controller, dialog }) {
+    // The authoring guide is DEPLOYMENT config: a layered app ships its own,
+    // carrying the base instructions plus the skills, tools and MCP servers
+    // that only exist on that fleet.
+    const guideUrl = useControllerSelector(controller, (state) => state.docs?.agentPackageGuideUrl || null);
     const setField = (field) => (event) => controller.setAdminAddPackageField(field, event.target.value);
     const kinds = [["repo", "GitHub / Azure DevOps"], ["upload", "Upload folder"]];
     const isRepo = dialog.kind === "repo" || dialog.kind === "github" || dialog.kind === "ado";
@@ -7707,7 +7727,7 @@ function AdminAddPackageDialog({ controller, dialog }) {
             onSubmit,
         },
             React.createElement("div", { className: "ps-modal-header" },
-                React.createElement("span", null, "Add agent package"),
+                React.createElement("span", null, dialog.updateName ? `Update ${dialog.updateName}` : "Add agent package"),
                 React.createElement("button", { type: "button", className: "ps-mini-button", onClick: () => controller.closeAdminAddPackage() }, "✕")),
             React.createElement("div", { className: "ps-admin-add__body" },
                 React.createElement("div", { className: "ps-admin-add__tabs" },
@@ -7756,11 +7776,29 @@ function AdminAddPackageDialog({ controller, dialog }) {
                             React.createElement("input", { ref: folderRef, type: "file", webkitdirectory: "", directory: "", multiple: true })),
                 React.createElement("div", { className: "ps-admin-add__scope" },
                     React.createElement("label", null,
-                        React.createElement("input", { type: "radio", name: "pkg-scope", checked: dialog.scope === "shared", onChange: () => controller.setAdminAddPackageField("scope", "shared") }),
+                        React.createElement("input", { type: "radio", name: "pkg-scope", checked: dialog.scope === "shared", disabled: Boolean(dialog.updateName), onChange: () => controller.setAdminAddPackageField("scope", "shared") }),
                         " Shared — everyone can use it"),
                     React.createElement("label", null,
-                        React.createElement("input", { type: "radio", name: "pkg-scope", checked: dialog.scope === "user", onChange: () => controller.setAdminAddPackageField("scope", "user") }),
+                        React.createElement("input", { type: "radio", name: "pkg-scope", checked: dialog.scope === "user", disabled: Boolean(dialog.updateName), onChange: () => controller.setAdminAddPackageField("scope", "user") }),
                         " User — only you see it")),
+                dialog.updateName
+                    ? React.createElement("p", { className: "ps-admin-console__hint" },
+                        `Publishes a new version of ${dialog.updateName}. Its scope is unchanged — `
+                        + "use Demote/Promote on the package to move it.")
+                    : null,
+                // The authoring guide, linked where someone actually needs it.
+                // It is written to be handed to a coding assistant as-is, so
+                // the URL is worth being able to copy out of the dialog.
+                guideUrl
+                    ? React.createElement("p", { className: "ps-admin-console__hint" },
+                        "New to this? ",
+                        React.createElement("a", {
+                            href: guideUrl,
+                            target: "_blank",
+                            rel: "noreferrer noopener",
+                        }, "How to build an agent package"),
+                        " — a complete guide you can also hand straight to Claude or Copilot.")
+                    : null,
                 React.createElement("p", { className: "ps-admin-console__hint" },
                     "Same thing from a terminal: pilotswarm agents push ./my-agents --shared"),
                 dialog.progress && !dialog.error
@@ -7772,7 +7810,11 @@ function AdminAddPackageDialog({ controller, dialog }) {
             React.createElement("div", { className: "ps-modal-footer" },
                 React.createElement("button", { type: "button", className: "ps-mini-button", onClick: () => controller.closeAdminAddPackage(), disabled: dialog.submitting }, "Cancel"),
                 React.createElement("button", { type: "submit", className: "ps-primary-button", disabled: dialog.submitting || reading },
-                    reading ? "Reading folder…" : (dialog.submitting ? "Importing…" : "Import & publish")))));
+                    reading
+                        ? "Reading folder…"
+                        : dialog.submitting
+                            ? "Importing…"
+                            : dialog.updateName ? "Import & update" : "Import & publish"))));
 }
 
 function AdminGhcpSection({ view, draftRef, onBeginEdit, onCancelEdit, onClear, onSubmit, onDraftChange, onRefresh, controller }) {
@@ -7847,7 +7889,7 @@ function AdminGhcpSection({ view, draftRef, onBeginEdit, onCancelEdit, onClear, 
                     }, view.loading ? "Refreshing..." : "Refresh")));
 }
 
-export function createWebPilotSwarmController({ transport, mode = "remote", branding = null } = {}) {
+export function createWebPilotSwarmController({ transport, mode = "remote", branding = null, docs = null } = {}) {
     clearBrowserPreferenceCache();
     // Rich prose is the right default on a desktop transcript; on a phone the
     // terminal view fits far more per screen and does not reflow wide content.
@@ -7859,6 +7901,7 @@ export function createWebPilotSwarmController({ transport, mode = "remote", bran
     const store = createStore(appReducer, createInitialState({
         mode,
         branding,
+        docs,
         chatViewMode: isNarrowViewport ? "transcript" : "rich",
     }));
     return new PilotSwarmUiController({ store, transport });
