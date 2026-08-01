@@ -83,10 +83,68 @@ constraint: *native subagents must never see PilotSwarm durability tools*
   contracts/wake policies, its own facts/artifacts, or must survive worker
   restarts and rollouts.
 
-## Phase 1: A/B eval
+## Phase 1a: easy A/B eval (eval.mjs)
 
-`eval.mjs` — 8 codebase questions × {task-off (prod config), task-on
-(locked config)}, single-turn fresh sessions, claude-sonnet-5, measuring
-correctness, latency, parent-context accretion (`session.usage_info`),
-token split by lane (`assistant.usage` by `agentId`), native-task adoption
-rate, and the leak canary. Results appended below when complete.
+8 simple codebase questions × {task-off (prod config), task-on (locked
+config)}, single-turn fresh sessions, claude-sonnet-5.
+
+| metric | off | on |
+|---|---|---|
+| correct | 8/8 | 8/8 |
+| native task used | 0/8 | **0/8** |
+| mean wall ms | 6,053 | 6,941 |
+| mean parent final ctx | 24,408 | 26,906 |
+| leaks | 0 | 0 |
+
+**Findings:**
+- **Zero unprompted adoption on easy questions.** With a neutral system
+  prompt ("you may use"), sonnet-5 never dispatched a subagent for 1–2-call
+  questions — it just grepped. Correct behavior, actually: delegation would
+  have been slower.
+- **Standing declaration tax ≈ +2,615 initial context tokens/session**
+  (toolDefs 5,120 → 6,958; system 17,881 → 18,658). This is the per-session
+  cost of having task + agent roster declared, paid whether or not it's used.
+- Conclusion: the tool is not harmful on easy work (model ignores it), but
+  it isn't free either. Its value must come from verbose scenarios →
+  Phase 1b.
+
+## Phase 1b: hard A/B eval (eval-hard.mjs)
+
+4 scenarios shaped like the supposed niche — broad file sweep (42-tool
+roster from a 2,400-line file), noisy 504-line build script, 4-question
+fan-out, multi-file reference hunt. ON arm carried shipped-shape
+delineation guidance ("prefer delegating broad sweeps and noisy commands").
+
+| metric | off | on |
+|---|---|---|
+| correct | 4/4 | 4/4 |
+| native task used | 0/4 | 1/4 (h2 via swarm-task) |
+| mean wall ms | 9,381 | 12,437 |
+| mean parent final ctx | 26,079 | 28,594 |
+
+**Findings:**
+- **Adoption stayed low (1/4) even with guidance.** The one delegation
+  (noisy build) was 3.6× slower than OFF (15.8s vs 4.4s) with *higher*
+  parent context (26.4K vs 23.5K) — the declaration tax exceeded the
+  isolation savings.
+- **The OFF arm gamed h2**: it read the script source and extracted the
+  checksum without running it. Fixed in Phase 1c with a runtime-computed
+  checksum (noisy-build2.sh).
+- **Two structural mitigations already cap single-turn bloat:**
+  1. The CLI truncates tool output aggressively — the 504-line build
+     output came back as ~933 chars *even inside the subagent*.
+  2. sonnet-5 is surgical: the 2,400-line sweep cost 3 targeted calls
+     (~9KB of tool results), not a full-file read.
+- Conclusion: **single-turn isolation value ≈ zero for a strong model.**
+  The real production pathology (chk: 936K-token sessions, 1.5–2M
+  input/turn) is *multi-turn accretion* — every tool result is re-sent as
+  input on every later call — and chattier models (gpt-5.4 family).
+  → Phase 1c tests exactly that.
+
+## Phase 1c: multi-turn accretion eval (eval-multi.mjs)
+
+One 8-turn session per (arm × model), models = claude-sonnet-5 (github)
+and gpt-5.4 (BYOK azure — the waldemort-chk production model). Measures
+the per-turn parent-context curve, cumulative parent input tokens, and
+adoption under trigger-based delineation rules. Results appended when
+complete.

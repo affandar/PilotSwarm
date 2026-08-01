@@ -1,0 +1,228 @@
+[
+  {
+    "arm": "off",
+    "id": "h1-broad-sweep",
+    "correct": true,
+    "wallMs": 11358,
+    "reply": "Two functions define the same tool set (`systemToolDefs()` for registration, and `_runTurnInner()` for per-turn handlers). Definition order (same in both):\n\n1. wait\n2. wait_on_worker\n3. cron\n4. cron_at\n5. ask_user\n6. report_cycle\n7. list_available_models\n8. set_session_model\n9. regenerate_context\n10. regenerate_agent\n11. update_session_summary\n12. send_session_message\n13. reply_session_message\n14. spawn_agent\n15. message_agent\n16. check_agents\n17. wait_for_agents\n18. list_sessions\n19. complete_a",
+    "errors": [],
+    "markerInvocations": [],
+    "taskUsed": false,
+    "subagentNames": [],
+    "parentFinalCtx": 26280,
+    "parentTokens": {
+      "input": 99780,
+      "output": 774,
+      "cacheRead": 73158,
+      "cacheWrite": 26616,
+      "calls": 3
+    },
+    "subagentTokens": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "calls": 0
+    },
+    "parentToolCalls": 3,
+    "subagentToolCalls": 0
+  },
+  {
+    "arm": "off",
+    "id": "h2-noisy-cmd",
+    "correct": true,
+    "wallMs": 4397,
+    "reply": "Build succeeded — output ends with `BUILD OK in 41.7s` (exit code 0). The printed **CHECKSUM: 7f3a9c-e51b22**.",
+    "errors": [],
+    "markerInvocations": [],
+    "taskUsed": false,
+    "subagentNames": [],
+    "parentFinalCtx": 23517,
+    "parentTokens": {
+      "input": 62955,
+      "output": 237,
+      "cacheRead": 39954,
+      "cacheWrite": 22997,
+      "calls": 2
+    },
+    "subagentTokens": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "calls": 0
+    },
+    "parentToolCalls": 1,
+    "subagentToolCalls": 0
+  },
+  {
+    "arm": "off",
+    "id": "h3-fanout",
+    "correct": true,
+    "wallMs": 16271,
+    "reply": "(a) `packages/sdk/src/managed-session.ts` (line 644, `static subAgentToolDefs()`).\n\n(b) `\"2024-10-21\"` — the default Azure `apiVersion` fallback in `model-providers.ts`.\n\n(c) `.model_providers.json` — the primary (non-legacy) filename `resolveModelProvidersPath` searches for; `model_providers.json` is the legacy fallback.\n\n(d) `message_agent` — the tool that sends a message to a running sub-agent.",
+    "errors": [],
+    "markerInvocations": [],
+    "taskUsed": false,
+    "subagentNames": [],
+    "parentFinalCtx": 31031,
+    "parentTokens": {
+      "input": 110595,
+      "output": 1256,
+      "cacheRead": 75967,
+      "cacheWrite": 30201,
+      "calls": 3
+    },
+    "subagentTokens": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "calls": 0
+    },
+    "parentToolCalls": 7,
+    "subagentToolCalls": 0
+  },
+  {
+    "arm": "off",
+    "id": "h4-multi-file",
+    "correct": true,
+    "wallMs": 5499,
+    "reply": "Only two files under `packages/sdk/src` reference `COPILOT_HOME`:\n\n- **`session-manager.ts`** — sets `COPILOT_HOME` (as `path.dirname(this.sessionStateDir)`) when spawning each per-token `CopilotClient`, since the Copilot CLI only honors that env var to locate its session-state directory.\n- **`regen-worker.ts`** — creates an isolated `tempHome` directory and spawns a CLI process with `COPILOT_HOME` pointed at it, giving the regen worker its own scratch session-state location separate from the ma",
+    "errors": [],
+    "markerInvocations": [],
+    "taskUsed": false,
+    "subagentNames": [],
+    "parentFinalCtx": 23488,
+    "parentTokens": {
+      "input": 62979,
+      "output": 333,
+      "cacheRead": 39935,
+      "cacheWrite": 23040,
+      "calls": 2
+    },
+    "subagentTokens": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "calls": 0
+    },
+    "parentToolCalls": 1,
+    "subagentToolCalls": 0
+  },
+  {
+    "arm": "on",
+    "id": "h1-broad-sweep",
+    "correct": true,
+    "wallMs": 13358,
+    "reply": "Every `defineTool()` call in `managed-session.ts`, in the order they appear in the file (the file defines two similar tool sets, e.g., for two branches — both included in order):\n\n**First block (~line 346–837):**\n1. wait\n2. wait_on_worker\n3. cron\n4. cron_at\n5. ask_user\n6. report_cycle\n7. list_available_models\n8. set_session_model\n9. regenerate_context\n10. regenerate_agent\n11. update_session_summary\n12. send_session_message\n13. reply_session_message\n14. spawn_agent\n15. message_agent\n16. check_age",
+    "errors": [],
+    "markerInvocations": [],
+    "taskUsed": false,
+    "subagentNames": [],
+    "parentFinalCtx": 27308,
+    "parentTokens": {
+      "input": 106210,
+      "output": 1014,
+      "cacheRead": 80701,
+      "cacheWrite": 25503,
+      "calls": 3
+    },
+    "subagentTokens": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "calls": 0
+    },
+    "parentToolCalls": 2,
+    "subagentToolCalls": 0
+  },
+  {
+    "arm": "on",
+    "id": "h2-noisy-cmd",
+    "correct": true,
+    "wallMs": 15823,
+    "reply": "Build succeeded (exit code 0), 500/500 units compiled, no errors.\n\n**CHECKSUM: 7f3a9c-e51b22**",
+    "errors": [],
+    "markerInvocations": [],
+    "taskUsed": true,
+    "subagentNames": [
+      "swarm-task"
+    ],
+    "parentFinalCtx": 26435,
+    "parentTokens": {
+      "input": 104641,
+      "output": 564,
+      "cacheRead": 80360,
+      "cacheWrite": 24275,
+      "calls": 3
+    },
+    "subagentTokens": {
+      "input": 20295,
+      "output": 358,
+      "cacheRead": 13182,
+      "cacheWrite": 7107,
+      "calls": 3
+    },
+    "parentToolCalls": 2,
+    "subagentToolCalls": 2
+  },
+  {
+    "arm": "on",
+    "id": "h3-fanout",
+    "correct": true,
+    "wallMs": 14716,
+    "reply": "All confirmed:\n\n**(a)** `packages/sdk/src/managed-session.ts` — `subAgentToolDefs()` is defined as a static method there (line 644), on the `ManagedSession` class.\n\n**(b)** `\"2024-10-21\"` — the Azure `apiVersion` default fallback in `model-providers.ts`.\n\n**(c)** `.model_providers.json` — the primary filename searched by `resolveModelProvidersPath` (with `model_providers.json`, no leading dot, kept only as a legacy fallback).\n\n**(d)** `message_agent` — the tool that sends a message to a running ",
+    "errors": [],
+    "markerInvocations": [],
+    "taskUsed": false,
+    "subagentNames": [],
+    "parentFinalCtx": 34422,
+    "parentTokens": {
+      "input": 166269,
+      "output": 1260,
+      "cacheRead": 131436,
+      "cacheWrite": 34480,
+      "calls": 4
+    },
+    "subagentTokens": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "calls": 0
+    },
+    "parentToolCalls": 7,
+    "subagentToolCalls": 0
+  },
+  {
+    "arm": "on",
+    "id": "h4-multi-file",
+    "correct": true,
+    "wallMs": 5852,
+    "reply": "Only two files under `packages/sdk/src` reference `COPILOT_HOME`:\n\n- **`session-manager.ts`** — sets `COPILOT_HOME: path.dirname(this.sessionStateDir)` on the spawned Copilot CLI process env so the CLI uses PilotSwarm's session state directory instead of its default home, and comments explain this is the only variable the CLI honors for that purpose.\n- **`regen-worker.ts`** — creates its own isolated `COPILOT_HOME` under a temp directory when spawning a throwaway regen worker, so it can safely r",
+    "errors": [],
+    "markerInvocations": [],
+    "taskUsed": false,
+    "subagentNames": [],
+    "parentFinalCtx": 26211,
+    "parentTokens": {
+      "input": 69721,
+      "output": 341,
+      "cacheRead": 45540,
+      "cacheWrite": 24177,
+      "calls": 2
+    },
+    "subagentTokens": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "calls": 0
+    },
+    "parentToolCalls": 1,
+    "subagentToolCalls": 0
+  }
+]

@@ -88,6 +88,45 @@ export function makeMarkerTools(invocationLog) {
     ];
 }
 
+// ── event-stream analysis (shared by evals) ─────────────────────────────────
+export function analyzeEvents(eventsPath) {
+    const out = {
+        taskUsed: false,
+        subagentNames: [],
+        parentFinalCtx: null,
+        parentTokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, calls: 0 },
+        subagentTokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, calls: 0 },
+        parentToolCalls: 0,
+        subagentToolCalls: 0,
+    };
+    for (const line of fs.readFileSync(eventsPath, "utf-8").split("\n")) {
+        if (!line.trim()) continue;
+        let e;
+        try { e = JSON.parse(line); } catch { continue; }
+        const lane = e.agentId ? "subagent" : "parent";
+        if (e.type === "subagent.started") {
+            out.taskUsed = true;
+            out.subagentNames.push(e.data?.agentName);
+        }
+        if (e.type === "session.usage_info" && !e.agentId) {
+            out.parentFinalCtx = e.data?.currentTokens ?? out.parentFinalCtx;
+        }
+        if (e.type === "assistant.usage") {
+            const bucket = lane === "subagent" ? out.subagentTokens : out.parentTokens;
+            bucket.input += e.data?.inputTokens ?? 0;
+            bucket.output += e.data?.outputTokens ?? 0;
+            bucket.cacheRead += e.data?.cacheReadTokens ?? 0;
+            bucket.cacheWrite += e.data?.cacheWriteTokens ?? 0;
+            bucket.calls += 1;
+        }
+        if (e.type === "tool.execution_start") {
+            if (lane === "subagent") out.subagentToolCalls += 1;
+            else out.parentToolCalls += 1;
+        }
+    }
+    return out;
+}
+
 // ── experiment runner ────────────────────────────────────────────────────────
 export async function runExperiment({ name, env, sessionConfig, turns, timeoutMs = 240_000, homeFiles }) {
     fs.mkdirSync(RESULTS_DIR, { recursive: true });

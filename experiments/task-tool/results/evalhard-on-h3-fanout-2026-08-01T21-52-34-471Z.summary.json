@@ -1,0 +1,85 @@
+{
+  "name": "evalhard-on-h3-fanout",
+  "eventsPath": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/experiments/task-tool/results/evalhard-on-h3-fanout-2026-08-01T21-52-34-471Z.events.jsonl",
+  "turns": [
+    {
+      "prompt": "Answer all four questions about this repo: (a) Which file defines the static method subAgentToolDefs? (b) What default Azure apiVersion does model-providers.ts fall back to? (c) What is the primary (non-legacy) filename resolveModelProvidersPath searches for? (d) What is the name of the LLM tool that sends a message to a running sub-agent?",
+      "ms": 14716,
+      "reply": "All confirmed:\n\n**(a)** `packages/sdk/src/managed-session.ts` — `subAgentToolDefs()` is defined as a static method there (line 644), on the `ManagedSession` class.\n\n**(b)** `\"2024-10-21\"` — the Azure `apiVersion` default fallback in `model-providers.ts`.\n\n**(c)** `.model_providers.json` — the primary filename searched by `resolveModelProvidersPath` (with `model_providers.json`, no leading dot, kept only as a legacy fallback).\n\n**(d)** `message_agent` — the tool that sends a message to a running sub-agent."
+    }
+  ],
+  "subagentEvents": [],
+  "toolCalls": [
+    {
+      "tool": "grep",
+      "agentId": null,
+      "args": {
+        "pattern": "subAgentToolDefs|resolveModelProvidersPath|apiVersion",
+        "output_mode": "files_with_matches"
+      }
+    },
+    {
+      "tool": "grep",
+      "agentId": null,
+      "args": {
+        "pattern": "subAgentToolDefs\" pattern|static subAgentToolDefs",
+        "paths": "packages/sdk/src",
+        "output_mode": "files_with_matches"
+      }
+    },
+    {
+      "tool": "grep",
+      "agentId": null,
+      "args": {
+        "pattern": "apiVersion",
+        "paths": "packages/sdk/src/model-providers.ts",
+        "output_mode": "content",
+        "-n": true
+      }
+    },
+    {
+      "tool": "grep",
+      "agentId": null,
+      "args": {
+        "pattern": "resolveModelProvidersPath",
+        "paths": "packages/sdk/src",
+        "output_mode": "content",
+        "-n": true,
+        "-A": 15
+      }
+    },
+    {
+      "tool": "grep",
+      "agentId": null,
+      "args": {
+        "pattern": "message.*sub.?agent|send_message|sub_agent.*message",
+        "paths": "packages/sdk/src/managed-session.ts",
+        "output_mode": "content",
+        "-n": true,
+        "-i": true
+      }
+    },
+    {
+      "tool": "grep",
+      "agentId": null,
+      "args": {
+        "-n": true,
+        "-B": 5,
+        "output_mode": "content",
+        "paths": "packages/sdk/src/managed-session.ts",
+        "pattern": "Send a message to a running sub-agent"
+      }
+    },
+    {
+      "tool": "grep",
+      "agentId": null,
+      "args": {
+        "-n": true,
+        "output_mode": "content",
+        "paths": "packages/sdk/src",
+        "pattern": "static subAgentToolDefs|subAgentToolDefs\\(\\)"
+      }
+    }
+  ],
+  "errors": []
+}

@@ -1,0 +1,47 @@
+{
+  "name": "evalhard-off-h1-broad-sweep",
+  "eventsPath": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/experiments/task-tool/results/evalhard-off-h1-broad-sweep-2026-08-01T21-52-15-777Z.events.jsonl",
+  "turns": [
+    {
+      "prompt": "List the name of every LLM tool defined via defineTool() in packages/sdk/src/managed-session.ts, in definition order. Just the tool names.",
+      "ms": 11358,
+      "reply": "Two functions define the same tool set (`systemToolDefs()` for registration, and `_runTurnInner()` for per-turn handlers). Definition order (same in both):\n\n1. wait\n2. wait_on_worker\n3. cron\n4. cron_at\n5. ask_user\n6. report_cycle\n7. list_available_models\n8. set_session_model\n9. regenerate_context\n10. regenerate_agent\n11. update_session_summary\n12. send_session_message\n13. reply_session_message\n14. spawn_agent\n15. message_agent\n16. check_agents\n17. wait_for_agents\n18. list_sessions\n19. complete_agent\n20. cancel_agent\n21. delete_agent"
+    }
+  ],
+  "subagentEvents": [],
+  "toolCalls": [
+    {
+      "tool": "grep",
+      "agentId": null,
+      "args": {
+        "pattern": "defineTool",
+        "paths": "packages/sdk/src/managed-session.ts",
+        "output_mode": "content",
+        "-n": true
+      }
+    },
+    {
+      "tool": "view",
+      "agentId": null,
+      "args": {
+        "path": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src/managed-session.ts",
+        "view_range": [
+          300,
+          350
+        ]
+      }
+    },
+    {
+      "tool": "view",
+      "agentId": null,
+      "args": {
+        "path": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src/managed-session.ts",
+        "view_range": [
+          900,
+          940
+        ]
+      }
+    }
+  ],
+  "errors": []
+}

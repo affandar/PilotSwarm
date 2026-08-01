@@ -1,0 +1,25 @@
+{
+  "name": "evalhard-on-h4-multi-file",
+  "eventsPath": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/experiments/task-tool/results/evalhard-on-h4-multi-file-2026-08-01T21-52-44-927Z.events.jsonl",
+  "turns": [
+    {
+      "prompt": "Which files under packages/sdk/src reference COPILOT_HOME? Report every file path, and for each, one sentence on why it touches COPILOT_HOME.",
+      "ms": 5852,
+      "reply": "Only two files under `packages/sdk/src` reference `COPILOT_HOME`:\n\n- **`session-manager.ts`** — sets `COPILOT_HOME: path.dirname(this.sessionStateDir)` on the spawned Copilot CLI process env so the CLI uses PilotSwarm's session state directory instead of its default home, and comments explain this is the only variable the CLI honors for that purpose.\n- **`regen-worker.ts`** — creates its own isolated `COPILOT_HOME` under a temp directory when spawning a throwaway regen worker, so it can safely run/cleanup without touching the real session state."
+    }
+  ],
+  "subagentEvents": [],
+  "toolCalls": [
+    {
+      "tool": "grep",
+      "agentId": null,
+      "args": {
+        "pattern": "COPILOT_HOME",
+        "paths": "packages/sdk/src",
+        "output_mode": "content",
+        "-n": true
+      }
+    }
+  ],
+  "errors": []
+}

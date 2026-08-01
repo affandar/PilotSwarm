@@ -1,0 +1,91 @@
+{
+  "name": "evalhard-off-h3-fanout",
+  "eventsPath": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/experiments/task-tool/results/evalhard-off-h3-fanout-2026-08-01T21-52-15-780Z.events.jsonl",
+  "turns": [
+    {
+      "prompt": "Answer all four questions about this repo: (a) Which file defines the static method subAgentToolDefs? (b) What default Azure apiVersion does model-providers.ts fall back to? (c) What is the primary (non-legacy) filename resolveModelProvidersPath searches for? (d) What is the name of the LLM tool that sends a message to a running sub-agent?",
+      "ms": 16271,
+      "reply": "(a) `packages/sdk/src/managed-session.ts` (line 644, `static subAgentToolDefs()`).\n\n(b) `\"2024-10-21\"` — the default Azure `apiVersion` fallback in `model-providers.ts`.\n\n(c) `.model_providers.json` — the primary (non-legacy) filename `resolveModelProvidersPath` searches for; `model_providers.json` is the legacy fallback.\n\n(d) `message_agent` — the tool that sends a message to a running sub-agent."
+    }
+  ],
+  "subagentEvents": [],
+  "toolCalls": [
+    {
+      "tool": "grep",
+      "agentId": null,
+      "args": {
+        "pattern": "subAgentToolDefs",
+        "output_mode": "files_with_matches"
+      }
+    },
+    {
+      "tool": "grep",
+      "agentId": null,
+      "args": {
+        "pattern": "apiVersion",
+        "path": "packages/sdk/src/model-providers.ts",
+        "output_mode": "content",
+        "-n": true
+      }
+    },
+    {
+      "tool": "grep",
+      "agentId": null,
+      "args": {
+        "pattern": "resolveModelProvidersPath",
+        "output_mode": "content",
+        "-n": true,
+        "-A": 15
+      }
+    },
+    {
+      "tool": "grep",
+      "agentId": null,
+      "args": {
+        "pattern": "send.*message.*sub.?agent|message_agent|send_message_to",
+        "-i": true,
+        "path": "packages/sdk/src",
+        "output_mode": "files_with_matches"
+      }
+    },
+    {
+      "tool": "grep",
+      "agentId": null,
+      "args": {
+        "pattern": "subAgentToolDefs",
+        "paths": [
+          "packages/sdk/src"
+        ],
+        "output_mode": "content",
+        "-n": true
+      }
+    },
+    {
+      "tool": "grep",
+      "agentId": null,
+      "args": {
+        "pattern": "resolveModelProvidersPath",
+        "paths": [
+          "packages/sdk/src"
+        ],
+        "output_mode": "content",
+        "-n": true,
+        "-A": 15
+      }
+    },
+    {
+      "tool": "grep",
+      "agentId": null,
+      "args": {
+        "pattern": "\"send_message|message_agent|name:\\s*\"send\"|send.*sub.?agent",
+        "paths": [
+          "packages/sdk/src/orchestration"
+        ],
+        "output_mode": "content",
+        "-n": true,
+        "-i": true
+      }
+    }
+  ],
+  "errors": []
+}

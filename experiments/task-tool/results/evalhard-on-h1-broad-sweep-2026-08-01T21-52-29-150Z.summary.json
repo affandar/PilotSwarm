@@ -1,0 +1,36 @@
+{
+  "name": "evalhard-on-h1-broad-sweep",
+  "eventsPath": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/experiments/task-tool/results/evalhard-on-h1-broad-sweep-2026-08-01T21-52-29-150Z.events.jsonl",
+  "turns": [
+    {
+      "prompt": "List the name of every LLM tool defined via defineTool() in packages/sdk/src/managed-session.ts, in definition order. Just the tool names.",
+      "ms": 13358,
+      "reply": "Every `defineTool()` call in `managed-session.ts`, in the order they appear in the file (the file defines two similar tool sets, e.g., for two branches — both included in order):\n\n**First block (~line 346–837):**\n1. wait\n2. wait_on_worker\n3. cron\n4. cron_at\n5. ask_user\n6. report_cycle\n7. list_available_models\n8. set_session_model\n9. regenerate_context\n10. regenerate_agent\n11. update_session_summary\n12. send_session_message\n13. reply_session_message\n14. spawn_agent\n15. message_agent\n16. check_agents\n17. wait_for_agents\n18. list_sessions\n19. complete_agent\n20. cancel_agent\n21. delete_agent\n\n**Second block (~line 938–1756, same names repeated in a slightly different order):**\n22. wait\n23. report_cycle\n24. wait_on_worker\n25. cron\n26. cron_at\n27. ask_user\n28. list_available_models\n29. regenerate_context\n30. regenerate_agent\n31. set_session_model\n32. update_session_summary\n33. send_session_message\n34. reply_session_message\n35. spawn_agent\n36. message_agent\n37. check_agents\n38. wait_for_agents\n39. list_sessions\n40. complete_agent\n41. cancel_agent\n42. delete_agent"
+    }
+  ],
+  "subagentEvents": [],
+  "toolCalls": [
+    {
+      "tool": "grep",
+      "agentId": null,
+      "args": {
+        "pattern": "defineTool\\(",
+        "paths": [
+          "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src/managed-session.ts"
+        ],
+        "output_mode": "content",
+        "-n": true,
+        "-A": 3
+      }
+    },
+    {
+      "tool": "bash",
+      "agentId": null,
+      "args": {
+        "command": "grep -n 'defineTool(' /Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src/managed-session.ts",
+        "description": "Find defineTool call lines with names"
+      }
+    }
+  ],
+  "errors": []
+}

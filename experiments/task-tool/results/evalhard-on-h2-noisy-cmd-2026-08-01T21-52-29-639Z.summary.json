@@ -1,0 +1,75 @@
+{
+  "name": "evalhard-on-h2-noisy-cmd",
+  "eventsPath": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/experiments/task-tool/results/evalhard-on-h2-noisy-cmd-2026-08-01T21-52-29-639Z.events.jsonl",
+  "turns": [
+    {
+      "prompt": "Run scripts/noisy-build.sh in the working directory. Confirm whether the build succeeded and report the CHECKSUM value it prints.",
+      "ms": 15823,
+      "reply": "Build succeeded (exit code 0), 500/500 units compiled, no errors.\n\n**CHECKSUM: 7f3a9c-e51b22**"
+    }
+  ],
+  "subagentEvents": [
+    {
+      "type": "subagent.started",
+      "agentId": "toolu_01EaWmhoi4mrXJ3HbFnGTnSY",
+      "data": {
+        "toolCallId": "toolu_01EaWmhoi4mrXJ3HbFnGTnSY",
+        "agentName": "swarm-task",
+        "agentDisplayName": "Swarm Task Runner",
+        "agentDescription": "Execute development commands (tests, builds, linters, shell). Brief summary on success, full output on failure. Shell and file access only.",
+        "model": "claude-sonnet-5"
+      }
+    },
+    {
+      "type": "subagent.completed",
+      "agentId": "toolu_01EaWmhoi4mrXJ3HbFnGTnSY",
+      "data": {
+        "toolCallId": "toolu_01EaWmhoi4mrXJ3HbFnGTnSY",
+        "agentName": "swarm-task",
+        "agentDisplayName": "Swarm Task Runner",
+        "model": "claude-sonnet-5",
+        "totalToolCalls": 2,
+        "totalTokens": 20653,
+        "durationMs": 5919
+      }
+    }
+  ],
+  "toolCalls": [
+    {
+      "tool": "bash",
+      "agentId": null,
+      "args": {
+        "command": "ls scripts/noisy-build.sh 2>&1",
+        "description": "Check if noisy-build.sh exists"
+      }
+    },
+    {
+      "tool": "task",
+      "agentId": null,
+      "args": {
+        "name": "run-noisy-build",
+        "agent_type": "swarm-task",
+        "description": "Run scripts/noisy-build.sh",
+        "mode": "sync",
+        "prompt": "Run `bash scripts/noisy-build.sh` in the current working directory (/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/experiments/task-tool/fixture). Report: 1) whether the build succeeded (exit code 0) or failed, 2) the exact CHECKSUM value printed in the output (search for a line containing \"CHECKSUM\"), 3) any error messages if it failed. Be concise."
+      }
+    },
+    {
+      "tool": "bash",
+      "agentId": "toolu_01EaWmhoi4mrXJ3HbFnGTnSY",
+      "args": {
+        "command": "bash scripts/noisy-build.sh; echo \"EXIT_CODE:$?\"",
+        "description": "Run noisy-build.sh script and capture exit code"
+      }
+    },
+    {
+      "tool": "bash",
+      "agentId": "toolu_01EaWmhoi4mrXJ3HbFnGTnSY",
+      "args": {
+        "command": "grep -i \"checksum\\|error\\|fail\" /var/folders/v5/0qbxlktj4nb4jzvgfg6jqljw0000gn/T/1785621160770-copilot-tool-output-60571-a6553b9c-6652-4558-8a94-43c4db47eec9.txt",
+        "description": "Search for checksum and error lines in build output"
+      }
+    }
+  ],
+  "errors": []
+}
