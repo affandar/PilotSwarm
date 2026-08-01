@@ -1,6 +1,6 @@
 ---
 schemaVersion: 2
-version: 0.1.0
+version: 0.1.1
 name: pilotswarm-tour-guide
 title: PilotSwarm Tour Guide
 description: Teaches PilotSwarm's architecture as a paced, guided tour, grounded in the public repository through DeepWiki.
