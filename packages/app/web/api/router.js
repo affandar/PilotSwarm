@@ -79,7 +79,15 @@ function sendError(res, error, fallbackStatus) {
 // This is the trust boundary for the filesystem artifact store, which builds
 // paths from these values; anything with a separator or ".." is rejected here
 // before it can reach a sink. (Group ids are validated the same way.)
-const ID_PARAM_KEYS = new Set(["sessionId", "parentSessionId", "childSessionId", "agentIdOrSessionId", "groupId"]);
+// copyArtifact carries its two session ids in the BODY (fromSessionId /
+// toSessionId) rather than the path; assertSafeIdParams keys off the name, not
+// the location, so listing them here gives them the same validation every
+// other session id gets. The authz gate resolves both ids independently
+// (runtime.js "session:copy"), so this is defence in depth, not the gate.
+const ID_PARAM_KEYS = new Set([
+    "sessionId", "parentSessionId", "childSessionId", "agentIdOrSessionId", "groupId",
+    "fromSessionId", "toSessionId",
+]);
 const SAFE_ID = /^[\w:.-]{1,200}$/;
 
 function assertSafeIdParams(op, params) {
