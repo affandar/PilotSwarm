@@ -5959,16 +5959,14 @@ function Toolbar({ controller, mobile, chatFocusMode = false, onToggleChatFocus 
     // Icon-first toolbar: the glyph is the affordance, the label rides a
     // tooltip (desktop hover via title; mobile long-press via IconButton).
     const buttonDefs = [
+        // ONE new-session button, and it opens the chooser. The plain "＋"
+        // (default model, generic agent) and "＋⚙" (choose model, then agent)
+        // were two buttons for one intent, and the pair cost a slot the phone
+        // toolbar could not spare.
         {
             key: "new",
             icon: "＋",
-            label: "New session",
-            onClick: () => controller.handleCommand(UI_COMMANDS.NEW_SESSION).catch(() => {}),
-        },
-        {
-            key: "model",
-            icon: "＋⚙",
-            label: "New session + choose model",
+            label: "New session — choose model and agent",
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_MODEL_PICKER).catch(() => {}),
         },
         {
@@ -6001,13 +5999,16 @@ function Toolbar({ controller, mobile, chatFocusMode = false, onToggleChatFocus 
             disabled: chatFocusDisabled,
             active: chatFocusMode,
         }] : []),
-        {
+        // Admin console is desktop-only: its settings tree, package detail
+        // and file preview need width the phone layout cannot give them, so
+        // the button is omitted rather than shipped half-working.
+        ...(mobile ? [] : [{
             key: "admin",
             icon: "⚙",
             label: adminVisible ? "Close admin console" : "Admin console",
             onClick: () => controller.handleCommand(adminVisible ? UI_COMMANDS.CLOSE_ADMIN_CONSOLE : UI_COMMANDS.OPEN_ADMIN_CONSOLE).catch(() => {}),
             active: adminVisible,
-        },
+        }]),
     ];
 
     const renderButton = (def) => React.createElement(IconButton, {

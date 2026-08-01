@@ -122,6 +122,8 @@ The native TUI and browser portal share `ui-core` state and `ui-react` component
 | Session collapse toggle | Keyboard shortcut in `app.js` | **Click** — clicking a session with children toggles collapse/expand in `SessionPane` |
 | Nesting depth | **Box-drawing prefix** — the `└ ` run (`role:"depth"`) is rendered as text | **Guide rails** — the depth run is dropped and replaced by one hairline per ancestor level, painted as per-row background images so the list stays a flat row sequence |
 | Row status mark | **Glyph** — the status run (`role:"status"`) is rendered as text+colour | **Disc at top level, RING when nested** — the ring is centred on the row's deepest rail, so a run of siblings reads as one thread with a node each rather than a stack of glyphs. Status is still carried by colour; only the fill changes |
+| Creating a session | **Two keys** — `n` fast-starts a generic session on the default model, `Shift+N` opens model → reasoning effort → agent | **One `＋` button**, and it opens the chooser (equivalent to `Shift+N`). The plain-`＋` fast path was dropped: two buttons for one intent cost a toolbar slot the phone cannot spare. Deliberate divergence — the TUI keeps both keys |
+| Admin console | `Shift+A` toggles it | **Desktop only** — the button is omitted on mobile. Its settings tree, package detail and file preview need width the phone layout cannot give them |
 
 Both the depth and status runs are tagged by the shared selector precisely so a
 host can re-render them. The TUI ignores the tags by design — glyphs are correct
