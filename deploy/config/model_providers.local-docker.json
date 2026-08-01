@@ -8,7 +8,24 @@
                 {
                     "name": "claude-sonnet-5",
                     "description": "Claude Sonnet 5. Latest Sonnet — strong all-rounder with improved reasoning and coding over 4.6.",
-                    "cost": "medium"
+                    "cost": "medium",
+                    "supportedReasoningEfforts": [
+                        "low",
+                        "medium",
+                        "high",
+                        "xhigh",
+                        "max"
+                    ],
+                    "defaultReasoningEffort": "medium",
+                    "supportedContextTiers": [
+                        "default",
+                        "long_context"
+                    ],
+                    "defaultContextTier": "default",
+                    "contextWindowSizes": {
+                        "default": 200000,
+                        "long_context": 936000
+                    }
                 },
                 {
                     "name": "gpt-5.4",
