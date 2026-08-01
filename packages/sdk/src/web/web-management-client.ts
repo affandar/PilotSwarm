@@ -4,7 +4,7 @@ import {
     createApiClientFromOptions,
     webModeUnsupported,
 } from "./api-connection.js";
-import { type GeneratedOpMethods, installGeneratedOpMethods } from "./generated-op-methods.js";
+import { createManagementOps, type ManagementOps } from "./generated-op-methods.js";
 
 const WAIT_SLICE_MS = 25_000;
 
@@ -16,10 +16,18 @@ function toIso(value: unknown): unknown {
  * PilotSwarmManagementClient in web mode: the management surface over the
  * Web API. Constructed via `new PilotSwarmManagementClient({ apiUrl, … })`.
  *
+ * Two layers, both honest about what they are:
+ *
+ *   - `client.ops` — the canonical surface: one method per protocol-table
+ *     operation, wire-shaped params, generated. Complete by construction;
+ *     the coverage contract test keeps it that way.
+ *   - the methods on the class — hand-written ergonomic sugar over the same
+ *     wire (positional args, Date coercion, polling loops). Allowed to be
+ *     partial; `ops` is not.
+ *
  * Methods without an API equivalent (low-level command plumbing, session
  * dumps) throw `WEB_MODE_UNSUPPORTED` errors — they remain direct-mode-only
- * until a remote consumer needs them. Graph/retrieval observability gained
- * API routes for the MCP server's tuner-grade debug surface.
+ * until a remote consumer needs them.
  *
  * User-profile methods operate on the **authenticated** principal; the
  * explicit `principal` argument accepted by the direct client is ignored
@@ -28,10 +36,13 @@ function toIso(value: unknown): unknown {
 export class WebPilotSwarmManagementClient {
     /** @internal */
     readonly _api: ApiClient;
+    /** The canonical Web API surface: one wire-shaped method per operation. */
+    readonly ops: ManagementOps;
     private started = false;
 
     constructor(options: PilotSwarmWebOptions) {
         this._api = createApiClientFromOptions(options);
+        this.ops = createManagementOps((name, params) => this._api.call(name, params));
     }
 
     async start(): Promise<void> {
@@ -390,18 +401,3 @@ export class WebPilotSwarmManagementClient {
     }
 }
 
-/**
- * Every operation in the protocol table is reachable from this client.
- *
- * The hand-written methods above keep their ergonomic signatures (and their
- * callers); this merge adds a flat-params method for each of the remaining
- * operations. Previously the class was hand-ported one method at a time, which
- * is how it ended up 30 methods behind the direct client — including the
- * session-sharing ops, whose routes existed the whole time.
- */
-export interface WebPilotSwarmManagementClient extends GeneratedOpMethods {}
-
-installGeneratedOpMethods(
-    WebPilotSwarmManagementClient.prototype,
-    (self: WebPilotSwarmManagementClient, name, params) => self._api.call(name, params),
-);

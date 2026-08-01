@@ -10,10 +10,16 @@
  * `setSessionVisibility` / `getSessionAccess`, the authorization primitives
  * themselves, whose HTTP routes existed the whole time.
  *
- * These tests pin the two things that keep it from drifting again:
- *   1. Every operation in the table is callable on the client.
+ * The cure is `client.ops`: the canonical surface, generated from the table,
+ * complete by construction. These tests pin the three things that keep it
+ * from drifting again:
+ *   1. `ops` covers every operation in the table, exactly — no gaps, no
+ *      strays.
  *   2. The generated file is in sync with the table — adding an operation
- *      without regenerating fails here rather than at a call site months later.
+ *      without regenerating fails here rather than at a call site months
+ *      later.
+ *   3. The hand-written ergonomic layer stays a layer OVER the wire, not a
+ *      fork of it.
  *
  * Run: node --test test/unit/web-client-op-coverage.test.mjs
  */
@@ -30,36 +36,35 @@ import { OPERATIONS } from "../../api/src/protocol.js";
 import { WebPilotSwarmManagementClient } from "../../dist/web/web-management-client.js";
 import {
     GENERATED_OP_NAMES,
-    HAND_WRITTEN_OP_NAMES,
+    createManagementOps,
 } from "../../dist/web/generated-op-methods.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const GENERATED_FILE = resolve(here, "../../src/web/generated-op-methods.ts");
 const GENERATOR = resolve(here, "../../scripts/generate-web-client-ops.mjs");
 
-test("every operation in the protocol table is callable on the web client", () => {
-    const missing = OPERATIONS
-        .map((op) => op.name)
-        .filter((name) => typeof WebPilotSwarmManagementClient.prototype[name] !== "function");
-    assert.deepEqual(missing, [], `operations with no client method: ${missing.join(", ")}`);
-});
+function clientWithFakeApi() {
+    const client = Object.create(WebPilotSwarmManagementClient.prototype);
+    const calls = [];
+    client._api = { call: async (name, params) => { calls.push({ name, params }); return "ok"; } };
+    // `ops` is normally bound in the constructor; bind it the same way here.
+    Object.defineProperty(client, "ops", {
+        value: createManagementOps((name, params) => client._api.call(name, params)),
+    });
+    return { client, calls };
+}
 
-test("the generated name list matches the protocol table exactly", () => {
+test("client.ops covers the protocol table exactly", () => {
+    const { client } = clientWithFakeApi();
     const fromTable = [...OPERATIONS.map((op) => op.name)].sort();
-    assert.deepEqual([...GENERATED_OP_NAMES].sort(), fromTable);
-});
 
-test("hand-written operations really are implemented by hand", () => {
-    // Each name here is excluded from the generated interface because the class
-    // gives it an ergonomic signature. If one disappears from the class, the
-    // generator must be re-run so it becomes a generated method instead.
-    for (const name of HAND_WRITTEN_OP_NAMES) {
-        assert.equal(
-            typeof WebPilotSwarmManagementClient.prototype[name],
-            "function",
-            `${name} is listed as hand-written but the class does not define it`,
-        );
-    }
+    const missing = fromTable.filter((name) => typeof client.ops[name] !== "function");
+    assert.deepEqual(missing, [], `operations with no ops method: ${missing.join(", ")}`);
+
+    const extra = Object.keys(client.ops).filter((name) => !fromTable.includes(name)).sort();
+    assert.deepEqual(extra, [], `ops methods with no table operation: ${extra.join(", ")}`);
+
+    assert.deepEqual([...GENERATED_OP_NAMES].sort(), fromTable);
 });
 
 test("the generated file is up to date with the protocol table", () => {
@@ -74,32 +79,34 @@ test("the generated file is up to date with the protocol table", () => {
     );
 });
 
-test("generated methods forward the operation name and params verbatim", async () => {
-    const client = Object.create(WebPilotSwarmManagementClient.prototype);
-    const calls = [];
-    client._api = { call: async (name, params) => { calls.push({ name, params }); return "ok"; } };
+test("ops methods forward the operation name and params verbatim", async () => {
+    const { client, calls } = clientWithFakeApi();
 
     // grantSessionShare was direct-mode-only before the client was generated.
-    const result = await client.grantSessionShare({
+    const result = await client.ops.grantSessionShare({
         sessionId: "s1",
         user: { provider: "entra", subject: "u1" },
         access: "read",
     });
-
     assert.equal(result, "ok");
-    assert.deepEqual(calls, [{
-        name: "grantSessionShare",
-        params: { sessionId: "s1", user: { provider: "entra", subject: "u1" }, access: "read" },
-    }]);
+
+    // A no-params op defaults to an empty object.
+    await client.ops.getWorkerCount();
+
+    assert.deepEqual(calls, [
+        {
+            name: "grantSessionShare",
+            params: { sessionId: "s1", user: { provider: "entra", subject: "u1" }, access: "read" },
+        },
+        { name: "getWorkerCount", params: {} },
+    ]);
 });
 
-test("generation never clobbers a hand-written ergonomic signature", async () => {
-    const client = Object.create(WebPilotSwarmManagementClient.prototype);
-    const calls = [];
-    client._api = { call: async (name, params) => { calls.push({ name, params }); } };
+test("the ergonomic layer still rides the same wire with its own signatures", async () => {
+    const { client, calls } = clientWithFakeApi();
 
-    // Positional, not a flat params object — this is the signature 55 MCP call
-    // sites, the TUI and the portal depend on.
+    // Positional, not a flat params object — this is the signature the MCP
+    // server, the TUI and the portal depend on.
     await client.renameSession("s2", "New Title");
 
     assert.deepEqual(calls, [{ name: "renameSession", params: { sessionId: "s2", title: "New Title" } }]);

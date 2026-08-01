@@ -245,7 +245,7 @@ export async function runAgentsCommand(argv) {
                         } finally {
                             staged.cleanup();
                         }
-                        outcome = await ctx.client.uploadAgentPackage({ files: collectUploadFiles(resolvedDir), scope });
+                        outcome = await ctx.client.ops.uploadAgentPackage({ files: collectUploadFiles(resolvedDir), scope });
                     } else {
                         outcome = await publishAgentPackageDir(ctx, {
                             dir: resolvedDir,
@@ -275,7 +275,7 @@ export async function runAgentsCommand(argv) {
             }
             case "list": {
                 const packages = web
-                    ? await ctx.client.listAgentPackages()
+                    ? await ctx.client.ops.listAgentPackages()
                     : await ctx.catalog.listAgentPackages(actor, isAdmin);
                 if (flags.json) { console.log(JSON.stringify(packages, null, 2)); return 0; }
                 if (packages.length === 0) { console.log("no agent packages registered"); return 0; }
@@ -286,7 +286,7 @@ export async function runAgentsCommand(argv) {
                 const name = rest[0];
                 if (!name) { console.error("usage: pilotswarm agents show <name>"); return 1; }
                 const detail = web
-                    ? await ctx.client.getAgentPackage({ name })
+                    ? await ctx.client.ops.getAgentPackage({ name })
                     : await ctx.catalog.getAgentPackage(name, actor, isAdmin);
                 if (!detail) { console.error(`package "${name}" not found`); return 1; }
                 if (flags.json) { console.log(JSON.stringify(detail, null, 2)); return 0; }
@@ -306,7 +306,7 @@ export async function runAgentsCommand(argv) {
                 let semver = rest[1];
                 if (name?.includes("@")) [name, semver] = name.split("@");
                 if (!name || !semver) { console.error("usage: pilotswarm agents pin <name>@<semver>"); return 1; }
-                if (web) await ctx.client.pinAgentPackageVersion({ name, semver });
+                if (web) await ctx.client.ops.pinAgentPackageVersion({ name, semver });
                 else await ctx.catalog.pinAgentPackageVersion(name, semver, actor, isAdmin);
                 console.log(`✓ ${name} active version pinned to ${semver} — fleet converges on the next epoch poll`);
                 return 0;
@@ -316,7 +316,7 @@ export async function runAgentsCommand(argv) {
                 const name = rest[0];
                 if (!name) { console.error(`usage: pilotswarm agents ${command} <name>`); return 1; }
                 const scope = command === "promote" ? "shared" : "user";
-                if (web) await ctx.client.setAgentPackageScope({ name, scope });
+                if (web) await ctx.client.ops.setAgentPackageScope({ name, scope });
                 else await ctx.catalog.setAgentPackageScope(name, scope, actor, isAdmin);
                 console.log(`✓ ${name} is now ${scope}${scope === "shared" ? " — visible to every user" : " — visible only to its owner"} (running agents unaffected)`);
                 return 0;
@@ -326,7 +326,7 @@ export async function runAgentsCommand(argv) {
                 const name = rest[0];
                 if (!name) { console.error(`usage: pilotswarm agents ${command} <name>`); return 1; }
                 const enabled = command === "enable";
-                if (web) await ctx.client.setAgentPackageEnabled({ name, enabled });
+                if (web) await ctx.client.ops.setAgentPackageEnabled({ name, enabled });
                 else await ctx.catalog.setAgentPackageEnabled(name, enabled, actor, isAdmin);
                 console.log(`✓ ${name} ${enabled ? "enabled" : "disabled"} fleet-wide — workers converge on the next epoch poll`);
                 return 0;
@@ -335,7 +335,7 @@ export async function runAgentsCommand(argv) {
                 const name = rest[0];
                 if (!name) { console.error("usage: pilotswarm agents tree <name> [--semver <v>]"); return 1; }
                 const tree = web
-                    ? await ctx.client.getAgentPackageTree({ name, semver: flags.semver })
+                    ? await ctx.client.ops.getAgentPackageTree({ name, semver: flags.semver })
                     : await directTree(ctx, name, flags.semver, actor, isAdmin);
                 if (flags.json) { console.log(JSON.stringify(tree, null, 2)); return 0; }
                 const entries = Array.isArray(tree) ? tree : (tree?.files ?? tree?.entries ?? []);
@@ -352,7 +352,7 @@ export async function runAgentsCommand(argv) {
                 const filePath = rest[1];
                 if (!name || !filePath) { console.error("usage: pilotswarm agents cat <name> <file> [--semver <v>]"); return 1; }
                 const file = web
-                    ? await ctx.client.getAgentPackageFile({ name, semver: flags.semver, filePath })
+                    ? await ctx.client.ops.getAgentPackageFile({ name, semver: flags.semver, filePath })
                     : await directFile(ctx, name, flags.semver, filePath, actor, isAdmin);
                 if (flags.json) { console.log(JSON.stringify(file, null, 2)); return 0; }
                 if (file?.binary) { console.error(`${filePath} is binary (${file.size ?? "?"} bytes)`); return 1; }
@@ -367,7 +367,7 @@ export async function runAgentsCommand(argv) {
                     console.error(`refusing to delete "${name}" without --yes (removes every version and its artifacts; live sessions using its agents will fail resolution on their next turn)`);
                     return 1;
                 }
-                if (web) await ctx.client.deleteAgentPackage({ name });
+                if (web) await ctx.client.ops.deleteAgentPackage({ name });
                 else await deleteAgentPackageEverywhere(ctx, name, actor, isAdmin);
                 console.log(`✓ ${name} deleted (registry rows and artifacts)`);
                 return 0;
