@@ -1,0 +1,21 @@
+{
+  "name": "finance-research-lab",
+  "version": "0.1.0-dev.1",
+  "description": "A source-backed stock and finance research desk with specialist agents and live market, SEC, ratio, and DCF tools.",
+  "agents": [
+    "agents/finance-research-lead.agent.md",
+    "agents/equity-fundamentals.agent.md",
+    "agents/valuation-analyst.agent.md",
+    "agents/market-catalyst-scout.agent.md",
+    "agents/investment-risk-auditor.agent.md",
+    "agents/macro-sector-strategist.agent.md"
+  ],
+  "skills": [
+    "skills/finance-research-standards",
+    "skills/valuation-methods"
+  ],
+  "tools": "tools/worker-module.js",
+  "include": [
+    "README.md"
+  ]
+}
