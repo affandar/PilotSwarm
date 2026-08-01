@@ -253,6 +253,10 @@ export {
     readAgentPackageTarGz,
     extractAgentPackageTarGz,
     validateAgentPackageDir,
+    // A manifest-layout package only validates against its staged canonical
+    // tree, so any caller validating before publish needs to stage first —
+    // otherwise it reports failures that publishing would have resolved.
+    stageAgentPackageDir,
     AGENT_PACKAGE_MAX_COMPRESSED_BYTES,
 } from "./agent-package-format.js";
 export type {

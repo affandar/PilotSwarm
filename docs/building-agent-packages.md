@@ -270,6 +270,20 @@ pilotswarm agents validate ./my-kit
 **Upload — any of these paths:**
 
 1. **CLI**: `pilotswarm agents push ./my-kit --shared` (or `--user`).
+
+   The CLI talks to a deployment's Web API, so it needs no database
+   credentials — your own sign-in decides what you can publish and change:
+
+   ```sh
+   pilotswarm auth login --api-url https://<your-portal>
+   export PILOTSWARM_API_URL=https://<your-portal>   # or pass --api-url
+   pilotswarm agents push ./my-kit --shared
+   ```
+
+   Inline upload carries the same **≤ 2 MB** envelope as the portal and MCP
+   paths. A larger package needs `--store <postgres-url>`, which talks to the
+   datastore directly and bypasses authentication and authorization entirely
+   — operator break-glass, not a normal path.
 2. **Portal**: Admin Console → **Agents** → **+ Add package**:
    - **GitHub / Azure DevOps** — paste the browser link to `plugin.json`
      (or the folder containing it); the branch and path are read from the
