@@ -3197,9 +3197,23 @@ function SessionDetailBox({ session, childCount = 0 }) {
  * fleet. That only holds while every prop is referentially stable — hence the
  * hoisted click handler and ref setter rather than closures built per row.
  */
+const RAIL_ORIGIN_PX = 13;
+const RAIL_STEP_PX = 11;
+
 const SessionListRow = React.memo(function SessionListRow({
-    row, theme, rich, structuredRows, mobile, onRowClick, setRef, drag, well = null,
+    row, theme, rich, structuredRows, mobile, onRowClick, setRef, drag,
 }) {
+    const depth = Math.max(0, row.depth);
+    const railStyle = React.useMemo(() => {
+        if (depth < 1) return undefined;
+        const levels = Array.from({ length: depth }, (_, level) => level);
+        return {
+            backgroundImage: levels.map(() => "linear-gradient(var(--ps-rail), var(--ps-rail))").join(", "),
+            backgroundSize: levels.map(() => "1.5px 100%").join(", "),
+            backgroundPosition: levels.map((level) => `${RAIL_ORIGIN_PX + (level * RAIL_STEP_PX)}px 0`).join(", "),
+            backgroundRepeat: "no-repeat",
+        };
+    }, [depth]);
     const ref = React.useCallback((node) => setRef(row.sessionId, node), [setRef, row.sessionId]);
     const onClick = React.useCallback((event) => onRowClick(event, row), [onRowClick, row]);
     // Pointer-based dragging: HTML5 drag never fired reliably from these
@@ -3229,7 +3243,12 @@ const SessionListRow = React.memo(function SessionListRow({
     return React.createElement("button", {
         type: "button",
         ref,
-        className: `ps-list-button ps-session-list-button${row.active ? " is-selected" : ""}${row.selected ? " is-multiselected" : ""}${row.pinned ? " is-pinned" : ""}${inDropZone ? " is-drop-zone" : ""}${isDropTarget ? " is-drop-target" : ""}${well ? " is-nested" : ""}${well?.start ? " is-well-start" : ""}${well?.end ? " is-well-end" : ""}`,
+        className: `ps-list-button ps-session-list-button${row.active ? " is-selected" : ""}${row.selected ? " is-multiselected" : ""}${row.pinned ? " is-pinned" : ""}${inDropZone ? " is-drop-zone" : ""}${isDropTarget ? " is-drop-target" : ""}${row.depth > 0 ? " is-nested" : ""}`,
+        // Guide rails: one hairline per ancestor level, painted as background
+        // images so each row covers its OWN full height and the levels join
+        // into continuous lines down the branch. No wrapper element, so the
+        // list stays a flat row sequence.
+        style: railStyle,
         tabIndex: row.active ? 0 : -1,
         "aria-selected": row.active ? "true" : "false",
         "data-session-id": row.sessionId,
@@ -3241,9 +3260,6 @@ const SessionListRow = React.memo(function SessionListRow({
         // Every row that BELONGS to a folder advertises it too, so the hit
         // test can resolve a destination from anywhere in the folder's region.
         "data-drop-group": dropGroupId || undefined,
-        // The well's header label is drawn from this by CSS, so a run of
-        // nested rows needs no wrapper element and the list stays flat.
-        "data-well-count": well?.start ? String(well.count) : undefined,
         onPointerDown,
         onClick,
         // macOS turns Ctrl+click into a context-menu event, so the click
@@ -3258,20 +3274,18 @@ const SessionListRow = React.memo(function SessionListRow({
         React.createElement("div", {
             className: rich ? "ps-session-row-content is-rich" : "ps-line ps-session-row-content",
             style: {
-                // Inside a well the row starts clear of its rail (18px + 2px)
-                // and steps in per level; the well itself now carries the
-                // nesting that the dropped "└ " glyph used to.
-                paddingInlineStart: well
-                    ? `${14 + (Math.max(1, row.depth) * 10)}px`
+                // Content clears the deepest rail, then steps in per level.
+                paddingInlineStart: depth > 0
+                    ? `${(RAIL_ORIGIN_PX - 4) + (depth * RAIL_STEP_PX)}px`
                     : rich
-                        ? `${Math.max(0, row.depth) * 14}px`
-                        : `${Math.max(0, row.depth) * 4}px`,
+                        ? "0px"
+                        : "0px",
             },
         },
             rich
                 ? React.createElement(RichSessionRow, { row, theme, showDetail: mobile })
                 : React.createElement(SessionRowContent, {
-                    row, theme, structured: structuredRows, showInlineDetail: mobile, dropDepthRun: Boolean(well),
+                    row, theme, structured: structuredRows, showInlineDetail: mobile,
                 })));
 });
 
@@ -3330,27 +3344,52 @@ function RichSessionRow({ row, theme, showDetail = false }) {
             : null);
 }
 
-// The depth run is the "└ " prefix. Nesting is drawn as a WELL in the portal,
-// so the glyph inside it would be saying the same thing twice, in the weaker
-// of the two languages. Tagged with role:"depth" by the selector precisely so
-// a host can drop it; the TUI keeps it.
-function withoutDepthRun(runs, drop) {
-    if (!drop || !Array.isArray(runs)) return runs;
-    return runs.filter((run) => run?.role !== "depth");
+/**
+ * Portal row prefix: drop the "└ " depth glyph (the guide rail says it, and
+ * better — a rail shows a branch that CONTINUES, which the glyph cannot), and
+ * lift the status run out so it can be drawn as a dot instead of "~" / "*",
+ * which is unreadable without a legend.
+ *
+ * Both runs are tagged by the selector precisely so a host can do this; the
+ * TUI renders text+colour, ignores the tags, and keeps its glyphs.
+ */
+function portalRowRuns(runs, theme) {
+    if (!Array.isArray(runs)) return { statusColor: null, rest: runs };
+    let statusColor = null;
+    const rest = [];
+    for (const run of runs) {
+        if (run?.role === "depth") continue;
+        if (run?.role === "status") {
+            statusColor = resolveColor(theme, run.color) || null;
+            continue;
+        }
+        rest.push(run);
+    }
+    return { statusColor, rest };
 }
 
-function SessionRowContent({ row, theme, structured = false, showInlineDetail = false, dropDepthRun = false }) {
+function StatusDot({ color }) {
+    return React.createElement("span", {
+        className: "ps-session-status-dot",
+        style: color ? { background: color } : undefined,
+    });
+}
+
+function SessionRowContent({ row, theme, structured = false, showInlineDetail = false }) {
     const hasStructuredRuns = structured && Array.isArray(row.titleRuns);
     if (!hasStructuredRuns) {
-        return Array.isArray(row.runs)
-            ? React.createElement(Runs, { runs: withoutDepthRun(row.runs, dropDepthRun), theme })
-            : row.text;
+        if (!Array.isArray(row.runs)) return row.text;
+        const plain = portalRowRuns(row.runs, theme);
+        return React.createElement(React.Fragment, null,
+            plain.statusColor ? React.createElement(StatusDot, { color: plain.statusColor }) : null,
+            React.createElement(Runs, { runs: plain.rest, theme }));
     }
 
     // Dense row: the title takes one line (clamped by CSS) and the context %
     // is pinned to the right. id · time · model · ctx now live in the panel's
     // detail box rather than unfolding under the row, so selecting a session
     // no longer reflows the list.
+    const title = portalRowRuns(row.titleRuns, theme);
     const ctxRuns = Array.isArray(row.ctxRuns) ? row.ctxRuns : [];
     const hasCtx = ctxRuns.length > 0;
     // Mobile keeps the inline unfold under the selected row (no detail box).
@@ -3362,7 +3401,8 @@ function SessionRowContent({ row, theme, structured = false, showInlineDetail = 
     return React.createElement(React.Fragment, null,
         React.createElement("div", { className: "ps-session-row-line" },
             React.createElement("div", { className: "ps-session-row-title" },
-                React.createElement(Runs, { runs: withoutDepthRun(row.titleRuns, dropDepthRun), theme })),
+                title.statusColor ? React.createElement(StatusDot, { color: title.statusColor }) : null,
+                React.createElement(Runs, { runs: title.rest, theme })),
             hasCtx
                 ? React.createElement("div", { className: "ps-session-row-ctx" },
                     React.createElement(Runs, { runs: ctxRuns, theme }))
@@ -3458,29 +3498,6 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     }), [viewState.activeSessionId, viewState.auth, viewState.branding, viewState.connectionMode, viewState.filterQuery, viewState.listDeselected, viewState.ownerFilter, viewState.pinnedIds, viewState.selectedIds, viewState.selectMode, viewState.sessionsById, viewState.sessionsFlat]);
     // Hold the previous rows when a poll produced identical output.
     const rows = useStableValue(computedRows);
-    // Nested sessions render inside a "well" — a tone-separated surface that
-    // makes containment a SURFACE rather than a box-drawing character, which
-    // could never show a branch that continues.
-    //
-    // Derived HERE rather than in selectSessionRows on purpose: a well spans a
-    // contiguous RUN of rows, so it depends on a row's neighbours, and the
-    // shared row memo keys each row on its own inputs alone — a neighbour
-    // changing depth would hand back a stale cached row. The portal is also
-    // the only surface that draws it; the TUI keeps its glyphs.
-    const wells = React.useMemo(() => {
-        const flags = new Array(rows.length).fill(null);
-        for (let index = 0; index < rows.length; index += 1) {
-            if (!(rows[index].depth > 0)) continue;
-            if (index > 0 && rows[index - 1].depth > 0) continue;
-            let end = index;
-            while (end + 1 < rows.length && rows[end + 1].depth > 0) end += 1;
-            const count = end - index + 1;
-            for (let cursor = index; cursor <= end; cursor += 1) {
-                flags[cursor] = { start: cursor === index, end: cursor === end, count };
-            }
-        }
-        return flags;
-    }, [rows]);
     const activeSession = viewState.activeSessionId
         ? viewState.sessionsById[viewState.activeSessionId] || null
         : null;
@@ -3900,7 +3917,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             ? React.createElement("div", { className: "ps-empty-state" }, viewState.filterQuery
                 ? `No sessions matched "@@${viewState.filterQuery}".`
                 : "No sessions yet.")
-            : rows.map((row, index) => React.createElement(SessionListRow, {
+            : rows.map((row) => React.createElement(SessionListRow, {
                 key: row.sessionId,
                 row,
                 theme,
@@ -3910,10 +3927,6 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                 onRowClick: handleRowClick,
                 setRef: setSessionButtonRef,
                 drag: dragHandlers,
-                // Memoised on `rows`, which useStableValue holds stable across
-                // identical polls — so these objects keep their identity and
-                // React.memo still skips unchanged rows.
-                well: wells[index],
             }))),
     isMobilePane
         ? null

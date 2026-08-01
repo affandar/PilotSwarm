@@ -646,9 +646,13 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
         prefixRuns.push({ text: "⚗ ", color: "magenta", bold: true });
     } else {
         const icon = sessionStatusIcon(session, mode);
+        // role:"status" so a host can render this as a MARK rather than a
+        // character — the portal draws a dot, since "~" vs "*" is unreadable
+        // without a legend. The TUI renders text+colour and ignores the field.
         prefixRuns.push({
             text: icon ? `${icon} ` : "  ",
             color: sessionStatusColor(session, mode),
+            role: "status",
         });
     }
 

@@ -1,104 +1,113 @@
-// Nested sessions render as a "well" — a tone-separated surface with a left
-// rail — instead of a box-drawing character.
+// Nested sessions render with guide rails and a status dot instead of a
+// box-drawing character and punctuation.
 //
-// WHY THIS EXISTS: the well is built entirely from per-row classes so the list
-// stays a FLAT row sequence (memoised rendering, keyboard nav and the drag
-// hit-test all depend on that). Nothing in a unit test can tell you the run
-// boundaries landed on the right rows, or that the "└ " glyph actually
-// disappeared from the portal while the TUI kept it.
+// WHY THIS EXISTS: the rails are per-row background images so the list stays a
+// FLAT row sequence (memoised rendering, keyboard nav and the drag hit-test
+// all depend on that). Nothing in a unit test can tell you a rail landed at
+// the right depth, that the "└ " glyph actually left the portal while the TUI
+// kept it, or that a folder survived a transient empty listing.
 import { test, expect } from "@playwright/test";
 import { startStubServer } from "./stub-server.mjs";
 
-let stub;
-let base;
+const GROUP = {
+    groupId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    title: "R2D Sessions",
+    description: "",
+    owner: null,
+    memberCount: 3,
+    runningCount: 0, waitingCount: 0, completedCount: 0, failedCount: 0, cancelledCount: 0,
+    createdAt: 1785000000000,
+    updatedAt: 1785000000000,
+};
 
-test.beforeAll(async () => {
-    // 1 → {2 → {3}}, 5: a chain deep enough to show more than one level.
-    stub = await startStubServer(0, { sessionCount: 7, parents: { 2: 1, 3: 2, 5: 1 } });
-    base = `http://127.0.0.1:${stub.port}`;
-});
+// Stub session ids are deterministic; matching on them avoids a text locator
+// racing a list that is re-rendering under it.
+const idOf = (index) => `1111111${index}-2222-3333-4444-55555555555${index}`;
+const rowFor = (page, index) => page.locator(`.ps-session-list-button[data-session-id="${idOf(index)}"]`);
 
-test.afterAll(async () => { await new Promise((resolve) => stub.server.close(resolve)); });
-
-// Parents start collapsed; the first click selects, the second toggles.
-async function expand(page, label) {
-    const row = page.locator(".ps-session-list-button", { hasText: new RegExp(`${label}\\b`) }).first();
+// Parents start collapsed; the first click selects, the second toggles. Each
+// click is allowed to settle — firing both immediately reads as a double-click
+// and the second expand can race the re-render.
+async function expand(page, index) {
+    const row = rowFor(page, index);
     await row.click();
+    await page.waitForTimeout(120);
     await row.click();
+    await page.waitForTimeout(160);
 }
 
-test("a subtree renders as one well, capped at both ends", async ({ page }) => {
-    await page.goto(base);
-    await page.locator(".ps-session-list-button").first().waitFor();
-    await expect(page.locator(".ps-session-list-button.is-nested")).toHaveCount(0);
+test.describe("guide rails", () => {
+    let stub;
+    let base;
+    test.beforeAll(async () => {
+        stub = await startStubServer(0, { sessionCount: 7, parents: { 2: 1, 3: 2, 5: 1 } });
+        base = `http://127.0.0.1:${stub.port}`;
+    });
+    test.afterAll(async () => { await new Promise((resolve) => stub.server.close(resolve)); });
 
-    await expand(page, "Session 1");
-    const nested = page.locator(".ps-session-list-button.is-nested");
-    await expect(nested).toHaveCount(2);
-    // Exactly one cap at each end, however deep the run goes.
-    await expect(page.locator(".ps-session-list-button.is-well-start")).toHaveCount(1);
-    await expect(page.locator(".ps-session-list-button.is-well-end")).toHaveCount(1);
+    test("one rail per ancestor level, and none at top level", async ({ page }) => {
+        await page.goto(base);
+        await page.locator(".ps-session-list-button").first().waitFor();
+        await expect(page.locator(".ps-session-list-button.is-nested")).toHaveCount(0);
 
-    await expand(page, "Session 2");
-    await expect(nested).toHaveCount(3);
-    await expect(page.locator(".ps-session-list-button.is-well-start")).toHaveCount(1);
-    await expect(page.locator(".ps-session-list-button.is-well-end")).toHaveCount(1);
+        await expand(page, 1);
+        await expand(page, 2);
+
+        const railCount = (node) => {
+            const image = getComputedStyle(node).backgroundImage;
+            return image === "none" ? 0 : image.split("linear-gradient").length - 1;
+        };
+        // One hairline per ANCESTOR level, so depth reads without counting
+        // indent — the thing the single "└ " could never convey.
+        expect(await rowFor(page, 1).evaluate(railCount), "top level has no rail").toBe(0);
+        expect(await rowFor(page, 2).evaluate(railCount), "depth 1").toBe(1);
+        expect(await rowFor(page, 3).evaluate(railCount), "depth 2").toBe(2);
+    });
+
+    test("the box-drawing glyph is gone from the portal", async ({ page }) => {
+        await page.goto(base);
+        await page.locator(".ps-session-list-button").first().waitFor();
+        await expand(page, 1);
+        await expect(page.locator(".ps-session-list-button.is-nested").first()).toBeVisible();
+        expect(await page.locator(".ps-session-list").innerText()).not.toContain("└");
+    });
+
+    test("status is a dot, not punctuation", async ({ page }) => {
+        await page.goto(base);
+        await page.locator(".ps-session-list-button").first().waitFor();
+        const dots = page.locator(".ps-session-status-dot");
+        expect(await dots.count()).toBeGreaterThan(0);
+        // A dot carries the status COLOUR, so it has to be painted, not blank.
+        const background = await dots.first().evaluate((node) => getComputedStyle(node).backgroundColor);
+        expect(background).not.toBe("rgba(0, 0, 0, 0)");
+    });
 });
 
-test("the box-drawing glyph is gone from nested rows", async ({ page }) => {
-    await page.goto(base);
-    await page.locator(".ps-session-list-button").first().waitFor();
-    await expand(page, "Session 1");
-    await expect(page.locator(".ps-session-list-button.is-nested").first()).toBeVisible();
+test("a folder survives a transient empty group listing", async ({ page }) => {
+    // A successful-but-empty listing used to delete the folder row. Its
+    // members then hung off a generic stand-in, and because collapse state is
+    // keyed by row id, the pruned entry took the group's COLLAPSED state with
+    // it — so the group sprang open and spilled its members into the list.
+    const stub = await startStubServer(0, {
+        sessionCount: 6,
+        groups: [GROUP],
+        groupMembers: { 2: GROUP.groupId, 3: GROUP.groupId, 4: GROUP.groupId },
+    });
+    try {
+        const base = `http://127.0.0.1:${stub.port}`;
+        await page.goto(base);
+        const folder = page.locator(".ps-session-list-button[data-group-row='1']");
+        await expect(folder).toContainText("R2D Sessions");
+        const before = await page.locator(".ps-session-list-button").count();
 
-    // The well says "nested"; the glyph saying it again is the thing being
-    // replaced. (The selector still emits it — the TUI renders it.)
-    const text = await page.locator(".ps-session-list").innerText();
-    expect(text).not.toContain("└");
-});
+        stub.setGroups([]);
+        // Long enough for several refresh ticks to land.
+        await page.waitForTimeout(6000);
 
-test("the well is labelled with the size of the run", async ({ page }) => {
-    await page.goto(base);
-    await page.locator(".ps-session-list-button").first().waitFor();
-    await expand(page, "Session 1");
-
-    const start = page.locator(".ps-session-list-button.is-well-start");
-    await expect(start).toHaveAttribute("data-well-count", "2");
-    const label = await start.evaluate((node) => getComputedStyle(node, "::before").content);
-    expect(label).toContain("sub-agents");
-
-    // Growing the run re-labels it rather than counting only direct children.
-    await expand(page, "Session 2");
-    await expect(page.locator(".ps-session-list-button.is-well-start")).toHaveAttribute("data-well-count", "3");
-});
-
-test("the well elevates in BOTH polarities, never white-on-white", async ({ page }) => {
-    // --ps-surface was invisible on the light themes; the well elevates from
-    // the background toward the foreground instead, so it steps darker on
-    // light and lighter on dark.
-    for (const themeId of ["github-light", "noctis"]) {
-        const themed = await startStubServer(0, { sessionCount: 5, themeId, parents: { 2: 1 } });
-        try {
-            await page.goto(`http://127.0.0.1:${themed.port}`);
-            await page.locator(".ps-session-list-button").first().waitFor();
-            await expand(page, "Session 1");
-            const nested = page.locator(".ps-session-list-button.is-nested").first();
-            await expect(nested).toBeVisible();
-            const [well, ground] = await page.evaluate(() => {
-                const styles = getComputedStyle(document.documentElement);
-                const probe = (value) => {
-                    const el = document.createElement("span");
-                    el.style.color = value;
-                    document.body.appendChild(el);
-                    const out = getComputedStyle(el).color;
-                    el.remove();
-                    return out;
-                };
-                return [probe(styles.getPropertyValue("--ps-well")), probe(styles.getPropertyValue("--ps-background"))];
-            });
-            expect(well, `${themeId}: the well must not equal the ground`).not.toBe(ground);
-        } finally {
-            await new Promise((resolve) => themed.server.close(resolve));
-        }
+        await expect(folder, "the folder keeps its title").toContainText("R2D Sessions");
+        await expect(page.locator(".ps-session-list-button.is-nested"), "and stays collapsed").toHaveCount(0);
+        expect(await page.locator(".ps-session-list-button").count()).toBe(before);
+    } finally {
+        await new Promise((resolve) => stub.server.close(resolve));
     }
 });

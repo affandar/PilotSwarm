@@ -46,7 +46,10 @@
   /* The nested-session well sits on the LIST ground, not on a pane surface, so
      it elevates from --ps-background. Same polarity rule: --ps-surface would
      have been white-on-white in the light themes (verified: invisible). */
-  --ps-well: color-mix(in srgb, var(--ps-background) 92%, var(--ps-foreground) 8%);
+  /* Nesting guide rails. Derived like the elevation tokens so it can never
+     drift per theme, and mixed toward the SELECTION colour so it reads as
+     structure rather than as another border. */
+  --ps-rail: color-mix(in srgb, var(--ps-selection-background) 42%, transparent);
   --ps-border-strong: color-mix(in srgb, var(--ps-border) 72%, var(--ps-foreground) 28%);
   --ps-radius-sm: 6px;
   --ps-radius-md: 8px;
@@ -5707,58 +5710,26 @@ body.ps-rich-ui .ps-panel-header {
    sequence, so memoised rendering, keyboard nav and the drag hit-test (which
    walks up from elementFromPoint) are all untouched. The TUI keeps its glyphs,
    which are correct in a terminal. */
-.ps-session-list-button.is-nested {
-  position: relative;
-}
-/* The well is PAINTED, not laid out: rows keep width:max-content (the list
-   scrolls horizontally by design), so a left margin would push every nested
-   row 18px past the scroll width. An inset pseudo-element gives the same
-   picture and cannot affect layout. */
-.ps-session-list-button.is-nested::after {
-  content: "";
-  position: absolute;
-  inset: 0 0 0 18px;
-  z-index: 0;
-  background: var(--ps-well);
-  border-left: 2px solid color-mix(in srgb, var(--ps-selection-background) 55%, transparent);
-  pointer-events: none;
-}
-/* Row content sits above the well; a selected/dragged row keeps its own
-   colour, so the well steps aside rather than muddying it. */
-.ps-session-list-button.is-nested > * { position: relative; z-index: 1; }
-.ps-session-list-button.is-nested.is-selected::after,
-.ps-session-list-button.is-nested.is-multiselected::after,
-.ps-session-list-button.is-nested.is-drop-zone::after { background: transparent; }
+/* ── Nested sessions: guide rails ───────────────────────────────────────────
+   One hairline per ancestor level, painted per row as background images (see
+   SessionListRow) so each row covers its own full height and the levels join
+   into continuous lines down the branch. A rail shows a branch that
+   CONTINUES, which the `└ ` glyph it replaces never could — the glyph said
+   "last child" at every depth. The list stays a flat row sequence, so
+   memoised rendering, keyboard nav and the drag hit-test are untouched, and
+   the TUI keeps its glyphs. */
+.ps-session-list-button.is-nested { position: relative; }
 
-.ps-session-list-button.is-nested.is-well-start {
-  /* Room for the run's label, drawn into this padding. */
-  padding-top: 20px;
-}
-.ps-session-list-button.is-nested.is-well-start::after {
-  border-top-right-radius: var(--ps-radius-md);
-  top: 3px;
-}
-.ps-session-list-button.is-nested.is-well-end::after {
-  border-bottom-right-radius: var(--ps-radius-md);
-  bottom: 3px;
-}
-
-/* "N sub-agents", read from data-well-count — no wrapper element, no extra
-   row, so the flat row list is preserved. */
-.ps-session-list-button.is-nested.is-well-start::before {
-  content: attr(data-well-count) " sub-agents";
-  position: absolute;
-  top: 6px;
-  left: 30px;
-  z-index: 1;
-  font-size: var(--ps-font-size-dense);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--ps-muted);
-  pointer-events: none;
-}
-.ps-session-list-button.is-nested.is-well-start[data-well-count="1"]::before {
-  content: "1 sub-agent";
+/* Status as a MARK, not punctuation: "~" vs "*" needed a legend. */
+.ps-session-status-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-right: 7px;
+  vertical-align: 1px;
+  flex: none;
+  background: var(--ps-muted);
 }
 
 /* Drag sessions into a group row, or onto the list background to take them out.

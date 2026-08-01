@@ -80,20 +80,35 @@ test("clicking empty space clears the list highlight but keeps the session attac
     assert.equal(selectSessionRows(store.getState())[0].active, true);
 });
 
-test("a session inside a folder is never listed at top level, even mid-refresh", () => {
+test("an empty group listing does not delete a folder its members still claim", () => {
     const store = createStore(appReducer, createInitialState());
     store.dispatch({ type: "sessions/groupsLoaded", groups: [groupRow] });
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "child", title: "in folder", status: "idle", groupId: "g1" }] });
-    // Folder removed from the tree for a beat (the old flicker): its member
-    // must NOT pop out to the root level — but it must not vanish either. A
-    // stand-in folder holds it until the real row returns.
+
+    // A successful-but-EMPTY listing. Deleting the folder here was visibly
+    // destructive: the titled row was replaced by a generic stand-in, and
+    // because collapse state is keyed by row id, pruning the entry took the
+    // group's COLLAPSED state with it — so the group sprang open and spilled
+    // its members into the list.
     store.dispatch({ type: "sessions/groupsLoaded", groups: [] });
-    const rows = selectSessionRows(store.getState());
-    const child = rows.find((row) => row.sessionId === "child");
-    assert.ok(child, "the member stays visible");
-    assert.ok(child.depth > 0, "a grouped session never appears at top level");
-    assert.ok(rows.some((row) => row.sessionId === "group:g1" && row.depth === 0),
-        "a stand-in folder holds it");
+
+    const state = store.getState();
+    const folder = state.sessions.byId["group:g1"];
+    assert.ok(folder, "the folder survives");
+    assert.equal(folder.title, groupRow.title, "and keeps its own title, not a stand-in's");
+    assert.ok(state.sessions.collapsedIds.has("group:g1"), "and its collapsed state");
+    // Folders start collapsed, so the member is correctly not rendered — the
+    // invariant is that it is never rendered at TOP level.
+    const rows = selectSessionRows(state);
+    assert.ok(rows.some((row) => row.sessionId === "group:g1" && row.depth === 0), "the folder row is there");
+    assert.equal(rows.some((row) => row.sessionId === "child" && row.depth === 0), false,
+        "a grouped session never appears at top level");
+
+    // Expanding shows it nested, which is where it has been all along.
+    store.dispatch({ type: "sessions/expand", sessionId: "group:g1" });
+    const expanded = selectSessionRows(store.getState());
+    const child = expanded.find((row) => row.sessionId === "child");
+    assert.ok(child && child.depth > 0, "the member is inside the folder");
 });
 
 test("members never vanish when their folder row is missing", () => {

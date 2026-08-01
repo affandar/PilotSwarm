@@ -186,6 +186,8 @@ export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 
     assertFreshBundle();
     const SESSIONS = makeSessions(Math.max(1, sessionCount), groupMembers, parents);
     const WORKERS = admin ? makeWorkers(8, Date.now()) : [];
+    let liveGroups = groups;
+    let groupFetches = 0;
     const TRANSCRIPT = makeTranscript(Math.max(0, transcriptTurns), systemEvery);
     // Placement calls the drag tests assert against: [{ sessionIds, groupId }].
     const placements = [];
@@ -197,8 +199,11 @@ export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 
             // Session groups: list them, and RECORD placement calls so a test
             // can prove a drag reached the API with the right group id.
             if (/\/management\/session-groups$/.test(pathname) && req.method === "GET") {
+                groupFetches += 1;
                 res.writeHead(200, { "content-type": "application/json" });
-                res.end(JSON.stringify({ ok: true, result: groups }));
+                // `liveGroups` is mutable so a test can simulate the transient
+                // EMPTY-but-successful listing that makes folders vanish.
+                res.end(JSON.stringify({ ok: true, result: liveGroups }));
                 return;
             }
             if (/\/management\/session-groups\/place$/.test(pathname)) {
@@ -289,7 +294,13 @@ export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 
 
     return new Promise((resolve) => {
         server.listen(port, "127.0.0.1", () => {
-            resolve({ server, port: server.address().port, placements });
+            resolve({
+                server,
+                port: server.address().port,
+                placements,
+                setGroups: (next) => { liveGroups = next; },
+                groupFetches: () => groupFetches,
+            });
         });
     });
 }

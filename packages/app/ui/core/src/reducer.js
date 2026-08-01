@@ -1162,8 +1162,26 @@ export function appReducer(state, action) {
             // truth: folders it omits are gone, folders it names are kept.
             const groups = Array.isArray(action.groups) ? action.groups : [];
             const byId = { ...state.sessions.byId };
+            // A folder the fetch omits is gone — UNLESS a loaded session still
+            // claims membership in it. Deleting one that is still referenced
+            // was visibly destructive: the titled row was replaced by a
+            // generic stand-in ("Group"), and because collapse state is keyed
+            // by row id, the pruned entry took the group's COLLAPSED state
+            // with it, so the whole group sprang open and dumped its members
+            // into the list. One transient empty-but-successful listing did
+            // all of that. Keep the row we already have; the stand-in stays
+            // the last resort for a folder we have never seen.
+            const claimedByLoadedSessions = new Set(
+                Object.values(state.sessions.byId)
+                    .filter((session) => session && !session.isGroup && session.groupId && !session.parentSessionId)
+                    .map((session) => `group:${session.groupId}`),
+            );
+            const keptRows = [];
             for (const key of Object.keys(byId)) {
-                if (byId[key]?.isGroup && !groups.some((row) => row.sessionId === key)) delete byId[key];
+                if (!byId[key]?.isGroup) continue;
+                if (groups.some((row) => row.sessionId === key)) continue;
+                if (claimedByLoadedSessions.has(key)) { keptRows.push(byId[key]); continue; }
+                delete byId[key];
             }
             for (const row of groups) {
                 byId[row.sessionId] = { ...(byId[row.sessionId] || {}), ...row };
@@ -1174,14 +1192,25 @@ export function appReducer(state, action) {
                 state.sessions.nextOrderOrdinal,
                 Object.values(byId),
             );
+            // A folder the state has not seen before starts COLLAPSED, exactly
+            // as it does on first load — otherwise a folder that round-trips
+            // (deleted by one listing, restored by the next) comes back open
+            // and spills its members into the list.
+            const nextCollapsedIds = cloneCollapsedIds(state.sessions.collapsedIds);
+            for (const row of groups) {
+                if (!state.sessions.byId[row.sessionId]) nextCollapsedIds.add(row.sessionId);
+            }
             const nextSessions = {
                 ...state.sessions,
-                groupRows: groups,
+                // sessions/loaded re-seeds folders from this slice, so a kept
+                // row has to live here too or the next session refresh drops it.
+                groupRows: [...groups, ...keptRows],
                 byId,
                 pinnedIds: survivingPins,
                 orderById,
                 nextOrderOrdinal,
-                flat: buildSessionTree(Object.values(byId), state.sessions.collapsedIds, orderById, survivingPins),
+                collapsedIds: nextCollapsedIds,
+                flat: buildSessionTree(Object.values(byId), nextCollapsedIds, orderById, survivingPins),
             };
             const groupSelection = applyVisibleSessionSelection(state, nextSessions);
             return { ...state, sessions: groupSelection.sessions, ui: groupSelection.ui };
