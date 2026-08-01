@@ -3221,6 +3221,16 @@ function useCoarsePointer() {
 
 const RAIL_ORIGIN_PX = 13;
 const RAIL_STEP_PX = 11;
+const RAIL_WIDTH_PX = 1.5;
+// A nested row's status mark sits ON its deepest rail, so the branch reads as
+// one continuous thread with a node per member rather than a stack of
+// separate glyphs. Ring, not disc: the ring says "on the thread", and it keeps
+// the top-level disc meaning "root" at a glance.
+const RAIL_NODE_SIZE_PX = 7;
+
+function railNodeInsetPx(depth) {
+    return RAIL_ORIGIN_PX + ((depth - 1) * RAIL_STEP_PX) + (RAIL_WIDTH_PX / 2) - (RAIL_NODE_SIZE_PX / 2);
+}
 
 const SessionListRow = React.memo(function SessionListRow({
     row, theme, rich, structuredRows, mobile, onRowClick, setRef, drag,
@@ -3231,7 +3241,7 @@ const SessionListRow = React.memo(function SessionListRow({
         const levels = Array.from({ length: depth }, (_, level) => level);
         return {
             backgroundImage: levels.map(() => "linear-gradient(var(--ps-rail), var(--ps-rail))").join(", "),
-            backgroundSize: levels.map(() => "1.5px 100%").join(", "),
+            backgroundSize: levels.map(() => `${RAIL_WIDTH_PX}px 100%`).join(", "),
             backgroundPosition: levels.map((level) => `${RAIL_ORIGIN_PX + (level * RAIL_STEP_PX)}px 0`).join(", "),
             backgroundRepeat: "no-repeat",
         };
@@ -3299,12 +3309,9 @@ const SessionListRow = React.memo(function SessionListRow({
         React.createElement("div", {
             className: rich ? "ps-session-row-content is-rich" : "ps-line ps-session-row-content",
             style: {
-                // Content clears the deepest rail, then steps in per level.
-                paddingInlineStart: depth > 0
-                    ? `${(RAIL_ORIGIN_PX - 4) + (depth * RAIL_STEP_PX)}px`
-                    : rich
-                        ? "0px"
-                        : "0px",
+                // Nested content starts where its node mark does, so the mark
+                // lands centred on the deepest rail and the text clears it.
+                paddingInlineStart: depth > 0 ? `${railNodeInsetPx(depth)}px` : "0px",
             },
         },
             rich
@@ -3334,8 +3341,10 @@ function RichSessionRow({ row, theme, showDetail = false }) {
             kindGlyph
                 ? React.createElement("span", { className: "ps-rich-session-kind" }, kindGlyph)
                 : React.createElement("span", {
-                    className: "ps-rich-session-dot",
-                    style: { background: resolveColor(theme, chrome.statusColor) || undefined },
+                    className: `ps-rich-session-dot${row.depth > 0 ? " is-node" : ""}`,
+                    style: row.depth > 0
+                        ? { borderColor: resolveColor(theme, chrome.statusColor) || undefined }
+                        : { background: resolveColor(theme, chrome.statusColor) || undefined },
                     title: row.status || undefined,
                 }),
             chrome.owner
@@ -3393,10 +3402,10 @@ function portalRowRuns(runs, theme) {
     return { statusColor, rest };
 }
 
-function StatusDot({ color }) {
+function StatusDot({ color, node = false }) {
     return React.createElement("span", {
-        className: "ps-session-status-dot",
-        style: color ? { background: color } : undefined,
+        className: `ps-session-status-dot${node ? " is-node" : ""}`,
+        style: color ? (node ? { borderColor: color } : { background: color }) : undefined,
     });
 }
 
@@ -3406,7 +3415,7 @@ function SessionRowContent({ row, theme, structured = false, showInlineDetail = 
         if (!Array.isArray(row.runs)) return row.text;
         const plain = portalRowRuns(row.runs, theme);
         return React.createElement(React.Fragment, null,
-            plain.statusColor ? React.createElement(StatusDot, { color: plain.statusColor }) : null,
+            plain.statusColor ? React.createElement(StatusDot, { color: plain.statusColor, node: row.depth > 0 }) : null,
             React.createElement(Runs, { runs: plain.rest, theme }));
     }
 
@@ -3426,7 +3435,7 @@ function SessionRowContent({ row, theme, structured = false, showInlineDetail = 
     return React.createElement(React.Fragment, null,
         React.createElement("div", { className: "ps-session-row-line" },
             React.createElement("div", { className: "ps-session-row-title" },
-                title.statusColor ? React.createElement(StatusDot, { color: title.statusColor }) : null,
+                title.statusColor ? React.createElement(StatusDot, { color: title.statusColor, node: row.depth > 0 }) : null,
                 React.createElement(Runs, { runs: title.rest, theme })),
             hasCtx
                 ? React.createElement("div", { className: "ps-session-row-ctx" },

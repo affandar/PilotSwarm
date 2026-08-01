@@ -5732,6 +5732,20 @@ body.ps-rich-ui .ps-panel-header {
   background: var(--ps-muted);
 }
 
+/* Nested rows: the mark becomes a NODE on the branch — a ring centred on the
+   row's deepest rail (SessionListRow pads the content to put it there), so a
+   run of siblings reads as one thread with a node each, and the filled disc
+   keeps meaning "top level". Colour still carries status; only the fill
+   changes, so nothing is lost by the swap. */
+.ps-session-status-dot.is-node,
+.ps-rich-session-dot.is-node {
+  width: 7px;
+  height: 7px;
+  box-sizing: border-box;
+  background: transparent;
+  border: 1.5px solid var(--ps-muted);
+}
+
 /* Drag sessions into a group row, or onto the list background to take them out.
    (The .is-drop-target / .is-drop-zone appearance lives further down, in the
    drag block — an earlier duplicate of it here was dead weight, fully

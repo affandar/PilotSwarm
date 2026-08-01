@@ -55,6 +55,11 @@ Do not hard-code `ACR_NAME` on the deploy command line — `scripts/deploy-aks.s
 ## Core Learnings
 
 - Use `docker buildx build --platform linux/amd64` for AKS images. Do not use a plain `docker build` from Apple Silicon for cluster deploys.
+- **Images build through an npm mirror, not public npm.** Microsoft-managed devices are hard-blocked from `registry.npmjs.org`, and **containers inherit the block** — a Docker build gets no special egress. Proven 2026-07-31: host `curl` → `http=000` (socket not connected), in-container `fetch` → `ECONNRESET`, in-container `fetch` of `https://packagefeedproxy.microsoft.io/npm/` → `200`. Both Dockerfiles take an `NPM_REGISTRY` build arg (`ARG NPM_REGISTRY` + `ENV npm_config_registry`) that `deploy-aks.sh` and `deploy-portal.sh` pass through from `.env.remote`, where `NPM_REGISTRY=https://packagefeedproxy.microsoft.io/npm/` is set. It defaults to public npm when unset, so unmanaged machines are unaffected. npm's `replace-registry-host` (default `npmjs`) rewrites the lockfile's `resolved` URLs onto the mirror, so `package-lock.json` stays authoritative and integrity hashes still gate every tarball.
+  - **Any hand-rolled `docker buildx build` must pass `--build-arg NPM_REGISTRY="$NPM_REGISTRY"`** or it will fail at `npm ci` on a managed device. The repo scripts do this for you, and the manual recipes in this skill, `pilotswarm-corp-aks-deploy`, and `pilotswarm-aks-reset` carry it. The commands in `docs/developer/deploy/aks.md` do NOT — add the arg if you copy from there.
+  - A cached `npm ci` layer hides all of this — a build can succeed having never touched the network. Do not read a green build as proof the mirror path works; that only holds on a cold cache (`--no-cache`, a lockfile change, a pruned builder, or a fresh clone).
+  - Reaching the mirror is not the same as finding your package on it. The feed imposes a deliberate **7-day quarantine** on newly published versions, so a same-week `pilotswarm-sdk` release will 404 there regardless of this wiring.
+  - `deploy/Dockerfile.starter` still lacks the arg.
 - The deploy target is the AKS cluster, not the local namespace. Use `copilot-runtime`, not the local `pilotswarm` namespace.
 - The deploy script prefers `.env.remote`, then `.env`, and pushes env-backed provider keys into the Kubernetes secret.
 - `.model_providers.example.json` is the checked-in shareable model-catalog template. The real `.model_providers.json` is local and gitignored so personal service URLs can stay out of source control.
@@ -126,6 +131,7 @@ Do not hard-code `ACR_NAME` on the deploy command line — `scripts/deploy-aks.s
      docker buildx build \
          --platform linux/amd64 \
          -f deploy/Dockerfile.worker \
+         --build-arg NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmjs.org/}" \
          -t pilotswarmacr.azurecr.io/copilot-runtime-worker:latest \
          --push .
      ```

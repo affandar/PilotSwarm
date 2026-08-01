@@ -120,8 +120,35 @@ The native TUI and browser portal share `ui-core` state and `ui-react` component
 | Footer | Status strip + prompt | **No page-wide footer** — the prompt composer lives inside the chat pane so it stays scoped to Chat instead of spanning inspector/activity columns |
 | Session collapse default | **Starts collapsed** — sessions that become parents are auto-collapsed on initial bulk load, but manual expand stays respected across refreshes | **Starts collapsed** — same shared reducer behavior |
 | Session collapse toggle | Keyboard shortcut in `app.js` | **Click** — clicking a session with children toggles collapse/expand in `SessionPane` |
+| Nesting depth | **Box-drawing prefix** — the `└ ` run (`role:"depth"`) is rendered as text | **Guide rails** — the depth run is dropped and replaced by one hairline per ancestor level, painted as per-row background images so the list stays a flat row sequence |
+| Row status mark | **Glyph** — the status run (`role:"status"`) is rendered as text+colour | **Disc at top level, RING when nested** — the ring is centred on the row's deepest rail, so a run of siblings reads as one thread with a node each rather than a stack of glyphs. Status is still carried by colour; only the fill changes |
+
+Both the depth and status runs are tagged by the shared selector precisely so a
+host can re-render them. The TUI ignores the tags by design — glyphs are correct
+in a terminal — so the rails and the nested ring are deliberately portal-only.
 
 The auto-collapse-on-load logic lives in `ui-core/src/reducer.js` (shared). It collapses sessions when they first become parents, including nested parents, but must not re-collapse a row the user already expanded during later `sessions/loaded` refreshes. Initial active selection should be the first visible flat-tree row after collapse, not the first raw session object.
+
+### Session folders: two load-bearing refresh invariants
+
+Both were broken once and cost a visible flicker each. Do not "simplify" either.
+
+1. **`sessions/groupsLoaded` must dispatch BEFORE `sessions/loaded`.** `sessions/loaded`
+   seeds default collapse state and the default selection from the rows it can
+   see. With no folder rows in state it collapses nothing and auto-selects a
+   folder MEMBER, which then holds the folder open forever to keep that
+   selection visible.
+2. **The "is this folder still claimed?" check must read the INCOMING catalog**, not
+   `state.sessions.byId`. Because of (1) the store still holds the previous
+   membership, so a folder whose last member just moved out looked claimed by
+   its own stale members and survived its deletion. The refresh passes the fresh
+   rows on the action (`{ type: "sessions/groupsLoaded", groups, sessions }`).
+
+`refreshSessions()` also stamps each run (`sessionRefreshSeq`) and drops its
+writes if a newer run started while it was awaiting. Refreshes genuinely
+overlap — a 4s catalog tick against a run that awaits several sequential
+round-trips — and `groupsLoaded` is authoritative, so a stale snapshot landing
+late deleted folders that a newer run had just found.
 
 ## Workflow
 

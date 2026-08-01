@@ -106,6 +106,16 @@ function sessionGroupIdFromRowId(sessionId) {
     return String(sessionId || "").startsWith("group:") ? String(sessionId).slice("group:".length) : null;
 }
 
+// A folder's row id ("group:<uuid>") is a CLIENT-SIDE row, not a session. Feed
+// one to a per-session endpoint and the server correctly answers 404 — which
+// the data loops read as "this session was deleted" and evict the row. The
+// folder then vanished a few ms after every refresh re-added it, and its
+// members reflowed under the folder above. Every per-session path must skip
+// these ids.
+function isSessionGroupRowId(sessionId) {
+    return sessionGroupIdFromRowId(sessionId) !== null;
+}
+
 // Per-row placement skip reasons ('system', 'not_found') folded into a short
 // status-bar suffix, e.g. "2 system, 1 not found".
 function summarizePlacementSkips(rows) {
@@ -2033,6 +2043,9 @@ export class PilotSwarmUiController {
      */
     handleSessionGone(sessionId) {
         if (!sessionId) return;
+        // A folder row can never be "gone" from the session catalog: it is not
+        // a session. Only sessions/groupsLoaded may remove one.
+        if (isSessionGroupRowId(sessionId)) return;
         if (this.activeSessionSubscriptionId === sessionId) {
             this.detachActiveSession();
         }
@@ -2056,6 +2069,16 @@ export class PilotSwarmUiController {
         // navigation-intent branch returns before the tail): the worker
         // registry must refresh on every tick of the loop that provably runs.
         this.refreshWorkerRegistryIfStale().catch(() => {});
+        // Refreshes OVERLAP. The catalog loop ticks every 4s and a dozen
+        // actions call this directly, while one run awaits several sequential
+        // round-trips (N catalog pages, the folder list, up to two getSession
+        // fetches) — easily longer than the tick. Without an ordering guard a
+        // slow run applies a snapshot taken BEFORE a folder existed (or before
+        // a member moved) on top of a newer one, and since groupsLoaded is
+        // authoritative — "folders it omits are gone" — the folder is deleted,
+        // its members reflow to the top level, and the next tick puts it back.
+        // That is the flicker. Stamp each run and let only the newest apply.
+        const refreshSeq = (this.sessionRefreshSeq = (this.sessionRefreshSeq || 0) + 1);
         const preRefreshState = this.getState();
         const recoveringConnection = !preRefreshState.connection.connected || Boolean(preRefreshState.connection.error);
         const shouldClearRefreshFailureBanner = preRefreshState.ui.statusText === SESSION_REFRESH_FAILED_STATUS;
@@ -2064,11 +2087,20 @@ export class PilotSwarmUiController {
         // Folders are NOT merged into the session payload any more: they live
         // in their own state slice, so a session refresh cannot drop them. A
         // failed fetch is "no news" and simply leaves the slice alone.
+        //
+        // This still dispatches BEFORE sessions/loaded, and must: sessions/loaded
+        // seeds default collapse state and the default selection from the rows
+        // it can see, so with no folder rows in state it collapses nothing and
+        // auto-selects a folder MEMBER — which then holds the folder open
+        // forever to keep the selection visible. What it could not do from
+        // state alone is judge which folders are still claimed, since the store
+        // still holds the PREVIOUS membership at this point; the incoming rows
+        // ride along on the action for exactly that.
+        let pendingGroupRows = null;
         if (typeof this.transport.listSessionGroups === "function") {
             try {
                 const groups = await this.transport.listSessionGroups();
-                const groupRows = (Array.isArray(groups) ? groups : []).map(sessionGroupToRow).filter(Boolean);
-                this.dispatch({ type: "sessions/groupsLoaded", groups: groupRows });
+                pendingGroupRows = (Array.isArray(groups) ? groups : []).map(sessionGroupToRow).filter(Boolean);
             } catch (error) {
                 console.warn(`[PilotSwarmUi] session-group fetch failed, keeping the known folders: ${error?.message || error}`);
             }
@@ -2106,6 +2138,7 @@ export class PilotSwarmUiController {
         const active = previousActive;
         if (
             active
+            && !isSessionGroupRowId(active)
             && !sessions.some((session) => session?.sessionId === active)
             && typeof this.transport.getSession === "function"
         ) {
@@ -2114,12 +2147,20 @@ export class PilotSwarmUiController {
                 sessions = [...sessions, normalizeSessionListRow(activeSession)];
             }
         }
+        // Everything above is READ-ONLY on the store (bar the navigation-intent
+        // failures, which are keyed to a specific session and stay true). From
+        // here down the run WRITES, so a run that a newer one has overtaken
+        // must stop: its snapshot is older than what the store already holds.
+        if (refreshSeq !== this.sessionRefreshSeq) return;
         if (recoveringConnection) {
             this.dispatch({
                 type: "connection/ready",
                 workersOnline: typeof this.transport.getWorkerCount === "function" ? this.transport.getWorkerCount() : null,
                 ...(shouldClearRefreshFailureBanner ? { statusText: "Connected" } : {}),
             });
+        }
+        if (pendingGroupRows) {
+            this.dispatch({ type: "sessions/groupsLoaded", groups: pendingGroupRows, sessions });
         }
         this.dispatch({ type: "sessions/loaded", sessions });
         this.refreshOpenSessionOwnerFilterModal();
@@ -2277,7 +2318,8 @@ export class PilotSwarmUiController {
         const sessionIds = [...new Set(
             visibleRows
                 .map((row) => row.sessionId)
-                .filter((sessionId) => sessionId && !excludedIds.has(sessionId)),
+                // Folder rows are visible rows but not sessions.
+                .filter((sessionId) => sessionId && !isSessionGroupRowId(sessionId) && !excludedIds.has(sessionId)),
         )];
         if (sessionIds.length === 0) return;
 
@@ -3966,6 +4008,7 @@ export class PilotSwarmUiController {
 
     scheduleSessionDetailSync(sessionId, delayMs = 250) {
         if (typeof this.transport.getSession !== "function" || !sessionId) return;
+        if (isSessionGroupRowId(sessionId)) return;
         if (this.activeSessionDetailTimer) clearTimeout(this.activeSessionDetailTimer);
         this.activeSessionDetailSessionId = sessionId;
         this.activeSessionDetailTimer = setTimeout(() => {
@@ -3986,6 +4029,7 @@ export class PilotSwarmUiController {
 
     async syncSessionDetail(sessionId) {
         if (typeof this.transport.getSession !== "function" || !sessionId) return;
+        if (isSessionGroupRowId(sessionId)) return;
         let session = null;
         try {
             session = await this.transport.getSession(sessionId);

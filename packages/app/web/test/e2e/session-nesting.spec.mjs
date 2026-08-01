@@ -81,6 +81,52 @@ test.describe("guide rails", () => {
         const background = await dots.first().evaluate((node) => getComputedStyle(node).backgroundColor);
         expect(background).not.toBe("rgba(0, 0, 0, 0)");
     });
+
+    // A nested row's mark is a RING sitting ON its deepest rail, so a run of
+    // siblings reads as one thread with a node each. Only a real layout pass
+    // can tell you the mark and the rail actually line up.
+    test("a nested row's mark is a ring centred on its deepest rail", async ({ page }) => {
+        await page.goto(base);
+        await page.locator(".ps-session-list-button").first().waitFor();
+        await expand(page, 1);
+
+        const nested = rowFor(page, 2);
+        const markSelector = ".ps-session-status-dot, .ps-rich-session-dot";
+        const mark = nested.locator(markSelector).first();
+
+        // Ring, not disc: the fill empties and the status colour moves to the
+        // border, so nothing about status legibility is lost by the swap.
+        expect(await mark.evaluate((node) => getComputedStyle(node).backgroundColor)).toBe("rgba(0, 0, 0, 0)");
+        expect(await mark.evaluate((node) => getComputedStyle(node).borderTopWidth)).not.toBe("0px");
+
+        const offsets = await nested.evaluate((node, selector) => {
+            const style = getComputedStyle(node);
+            const positions = style.backgroundPosition
+                .split(",")
+                .map((layer) => parseFloat(layer.trim()));
+            // background-position resolves against the PADDING box, so both
+            // measurements have to start there or they differ by the row's
+            // own horizontal padding.
+            const originLeft = node.getBoundingClientRect().left
+                + parseFloat(style.borderLeftWidth)
+                + parseFloat(style.paddingLeft);
+            const box = node.querySelector(selector).getBoundingClientRect();
+            return {
+                markCentre: box.left + (box.width / 2) - originLeft,
+                // Deepest rail, plus half its 1.5px hairline.
+                railCentre: Math.max(...positions) + 0.75,
+            };
+        }, markSelector);
+        expect(Math.abs(offsets.markCentre - offsets.railCentre)).toBeLessThan(1.5);
+    });
+
+    // Top level keeps the filled disc, so "root" still reads at a glance.
+    test("a top-level row keeps the filled disc", async ({ page }) => {
+        await page.goto(base);
+        await page.locator(".ps-session-list-button").first().waitFor();
+        const mark = rowFor(page, 1).locator(".ps-session-status-dot, .ps-rich-session-dot").first();
+        expect(await mark.evaluate((node) => getComputedStyle(node).backgroundColor)).not.toBe("rgba(0, 0, 0, 0)");
+    });
 });
 
 test("a folder survives a transient empty group listing", async ({ page }) => {
@@ -107,6 +153,58 @@ test("a folder survives a transient empty group listing", async ({ page }) => {
         await expect(folder, "the folder keeps its title").toContainText("R2D Sessions");
         await expect(page.locator(".ps-session-list-button.is-nested"), "and stays collapsed").toHaveCount(0);
         expect(await page.locator(".ps-session-list-button").count()).toBe(before);
+    } finally {
+        await new Promise((resolve) => stub.server.close(resolve));
+    }
+});
+
+// Every folder test above uses ONE folder. With two, a reported bug had the
+// second header vanish and reappear for a few ms on each refresh tick, so its
+// members read as if they had jumped into the neighbouring folder. The root
+// cause was the per-row detail sync fetching the folder's row id
+// ("group:<uuid>") as a session, taking the server's 404 as "deleted" and
+// evicting the row.
+test("two folders both keep their headers across refresh ticks", async ({ page }) => {
+    const A = { ...GROUP, groupId: "aaaaaaaa-1111-2222-3333-444444444444", title: "Folder Alpha", memberCount: 4 };
+    const B = { ...GROUP, groupId: "bbbbbbbb-1111-2222-3333-444444444444", title: "Folder Beta", memberCount: 4 };
+    const stub = await startStubServer(0, {
+        sessionCount: 10,
+        groups: [A, B],
+        groupMembers: {
+            1: A.groupId, 2: A.groupId, 3: A.groupId, 4: A.groupId,
+            5: B.groupId, 6: B.groupId, 7: B.groupId, 8: B.groupId,
+        },
+    });
+    try {
+        const base = `http://127.0.0.1:${stub.port}`;
+        await page.goto(base);
+        const folders = page.locator(".ps-session-list-button[data-group-row='1']");
+        await expect(folders).toHaveCount(2);
+
+        const sample = await page.evaluate(async () => {
+            const count = () => document.querySelectorAll(".ps-session-list-button[data-group-row='1']").length;
+            let min = count();
+            const dips = [];
+            const started = Date.now();
+            // MutationObserver, not a poll: the gap is only a few ms (far too
+            // short for Playwright's per-assertion round trips), and a 10ms
+            // interval loads the CPU enough to destabilise neighbouring tests.
+            const observer = new MutationObserver(() => {
+                const n = count();
+                if (n < 2) dips.push({ atMs: Date.now() - started, n });
+                if (n < min) min = n;
+            });
+            observer.observe(document.body, { childList: true, subtree: true });
+            await new Promise((resolve) => setTimeout(resolve, 12000));
+            observer.disconnect();
+            return { min, dips: dips.slice(0, 12), dipCount: dips.length };
+        });
+
+        expect(
+            sample.min,
+            `a folder header dropped out during refresh (min=${sample.min}, dips=${sample.dipCount}, first=${JSON.stringify(sample.dips)})`,
+        ).toBe(2);
+        await expect(folders).toHaveCount(2);
     } finally {
         await new Promise((resolve) => stub.server.close(resolve));
     }

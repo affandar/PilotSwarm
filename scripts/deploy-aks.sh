@@ -157,10 +157,15 @@ npm run build -w packages/sdk
 if [ "$SKIP_BUILD" = false ]; then
     echo ""
     echo "🐳 Building and pushing Docker image..."
+    # Set NPM_REGISTRY (here or in .env.remote) to build through a mirror when
+    # the network blocks registry.npmjs.org. Unset = the public registry.
+    NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmjs.org/}"
+    echo "   npm registry: $NPM_REGISTRY"
     az acr login --name "$ACR_NAME"
     docker buildx build \
         --platform linux/amd64 \
         -f deploy/Dockerfile.worker \
+        --build-arg NPM_REGISTRY="$NPM_REGISTRY" \
         -t "${ACR_NAME}.azurecr.io/${IMAGE_NAME}:latest" \
         --push .
     echo "   ✅ Image pushed: ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:latest"

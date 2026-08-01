@@ -1779,7 +1779,10 @@ describe("session refresh UI recovery", () => {
             assert(rows.includes("group:mine-group"), "default owner filter should include current user's groups");
             assert(rows.includes("group:legacy-group"), "default owner filter should include groups with current-user members");
             assert(rows.includes("group:other-group"), "default owner filter now surfaces foreign-owned groups via includeShared");
-            assert(!rows.includes("group:unowned-group"), "default owner filter should exclude unowned groups");
+            // A folder is the viewer's OWN private organization and the row
+            // carries no owner of its own, so owner filters never hide one —
+            // its members are still filtered on their own merits.
+            assert(rows.includes("group:unowned-group"), "owner filters should never hide a folder row");
 
             const rowText = selectSessionRows(store.getState())
                 .filter((row) => row.sessionId === "group:mine-group" || row.sessionId === "group:legacy-group")

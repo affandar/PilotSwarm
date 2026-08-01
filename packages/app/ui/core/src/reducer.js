@@ -1171,8 +1171,17 @@ export function appReducer(state, action) {
             // into the list. One transient empty-but-successful listing did
             // all of that. Keep the row we already have; the stand-in stays
             // the last resort for a folder we have never seen.
+            //
+            // Judge that against the INCOMING catalog when the refresh sends
+            // it: this action lands before sessions/loaded, so state still
+            // holds the PREVIOUS membership, and a folder whose last member
+            // had just moved out looked claimed by its own stale members and
+            // survived its deletion forever.
+            const claimSource = Array.isArray(action.sessions)
+                ? action.sessions
+                : Object.values(state.sessions.byId);
             const claimedByLoadedSessions = new Set(
-                Object.values(state.sessions.byId)
+                claimSource
                     .filter((session) => session && !session.isGroup && session.groupId && !session.parentSessionId)
                     .map((session) => `group:${session.groupId}`),
             );

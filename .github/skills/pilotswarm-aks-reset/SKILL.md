@@ -106,7 +106,10 @@ That means:
 
   # 3. Build and push new image (if code changed)
   az acr login --name "${ACR_NAME:-pilotswarmacr}"
+  # NPM_REGISTRY is required on managed devices (public npm is blocked, and the
+  # container inherits the block); .env.remote sets it. Harmless elsewhere.
   docker buildx build --platform linux/amd64 -f deploy/Dockerfile.worker \
+    --build-arg NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmjs.org/}" \
     -t "${ACR_NAME:-pilotswarmacr}.azurecr.io/copilot-runtime-worker:latest" --push .
 
   # 4. Apply any manifest changes, then scale back up

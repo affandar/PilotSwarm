@@ -28,6 +28,15 @@ COPY scripts/postinstall.js ./scripts/
 # byte-reproducible from this SHA. Matches the deploy/Dockerfile.starter
 # pattern (the third in-repo image-build flow). `--force` preserves the
 # peer-dep tolerance the legacy `npm install` flow relied on.
+#
+# NPM_REGISTRY lets a build that cannot reach registry.npmjs.org (corporate
+# networks routinely block or reset it) install from a mirror instead. It
+# defaults to the public registry, so an unset build arg behaves exactly as
+# before. npm rewrites the lockfile's registry.npmjs.org `resolved` URLs onto
+# the configured registry (replace-registry-host defaults to `npmjs`), so the
+# lockfile stays authoritative and the image stays reproducible.
+ARG NPM_REGISTRY=https://registry.npmjs.org/
+ENV npm_config_registry=${NPM_REGISTRY}
 RUN npm ci --force
 
 # Copy built SDK dist + plugins
