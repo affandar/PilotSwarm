@@ -1,0 +1,466 @@
+[
+  {
+    "arm": "off",
+    "id": "q1-subagent-defs",
+    "correct": true,
+    "wallMs": 7541,
+    "reply": "`packages/sdk/src/managed-session.ts` (line 644) defines `static subAgentToolDefs()`.",
+    "errors": [],
+    "markerInvocations": [],
+    "possibleLeak": [],
+    "taskUsed": false,
+    "subagentNames": [],
+    "parentFinalCtx": 24902,
+    "parentTokens": {
+      "input": 97497,
+      "output": 399,
+      "cacheRead": 64197,
+      "cacheWrite": 33294,
+      "calls": 3
+    },
+    "subagentTokens": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "calls": 0
+    },
+    "parentToolCalls": 2,
+    "subagentToolCalls": 0
+  },
+  {
+    "arm": "off",
+    "id": "q2-excluded-tools",
+    "correct": true,
+    "wallMs": 3831,
+    "reply": "In `session-manager.ts` line 1250, `excludedTools` is set to `[\"task\"]`.",
+    "errors": [],
+    "markerInvocations": [],
+    "possibleLeak": [],
+    "taskUsed": false,
+    "subagentNames": [],
+    "parentFinalCtx": 23351,
+    "parentTokens": {
+      "input": 62795,
+      "output": 211,
+      "cacheRead": 31269,
+      "cacheWrite": 31522,
+      "calls": 2
+    },
+    "subagentTokens": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "calls": 0
+    },
+    "parentToolCalls": 1,
+    "subagentToolCalls": 0
+  },
+  {
+    "arm": "off",
+    "id": "q3-providers-env",
+    "correct": true,
+    "wallMs": 7310,
+    "reply": "`PS_MODEL_PROVIDERS_PATH` and `MODEL_PROVIDERS_PATH` (in `packages/sdk/src/model-providers.ts`, precedence: `PS_MODEL_PROVIDERS_PATH` checked first, then `MODEL_PROVIDERS_PATH`).",
+    "errors": [],
+    "markerInvocations": [],
+    "possibleLeak": [],
+    "taskUsed": false,
+    "subagentNames": [],
+    "parentFinalCtx": 25705,
+    "parentTokens": {
+      "input": 97952,
+      "output": 429,
+      "cacheRead": 63012,
+      "cacheWrite": 34934,
+      "calls": 3
+    },
+    "subagentTokens": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "calls": 0
+    },
+    "parentToolCalls": 2,
+    "subagentToolCalls": 0
+  },
+  {
+    "arm": "off",
+    "id": "q4-azure-apiversion",
+    "correct": true,
+    "wallMs": 4501,
+    "reply": "The default Azure `apiVersion` fallback is **`\"2024-10-21\"`** (used in both places it's referenced, lines 291 and 440).",
+    "errors": [],
+    "markerInvocations": [],
+    "possibleLeak": [],
+    "taskUsed": false,
+    "subagentNames": [],
+    "parentFinalCtx": 23384,
+    "parentTokens": {
+      "input": 62857,
+      "output": 185,
+      "cacheRead": 39982,
+      "cacheWrite": 22871,
+      "calls": 2
+    },
+    "subagentTokens": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "calls": 0
+    },
+    "parentToolCalls": 1,
+    "subagentToolCalls": 0
+  },
+  {
+    "arm": "off",
+    "id": "q5-message-tool",
+    "correct": true,
+    "wallMs": 11580,
+    "reply": "The tool is **`message_agent`** (defined in `managed-session.ts` around line 705) — it sends a message enqueued as a prompt for the sub-agent's next turn.",
+    "errors": [],
+    "markerInvocations": [],
+    "possibleLeak": [],
+    "taskUsed": false,
+    "subagentNames": [],
+    "parentFinalCtx": 25187,
+    "parentTokens": {
+      "input": 128646,
+      "output": 744,
+      "cacheRead": 103527,
+      "cacheWrite": 25030,
+      "calls": 4
+    },
+    "subagentTokens": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "calls": 0
+    },
+    "parentToolCalls": 4,
+    "subagentToolCalls": 0
+  },
+  {
+    "arm": "off",
+    "id": "q6-search-fallbacks",
+    "correct": true,
+    "wallMs": 6691,
+    "reply": "The primary filename is **`.model_providers.json`** (with the dot prefix). It checks `.model_providers.json` in cwd/`/app`/repo-root-walk before falling back to the legacy `model_providers.json` (no leading dot).",
+    "errors": [],
+    "markerInvocations": [],
+    "possibleLeak": [],
+    "taskUsed": false,
+    "subagentNames": [],
+    "parentFinalCtx": 25964,
+    "parentTokens": {
+      "input": 99709,
+      "output": 312,
+      "cacheRead": 73712,
+      "cacheWrite": 25991,
+      "calls": 3
+    },
+    "subagentTokens": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "calls": 0
+    },
+    "parentToolCalls": 2,
+    "subagentToolCalls": 0
+  },
+  {
+    "arm": "off",
+    "id": "q7-streaming-flag",
+    "correct": true,
+    "wallMs": 3782,
+    "reply": "`includeSubAgentStreamingEvents` is set to `false`. Per the adjacent comment: it suppresses sub-agent streaming events so that the parent session's event log doesn't get polluted with grandchild deltas.",
+    "errors": [],
+    "markerInvocations": [],
+    "possibleLeak": [],
+    "taskUsed": false,
+    "subagentNames": [],
+    "parentFinalCtx": 23560,
+    "parentTokens": {
+      "input": 63164,
+      "output": 222,
+      "cacheRead": 39998,
+      "cacheWrite": 23162,
+      "calls": 2
+    },
+    "subagentTokens": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "calls": 0
+    },
+    "parentToolCalls": 1,
+    "subagentToolCalls": 0
+  },
+  {
+    "arm": "off",
+    "id": "q8-run-command",
+    "correct": true,
+    "wallMs": 3189,
+    "reply": "`packages/` contains: `app`, `horizon-store`, `sdk`",
+    "errors": [],
+    "markerInvocations": [],
+    "possibleLeak": [],
+    "taskUsed": false,
+    "subagentNames": [],
+    "parentFinalCtx": 23213,
+    "parentTokens": {
+      "input": 62619,
+      "output": 102,
+      "cacheRead": 39967,
+      "cacheWrite": 22648,
+      "calls": 2
+    },
+    "subagentTokens": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "calls": 0
+    },
+    "parentToolCalls": 1,
+    "subagentToolCalls": 0
+  },
+  {
+    "arm": "on",
+    "id": "q1-subagent-defs",
+    "correct": true,
+    "wallMs": 6211,
+    "reply": "`packages/sdk/src/managed-session.ts` (line 644, on the `ManagedSession` class).",
+    "errors": [],
+    "markerInvocations": [],
+    "possibleLeak": [],
+    "taskUsed": false,
+    "subagentNames": [],
+    "parentFinalCtx": 28307,
+    "parentTokens": {
+      "input": 109184,
+      "output": 278,
+      "cacheRead": 71653,
+      "cacheWrite": 37525,
+      "calls": 3
+    },
+    "subagentTokens": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "calls": 0
+    },
+    "parentToolCalls": 2,
+    "subagentToolCalls": 0
+  },
+  {
+    "arm": "on",
+    "id": "q2-excluded-tools",
+    "correct": true,
+    "wallMs": 5402,
+    "reply": "`excludedTools: [\"task\"]` — it excludes the SDK's built-in `task` tool so the LLM uses PilotSwarm's durable `spawn_agent`/`check_agents` mechanism instead of the in-process native task tool.",
+    "errors": [],
+    "markerInvocations": [],
+    "possibleLeak": [],
+    "taskUsed": false,
+    "subagentNames": [],
+    "parentFinalCtx": 26315,
+    "parentTokens": {
+      "input": 69797,
+      "output": 280,
+      "cacheRead": 45455,
+      "cacheWrite": 24338,
+      "calls": 2
+    },
+    "subagentTokens": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "calls": 0
+    },
+    "parentToolCalls": 1,
+    "subagentToolCalls": 0
+  },
+  {
+    "arm": "on",
+    "id": "q3-providers-env",
+    "correct": true,
+    "wallMs": 8636,
+    "reply": "Two environment variables can override the model providers config file path (checked in this order):\n\n1. **`PS_MODEL_PROVIDERS_PATH`** (checked first)\n2. **`MODEL_PROVIDERS_PATH`** (fallback)\n\nSource: `packages/sdk/src/model-providers.ts:354` — precedence is explicit file path > env vars > default location.",
+    "errors": [],
+    "markerInvocations": [],
+    "possibleLeak": [],
+    "taskUsed": false,
+    "subagentNames": [],
+    "parentFinalCtx": 27369,
+    "parentTokens": {
+      "input": 106226,
+      "output": 523,
+      "cacheRead": 80423,
+      "cacheWrite": 25797,
+      "calls": 3
+    },
+    "subagentTokens": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "calls": 0
+    },
+    "parentToolCalls": 2,
+    "subagentToolCalls": 0
+  },
+  {
+    "arm": "on",
+    "id": "q4-azure-apiversion",
+    "correct": true,
+    "wallMs": 3987,
+    "reply": "The default fallback is **`\"2024-10-21\"`** (used in both places it's referenced, at lines 291 and 440).",
+    "errors": [],
+    "markerInvocations": [],
+    "possibleLeak": [],
+    "taskUsed": false,
+    "subagentNames": [],
+    "parentFinalCtx": 26147,
+    "parentTokens": {
+      "input": 69535,
+      "output": 218,
+      "cacheRead": 45456,
+      "cacheWrite": 24075,
+      "calls": 2
+    },
+    "subagentTokens": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "calls": 0
+    },
+    "parentToolCalls": 1,
+    "subagentToolCalls": 0
+  },
+  {
+    "arm": "on",
+    "id": "q5-message-tool",
+    "correct": true,
+    "wallMs": 15188,
+    "reply": "The tool is **`message_agent`**, defined via `defineTool(\"message_agent\", ...)` in `managed-session.ts` (lines ~705 and ~1543) — it lets the LLM send a follow-up message to a running/idle sub-agent (since sub-agents stay alive after finishing, per the comment at line 655).",
+    "errors": [],
+    "markerInvocations": [],
+    "possibleLeak": [],
+    "taskUsed": false,
+    "subagentNames": [],
+    "parentFinalCtx": 27976,
+    "parentTokens": {
+      "input": 212180,
+      "output": 1079,
+      "cacheRead": 186004,
+      "cacheWrite": 26164,
+      "calls": 6
+    },
+    "subagentTokens": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "calls": 0
+    },
+    "parentToolCalls": 5,
+    "subagentToolCalls": 0
+  },
+  {
+    "arm": "on",
+    "id": "q6-search-fallbacks",
+    "correct": true,
+    "wallMs": 5755,
+    "reply": "`.model_providers.json` — the primary filename (with leading dot). `model_providers.json` (no dot) is the legacy fallback.",
+    "errors": [],
+    "markerInvocations": [],
+    "possibleLeak": [],
+    "taskUsed": false,
+    "subagentNames": [],
+    "parentFinalCtx": 26810,
+    "parentTokens": {
+      "input": 105455,
+      "output": 292,
+      "cacheRead": 80423,
+      "cacheWrite": 25026,
+      "calls": 3
+    },
+    "subagentTokens": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "calls": 0
+    },
+    "parentToolCalls": 2,
+    "subagentToolCalls": 0
+  },
+  {
+    "arm": "on",
+    "id": "q7-streaming-flag",
+    "correct": true,
+    "wallMs": 4413,
+    "reply": "`includeSubAgentStreamingEvents: false`\n\nPer the comment: it's set to suppress sub-agent streaming events, because the parent session's event log should never be polluted with grandchild deltas.",
+    "errors": [],
+    "markerInvocations": [],
+    "possibleLeak": [],
+    "taskUsed": false,
+    "subagentNames": [],
+    "parentFinalCtx": 26498,
+    "parentTokens": {
+      "input": 70097,
+      "output": 259,
+      "cacheRead": 45462,
+      "cacheWrite": 24631,
+      "calls": 2
+    },
+    "subagentTokens": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "calls": 0
+    },
+    "parentToolCalls": 1,
+    "subagentToolCalls": 0
+  },
+  {
+    "arm": "on",
+    "id": "q8-run-command",
+    "correct": true,
+    "wallMs": 5934,
+    "reply": "`packages/` contains: **app**, **horizon-store**, **sdk**",
+    "errors": [],
+    "markerInvocations": [],
+    "possibleLeak": [],
+    "taskUsed": false,
+    "subagentNames": [],
+    "parentFinalCtx": 25827,
+    "parentTokens": {
+      "input": 69075,
+      "output": 102,
+      "cacheRead": 45429,
+      "cacheWrite": 23642,
+      "calls": 2
+    },
+    "subagentTokens": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "calls": 0
+    },
+    "parentToolCalls": 1,
+    "subagentToolCalls": 0
+  }
+]

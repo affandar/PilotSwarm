@@ -1,0 +1,12 @@
+id: 0aa8f5c3-e267-49e8-8e63-b49944e18bbf
+cwd: /Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/experiments/task-tool/fixture
+git_root: /Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals
+repository: affandar/PilotSwarm
+host_type: github
+branch: task-tool-evals
+client_name: sdk
+name: 'Use your ''task'' tool to launch an ''explore'' agent. Its job: find the value of MAGIC_CONSTANT in this project and report which file defines it. Relay the subagent''s answer verbatim.'
+user_named: false
+summary_count: 0
+created_at: 2026-08-01T21:42:45.003Z
+updated_at: 2026-08-01T21:42:45.074Z

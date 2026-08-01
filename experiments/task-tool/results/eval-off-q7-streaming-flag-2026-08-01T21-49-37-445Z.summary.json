@@ -1,0 +1,27 @@
+{
+  "name": "eval-off-q7-streaming-flag",
+  "eventsPath": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/experiments/task-tool/results/eval-off-q7-streaming-flag-2026-08-01T21-49-37-445Z.events.jsonl",
+  "turns": [
+    {
+      "prompt": "In packages/sdk/src/session-manager.ts, what value is set for includeSubAgentStreamingEvents in the session config, and why per the adjacent comment?",
+      "ms": 3782,
+      "reply": "`includeSubAgentStreamingEvents` is set to `false`. Per the adjacent comment: it suppresses sub-agent streaming events so that the parent session's event log doesn't get polluted with grandchild deltas."
+    }
+  ],
+  "subagentEvents": [],
+  "toolCalls": [
+    {
+      "tool": "grep",
+      "agentId": null,
+      "args": {
+        "pattern": "includeSubAgentStreamingEvents",
+        "paths": [
+          "packages/sdk/src/session-manager.ts"
+        ],
+        "output_mode": "content",
+        "-C": 5
+      }
+    }
+  ],
+  "errors": []
+}

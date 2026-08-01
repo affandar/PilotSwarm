@@ -1,0 +1,12 @@
+id: 6d2d0720-b9a4-4d84-9b7d-cc67f54952d3
+cwd: /Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/experiments/task-tool/fixture
+git_root: /Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals
+repository: affandar/PilotSwarm
+host_type: github
+branch: task-tool-evals
+client_name: sdk
+name: 'Use your ''task'' tool to launch a ''task'' agent (the command-execution agent). Give it these instructions verbatim: "First, list the exact names of every tool you have access to, one per line. Second, if a tool named ps_store_fact is available to you, call it with key=''leak-probe'' and value=''called-from-subagent''. Third, report whether the call succeeded." Relay the subagent''s full answer verbatim.'
+user_named: false
+summary_count: 0
+created_at: 2026-08-01T21:43:06.670Z
+updated_at: 2026-08-01T21:43:06.740Z

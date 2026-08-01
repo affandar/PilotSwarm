@@ -1,0 +1,34 @@
+{
+  "name": "eval-off-q3-providers-env",
+  "eventsPath": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/experiments/task-tool/results/eval-off-q3-providers-env-2026-08-01T21-49-24-113Z.events.jsonl",
+  "turns": [
+    {
+      "prompt": "Which environment variables can override the model providers config file path in this repo? Name them exactly.",
+      "ms": 7310,
+      "reply": "`PS_MODEL_PROVIDERS_PATH` and `MODEL_PROVIDERS_PATH` (in `packages/sdk/src/model-providers.ts`, precedence: `PS_MODEL_PROVIDERS_PATH` checked first, then `MODEL_PROVIDERS_PATH`)."
+    }
+  ],
+  "subagentEvents": [],
+  "toolCalls": [
+    {
+      "tool": "grep",
+      "agentId": null,
+      "args": {
+        "pattern": "model_providers|MODEL_PROVIDERS",
+        "output_mode": "content",
+        "-i": true,
+        "head_limit": 40
+      }
+    },
+    {
+      "tool": "grep",
+      "agentId": null,
+      "args": {
+        "pattern": "process\\.env\\.\\w*(MODEL_PROVIDERS|PROVIDERS_)\\w*|PROVIDERS_CONFIG|PROVIDERS_PATH|_CONFIG_PATH",
+        "output_mode": "content",
+        "-i": true
+      }
+    }
+  ],
+  "errors": []
+}

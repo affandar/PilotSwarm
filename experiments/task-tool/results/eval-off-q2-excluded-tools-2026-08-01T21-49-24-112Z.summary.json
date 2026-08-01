@@ -1,0 +1,27 @@
+{
+  "name": "eval-off-q2-excluded-tools",
+  "eventsPath": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/experiments/task-tool/results/eval-off-q2-excluded-tools-2026-08-01T21-49-24-112Z.events.jsonl",
+  "turns": [
+    {
+      "prompt": "In packages/sdk/src/session-manager.ts, what exact value is passed as excludedTools in the session config?",
+      "ms": 3831,
+      "reply": "In `session-manager.ts` line 1250, `excludedTools` is set to `[\"task\"]`."
+    }
+  ],
+  "subagentEvents": [],
+  "toolCalls": [
+    {
+      "tool": "grep",
+      "agentId": null,
+      "args": {
+        "pattern": "excludedTools",
+        "paths": [
+          "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src/session-manager.ts"
+        ],
+        "output_mode": "content",
+        "-n": true
+      }
+    }
+  ],
+  "errors": []
+}

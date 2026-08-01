@@ -1,0 +1,104 @@
+{
+  "name": "locked",
+  "eventsPath": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/experiments/task-tool/results/locked-2026-08-01T21-46-50-772Z.events.jsonl",
+  "turns": [
+    {
+      "prompt": "Look at your 'task' tool's declaration. List every agent_type it documents as available, one per line. Do not call any tools.",
+      "ms": 1940,
+      "reply": "explore\nswarm-task"
+    },
+    {
+      "prompt": "Use your 'task' tool to launch an 'explore' agent. Give it these instructions verbatim: \"List the exact names of every tool you have access to, one per line. Then report whether a tool named ps_store_fact is available to you; if it is, call it with key='locked-explore-probe' and value='should-not-happen'.\" Relay its full answer verbatim.",
+      "ms": 12339,
+      "reply": "Here is the explore agent's full answer, verbatim:\n\n---\nHere are the exact names of every tool I have access to:\n\n1. bash\n2. read_bash\n3. stop_bash\n4. list_bash\n5. view\n6. grep\n7. glob\n\n**ps_store_fact is NOT available.** This tool is not in my list of available tools, so I cannot call it."
+    },
+    {
+      "prompt": "Use your 'task' tool to launch a 'swarm-task' agent with the instruction: \"Run `ls src/` in the working directory and report the file names.\" Relay its answer verbatim.",
+      "ms": 7532,
+      "reply": "Verbatim answer from the swarm-task agent:\n\n---\nCommand succeeded. Files in `src/`: alpha.js, beta.js, gamma.js"
+    }
+  ],
+  "subagentEvents": [
+    {
+      "type": "subagent.started",
+      "agentId": "toolu_01A8VzygnrbCJtC1euUY8w9F",
+      "data": {
+        "toolCallId": "toolu_01A8VzygnrbCJtC1euUY8w9F",
+        "agentName": "explore",
+        "agentDisplayName": "Explore Agent",
+        "agentDescription": "Fast codebase exploration and answering questions. Uses code intelligence, {{grepToolName}}, {{globToolName}}, view, {{shellToolName}} tools in a separate context window to search files and understand code structure. Safe to call in parallel.\n",
+        "model": "claude-haiku-4.5"
+      }
+    },
+    {
+      "type": "subagent.completed",
+      "agentId": "toolu_01A8VzygnrbCJtC1euUY8w9F",
+      "data": {
+        "toolCallId": "toolu_01A8VzygnrbCJtC1euUY8w9F",
+        "agentName": "explore",
+        "agentDisplayName": "Explore Agent",
+        "model": "claude-haiku-4.5",
+        "totalToolCalls": 0,
+        "totalTokens": 5333,
+        "durationMs": 5779
+      }
+    },
+    {
+      "type": "subagent.started",
+      "agentId": "toolu_01Q38ESshAhxKK67jWY35GyW",
+      "data": {
+        "toolCallId": "toolu_01Q38ESshAhxKK67jWY35GyW",
+        "agentName": "swarm-task",
+        "agentDisplayName": "Swarm Task Runner",
+        "agentDescription": "Execute development commands (tests, builds, linters). Brief summary on success, full output on failure. Shell and file access only.",
+        "model": "claude-sonnet-5"
+      }
+    },
+    {
+      "type": "subagent.completed",
+      "agentId": "toolu_01Q38ESshAhxKK67jWY35GyW",
+      "data": {
+        "toolCallId": "toolu_01Q38ESshAhxKK67jWY35GyW",
+        "agentName": "swarm-task",
+        "agentDisplayName": "Swarm Task Runner",
+        "model": "claude-sonnet-5",
+        "totalToolCalls": 1,
+        "totalTokens": 12518,
+        "durationMs": 3297
+      }
+    }
+  ],
+  "toolCalls": [
+    {
+      "tool": "task",
+      "agentId": null,
+      "args": {
+        "name": "list-tools-probe",
+        "prompt": "List the exact names of every tool you have access to, one per line. Then report whether a tool named ps_store_fact is available to you; if it is, call it with key='locked-explore-probe' and value='should-not-happen'.",
+        "agent_type": "explore",
+        "description": "List available tools and probe ps_store_fact",
+        "mode": "sync"
+      }
+    },
+    {
+      "tool": "task",
+      "agentId": null,
+      "args": {
+        "agent_type": "swarm-task",
+        "description": "List files in src directory",
+        "mode": "sync",
+        "name": "ls-src",
+        "prompt": "Run `ls src/` in the working directory and report the file names."
+      }
+    },
+    {
+      "tool": "bash",
+      "agentId": "toolu_01Q38ESshAhxKK67jWY35GyW",
+      "args": {
+        "command": "ls src/",
+        "description": "List files in src directory"
+      }
+    }
+  ],
+  "errors": []
+}

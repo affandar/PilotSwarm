@@ -1,0 +1,12 @@
+id: 7ec27e54-604b-4a1c-ab39-f8e34363236d
+cwd: /Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals
+git_root: /Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals
+repository: affandar/PilotSwarm
+host_type: github
+branch: task-tool-evals
+client_name: sdk
+name: In this repo, which file defines the static method subAgentToolDefs? Give the path.
+user_named: false
+summary_count: 0
+created_at: 2026-08-01T21:49:26.393Z
+updated_at: 2026-08-01T21:49:26.467Z

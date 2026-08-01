@@ -1,0 +1,35 @@
+{
+  "name": "eval-off-q6-search-fallbacks",
+  "eventsPath": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/experiments/task-tool/results/eval-off-q6-search-fallbacks-2026-08-01T21-49-34-735Z.events.jsonl",
+  "turns": [
+    {
+      "prompt": "What is the primary (non-legacy) filename that resolveModelProvidersPath searches for?",
+      "ms": 6691,
+      "reply": "The primary filename is **`.model_providers.json`** (with the dot prefix). It checks `.model_providers.json` in cwd/`/app`/repo-root-walk before falling back to the legacy `model_providers.json` (no leading dot)."
+    }
+  ],
+  "subagentEvents": [],
+  "toolCalls": [
+    {
+      "tool": "grep",
+      "agentId": null,
+      "args": {
+        "pattern": "resolveModelProvidersPath",
+        "output_mode": "content",
+        "-n": true
+      }
+    },
+    {
+      "tool": "view",
+      "agentId": null,
+      "args": {
+        "path": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src/model-providers.ts",
+        "view_range": [
+          350,
+          395
+        ]
+      }
+    }
+  ],
+  "errors": []
+}

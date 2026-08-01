@@ -1,0 +1,30 @@
+{
+  "name": "disabled",
+  "eventsPath": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/experiments/task-tool/results/disabled-2026-08-01T21-46-01-081Z.events.jsonl",
+  "turns": [
+    {
+      "prompt": "Look at your 'task' tool's declaration. List every agent_type value it documents as available, one per line. Do not call any tools.",
+      "ms": 1466,
+      "reply": "explore\ngeneral-purpose"
+    },
+    {
+      "prompt": "Now attempt to use the 'task' tool with agent_type 'task' and prompt 'echo hello'. Report exactly what happens, including any error text.",
+      "ms": 4188,
+      "reply": "The tool call failed with the exact error:\n\n```\nThe \"task\" subagent is turned off. Enable it in /subagents before dispatching it.\n```\n\n'task' is not a valid `agent_type` (only `explore` and `general-purpose` are documented) — the error indicates it's being interpreted as a disabled subagent named \"task\" rather than a schema validation error."
+    }
+  ],
+  "subagentEvents": [],
+  "toolCalls": [
+    {
+      "tool": "task",
+      "agentId": null,
+      "args": {
+        "name": "echo-test",
+        "prompt": "echo hello",
+        "agent_type": "task",
+        "description": "Test invalid agent_type"
+      }
+    }
+  ],
+  "errors": []
+}

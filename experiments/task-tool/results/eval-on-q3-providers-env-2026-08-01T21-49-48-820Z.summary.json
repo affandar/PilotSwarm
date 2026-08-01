@@ -1,0 +1,33 @@
+{
+  "name": "eval-on-q3-providers-env",
+  "eventsPath": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/experiments/task-tool/results/eval-on-q3-providers-env-2026-08-01T21-49-48-820Z.events.jsonl",
+  "turns": [
+    {
+      "prompt": "Which environment variables can override the model providers config file path in this repo? Name them exactly.",
+      "ms": 8636,
+      "reply": "Two environment variables can override the model providers config file path (checked in this order):\n\n1. **`PS_MODEL_PROVIDERS_PATH`** (checked first)\n2. **`MODEL_PROVIDERS_PATH`** (fallback)\n\nSource: `packages/sdk/src/model-providers.ts:354` — precedence is explicit file path > env vars > default location."
+    }
+  ],
+  "subagentEvents": [],
+  "toolCalls": [
+    {
+      "tool": "grep",
+      "agentId": null,
+      "args": {
+        "pattern": "model_providers|MODEL_PROVIDERS",
+        "output_mode": "content",
+        "-i": true,
+        "-n": true
+      }
+    },
+    {
+      "tool": "bash",
+      "agentId": null,
+      "args": {
+        "command": "grep -rn \"PROVIDERS_PATH\\|PROVIDERS_CONFIG\\|process.env.*PROVIDER\" --include=\"*.ts\" --include=\"*.js\" /Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages 2>/dev/null | grep -i path",
+        "description": "Search for env var overriding providers config path"
+      }
+    }
+  ],
+  "errors": []
+}

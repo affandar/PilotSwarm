@@ -1,0 +1,28 @@
+{
+  "name": "eval-on-q2-excluded-tools",
+  "eventsPath": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/experiments/task-tool/results/eval-on-q2-excluded-tools-2026-08-01T21-49-48-257Z.events.jsonl",
+  "turns": [
+    {
+      "prompt": "In packages/sdk/src/session-manager.ts, what exact value is passed as excludedTools in the session config?",
+      "ms": 5402,
+      "reply": "`excludedTools: [\"task\"]` — it excludes the SDK's built-in `task` tool so the LLM uses PilotSwarm's durable `spawn_agent`/`check_agents` mechanism instead of the in-process native task tool."
+    }
+  ],
+  "subagentEvents": [],
+  "toolCalls": [
+    {
+      "tool": "grep",
+      "agentId": null,
+      "args": {
+        "pattern": "excludedTools",
+        "paths": [
+          "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src/session-manager.ts"
+        ],
+        "output_mode": "content",
+        "-n": true,
+        "-C": 3
+      }
+    }
+  ],
+  "errors": []
+}

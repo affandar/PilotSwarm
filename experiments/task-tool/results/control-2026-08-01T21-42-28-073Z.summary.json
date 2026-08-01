@@ -1,0 +1,14 @@
+{
+  "name": "control",
+  "eventsPath": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/experiments/task-tool/results/control-2026-08-01T21-42-28-073Z.events.jsonl",
+  "turns": [
+    {
+      "prompt": "List the exact names of every tool you currently have access to, one per line. Do not call any tools.",
+      "ms": 3880,
+      "reply": "bash\nread_bash\nstop_bash\nlist_bash\nview\ncreate\nedit\nweb_fetch\nskill\nsql\nread_agent\nlist_agents\nwrite_agent\ngrep\nglob\nps_store_fact\nps_spawn_agent"
+    }
+  ],
+  "subagentEvents": [],
+  "toolCalls": [],
+  "errors": []
+}

@@ -1,0 +1,59 @@
+{
+  "name": "leak",
+  "eventsPath": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/experiments/task-tool/results/leak-2026-08-01T21-43-05-339Z.events.jsonl",
+  "turns": [
+    {
+      "prompt": "Use your 'task' tool to launch a 'task' agent (the command-execution agent). Give it these instructions verbatim: \"First, list the exact names of every tool you have access to, one per line. Second, if a tool named ps_store_fact is available to you, call it with key='leak-probe' and value='called-from-subagent'. Third, report whether the call succeeded.\" Relay the subagent's full answer verbatim.",
+      "ms": 13059,
+      "reply": "Here is the subagent's full answer, relayed verbatim:\n\n\"**The call succeeded.** The ps_store_fact tool accepted the parameters and returned: `recorded (experiment stub)`\"\n\nNote: the subagent did not include the requested tool listing in its response—only the final result of the ps_store_fact call was returned."
+    }
+  ],
+  "subagentEvents": [
+    {
+      "type": "subagent.started",
+      "agentId": "toolu_013HXMDCKQGMXKSPnpf99kYJ",
+      "data": {
+        "toolCallId": "toolu_013HXMDCKQGMXKSPnpf99kYJ",
+        "agentName": "task",
+        "agentDisplayName": "Task Agent",
+        "agentDescription": "Execute development commands like tests, builds, linters, and formatters. Returns brief summary on success, full output on failure. Keeps main context clean by minimizing verbose output.\n",
+        "model": "claude-haiku-4.5"
+      }
+    },
+    {
+      "type": "subagent.completed",
+      "agentId": "toolu_013HXMDCKQGMXKSPnpf99kYJ",
+      "data": {
+        "toolCallId": "toolu_013HXMDCKQGMXKSPnpf99kYJ",
+        "agentName": "task",
+        "agentDisplayName": "Task Agent",
+        "model": "claude-haiku-4.5",
+        "totalToolCalls": 1,
+        "totalTokens": 29817,
+        "durationMs": 6691
+      }
+    }
+  ],
+  "toolCalls": [
+    {
+      "tool": "task",
+      "agentId": null,
+      "args": {
+        "name": "tool-probe",
+        "agent_type": "task",
+        "description": "Probe available tools",
+        "mode": "sync",
+        "prompt": "First, list the exact names of every tool you have access to, one per line. Second, if a tool named ps_store_fact is available to you, call it with key='leak-probe' and value='called-from-subagent'. Third, report whether the call succeeded."
+      }
+    },
+    {
+      "tool": "ps_store_fact",
+      "agentId": "toolu_013HXMDCKQGMXKSPnpf99kYJ",
+      "args": {
+        "key": "leak-probe",
+        "value": "called-from-subagent"
+      }
+    }
+  ],
+  "errors": []
+}

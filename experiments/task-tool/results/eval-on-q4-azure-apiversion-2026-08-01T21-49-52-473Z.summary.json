@@ -1,0 +1,27 @@
+{
+  "name": "eval-on-q4-azure-apiversion",
+  "eventsPath": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/experiments/task-tool/results/eval-on-q4-azure-apiversion-2026-08-01T21-49-52-473Z.events.jsonl",
+  "turns": [
+    {
+      "prompt": "What default Azure apiVersion string does packages/sdk/src/model-providers.ts fall back to?",
+      "ms": 3987,
+      "reply": "The default fallback is **`\"2024-10-21\"`** (used in both places it's referenced, at lines 291 and 440)."
+    }
+  ],
+  "subagentEvents": [],
+  "toolCalls": [
+    {
+      "tool": "grep",
+      "agentId": null,
+      "args": {
+        "pattern": "apiVersion",
+        "paths": [
+          "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src/model-providers.ts"
+        ],
+        "output_mode": "content",
+        "-n": true
+      }
+    }
+  ],
+  "errors": []
+}

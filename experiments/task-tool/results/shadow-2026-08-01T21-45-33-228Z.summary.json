@@ -1,0 +1,59 @@
+{
+  "name": "shadow",
+  "eventsPath": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/experiments/task-tool/results/shadow-2026-08-01T21-45-33-228Z.events.jsonl",
+  "turns": [
+    {
+      "prompt": "Use your 'task' tool to launch a 'task' agent. Give it these instructions verbatim: \"First, list the exact names of every tool you have access to, one per line. Second, if a tool named ps_store_fact is available to you, call it with key='shadow-probe' and value='should-not-happen'. Third, report whether ps_store_fact was available.\" Relay the subagent's full answer verbatim.",
+      "ms": 13830,
+      "reply": "Here is the subagent's full answer, verbatim:\n\n---\n\nHere are the exact names of all tools I have access to:\n\n1. bash\n2. read_bash\n3. stop_bash\n4. list_bash\n5. view\n6. create\n7. edit\n8. web_fetch\n9. fetch_copilot_cli_documentation\n10. skill\n11. sql\n12. session_store_sql\n13. read_agent\n14. list_agents\n15. write_agent\n16. grep\n17. glob\n18. task\n19. ps_store_fact\n20. ps_spawn_agent\n\n**ps_store_fact availability:** YES, ps_store_fact was available and the call succeeded (recorded as \"experiment stub\")."
+    }
+  ],
+  "subagentEvents": [
+    {
+      "type": "subagent.started",
+      "agentId": "toolu_015yhGoYK9mUGwYx5zfBpmTe",
+      "data": {
+        "toolCallId": "toolu_015yhGoYK9mUGwYx5zfBpmTe",
+        "agentName": "task",
+        "agentDisplayName": "Task Agent",
+        "agentDescription": "Execute development commands like tests, builds, linters, and formatters. Returns brief summary on success, full output on failure. Keeps main context clean by minimizing verbose output.\n",
+        "model": "claude-haiku-4.5"
+      }
+    },
+    {
+      "type": "subagent.completed",
+      "agentId": "toolu_015yhGoYK9mUGwYx5zfBpmTe",
+      "data": {
+        "toolCallId": "toolu_015yhGoYK9mUGwYx5zfBpmTe",
+        "agentName": "task",
+        "agentDisplayName": "Task Agent",
+        "model": "claude-haiku-4.5",
+        "totalToolCalls": 1,
+        "totalTokens": 29911,
+        "durationMs": 8031
+      }
+    }
+  ],
+  "toolCalls": [
+    {
+      "tool": "task",
+      "agentId": null,
+      "args": {
+        "name": "tool-list-probe",
+        "prompt": "First, list the exact names of every tool you have access to, one per line. Second, if a tool named ps_store_fact is available to you, call it with key='shadow-probe' and value='should-not-happen'. Third, report whether ps_store_fact was available.",
+        "agent_type": "task",
+        "description": "Probe available tools",
+        "mode": "sync"
+      }
+    },
+    {
+      "tool": "ps_store_fact",
+      "agentId": "toolu_015yhGoYK9mUGwYx5zfBpmTe",
+      "args": {
+        "key": "shadow-probe",
+        "value": "should-not-happen"
+      }
+    }
+  ],
+  "errors": []
+}

@@ -1,0 +1,51 @@
+{
+  "name": "restricted",
+  "eventsPath": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/experiments/task-tool/results/restricted-2026-08-01T21-43-31-579Z.events.jsonl",
+  "turns": [
+    {
+      "prompt": "Use your 'task' tool to launch the 'swarm-worker' agent. Give it these instructions verbatim: \"First, list the exact names of every tool you have access to, one per line. Second, if a tool named ps_store_fact is available to you, call it with key='restricted-probe' and value='should-not-happen'. Third, report whether ps_store_fact was available.\" Relay the subagent's full answer verbatim.",
+      "ms": 9028,
+      "reply": "Subagent's full answer, relayed verbatim:\n\n**1. Tools available to me:**\n- bash\n- read_bash\n- stop_bash\n- list_bash\n- view\n- grep\n- glob\n\n**2. Calling ps_store_fact:**\nNo such tool named `ps_store_fact` is available in my toolset, so I cannot call it.\n\n**3. Report:**\n`ps_store_fact` was **not available**. It does not appear in my list of accessible tools (bash, read_bash, stop_bash, list_bash, view, grep, glob), so no call was made."
+    }
+  ],
+  "subagentEvents": [
+    {
+      "type": "subagent.started",
+      "agentId": "toolu_01XBACmmAWsqYxzRc5M13k6Z",
+      "data": {
+        "toolCallId": "toolu_01XBACmmAWsqYxzRc5M13k6Z",
+        "agentName": "swarm-worker",
+        "agentDisplayName": "Swarm Worker",
+        "agentDescription": "Restricted ephemeral worker: shell and file reading only. No durability tools.",
+        "model": "claude-sonnet-5"
+      }
+    },
+    {
+      "type": "subagent.completed",
+      "agentId": "toolu_01XBACmmAWsqYxzRc5M13k6Z",
+      "data": {
+        "toolCallId": "toolu_01XBACmmAWsqYxzRc5M13k6Z",
+        "agentName": "swarm-worker",
+        "agentDisplayName": "Swarm Worker",
+        "model": "claude-sonnet-5",
+        "totalToolCalls": 0,
+        "totalTokens": 6403,
+        "durationMs": 3107
+      }
+    }
+  ],
+  "toolCalls": [
+    {
+      "tool": "task",
+      "agentId": null,
+      "args": {
+        "name": "swarm-worker-probe",
+        "prompt": "First, list the exact names of every tool you have access to, one per line. Second, if a tool named ps_store_fact is available to you, call it with key='restricted-probe' and value='should-not-happen'. Third, report whether ps_store_fact was available.",
+        "agent_type": "swarm-worker",
+        "description": "Probe swarm-worker tool access",
+        "mode": "sync"
+      }
+    }
+  ],
+  "errors": []
+}

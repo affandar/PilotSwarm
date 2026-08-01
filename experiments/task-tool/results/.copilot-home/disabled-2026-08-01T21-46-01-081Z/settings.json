@@ -1,0 +1,12 @@
+{
+  "subagents": {
+    "disabledSubagents": [
+      "code-review",
+      "research",
+      "rubber-duck",
+      "security-review",
+      "rem-agent",
+      "task"
+    ]
+  }
+}

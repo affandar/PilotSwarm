@@ -1,0 +1,36 @@
+{
+  "name": "eval-off-q1-subagent-defs",
+  "eventsPath": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/experiments/task-tool/results/eval-off-q1-subagent-defs-2026-08-01T21-49-24-105Z.events.jsonl",
+  "turns": [
+    {
+      "prompt": "In this repo, which file defines the static method subAgentToolDefs? Give the path.",
+      "ms": 7541,
+      "reply": "`packages/sdk/src/managed-session.ts` (line 644) defines `static subAgentToolDefs()`."
+    }
+  ],
+  "subagentEvents": [],
+  "toolCalls": [
+    {
+      "tool": "grep",
+      "agentId": null,
+      "args": {
+        "pattern": "subAgentToolDefs",
+        "output_mode": "files_with_matches"
+      }
+    },
+    {
+      "tool": "grep",
+      "agentId": null,
+      "args": {
+        "pattern": "static subAgentToolDefs|subAgentToolDefs\\(\" ",
+        "paths": [
+          "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src/session-manager.ts",
+          "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src/managed-session.ts"
+        ],
+        "output_mode": "content",
+        "-n": true
+      }
+    }
+  ],
+  "errors": []
+}
