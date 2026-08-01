@@ -86,6 +86,16 @@ export const OPERATIONS = [
     { name: "downloadArtifact", access: "session:read", method: "GET", path: "/sessions/:sessionId/artifacts/:filename/text", params: { sessionId: path("sessionId"), filename: path("filename") }, summary: "Artifact content as text (JSON envelope). Binary: GET …/download." },
     { name: "uploadArtifact", access: "session:write", method: "PUT", path: "/sessions/:sessionId/artifacts/:filename", params: { sessionId: path("sessionId"), filename: path("filename"), content: body(), contentType: body(), contentEncoding: body() }, summary: "Upload artifact content (base64 for binary; 2 MB JSON limit)." },
     { name: "deleteArtifact", access: "session:manage", method: "DELETE", path: "/sessions/:sessionId/artifacts/:filename", params: { sessionId: path("sessionId"), filename: path("filename") }, summary: "Delete an artifact." },
+    // These three were dispatchable (runtime.js) and access-classified
+    // (authz.js RPC_ONLY_ACCESS) but reachable only through the legacy
+    // /api/rpc path — every ApiClient.call() of them threw "Unknown API
+    // operation" client-side, which silently broke the MCP artifact
+    // read-base64/copy/pin actions in web mode. Table rows give them
+    // generated routes with the same authz (session:copy gates
+    // fromSessionId for read + toSessionId for write by param name).
+    { name: "readArtifactBase64", access: "session:read", method: "GET", path: "/sessions/:sessionId/artifacts/:filename/base64", params: { sessionId: path("sessionId"), filename: path("filename"), maxBytes: query("number") }, summary: "Artifact content as base64 (JSON envelope; maxBytes caps the read, truncated flag set when hit)." },
+    { name: "copyArtifact", access: "session:copy", method: "POST", path: "/artifacts/copy", params: { fromSessionId: body(), fromFilename: body(), toSessionId: body(), toFilename: body() }, summary: "Copy an artifact across sessions (read access on the source, write on the target)." },
+    { name: "setArtifactPinned", access: "session:manage", method: "PUT", path: "/sessions/:sessionId/artifacts/:filename/pinned", params: { sessionId: path("sessionId"), filename: path("filename"), pinned: body() }, summary: "Pin/unpin an artifact (pinned artifacts survive retention sweeps)." },
 
     // ── Management: sessions ────────────────────────────────────────────
     { name: "listSessionsPage", access: "session:list", method: "GET", path: "/management/sessions", params: { limit: query("number"), cursor: query("json"), includeDeleted: query("boolean") }, summary: "Keyset-paginated session listing." },

@@ -1,6 +1,8 @@
 import {
     PilotSwarmClient,
     PilotSwarmManagementClient,
+    WebPilotSwarmManagementClient,
+    createManagementClient,
     createFactStoreForUrl,
     createWebFactStore,
     createGraphStoreForUrl,
@@ -11,6 +13,7 @@ import {
     ModelProviderRegistry,
     loadSkills,
     loadAgentFiles,
+    type SharedManagementSurface,
     type FactStore,
     type EnhancedFactStore,
     type GraphStore,
@@ -22,7 +25,20 @@ type AgentConfig = ReturnType<typeof loadAgentFiles>[number];
 
 export interface ServerContext {
     client: PilotSwarmClient;
-    mgmt: PilotSwarmManagementClient;
+    /**
+     * The management surface shared by both modes — every method works (or
+     * refuses with a typed WEB_MODE_UNSUPPORTED error) whichever mode this
+     * process runs in. No casts anywhere on this path.
+     */
+    mgmt: SharedManagementSurface;
+    /**
+     * The honestly-typed web client (web mode only; null in direct mode).
+     * Same instance as `mgmt`. Carries `web.ops` — the generated,
+     * wire-shaped method per protocol-table operation — which is how tools
+     * call operations the ergonomic surface does not wrap. Non-null exactly
+     * when `api` is non-null.
+     */
+    web: WebPilotSwarmManagementClient | null;
     facts: FactStore;
     /**
      * The same store as `facts`, narrowed once at boot via
@@ -109,7 +125,8 @@ export interface CreateContextOptions {
 
 export async function createContext(opts: CreateContextOptions): Promise<ServerContext> {
     let client: PilotSwarmClient;
-    let mgmt: PilotSwarmManagementClient;
+    let mgmt: SharedManagementSurface;
+    let web: WebPilotSwarmManagementClient | null = null;
     let facts: FactStore;
     let graph: GraphStore | null = null;
     let api: ApiClient | null = null;
@@ -123,9 +140,13 @@ export async function createContext(opts: CreateContextOptions): Promise<ServerC
         const getAccessToken = await createApiTokenProvider(opts.apiUrl) ?? undefined;
         client = new PilotSwarmClient({ apiUrl: opts.apiUrl, getAccessToken } as any);
         await client.start();
-        mgmt = new PilotSwarmManagementClient({ apiUrl: opts.apiUrl, getAccessToken } as any);
-        await mgmt.start();
+        // ONE connection and token pipeline for the whole process: the
+        // management client, the fact/graph stores, and ctx.api all share
+        // this ApiClient.
         api = new ApiClient({ apiUrl: opts.apiUrl, getAccessToken });
+        web = createManagementClient({ apiUrl: opts.apiUrl, getAccessToken, api });
+        await web.start();
+        mgmt = web;
         facts = await createWebFactStore(api);
 
         // Graph: capability-probed against the deployment (null ⇒ no graph
@@ -167,7 +188,7 @@ export async function createContext(opts: CreateContextOptions): Promise<ServerC
         // truth in web mode — local plugin dirs may diverge from what
         // createSessionForAgent will accept.
         try {
-            const creatable: any[] = await api.call("listCreatableAgents");
+            const creatable: any[] = await web.ops.listCreatableAgents();
             if (Array.isArray(creatable)) {
                 webAgents = creatable.map((a: any) => ({
                     name: a.name ?? a.id,
@@ -286,6 +307,7 @@ export async function createContext(opts: CreateContextOptions): Promise<ServerC
     return {
         client,
         mgmt,
+        web,
         facts,
         enhancedFacts,
         graph,

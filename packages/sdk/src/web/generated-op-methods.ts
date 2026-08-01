@@ -13,6 +13,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "cancelSessionGroup",
     "completeSession",
     "completeSessionGroup",
+    "copyArtifact",
     "createSession",
     "createSessionForAgent",
     "createSessionGroup",
@@ -92,6 +93,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "pinAgentPackageVersion",
     "placeSessionsInGroup",
     "pruneDeletedSummaries",
+    "readArtifactBase64",
     "readFacts",
     "regenerateSession",
     "renameSession",
@@ -105,6 +107,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "sendSessionEvent",
     "setAgentPackageEnabled",
     "setAgentPackageScope",
+    "setArtifactPinned",
     "setCurrentUserGitHubCopilotKey",
     "setCurrentUserProfileSettings",
     "setSessionModel",
@@ -185,6 +188,17 @@ export interface ManagementOps {
     completeSessionGroup(params: {
         groupId: string;
         options?: any;
+    }): Promise<any>;
+
+    /**
+     * Copy an artifact across sessions (read access on the source, write on the target).
+     * @remarks `POST /artifacts/copy` — access: `session:copy`
+     */
+    copyArtifact(params: {
+        fromSessionId?: any;
+        fromFilename?: any;
+        toSessionId?: any;
+        toFilename?: any;
     }): Promise<any>;
 
     /**
@@ -848,6 +862,16 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Artifact content as base64 (JSON envelope; maxBytes caps the read, truncated flag set when hit).
+     * @remarks `GET /sessions/:sessionId/artifacts/:filename/base64` — access: `session:read`
+     */
+    readArtifactBase64(params: {
+        sessionId: string;
+        filename: string;
+        maxBytes?: number;
+    }): Promise<any>;
+
+    /**
      * Read facts (ReadFactsQuery params).
      * @remarks `GET /facts` — access: `facts:read`
      */
@@ -967,6 +991,16 @@ export interface ManagementOps {
     setAgentPackageScope(params: {
         name: string;
         scope?: any;
+    }): Promise<any>;
+
+    /**
+     * Pin/unpin an artifact (pinned artifacts survive retention sweeps).
+     * @remarks `PUT /sessions/:sessionId/artifacts/:filename/pinned` — access: `session:manage`
+     */
+    setArtifactPinned(params: {
+        sessionId: string;
+        filename: string;
+        pinned?: any;
     }): Promise<any>;
 
     /**
@@ -1134,6 +1168,7 @@ export function createManagementOps(
         cancelSessionGroup: (params: Record<string, unknown> = {}) => callOp("cancelSessionGroup", params),
         completeSession: (params: Record<string, unknown> = {}) => callOp("completeSession", params),
         completeSessionGroup: (params: Record<string, unknown> = {}) => callOp("completeSessionGroup", params),
+        copyArtifact: (params: Record<string, unknown> = {}) => callOp("copyArtifact", params),
         createSession: (params: Record<string, unknown> = {}) => callOp("createSession", params),
         createSessionForAgent: (params: Record<string, unknown> = {}) => callOp("createSessionForAgent", params),
         createSessionGroup: (params: Record<string, unknown> = {}) => callOp("createSessionGroup", params),
@@ -1213,6 +1248,7 @@ export function createManagementOps(
         pinAgentPackageVersion: (params: Record<string, unknown> = {}) => callOp("pinAgentPackageVersion", params),
         placeSessionsInGroup: (params: Record<string, unknown> = {}) => callOp("placeSessionsInGroup", params),
         pruneDeletedSummaries: (params: Record<string, unknown> = {}) => callOp("pruneDeletedSummaries", params),
+        readArtifactBase64: (params: Record<string, unknown> = {}) => callOp("readArtifactBase64", params),
         readFacts: (params: Record<string, unknown> = {}) => callOp("readFacts", params),
         regenerateSession: (params: Record<string, unknown> = {}) => callOp("regenerateSession", params),
         renameSession: (params: Record<string, unknown> = {}) => callOp("renameSession", params),
@@ -1226,6 +1262,7 @@ export function createManagementOps(
         sendSessionEvent: (params: Record<string, unknown> = {}) => callOp("sendSessionEvent", params),
         setAgentPackageEnabled: (params: Record<string, unknown> = {}) => callOp("setAgentPackageEnabled", params),
         setAgentPackageScope: (params: Record<string, unknown> = {}) => callOp("setAgentPackageScope", params),
+        setArtifactPinned: (params: Record<string, unknown> = {}) => callOp("setArtifactPinned", params),
         setCurrentUserGitHubCopilotKey: (params: Record<string, unknown> = {}) => callOp("setCurrentUserGitHubCopilotKey", params),
         setCurrentUserProfileSettings: (params: Record<string, unknown> = {}) => callOp("setCurrentUserProfileSettings", params),
         setSessionModel: (params: Record<string, unknown> = {}) => callOp("setSessionModel", params),

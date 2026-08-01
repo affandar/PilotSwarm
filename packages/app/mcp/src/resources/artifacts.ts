@@ -4,8 +4,9 @@ import type { ServerContext } from "../context.js";
 
 /** Artifact listing resource — web mode only (see tools/artifacts.ts). */
 export function registerArtifactResources(server: McpServer, ctx: ServerContext) {
-    const api = ctx.api;
-    if (!api) return;
+    const web = ctx.web;
+    if (!web) return;
+    const ops = web.ops;
 
     server.registerResource(
         "session-artifacts",
@@ -29,7 +30,7 @@ export function registerArtifactResources(server: McpServer, ctx: ServerContext)
         async (uri, variables) => {
             const id = String(variables.id);
             try {
-                const artifacts = await api.call("listArtifacts", { sessionId: id });
+                const artifacts = await ops.listArtifacts({ sessionId: id });
                 const list = Array.isArray(artifacts) ? artifacts : (artifacts?.artifacts ?? []);
                 return {
                     contents: [{ uri: uri.href, text: JSON.stringify(list, null, 2), mimeType: "application/json" }],

@@ -244,6 +244,10 @@ const VALID_ACCESS_CLASSES = new Set([
     "authed",
     "session:list", "session:create", "session:read", "session:write",
     "session:manage", "session:destroy", "session:share",
+    // Cross-session copy: the runtime gates fromSessionId for read and
+    // toSessionId for write (runtime.js "session:copy" branch). In the table
+    // since copyArtifact stopped being /api/rpc-only.
+    "session:copy",
     "group:list", "group:manage",
     "facts:read", "facts:write",
     "fleet:read", "fleet:admin",

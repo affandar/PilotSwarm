@@ -13,6 +13,14 @@ export interface PilotSwarmWebOptions {
     onUnauthorized?: () => void;
     /** Invoked on HTTP 403 / WS 4403 with the server's reason. */
     onForbidden?: (message: string) => void;
+    /**
+     * Reuse an existing ApiClient instead of constructing one. A process that
+     * also builds fact/graph stores (the MCP server) should hold ONE
+     * connection and token pipeline, not one per consumer. When set, the
+     * other connection options here are ignored — the injected client already
+     * carries them.
+     */
+    api?: ApiClient;
 }
 
 export function isWebOptions(options: unknown): options is PilotSwarmWebOptions {
@@ -28,6 +36,7 @@ export function assertUnambiguousProvider(options: any, className: string): void
 }
 
 export function createApiClientFromOptions(options: PilotSwarmWebOptions): ApiClient {
+    if (options.api) return options.api;
     return new ApiClient({
         apiUrl: options.apiUrl,
         getAccessToken: options.getAccessToken,

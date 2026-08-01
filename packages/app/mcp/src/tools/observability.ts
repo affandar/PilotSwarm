@@ -199,7 +199,7 @@ export function registerObservabilityTools(server: McpServer, ctx: ServerContext
                 },
             },
             withToolErrors(async ({ session_id }) => {
-                const meta = await ctx.api!.call("exportExecutionHistory", { sessionId: session_id });
+                const meta = await ctx.web!.ops.exportExecutionHistory({ sessionId: session_id });
                 return jsonResult({ exported: true, artifact: meta });
             }),
         );

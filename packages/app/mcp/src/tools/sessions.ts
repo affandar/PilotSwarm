@@ -173,7 +173,7 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                             isError: true,
                         };
                     }
-                    await ctx.api.call("sendMessage", {
+                    await ctx.web!.ops.sendMessage({
                         sessionId: session_id,
                         prompt: message,
                         options: {
@@ -524,7 +524,7 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
         async ({ limit }) => {
             try {
                 const users = ctx.api
-                    ? await ctx.api.call("listKnownUsers", limit != null ? { limit } : {})
+                    ? await ctx.web!.ops.listKnownUsers(limit != null ? { limit } : {})
                     : await (ctx.mgmt as any).listKnownUsers?.(limit != null ? { limit } : undefined);
                 return { content: [{ type: "text" as const, text: JSON.stringify({ users: users ?? [] }) }] };
             } catch (err) {

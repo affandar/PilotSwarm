@@ -72,6 +72,14 @@ function mockApi() {
     };
 }
 
+// Mirrors the real invariant: ctx.web is non-null exactly when ctx.api is —
+// same deployment connection, honestly-typed handle. ops mirrors the
+// generated surface: every method resolves an empty result.
+function mockWeb() {
+    const ops = new Proxy({}, { get: () => async () => ({}) });
+    return { ops };
+}
+
 function makeCtx({ enhanced = false, graph = false, admin = false, web = false } = {}) {
     return {
         client: {},
@@ -80,6 +88,7 @@ function makeCtx({ enhanced = false, graph = false, admin = false, web = false }
         enhancedFacts: enhanced ? mockEnhancedFacts() : null,
         graph: graph ? mockGraph() : null,
         api: web ? mockApi() : null,
+        web: web ? mockWeb() : null,
         admin,
         webMode: web,
         models: null,

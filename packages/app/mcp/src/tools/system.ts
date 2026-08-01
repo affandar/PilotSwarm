@@ -47,14 +47,14 @@ export function registerSystemTools(server: McpServer, ctx: ServerContext) {
 
                 if (wants.has("workers")) {
                     await grab("workers", async () => {
-                        const w: any = await ctx.api!.call("getWorkerCount");
+                        const w: any = await ctx.web!.ops.getWorkerCount();
                         const count = typeof w === "number" ? w : (w?.count ?? null);
                         // Worker registry (admin credentials only): live fleet
                         // presence regardless of where workers run.
                         let registry: Record<string, unknown> | undefined;
                         if (ctx.admin) {
                             try {
-                                const rows: any[] = (await ctx.api!.call("listWorkers")) ?? [];
+                                const rows: any[] = (await ctx.web!.ops.listWorkers()) ?? [];
                                 const liveCutoff = Date.now() - 90_000;
                                 const live = rows.filter((r) => new Date(r?.updatedAt ?? 0).getTime() >= liveCutoff);
                                 const byPhase: Record<string, number> = {};
@@ -74,9 +74,9 @@ export function registerSystemTools(server: McpServer, ctx: ServerContext) {
                         };
                     });
                 }
-                if (wants.has("policy")) await grab("policy", () => ctx.api!.call("getSessionCreationPolicy"));
-                if (wants.has("agents")) await grab("agents", () => ctx.api!.call("listCreatableAgents"));
-                if (wants.has("log_config")) await grab("log_config", () => ctx.api!.call("getLogConfig"));
+                if (wants.has("policy")) await grab("policy", () => ctx.web!.ops.getSessionCreationPolicy());
+                if (wants.has("agents")) await grab("agents", () => ctx.web!.ops.listCreatableAgents());
+                if (wants.has("log_config")) await grab("log_config", () => ctx.web!.ops.getLogConfig());
 
                 if (Object.keys(errors).length > 0) result.errors = errors;
                 return jsonResult(result);
@@ -102,7 +102,7 @@ export function registerSystemTools(server: McpServer, ctx: ServerContext) {
                 },
             },
             withToolErrors(async ({ pool, live_only }) => {
-                let rows: any[] = ((await ctx.api!.call("listWorkers")) ?? []) as any[];
+                let rows: any[] = ((await ctx.web!.ops.listWorkers()) ?? []) as any[];
                 if (pool) rows = rows.filter((r) => r.pool === pool);
                 if (live_only) {
                     const cutoff = Date.now() - 90_000;

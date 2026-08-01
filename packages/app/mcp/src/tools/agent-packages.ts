@@ -14,8 +14,9 @@ import { jsonResult, errorResult, withToolErrors } from "../util/respond.js";
  * tools, "full" (default) adds publish/sync/scope/pin/delete.
  */
 export function registerAgentPackageTools(server: McpServer, ctx: ServerContext) {
-    const api = ctx.api;
-    if (!api || ctx.agentMgmt === "off") return;
+    const web = ctx.web;
+    if (!web || ctx.agentMgmt === "off") return;
+    const ops = web.ops;
 
     server.registerTool(
         "list_agent_packages",
@@ -28,7 +29,7 @@ export function registerAgentPackageTools(server: McpServer, ctx: ServerContext)
             inputSchema: {},
         },
         withToolErrors(async () => {
-            const packages = await api.call("listAgentPackages");
+            const packages = await ops.listAgentPackages();
             return jsonResult({ count: Array.isArray(packages) ? packages.length : 0, packages });
         }),
     );
@@ -45,11 +46,11 @@ export function registerAgentPackageTools(server: McpServer, ctx: ServerContext)
             },
         },
         withToolErrors(async ({ name, include_tree, semver }) => {
-            const detail = await api.call("getAgentPackage", { name });
+            const detail = await ops.getAgentPackage({ name });
             if (!detail) return errorResult(`package "${name}" not found or not visible to you`, { name });
             const result: Record<string, unknown> = { package: detail };
             if (include_tree) {
-                result.tree = await api.call("getAgentPackageTree", { name, ...(semver ? { semver } : {}) });
+                result.tree = await ops.getAgentPackageTree({ name, ...(semver ? { semver } : {}) });
             }
             return jsonResult(result);
         }),
@@ -67,7 +68,7 @@ export function registerAgentPackageTools(server: McpServer, ctx: ServerContext)
             },
         },
         withToolErrors(async ({ name, file_path, semver }) => {
-            const file = await api.call("getAgentPackageFile", { name, filePath: file_path, ...(semver ? { semver } : {}) });
+            const file = await ops.getAgentPackageFile({ name, filePath: file_path, ...(semver ? { semver } : {}) });
             return jsonResult(file);
         }),
     );
@@ -93,7 +94,7 @@ export function registerAgentPackageTools(server: McpServer, ctx: ServerContext)
             },
         },
         withToolErrors(async ({ files, scope }) => {
-            const outcome = await api.call("uploadAgentPackage", {
+            const outcome = await ops.uploadAgentPackage({
                 files: files.map((f: { path: string; content_base64: string }) => ({ path: f.path, contentBase64: f.content_base64 })),
                 scope: scope ?? "user",
             });
@@ -112,7 +113,7 @@ export function registerAgentPackageTools(server: McpServer, ctx: ServerContext)
             },
         },
         withToolErrors(async ({ name, scope }) => {
-            await api.call("setAgentPackageScope", { name, scope });
+            await ops.setAgentPackageScope({ name, scope });
             return jsonResult({ ok: true, name, scope });
         }),
     );
@@ -128,7 +129,7 @@ export function registerAgentPackageTools(server: McpServer, ctx: ServerContext)
             },
         },
         withToolErrors(async ({ name, semver }) => {
-            await api.call("pinAgentPackageVersion", { name, semver });
+            await ops.pinAgentPackageVersion({ name, semver });
             return jsonResult({ ok: true, name, active: semver });
         }),
     );
@@ -144,7 +145,7 @@ export function registerAgentPackageTools(server: McpServer, ctx: ServerContext)
             },
         },
         withToolErrors(async ({ name, enabled }) => {
-            await api.call("setAgentPackageEnabled", { name, enabled });
+            await ops.setAgentPackageEnabled({ name, enabled });
             return jsonResult({ ok: true, name, enabled });
         }),
     );
@@ -160,7 +161,7 @@ export function registerAgentPackageTools(server: McpServer, ctx: ServerContext)
             },
         },
         withToolErrors(async ({ name }) => {
-            await api.call("deleteAgentPackage", { name });
+            await ops.deleteAgentPackage({ name });
             return jsonResult({ ok: true, deleted: name });
         }),
     );

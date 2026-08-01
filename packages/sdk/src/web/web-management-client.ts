@@ -606,3 +606,32 @@ export type _WebSatisfiesManagementSurface = AssertExtends<
     PublicSurface<import("../management-client.js").PilotSwarmManagementClient>
 >;
 
+/**
+ * The management surface both modes genuinely share. Hold THIS type when a
+ * variable may carry either mode — every method on it works (or refuses with
+ * a typed WEB_MODE_UNSUPPORTED error) on both classes, no casts.
+ *
+ * The KnownDivergences appear with union returns (`X | Promise<X>`): sync in
+ * direct mode, async over HTTP — `await` the result and both modes are
+ * correct. Everything else carries the direct client's exact signature.
+ *
+ * The assertions below make both halves of the claim compile-checked.
+ */
+type DirectClient = import("../management-client.js").PilotSwarmManagementClient;
+type SyncOrAsync<M extends (...args: never[]) => unknown> =
+    (...args: Parameters<M>) => ReturnType<M> | Promise<Awaited<ReturnType<M>>>;
+export type SharedManagementSurface =
+    PublicSurface<DirectClient>
+    & {
+        /** Sync in direct mode, async over HTTP — always `await` the result. */
+        listModels: SyncOrAsync<DirectClient["listModels"]>;
+        /** Sync in direct mode, async over HTTP — always `await` the result. */
+        getModelsByProvider: SyncOrAsync<DirectClient["getModelsByProvider"]>;
+        /** Sync in direct mode, async over HTTP — always `await` the result. */
+        getDefaultModel: SyncOrAsync<DirectClient["getDefaultModel"]>;
+    };
+
+type FullPublic<T> = Pick<T, keyof T>;
+export type _DirectSatisfiesShared = AssertExtends<FullPublic<DirectClient>, SharedManagementSurface>;
+export type _WebSatisfiesShared = AssertExtends<FullPublic<WebPilotSwarmManagementClient>, SharedManagementSurface>;
+

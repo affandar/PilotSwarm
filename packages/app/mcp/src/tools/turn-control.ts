@@ -119,7 +119,7 @@ export function registerTurnControlTools(server: McpServer, ctx: ServerContext) 
                 if (!(await requireSession(session_id))) {
                     return errorResult("session not found", { session_id });
                 }
-                await ctx.api!.call("sendSessionEvent", { sessionId: session_id, eventName: event_name, data });
+                await ctx.web!.ops.sendSessionEvent({ sessionId: session_id, eventName: event_name, data });
                 return jsonResult({ sent: true, event_name });
             }),
         );

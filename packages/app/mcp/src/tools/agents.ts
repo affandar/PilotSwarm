@@ -116,7 +116,7 @@ export function registerAgentTools(server: McpServer, ctx: ServerContext) {
                 let agents = ctx.registeredAgents;
                 if (ctx.api) {
                     try {
-                        const live = await ctx.api.call("listCreatableAgents");
+                        const live = await ctx.web!.ops.listCreatableAgents();
                         if (Array.isArray(live)) agents = live as typeof agents;
                     } catch { /* keep boot snapshot */ }
                 }
