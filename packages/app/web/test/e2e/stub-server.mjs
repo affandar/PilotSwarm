@@ -62,7 +62,9 @@ const MIME = {
 // realistic fleet size, where per-row cost actually shows up.
 // `groupMembers` files chosen sessions into a folder up front (index -> groupId),
 // so a test can drag onto a folder's MEMBERS and not just its header row.
-const makeSessions = (count, groupMembers = {}) => Array.from({ length: count }, (_, i) => ({
+// `parents` nests sessions (childIndex -> parentIndex) so the list renders a
+// real subtree - the shape the nested-session "well" is drawn around.
+const makeSessions = (count, groupMembers = {}, parents = {}) => Array.from({ length: count }, (_, i) => ({
     // The WIRE field is viewerGroupId (placement is viewer-private); the
     // client deliberately ignores a raw groupId on the session DTO.
     viewerGroupId: groupMembers[i] || null,
@@ -76,7 +78,7 @@ const makeSessions = (count, groupMembers = {}) => Array.from({ length: count },
     model: "github-copilot:claude-sonnet-5",
     agentId: null,
     isSystem: false,
-    parentSessionId: null,
+    parentSessionId: parents[i] == null ? null : `1111111${parents[i]}-2222-3333-4444-55555555555${parents[i]}`,
     createdAt: 1785000000000,
     updatedAt: 1785000000000 + i,
     // Real rows carry usage, so the ctx column and the detail box render the
@@ -180,9 +182,9 @@ function rpc(method, SESSIONS, PROFILE_SETTINGS = {}) {
     }
 }
 
-export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 0, systemEvery = 0, groups = [], themeId = null, groupMembers = {}, admin = false } = {}) {
+export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 0, systemEvery = 0, groups = [], themeId = null, groupMembers = {}, admin = false, parents = {} } = {}) {
     assertFreshBundle();
-    const SESSIONS = makeSessions(Math.max(1, sessionCount), groupMembers);
+    const SESSIONS = makeSessions(Math.max(1, sessionCount), groupMembers, parents);
     const WORKERS = admin ? makeWorkers(8, Date.now()) : [];
     const TRANSCRIPT = makeTranscript(Math.max(0, transcriptTurns), systemEvery);
     // Placement calls the drag tests assert against: [{ sessionIds, groupId }].

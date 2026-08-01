@@ -600,7 +600,11 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
         : "";
 
     if (depthPrefix) {
-        prefixRuns.push({ text: depthPrefix, color: "gray" });
+        // `role` lets a host drop this run without losing the rest: the portal
+        // draws nesting as a surface (the "well") and would otherwise show a
+        // box-drawing character inside it. The TUI renders text+colour and
+        // ignores the field, so its glyphs are untouched.
+        prefixRuns.push({ text: depthPrefix, color: "gray", role: "depth" });
     }
 
     const pinnedSet = new Set(Array.isArray(state.sessions?.pinnedIds) ? state.sessions.pinnedIds : []);
