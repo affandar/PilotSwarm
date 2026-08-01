@@ -1,6 +1,6 @@
 {
   "name": "pilotswarm-tour-guide",
-  "version": "0.1.0-dev.2",
+  "version": "0.1.0-dev.3",
   "description": "A self-starting guided tour of PilotSwarm's architecture, grounded in the public repository through the DeepWiki MCP server.",
   "agents": [
     "agents/pilotswarm-tour-guide.agent.md"
