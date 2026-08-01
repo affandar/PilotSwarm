@@ -3197,6 +3197,28 @@ function SessionDetailBox({ session, childCount = 0 }) {
  * fleet. That only holds while every prop is referentially stable — hence the
  * hoisted click handler and ref setter rather than closures built per row.
  */
+/**
+ * True when the primary input is a finger. Drag-to-folder is armed on
+ * pointerdown and needs `touch-action: none` to receive a move stream — which
+ * on a touch screen also means the list can no longer be scrolled by dragging
+ * it, so the gesture is withheld there entirely.
+ */
+function useCoarsePointer() {
+    const query = "(pointer: coarse)";
+    const read = () => (typeof window !== "undefined" && typeof window.matchMedia === "function"
+        ? window.matchMedia(query).matches
+        : false);
+    const [coarse, setCoarse] = React.useState(read);
+    React.useEffect(() => {
+        if (typeof window === "undefined" || typeof window.matchMedia !== "function") return undefined;
+        const media = window.matchMedia(query);
+        const onChange = (event) => setCoarse(event.matches);
+        media.addEventListener?.("change", onChange);
+        return () => media.removeEventListener?.("change", onChange);
+    }, []);
+    return coarse;
+}
+
 const RAIL_ORIGIN_PX = 13;
 const RAIL_STEP_PX = 11;
 
@@ -3231,13 +3253,16 @@ const SessionListRow = React.memo(function SessionListRow({
     const inDropZone = Boolean(drag?.dragging && drag.overGroupId && dropGroupId === drag.overGroupId);
     const isDropTarget = inDropZone && Boolean(row.isGroup);
     const onPointerDown = React.useCallback((event) => {
+        // No drag handlers (mobile) → no gesture to claim. Capturing the
+        // pointer there would swallow the touch that should scroll the list.
+        if (!drag?.onPointerDown) return;
         if (event.button !== 0) return;
         // Claim the gesture: without this the browser can start a native
         // selection/element drag on the button and never deliver pointermove.
         if (event.currentTarget?.setPointerCapture && event.pointerId != null) {
             try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* not capturable */ }
         }
-        drag?.onPointerDown?.(event, row);
+        drag.onPointerDown(event, row);
     }, [drag, row]);
 
     return React.createElement("button", {
@@ -3447,6 +3472,10 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     // Mobile keeps its inline detail line and gets no detail box — a reserved
     // footer would eat a meaningful slice of a phone screen.
     const isMobilePane = String(panelClassName).includes("ps-mobile-session-pane");
+    // Selection reverts to plain taps wherever the primary input is a finger:
+    // the mobile pane, and the chat-focus overlay's list on a phone. Matches
+    // the `(pointer: fine)` guard on touch-action in the stylesheet.
+    const touchInput = isMobilePane || useCoarsePointer();
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
     const sessionButtonRefs = React.useRef(new Map());
@@ -3926,7 +3955,9 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                 mobile: isMobilePane,
                 onRowClick: handleRowClick,
                 setRef: setSessionButtonRef,
-                drag: dragHandlers,
+                // Drag-to-folder is a fine-pointer gesture: arming it on
+                // touch hijacks the finger that should be scrolling the list.
+                drag: touchInput ? null : dragHandlers,
             }))),
     isMobilePane
         ? null

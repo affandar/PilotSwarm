@@ -5863,5 +5863,13 @@ body.ps-dragging-sessions.ps-drop-ok, body.ps-dragging-sessions.ps-drop-ok * { c
 /* Session-filter search: part of the frame, above the scrolling people list. */
 .ps-modal-search { flex: 0 0 auto; margin: 12px 0 0; }
 /* Rows own their pointer gestures so a drag is never stolen by the browser's
-   native text selection or scroll chaining. */
-.ps-session-list-button { touch-action: none; }
+   native text selection or scroll chaining — but ONLY where there is a fine
+   pointer. On a touch screen `touch-action: none` means the list cannot be
+   scrolled with a finger at all: every touch on a row is claimed as a
+   potential drag, which made the session list unusable on a phone. Keyed on
+   the input device rather than a pane class so the chat-focus overlay's list
+   is covered too. Touch keeps plain taps and native scrolling; drag-to-folder
+   stays a fine-pointer gesture. */
+@media (pointer: fine) {
+  .ps-session-list-button { touch-action: none; }
+}
