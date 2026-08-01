@@ -358,8 +358,8 @@ function PortalForbidden({ branding, authUi, authConfig, error, onSignOut, shell
 
 /**
  * This tab's build id: the hash Vite baked into the chunk this module lives
- * in. Shown in the header so a screenshot always identifies the running
- * bundle, and compared against what the server currently serves.
+ * in. Compared against what the server currently serves so a stale tab can
+ * offer a reload. Not displayed — it is a diagnostic, not product copy.
  */
 const BUILD_ID = (() => {
     try {
@@ -425,7 +425,7 @@ function PortalHeader({ account, authEnabled, isAdmin = false, branding, onSignO
             ? React.createElement("div", { className: "portal-header-user" },
                 React.createElement("div", { className: "portal-header-meta" },
                     versionLabel
-                        ? React.createElement("span", { className: "portal-header-version" }, `${versionLabel} · ${BUILD_ID}`)
+                        ? React.createElement("span", { className: "portal-header-version" }, versionLabel)
                         : null,
                     buildStale
                         ? React.createElement("button", {
