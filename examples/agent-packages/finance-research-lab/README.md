@@ -3,6 +3,11 @@
 An uploadable PilotSwarm agent package for source-backed stock and finance
 research. It contains a coordinating research lead and five specialist agents.
 
+It doubles as the multi-agent worked example in
+[Building an Agent Package for PilotSwarm](../../../docs/building-agent-packages.md),
+which is the reference for the manifest, agent, skill, and worker-tool
+contracts this package implements.
+
 ## Agents
 
 | Agent | Focus |

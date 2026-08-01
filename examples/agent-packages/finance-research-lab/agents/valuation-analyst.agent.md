@@ -1,5 +1,5 @@
 ---
-schemaVersion: 1
+schemaVersion: 2
 version: 0.1.0
 name: valuation-analyst
 title: Valuation Analyst

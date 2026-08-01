@@ -330,6 +330,36 @@ contains, and an MCP tool call — and confirm none of the answers are
 hallucinated (the demo kit's tools return the executing `workerNodeId` for
 exactly this reason).
 
+### A multi-agent package you can read in this repo
+
+[`examples/agent-packages/finance-research-lab/`](../examples/agent-packages/finance-research-lab/)
+is a larger package checked into this repository, so it needs no deployment
+to study: a lead agent that coordinates five specialists over six shared
+worker tools, plus two skills — also in manifest mode:
+
+```
+finance-research-lab/
+├── plugin.json                                # manifest: six agents, two skills
+├── agents/finance-research-lead.agent.md      # coordinator for the five below
+├── agents/equity-fundamentals.agent.md
+├── agents/valuation-analyst.agent.md
+├── agents/market-catalyst-scout.agent.md
+├── agents/investment-risk-auditor.agent.md
+├── agents/macro-sector-strategist.agent.md
+├── skills/finance-research-standards/SKILL.md
+├── skills/valuation-methods/SKILL.md
+├── tools/worker-module.js                     # the §5 contract, six tools
+└── README.md                                  # shipped via "include"
+```
+
+It shows two things a single-agent kit cannot: several agents sharing one
+worker module while each declaring a different subset of its tools, and
+skills scoped to the agents that need them rather than to the package (only
+the valuation-facing agents preload `valuation-methods`). It ships no MCP
+server, so it is also the smaller of the two starting points. Its only
+external configuration is `SEC_USER_AGENT`, which the SEC's fair-access
+policy requires of automated callers.
+
 ## 12. Checklist for assistants
 
 Before telling the user the package is ready:
