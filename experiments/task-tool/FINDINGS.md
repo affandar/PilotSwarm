@@ -155,10 +155,38 @@ collection/management). Excluding those three too:
 **Recommendation independent of the task-tool decision:** if `task` stays
 excluded, exclude `read_agent`, `list_agents`, `write_agent` as well.
 
-## Phase 1c: multi-turn accretion eval (eval-multi.mjs)
+## Phase 1c: multi-turn accretion eval (eval-multi.mjs) — THE decisive result
 
 One 8-turn session per (arm × model), models = claude-sonnet-5 (github)
-and gpt-5.4 (BYOK azure — the waldemort-chk production model). Measures
-the per-turn parent-context curve, cumulative parent input tokens, and
-adoption under trigger-based delineation rules. Results appended when
-complete.
+and gpt-5.4 (BYOK azure — the waldemort-chk production model).
+Trigger-based delineation rules in the ON arm. All arms 8/8 correct.
+
+| model | arm | adoption | parent ctx t1→t8 | cum. parent input | cost units* | wall |
+|---|---|---|---|---|---|---|
+| gpt-5.4 | off | — | 22.1K → 56.1K | 2,297K | 1,307K | 92s |
+| gpt-5.4 | on | **8/8** | **21.8K → 26.5K (flat)** | **718K (−69%)** | **747K (−43%)** | 125s (+36%) |
+| sonnet-5 | off | — | 28.4K → 46.2K | 2,018K | 1,195K | 68s |
+| sonnet-5 | on | 1/8 | 31.2K → 50.5K | 2,095K | 1,931K (+62%) | 183s |
+
+\* cache-aware: fresh×1 + cacheWrite×1.25 + cacheRead×0.1 + output×5,
+parent+subagent lanes combined.
+
+**Findings:**
+1. **For gpt-5.4 — the actual production model — this is a massive win.**
+   It followed the delegation rules on every turn; the parent context curve
+   went *flat* (26.5K after 8 verbose turns vs 56.1K without), cutting
+   total cache-aware cost 43% despite paying for subagents. This is the
+   exact accretion pathology measured on chk (31K/request baseline,
+   1.5–2M input/turn sessions), and the task tool fixes it at the source.
+2. **For sonnet-5 it is net negative.** It correctly judges that its own
+   surgical grep is cheaper and ignores the delegation guidance (1/8) —
+   and its single delegation exposed the haiku trap (below). Do not ship
+   the delegation guidance to strong-explorer models.
+3. **The haiku trap: never pin subagents weaker than the parent.** The
+   built-in explore pins claude-haiku-4.5; on a one-function question it
+   spiraled — 25 tool calls, 26 model calls, 559K tokens, 112s. Meanwhile
+   the gpt arm's subagents ran gpt-5.4 (the haiku pin FELL BACK because
+   azure doesn't serve it) and averaged ~42K cost units per delegation.
+   The accidental fallback is the correct design: **disable ALL built-ins
+   (explore included) and ship custom agents with no model pin** so they
+   inherit the parent session model. Phase 1d (on2 arm) validates this.

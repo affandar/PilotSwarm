@@ -1,0 +1,427 @@
+{
+  "name": "evalmulti-off-gpt",
+  "eventsPath": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/experiments/task-tool/results/evalmulti-off-gpt-2026-08-01T21-57-00-563Z.events.jsonl",
+  "turns": [
+    {
+      "prompt": "List the name of every LLM tool defined via defineTool() in packages/sdk/src/managed-session.ts, in definition order. Just the names.",
+      "ms": 7944,
+      "reply": "wait\nwait_on_worker\ncron\ncron_at\nask_user\nreport_cycle\nlist_available_models\nset_session_model\nregenerate_context\nregenerate_agent\nupdate_session_summary\nsend_session_message\nreply_session_message\nspawn_agent\nmessage_agent\ncheck_agents\nwait_for_agents\nlist_sessions\ncomplete_agent\ncancel_agent\ndelete_agent"
+    },
+    {
+      "prompt": "In packages/sdk/src/session-manager.ts, under exactly which conditions is an existing warm in-memory Copilot session discarded instead of reused? List each condition.",
+      "ms": 14692,
+      "reply": "- `turnIndex === 0` and there is already a warm in-memory session for that `sessionId`.\n- `epochStart` is true and there is already a warm in-memory session for that `sessionId` (the warm session belongs to the previous transcript epoch).\n- `existing.requiresModelRebind(config)` returns true for the warm session, meaning the effective model configuration changed and the session must be resumed on a newly bound SDK session.\n- Earlier in the same `getOrCreate` flow, the resolved GitHub Copilot token for the session changed: `previousClientKey !== undefined && previousClientKey !== desiredClientKey`, and a warm session exists, so it is destroyed to rebind onto the correct `CopilotClient`."
+    },
+    {
+      "prompt": "Run experiments/task-tool/fixture/scripts/noisy-build2.sh and report whether the build succeeded and the CHECKSUM value it printed. The checksum is computed at runtime, so you must actually run it.",
+      "ms": 8142,
+      "reply": "**Succeeded.** The script completed with `BUILD OK`.\n\n**CHECKSUM:** `eb101da4d478`"
+    },
+    {
+      "prompt": "Which files under packages/sdk/src reference COPILOT_HOME? Name each file and say in one sentence why it touches COPILOT_HOME.",
+      "ms": 9207,
+      "reply": "- `packages/sdk/src/session-manager.ts` — it sets `COPILOT_HOME` when creating Copilot clients because the Copilot CLI uses that env var to decide where session state lives, and this code wants session state under the manager’s controlled session-state directory.\n- `packages/sdk/src/regen-worker.ts` — it creates a temporary per-invocation `COPILOT_HOME` for the distiller/regeneration worker so the fresh SDK session uses isolated temporary state that can be deleted afterward."
+    },
+    {
+      "prompt": "List every parameter of the spawn_agent tool declaration in managed-session.ts with its type and a one-phrase purpose.",
+      "ms": 17000,
+      "reply": "- `agent_name` — `string` — known user-creatable agent to spawn.\n- `task` — `string` — task prompt for a custom sub-agent.\n- `model` — `string` — exact model override for the child agent.\n- `reasoning_effort` — `string` (`none | minimal | low | medium | high | xhigh | max`) — reasoning level override for the child.\n- `system_message` — `string` — custom system prompt for a custom child agent.\n- `tool_names` — `string[]` — explicit tool access list for a custom child.\n- `title` — `string` — initial session title for the spawned child.\n- `contract` — `object` — expected outputs and wake-up/validation contract for delegated work."
+    },
+    {
+      "prompt": "Explain what _resolveProviderConfig in session-manager.ts does for azure-type providers, covering both the registry path and the legacy single-provider path.",
+      "ms": 19362,
+      "reply": "For **Azure providers**, `_resolveProviderConfig()` behaves differently depending on whether the worker is using the **model-provider registry** or the **legacy single `provider` config**.\n\nIn the **registry path**, it calls `this.workerDefaults.modelProviders.resolve(model)`. If that resolves to a non-GitHub provider and the resolved entry has `sdkProvider`, `_resolveProviderConfig()` simply returns `{ provider: resolved.sdkProvider }`. For Azure, that means the Azure-specific SDK provider object is expected to have already been built by the registry layer, so `_resolveProviderConfig()` does **no Azure-specific rewriting itself** there.\n\nIn the **legacy single-provider path**, it falls back to `this.workerDefaults.provider`. If that provider is Azure (`p.type === \"azure\"`), and a `model` is present, and `p.baseUrl` does **not** already contain `/deployments/`, it returns a cloned provider object with `baseUrl` rewritten to `${trimmedBaseUrl}/deployments/${model}`. Otherwise, it returns the legacy provider unchanged as `{ provider: p }`. So in legacy mode, Azure gets special handling to construct the deployment-specific URL from the selected model, while in registry mode that work is assumed to have happened before `_resolveProviderConfig()` is called."
+    },
+    {
+      "prompt": "List, in order, the search paths that resolveModelProvidersPath checks in packages/sdk/src/model-providers.ts.",
+      "ms": 10112,
+      "reply": "1. `filePath` argument, if provided and exists.\n2. `process.env.PS_MODEL_PROVIDERS_PATH`, or `process.env.MODEL_PROVIDERS_PATH` if the first is unset, if that path exists.\n3. `.model_providers.json`\n4. `path.join(process.cwd(), \".model_providers.json\")`\n5. `/app/.model_providers.json`\n6. `model_providers.json`\n7. `path.join(process.cwd(), \"model_providers.json\")`\n8. `/app/model_providers.json`\n9. Up to 5 parent-directory candidates, appended in order while walking upward from `process.cwd()`: `path.join(parent, \".model_providers.json\")` for each successive parent directory."
+    },
+    {
+      "prompt": "Count how many .ts files under packages/sdk/src contain the string 'defineTool(' (run the count), report the number and name three such files.",
+      "ms": 5687,
+      "reply": "**9** files.\n\nThree examples:\n- `packages/sdk/src/managed-session.ts`\n- `packages/sdk/src/facts-tools.ts`\n- `packages/sdk/src/inspect-tools.ts`"
+    }
+  ],
+  "subagentEvents": [],
+  "toolCalls": [
+    {
+      "tool": "view",
+      "agentId": null,
+      "args": {
+        "path": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src/managed-session.ts"
+      }
+    },
+    {
+      "tool": "rg",
+      "agentId": null,
+      "args": {
+        "pattern": "defineTool\\(",
+        "paths": [
+          "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src/managed-session.ts"
+        ],
+        "output_mode": "content",
+        "n": true
+      }
+    },
+    {
+      "tool": "rg",
+      "agentId": null,
+      "args": {
+        "pattern": "warm|reuse|discard|existing|in-memory|CopilotSession|sessionCache|cache",
+        "paths": [
+          "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src/session-manager.ts"
+        ],
+        "output_mode": "content",
+        "n": true,
+        "head_limit": 200
+      }
+    },
+    {
+      "tool": "view",
+      "agentId": null,
+      "args": {
+        "path": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src/session-manager.ts",
+        "view_range": [
+          1,
+          320
+        ]
+      }
+    },
+    {
+      "tool": "rg",
+      "agentId": null,
+      "args": {
+        "pattern": "stale in-memory Copilot session found for turn 0|discarding the warm Copilot session of the previous epoch|requiresModelRebind|github copilot token changed; recycling warm session onto new client",
+        "paths": [
+          "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src/session-manager.ts"
+        ],
+        "output_mode": "content",
+        "n": true,
+        "A": 6,
+        "B": 6
+      }
+    },
+    {
+      "tool": "view",
+      "agentId": null,
+      "args": {
+        "path": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src/session-manager.ts",
+        "view_range": [
+          980,
+          1145
+        ]
+      }
+    },
+    {
+      "tool": "view",
+      "agentId": null,
+      "args": {
+        "path": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src/session-manager.ts",
+        "view_range": [
+          1180,
+          1265
+        ]
+      }
+    },
+    {
+      "tool": "view",
+      "agentId": null,
+      "args": {
+        "path": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src/session-manager.ts",
+        "view_range": [
+          1265,
+          1338
+        ]
+      }
+    },
+    {
+      "tool": "bash",
+      "agentId": null,
+      "args": {
+        "command": "./experiments/task-tool/fixture/scripts/noisy-build2.sh",
+        "description": "Run noisy build script",
+        "initial_wait": 120,
+        "mode": "sync"
+      }
+    },
+    {
+      "tool": "bash",
+      "agentId": null,
+      "args": {
+        "command": "tail -n 40 /var/folders/v5/0qbxlktj4nb4jzvgfg6jqljw0000gn/T/1785621445634-copilot-tool-output-90282-5388b721-ba0c-4fc1-9fbc-e8725a4a902a.txt",
+        "description": "Read end of build output",
+        "initial_wait": 30,
+        "mode": "sync"
+      }
+    },
+    {
+      "tool": "bash",
+      "agentId": null,
+      "args": {
+        "command": "rg -n \"CHECKSUM|succeeded|success|failed|error\" /var/folders/v5/0qbxlktj4nb4jzvgfg6jqljw0000gn/T/1785621445634-copilot-tool-output-90282-5388b721-ba0c-4fc1-9fbc-e8725a4a902a.txt",
+        "description": "Find checksum and outcome",
+        "initial_wait": 30,
+        "mode": "sync"
+      }
+    },
+    {
+      "tool": "rg",
+      "agentId": null,
+      "args": {
+        "pattern": "COPILOT_HOME",
+        "paths": [
+          "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src"
+        ],
+        "output_mode": "content",
+        "n": true,
+        "glob": "*.ts"
+      }
+    },
+    {
+      "tool": "glob",
+      "agentId": null,
+      "args": {
+        "pattern": "packages/sdk/src/**/*.ts",
+        "paths": [
+          "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals"
+        ]
+      }
+    },
+    {
+      "tool": "view",
+      "agentId": null,
+      "args": {
+        "path": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src/session-manager.ts",
+        "view_range": [
+          620,
+          720
+        ]
+      }
+    },
+    {
+      "tool": "view",
+      "agentId": null,
+      "args": {
+        "path": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src/regen-worker.ts",
+        "view_range": [
+          1,
+          220
+        ]
+      }
+    },
+    {
+      "tool": "rg",
+      "agentId": null,
+      "args": {
+        "pattern": "const spawnAgentTool = defineTool\\(\"spawn_agent\", \\{",
+        "paths": [
+          "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src/managed-session.ts"
+        ],
+        "output_mode": "content",
+        "n": true,
+        "A": 120
+      }
+    },
+    {
+      "tool": "rg",
+      "agentId": null,
+      "args": {
+        "pattern": "spawnAgentTool = defineTool\\(\"spawn_agent\", \\{",
+        "paths": [
+          "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src/managed-session.ts"
+        ],
+        "output_mode": "content",
+        "n": true,
+        "A": 220,
+        "B": 10
+      }
+    },
+    {
+      "tool": "view",
+      "agentId": null,
+      "args": {
+        "path": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src/managed-session.ts",
+        "view_range": [
+          2550,
+          2755
+        ]
+      }
+    },
+    {
+      "tool": "rg",
+      "agentId": null,
+      "args": {
+        "pattern": "const spawnAgentTool = defineTool\\(\"spawn_agent\", \\{",
+        "paths": [
+          "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src/managed-session.ts"
+        ],
+        "output_mode": "content",
+        "n": true,
+        "A": 140,
+        "B": 5
+      }
+    },
+    {
+      "tool": "rg",
+      "agentId": null,
+      "args": {
+        "pattern": "z\\.object\\(|schema:|inputSchema:",
+        "paths": [
+          "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src/managed-session.ts"
+        ],
+        "output_mode": "content",
+        "n": true,
+        "A": 4,
+        "B": 2,
+        "head_limit": 80
+      }
+    },
+    {
+      "tool": "bash",
+      "agentId": null,
+      "args": {
+        "command": "node - <<'NODE'\nconst fs = require('fs');\nconst p = 'packages/sdk/src/managed-session.ts';\nconst s = fs.readFileSync(p,'utf8');\nconst needle = 'const spawnAgentTool = defineTool(\"spawn_agent\", {';\nlet idx = -1;\nwhile ((idx = s.indexOf(needle, idx + 1)) !== -1) {\n  const start = s.lastIndexOf('\\n', idx-1)+1;\n  const end = s.indexOf('const messageAgentTool', idx);\n  console.log('---BLOCK---');\n  console.log(s.slice(start, end));\n}\nNODE",
+        "description": "Extract spawn_agent blocks",
+        "initial_wait": 30,
+        "mode": "sync"
+      }
+    },
+    {
+      "tool": "rg",
+      "agentId": null,
+      "args": {
+        "pattern": "_resolveProviderConfig\\(",
+        "paths": [
+          "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src/session-manager.ts"
+        ],
+        "output_mode": "content",
+        "n": true,
+        "A": 120,
+        "B": 20
+      }
+    },
+    {
+      "tool": "rg",
+      "agentId": null,
+      "args": {
+        "pattern": "type === \"azure\"|azure\\?: \\{ apiVersion|apiVersion",
+        "paths": [
+          "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src/session-manager.ts"
+        ],
+        "output_mode": "content",
+        "n": true,
+        "A": 20,
+        "B": 10
+      }
+    },
+    {
+      "tool": "view",
+      "agentId": null,
+      "args": {
+        "path": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src/session-manager.ts",
+        "view_range": [
+          340,
+          430
+        ]
+      }
+    },
+    {
+      "tool": "view",
+      "agentId": null,
+      "args": {
+        "path": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src/session-manager.ts",
+        "view_range": [
+          1460,
+          1545
+        ]
+      }
+    },
+    {
+      "tool": "bash",
+      "agentId": null,
+      "args": {
+        "command": "node - <<'NODE'\nconst fs = require('fs');\nconst s = fs.readFileSync('packages/sdk/src/session-manager.ts','utf8');\nconst start = s.indexOf('private _resolveProviderConfig(model?: string): Record<string, any> {');\nconst end = s.indexOf('\\n    }\\n\\n    private async _resolveSessionGitHubToken', start);\nconsole.log(s.slice(start, end+5));\nNODE",
+        "description": "Extract _resolveProviderConfig method",
+        "initial_wait": 30,
+        "mode": "sync"
+      }
+    },
+    {
+      "tool": "rg",
+      "agentId": null,
+      "args": {
+        "pattern": "private _resolveProviderConfig\\(model\\?: string\\): Record<string, any> \\{[\\s\\S]*?^    \\}",
+        "paths": [
+          "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src/session-manager.ts"
+        ],
+        "output_mode": "content",
+        "n": true,
+        "multiline": true
+      }
+    },
+    {
+      "tool": "rg",
+      "agentId": null,
+      "args": {
+        "pattern": "resolveModelProvidersPath",
+        "paths": [
+          "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src/model-providers.ts"
+        ],
+        "output_mode": "content",
+        "n": true,
+        "A": 80,
+        "B": 20
+      }
+    },
+    {
+      "tool": "view",
+      "agentId": null,
+      "args": {
+        "path": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src/model-providers.ts",
+        "view_range": [
+          1,
+          260
+        ]
+      }
+    },
+    {
+      "tool": "rg",
+      "agentId": null,
+      "args": {
+        "pattern": "export function resolveModelProvidersPath\\(filePath\\?: string\\): string \\| null \\{[\\s\\S]*?^\\}",
+        "paths": [
+          "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src/model-providers.ts"
+        ],
+        "output_mode": "content",
+        "n": true,
+        "multiline": true
+      }
+    },
+    {
+      "tool": "rg",
+      "agentId": null,
+      "args": {
+        "pattern": "defineTool\\(",
+        "paths": [
+          "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src"
+        ],
+        "glob": "*.ts",
+        "output_mode": "files_with_matches"
+      }
+    },
+    {
+      "tool": "rg",
+      "agentId": null,
+      "args": {
+        "pattern": "defineTool\\(",
+        "paths": [
+          "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src"
+        ],
+        "glob": "*.ts",
+        "output_mode": "count"
+      }
+    }
+  ],
+  "errors": []
+}

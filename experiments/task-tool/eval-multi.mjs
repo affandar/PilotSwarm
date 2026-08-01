@@ -85,6 +85,25 @@ const LOCKED_SETTINGS = JSON.stringify({
     },
 }, null, 2);
 
+// on2: ALL built-ins disabled (explore too — its haiku pin spirals);
+// custom agents only, no model pins → inherit the parent session model.
+const LOCKED_SETTINGS_2 = JSON.stringify({
+    subagents: {
+        disabledSubagents: [
+            "task", "general-purpose", "code-review", "rubber-duck",
+            "security-review", "rem-agent", "research", "explore",
+        ],
+    },
+}, null, 2);
+
+const SWARM_EXPLORE_AGENT = {
+    name: "swarm-explore",
+    displayName: "Swarm Explorer",
+    description: "Fast read-only codebase exploration and question answering in a separate context window. Safe to call in parallel.",
+    tools: ["grep", "glob", "view", "bash"],
+    prompt: "You are a read-only exploration agent. Answer the dispatching prompt from the codebase efficiently — prefer targeted grep over broad reading, keep it under 6 tool calls. Report a concise, complete answer, then stop.",
+};
+
 const SWARM_TASK_AGENT = {
     name: "swarm-task",
     displayName: "Swarm Task Runner",
@@ -99,6 +118,17 @@ function jobConfig(arm, modelKey, markerTools) {
     const common = { model, ...provider, workingDirectory: WORKTREE, tools: markerTools };
     if (arm === "off") {
         return { sessionConfig: { ...common, systemMessage: { content: BASE_PROMPT }, excludedTools: ["task"] } };
+    }
+    if (arm === "on2") {
+        const delineation2 = DELINEATION.replaceAll("'explore'", "'swarm-explore'");
+        return {
+            homeFiles: { "settings.json": LOCKED_SETTINGS_2 },
+            sessionConfig: {
+                ...common,
+                systemMessage: { content: BASE_PROMPT + delineation2 },
+                customAgents: [SWARM_EXPLORE_AGENT, SWARM_TASK_AGENT],
+            },
+        };
     }
     return {
         homeFiles: { "settings.json": LOCKED_SETTINGS },
@@ -172,12 +202,15 @@ async function runJob({ arm, modelKey }) {
 }
 
 const concurrency = Number(process.argv[process.argv.indexOf("--concurrency") + 1]) || 2;
-const jobs = [
-    { arm: "off", modelKey: "sonnet" },
-    { arm: "on", modelKey: "sonnet" },
-    { arm: "off", modelKey: "gpt" },
-    { arm: "on", modelKey: "gpt" },
-];
+const jobArgs = process.argv.slice(2).filter((a) => /^(off|on|on2)-(sonnet|gpt)$/.test(a));
+const jobs = jobArgs.length
+    ? jobArgs.map((a) => { const [arm, modelKey] = a.split("-"); return { arm, modelKey }; })
+    : [
+        { arm: "off", modelKey: "sonnet" },
+        { arm: "on", modelKey: "sonnet" },
+        { arm: "off", modelKey: "gpt" },
+        { arm: "on", modelKey: "gpt" },
+    ];
 
 console.error(`running ${jobs.length} multi-turn sessions (8 turns each, concurrency ${concurrency})`);
 const results = [];
