@@ -664,9 +664,22 @@ export class NodeSdkTransport {
                 viewer ? { provider: viewer.provider, subject: viewer.subject } : null,
                 Boolean(isAdmin),
             );
+            // Ownership is decided HERE, where the viewer's identity is known.
+            // An ADMIN sees every user's user-scoped packages, so "scope is
+            // user" does not mean "mine" — grouping on scope alone filed other
+            // people's agents onto the caller's shelf. Sending a boolean rather
+            // than the owner's identifiers keeps the catalog from telling every
+            // caller who installed what. No viewer at all (single-user or
+            // auth-disabled) means any user-scoped package is the caller's.
+            const principalKey = (principal) => (principal?.provider && principal?.subject
+                ? `${principal.provider}:${principal.subject}`.toLowerCase()
+                : null);
+            const viewerKey = principalKey(viewer);
             const entries = [];
             for (const pkg of packages) {
                 if (!pkg.enabled || !pkg.active) continue;
+                const ownerKey = principalKey(pkg.owner);
+                const mine = pkg.scope === "user" && (viewerKey === null || ownerKey === viewerKey);
                 const agents = Array.isArray(pkg.active.manifest?.agents) ? pkg.active.manifest.agents : [];
                 for (const agent of agents) {
                     if (!agent?.name) continue;
@@ -679,6 +692,7 @@ export class NodeSdkTransport {
                         packageName: pkg.name,
                         packageSemver: pkg.active.semver,
                         scope: pkg.scope,
+                        mine,
                         ownerLabel: pkg.createdBy || pkg.owner?.subject || null,
                     });
                 }

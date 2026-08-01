@@ -4451,7 +4451,15 @@ export class PilotSwarmUiController {
                 // Agent-package provenance (docs/proposals/agent-packages.md):
                 // "mine" = my user-scope package agents; everything else
                 // (baked/built-in + shared packages) groups under Shared.
-                group: agent?.source === "package" && agent?.scope === "user" ? "mine" : "shared",
+                //
+                // Ownership is the transport's call — it knows the viewer. An
+                // admin sees OTHER users' user-scoped packages, so scope alone
+                // put their agents under "My agents". A transport that does not
+                // report `mine` is single-user or legacy, where user-scope does
+                // mean mine.
+                group: agent?.source === "package" && agent?.scope === "user" && agent?.mine !== false
+                    ? "mine"
+                    : "shared",
                 packageName: agent?.packageName || null,
                 packageSemver: agent?.packageSemver || null,
                 packageScope: agent?.scope || null,

@@ -11,6 +11,26 @@ tools:
   - finance_ratio_math
 skills:
   - finance-research-standards
+# Splash art is terminal markup ({colour-fg}...{/colour-fg}, {bold}), shown when
+# the session is selected. `splash` is the desktop/wide variant; `splashMobile`
+# is swapped in when the pane is narrower than the art (phone portal, narrow
+# terminal). Both are literal block scalars (`|`) so the line breaks survive.
+splash: |
+  {bold}
+  {green-fg}  ╔════════════════════════════════════════════════╗{/green-fg}
+  {green-fg}  ║{/green-fg}{white-fg}   E Q U I T Y   F U N D A M E N T A L S        {/white-fg}{green-fg}║{/green-fg}
+  {green-fg}  ╚════════════════════════════════════════════════╝{/green-fg}
+  {/bold}
+    {bold}{green-fg}Filings{/green-fg} · {cyan-fg}Cash flow{/cyan-fg} · {blue-fg}Earnings quality{/blue-fg}{/bold}
+    {gray-fg}Read the statements before the story.{/gray-fg}
+splashMobile: |
+  {bold}{green-fg} ╔════════════════════════╗{/green-fg}{/bold}
+  {bold}{green-fg} ║{/green-fg}{white-fg}  Fundamentals Desk     {/white-fg}{green-fg}║{/green-fg}{/bold}
+  {bold}{green-fg} ╚════════════════════════╝{/green-fg}{/bold}
+   {green-fg}Filings{/green-fg} · {cyan-fg}Cash flow{/cyan-fg}
+# An agent with an initialPrompt is SELF-STARTING: the runtime sends this as the
+# first user message the moment a session starts blank, so the agent opens the
+# conversation instead of waiting to be prompted.
 initialPrompt: >
   Introduce yourself as the Equity Fundamentals specialist. Ask for the company
   or ticker, the periods to analyze, and whether the user wants a concise

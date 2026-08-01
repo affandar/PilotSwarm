@@ -42,6 +42,29 @@ const CATALOG = [
     { name: "my-scraper", title: "My Scraper", source: "package", scope: "user", packageName: "hn-scraper", packageSemver: "0.2.1" },
 ];
 
+// An ADMIN sees every user's user-scoped packages, so "scope is user" is not
+// "mine". The transport knows the viewer and says so; grouping on scope alone
+// filed other people's agents onto the caller's shelf.
+test("another user's user-scoped agent is Shared, not My agents", async () => {
+    const { controller, store } = makeController({
+        listCreatableAgents: async () => [
+            { name: "mine-bot", title: "Mine Bot", source: "package", scope: "user", mine: true, packageName: "my-kit", packageSemver: "1.0.0" },
+            { name: "theirs-bot", title: "Theirs Bot", source: "package", scope: "user", mine: false, packageName: "their-kit", packageSemver: "1.0.0" },
+        ],
+    });
+    await controller.openSessionAgentPicker();
+
+    const items = store.getState().ui.modal.items;
+    const groupOf = (agentName) => items.find((item) => item.agentName === agentName)?.group;
+    assert.equal(groupOf("mine-bot"), "mine", "my own user-scoped package stays under My agents");
+    assert.equal(groupOf("theirs-bot"), "shared", "another user's user-scoped package must not be My agents");
+    assert.deepEqual(
+        items.map((item) => item.kind === "generic" ? "generic" : item.agentName),
+        ["theirs-bot", "mine-bot", "generic"],
+        "shared segment first, then mine",
+    );
+});
+
 test("picker groups Shared → My agents → Generic with heading rows", async () => {
     const { controller, store } = makeController({
         listCreatableAgents: async () => CATALOG,
