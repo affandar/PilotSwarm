@@ -38,7 +38,11 @@ examples/horizon-harvester/graph.md
 
 # Local editor + MCP client config (machine-specific; not shared)
 .vscode/
-.mcp.json
+# Root-anchored: an agent package legitimately SHIPS a .mcp.json (its MCP server
+# catalog, declared by plugin.json), and an unanchored pattern matches at every
+# depth — which silently dropped one from a sample package. A missing declared
+# path is a hard error at publish, so the package would have failed in a clone.
+/.mcp.json
 .copilot/mcp-config.json
 
 # Playwright
