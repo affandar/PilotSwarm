@@ -137,7 +137,7 @@ export class PortalRuntime {
     }
 
     _shouldRecordBreakGlass(actorKey, sessionId) {
-        const key = `${actorKey}${sessionId}`;
+        const key = `${actorKey}\u0001${sessionId}`;
         const now = Date.now();
         const expiry = this._breakGlassSeen.get(key);
         if (expiry && expiry > now) return false;
@@ -433,7 +433,7 @@ export class PortalRuntime {
      */
     _listViewer(owner, isAdmin) {
         if (isAdmin || !this.authz.enforce) return null;
-        if (!owner) return { provider: " nomatch", subject: " nomatch", systemVisible: false };
+        if (!owner) return { provider: "\0nomatch", subject: "\0nomatch", systemVisible: false };
         return {
             provider: owner.provider,
             subject: owner.subject,

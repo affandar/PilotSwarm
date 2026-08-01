@@ -70,13 +70,27 @@ test("401 fires onUnauthorized and throws ApiError", async () => {
     assert.equal(unauthorized, 1);
 });
 
-test("403 fires onForbidden with the server reason", async () => {
+// v0.5.14 (105e78f): onForbidden is an ADMISSION signal, not a per-op one. A
+// 403 on a normal operation (e.g. a non-owner renaming) throws to the caller
+// but must NOT flip the app to the access-denied gate; only the admission
+// probes (/auth/me, /bootstrap) do that.
+test("a per-operation 403 throws the server reason without firing onForbidden", async () => {
     let reason = null;
     const { client } = createClient({
         responses: [jsonResponse({ ok: false, error: { code: "FORBIDDEN", message: "not on the allowlist" } }, { status: 403 })],
         onForbidden: (message) => { reason = message; },
     });
     await assert.rejects(client.call("listSessions"), /not on the allowlist/);
+    assert.equal(reason, null);
+});
+
+test("a 403 on the admission probe fires onForbidden with the server reason", async () => {
+    let reason = null;
+    const { client } = createClient({
+        responses: [jsonResponse({ ok: false, error: { code: "FORBIDDEN", message: "not on the allowlist" } }, { status: 403 })],
+        onForbidden: (message) => { reason = message; },
+    });
+    await assert.rejects(client.getAuthContext(), /not on the allowlist/);
     assert.equal(reason, "not on the allowlist");
 });
 
