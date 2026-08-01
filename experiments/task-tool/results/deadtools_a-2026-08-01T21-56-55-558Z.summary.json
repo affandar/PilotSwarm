@@ -1,0 +1,14 @@
+{
+  "name": "deadtools_a",
+  "eventsPath": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/experiments/task-tool/results/deadtools_a-2026-08-01T21-56-55-558Z.events.jsonl",
+  "turns": [
+    {
+      "prompt": "Reply with exactly: OK",
+      "ms": 1748,
+      "reply": "OK"
+    }
+  ],
+  "subagentEvents": [],
+  "toolCalls": [],
+  "errors": []
+}

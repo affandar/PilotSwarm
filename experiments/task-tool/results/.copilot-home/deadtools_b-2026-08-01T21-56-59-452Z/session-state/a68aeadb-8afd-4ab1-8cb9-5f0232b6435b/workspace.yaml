@@ -1,0 +1,12 @@
+id: a68aeadb-8afd-4ab1-8cb9-5f0232b6435b
+cwd: /Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/experiments/task-tool/fixture
+git_root: /Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals
+repository: affandar/PilotSwarm
+host_type: github
+branch: task-tool-evals
+client_name: sdk
+name: 'Reply with exactly: OK'
+user_named: false
+summary_count: 0
+created_at: 2026-08-01T21:57:00.820Z
+updated_at: 2026-08-01T21:57:00.909Z

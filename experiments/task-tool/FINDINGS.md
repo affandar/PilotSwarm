@@ -141,6 +141,20 @@ delineation guidance ("prefer delegating broad sweeps and noisy commands").
   input on every later call — and chattier models (gpt-5.4 family).
   → Phase 1c tests exactly that.
 
+## Side measurement: dead companion tools (deadtools_a/b)
+
+Today's prod config excludes `task` but still declares its companion
+surface: `read_agent`, `list_agents`, `write_agent` (background-task
+collection/management). Excluding those three too:
+
+- toolDefinitionsTokens: 5,120 → 3,911 (**−1,209 tokens/session**, every
+  session, every turn's cache-write)
+- They are useless without `task` — and `read_agent` is the tool observed
+  failing at 100% (381 calls) on waldemort-chk.
+
+**Recommendation independent of the task-tool decision:** if `task` stays
+excluded, exclude `read_agent`, `list_agents`, `write_agent` as well.
+
 ## Phase 1c: multi-turn accretion eval (eval-multi.mjs)
 
 One 8-turn session per (arm × model), models = claude-sonnet-5 (github)

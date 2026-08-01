@@ -1,0 +1,207 @@
+{
+  "name": "evalmulti-off-sonnet",
+  "eventsPath": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/experiments/task-tool/results/evalmulti-off-sonnet-2026-08-01T21-55-50-424Z.events.jsonl",
+  "turns": [
+    {
+      "prompt": "List the name of every LLM tool defined via defineTool() in packages/sdk/src/managed-session.ts, in definition order. Just the names.",
+      "ms": 8291,
+      "reply": "Names of every `defineTool()` call in `managed-session.ts`, in definition order (the file defines two tool-set functions, each with its own sequence):\n\n**First function (lines ~346–837):**\n1. wait\n2. wait_on_worker\n3. cron\n4. cron_at\n5. ask_user\n6. report_cycle\n7. list_available_models\n8. set_session_model\n9. regenerate_context\n10. regenerate_agent\n11. update_session_summary\n12. send_session_message\n13. reply_session_message\n14. spawn_agent\n15. message_agent\n16. check_agents\n17. wait_for_agents\n18. list_sessions\n19. complete_agent\n20. cancel_agent\n21. delete_agent\n\n**Second function (lines ~938–1756):**\n1. wait\n2. report_cycle\n3. wait_on_worker\n4. cron\n5. cron_at\n6. ask_user\n7. list_available_models\n8. regenerate_context\n9. regenerate_agent\n10. set_session_model\n11. update_session_summary\n12. send_session_message\n13. reply_session_message\n14. spawn_agent\n15. message_agent\n16. check_agents\n17. wait_for_agents\n18. list_sessions\n19. complete_agent\n20. cancel_agent\n21. delete_agent"
+    },
+    {
+      "prompt": "In packages/sdk/src/session-manager.ts, under exactly which conditions is an existing warm in-memory Copilot session discarded instead of reused? List each condition.",
+      "ms": 12725,
+      "reply": "In `_getOrCreateUnlocked()` (the warm-session check block, ~line 1264–1290), an existing in-memory `CopilotSession` is discarded (not reused) under exactly these conditions:\n\n1. **`turnIndex === 0`** — a warm handle found for what should be turn 0 is treated as stale; it's discarded via `_resetSessionState()` and a fresh session is created.\n2. **`epochStart === true`** — start of a new transcript epoch (session regeneration); the previous epoch's warm session is destroyed and removed from `this.sessions`.\n3. **`existing.requiresModelRebind(config)` returns true** — the resolved model/config for this turn differs from what the warm session is bound to (including the catalog-model-wins adoption at lines 979–1000, which forces this check to fire when CMS and configured model disagree); the session is destroyed and removed.\n\nIf none of these three conditions hold, the warm session is reused (`existing.updateConfig(config); return existing;`)."
+    },
+    {
+      "prompt": "Run experiments/task-tool/fixture/scripts/noisy-build2.sh and report whether the build succeeded and the CHECKSUM value it printed. The checksum is computed at runtime, so you must actually run it.",
+      "ms": 6304,
+      "reply": "Build succeeded: **BUILD OK in 41.7s**\n\n**CHECKSUM: eb101da4d478**"
+    },
+    {
+      "prompt": "Which files under packages/sdk/src reference COPILOT_HOME? Name each file and say in one sentence why it touches COPILOT_HOME.",
+      "ms": 8534,
+      "reply": "Two files under `packages/sdk/src` reference `COPILOT_HOME`:\n\n1. **`session-manager.ts`** — sets `COPILOT_HOME` (to `path.dirname(this.sessionStateDir)`) on each `CopilotClient`'s spawned CLI process, since it's the only variable the Copilot CLI actually honors to place per-session state on the mounted volume/test dir (the `configDir` SessionConfig option is inert for this purpose).\n\n2. **`regen-worker.ts`** — points the ephemeral Distiller SDK client's `COPILOT_HOME` at a private temp directory so its regeneration session's state never leaks into or shares the real session's `~/.copilot` home."
+    },
+    {
+      "prompt": "List every parameter of the spawn_agent tool declaration in managed-session.ts with its type and a one-phrase purpose.",
+      "ms": 8308,
+      "reply": "Both `spawn_agent` definitions in `managed-session.ts` share the same parameter schema:\n\n| Parameter | Type | Purpose |\n|---|---|---|\n| `agent_name` | `string` | Name of a known user-creatable agent to spawn (loads prompt/tools/task automatically) |\n| `task` | `string` | Ad-hoc task description for a custom (unnamed) agent |\n| `model` | `string` | Optional exact `provider:model` override for the sub-agent |\n| `reasoning_effort` | `string` (enum: none/minimal/low/medium/high/xhigh/max) | Optional reasoning-effort override for the sub-agent |\n| `system_message` | `string` | Optional custom system prompt override (custom agents only) |\n| `tool_names` | `array` of `string` | Optional explicit tool allowlist for the sub-agent |\n| `title` | `string` | Optional display/session title for the spawned sub-agent |\n| `contract` | `object` | Optional success-criteria/wake-condition contract for parent notification |"
+    },
+    {
+      "prompt": "Explain what _resolveProviderConfig in session-manager.ts does for azure-type providers, covering both the registry path and the legacy single-provider path.",
+      "ms": 12329,
+      "reply": "`_resolveProviderConfig(model)` picks the SDK `provider` config to pass to `client.createSession()`, in two tiers:\n\n**1. Registry path (multi-provider, `workerDefaults.modelProviders`):** it calls `registry.resolve(model)`. If the resolved provider's `type === \"azure\"` (a specific instance registered in the catalog), it simply returns `{ provider: resolved.sdkProvider }` — the registry entry is expected to already carry the correct, fully-formed Azure config (including any deployment-specific `baseUrl`) built at registration time, so no extra URL construction happens here.\n\n**2. Legacy single-provider path (`workerDefaults.provider`, used only if the registry didn't resolve):** here Azure gets special dynamic handling — if `p.type === \"azure\"` and a `model` is given and `p.baseUrl` doesn't already contain `/deployments/`, it constructs a per-model deployment URL by appending `/deployments/${model}` to the base URL (stripping trailing slashes first), returning `{ provider: { ...p, baseUrl: <constructed> } }`. This lets one legacy Azure config be reused across multiple model deployments by deriving the deployment-specific endpoint from the model name at session-creation time. If `baseUrl` already has `/deployments/` (or it's not Azure), it just returns `{ provider: p }` unchanged."
+    },
+    {
+      "prompt": "List, in order, the search paths that resolveModelProvidersPath checks in packages/sdk/src/model-providers.ts.",
+      "ms": 6974,
+      "reply": "`resolveModelProvidersPath` checks, in order:\n\n0. **Override first** — explicit `filePath` arg, or `PS_MODEL_PROVIDERS_PATH`/`MODEL_PROVIDERS_PATH` env var (returned immediately if it exists on disk).\n\nThen the static `searchPaths` list, checked in this order:\n\n1. `.model_providers.json` (relative to process CWD implicitly)\n2. `path.join(process.cwd(), \".model_providers.json\")`\n3. `/app/.model_providers.json`\n4. `model_providers.json` (legacy fallback, no dot)\n5. `path.join(process.cwd(), \"model_providers.json\")` (legacy)\n6. `/app/model_providers.json` (legacy)\n7. Then up to 5 levels walking up from CWD's parent directories, appending `.model_providers.json` at each ancestor directory (repo-root discovery)\n\nThe first path in that combined list that exists on disk is returned; otherwise `null`."
+    },
+    {
+      "prompt": "Count how many .ts files under packages/sdk/src contain the string 'defineTool(' (run the count), report the number and name three such files.",
+      "ms": 4272,
+      "reply": "**9** `.ts` files under `packages/sdk/src` contain `defineTool(`.\n\nExamples: `managed-session.ts`, `facts-tools.ts`, `inspect-tools.ts`."
+    }
+  ],
+  "subagentEvents": [],
+  "toolCalls": [
+    {
+      "tool": "grep",
+      "agentId": null,
+      "args": {
+        "pattern": "defineTool\\(",
+        "paths": "packages/sdk/src/managed-session.ts",
+        "output_mode": "content",
+        "-n": true,
+        "-A": 3
+      }
+    },
+    {
+      "tool": "grep",
+      "agentId": null,
+      "args": {
+        "-n": true,
+        "output_mode": "content",
+        "paths": "packages/sdk/src/session-manager.ts",
+        "pattern": "discard|recreate|stale|invalidat|mismatch|dispose|delete this\\.sessions|evict"
+      }
+    },
+    {
+      "tool": "view",
+      "agentId": null,
+      "args": {
+        "path": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src/session-manager.ts",
+        "view_range": [
+          930,
+          1035
+        ]
+      }
+    },
+    {
+      "tool": "view",
+      "agentId": null,
+      "args": {
+        "path": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src/session-manager.ts",
+        "view_range": [
+          1230,
+          1340
+        ]
+      }
+    },
+    {
+      "tool": "view",
+      "agentId": null,
+      "args": {
+        "path": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src/session-manager.ts",
+        "view_range": [
+          620,
+          665
+        ]
+      }
+    },
+    {
+      "tool": "bash",
+      "agentId": null,
+      "args": {
+        "command": "bash experiments/task-tool/fixture/scripts/noisy-build2.sh",
+        "description": "Run noisy-build2.sh script"
+      }
+    },
+    {
+      "tool": "bash",
+      "agentId": null,
+      "args": {
+        "command": "grep -iE \"checksum|build (succeeded|failed)|BUILD\" /var/folders/v5/0qbxlktj4nb4jzvgfg6jqljw0000gn/T/1785621375394-copilot-tool-output-79844-10172109-2297-4d87-b349-b54d10365e93.txt",
+        "description": "Search output for checksum and build result"
+      }
+    },
+    {
+      "tool": "grep",
+      "agentId": null,
+      "args": {
+        "pattern": "COPILOT_HOME",
+        "path": "packages/sdk/src",
+        "output_mode": "files_with_matches"
+      }
+    },
+    {
+      "tool": "grep",
+      "agentId": null,
+      "args": {
+        "-n": true,
+        "-C": 3,
+        "output_mode": "content",
+        "pattern": "COPILOT_HOME",
+        "paths": [
+          "packages/sdk/src/session-manager.ts",
+          "packages/sdk/src/regen-worker.ts"
+        ]
+      }
+    },
+    {
+      "tool": "view",
+      "agentId": null,
+      "args": {
+        "path": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src/managed-session.ts",
+        "view_range": [
+          645,
+          705
+        ]
+      }
+    },
+    {
+      "tool": "view",
+      "agentId": null,
+      "args": {
+        "path": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src/managed-session.ts",
+        "view_range": [
+          1464,
+          1545
+        ]
+      }
+    },
+    {
+      "tool": "grep",
+      "agentId": null,
+      "args": {
+        "-n": true,
+        "output_mode": "content",
+        "paths": "packages/sdk/src/session-manager.ts",
+        "pattern": "_resolveProviderConfig"
+      }
+    },
+    {
+      "tool": "view",
+      "agentId": null,
+      "args": {
+        "path": "/Users/affandar/workshop/drox/pilotswarm/.claude/worktrees/task-tool-evals/packages/sdk/src/session-manager.ts",
+        "view_range": [
+          1802,
+          1880
+        ]
+      }
+    },
+    {
+      "tool": "grep",
+      "agentId": null,
+      "args": {
+        "-n": true,
+        "output_mode": "content",
+        "-A": 40,
+        "paths": "packages/sdk/src/model-providers.ts",
+        "pattern": "function resolveModelProvidersPath"
+      }
+    },
+    {
+      "tool": "grep",
+      "agentId": null,
+      "args": {
+        "pattern": "defineTool\\(",
+        "glob": "*.ts",
+        "paths": "packages/sdk/src",
+        "output_mode": "files_with_matches"
+      }
+    }
+  ],
+  "errors": []
+}

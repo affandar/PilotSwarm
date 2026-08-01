@@ -188,6 +188,17 @@ const EXPERIMENTS = {
     },
 };
 
+// Quantify the declaration cost of the task tool's dead companions
+// (read_agent/list_agents/write_agent) in today's prod config.
+EXPERIMENTS.deadtools_a = {
+    sessionConfig: { ...COMMON, excludedTools: ["task"] },
+    turns: ["Reply with exactly: OK"],
+};
+EXPERIMENTS.deadtools_b = {
+    sessionConfig: { ...COMMON, excludedTools: ["task", "read_agent", "list_agents", "write_agent"] },
+    turns: ["Reply with exactly: OK"],
+};
+
 const name = process.argv[2];
 if (!EXPERIMENTS[name]) {
     console.error(`Unknown experiment '${name}'. One of: ${Object.keys(EXPERIMENTS).join(", ")}`);
