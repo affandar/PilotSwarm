@@ -190,3 +190,50 @@ parent+subagent lanes combined.
    The accidental fallback is the correct design: **disable ALL built-ins
    (explore included) and ship custom agents with no model pin** so they
    inherit the parent session model. Phase 1d (on2 arm) validates this.
+
+## Phase 1d: on2 arm — custom-only roster, no model pins
+
+Same 8-turn protocol; ALL built-ins disabled (explore included), custom
+`swarm-explore` + `swarm-task` (no model pins → inherit parent model).
+
+| model | off | on (built-ins) | on2 (custom-only) |
+|---|---|---|---|
+| gpt-5.4 cost units | 1,307K | 747K (−43%) | **627K (−52%)** |
+| gpt-5.4 final ctx | 56.1K | 26.5K | **25.7K** |
+| gpt-5.4 adoption | — | 8/8 | 8/8 |
+| sonnet-5 cost units | 1,195K | 1,931K (+62%) | 1,377K (+15%) |
+| sonnet-5 final ctx | 46.2K | 50.5K | 44.5K |
+| sonnet-5 adoption | — | 1/8 | 3/8 |
+
+- **Custom-only strictly dominates built-ins for both models.** No spirals:
+  sonnet's subagents ran at sonnet and stayed surgical (6/3/10 tool calls).
+- gpt-5.4 improves to **−52% total cost**, context curve flat.
+- sonnet still nets +15% cost and 2.6× wall clock — its own direct
+  exploration is simply cheaper than delegation on this workload.
+
+## Leak guarantee
+
+Across all 40 experiment/eval sessions, the only subagent-lane `ps_*`
+invocations are the two deliberate pre-mitigation probes (`leak`,
+`shadow`). Under the locked/on2 recipe: **zero leaks**, while the parent
+kept full access to the durability tools throughout.
+
+## Final recommendation
+
+1. **Enable the native task tool per-model, not fleet-wide.** Gate on the
+   session's effective model family: ON + delineation guidance for
+   gpt-5.4-class models (this is chk's fleet — the measured win is −52%
+   cost and a flat context curve); OFF (or present-but-unguided) for
+   sonnet/opus-class models, which self-serve more cheaply.
+2. **Ship the locked recipe**: drop `task` from `excludedTools`; write
+   worker-global `settings.json` disabling ALL built-in subagents; add
+   `swarm-explore` + `swarm-task` customAgents with explicit tool
+   allowlists (`bash`/`view`/`grep`/`glob` family) and **no model pin**.
+3. **Where task stays off, also exclude** `read_agent`, `list_agents`,
+   `write_agent` (−1,209 tokens/session, kills chk's 100%-failing
+   read_agent pattern).
+4. **Delineation** (prompt layer, only where task is ON): durable work →
+   `spawn_agent` (survives restarts, portal-visible, messageable);
+   intra-turn search/command noise → `task` subagents (die with the turn).
+   Trigger-rule phrasing measurably outperforms "you may use" phrasing
+   for gpt-family adoption (8/8 vs the soft phrasing's partial uptake).
