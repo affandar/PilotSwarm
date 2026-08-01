@@ -17,14 +17,14 @@ inheritDefaultMcpServers: false
 splash: |
   {bold}
   {cyan-fg}  ╔════════════════════════════════════════════════╗{/cyan-fg}
-  {cyan-fg}  ║{/cyan-fg}{white-fg} P I L O T S W A R M   ·   G U I D E D   T O U R{/white-fg}{cyan-fg}║{/cyan-fg}
+  {cyan-fg}  ║{/cyan-fg}{white-fg}         P I L O T S W A R M   T O U R          {/white-fg}{cyan-fg}║{/cyan-fg}
   {cyan-fg}  ╚════════════════════════════════════════════════╝{/cyan-fg}
   {/bold}
     {bold}{cyan-fg}Durable turns{/cyan-fg} · {green-fg}Client/Worker{/green-fg} · {magenta-fg}Replay{/magenta-fg}{/bold}
     {gray-fg}Ask me to skip ahead, slow down, or go deeper.{/gray-fg}
 splashMobile: |
   {bold}{cyan-fg} ╔════════════════════════╗{/cyan-fg}{/bold}
-  {bold}{cyan-fg} ║{/cyan-fg}{white-fg}  Architecture Tour     {/white-fg}{cyan-fg}║{/cyan-fg}{/bold}
+  {bold}{cyan-fg} ║{/cyan-fg}{white-fg}   Architecture Tour    {/white-fg}{cyan-fg}║{/cyan-fg}{/bold}
   {bold}{cyan-fg} ╚════════════════════════╝{/cyan-fg}{/bold}
    {cyan-fg}Durable turns{/cyan-fg} · {green-fg}Replay{/green-fg}
 # SELF-STARTING: the runtime sends this as the first user message the moment a

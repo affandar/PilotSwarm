@@ -595,6 +595,14 @@ export interface AgentPackageManifest {
         tools?: string[];
         skills?: string[];
         mcpServers?: string[];
+        // Session-presentation fields. They have to ride the MANIFEST because a
+        // session is created from the catalog, before the package's agent file
+        // is ever read: the picker sends splash/initialPrompt with the create
+        // call. Dropping them here is why a package agent could not self-start
+        // or show its own splash, while an identical baked agent could.
+        splash?: string;
+        splashMobile?: string;
+        initialPrompt?: string;
     }>;
     skills: Array<{ name: string; description?: string }>;
     mcpServers: string[];
@@ -916,6 +924,9 @@ export async function validateAgentPackageDir(
                 tools: a.tools ?? undefined,
                 skills: a.skills,
                 mcpServers: a.mcpServers,
+                splash: a.splash,
+                splashMobile: a.splashMobile,
+                initialPrompt: a.initialPrompt,
             })),
             skills: skills.map((s) => ({ name: s.name, description: s.description })),
             mcpServers: mcpServerNames,

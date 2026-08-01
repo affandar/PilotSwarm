@@ -18,14 +18,14 @@ skills:
 splash: |
   {bold}
   {green-fg}  ╔════════════════════════════════════════════════╗{/green-fg}
-  {green-fg}  ║{/green-fg}{white-fg}   E Q U I T Y   F U N D A M E N T A L S        {/white-fg}{green-fg}║{/green-fg}
+  {green-fg}  ║{/green-fg}{white-fg}     E Q U I T Y   F U N D A M E N T A L S      {/white-fg}{green-fg}║{/green-fg}
   {green-fg}  ╚════════════════════════════════════════════════╝{/green-fg}
   {/bold}
     {bold}{green-fg}Filings{/green-fg} · {cyan-fg}Cash flow{/cyan-fg} · {blue-fg}Earnings quality{/blue-fg}{/bold}
     {gray-fg}Read the statements before the story.{/gray-fg}
 splashMobile: |
   {bold}{green-fg} ╔════════════════════════╗{/green-fg}{/bold}
-  {bold}{green-fg} ║{/green-fg}{white-fg}  Fundamentals Desk     {/white-fg}{green-fg}║{/green-fg}{/bold}
+  {bold}{green-fg} ║{/green-fg}{white-fg}   Fundamentals Desk    {/white-fg}{green-fg}║{/green-fg}{/bold}
   {bold}{green-fg} ╚════════════════════════╝{/green-fg}{/bold}
    {green-fg}Filings{/green-fg} · {cyan-fg}Cash flow{/cyan-fg}
 # An agent with an initialPrompt is SELF-STARTING: the runtime sends this as the

@@ -688,6 +688,13 @@ export class NodeSdkTransport {
                         title: agent.title || undefined,
                         description: agent.description || undefined,
                         tools: Array.isArray(agent.tools) ? agent.tools : undefined,
+                        // Carried so a PACKAGE agent presents itself like a
+                        // baked one: the picker sends these with the create
+                        // call, so without them a package agent could neither
+                        // self-start (initialPrompt) nor show its own splash.
+                        splash: typeof agent.splash === "string" && agent.splash.trim() ? agent.splash : undefined,
+                        splashMobile: typeof agent.splashMobile === "string" && agent.splashMobile.trim() ? agent.splashMobile : undefined,
+                        initialPrompt: typeof agent.initialPrompt === "string" && agent.initialPrompt.trim() ? agent.initialPrompt : undefined,
                         source: "package",
                         packageName: pkg.name,
                         packageSemver: pkg.active.semver,
