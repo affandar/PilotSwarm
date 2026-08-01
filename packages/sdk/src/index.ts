@@ -33,10 +33,12 @@
 export { PilotSwarmClient, PilotSwarmSession } from "./client.js";
 export type { SessionEventHandler } from "./client.js";
 export { PilotSwarmWorker } from "./worker.js";
-export { PilotSwarmManagementClient } from "./management-client.js";
+export { PilotSwarmManagementClient, createManagementClient } from "./management-client.js";
 export type { PilotSwarmWebOptions } from "./web/api-connection.js";
 export { WebPilotSwarmClient, WebPilotSwarmSession } from "./web/web-client.js";
 export { WebPilotSwarmManagementClient } from "./web/web-management-client.js";
+export { createManagementOps } from "./web/generated-op-methods.js";
+export type { ManagementOps } from "./web/generated-op-methods.js";
 export { WebFactStore, WebEnhancedFactStore, createWebFactStore } from "./web/web-fact-store.js";
 export { WebGraphStore, createWebGraphStore } from "./web/web-graph-store.js";
 export type {

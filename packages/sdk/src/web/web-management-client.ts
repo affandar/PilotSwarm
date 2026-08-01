@@ -101,7 +101,7 @@ export class WebPilotSwarmManagementClient {
         await this._api.call("setSessionModel", { sessionId, options: { model, ...opts } });
     }
 
-    async restartSystemSession(agentIdOrSessionId: string, options: Record<string, unknown>): Promise<any> {
+    async restartSystemSession(agentIdOrSessionId: string, options: object): Promise<any> {
         return this._api.call("restartSystemSession", { agentIdOrSessionId, options });
     }
 
@@ -120,12 +120,12 @@ export class WebPilotSwarmManagementClient {
     }
 
     /** Deprecated alias of placeSessionsInGroup; returns the same per-root result array. */
-    async assignSessionsToGroup(groupId: string, sessionIds: string[]): Promise<any[]> {
+    async assignSessionsToGroup(groupId: string, sessionIds: string[]): Promise<any> {
         return this._api.call("assignSessionsToGroup", { groupId, sessionIds });
     }
 
     /** Deprecated alias of placeSessionsInGroup; returns the same per-root result array. */
-    async moveSessionsToGroup(groupId: string | null, sessionIds: string[]): Promise<any[]> {
+    async moveSessionsToGroup(groupId: string | null, sessionIds: string[]): Promise<any> {
         return this._api.call("moveSessionsToGroup", { groupId, sessionIds });
     }
 
@@ -133,8 +133,24 @@ export class WebPilotSwarmManagementClient {
      * Viewer-private placement over the Web API: the server derives the
      * placing viewer from the request's auth context. groupId null = ungroup.
      * Returns one { rootSessionId, placed, reason } entry per session root.
+     *
+     * Accepts BOTH calling conventions — the web/transport shape
+     * `(sessionIds, groupId)` and the direct client's viewer-first shape
+     * `(viewer, sessionIds, groupId)`. Before this adapter, a caller holding
+     * the direct type on a web instance sent the viewer object as the
+     * sessionIds array: a silently corrupt wire call. The viewer is dropped
+     * either way — the server derives it from auth.
      */
-    async placeSessionsInGroup(sessionIds: string[], groupId: string | null): Promise<any[]> {
+    placeSessionsInGroup(sessionIds: string[], groupId: string | null): Promise<any[]>;
+    placeSessionsInGroup(viewer: { provider: string; subject: string }, sessionIds: string[], groupId: string | null): Promise<any[]>;
+    async placeSessionsInGroup(
+        first: string[] | { provider: string; subject: string },
+        second?: string[] | string | null,
+        third?: string | null,
+    ): Promise<any[]> {
+        const directForm = !Array.isArray(first);
+        const sessionIds = directForm ? (second as string[]) : first;
+        const groupId = (directForm ? third : (second as string | null)) ?? null;
         return this._api.call("placeSessionsInGroup", { groupId, sessionIds });
     }
 
@@ -388,8 +404,167 @@ export class WebPilotSwarmManagementClient {
         return this._api.call("getSessionGraphEdgeSearchUsage", { sessionId, since: toIso(opts.since), limit: opts.limit });
     }
 
-    getEmbedderStatus(): never {
-        throw webModeUnsupported("getEmbedderStatus");
+    // ── Direct-parity shims ─────────────────────────────────────────────
+    //
+    // The direct client's positional signatures, implemented over `ops`.
+    // These exist so `new PilotSwarmManagementClient({ apiUrl })` — which
+    // returns this class under the direct client's type — is a TRUE claim
+    // for the whole shared surface (the compile-time proof at the bottom of
+    // this file enforces it). Param shapes mirror the web fact/graph stores,
+    // which have exercised these exact wire mappings in production.
+    //
+    // Server-derived arguments (viewer, grantedBy, admin flags) are ignored:
+    // the deployment derives identity and role from the request's auth
+    // context, same as every other web-mode method.
+
+    // — facts —
+
+    async readFacts(query: Record<string, unknown>, _opts?: { admin?: boolean }): Promise<any> {
+        return this.ops.readFacts({ ...query });
+    }
+
+    async storeFact(input: unknown): Promise<any> {
+        return this.ops.storeFact({ input });
+    }
+
+    async deleteFact(input: unknown): Promise<any> {
+        return this.ops.deleteFact({ input });
+    }
+
+    async searchFacts(query: string, opts?: unknown, _roleOpts?: { admin?: boolean }): Promise<any> {
+        return this.ops.searchFacts({ query, opts });
+    }
+
+    async similarFacts(scopeKey: string, opts?: unknown, _roleOpts?: { admin?: boolean }): Promise<any> {
+        return this.ops.similarFacts({ scopeKey, opts });
+    }
+
+    async forcePurgeFacts(input: unknown): Promise<any> {
+        return this.ops.forcePurgeFacts({ input });
+    }
+
+    factsCapabilities(): never {
+        // The direct signature is synchronous; capabilities live server-side
+        // in web mode. Loud beats silent: an async lookalike would hand the
+        // caller a Promise where they expect { search, embedder, graph }.
+        throw webModeUnsupported("factsCapabilities", "use ops.factsCapabilities() (async over HTTP)");
+    }
+
+    // — embedder —
+
+    async getEmbedderStatus(): Promise<any> {
+        return this.ops.getEmbedderStatus();
+    }
+
+    async startEmbedder(opts?: { intervalSeconds?: number; batch?: number }): Promise<any> {
+        return this.ops.startFactsEmbedder({ intervalSeconds: opts?.intervalSeconds, batch: opts?.batch });
+    }
+
+    async stopEmbedder(reason?: string): Promise<any> {
+        return this.ops.stopFactsEmbedder({ reason });
+    }
+
+    // — graph —
+
+    async searchGraphNodes(q: unknown): Promise<any> {
+        return this.ops.searchGraphNodes({ query: q });
+    }
+
+    async searchGraphEdges(q: unknown): Promise<any> {
+        return this.ops.searchGraphEdges({ query: q });
+    }
+
+    async graphNeighbourhood(nodeKey: string, depth: number, opts?: { namespace?: string }): Promise<any> {
+        return this.ops.graphNeighbourhood({ nodeKey, depth, namespace: opts?.namespace });
+    }
+
+    async upsertGraphNode(n: unknown): Promise<any> {
+        return this.ops.upsertGraphNode({ input: n });
+    }
+
+    async upsertGraphEdge(e: unknown): Promise<any> {
+        return this.ops.upsertGraphEdge({ input: e });
+    }
+
+    async deleteGraphNode(nodeKey: string, opts?: { namespace?: string }): Promise<any> {
+        return this.ops.deleteGraphNode({ nodeKey, namespace: opts?.namespace });
+    }
+
+    async deleteGraphEdge(fromKey: string, toKey: string, predicateKey: string, opts?: { namespace?: string }): Promise<any> {
+        return this.ops.deleteGraphEdge({ fromKey, toKey, predicateKey, namespace: opts?.namespace });
+    }
+
+    async graphStats(opts?: { namespace?: string }): Promise<any> {
+        return this.ops.graphStats({ namespace: opts?.namespace });
+    }
+
+    async listGraphNamespaces(q?: { prefix?: string; includeArchived?: boolean; includeDetails?: boolean }): Promise<any> {
+        return this.ops.listGraphNamespaces({
+            prefix: q?.prefix,
+            includeArchived: q?.includeArchived,
+            includeDetails: q?.includeDetails,
+        });
+    }
+
+    async getGraphNamespace(namespace: string): Promise<any> {
+        return this.ops.getGraphNamespace({ namespace });
+    }
+
+    async upsertGraphNamespace(input: unknown): Promise<any> {
+        return this.ops.upsertGraphNamespace({ input });
+    }
+
+    async deleteGraphNamespace(namespace: string): Promise<any> {
+        return this.ops.deleteGraphNamespace({ namespace });
+    }
+
+    // — session sharing / authz —
+
+    async getSessionAccess(sessionId: string, _viewer?: unknown): Promise<any> {
+        return this.ops.getSessionAccess({ sessionId });
+    }
+
+    async setSessionVisibility(sessionId: string, visibility: string): Promise<void> {
+        await this.ops.setSessionVisibility({ sessionId, visibility });
+    }
+
+    async grantSessionShare(
+        sessionId: string,
+        grantee: { provider: string; subject: string; email?: string | null; displayName?: string | null },
+        access: "read" | "write",
+        _grantedBy?: unknown,
+    ): Promise<void> {
+        await this.ops.grantSessionShare({ sessionId, user: grantee, access });
+    }
+
+    async revokeSessionShare(sessionId: string, grantee: { provider: string; subject: string }): Promise<void> {
+        await this.ops.revokeSessionShare({ sessionId, user: grantee });
+    }
+
+    async listSessionShares(sessionId: string): Promise<any> {
+        return this.ops.listSessionShares({ sessionId });
+    }
+
+    async listKnownUsers(opts?: { limit?: number }): Promise<any> {
+        return this.ops.listKnownUsers({ limit: opts?.limit });
+    }
+
+    async listAuthzAudit(opts?: { limit?: number; sessionId?: string | null }): Promise<any> {
+        return this.ops.listAuthzAudit({ limit: opts?.limit, sessionId: opts?.sessionId ?? undefined });
+    }
+
+    // ── Direct-only plumbing: explicit, typed refusals ──────────────────
+    //
+    // No route exists (or can exist) for these; a caller reaching them in
+    // web mode gets a WEB_MODE_UNSUPPORTED error naming the alternative,
+    // never a silent no-op or a bare TypeError.
+
+    listSessionsVisible(): never {
+        throw webModeUnsupported("listSessionsVisible", "listSessions is already viewer-scoped by the server in web mode");
+    }
+
+    recordAuthzAudit(): never {
+        throw webModeUnsupported("recordAuthzAudit", "the portal records authz audit server-side");
     }
 
     normalizeModel(): never {
@@ -400,4 +575,34 @@ export class WebPilotSwarmManagementClient {
         throw webModeUnsupported("getModelCredentialStatus", "credential checks happen server-side");
     }
 }
+
+/**
+ * Compile-time proof that the constructor masquerade is true.
+ *
+ * `new PilotSwarmManagementClient({ apiUrl })` returns THIS class under the
+ * direct client's type. That is only honest if this class satisfies the
+ * direct client's entire public surface — every method either works over
+ * HTTP (hand-written or shim) or refuses loudly with WEB_MODE_UNSUPPORTED
+ * (`(): never` satisfies any signature, and a thrown typed error beats a
+ * silent signature mismatch).
+ *
+ * If a method is added to the direct client without a web counterpart, this
+ * line stops compiling and names it.
+ */
+/**
+ * Deliberate signature divergences, excluded from the proof. All one family:
+ * model-catalog reads that direct mode answers synchronously from its loaded
+ * provider registry and web mode necessarily answers async over HTTP. The
+ * async web forms shipped in released versions, so they stay. A direct-typed
+ * caller in web mode receives a Promise where it expects a value — await it,
+ * or use the `ops.*` form.
+ */
+type KnownDivergences = "getDefaultModel" | "getModelsByProvider" | "listModels";
+
+type PublicSurface<T> = Pick<T, Exclude<keyof T, KnownDivergences>>;
+type AssertExtends<A extends B, B> = A;
+export type _WebSatisfiesManagementSurface = AssertExtends<
+    PublicSurface<WebPilotSwarmManagementClient>,
+    PublicSurface<import("../management-client.js").PilotSwarmManagementClient>
+>;
 
