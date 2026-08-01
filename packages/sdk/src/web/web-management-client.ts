@@ -4,6 +4,7 @@ import {
     createApiClientFromOptions,
     webModeUnsupported,
 } from "./api-connection.js";
+import { type GeneratedOpMethods, installGeneratedOpMethods } from "./generated-op-methods.js";
 
 const WAIT_SLICE_MS = 25_000;
 
@@ -388,3 +389,19 @@ export class WebPilotSwarmManagementClient {
         throw webModeUnsupported("getModelCredentialStatus", "credential checks happen server-side");
     }
 }
+
+/**
+ * Every operation in the protocol table is reachable from this client.
+ *
+ * The hand-written methods above keep their ergonomic signatures (and their
+ * callers); this merge adds a flat-params method for each of the remaining
+ * operations. Previously the class was hand-ported one method at a time, which
+ * is how it ended up 30 methods behind the direct client — including the
+ * session-sharing ops, whose routes existed the whole time.
+ */
+export interface WebPilotSwarmManagementClient extends GeneratedOpMethods {}
+
+installGeneratedOpMethods(
+    WebPilotSwarmManagementClient.prototype,
+    (self: WebPilotSwarmManagementClient, name, params) => self._api.call(name, params),
+);
