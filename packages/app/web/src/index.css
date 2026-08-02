@@ -1615,6 +1615,21 @@ body.is-resizing-pane-y * {
   min-width: 0;
   flex: 1 1 auto;
   line-height: 1.28;
+  /* Flex so the owner avatar centres against the text. A vertical-align
+     nudge cannot do this reliably: `middle` aligns to baseline + half
+     x-height, which left a 16px disc ~1px low, and a fixed pixel offset
+     stops working the moment the font size changes.
+     The runs live inside ps-session-row-title__text rather than being flex
+     items themselves — as direct children their inter-span whitespace
+     collapses and the title silently narrows. */
+  display: flex;
+  align-items: center;
+}
+/* Inline flow inside, so run spacing behaves exactly as it did before. */
+.ps-session-row-title__text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Right-hand context % — never shrinks, tabular so it forms a column. */
@@ -5324,14 +5339,31 @@ body.ps-rich-ui .ps-panel-header {
     font-variant-numeric: tabular-nums;
     user-select: none;
 }
+/* `middle` rather than a pixel nudge: it aligns the disc's centre to the
+   text's optical centre and keeps doing so at any font size. The 6px status
+   dot next to it can get away with a fixed offset; a 16px disc cannot — it
+   sat visibly off the text baseline.
+
+   The disc is 16px against a ~16.6px line box (13px × 1.28), so it rides
+   inside the existing line and does not push rows taller. */
 .ps-owner-avatar.is-sm {
     width: 16px;
     height: 16px;
     font-size: 8.5px;
     margin-inline-end: 6px;
-    vertical-align: -3px;
+    vertical-align: middle;
+    /* The glyph is centred by the flex box above; this keeps the two-letter
+       monogram from riding high on its own line box inside the disc. */
+    line-height: 1;
 }
-.ps-owner-avatar.is-md { width: 22px; height: 22px; font-size: 10.5px; margin-inline-end: 8px; }
+.ps-owner-avatar.is-md {
+    width: 22px;
+    height: 22px;
+    font-size: 10.5px;
+    margin-inline-end: 8px;
+    vertical-align: middle;
+    line-height: 1;
+}
 /* The viewer's own rows get a ring rather than a different colour — colour
    already means "which person", and overloading it would break that. */
 .ps-owner-avatar.is-mine {

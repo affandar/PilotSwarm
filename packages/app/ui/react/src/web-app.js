@@ -3470,7 +3470,8 @@ function SessionRowContent({ row, theme, structured = false, showInlineDetail = 
         return React.createElement(React.Fragment, null,
             plain.statusColor ? React.createElement(StatusDot, { color: plain.statusColor, node: row.depth > 0 }) : null,
             React.createElement(OwnerAvatar, { badge: row.ownerBadge }),
-            React.createElement(Runs, { runs: plain.rest, theme }));
+            React.createElement("span", { className: "ps-session-row-title__text" },
+                React.createElement(Runs, { runs: plain.rest, theme })));
     }
 
     // Dense row: the title takes one line (clamped by CSS) and the context %
@@ -3491,7 +3492,13 @@ function SessionRowContent({ row, theme, structured = false, showInlineDetail = 
             React.createElement("div", { className: "ps-session-row-title" },
                 title.statusColor ? React.createElement(StatusDot, { color: title.statusColor, node: row.depth > 0 }) : null,
                 React.createElement(OwnerAvatar, { badge: row.ownerBadge }),
-                React.createElement(Runs, { runs: title.rest, theme })),
+                // Runs wrapped in ONE element: the title is a flex row so the
+                // avatar centres against the text, and the runs keep normal
+                // inline flow inside the wrapper. Flexing the runs directly
+                // collapses the whitespace BETWEEN them and silently narrows
+                // the title (measured: 225.8px → 210.8px).
+                React.createElement("span", { className: "ps-session-row-title__text" },
+                    React.createElement(Runs, { runs: title.rest, theme }))),
             hasCtx
                 ? React.createElement("div", { className: "ps-session-row-ctx" },
                     React.createElement(Runs, { runs: ctxRuns, theme }))
