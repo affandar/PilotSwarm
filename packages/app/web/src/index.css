@@ -5350,7 +5350,7 @@ body.ps-rich-ui .ps-panel-header {
     width: 16px;
     height: 16px;
     font-size: 8.5px;
-    margin-inline-end: 6px;
+    margin-inline-end: 7px;
     vertical-align: middle;
     /* The glyph is centred by the flex box above; this keeps the two-letter
        monogram from riding high on its own line box inside the disc. */
@@ -5366,6 +5366,8 @@ body.ps-rich-ui .ps-panel-header {
 }
 /* The viewer's own rows get a ring rather than a different colour — colour
    already means "which person", and overloading it would break that. */
+.ps-admin-tree__row .ps-owner-avatar { margin-inline-end: 0; }
+
 .ps-owner-avatar.is-mine {
     box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--ps-owner-fg) 55%, transparent);
 }
