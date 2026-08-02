@@ -19,6 +19,7 @@ const { values } = parseArgs({
         "api-url": { type: "string" },
         plugin: { type: "string", multiple: true },
         "model-providers": { type: "string" },
+        "agent-mgmt": { type: "string", default: "full" },
         "log-level": { type: "string", default: "error" },
     },
 });
@@ -54,10 +55,14 @@ if (!apiUrl && !store) {
     process.exit(1);
 }
 
+const agentMgmtRaw = (values["agent-mgmt"] ?? "full").toLowerCase();
+const agentMgmt = ["off", "read", "full"].includes(agentMgmtRaw) ? agentMgmtRaw as "off" | "read" | "full" : "full";
+
 const ctx = await createContext({
     ...(apiUrl ? { apiUrl } : { store }),
     modelProvidersPath: values["model-providers"],
     pluginDirs: values.plugin,
+    agentMgmt,
 });
 
 if (values.transport === "stdio") {

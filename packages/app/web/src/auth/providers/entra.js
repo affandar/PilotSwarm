@@ -84,6 +84,30 @@ export function createEntraBrowserAuthProvider() {
             accessToken = null;
             return { account, accessToken };
         },
+        /**
+         * Token for ANOTHER resource (e.g. Azure DevOps) so the browser can
+         * read a repo as the signed-in user. Unlike getAccessToken this MAY
+         * go interactive: it only runs from an explicit user action (importing
+         * a package), where a consent popup is expected rather than surprising.
+         */
+        async getResourceToken(resource) {
+            if (!msal || !account) return null;
+            const scopes = [`${String(resource || "").replace(/\/+$/u, "")}/.default`];
+            try {
+                const response = await msal.acquireTokenSilent({ scopes, account });
+                return response.accessToken || null;
+            } catch {
+                try {
+                    const response = await msal.acquireTokenPopup({ scopes, account });
+                    return response.accessToken || null;
+                } catch (error) {
+                    throw new Error(
+                        `could not get an access token for this resource (${error?.errorCode || error?.message || "consent required"})`
+                        + " — an admin may need to grant the portal app delegated access, or paste a PAT instead",
+                    );
+                }
+            }
+        },
         async getAccessToken() {
             // Always attempt a silent acquire: MSAL returns the cached access
             // token while it is still valid and transparently uses the refresh

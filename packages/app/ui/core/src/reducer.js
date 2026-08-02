@@ -1,4 +1,4 @@
-import { buildSessionTree } from "./session-tree.js";
+import { buildSessionTree, isManuallyOrderableSession } from "./session-tree.js";
 import { FOCUS_REGIONS } from "./commands.js";
 import { DEFAULT_HISTORY_EVENT_LIMIT, dedupeChatMessages } from "./history.js";
 import { getPromptInputRows } from "./layout.js";
@@ -11,6 +11,8 @@ import {
     normalizeStoredCollapsedSessionIds,
     normalizeStoredLayoutAdjustments,
     normalizeStoredPinnedSessionIds,
+    normalizeStoredSessionOrder,
+    createInitialState,
 } from "./state.js";
 
 function cloneHistoryMap(historyMap) {
@@ -55,28 +57,42 @@ function prunePinnedIds(ids, byId) {
     return pruneIdList(ids, byId).filter((sessionId) => isPinnableSession(byId[sessionId]));
 }
 
-function collectCollapsibleSessionIds(sessions = []) {
-    const byId = new Set((sessions || []).map((session) => session?.sessionId).filter(Boolean));
-    const collapsibleIds = new Set();
-    for (const session of sessions || []) {
-        if (!session?.sessionId) continue;
-        if (session.isGroup) collapsibleIds.add(session.sessionId);
-        const parentSessionId = session.parentSessionId;
-        if (parentSessionId && byId.has(parentSessionId)) {
-            collapsibleIds.add(parentSessionId);
-        }
-    }
-    return collapsibleIds;
+
+/**
+ * Keep a collapse flag unless the session is genuinely gone.
+ *
+ * "Collapsible" means the row is a folder OR has at least one LOADED child.
+ * Sub-agent children arrive lazily, so a parent is routinely not collapsible
+ * yet at the moment the profile is applied — dropping its flag there is why
+ * parent/sub-agent expansion never survived a reload, while folders (whose
+ * rows load with the listing) mostly did.
+ *
+ * So: a row we cannot currently see keeps its state. Not-loaded, filtered
+ * out, on another page, or simply slower to arrive are all indistinguishable
+ * from here, and none of them is the user changing their mind. The flag is a
+ * preference about a row, not a fact about the current listing.
+ *
+ * Nothing prunes on deletion either, and deliberately: there is no signal
+ * that means "deleted" as opposed to "not in this listing". A row missing
+ * from sessions/loaded may have been filtered, paged out, or simply not
+ * arrived yet, and treating that as deletion is precisely the bug above. A
+ * stale id costs one string and orders nothing; a wrongly dropped one costs
+ * the user's layout. If a session really is gone its id is inert, and if it
+ * comes back it returns exactly as the user left it.
+ *
+ * What protects you when something vanishes UNDER you is separate and
+ * already here: reconcileCollapsedIdsForActiveSession force-expands every
+ * ancestor of the active session, so the row you are actually looking at can
+ * never end up hidden inside a collapsed parent.
+ */
+function pruneCollapsedIds(collapsedIds) {
+    // Keeps everything. "Loaded but not collapsible yet" is the common case
+    // for a parent whose children have not arrived, so even that cannot be
+    // used to drop a flag — which is what made this function's original
+    // filter lose parent/sub-agent expansion on every reload.
+    return cloneCollapsedIds(collapsedIds);
 }
 
-function pruneCollapsedIds(collapsedIds, byId) {
-    const collapsibleIds = collectCollapsibleSessionIds(Object.values(byId || {}));
-    const out = new Set();
-    for (const id of collapsedIds || []) {
-        if (collapsibleIds.has(id)) out.add(id);
-    }
-    return out;
-}
 
 function collectSessionAncestorIds(sessionId, byId) {
     const ancestors = [];
@@ -402,6 +418,14 @@ function resolveVisibleActiveSessionId(state, fallbackSessions = []) {
     if (currentSessionId && state.sessions?.byId?.[currentSessionId] && !hasSessionVisibilityFilter(state.sessions)) {
         return currentSessionId;
     }
+    // A selection restored from the profile names a session the listing has
+    // not delivered yet — the folder listing routinely lands first, so the
+    // restored id was judged "not visible" and replaced by the default, which
+    // then got saved over it. Hold it until a sessions listing has actually
+    // arrived; only then is absence evidence the session is gone.
+    if (currentSessionId && !state.sessions?.listingSeen) {
+        return currentSessionId;
+    }
     if (hasSessionVisibilityFilter(state.sessions)) {
         return visibleRows[0]?.sessionId || null;
     }
@@ -465,7 +489,7 @@ function applyVisibleSessionSelection(state, nextSessions) {
             sessions = {
                 ...sessions,
                 collapsedIds: expandedCollapsedIds,
-                flat: buildSessionTree(Object.values(sessions.byId || {}), expandedCollapsedIds, sessions.orderById, sessions.pinnedIds),
+                flat: buildSessionTree(Object.values(sessions.byId || {}), expandedCollapsedIds, sessions.orderById, sessions.pinnedIds, sessions.manualOrder),
             };
         }
     }
@@ -494,7 +518,7 @@ function applyVisibleSessionSelection(state, nextSessions) {
         ? {
             ...sessions,
             collapsedIds: nextCollapsedIds,
-            flat: buildSessionTree(Object.values(sessions.byId || {}), nextCollapsedIds, sessions.orderById, sessions.pinnedIds),
+            flat: buildSessionTree(Object.values(sessions.byId || {}), nextCollapsedIds, sessions.orderById, sessions.pinnedIds, sessions.manualOrder),
         }
         : sessions;
     return {
@@ -636,11 +660,13 @@ export function appReducer(state, action) {
                 && settings.themeId.trim();
             const hasOwnerFilter = Object.prototype.hasOwnProperty.call(settings, "sessionOwnerFilter");
             const hasLayout = Object.prototype.hasOwnProperty.call(settings, "layoutAdjustments");
+            // "rich" retired as a view mode (now theme.richChat) — stored
+            // profiles that still say "rich" simply keep the transcript.
             const hasChatViewMode = Object.prototype.hasOwnProperty.call(settings, "chatViewMode")
-                && (settings.chatViewMode === "summary" || settings.chatViewMode === "transcript"
-                    || settings.chatViewMode === "rich");
+                && (settings.chatViewMode === "summary" || settings.chatViewMode === "transcript");
             const hasPins = Object.prototype.hasOwnProperty.call(settings, "pinnedSessionIds");
             const hasCollapsed = Object.prototype.hasOwnProperty.call(settings, "collapsedSessionIds");
+            const hasSessionOrder = Object.prototype.hasOwnProperty.call(settings, "sessionOrder");
             // A pending/resolved deep-link intent outranks the profile's
             // persisted activeSessionId — a remote profile poll must not
             // yank selection away from the linked session.
@@ -667,6 +693,9 @@ export function appReducer(state, action) {
                     ? pruneCollapsedIds(normalizeStoredCollapsedSessionIds(settings.collapsedSessionIds), state.sessions.byId)
                     : normalizeStoredCollapsedSessionIds(settings.collapsedSessionIds))
                 : state.sessions.collapsedIds;
+            const nextManualOrder = hasSessionOrder
+                ? normalizeStoredSessionOrder(settings.sessionOrder)
+                : state.sessions.manualOrder;
             const nextActiveSessionId = hasActive
                 ? normalizeStoredActiveSessionId(settings.activeSessionId)
                 : state.sessions.activeSessionId;
@@ -679,11 +708,12 @@ export function appReducer(state, action) {
                     }
                     : {}),
                 pinnedIds: nextPinnedIds,
+                manualOrder: nextManualOrder,
                 collapsedIds: nextCollapsedIds,
                 collapsedIdsExplicit: hasCollapsed ? true : state.sessions.collapsedIdsExplicit,
                 activeSessionId: nextActiveSessionId,
-                flat: (hasPins || hasCollapsed)
-                    ? buildSessionTree(Object.values(state.sessions.byId), nextCollapsedIds, state.sessions.orderById, nextPinnedIds)
+                flat: (hasPins || hasCollapsed || hasSessionOrder)
+                    ? buildSessionTree(Object.values(state.sessions.byId), nextCollapsedIds, state.sessions.orderById, nextPinnedIds, nextManualOrder)
                     : state.sessions.flat,
             };
             const selection = hasLoadedSessions && (hasOwnerFilter || hasPins || hasCollapsed || hasActive)
@@ -702,7 +732,7 @@ export function appReducer(state, action) {
         }
 
         case "ui/chatViewMode":
-            if (action.mode !== "summary" && action.mode !== "transcript" && action.mode !== "rich") {
+            if (action.mode !== "summary" && action.mode !== "transcript") {
                 return state;
             }
             return {
@@ -954,6 +984,12 @@ export function appReducer(state, action) {
             };
         }
 
+        case "ui/nodeMapSelect": {
+            // Set, never toggle: a node is always selected while the Node Map
+            // is up, and the remembered choice survives leaving the tab.
+            if (!action.label) return state;
+            return { ...state, ui: { ...state.ui, nodeMapSelectedNode: String(action.label) } };
+        }
         case "ui/inspectorTab":
             return {
                 ...state,
@@ -1058,6 +1094,14 @@ export function appReducer(state, action) {
             const byId = {};
             let anyChanged = false;
             const nowMs = Date.now();
+            // Folders first: this case rebuilds byId from the payload, so a
+            // session refresh that carries no groups would otherwise delete
+            // every folder until the next group fetch — the "flickers in and
+            // out" bug. They are re-seeded from their own slice and can only
+            // be removed by sessions/groupsLoaded.
+            for (const groupRow of (state.sessions.groupRows || [])) {
+                byId[groupRow.sessionId] = state.sessions.byId[groupRow.sessionId] || groupRow;
+            }
             for (const session of action.sessions) {
                 const previous = state.sessions.byId[session.sessionId];
                 const merged = mergeSessionRowVisualStatus(
@@ -1106,7 +1150,21 @@ export function appReducer(state, action) {
             const collapsedIds = previousCollapsedIdsExplicit
                 ? cloneCollapsedIds(state.sessions.collapsedIds)
                 : initialCollapsedIds;
-            if (previousCollapsedIdsExplicit) {
+            // A row that ARRIVES while the app is open starts collapsed, even
+            // for a user with explicit preferences — a new sub-tree should not
+            // spill open on its own.
+            //
+            // "Arrives" is only meaningful against a baseline. On the FIRST
+            // listing after a page load there is none (byId is empty), so
+            // every row looked new and this force-collapsed the whole tree
+            // over the profile that had just been restored. The save effect
+            // then persisted that, and the next load read its own corruption
+            // back as the user's preference — a one-way ratchet, which is why
+            // one refresh looked fine and the one after it collapsed
+            // everything. With no baseline we cannot tell new from
+            // pre-existing, so we add nothing and trust the restored state.
+            const hadBaseline = state.sessions.listingSeen === true;
+            if (previousCollapsedIdsExplicit && hadBaseline) {
                 const previousDefaultCollapsedIds = collectDefaultCollapsedSessionIds(Object.values(state.sessions.byId));
                 for (const sessionId of initialCollapsedIds) {
                     if (!previousDefaultCollapsedIds.has(sessionId)) {
@@ -1119,12 +1177,13 @@ export function appReducer(state, action) {
             // sessions). Sessions inside containers lose their pins.
             const survivingPins = prunePinnedIds(state.sessions.pinnedIds, byId);
             const survivingSelected = pruneIdList(state.sessions.selectedIds, byId);
-            const flat = buildSessionTree(mergedSessions, collapsedIds, orderById, survivingPins);
+            const flat = buildSessionTree(mergedSessions, collapsedIds, orderById, survivingPins, state.sessions.manualOrder);
             const nextSessions = {
                 ...state.sessions,
                 byId,
                 collapsedIds,
                 collapsedIdsExplicit: previousCollapsedIdsExplicit,
+                listingSeen: true,
                 pinnedIds: survivingPins,
                 selectedIds: survivingSelected,
                 selectMode: state.sessions.selectMode && survivingSelected.length > 0,
@@ -1141,6 +1200,87 @@ export function appReducer(state, action) {
             };
         }
 
+        case "sessions/groupsLoaded": {
+            // The ONLY writer of folder rows. A successful fetch is the whole
+            // truth: folders it omits are gone, folders it names are kept.
+            const groups = Array.isArray(action.groups) ? action.groups : [];
+            const byId = { ...state.sessions.byId };
+            // A folder the fetch omits is gone — UNLESS a loaded session still
+            // claims membership in it. Deleting one that is still referenced
+            // was visibly destructive: the titled row was replaced by a
+            // generic stand-in ("Group"), and because collapse state is keyed
+            // by row id, the pruned entry took the group's COLLAPSED state
+            // with it, so the whole group sprang open and dumped its members
+            // into the list. One transient empty-but-successful listing did
+            // all of that. Keep the row we already have; the stand-in stays
+            // the last resort for a folder we have never seen.
+            //
+            // Judge that against the INCOMING catalog when the refresh sends
+            // it: this action lands before sessions/loaded, so state still
+            // holds the PREVIOUS membership, and a folder whose last member
+            // had just moved out looked claimed by its own stale members and
+            // survived its deletion forever.
+            const claimSource = Array.isArray(action.sessions)
+                ? action.sessions
+                : Object.values(state.sessions.byId);
+            const claimedByLoadedSessions = new Set(
+                claimSource
+                    .filter((session) => session && !session.isGroup && session.groupId && !session.parentSessionId)
+                    .map((session) => `group:${session.groupId}`),
+            );
+            const keptRows = [];
+            for (const key of Object.keys(byId)) {
+                if (!byId[key]?.isGroup) continue;
+                if (groups.some((row) => row.sessionId === key)) continue;
+                if (claimedByLoadedSessions.has(key)) { keptRows.push(byId[key]); continue; }
+                delete byId[key];
+            }
+            for (const row of groups) {
+                byId[row.sessionId] = { ...(byId[row.sessionId] || {}), ...row };
+            }
+            const survivingPins = prunePinnedIds(state.sessions.pinnedIds, byId);
+            const { orderById, nextOrderOrdinal } = assignStableSessionOrder(
+                state.sessions.orderById,
+                state.sessions.nextOrderOrdinal,
+                Object.values(byId),
+            );
+            // A folder the state has not seen before starts COLLAPSED, exactly
+            // as it does on first load — otherwise a folder that round-trips
+            // (deleted by one listing, restored by the next) comes back open
+            // and spills its members into the list.
+            //
+            // "Not seen before" needs something to have been seen. On a fresh
+            // page load byId is empty, so every folder qualified and this
+            // re-collapsed everything the user had left open, on top of the
+            // profile that had just been restored. Same baseline rule as
+            // sessions/loaded: with nothing to compare against, add nothing.
+            //
+            // (An earlier attempt keyed this off collapsedIdsExplicit, which
+            // fixed the reload but also stopped a genuinely new folder —
+            // created while the app is open — from starting collapsed. The
+            // baseline test gets both right.)
+            const hadGroupBaseline = state.sessions.groupsListingSeen === true;
+            const nextCollapsedIds = cloneCollapsedIds(state.sessions.collapsedIds);
+            for (const row of groups) {
+                if (!hadGroupBaseline) continue;
+                if (!state.sessions.byId[row.sessionId]) nextCollapsedIds.add(row.sessionId);
+            }
+            const nextSessions = {
+                ...state.sessions,
+                // sessions/loaded re-seeds folders from this slice, so a kept
+                // row has to live here too or the next session refresh drops it.
+                groupRows: [...groups, ...keptRows],
+                byId,
+                pinnedIds: survivingPins,
+                orderById,
+                nextOrderOrdinal,
+                collapsedIds: nextCollapsedIds,
+                groupsListingSeen: true,
+                flat: buildSessionTree(Object.values(byId), nextCollapsedIds, orderById, survivingPins, state.sessions.manualOrder),
+            };
+            const groupSelection = applyVisibleSessionSelection(state, nextSessions);
+            return { ...state, sessions: groupSelection.sessions, ui: groupSelection.ui };
+        }
         case "sessions/merged": {
             if (!action.session?.sessionId) return state;
             const previousSession = state.sessions.byId[action.session.sessionId];
@@ -1167,7 +1307,7 @@ export function appReducer(state, action) {
                 ...state.sessions,
                 byId,
                 pinnedIds: survivingPins,
-                flat: buildSessionTree(Object.values(byId), state.sessions.collapsedIds, orderById, survivingPins),
+                flat: buildSessionTree(Object.values(byId), state.sessions.collapsedIds, orderById, survivingPins, state.sessions.manualOrder),
                 activeSessionId: state.sessions.activeSessionId,
                 orderById,
                 nextOrderOrdinal,
@@ -1181,6 +1321,7 @@ export function appReducer(state, action) {
         }
 
         case "sessions/selected": {
+            state = { ...state, sessions: { ...state.sessions, listDeselected: false } };
             // Per-session chat scroll memory: stash the outgoing session's
             // offset and restore the incoming one's. If new chat arrives on
             // re-entry, history/set's activeChatUpdated reset still snaps to
@@ -1254,7 +1395,7 @@ export function appReducer(state, action) {
                     ...state.sessions,
                     collapsedIds,
                     collapsedIdsExplicit: true,
-                    flat: buildSessionTree(Object.values(state.sessions.byId), collapsedIds, state.sessions.orderById, state.sessions.pinnedIds),
+                    flat: buildSessionTree(Object.values(state.sessions.byId), collapsedIds, state.sessions.orderById, state.sessions.pinnedIds, state.sessions.manualOrder),
                 },
             };
         }
@@ -1268,7 +1409,7 @@ export function appReducer(state, action) {
                     ...state.sessions,
                     collapsedIds,
                     collapsedIdsExplicit: true,
-                    flat: buildSessionTree(Object.values(state.sessions.byId), collapsedIds, state.sessions.orderById, state.sessions.pinnedIds),
+                    flat: buildSessionTree(Object.values(state.sessions.byId), collapsedIds, state.sessions.orderById, state.sessions.pinnedIds, state.sessions.manualOrder),
                 },
             };
         }
@@ -1290,7 +1431,64 @@ export function appReducer(state, action) {
                 sessions: {
                     ...state.sessions,
                     pinnedIds: nextPinned,
-                    flat: buildSessionTree(Object.values(state.sessions.byId), state.sessions.collapsedIds, state.sessions.orderById, nextPinned),
+                    flat: buildSessionTree(Object.values(state.sessions.byId), state.sessions.collapsedIds, state.sessions.orderById, nextPinned, state.sessions.manualOrder),
+                },
+            };
+        }
+
+        // Drop `sessionId` immediately before `beforeSessionId` in the user's
+        // explicit order (beforeSessionId null ⇒ last among its siblings).
+        //
+        // The stored list spans every level; ordering only ever compares
+        // siblings, so writing a global list is safe and keeps one array to
+        // persist. The reducer is deliberately permissive about ids it does
+        // not recognise — the desktop is the only writer, but a phone or TUI
+        // may hold a narrower slice of the fleet, and dropping unknown ids
+        // here would let the smaller surface erase the larger one's placements.
+        case "sessions/reorder": {
+            const sessionId = String(action.sessionId || "").trim();
+            if (!sessionId) return state;
+            const session = state.sessions.byId[sessionId];
+            // The tree ignores placements for immovable rows; refusing here
+            // too keeps the stored list free of entries that can never apply.
+            if (!isManuallyOrderableSession(session)) return state;
+
+            const beforeId = action.beforeSessionId == null
+                ? null
+                : String(action.beforeSessionId).trim() || null;
+            if (beforeId === sessionId) return state;
+
+            // Seed from the CURRENT rendered order so a first drag preserves
+            // what the user is looking at. Without this, moving one row would
+            // leave every other row unplaced and re-sorted underneath it.
+            const seed = Array.isArray(state.sessions.manualOrder) && state.sessions.manualOrder.length > 0
+                ? state.sessions.manualOrder
+                : (state.sessions.flat || [])
+                    .map((entry) => entry.sessionId)
+                    .filter((id) => isManuallyOrderableSession(state.sessions.byId[id]));
+
+            const without = seed.filter((id) => id !== sessionId);
+            const insertAt = beforeId ? without.indexOf(beforeId) : -1;
+            const nextManualOrder = insertAt >= 0
+                ? [...without.slice(0, insertAt), sessionId, ...without.slice(insertAt)]
+                : [...without, sessionId];
+
+            const unchanged = nextManualOrder.length === (state.sessions.manualOrder || []).length
+                && nextManualOrder.every((id, index) => id === state.sessions.manualOrder[index]);
+            if (unchanged) return state;
+
+            return {
+                ...state,
+                sessions: {
+                    ...state.sessions,
+                    manualOrder: nextManualOrder,
+                    flat: buildSessionTree(
+                        Object.values(state.sessions.byId),
+                        state.sessions.collapsedIds,
+                        state.sessions.orderById,
+                        state.sessions.pinnedIds,
+                        nextManualOrder,
+                    ),
                 },
             };
         }
@@ -1348,6 +1546,23 @@ export function appReducer(state, action) {
             };
         }
 
+        // Re-arm the list highlight WITHOUT re-running session selection. A
+        // plain click on the still-active row after an empty-space deselect
+        // cannot go through loadSession (it short-circuits on the active id),
+        // so without this the row could never be selected again.
+        case "sessions/listReselect": {
+            if (!state.sessions.listDeselected) return state;
+            return { ...state, sessions: { ...state.sessions, listDeselected: false } };
+        }
+
+        case "sessions/listDeselect": {
+            // Purely a list affordance: activeSessionId is untouched so the
+            // chat, inspector and activity panes carry on unchanged.
+            return {
+                ...state,
+                sessions: { ...state.sessions, listDeselected: true, selectedIds: [], selectMode: false },
+            };
+        }
         case "sessions/selectClear": {
             if (state.sessions.selectedIds.length === 0 && !state.sessions.selectMode) return state;
             return {
@@ -1843,6 +2058,178 @@ export function appReducer(state, action) {
                     },
                 },
             };
+        }
+        case "admin/section": {
+            const section = ["packages", "workers", "ghcp"].includes(action.section) ? action.section : "ghcp";
+            return { ...state, admin: { ...state.admin, section } };
+        }
+        case "admin/workers/attempt": {
+            const workers = state.admin.workers || {};
+            return { ...state, admin: { ...state.admin, workers: { ...workers, attempts: (workers.attempts || 0) + 1, lastAttemptAt: Date.now(), lastSkip: action.skip || null } } };
+        }
+        case "admin/workers/loading": {
+            return { ...state, admin: { ...state.admin, workers: { ...state.admin.workers, loading: true, error: null } } };
+        }
+        case "admin/workers/loaded": {
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    workers: {
+                        loading: false,
+                        error: null,
+                        list: Array.isArray(action.list) ? action.list : [],
+                        fetchedAt: Date.now(),
+                    },
+                },
+            };
+        }
+        case "admin/workers/loadFailed": {
+            return { ...state, admin: { ...state.admin, workers: { ...state.admin.workers, loading: false, error: action.error || "Failed to load workers" } } };
+        }
+        case "admin/packages/loading": {
+            return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, loading: true, error: null } } };
+        }
+        case "admin/packages/loaded": {
+            const previous = state.admin.packages;
+            const list = Array.isArray(action.list) ? action.list : [];
+            // Keep the selection when the package still exists; otherwise clear
+            // the dependent detail/workspace state with it.
+            const stillThere = previous.selectedName && list.some((p) => p.name === previous.selectedName);
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    packages: {
+                        ...previous,
+                        loading: false,
+                        error: null,
+                        list,
+                        workerState: Array.isArray(action.workerState) ? action.workerState : [],
+                        fetchedAt: Date.now(),
+                        selectedName: stillThere ? previous.selectedName : null,
+                        ...(stillThere ? {} : { detail: null, workspace: { ...previous.workspace, tree: null, selectedPath: null, file: null } }),
+                    },
+                },
+            };
+        }
+        case "admin/packages/loadFailed": {
+            return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, loading: false, error: action.error || "Failed to load agent packages" } } };
+        }
+        case "admin/packages/select": {
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    section: "packages",
+                    packages: {
+                        ...state.admin.packages,
+                        selectedName: action.name || null,
+                        detail: null,
+                        detailLoading: Boolean(action.name),
+                        detailError: null,
+                        action: { pending: null, error: null },
+                        workspace: {
+                            tree: null, treeLoading: Boolean(action.name), treeError: null,
+                            expandedDirs: [], selectedPath: null,
+                            file: null, fileLoading: false, fileError: null,
+                        },
+                    },
+                },
+            };
+        }
+        case "admin/packages/detail/loaded": {
+            if (state.admin.packages.selectedName !== action.name) return state;
+            return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, detail: action.detail, detailLoading: false, detailError: null } } };
+        }
+        case "admin/packages/detail/loadFailed": {
+            if (state.admin.packages.selectedName !== action.name) return state;
+            return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, detail: null, detailLoading: false, detailError: action.error || "Failed to load package" } } };
+        }
+        case "admin/packages/tree/loaded": {
+            if (state.admin.packages.selectedName !== action.name) return state;
+            const topDirs = Array.isArray(action.tree?.dirs)
+                ? action.tree.dirs.filter((dir) => !dir.includes("/"))
+                : [];
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    packages: {
+                        ...state.admin.packages,
+                        workspace: {
+                            ...state.admin.packages.workspace,
+                            tree: action.tree,
+                            treeLoading: false,
+                            treeError: null,
+                            // Top-level folders start expanded; deeper levels open on click.
+                            expandedDirs: topDirs,
+                        },
+                    },
+                },
+            };
+        }
+        case "admin/packages/tree/loadFailed": {
+            if (state.admin.packages.selectedName !== action.name) return state;
+            return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, workspace: { ...state.admin.packages.workspace, treeLoading: false, treeError: action.error || "Failed to load package files" } } } };
+        }
+        case "admin/packages/toggleDir": {
+            const workspace = state.admin.packages.workspace;
+            const expanded = new Set(workspace.expandedDirs);
+            if (expanded.has(action.dir)) expanded.delete(action.dir);
+            else expanded.add(action.dir);
+            return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, workspace: { ...workspace, expandedDirs: [...expanded] } } } };
+        }
+        case "admin/packages/file/loading": {
+            return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, workspace: { ...state.admin.packages.workspace, selectedPath: action.path, file: null, fileLoading: true, fileError: null } } } };
+        }
+        case "admin/packages/file/loaded": {
+            if (state.admin.packages.workspace.selectedPath !== action.file?.path) return state;
+            return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, workspace: { ...state.admin.packages.workspace, file: action.file, fileLoading: false, fileError: null } } } };
+        }
+        case "admin/packages/file/loadFailed": {
+            if (state.admin.packages.workspace.selectedPath !== action.path) return state;
+            return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, workspace: { ...state.admin.packages.workspace, fileLoading: false, fileError: action.error || "Failed to load file" } } } };
+        }
+        case "admin/packages/action/pending": {
+            return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, action: { pending: action.action, error: null } } } };
+        }
+        case "admin/packages/action/done": {
+            return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, action: { pending: null, error: null } } } };
+        }
+        case "admin/packages/action/failed": {
+            return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, action: { pending: null, error: action.error || "Action failed" } } } };
+        }
+        case "admin/packages/addDialog/open": {
+            // Update mode reuses this dialog wholesale — the work is identical
+            // (point at a repo folder, import it here, publish) and only the
+            // destination is already decided.
+            const seeded = {
+                ...createInitialState().admin.packages.addDialog,
+                open: true,
+                updateName: action.updateName || null,
+                scope: action.scope === "shared" ? "shared" : "user",
+            };
+            return { ...state, admin: { ...state.admin, section: "packages", packages: { ...state.admin.packages, addDialog: seeded } } };
+        }
+        case "admin/packages/addDialog/close": {
+            return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, addDialog: { ...createInitialState().admin.packages.addDialog, open: false } } } };
+        }
+        case "admin/packages/addDialog/setField": {
+            const dialog = state.admin.packages.addDialog;
+            if (!(action.field in dialog)) return state;
+            return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, addDialog: { ...dialog, [action.field]: action.value, error: null } } } };
+        }
+        case "admin/packages/addDialog/submitting": {
+            return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, addDialog: { ...state.admin.packages.addDialog, submitting: true, progress: null, error: null } } } };
+        }
+        case "admin/packages/addDialog/progress": {
+            // Client-side import is a multi-request walk (tree, then blobs) —
+            // the dialog narrates it so a slow repo never looks hung.
+            return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, addDialog: { ...state.admin.packages.addDialog, progress: action.message || null } } } };
+        }
+        case "admin/packages/addDialog/failed": {
+            return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, addDialog: { ...state.admin.packages.addDialog, submitting: false, progress: null, error: action.error || "Failed to import package" } } } };
         }
         case "admin/systemGhcpKey/saved": {
             const status = action.status || {};

@@ -251,7 +251,18 @@ export function usePortalAuth(authConfig) {
                     return;
                 }
 
-                const result = await fetchAuthContext(accessToken);
+                // A reload restores the ACCOUNT from the MSAL cache before a
+                // token is necessarily available: initialize() acquires
+                // silently, and a silent acquire that needs interaction just
+                // returns null. Without a bearer token /api/auth/me can only
+                // answer 401, and the browser logs every failed request — so
+                // that guaranteed-doomed probe showed up as a console error on
+                // EVERY load. Skip it and take the same unauthorized branch it
+                // would have produced. A 401 that survives this is a real one:
+                // a token the server actually rejected.
+                const result = accessToken
+                    ? await fetchAuthContext(accessToken)
+                    : { status: "unauthorized", error: "Unauthorized" };
                 if (!active) return;
                 if (result.status === "authorized") {
                     setState({
@@ -409,11 +420,18 @@ export function usePortalAuth(authConfig) {
         return providerRef.current.getAccessToken();
     }, [state.authEnabled, state.provider]);
 
+    /** Token for a non-portal resource (Azure DevOps) — client-side repo reads. */
+    const getResourceToken = React.useCallback(async (resource) => {
+        if (!state.authEnabled || !providerRef.current?.getResourceToken) return null;
+        return providerRef.current.getResourceToken(resource);
+    }, [state.authEnabled]);
+
     return {
         ...state,
         signIn,
         signOut,
         getAccessToken,
+        getResourceToken,
         handleUnauthorized,
         handleForbidden,
     };

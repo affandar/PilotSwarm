@@ -94,6 +94,29 @@ export function normalizeStoredPinnedSessionIds(value) {
     return out;
 }
 
+/**
+ * The user's explicit row placement, as an ordered id list.
+ *
+ * Same shape and same discipline as the pinned list — deduped, trimmed, and
+ * tolerant of anything a stored profile might hold. Ids of sessions that no
+ * longer exist are NOT dropped here: the list is written from the desktop but
+ * read on every surface, and pruning on read would let a phone or a TUI
+ * (which may hold a narrower slice of the fleet) quietly erase placements for
+ * sessions it simply cannot see.
+ */
+export function normalizeStoredSessionOrder(value) {
+    if (!Array.isArray(value)) return [];
+    const seen = new Set();
+    const out = [];
+    for (const entry of value) {
+        const id = String(entry || "").trim();
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        out.push(id);
+    }
+    return out;
+}
+
 export function normalizeStoredCollapsedSessionIds(value) {
     if (!Array.isArray(value)) return new Set();
     const out = new Set();
@@ -111,7 +134,7 @@ export function normalizeStoredActiveSessionId(value) {
     return id ? id : null;
 }
 
-export function createInitialState({ mode = "local", branding = null, themeId = null, chatViewMode = null, sessionOwnerFilter = null, layoutAdjustments = null, pinnedSessionIds = null, collapsedSessionIds = null, activeSessionId = null } = {}) {
+export function createInitialState({ mode = "local", branding = null, docs = null, themeId = null, chatViewMode = null, sessionOwnerFilter = null, layoutAdjustments = null, pinnedSessionIds = null, collapsedSessionIds = null, activeSessionId = null, sessionOrder = null } = {}) {
     const hasStoredSessionOwnerFilter = sessionOwnerFilter != null;
     const hasStoredCollapsedSessionIds = collapsedSessionIds != null;
     const initialLayoutAdjustments = normalizeStoredLayoutAdjustments(layoutAdjustments);
@@ -120,6 +143,14 @@ export function createInitialState({ mode = "local", branding = null, themeId = 
             title: "PilotSwarm",
             splash: "{bold}{cyan-fg}PilotSwarm{/cyan-fg}{/bold}",
         },
+        // Deployment documentation links. A layered app (waldemort) ships its
+        // own agent-authoring guide - the base instructions PLUS the skills,
+        // tools and MCP servers that exist only on that fleet - so the portal
+        // links to whatever that deployment configured, not a fixed URL.
+        docs: {
+            agentPackageGuideUrl: docs?.agentPackageGuideUrl
+                || "https://github.com/affandar/PilotSwarm/blob/main/docs/building-agent-packages.md",
+        },
         auth: {
             principal: null,
             authorization: null,
@@ -127,9 +158,12 @@ export function createInitialState({ mode = "local", branding = null, themeId = 
         ui: {
             focusRegion: FOCUS_REGIONS.SESSIONS,
             inspectorTab: INSPECTOR_TABS[0],
+            /** Node Map selection: short node label, scopes the Activity pane. */
+            nodeMapSelectedNode: null,
             sequenceExpandedTurns: [],
             sequenceSelectedTurn: null,
-            chatViewMode: (chatViewMode === "summary" || chatViewMode === "rich") ? chatViewMode : "transcript",
+            // "rich" is a THEME property now (theme.richChat), not a view mode.
+            chatViewMode: chatViewMode === "summary" ? "summary" : "transcript",
             statsViewMode: "session",
             prompt: "",
             promptCursor: 0,
@@ -169,13 +203,30 @@ export function createInitialState({ mode = "local", branding = null, themeId = 
         },
         sessions: {
             byId: {},
+            // Folders live in their OWN slice: a session-list refresh rebuilds
+            // byId from its payload, so anything that only exists there gets
+            // deleted whenever the payload lacks it. Groups are re-seeded from
+            // here on every rebuild and only change when the group fetch says so.
+            groupRows: [],
             flat: [],
             activeSessionId: normalizeStoredActiveSessionId(activeSessionId),
             collapsedIds: normalizeStoredCollapsedSessionIds(collapsedSessionIds),
             collapsedIdsExplicit: hasStoredCollapsedSessionIds,
             pinnedIds: normalizeStoredPinnedSessionIds(pinnedSessionIds),
+            // Explicit user placement (desktop drag); read by every surface.
+            manualOrder: normalizeStoredSessionOrder(sessionOrder),
+            // Whether a listing of each kind has been processed. "This row is
+            // new" is only answerable against a previous listing OF THE SAME
+            // KIND — inferring it from byId being non-empty was wrong, because
+            // a groups listing populates byId without saying anything about
+            // which sessions existed.
+            listingSeen: false,
+            groupsListingSeen: false,
             selectedIds: [],
             selectMode: false,
+            // Clicking empty space in the list clears the LIST highlight while
+            // the chat/inspector panes keep showing the session.
+            listDeselected: false,
             orderById: {},
             nextOrderOrdinal: 0,
             filterQuery: "",
@@ -276,6 +327,61 @@ export function createInitialState({ mode = "local", branding = null, themeId = 
                 changedBy: null,
                 changedAt: null,
                 error: null,
+            },
+            // Which settings-tree node is active: "ghcp" (GitHub Keys) or
+            // "packages" (Agents). The tree replaces the old flat panel.
+            section: "ghcp",
+            // Agent packages (docs/proposals/agent-packages.md) — registry
+            // list, selected package detail, and the workspace viewer.
+            packages: {
+                loading: false,
+                error: null,
+                list: [],
+                workerState: [],
+                fetchedAt: 0,
+                selectedName: null,
+                detail: null,
+                detailLoading: false,
+                detailError: null,
+                workspace: {
+                    tree: null,
+                    treeLoading: false,
+                    treeError: null,
+                    expandedDirs: [],
+                    selectedPath: null,
+                    file: null,
+                    fileLoading: false,
+                    fileError: null,
+                },
+                action: { pending: null, error: null },
+                addDialog: {
+                    open: false,
+                    kind: "repo",
+                    scope: "user",
+                    // Set => the dialog is updating THIS package rather than
+                    // adding one: same fields, same import, but the publish is
+                    // refused unless the manifest names the same package.
+                    updateName: null,
+                    repoUrl: "",
+                    ref: "",
+                    path: "",
+                    url: "",
+                    authToken: "",
+                    submitting: false,
+                    progress: null,
+                    error: null,
+                },
+            },
+            workers: {
+                loading: false,
+                error: null,
+                list: [],
+                fetchedAt: 0,
+                // Refresh-attempt telemetry (surfaced in the Node Map): tells
+                // "never called" apart from "called and failed".
+                attempts: 0,
+                lastAttemptAt: 0,
+                lastSkip: null,
             },
         },
     };

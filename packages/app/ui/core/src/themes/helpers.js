@@ -41,7 +41,7 @@ export function isThemeLight(theme) {
     return getRelativeLuminance(background) >= 0.5;
 }
 
-export function createTheme({ id, label, description, page, terminal, tui = {} }) {
+export function createTheme({ id, label, description, page, terminal, tui = {}, richChat = false }) {
     const baseTui = {
         background: page?.background || terminal?.background || "#000000",
         surface: terminal?.background || page?.background || "#000000",
@@ -73,6 +73,9 @@ export function createTheme({ id, label, description, page, terminal, tui = {} }
         id,
         label,
         description,
+        // Portal-only: this theme renders the chat transcript in the rich
+        // (desktop-style) view. The TUI ignores it.
+        richChat: Boolean(richChat),
         page,
         terminal,
         tui: {

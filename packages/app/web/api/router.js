@@ -35,6 +35,10 @@ const ERROR_STATUS_BY_CODE = {
     FACTS_ENHANCED_UNSUPPORTED: 409,
     GRAPH_UNSUPPORTED: 409,
     PAYLOAD_TOO_LARGE: 413,
+    // Agent packages: structured validation failure (carries .validation),
+    // and immutable-version / scope-mismatch conflicts.
+    VALIDATION_FAILED: 400,
+    CONFLICT: 409,
 };
 
 // Domain/lifecycle errors the runtime throws with actionable, non-sensitive
@@ -62,14 +66,28 @@ function sendError(res, error, fallbackStatus) {
     // (4xx: validation, not-found, auth, lifecycle conflicts) keep their
     // message because it is actionable and non-sensitive.
     const message = status >= 500 ? "Internal server error" : (error?.message || String(error));
-    res.status(status).json({ ok: false, error: { code, message } });
+    const envelope = { ok: false, error: { code, message } };
+    // Structured validation detail (agent-package uploads): per-rule codes +
+    // messages the dialog renders verbatim. 4xx-only, never on faults.
+    if (status < 500 && Array.isArray(error?.validation?.errors)) {
+        envelope.error.validation = error.validation;
+    }
+    res.status(status).json(envelope);
 }
 
 // Session/child id path params must look like ids — never a path fragment.
 // This is the trust boundary for the filesystem artifact store, which builds
 // paths from these values; anything with a separator or ".." is rejected here
 // before it can reach a sink. (Group ids are validated the same way.)
-const ID_PARAM_KEYS = new Set(["sessionId", "parentSessionId", "childSessionId", "agentIdOrSessionId", "groupId"]);
+// copyArtifact carries its two session ids in the BODY (fromSessionId /
+// toSessionId) rather than the path; assertSafeIdParams keys off the name, not
+// the location, so listing them here gives them the same validation every
+// other session id gets. The authz gate resolves both ids independently
+// (runtime.js "session:copy"), so this is defence in depth, not the gate.
+const ID_PARAM_KEYS = new Set([
+    "sessionId", "parentSessionId", "childSessionId", "agentIdOrSessionId", "groupId",
+    "fromSessionId", "toSessionId",
+]);
 const SAFE_ID = /^[\w:.-]{1,200}$/;
 
 function assertSafeIdParams(op, params) {

@@ -86,6 +86,16 @@ export const OPERATIONS = [
     { name: "downloadArtifact", access: "session:read", method: "GET", path: "/sessions/:sessionId/artifacts/:filename/text", params: { sessionId: path("sessionId"), filename: path("filename") }, summary: "Artifact content as text (JSON envelope). Binary: GET …/download." },
     { name: "uploadArtifact", access: "session:write", method: "PUT", path: "/sessions/:sessionId/artifacts/:filename", params: { sessionId: path("sessionId"), filename: path("filename"), content: body(), contentType: body(), contentEncoding: body() }, summary: "Upload artifact content (base64 for binary; 2 MB JSON limit)." },
     { name: "deleteArtifact", access: "session:manage", method: "DELETE", path: "/sessions/:sessionId/artifacts/:filename", params: { sessionId: path("sessionId"), filename: path("filename") }, summary: "Delete an artifact." },
+    // These three were dispatchable (runtime.js) and access-classified
+    // (authz.js RPC_ONLY_ACCESS) but reachable only through the legacy
+    // /api/rpc path — every ApiClient.call() of them threw "Unknown API
+    // operation" client-side, which silently broke the MCP artifact
+    // read-base64/copy/pin actions in web mode. Table rows give them
+    // generated routes with the same authz (session:copy gates
+    // fromSessionId for read + toSessionId for write by param name).
+    { name: "readArtifactBase64", access: "session:read", method: "GET", path: "/sessions/:sessionId/artifacts/:filename/base64", params: { sessionId: path("sessionId"), filename: path("filename"), maxBytes: query("number") }, summary: "Artifact content as base64 (JSON envelope; maxBytes caps the read, truncated flag set when hit)." },
+    { name: "copyArtifact", access: "session:copy", method: "POST", path: "/artifacts/copy", params: { fromSessionId: body(), fromFilename: body(), toSessionId: body(), toFilename: body() }, summary: "Copy an artifact across sessions (read access on the source, write on the target)." },
+    { name: "setArtifactPinned", access: "session:manage", method: "PUT", path: "/sessions/:sessionId/artifacts/:filename/pinned", params: { sessionId: path("sessionId"), filename: path("filename"), pinned: body() }, summary: "Pin/unpin an artifact (pinned artifacts survive retention sweeps)." },
 
     // ── Management: sessions ────────────────────────────────────────────
     { name: "listSessionsPage", access: "session:list", method: "GET", path: "/management/sessions", params: { limit: query("number"), cursor: query("json"), includeDeleted: query("boolean") }, summary: "Keyset-paginated session listing." },
@@ -180,6 +190,21 @@ export const OPERATIONS = [
     { name: "getDefaultModel", access: "authed", method: "GET", path: "/models/default", summary: "The deployment default model." },
     { name: "listCreatableAgents", access: "authed", method: "GET", path: "/agents", summary: "Agents sessions can be created for." },
     { name: "getSessionCreationPolicy", access: "authed", method: "GET", path: "/session-creation-policy", summary: "Session creation policy." },
+
+    // ── Agent packages (docs/proposals/agent-packages.md) ───────────────
+    // Fixed segments (sources / upload / worker-state) are registered BEFORE
+    // the :name routes — Express matches in table order.
+    { name: "listAgentPackages", access: "authed", method: "GET", path: "/agent-packages", summary: "Agent packages visible to the caller: shared + own user-scope (admins see all)." },
+    { name: "uploadAgentPackage", access: "authed", method: "POST", path: "/agent-packages/upload", params: { files: body(), scope: body() }, summary: "Publish a package from inline files ([{path, contentBase64}], ≤ 2 MB total); validates, canonically packs, and registers as the caller." },
+    { name: "listAgentWorkerState", access: "fleet:admin", method: "GET", path: "/agent-packages/worker-state", admin: true, summary: "Per-worker installed package state (fleet adoption). Hard admin gate: the installed map enumerates every package name, including user-scope ones. [admin]" },
+    { name: "listWorkers", access: "fleet:admin", method: "GET", path: "/workers", admin: true, summary: "Worker registry (0040): every registered worker with pool, lifecycle phase, liveness, write-once info, health snapshot, and per-domain state. Hard admin gate. [admin]" },
+    { name: "getAgentPackage", access: "authed", method: "GET", path: "/agent-packages/:name", params: { name: path("name") }, summary: "One package with its full version history." },
+    { name: "getAgentPackageTree", access: "authed", method: "GET", path: "/agent-packages/:name/tree", params: { name: path("name"), semver: query("string") }, summary: "File tree of the package tarball (workspace viewer). Defaults to the active version." },
+    { name: "getAgentPackageFile", access: "authed", method: "GET", path: "/agent-packages/:name/file", params: { name: path("name"), semver: query("string"), filePath: query("string") }, summary: "One file from the package tarball (preview; text size-capped, binary flagged)." },
+    { name: "setAgentPackageScope", access: "authed", method: "PUT", path: "/agent-packages/:name/scope", params: { name: path("name"), scope: body() }, summary: "Promote (shared) or demote (user). Creator or admin; running agents unaffected." },
+    { name: "setAgentPackageEnabled", access: "authed", method: "PUT", path: "/agent-packages/:name/enabled", params: { name: path("name"), enabled: body() }, summary: "Enable/disable a package fleet-wide. Creator or admin." },
+    { name: "pinAgentPackageVersion", access: "authed", method: "PUT", path: "/agent-packages/:name/active", params: { name: path("name"), semver: body() }, summary: "Pin the active version (rollback). Creator or admin; fleet converges on the next epoch poll." },
+    { name: "deleteAgentPackage", access: "authed", method: "DELETE", path: "/agent-packages/:name", params: { name: path("name") }, summary: "Delete a package: every version and its artifacts. Creator or admin. Live sessions using its agents fail resolution on their next turn." },
 
     // ── Current user profile ────────────────────────────────────────────
     { name: "getCurrentUserProfile", access: "authed", method: "GET", path: "/me/profile", summary: "Profile of the authenticated principal." },

@@ -1384,12 +1384,12 @@ describe("session refresh UI recovery", () => {
 
         const rows = selectVisibleSessionRows(store.getState(), 8);
         const renderedRows = rows.map((row) => row.runs.map((run) => run.text).join(""));
-        assert(renderedRows.some((row) => row.includes("[ad] Owned Work")), "owned row should include the bracketed owner badge");
+        assert(renderedRows.some((row) => row.includes("[AD] Owned Work")), "owned row should include the bracketed owner badge");
         assert(renderedRows.some((row) => row.includes("[?] Legacy Work")), "unowned row should include the [?] owner marker");
 
         store.dispatch({ type: "sessions/selected", sessionId: "owned-session" });
         const chromeTitle = selectChatPaneChrome(store.getState()).title.map((run) => run.text).join("");
-        assert(!chromeTitle.includes("[ad]"), "chat header should not include the owner prefix");
+        assert(!chromeTitle.includes("[AD]"), "chat header should not include the owner prefix");
     });
 
     it("renders owner prefixes in the session list without auth context when owner metadata exists", () => {
@@ -1438,7 +1438,7 @@ describe("session refresh UI recovery", () => {
 
         const renderedRows = selectVisibleSessionRows(store.getState(), 8)
             .map((row) => row.runs.map((run) => run.text).join(""));
-        assert(renderedRows.some((row) => row.includes("[ad] Owned Work")), "owner metadata alone should enable owner initials in the session list");
+        assert(renderedRows.some((row) => row.includes("[AD] Owned Work")), "owner metadata alone should enable owner initials in the session list");
         assert(renderedRows.some((row) => row.includes("[?] Legacy Work")), "owner metadata should also mark unowned rows in the session list");
     });
 
@@ -1552,7 +1552,10 @@ describe("session refresh UI recovery", () => {
         const rows = selectSessionRows(store.getState()).map((row) => row.sessionId);
         assertEqual(
             JSON.stringify(rows),
-            JSON.stringify(["system-session", "group:pinned", "pinned-session", "group:unpinned", "loose-b", "loose-a"]),
+            // Remaining sessions run OLDEST first (loose-a updatedAt 1, loose-b 5):
+            // manual ordering means a row stays where it is put, so a new
+            // session has to arrive at the END rather than jumping to the top.
+            JSON.stringify(["system-session", "group:pinned", "pinned-session", "group:unpinned", "loose-a", "loose-b"]),
             "session tree should rank system, pinned groups, pinned sessions, unpinned groups, then timestamp-seeded remaining sessions",
         );
     });
@@ -1779,7 +1782,10 @@ describe("session refresh UI recovery", () => {
             assert(rows.includes("group:mine-group"), "default owner filter should include current user's groups");
             assert(rows.includes("group:legacy-group"), "default owner filter should include groups with current-user members");
             assert(rows.includes("group:other-group"), "default owner filter now surfaces foreign-owned groups via includeShared");
-            assert(!rows.includes("group:unowned-group"), "default owner filter should exclude unowned groups");
+            // A folder is the viewer's OWN private organization and the row
+            // carries no owner of its own, so owner filters never hide one —
+            // its members are still filtered on their own merits.
+            assert(rows.includes("group:unowned-group"), "owner filters should never hide a folder row");
 
             const rowText = selectSessionRows(store.getState())
                 .filter((row) => row.sessionId === "group:mine-group" || row.sessionId === "group:legacy-group")

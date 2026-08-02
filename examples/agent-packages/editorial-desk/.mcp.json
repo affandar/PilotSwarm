@@ -1,0 +1,7 @@
+{
+  "style-desk": {
+    "command": "node",
+    "args": ["./mcp-servers/style-desk.js"],
+    "tools": ["*"]
+  }
+}

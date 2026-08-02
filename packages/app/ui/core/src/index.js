@@ -3,6 +3,8 @@ export * from "./context-usage.js";
 export * from "./formatting.js";
 export * from "./history.js";
 export * from "./layout.js";
+export * from "./repo-links.js";
+export * from "./repo-import.js";
 export * from "./session-tree.js";
 export * from "./state.js";
 export * from "./reducer.js";

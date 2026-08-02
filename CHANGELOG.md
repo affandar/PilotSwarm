@@ -1,5 +1,88 @@
 # Changelog
 
+## 0.5.30 — 2026-08-02
+
+### Added
+
+- **Drag to reorder the session list, and it stays that way.** Sessions,
+  folders, and the sessions inside a folder can each be dragged into the order
+  you want; the placement is a user preference, so it follows you to the TUI
+  and the phone (which honour it read-only). New sessions arrive at the END of
+  their list rather than jumping to the top — a row you place stays placed,
+  which also means activity no longer reorders the list. Dragging near the
+  list edge auto-scrolls, and an insertion line shows where the row will land,
+  including a line under the last row when dropping at the end. Folders became
+  draggable for the first time; the system root and sub-agents deliberately
+  cannot move, because a sub-agent's position reflects the shape of the run.
+- **Owner avatars.** A monogram disc, coloured per person from a stable hash,
+  rendered by one component in both the session list and the agent-package
+  tree, so the same person cannot look like two different people in two panes.
+  The viewer's own rows take a ring rather than a different colour. The TUI
+  keeps its text chip.
+- **`client.ops` — the canonical Web API surface**, generated from the
+  protocol table. One method per operation, so the client cannot drift from
+  what the deployment actually exposes; a contract test fails if it does.
+- **`createManagementClient(options)`**, an overloaded factory returning
+  honestly-typed clients per mode, and `SharedManagementSurface` for code that
+  may hold either.
+- **`pilotswarm agents` now covers every package operation**: `enable`,
+  `disable`, `tree` and `cat` join push/list/show/pin/promote/demote/rm.
+- **`editorial-desk` example package** — four editor agents, a skill, seven
+  worker tools and a hand-rolled MCP server, offline and credential-free.
+
+### Changed
+
+- **The `agents` CLI talks to the Web API by default.** It previously required
+  `DATABASE_URL` and actively refused `--api-url`, so the surface an operator
+  reaches for first was also the one that bypassed authentication and
+  authorization. `--store` remains as break-glass and announces itself.
+- **Expansion state and the last selected session are restored on reload**,
+  across devices, with the system root as the fallback when a stored selection
+  no longer exists.
+- Owner initials are uppercase and derived from a person's name.
+
+### Fixed
+
+- **Agent-package owners showed the wrong initials** — "daraffan@…" rendered
+  as "DA" where the same person's sessions correctly showed "AD" for "Affan
+  Dar". Packages stored only an opaque directory principal; the human identity
+  was always in the `users` table, which the session view has joined all
+  along. Migration **0041** adds that join to the package procs, so both
+  resolve the same person the same way for every existing row — no new
+  columns, no backfill.
+- **Three artifact operations were unreachable over the Web API.**
+  `readArtifactBase64`, `copyArtifact` and `setArtifactPinned` were dispatched
+  server-side and access-classified but absent from the operations table, so
+  every client call threw "Unknown API operation". The MCP artifact
+  read-base64, copy and pin actions had been dead in web mode since they
+  shipped.
+- **Collapse state ratcheted shut.** Each page load force-collapsed rows the
+  listing had not delivered yet and saved that back, so one reload looked fine
+  and the next collapsed everything. Defaults now apply only against a real
+  previous listing.
+- **A restored selection was destroyed by the reload meant to restore it** —
+  the folder listing lands first, so the stored session looked "not visible"
+  and was replaced by the default, which was then persisted over it.
+- The profile poll adopted unsaved local state as already-persisted, so
+  changes could take effect on screen and never be written.
+- The web management client was 30 methods behind the direct client,
+  including `grantSessionShare`, `setSessionVisibility` and `getSessionAccess`
+  — the authorization primitives, previously reachable only from the client
+  with no authentication.
+- `packages/app/web/runtime.js` carried raw control bytes in string literals,
+  which made `file` classify the whole module as binary and caused grep and
+  ripgrep to silently return nothing for the portal's dispatch core.
+
+### Maintainer Workflow
+
+- Docker image builds accept an `NPM_REGISTRY` build arg (worker and portal),
+  for networks blocked from the public npm registry. Note the mirror holds new
+  versions for ~7 days, so a same-week dependency can still fail a cold build;
+  `az acr build` is the escape hatch.
+- Getting Started documents installing the CLI standalone, including the
+  tarball fallback when npm is blocked; the agent-package guide gains a
+  lifecycle section for managing a published package.
+
 ## 0.5.29 — 2026-07-28
 
 ### Changed

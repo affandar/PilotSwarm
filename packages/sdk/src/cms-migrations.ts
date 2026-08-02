@@ -200,7 +200,731 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "service_sessions",
             sql: migration_0037_service_sessions(schema),
         },
+        {
+            version: "0038",
+            name: "agent_packages",
+            sql: migration_0038_agent_packages(schema),
+        },
+        {
+            version: "0039",
+            name: "agent_worker_heartbeat_prune",
+            sql: migration_0039_agent_worker_heartbeat_prune(schema),
+        },
+        {
+            version: "0040",
+            name: "worker_registry",
+            sql: migration_0040_worker_registry(schema),
+        },
+        {
+            version: "0041",
+            name: "agent_package_owner_identity",
+            sql: migration_0041_agent_package_owner_identity(schema),
+        },
     ];
+}
+
+// ─── Migration 0040: worker registry ─────────────────────────────
+//
+// docs/proposals/worker-registry.md (rev 4). Substrate-neutral, uniformly
+// ephemeral workers (presence, not enrollment) + fleet_directives, the
+// scoped desired-state channel (fleet/pool/worker, shallow-merge union,
+// epoch = SUM of contributing rows). The heartbeat IS the convergence poll:
+// one proc upserts the worker row, prunes hour-silent rows, and returns the
+// effective directive set.
+//
+// Agent packages fold in as the first tenant VIA SHIMS with unchanged
+// signatures: cms_agent_registry_bump/_epoch ride the
+// ('agent-packages','*','*') directive row (seeded from
+// agent_registry_state so epochs continue monotonically — old workers see
+// no spurious change), and cms_list_agent_worker_state unions the legacy
+// table with workers.state so mixed fleets display correctly during a
+// rolling upgrade. Legacy tables are dropped later (0041) once the fleet
+// is upgraded.
+function migration_0040_worker_registry(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- 0040_worker_registry: workers + fleet_directives + heartbeat + shims.
+
+CREATE TABLE IF NOT EXISTS ${s}.workers (
+    worker_node_id TEXT PRIMARY KEY,
+    pool           TEXT NOT NULL DEFAULT 'default',
+    phase          TEXT NOT NULL DEFAULT 'starting' CHECK (phase IN ('starting', 'ready', 'draining')),
+    owner_provider TEXT,
+    owner_subject  TEXT,
+    registered_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    info           JSONB NOT NULL DEFAULT '{}'::jsonb,
+    health         JSONB NOT NULL DEFAULT '{}'::jsonb,
+    state          JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS workers_pool_idx ON ${s}.workers (pool);
+
+CREATE TABLE IF NOT EXISTS ${s}.fleet_directives (
+    domain         TEXT NOT NULL,
+    pool           TEXT NOT NULL DEFAULT '*',
+    worker_node_id TEXT NOT NULL DEFAULT '*',
+    epoch          BIGINT NOT NULL DEFAULT 1,
+    actuation      TEXT NOT NULL DEFAULT 'worker' CHECK (actuation IN ('worker', 'external')),
+    desired        JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by     TEXT,
+    -- Canonical form is structural: a row specializes pool OR worker, never
+    -- both, so even direct SQL cannot create an undefined-precedence row.
+    CONSTRAINT fleet_directives_canonical_scope CHECK (pool = '*' OR worker_node_id = '*'),
+    PRIMARY KEY (domain, pool, worker_node_id)
+);
+
+-- Seed the agent-packages directive from the legacy epoch so old and new
+-- workers observe ONE continuous monotonic counter. Idempotent; the second
+-- insert covers schemas where agent_registry_state was never populated.
+INSERT INTO ${s}.fleet_directives (domain, pool, worker_node_id, epoch, actuation, desired, updated_by)
+SELECT 'agent-packages', '*', '*', GREATEST(st.epoch, 1), 'worker', '{}'::jsonb, 'migration-0040'
+  FROM ${s}.agent_registry_state st WHERE st.id = 1
+ON CONFLICT (domain, pool, worker_node_id) DO NOTHING;
+INSERT INTO ${s}.fleet_directives (domain, pool, worker_node_id, epoch, actuation, desired, updated_by)
+VALUES ('agent-packages', '*', '*', 1, 'worker', '{}'::jsonb, 'migration-0040')
+ON CONFLICT (domain, pool, worker_node_id) DO NOTHING;
+
+-- ── directive mutation ───────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION ${s}.cms_fleet_directive_bump(
+    p_domain TEXT, p_pool TEXT, p_worker_node_id TEXT,
+    p_desired JSONB, p_actuation TEXT, p_updated_by TEXT
+) RETURNS BIGINT AS $$
+DECLARE
+    v_pool TEXT := COALESCE(NULLIF(BTRIM(p_pool), ''), '*');
+    v_worker TEXT := COALESCE(NULLIF(BTRIM(p_worker_node_id), ''), '*');
+    v_actuation TEXT := COALESCE(NULLIF(p_actuation, ''), 'worker');
+    v_existing_actuation TEXT;
+    v_epoch BIGINT;
+BEGIN
+    -- One writer per domain: the actuation-uniformity check below is
+    -- read-then-write, and two first-bumps racing could persist a mixed
+    -- domain that wedges every later bump. Directive writes are admin-rate.
+    PERFORM pg_advisory_xact_lock(hashtext('fleet_directive:' || p_domain));
+    -- Canonical worker-row form: worker-scoped rows use pool '*'; a triple
+    -- with BOTH pool and worker specialized has no defined precedence.
+    IF v_worker <> '*' AND v_pool <> '*' THEN
+        RAISE EXCEPTION 'FLEET_DIRECTIVE_BAD_SCOPE: worker-scoped directives use pool ''*'' (canonical form)';
+    END IF;
+    -- agent-packages converges through the legacy epoch shim (fleet row
+    -- only) until the registrar consumes the heartbeat's directive set; a
+    -- scoped row would be silently dead while skewing the summed epoch.
+    IF p_domain = 'agent-packages' AND (v_pool <> '*' OR v_worker <> '*') THEN
+        RAISE EXCEPTION 'FLEET_DIRECTIVE_BAD_SCOPE: agent-packages directives are fleet-wide for now (workers converge on the fleet row only)';
+    END IF;
+    -- Actuation is a property of the DOMAIN, uniform across its rows.
+    SELECT d.actuation INTO v_existing_actuation
+      FROM ${s}.fleet_directives d WHERE d.domain = p_domain LIMIT 1;
+    IF v_existing_actuation IS NOT NULL AND v_existing_actuation <> v_actuation THEN
+        RAISE EXCEPTION 'FLEET_DIRECTIVE_ACTUATION_MISMATCH: domain "%" is %-actuated; all rows of a domain share one actuation', p_domain, v_existing_actuation;
+    END IF;
+    INSERT INTO ${s}.fleet_directives (domain, pool, worker_node_id, epoch, actuation, desired, updated_at, updated_by)
+    VALUES (p_domain, v_pool, v_worker, 1, v_actuation, COALESCE(p_desired, '{}'::jsonb), now(), p_updated_by)
+    ON CONFLICT (domain, pool, worker_node_id) DO UPDATE
+        SET epoch = ${s}.fleet_directives.epoch + 1,
+            desired = COALESCE(p_desired, ${s}.fleet_directives.desired),
+            updated_at = now(),
+            updated_by = COALESCE(p_updated_by, ${s}.fleet_directives.updated_by)
+    RETURNING epoch INTO v_epoch;
+    RETURN v_epoch;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_get_fleet_directives()
+RETURNS TABLE(domain TEXT, pool TEXT, worker_node_id TEXT, epoch BIGINT,
+              actuation TEXT, desired JSONB, updated_at TIMESTAMPTZ, updated_by TEXT) AS $$
+    SELECT domain, pool, worker_node_id, epoch, actuation, desired, updated_at, updated_by
+      FROM ${s}.fleet_directives
+     ORDER BY domain, pool, worker_node_id;
+$$ LANGUAGE sql;
+
+-- ── the one round-trip ───────────────────────────────────────────
+--
+-- Upsert the worker row (info/owner insert-only; pool/phase/health/state/
+-- updated_at every beat), apply the uniform prune, and return the worker's
+-- effective directive set: per domain, the shallow-merge union of the
+-- fleet/pool/worker rows (worker > pool > fleet on conflicting keys) with
+-- epoch = SUM of contributing epochs (monotonic under any single-row bump).
+
+CREATE OR REPLACE FUNCTION ${s}.cms_worker_heartbeat(
+    p_worker_node_id TEXT, p_pool TEXT, p_phase TEXT,
+    p_owner_provider TEXT, p_owner_subject TEXT,
+    p_info JSONB, p_health JSONB, p_state JSONB
+) RETURNS TABLE(domain TEXT, epoch BIGINT, actuation TEXT, desired JSONB) AS $$
+DECLARE
+    v_pool TEXT := COALESCE(NULLIF(BTRIM(p_pool), ''), 'default');
+    -- Unknown phases coerce to 'starting' (never advertise garbage as
+    -- healthy); '*' or blank ids would cross-match every worker-scoped
+    -- directive at top specificity, so they are rejected outright.
+    v_phase TEXT := CASE WHEN p_phase IN ('starting', 'ready', 'draining') THEN p_phase ELSE 'starting' END;
+BEGIN
+    IF p_worker_node_id IS NULL OR BTRIM(p_worker_node_id) = '' OR p_worker_node_id = '*' THEN
+        RAISE EXCEPTION 'WORKER_ID_INVALID: worker_node_id must be a non-empty identifier';
+    END IF;
+    INSERT INTO ${s}.workers (worker_node_id, pool, phase, owner_provider, owner_subject,
+                              registered_at, updated_at, info, health, state)
+    VALUES (p_worker_node_id, v_pool, v_phase,
+            NULLIF(BTRIM(p_owner_provider), ''), NULLIF(BTRIM(p_owner_subject), ''),
+            now(), now(),
+            COALESCE(p_info, '{}'::jsonb), COALESCE(p_health, '{}'::jsonb), COALESCE(p_state, '{}'::jsonb))
+    ON CONFLICT (worker_node_id) DO UPDATE
+        SET pool = EXCLUDED.pool,
+            phase = EXCLUDED.phase,
+            health = EXCLUDED.health,
+            state = EXCLUDED.state,
+            updated_at = now();
+
+    -- Uniform gone-ness: silent for an hour = gone, whatever the substrate.
+    DELETE FROM ${s}.workers w WHERE w.updated_at < now() - interval '1 hour';
+
+    RETURN QUERY
+    WITH contrib AS (
+        SELECT d.domain AS c_domain, d.epoch AS c_epoch,
+               d.actuation AS c_actuation, d.desired AS c_desired,
+               CASE WHEN d.worker_node_id = p_worker_node_id THEN 3
+                    WHEN d.pool = v_pool THEN 2
+                    ELSE 1 END AS specificity
+          FROM ${s}.fleet_directives d
+         WHERE (d.pool = '*' AND d.worker_node_id = '*')
+            OR (d.pool = v_pool AND d.worker_node_id = '*')
+            OR (d.worker_node_id = p_worker_node_id)
+    )
+    SELECT c.c_domain,
+           SUM(c.c_epoch)::BIGINT,
+           (array_agg(c.c_actuation ORDER BY c.specificity DESC))[1],
+           COALESCE((array_agg(c.c_desired ORDER BY c.specificity ASC))[1], '{}'::jsonb)
+           || COALESCE((array_agg(c.c_desired ORDER BY c.specificity ASC))[2], '{}'::jsonb)
+           || COALESCE((array_agg(c.c_desired ORDER BY c.specificity ASC))[3], '{}'::jsonb)
+      FROM contrib c
+     GROUP BY c.c_domain;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_list_workers()
+RETURNS TABLE(worker_node_id TEXT, pool TEXT, phase TEXT,
+              owner_provider TEXT, owner_subject TEXT,
+              registered_at TIMESTAMPTZ, updated_at TIMESTAMPTZ,
+              info JSONB, health JSONB, state JSONB) AS $$
+    SELECT worker_node_id, pool, phase, owner_provider, owner_subject,
+           registered_at, updated_at, info, health, state
+      FROM ${s}.workers
+     ORDER BY pool, worker_node_id;
+$$ LANGUAGE sql;
+
+-- ── agent-packages fold-in shims (signatures unchanged) ──────────
+
+CREATE OR REPLACE FUNCTION ${s}.cms_agent_registry_bump() RETURNS BIGINT AS $$
+    SELECT ${s}.cms_fleet_directive_bump('agent-packages', '*', '*', NULL, 'worker', 'agent-packages');
+$$ LANGUAGE sql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_agent_registry_epoch() RETURNS BIGINT AS $$
+    SELECT COALESCE((SELECT d.epoch FROM ${s}.fleet_directives d
+                      WHERE d.domain = 'agent-packages' AND d.pool = '*' AND d.worker_node_id = '*'), 0);
+$$ LANGUAGE sql;
+
+-- Mixed-fleet display: union legacy agent_worker_state (old workers still
+-- write it) with workers.state->'agent-packages' (new workers), newest row
+-- per worker wins. Read paths (portal fleet adoption, MCP) stay untouched.
+CREATE OR REPLACE FUNCTION ${s}.cms_list_agent_worker_state()
+RETURNS TABLE(worker_node_id TEXT, epoch BIGINT, installed JSONB, updated_at TIMESTAMPTZ) AS $$
+    SELECT DISTINCT ON (u.worker_node_id)
+           u.worker_node_id, u.epoch, u.installed, u.updated_at
+      FROM (
+        SELECT w.worker_node_id,
+               CASE WHEN jsonb_typeof(w.state->'agent-packages'->'epoch') = 'number'
+                    THEN (w.state->'agent-packages'->>'epoch')::BIGINT
+                    ELSE 0 END AS epoch,
+               COALESCE(w.state->'agent-packages'->'installed', '{}'::jsonb) AS installed,
+               w.updated_at
+          FROM ${s}.workers w
+        UNION ALL
+        SELECT a.worker_node_id, a.epoch, a.installed, a.updated_at
+          FROM ${s}.agent_worker_state a
+      ) u
+     ORDER BY u.worker_node_id, u.updated_at DESC;
+$$ LANGUAGE sql;
+`;
+}
+
+// ─── Migration 0039: agent_worker_state self-prune ───────────────
+//
+// Workers are EPHEMERAL (K8s pods; names change every rollout), so
+// agent_worker_state accumulated a row per pod that ever reported and
+// fleet adoption read "8/16 workers". Workers now heartbeat updated_at on
+// every poll; liveness is a display-side window (~90s), and this upsert
+// prunes rows silent for over an hour so the table stays the live fleet
+// plus a short tail. Same signature as 0038's version — CREATE OR REPLACE.
+function migration_0039_agent_worker_heartbeat_prune(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+CREATE OR REPLACE FUNCTION ${s}.cms_upsert_agent_worker_state(
+    p_worker_node_id TEXT, p_epoch BIGINT, p_installed JSONB
+) RETURNS VOID AS $$
+BEGIN
+    INSERT INTO ${s}.agent_worker_state (worker_node_id, epoch, installed, updated_at)
+    VALUES (p_worker_node_id, p_epoch, COALESCE(p_installed, '{}'::jsonb), now())
+    ON CONFLICT (worker_node_id) DO UPDATE
+        SET epoch = EXCLUDED.epoch,
+            installed = EXCLUDED.installed,
+            updated_at = now();
+    -- Ephemeral-fleet hygiene: a worker silent for an hour is gone (pods
+    -- report every ~20s; rollouts retire names forever).
+    DELETE FROM ${s}.agent_worker_state
+     WHERE updated_at < now() - interval '1 hour';
+END;
+$$ LANGUAGE plpgsql;
+`;
+}
+
+// ─── Migration 0038: agent packages registry ─────────────────────
+//
+// User-uploadable agent packages (docs/proposals/agent-packages.md).
+// All-new tables, so a single transactional migration is safe — no hot-table
+// ALTERs, no steps shape needed. Identity is (name, semver); sha256 is a
+// verifier. agent_registry_state.epoch is bumped by EVERY mutating proc that
+// changes what workers should run — workers poll it to converge without
+// restarts. auth_token follows the users.github_copilot_key posture: status
+// procs return a boolean, the raw read is internal-only.
+function migration_0038_agent_packages(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- 0038_agent_packages: registry for user-uploadable agent packages.
+
+CREATE TABLE IF NOT EXISTS ${s}.agent_sources (
+    source_id        TEXT PRIMARY KEY,
+    kind             TEXT NOT NULL CHECK (kind IN ('github', 'ado', 'url', 'upload')),
+    scope            TEXT NOT NULL DEFAULT 'user' CHECK (scope IN ('shared', 'user')),
+    repo_url         TEXT,
+    ref              TEXT,
+    path             TEXT,
+    url              TEXT,
+    auth_token       TEXT,
+    auto_sync        BOOLEAN NOT NULL DEFAULT FALSE,
+    last_sync_at     TIMESTAMPTZ,
+    last_sync_status TEXT,
+    last_sync_error  TEXT,
+    last_commit_sha  TEXT,
+    owner_provider   TEXT,
+    owner_subject    TEXT,
+    created_by       TEXT,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS ${s}.agent_packages (
+    package_id        TEXT PRIMARY KEY,
+    source_id         TEXT REFERENCES ${s}.agent_sources(source_id) ON DELETE SET NULL,
+    name              TEXT NOT NULL UNIQUE,
+    scope             TEXT NOT NULL CHECK (scope IN ('shared', 'user')),
+    owner_provider    TEXT,
+    owner_subject     TEXT,
+    enabled           BOOLEAN NOT NULL DEFAULT TRUE,
+    active_version_id TEXT,
+    created_by        TEXT,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS agent_packages_owner_idx ON ${s}.agent_packages (owner_provider, owner_subject);
+
+CREATE TABLE IF NOT EXISTS ${s}.agent_package_versions (
+    version_id        TEXT PRIMARY KEY,
+    package_id        TEXT NOT NULL REFERENCES ${s}.agent_packages(package_id) ON DELETE CASCADE,
+    semver            TEXT NOT NULL,
+    sha256            TEXT NOT NULL,
+    size_bytes        BIGINT NOT NULL,
+    artifact_filename TEXT NOT NULL,
+    commit_sha        TEXT,
+    manifest          JSONB NOT NULL,
+    created_by        TEXT,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (package_id, semver)
+);
+
+CREATE TABLE IF NOT EXISTS ${s}.agent_registry_state (
+    id         INTEGER PRIMARY KEY CHECK (id = 1),
+    epoch      BIGINT NOT NULL DEFAULT 1,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+INSERT INTO ${s}.agent_registry_state (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS ${s}.agent_worker_state (
+    worker_node_id TEXT PRIMARY KEY,
+    epoch          BIGINT NOT NULL DEFAULT 0,
+    installed      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- ── epoch ────────────────────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION ${s}.cms_agent_registry_epoch() RETURNS BIGINT AS $$
+    SELECT epoch FROM ${s}.agent_registry_state WHERE id = 1;
+$$ LANGUAGE sql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_agent_registry_bump() RETURNS BIGINT AS $$
+    UPDATE ${s}.agent_registry_state
+       SET epoch = epoch + 1, updated_at = now()
+     WHERE id = 1
+    RETURNING epoch;
+$$ LANGUAGE sql;
+
+-- ── sources ──────────────────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION ${s}.cms_register_agent_source(
+    p_source_id TEXT, p_kind TEXT, p_scope TEXT, p_repo_url TEXT, p_ref TEXT, p_path TEXT,
+    p_url TEXT, p_auth_token TEXT, p_auto_sync BOOLEAN,
+    p_owner_provider TEXT, p_owner_subject TEXT, p_created_by TEXT
+) RETURNS VOID AS $$
+BEGIN
+    INSERT INTO ${s}.agent_sources
+        (source_id, kind, scope, repo_url, ref, path, url, auth_token, auto_sync,
+         owner_provider, owner_subject, created_by)
+    VALUES (p_source_id, p_kind, COALESCE(NULLIF(p_scope, ''), 'user'), p_repo_url, p_ref, p_path,
+            NULLIF(p_url, ''), NULLIF(p_auth_token, ''), COALESCE(p_auto_sync, FALSE),
+            NULLIF(BTRIM(p_owner_provider), ''), NULLIF(BTRIM(p_owner_subject), ''), p_created_by);
+END;
+$$ LANGUAGE plpgsql;
+
+-- Listing never returns auth_token — only whether one is set.
+CREATE OR REPLACE FUNCTION ${s}.cms_list_agent_sources(
+    p_viewer_provider TEXT, p_viewer_subject TEXT, p_is_admin BOOLEAN
+) RETURNS TABLE(
+    source_id TEXT, kind TEXT, scope TEXT, repo_url TEXT, ref TEXT, path TEXT, url TEXT,
+    auth_token_set BOOLEAN, auto_sync BOOLEAN, last_sync_at TIMESTAMPTZ,
+    last_sync_status TEXT, last_sync_error TEXT, last_commit_sha TEXT,
+    owner_provider TEXT, owner_subject TEXT, created_by TEXT, created_at TIMESTAMPTZ
+) AS $$
+    SELECT source_id, kind, scope, repo_url, ref, path, url,
+           (auth_token IS NOT NULL), auto_sync, last_sync_at,
+           last_sync_status, last_sync_error, last_commit_sha,
+           owner_provider, owner_subject, created_by, created_at
+      FROM ${s}.agent_sources s
+     WHERE p_is_admin
+        OR (s.owner_provider = BTRIM(p_viewer_provider) AND s.owner_subject = BTRIM(p_viewer_subject))
+     ORDER BY created_at DESC;
+$$ LANGUAGE sql;
+
+-- Internal-only raw token read for the sync fetchers. Never expose through
+-- the public management API (github_copilot_key precedent, migration 0010).
+CREATE OR REPLACE FUNCTION ${s}.cms_get_agent_source_token(p_source_id TEXT)
+RETURNS TEXT AS $$
+    SELECT auth_token FROM ${s}.agent_sources WHERE source_id = p_source_id;
+$$ LANGUAGE sql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_get_agent_source(p_source_id TEXT)
+RETURNS TABLE(
+    source_id TEXT, kind TEXT, scope TEXT, repo_url TEXT, ref TEXT, path TEXT, url TEXT,
+    auth_token_set BOOLEAN, auto_sync BOOLEAN, last_sync_at TIMESTAMPTZ,
+    last_sync_status TEXT, last_sync_error TEXT, last_commit_sha TEXT,
+    owner_provider TEXT, owner_subject TEXT, created_by TEXT, created_at TIMESTAMPTZ
+) AS $$
+    SELECT source_id, kind, scope, repo_url, ref, path, url,
+           (auth_token IS NOT NULL), auto_sync, last_sync_at,
+           last_sync_status, last_sync_error, last_commit_sha,
+           owner_provider, owner_subject, created_by, created_at
+      FROM ${s}.agent_sources
+     WHERE source_id = p_source_id;
+$$ LANGUAGE sql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_update_agent_source_sync(
+    p_source_id TEXT, p_status TEXT, p_error TEXT, p_commit_sha TEXT
+) RETURNS VOID AS $$
+BEGIN
+    UPDATE ${s}.agent_sources
+       SET last_sync_at = now(),
+           last_sync_status = p_status,
+           last_sync_error = p_error,
+           last_commit_sha = COALESCE(p_commit_sha, last_commit_sha)
+     WHERE source_id = p_source_id;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_delete_agent_source(
+    p_source_id TEXT, p_actor_provider TEXT, p_actor_subject TEXT, p_is_admin BOOLEAN
+) RETURNS VOID AS $$
+DECLARE
+    v_src RECORD;
+BEGIN
+    SELECT * INTO v_src FROM ${s}.agent_sources WHERE source_id = p_source_id;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'AGENT_SOURCE_NOT_FOUND: source % does not exist', p_source_id;
+    END IF;
+    IF NOT p_is_admin AND (
+        v_src.owner_provider IS NULL
+        OR v_src.owner_provider IS DISTINCT FROM NULLIF(BTRIM(p_actor_provider), '')
+        OR v_src.owner_subject IS DISTINCT FROM NULLIF(BTRIM(p_actor_subject), '')
+    ) THEN
+        RAISE EXCEPTION 'AGENT_PACKAGE_FORBIDDEN: only the source creator or an admin can delete it';
+    END IF;
+    DELETE FROM ${s}.agent_sources WHERE source_id = p_source_id;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── publish (the atomic heart) ───────────────────────────────────
+--
+-- Row-locks the package by name, enforces creator-or-admin, treats an
+-- identical (semver, sha256) republish as a no-op, rejects same-semver
+-- different-content outright (bump the version — no replace), inserts the
+-- version, activates it, and bumps the registry epoch. status is one of
+-- 'published' | 'noop'.
+
+CREATE OR REPLACE FUNCTION ${s}.cms_publish_agent_package(
+    p_package_id TEXT, p_version_id TEXT, p_name TEXT, p_scope TEXT,
+    p_owner_provider TEXT, p_owner_subject TEXT, p_source_id TEXT,
+    p_semver TEXT, p_sha256 TEXT, p_size_bytes BIGINT, p_artifact_filename TEXT,
+    p_commit_sha TEXT, p_manifest JSONB, p_created_by TEXT, p_is_admin BOOLEAN
+) RETURNS TABLE(status TEXT, package_id TEXT, version_id TEXT) AS $$
+DECLARE
+    v_pkg RECORD;
+    v_ver RECORD;
+    v_owner_provider TEXT := NULLIF(BTRIM(p_owner_provider), '');
+    v_owner_subject  TEXT := NULLIF(BTRIM(p_owner_subject), '');
+BEGIN
+    -- An owner-less publish is admin-only: a NULL-owner package would be
+    -- unmanageable by its (anonymous) creator afterwards, so reject the
+    -- combination up front instead of minting an orphan.
+    IF NOT p_is_admin AND (v_owner_provider IS NULL OR v_owner_subject IS NULL) THEN
+        RAISE EXCEPTION 'AGENT_PACKAGE_FORBIDDEN: publishing without an owner identity requires the admin role';
+    END IF;
+
+    <<retry>>
+    LOOP
+        SELECT * INTO v_pkg FROM ${s}.agent_packages p WHERE p.name = p_name FOR UPDATE;
+        IF NOT FOUND THEN
+            -- First publish. FOR UPDATE on a missing row takes no lock, so a
+            -- concurrent first publish can beat this INSERT — catch the
+            -- unique violation and loop back to lock the winner's row.
+            BEGIN
+                INSERT INTO ${s}.agent_packages
+                    (package_id, source_id, name, scope, owner_provider, owner_subject, created_by)
+                VALUES (p_package_id, p_source_id, p_name, p_scope,
+                        v_owner_provider, v_owner_subject, p_created_by);
+            EXCEPTION WHEN unique_violation THEN
+                CONTINUE retry;
+            END;
+            INSERT INTO ${s}.agent_package_versions
+                (version_id, package_id, semver, sha256, size_bytes, artifact_filename, commit_sha, manifest, created_by)
+            VALUES (p_version_id, p_package_id, p_semver, p_sha256, p_size_bytes,
+                    p_artifact_filename, p_commit_sha, p_manifest, p_created_by);
+            UPDATE ${s}.agent_packages SET active_version_id = p_version_id WHERE ${s}.agent_packages.package_id = p_package_id;
+            PERFORM ${s}.cms_agent_registry_bump();
+            RETURN QUERY SELECT 'published'::TEXT, p_package_id, p_version_id;
+            RETURN;
+        END IF;
+        EXIT retry;
+    END LOOP;
+
+    -- A NULL-owner package (no-auth or system provenance) is admin-managed:
+    -- publish must not be the one mutation left open to null principals.
+    IF NOT p_is_admin AND (
+        v_pkg.owner_provider IS NULL
+        OR v_pkg.owner_provider IS DISTINCT FROM v_owner_provider
+        OR v_pkg.owner_subject IS DISTINCT FROM v_owner_subject
+    ) THEN
+        RAISE EXCEPTION 'AGENT_PACKAGE_FORBIDDEN: only the package creator or an admin can publish new versions of "%"', p_name;
+    END IF;
+
+    IF p_scope IS DISTINCT FROM v_pkg.scope THEN
+        RAISE EXCEPTION 'AGENT_PACKAGE_SCOPE_MISMATCH: "%" is scope %, not %; change scope with promote/demote, not publish', p_name, v_pkg.scope, p_scope;
+    END IF;
+
+    SELECT * INTO v_ver FROM ${s}.agent_package_versions v
+     WHERE v.package_id = v_pkg.package_id AND v.semver = p_semver;
+    IF FOUND THEN
+        IF v_ver.sha256 = p_sha256 THEN
+            RETURN QUERY SELECT 'noop'::TEXT, v_pkg.package_id, v_ver.version_id;
+            RETURN;
+        END IF;
+        RAISE EXCEPTION 'AGENT_PACKAGE_SEMVER_CONFLICT: %@% is already published with different content — published versions are immutable, bump the version', p_name, p_semver;
+    END IF;
+
+    INSERT INTO ${s}.agent_package_versions
+        (version_id, package_id, semver, sha256, size_bytes, artifact_filename, commit_sha, manifest, created_by)
+    VALUES (p_version_id, v_pkg.package_id, p_semver, p_sha256, p_size_bytes,
+            p_artifact_filename, p_commit_sha, p_manifest, p_created_by);
+    UPDATE ${s}.agent_packages
+       SET active_version_id = p_version_id,
+           source_id = COALESCE(p_source_id, ${s}.agent_packages.source_id)
+     WHERE ${s}.agent_packages.package_id = v_pkg.package_id;
+    PERFORM ${s}.cms_agent_registry_bump();
+    RETURN QUERY SELECT 'published'::TEXT, v_pkg.package_id, p_version_id;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── package reads ────────────────────────────────────────────────
+--
+-- Visibility: shared packages are visible to everyone; user packages only to
+-- their owner (or an admin). This filter is THE user-scope privacy boundary —
+-- every listing path goes through one of these two procs.
+
+CREATE OR REPLACE FUNCTION ${s}.cms_list_agent_packages(
+    p_viewer_provider TEXT, p_viewer_subject TEXT, p_is_admin BOOLEAN
+) RETURNS TABLE(
+    package_id TEXT, source_id TEXT, name TEXT, scope TEXT,
+    owner_provider TEXT, owner_subject TEXT,
+    enabled BOOLEAN, created_by TEXT, created_at TIMESTAMPTZ,
+    active_version_id TEXT, semver TEXT, sha256 TEXT, size_bytes BIGINT,
+    artifact_filename TEXT, commit_sha TEXT, manifest JSONB,
+    version_created_at TIMESTAMPTZ, version_created_by TEXT
+) AS $$
+    SELECT p.package_id, p.source_id, p.name, p.scope,
+           p.owner_provider, p.owner_subject,
+           p.enabled, p.created_by, p.created_at,
+           v.version_id, v.semver, v.sha256, v.size_bytes,
+           v.artifact_filename, v.commit_sha, v.manifest, v.created_at, v.created_by
+      FROM ${s}.agent_packages p
+      LEFT JOIN ${s}.agent_package_versions v ON v.version_id = p.active_version_id
+     WHERE p.scope = 'shared'
+        OR p_is_admin
+        OR (p.owner_provider = BTRIM(p_viewer_provider) AND p.owner_subject = BTRIM(p_viewer_subject))
+     ORDER BY p.scope, p.name;
+$$ LANGUAGE sql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_get_agent_package(
+    p_name TEXT, p_viewer_provider TEXT, p_viewer_subject TEXT, p_is_admin BOOLEAN
+) RETURNS TABLE(
+    package_id TEXT, source_id TEXT, name TEXT, scope TEXT,
+    owner_provider TEXT, owner_subject TEXT,
+    enabled BOOLEAN, created_by TEXT, created_at TIMESTAMPTZ,
+    active_version_id TEXT, version_id TEXT, semver TEXT, sha256 TEXT,
+    size_bytes BIGINT, artifact_filename TEXT, commit_sha TEXT, manifest JSONB,
+    version_created_at TIMESTAMPTZ, version_created_by TEXT
+) AS $$
+    SELECT p.package_id, p.source_id, p.name, p.scope,
+           p.owner_provider, p.owner_subject,
+           p.enabled, p.created_by, p.created_at, p.active_version_id,
+           v.version_id, v.semver, v.sha256, v.size_bytes,
+           v.artifact_filename, v.commit_sha, v.manifest, v.created_at, v.created_by
+      FROM ${s}.agent_packages p
+      LEFT JOIN ${s}.agent_package_versions v ON v.package_id = p.package_id
+     WHERE p.name = p_name
+       AND (p.scope = 'shared' OR p_is_admin
+            OR (p.owner_provider = BTRIM(p_viewer_provider) AND p.owner_subject = BTRIM(p_viewer_subject)))
+     ORDER BY v.created_at DESC;
+$$ LANGUAGE sql;
+
+-- Worker-facing install manifest: every enabled package's active version.
+-- Workers are trusted infrastructure — no viewer filter here by design.
+CREATE OR REPLACE FUNCTION ${s}.cms_get_agent_packages_install_manifest()
+RETURNS TABLE(
+    name TEXT, scope TEXT, owner_provider TEXT, owner_subject TEXT,
+    semver TEXT, sha256 TEXT, size_bytes BIGINT, artifact_filename TEXT, manifest JSONB
+) AS $$
+    SELECT p.name, p.scope, p.owner_provider, p.owner_subject, v.semver, v.sha256,
+           v.size_bytes, v.artifact_filename, v.manifest
+      FROM ${s}.agent_packages p
+      JOIN ${s}.agent_package_versions v ON v.version_id = p.active_version_id
+     WHERE p.enabled
+     ORDER BY p.name;
+$$ LANGUAGE sql;
+
+-- ── package mutations (all creator-or-admin, all epoch-bumping) ──
+
+CREATE OR REPLACE FUNCTION ${s}.cms_agent_package_authz(
+    p_name TEXT, p_actor_provider TEXT, p_actor_subject TEXT, p_is_admin BOOLEAN
+) RETURNS ${s}.agent_packages AS $$
+DECLARE
+    v_pkg ${s}.agent_packages;
+BEGIN
+    SELECT * INTO v_pkg FROM ${s}.agent_packages WHERE name = p_name FOR UPDATE;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'AGENT_PACKAGE_NOT_FOUND: package "%" does not exist', p_name;
+    END IF;
+    IF NOT p_is_admin AND (
+        v_pkg.owner_provider IS NULL
+        OR v_pkg.owner_provider IS DISTINCT FROM NULLIF(BTRIM(p_actor_provider), '')
+        OR v_pkg.owner_subject IS DISTINCT FROM NULLIF(BTRIM(p_actor_subject), '')
+    ) THEN
+        RAISE EXCEPTION 'AGENT_PACKAGE_FORBIDDEN: only the package creator or an admin can modify "%"', p_name;
+    END IF;
+    RETURN v_pkg;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_set_agent_package_scope(
+    p_name TEXT, p_scope TEXT, p_actor_provider TEXT, p_actor_subject TEXT, p_is_admin BOOLEAN
+) RETURNS VOID AS $$
+DECLARE
+    v_pkg ${s}.agent_packages;
+BEGIN
+    v_pkg := ${s}.cms_agent_package_authz(p_name, p_actor_provider, p_actor_subject, p_is_admin);
+    IF p_scope NOT IN ('shared', 'user') THEN
+        RAISE EXCEPTION 'AGENT_PACKAGE_BAD_SCOPE: scope must be shared or user, got "%"', p_scope;
+    END IF;
+    UPDATE ${s}.agent_packages SET scope = p_scope WHERE package_id = v_pkg.package_id;
+    PERFORM ${s}.cms_agent_registry_bump();
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_set_agent_package_enabled(
+    p_name TEXT, p_enabled BOOLEAN, p_actor_provider TEXT, p_actor_subject TEXT, p_is_admin BOOLEAN
+) RETURNS VOID AS $$
+DECLARE
+    v_pkg ${s}.agent_packages;
+BEGIN
+    v_pkg := ${s}.cms_agent_package_authz(p_name, p_actor_provider, p_actor_subject, p_is_admin);
+    UPDATE ${s}.agent_packages SET enabled = p_enabled WHERE package_id = v_pkg.package_id;
+    PERFORM ${s}.cms_agent_registry_bump();
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_pin_agent_package_version(
+    p_name TEXT, p_semver TEXT, p_actor_provider TEXT, p_actor_subject TEXT, p_is_admin BOOLEAN
+) RETURNS VOID AS $$
+DECLARE
+    v_pkg ${s}.agent_packages;
+    v_version_id TEXT;
+BEGIN
+    v_pkg := ${s}.cms_agent_package_authz(p_name, p_actor_provider, p_actor_subject, p_is_admin);
+    SELECT version_id INTO v_version_id FROM ${s}.agent_package_versions
+     WHERE package_id = v_pkg.package_id AND semver = p_semver;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'AGENT_PACKAGE_VERSION_NOT_FOUND: %@% is not a published version', p_name, p_semver;
+    END IF;
+    UPDATE ${s}.agent_packages SET active_version_id = v_version_id WHERE package_id = v_pkg.package_id;
+    PERFORM ${s}.cms_agent_registry_bump();
+END;
+$$ LANGUAGE plpgsql;
+
+-- Returns the artifact filenames of every deleted version so the caller can
+-- clean up the artifact store after the transaction commits.
+CREATE OR REPLACE FUNCTION ${s}.cms_delete_agent_package(
+    p_name TEXT, p_actor_provider TEXT, p_actor_subject TEXT, p_is_admin BOOLEAN
+) RETURNS TABLE(artifact_filename TEXT) AS $$
+DECLARE
+    v_pkg ${s}.agent_packages;
+BEGIN
+    v_pkg := ${s}.cms_agent_package_authz(p_name, p_actor_provider, p_actor_subject, p_is_admin);
+    RETURN QUERY
+        SELECT v.artifact_filename FROM ${s}.agent_package_versions v
+         WHERE v.package_id = v_pkg.package_id;
+    DELETE FROM ${s}.agent_packages WHERE package_id = v_pkg.package_id;
+    PERFORM ${s}.cms_agent_registry_bump();
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── worker fleet state ───────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION ${s}.cms_upsert_agent_worker_state(
+    p_worker_node_id TEXT, p_epoch BIGINT, p_installed JSONB
+) RETURNS VOID AS $$
+BEGIN
+    INSERT INTO ${s}.agent_worker_state (worker_node_id, epoch, installed, updated_at)
+    VALUES (p_worker_node_id, p_epoch, COALESCE(p_installed, '{}'::jsonb), now())
+    ON CONFLICT (worker_node_id) DO UPDATE
+        SET epoch = EXCLUDED.epoch,
+            installed = EXCLUDED.installed,
+            updated_at = now();
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_list_agent_worker_state()
+RETURNS TABLE(worker_node_id TEXT, epoch BIGINT, installed JSONB, updated_at TIMESTAMPTZ) AS $$
+    SELECT worker_node_id, epoch, installed, updated_at
+      FROM ${s}.agent_worker_state
+     ORDER BY worker_node_id;
+$$ LANGUAGE sql;
+`;
 }
 
 // ─── Migration 0037: service sessions (tree-scoped system sessions) ─────
@@ -7479,4 +8203,83 @@ $$ LANGUAGE plpgsql;
 `;
 
     return [step_columns, step_backfill, step_drop_invalid_index, step_index, step_tables_and_functions];
+}
+
+// ─── Migration 0041: agent-package owner identity ────────────────
+//
+// An agent package stored only its owner PRINCIPAL (provider + subject —
+// an opaque directory id) plus a created_by email, so the UI had no human
+// name to render and fell back to the email's local part: "daraffan@…"
+// became "DA" where the same person's sessions correctly showed "AD" for
+// "Affan Dar".
+//
+// The identity was never missing — it lives in the users table, which the
+// session view has always joined (u.display_name AS owner_display_name).
+// These procs simply never did. Joining it here means packages and
+// sessions resolve the same person the same way, for every row that
+// already exists, with no new columns and nothing to backfill.
+function migration_0041_agent_package_owner_identity(schema: string): string {
+    const s = schema;
+    return `
+-- Adding OUT columns CHANGES the return type, and CREATE OR REPLACE cannot
+-- do that ("cannot change return type of existing function"). Both functions
+-- must be dropped first. The migrator runs this in a transaction, so callers
+-- never observe the gap.
+DROP FUNCTION IF EXISTS ${s}.cms_list_agent_packages(TEXT, TEXT, BOOLEAN);
+DROP FUNCTION IF EXISTS ${s}.cms_get_agent_package(TEXT, TEXT, TEXT, BOOLEAN);
+
+CREATE OR REPLACE FUNCTION ${s}.cms_list_agent_packages(
+    p_viewer_provider TEXT, p_viewer_subject TEXT, p_is_admin BOOLEAN
+) RETURNS TABLE(
+    package_id TEXT, source_id TEXT, name TEXT, scope TEXT,
+    owner_provider TEXT, owner_subject TEXT,
+    owner_email TEXT, owner_display_name TEXT,
+    enabled BOOLEAN, created_by TEXT, created_at TIMESTAMPTZ,
+    active_version_id TEXT, semver TEXT, sha256 TEXT, size_bytes BIGINT,
+    artifact_filename TEXT, commit_sha TEXT, manifest JSONB,
+    version_created_at TIMESTAMPTZ, version_created_by TEXT
+) AS $$
+    SELECT p.package_id, p.source_id, p.name, p.scope,
+           p.owner_provider, p.owner_subject,
+           u.email, u.display_name,
+           p.enabled, p.created_by, p.created_at,
+           v.version_id, v.semver, v.sha256, v.size_bytes,
+           v.artifact_filename, v.commit_sha, v.manifest, v.created_at, v.created_by
+      FROM ${s}.agent_packages p
+      LEFT JOIN ${s}.agent_package_versions v ON v.version_id = p.active_version_id
+      LEFT JOIN ${s}.users u
+             ON u.provider = p.owner_provider AND u.subject = p.owner_subject
+     WHERE p.scope = 'shared'
+        OR p_is_admin
+        OR (p.owner_provider = BTRIM(p_viewer_provider) AND p.owner_subject = BTRIM(p_viewer_subject))
+     ORDER BY p.scope, p.name;
+$$ LANGUAGE sql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_get_agent_package(
+    p_name TEXT, p_viewer_provider TEXT, p_viewer_subject TEXT, p_is_admin BOOLEAN
+) RETURNS TABLE(
+    package_id TEXT, source_id TEXT, name TEXT, scope TEXT,
+    owner_provider TEXT, owner_subject TEXT,
+    owner_email TEXT, owner_display_name TEXT,
+    enabled BOOLEAN, created_by TEXT, created_at TIMESTAMPTZ,
+    active_version_id TEXT, version_id TEXT, semver TEXT, sha256 TEXT,
+    size_bytes BIGINT, artifact_filename TEXT, commit_sha TEXT, manifest JSONB,
+    version_created_at TIMESTAMPTZ, version_created_by TEXT
+) AS $$
+    SELECT p.package_id, p.source_id, p.name, p.scope,
+           p.owner_provider, p.owner_subject,
+           u.email, u.display_name,
+           p.enabled, p.created_by, p.created_at, p.active_version_id,
+           v.version_id, v.semver, v.sha256, v.size_bytes,
+           v.artifact_filename, v.commit_sha, v.manifest, v.created_at, v.created_by
+      FROM ${s}.agent_packages p
+      LEFT JOIN ${s}.agent_package_versions v ON v.package_id = p.package_id
+      LEFT JOIN ${s}.users u
+             ON u.provider = p.owner_provider AND u.subject = p.owner_subject
+     WHERE p.name = p_name
+       AND (p.scope = 'shared' OR p_is_admin
+            OR (p.owner_provider = BTRIM(p_viewer_provider) AND p.owner_subject = BTRIM(p_viewer_subject)))
+     ORDER BY v.created_at DESC;
+$$ LANGUAGE sql;
+`;
 }

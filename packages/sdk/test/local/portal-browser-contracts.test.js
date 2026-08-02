@@ -159,13 +159,62 @@ describe("portal browser contracts", () => {
         assertIncludes(webApp, "modalOpen: Boolean(state.ui.modal)", "portal focus-managed panes should know when a modal is open");
         assertIncludes(webApp, "if (viewState.modalOpen || !viewState.focused || !viewState.activeSessionId) return;", "session-pane focus management should stand down while modals are open");
         assertIncludes(webApp, "if (!active || promptState.modalOpen || !promptState.focused || !inputNode) return;", "prompt focus management should stand down while modals are open");
+        // The portal panes hand shared selectors a RECONSTRUCTED state object.
+        // Anything a selector reads but the reconstruction omits is invisible
+        // forever — that is exactly how the Node Map stayed empty while the
+        // worker registry was loading fine (state.admin was never passed).
+        // Same class of bug, third occurrence: a pane reconstructs partial
+        // state for a shared selector and omits a field the selector reads,
+        // so the feature is invisible no matter what the controller does.
+        assertIncludes(webApp, "listDeselected: viewState.listDeselected",
+            "session-list selector state must carry the list-deselect flag");
+        assertIncludes(webApp, "admin: { workers: viewState.adminWorkers }",
+            "inspector/activity selector state must carry the worker registry");
+        assertIncludes(webApp, "nodeMapSelectedNode: viewState.nodeMapSelectedNode",
+            "inspector selector state must carry the Node Map selection");
+        assertIncludes(webApp, "ui: { nodeMapSelectedNode: viewState.nodeMapSelectedNode }",
+            "activity selector state must carry the Node Map selection (worker-details panel)");
+        // Fourth occurrence waiting to happen: manual row order is read by the
+        // shared session-tree builder, so the pane must subscribe to it AND
+        // thread it into the reconstructed state, or every drag would appear
+        // to do nothing while the reducer quietly did the right thing.
+        assertIncludes(webApp, "manualOrder: state.sessions.manualOrder",
+            "portal must subscribe to the user's manual session order");
+        assertIncludes(webApp, "manualOrder: viewState.manualOrder",
+            "session-list selector state must carry the manual session order");
+        assertIncludes(webApp, "sessionOrder: state?.sessions?.manualOrder",
+            "manual session order must be persisted into profile settings");
+        // The app-level subscription is a SECOND reconstruction, separate from
+        // the session list's. The profile-save effect reads from this one, so
+        // omitting the field here reorders the list correctly and then loses
+        // the placement on reload — the failure looks like "it didn't save"
+        // rather than "it didn't render", but it is the same omission.
+        assertIncludes(webApp, "manualOrder: rootState.sessions.manualOrder",
+            "app-level selector state must carry the manual session order (profile save reads it)");
+        assertIncludes(webApp, "state.manualOrder, state.pinnedIds",
+            "the profile-save effect must re-run when the manual order changes");
+        // The startup merge rebuilds the settings object key by key, so a key
+        // missing THERE is dropped on load and the save effect then writes the
+        // empty value back over the stored one. That is a data-losing failure
+        // that looks like "it never saved": placements survived until reload.
+        assertIncludes(webApp, `sessionOrder: hasOwn(normalizedRemote, "sessionOrder")`,
+            "the startup profile merge must carry sessionOrder through, or reload erases placements");
         assertIncludes(webApp, "controller.uploadArtifactFiles(nextFiles)", "portal uploads should flow through the shared artifact-upload controller path");
         assert(!webApp.includes("controller.uploadPromptAttachmentFiles(nextFiles)"), "prompt composer should no longer own browser artifact uploads");
         assertIncludes(webApp, "clearBrowserPreferenceCache()", "portal should purge legacy browser preference cache at startup");
         assertIncludes(webApp, "LEGACY_BROWSER_PREFERENCE_STORAGE_KEYS", "portal should know the old localStorage preference keys to clear");
         assertIncludes(webApp, "LEGACY_BROWSER_PREFERENCE_COOKIE_NAMES", "portal should know the old preference cookies to clear");
-        assert(!webApp.includes("window.localStorage.getItem"), "portal should not read preferences from browser localStorage");
-        assert(!webApp.includes("window.localStorage.setItem"), "portal should not write preferences to browser localStorage");
+        // Roaming preferences live in DB profile settings. The ONE sanctioned
+        // localStorage use is device-local pane GEOMETRY (ps-admin-ws-layout):
+        // pixel widths belong to the physical screen and must not roam.
+        {
+            const reads = webApp.match(/window\.localStorage\.getItem\([^)]*\)/g) || [];
+            const writes = webApp.match(/window\.localStorage\.setItem\([^,]*,/g) || [];
+            assert(reads.every((use) => use.includes('"ps-admin-ws-layout"')),
+                `portal should not read preferences from browser localStorage (only device-local pane geometry; saw: ${reads.join(", ")})`);
+            assert(writes.every((use) => use.includes('"ps-admin-ws-layout"')),
+                `portal should not write preferences to browser localStorage (only device-local pane geometry; saw: ${writes.join(", ")})`);
+        }
         assertIncludes(webApp, "profileSettings/apply", "portal should hydrate user UI preferences from database profile settings");
         assertIncludes(webApp, "getCurrentUserProfile()", "portal should read the current user's database-backed profile settings");
         assertIncludes(webApp, "setCurrentUserProfileSettings", "portal should persist user UI preferences to database profile settings");

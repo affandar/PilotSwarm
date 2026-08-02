@@ -24,11 +24,20 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => {
     await new Promise((r) => stub.server.close(r));
+    // Close every per-theme stub started by openPortal.
+    await Promise.all(themedStubs.map((t) => new Promise((resolve) => t.server.close(resolve))));
 });
 
 /** Relative luminance / contrast, per WCAG. */
 function contrastRatio(fg, bg) {
-    const parse = (c) => (c.match(/\d+(\.\d+)?/g) || []).slice(0, 3).map(Number);
+    // Chrome reports some colours as `color(srgb 1 1 1 / 0.96)`, whose channels
+    // are 0-1 rather than 0-255. Reading those as 8-bit made white measure as
+    // near-black and reported a false contrast failure.
+    const parse = (c) => {
+        const nums = (c.match(/\d+(\.\d+)?/g) || []).map(Number);
+        if (/^color\(/i.test(c)) return nums.slice(0, 3).map((v) => Math.round(v * 255));
+        return nums.slice(0, 3);
+    };
     const lum = (rgb) => {
         const [r, g, b] = rgb.map((v) => {
             const s = v / 255;
@@ -40,11 +49,23 @@ function contrastRatio(fg, bg) {
     return (a + 0.05) / (b2 + 0.05);
 }
 
+// Themed pages boot a stub that SERVES the theme in profile settings, which
+// is how the real app applies one: the id lands on <html data-ps-theme> AND
+// the palette lands as CSS variables. Stamping only the attribute (what this
+// helper used to do) left every colour at the default theme's value, so a
+// contrast assertion measured win95 chrome under noctis-obscuro text and
+// failed on a combination no user can produce.
+const themedStubs = [];
 async function openPortal(page, { theme } = {}) {
-    await page.goto(base, { waitUntil: "networkidle" });
     if (theme) {
-        await page.evaluate((id) => { document.documentElement.dataset.psTheme = id; }, theme);
+        const themed = await startStubServer(0, { themeId: theme });
+        themedStubs.push(themed);
+        await page.goto(`http://127.0.0.1:${themed.port}`, { waitUntil: "networkidle" });
+        await page.waitForSelector(".ps-panel", { timeout: 15_000 });
+        await page.waitForFunction((id) => document.documentElement.dataset.psTheme === id, theme, { timeout: 10_000 });
+        return;
     }
+    await page.goto(base, { waitUntil: "networkidle" });
     await page.waitForSelector(".ps-panel", { timeout: 15_000 });
 }
 
@@ -80,7 +101,8 @@ test("the page never scrolls horizontally", async ({ page }) => {
 
 // Every theme, because nobody clicks through twenty of them by hand — and
 // that is exactly where these regressions hide.
-const THEMES = ["github-dark", "github-light", "light-high-contrast", "win95", "ms-dos"];
+// Current palettes only: light-high-contrast and friends were retired.
+const THEMES = ["github-dark", "github-light", "win95", "ms-dos", "workspace-dark", "workspace-dark-rich"];
 
 for (const theme of THEMES) {
     test(`[${theme}] themed controls actually receive the theme`, async ({ page }) => {
@@ -90,8 +112,18 @@ for (const theme of THEMES) {
         await openPortal(page, { theme });
         const tab = await page.$(".ps-tab-row-icons .ps-toolbar-button");
         test.skip(!tab, "no inspector tab row in this layout");
-        const bg = await tab.evaluate((el) => getComputedStyle(el).backgroundColor);
-        expect(bg, `tab button is fully transparent under ${theme}`).not.toBe("rgba(0, 0, 0, 0)");
+        // "Themed" means it paints SOMETHING: win95's selected tab is a
+        // latched face drawn with a conic-gradient, and a gradient is a
+        // background-image, so backgroundColor alone reads as transparent on a
+        // button that is in fact fully themed.
+        const paint = await tab.evaluate((el) => {
+            const s = getComputedStyle(el);
+            return { color: s.backgroundColor, image: s.backgroundImage, border: s.borderTopWidth };
+        });
+        const painted = paint.color !== "rgba(0, 0, 0, 0)"
+            || (paint.image && paint.image !== "none")
+            || parseFloat(paint.border) > 0;
+        expect(painted, `tab button is unstyled under ${theme} (${JSON.stringify(paint)})`).toBe(true);
     });
 
     test(`[${theme}] body text is readable against its surface`, async ({ page }) => {

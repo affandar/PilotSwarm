@@ -28,8 +28,10 @@ import { defineTool } from "@github/copilot-sdk";
 import type { Tool } from "@github/copilot-sdk";
 import type { PilotSwarmWorkerOptions, ManagedSessionConfig } from "./types.js";
 import type { AgentConfig } from "./agent-loader.js";
+import { installAgentPackages, loadAgentPackageTools } from "./agent-package-installer.js";
 import fs from "node:fs";
 import os from "node:os";
+import { monitorEventLoopDelay, type IntervalHistogram } from "node:perf_hooks";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -193,6 +195,32 @@ export class PilotSwarmWorker {
     private _appDefaultDescriptor: import("./prompt-layers.js").PromptLayerDescriptor | null = null;
     /** Session creation policy loaded from session-policy.json. */
     private _sessionPolicy: import("./types.js").SessionPolicy | null = null;
+    /**
+     * Live allowed-agent-names array. registerActivities captures this exact
+     * array once at start(); refreshAgentPackages mutates it IN PLACE so the
+     * activity layer never sees a stale copy. Never reassign it.
+     */
+    private _allowedAgentNamesLive: string[] = [];
+    /** Constructor-time pluginDirs snapshot — package dirs are appended per refresh. */
+    private _basePluginDirs: string[] = [];
+    /** Agent-package dynamic install state (docs/proposals/agent-packages.md). */
+    private _agentPackagesCacheDir: string | null = null;
+    private _agentPackagesRefreshMs = 20_000;
+    private _agentPackagesEpoch = -1;
+    private _agentPackagesTimer: ReturnType<typeof setInterval> | null = null;
+    private _agentPackagesRefreshing = false;
+    /** Tools contributed by installed packages, merged under static tools. */
+    private _agentPackageTools = new Map<string, Tool<any>>();
+    /** Last install report — carried in the registry heartbeat's state. */
+    private _agentPackagesInstalled: Record<string, { semver: string; sha256: string; status: string; error?: string }> = {};
+    /** Worker-registry lifecycle phase (docs/proposals/worker-registry.md). */
+    private _workerPhase: "starting" | "ready" | "draining" = "starting";
+    /** Write-once registration info; built on the first heartbeat. */
+    private _registrarInfo: Record<string, unknown> | null = null;
+    /** Event-loop delay histogram for health reporting (reset each beat). */
+    private _eventLoopHist: IntervalHistogram | null = null;
+    /** Last refresh failure — carried in heartbeat state until a clean pass. */
+    private _agentPackagesRefreshError: string | null = null;
 
     constructor(options: PilotSwarmWorkerOptions) {
         this.config = {
@@ -201,6 +229,18 @@ export class PilotSwarmWorker {
             turnTimeoutMs: resolveWorkerTurnTimeoutMs(options.turnTimeoutMs),
         };
         const effectiveSessionStateDir = options.sessionStateDir ?? DEFAULT_SESSION_STATE_DIR;
+
+        // Agent packages: resolve the cache dir up front; installation itself
+        // runs in start() (needs the CMS catalog) and on every epoch refresh.
+        this._basePluginDirs = [...(options.pluginDirs ?? [])];
+        if (options.agentPackages) {
+            this._eventLoopHist = monitorEventLoopDelay({ resolution: 20 });
+            this._eventLoopHist.enable();
+            this._agentPackagesCacheDir = options.agentPackages.cacheDir
+                ?? path.join(path.dirname(effectiveSessionStateDir), "agent-packages");
+            const rawRefresh = options.agentPackages.refreshIntervalMs;
+            this._agentPackagesRefreshMs = Number.isFinite(rawRefresh as number) ? Number(rawRefresh) : 20_000;
+        }
 
         // Pick blob backing: explicit options win, but we route through
         // createSessionBlobStore() so the MI flag + account URL path
@@ -304,7 +344,18 @@ export class PilotSwarmWorker {
         for (const tool of tools) {
             this.toolRegistry.set((tool as any).name, tool);
         }
-        this.sessionManager.setToolRegistry(this.toolRegistry);
+        this._pushMergedToolRegistry();
+    }
+
+    /**
+     * SessionManager resolves tool names against one merged map: statically
+     * registered tools win over package tools on a name collision (the
+     * static registration is deployment code; a package must not shadow it).
+     */
+    private _pushMergedToolRegistry(): void {
+        const merged = new Map<string, Tool<any>>(this._agentPackageTools);
+        for (const [name, tool] of this.toolRegistry) merged.set(name, tool);
+        this.sessionManager.setToolRegistry(merged);
     }
 
     /** Store full config (with tools/hooks) for a session. */
@@ -447,6 +498,7 @@ export class PilotSwarmWorker {
                 throw new Error(`CMS initialization failed after ${attempts} attempts — refusing to run a degraded worker without catalog-gated tools: ${String((lastErr as Error)?.message ?? lastErr)}`);
             }
         }
+
         // ── Facts store: base PgFactStore (default) or an EnhancedFactStore
         //    provider (enhancedfactstore 07 P3). Shared resolver keeps the
         //    worker/client/management in lockstep.
@@ -515,6 +567,19 @@ export class PilotSwarmWorker {
         );
         this.sessionManager.setFactStore(this.factStore);
         this.sessionManager.setGraphStore(this.graphStore);
+
+        // ── Agent packages: initial install AFTER the stores settle (the
+        //    first heartbeat writes the worker's write-once capability info,
+        //    which reads factStore/graphStore) but BEFORE the runtime exists
+        //    so the first session on a fresh pod already sees registry
+        //    agents. A registry problem degrades to zero packages, never a
+        //    failed boot.
+        if (this._agentPackagesCacheDir) {
+            await this.refreshAgentPackages({ force: true });
+        }
+        // Registered + converged (or intentionally package-less): the next
+        // heartbeat advertises ready. Draining is set in gracefulShutdown.
+        this._workerPhase = "ready";
         if (this._catalog) {
             this.sessionManager.setSessionCatalog(this._catalog);
             this.sessionManager.setLineageSessionLookup(async (sessionId) => (
@@ -586,7 +651,7 @@ export class PilotSwarmWorker {
             },
             this._loadedSystemAgents,
             this._sessionPolicy,
-            this.allowedAgentNames,
+            this._allowedAgentNamesLive,
             this._rawLoadedAgents,
             this.factStore,
             this.config.workerNodeId,
@@ -729,6 +794,16 @@ export class PilotSwarmWorker {
             this._evictionTimer.unref?.();
         }
 
+        // Agent-package epoch poll (model-providers-reloader pattern): one
+        // single-row SELECT per interval; a changed epoch triggers the full
+        // install + in-place swap. 0 disables.
+        if (this._agentPackagesCacheDir && this._agentPackagesRefreshMs > 0) {
+            this._agentPackagesTimer = setInterval(() => {
+                void this.refreshAgentPackages();
+            }, this._agentPackagesRefreshMs);
+            this._agentPackagesTimer.unref?.();
+        }
+
         await new Promise(r => setTimeout(r, 200));
 
         // Auto-start system agents defined in plugins (idempotent), but do not
@@ -743,6 +818,14 @@ export class PilotSwarmWorker {
         if (this._evictionTimer) {
             clearInterval(this._evictionTimer);
             this._evictionTimer = null;
+        }
+        if (this._agentPackagesTimer) {
+            clearInterval(this._agentPackagesTimer);
+            this._agentPackagesTimer = null;
+        }
+        if (this._eventLoopHist) {
+            this._eventLoopHist.disable();
+            this._eventLoopHist = null;
         }
         if (this.runtime) {
             const rawShutdownTimeoutMs = Number.parseInt(
@@ -797,6 +880,18 @@ export class PilotSwarmWorker {
         const rawDrainMs = Number.parseInt(process.env.PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS || "", 10);
         const drainBudgetMs = Number.isFinite(rawDrainMs) && rawDrainMs >= 0 ? rawDrainMs : 60_000;
 
+        // Advertise draining before the runtime drain so operators see the
+        // phase for the duration of the drain window. Best-effort AND
+        // bounded: a black-holed CMS socket must not eat the drain budget
+        // (SIGKILL at grace-period expiry would crash in-flight turns).
+        this._workerPhase = "draining";
+        if (this._agentPackagesCacheDir) {
+            await Promise.race([
+                this._reportAgentWorkerState(),
+                new Promise<void>((resolve) => { setTimeout(resolve, 5_000).unref?.(); }),
+            ]);
+        }
+
         if (this.runtime) {
             console.error(`[PilotSwarmWorker] draining: waiting up to ${drainBudgetMs}ms for in-flight turns...`);
             await this.runtime.shutdown(drainBudgetMs);
@@ -842,6 +937,208 @@ export class PilotSwarmWorker {
      * Skills merge additively (all dirs combined).
      * MCP servers merge by name (later tiers override earlier).
      */
+    // ─── Agent packages (docs/proposals/agent-packages.md) ────────
+
+    /**
+     * Reset every plugin-derived structure IN PLACE so the shared references
+     * held by SessionManager (workerDefaults) and the activity layer
+     * (registerActivities args) observe the reload. Reassigning any of these
+     * would strand a consumer on a stale snapshot — see the field comments.
+     */
+    private _resetLoadedPluginState(): void {
+        this._loadedSkillDirs.length = 0;
+        this._loadedSkills.clear();
+        this._rawLoadedAgents.length = 0;
+        this._loadedAgents.length = 0;
+        this._loadedSystemAgents.length = 0;
+        this._availableBundledAgents.clear();
+        for (const key of Object.keys(this._loadedMcpServers)) delete this._loadedMcpServers[key];
+        for (const key of Object.keys(this._agentMcpServers)) delete this._agentMcpServers[key];
+        for (const key of Object.keys(this._agentPromptLookup)) delete this._agentPromptLookup[key];
+        this._defaultMcpServerNames.length = 0;
+        this._baseAgentMcpDecl = { refs: [], inherit: false };
+        this._directConfigMcpNames = [];
+        this._frameworkBasePrompt = null;
+        this._appDefaultPrompt = null;
+        this._frameworkBaseToolNames.length = 0;
+        this._appDefaultToolNames.length = 0;
+        this._frameworkBaseDescriptor = null;
+        this._appDefaultDescriptor = null;
+        this._sessionPolicy = null;
+    }
+
+    /**
+     * Install (or re-install) registry agent packages and swap them into the
+     * live catalog. Startup calls this once before the runtime exists; the
+     * epoch poll calls it forever after. Never throws: a registry outage or
+     * a broken package degrades to "packages unchanged/quarantined", never
+     * to a dead worker.
+     *
+     * Hot-swap semantics (existing runtime behavior, relied on, not added):
+     * prompts re-read per turn, tool HANDLERS re-register per turn, tool
+     * DECLARATIONS and MCP configs reach the CLI only on cold create/resume.
+     */
+    async refreshAgentPackages(opts: { force?: boolean } = {}): Promise<void> {
+        if (!this._agentPackagesCacheDir || !this._catalog || !this.artifactStore) return;
+        if (this._agentPackagesRefreshing) return;
+        this._agentPackagesRefreshing = true;
+        try {
+            const currentEpoch = await this._catalog.agentRegistryEpoch();
+            if (!opts.force && currentEpoch === this._agentPackagesEpoch) {
+                return;
+            }
+
+            const result = await installAgentPackages({
+                catalog: this._catalog,
+                artifactStore: this.artifactStore,
+                cacheDir: this._agentPackagesCacheDir,
+            });
+
+            // Import worker modules BEFORE the swap; an import failure
+            // quarantines the whole package (prompts included) so a package
+            // never half-loads.
+            const packageTools = new Map<string, Tool<any>>();
+            for (const pkg of result.packages) {
+                if (pkg.status !== "ok" || !pkg.workerModulePath) continue;
+                try {
+                    const tools = await loadAgentPackageTools(pkg, { workerNodeId: this.config.workerNodeId });
+                    for (const tool of tools) packageTools.set((tool as any).name, tool);
+                } catch (error: any) {
+                    pkg.status = "error";
+                    pkg.error = `worker-module import failed: ${String(error?.message ?? error)}`;
+                }
+            }
+            const okDirs = result.packages.filter((p) => p.status === "ok").map((p) => p.dir);
+
+            // Synchronous swap — no await between reset and reload, so no
+            // turn can observe the intermediate empty state.
+            this._resetLoadedPluginState();
+            this.config.pluginDirs = [...this._basePluginDirs, ...okDirs];
+            this._loadPlugins();
+            this._agentPackageTools = packageTools;
+            this._pushMergedToolRegistry();
+
+            this._agentPackagesEpoch = result.epoch;
+            this._agentPackagesInstalled = Object.fromEntries(result.packages.map((p) => [
+                p.name,
+                { semver: p.semver, sha256: p.sha256, status: p.status, ...(p.error ? { error: p.error } : {}) },
+            ]));
+            const failed = result.packages.filter((p) => p.status === "error");
+            console.log(
+                `[PilotSwarmWorker] agent packages @ epoch ${result.epoch}: ` +
+                `${okDirs.length} installed${failed.length ? `, ${failed.length} quarantined (${failed.map((p) => p.name).join(", ")})` : ""}`,
+            );
+            for (const pkg of failed) {
+                console.warn(`[PilotSwarmWorker] agent package "${pkg.name}@${pkg.semver}" quarantined: ${pkg.error}`);
+            }
+            this._agentPackagesRefreshError = null;
+        } catch (error: any) {
+            // Recorded into the heartbeat's state so a stuck worker is
+            // diagnosable from the registry (actual epoch lags + lastError),
+            // not just from this pod's logs.
+            this._agentPackagesRefreshError = String(error?.message ?? error);
+            console.warn(`[PilotSwarmWorker] agent-package refresh failed (will retry on next poll): ${error?.message ?? error}`);
+        } finally {
+            // The heartbeat is the worker's PRESENCE, not a success report:
+            // it must fire on the unchanged path, the converge path, and the
+            // install-failure path alike, or a worker becomes invisible
+            // exactly when it is unhealthy. Awaited so fleet truth is durable
+            // once a refresh resolves; never throws.
+            await this._reportAgentWorkerState();
+            this._agentPackagesRefreshing = false;
+        }
+    }
+
+    /** Stable registry identity: configured workerNodeId, else host#pid. */
+    private get _registryWorkerId(): string {
+        return this.config.workerNodeId || `${os.hostname()}#${process.pid}`;
+    }
+
+    private get _workerPool(): string {
+        return this.config.workerPool
+            || process.env.PILOTSWARM_WORKER_POOL
+            || (process.env.KUBERNETES_SERVICE_HOST ? "aks-default" : "default");
+    }
+
+    /** Write-once identity/build/capability record for the workers row. */
+    private _buildRegistrarInfo(): Record<string, unknown> {
+        if (this._registrarInfo) return this._registrarInfo;
+        let sdkVersion = "unknown";
+        try {
+            sdkVersion = require("../package.json").version ?? "unknown";
+        } catch { /* packed layouts without a reachable package.json */ }
+        this._registrarInfo = {
+            sdkVersion,
+            orchestrationVersions: DURABLE_SESSION_ORCHESTRATION_REGISTRY.map((r) => r.version),
+            consumes: this._agentPackagesCacheDir ? ["agent-packages"] : [],
+            capabilities: {
+                blobStore: Boolean(this.blobStore),
+                enhancedFacts: Boolean(this.factStore && isEnhancedFactStore(this.factStore)),
+                graph: Boolean(this.graphStore),
+            },
+            runtime: {
+                substrate: process.env.KUBERNETES_SERVICE_HOST ? "kubernetes" : "process",
+                hostname: os.hostname(),
+                pid: process.pid,
+                startedAt: new Date(Date.now() - Math.round(process.uptime() * 1000)).toISOString(),
+            },
+        };
+        return this._registrarInfo;
+    }
+
+    /** Glanceable health snapshot — last-known values, never a time series. */
+    private _collectWorkerHealth(): Record<string, unknown> {
+        const memory = process.memoryUsage();
+        const eventLoopDelayP99Ms = this._eventLoopHist
+            ? Math.round((this._eventLoopHist.percentile(99) / 1e6) * 100) / 100
+            : null;
+        this._eventLoopHist?.reset();
+        const slotTotal = (raw: string | undefined, fallback: number) => {
+            const n = Number.parseInt(raw || "", 10);
+            return Number.isFinite(n) && n > 0 ? n : fallback;
+        };
+        return {
+            uptimeS: Math.round(process.uptime()),
+            rssBytes: memory.rss,
+            heapUsedBytes: memory.heapUsed,
+            eventLoopDelayP99Ms,
+            activeSessions: this.sessionManager.activeSessionCount,
+            orchestrationSlots: { total: slotTotal(process.env.PILOTSWARM_ORCHESTRATION_CONCURRENCY, 2) },
+            workerSlots: { total: slotTotal(process.env.PILOTSWARM_WORKER_CONCURRENCY, 2) },
+        };
+    }
+
+    /**
+     * Worker-registry heartbeat (migration 0040): upsert this worker's row —
+     * presence, health, per-domain actual state — and receive the effective
+     * directive set. Agent-packages convergence stays driven by the refresh
+     * flow (its epoch read rides the seeded directive via the shim), so the
+     * returned directives are bookkeeping here; unknown or externally-
+     * actuated domains are inert by protocol. Never throws.
+     */
+    private async _reportAgentWorkerState(): Promise<void> {
+        if (!this._catalog) return;
+        try {
+            await this._catalog.workerHeartbeat({
+                workerNodeId: this._registryWorkerId,
+                pool: this._workerPool,
+                phase: this._workerPhase,
+                owner: this.config.workerOwner ?? null,
+                info: this._buildRegistrarInfo(),
+                health: this._collectWorkerHealth(),
+                state: {
+                    "agent-packages": {
+                        epoch: this._agentPackagesEpoch,
+                        installed: this._agentPackagesInstalled,
+                        ...(this._agentPackagesRefreshError ? { lastError: this._agentPackagesRefreshError } : {}),
+                    },
+                },
+            });
+        } catch (error: any) {
+            console.warn(`[PilotSwarmWorker] worker-registry heartbeat failed: ${error?.message ?? error}`);
+        }
+    }
+
     private _loadPlugins(): void {
         // ── Tier 1: SDK system plugins (always loaded) ───────────────
         const sdkPluginsDir = path.resolve(__sdkDir, "..", "plugins");
@@ -901,7 +1198,11 @@ export class PilotSwarmWorker {
         ]) ?? null;
         this._applyDeclaredAgentSkills();
         this._resolveAgentMcpServers();
-        this._loadedAgents = this._rawLoadedAgents.map((agent) => {
+        // IN PLACE: SessionManager holds this exact array as
+        // workerDefaults.customAgents — reassigning would strand it on the
+        // constructor-time snapshot after an agent-package refresh.
+        this._loadedAgents.length = 0;
+        this._loadedAgents.push(...this._rawLoadedAgents.map((agent) => {
             // Replace the frontmatter's named MCP references with the
             // resolved server map (and drop the inherit flag) so the SDK's
             // CustomAgentConfig.mcpServers receives real server configs.
@@ -915,7 +1216,9 @@ export class PilotSwarmWorker {
                 }) ?? agent.prompt,
                 ...(this._agentMcpServers[agent.name] ? { mcpServers: this._agentMcpServers[agent.name] } : {}),
             };
-        });
+        }));
+        this._allowedAgentNamesLive.length = 0;
+        this._allowedAgentNamesLive.push(...this._loadedAgents.map((a) => a.name));
 
         // ── Log summary ──────────────────────────────────────────────
         const parts: string[] = [];
@@ -1009,13 +1312,14 @@ export class PilotSwarmWorker {
         // Base map — applied to EVERY session: base (default) agents that
         // opted in, plus direct worker-config servers (their documented
         // every-session semantics predate per-agent resolution).
-        const base: Record<string, any> = {};
-        if (this._baseAgentMcpDecl.inherit) Object.assign(base, defaults);
-        resolveRefs("Base (default) agent", this._baseAgentMcpDecl.refs, base);
+        // IN PLACE: SessionManager holds this exact object as
+        // workerDefaults.baseMcpServers — never reassign it.
+        for (const key of Object.keys(this._baseMcpServers)) delete this._baseMcpServers[key];
+        if (this._baseAgentMcpDecl.inherit) Object.assign(this._baseMcpServers, defaults);
+        resolveRefs("Base (default) agent", this._baseAgentMcpDecl.refs, this._baseMcpServers);
         for (const name of this._directConfigMcpNames) {
-            if (this._loadedMcpServers[name]) base[name] = this._loadedMcpServers[name];
+            if (this._loadedMcpServers[name]) this._baseMcpServers[name] = this._loadedMcpServers[name];
         }
-        this._baseMcpServers = base;
         if (this._directConfigMcpNames.length > 0) {
             console.warn(
                 `[PilotSwarmWorker] Direct worker-config mcpServers (${this._directConfigMcpNames.join(", ")}) ` +
@@ -1149,11 +1453,19 @@ export class PilotSwarmWorker {
                 if (agent.name === "default") {
                     if (layer === "system") {
                         this._frameworkBasePrompt = agent.prompt;
-                        this._frameworkBaseToolNames = agent.tools ?? [];
+                        // IN PLACE: SessionManager captured this exact array at
+                        // construction (workerDefaults.frameworkBaseToolNames);
+                        // reassigning would strand it EMPTY after the reset in
+                        // an agent-package refresh — every cold session would
+                        // lose the entire framework base tool set.
+                        this._frameworkBaseToolNames.length = 0;
+                        this._frameworkBaseToolNames.push(...(agent.tools ?? []));
                         this._frameworkBaseDescriptor = descriptor;
                     } else if (layer === "app") {
                         this._appDefaultPrompt = agent.prompt;
-                        this._appDefaultToolNames = agent.tools ?? [];
+                        // IN PLACE — same contract as the framework array above.
+                        this._appDefaultToolNames.length = 0;
+                        this._appDefaultToolNames.push(...(agent.tools ?? []));
                         this._appDefaultDescriptor = descriptor;
                     }
                     // Base (default) agents may opt sessions into MCP: their

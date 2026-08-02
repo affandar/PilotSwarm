@@ -121,9 +121,9 @@ group membership is per-viewer state, not a property of the session. See
 | downloadArtifact | `GET /api/v1/sessions/:sessionId/artifacts/:filename/text` | sessionId (path), filename (path) | Artifact content as text (JSON envelope). Binary: GET …/download. |
 | uploadArtifact | `PUT /api/v1/sessions/:sessionId/artifacts/:filename` | sessionId (path), filename (path), content (body), contentType (body), contentEncoding (body) | Upload artifact content (base64 for binary; 2 MB JSON limit). |
 | deleteArtifact | `DELETE /api/v1/sessions/:sessionId/artifacts/:filename` | sessionId (path), filename (path) | Delete an artifact. |
-| copyArtifact | JSON-RPC `copyArtifact` | fromSessionId, fromFilename, toSessionId, toFilename? | Server-side artifact copy between sessions; result metadata carries `sha256` and copy provenance. |
-| setArtifactPinned | JSON-RPC `setArtifactPinned` | sessionId, filename, pinned | Pin/unpin an artifact; pinned artifacts survive bulk session cleanup. |
-| readArtifactBase64 | JSON-RPC `readArtifactBase64` | sessionId, filename, maxBytes? | Size-guarded base64 read for binary artifacts (JSON-safe; default 256 KB, max 1 MB). |
+| readArtifactBase64 | `GET /api/v1/sessions/:sessionId/artifacts/:filename/base64` | sessionId (path), filename (path), maxBytes (query) | Size-guarded base64 read for binary artifacts (JSON-safe; default 256 KB, max 1 MB). |
+| copyArtifact | `POST /api/v1/artifacts/copy` | fromSessionId, fromFilename, toSessionId, toFilename (body) | Server-side artifact copy between sessions (read access on the source, write on the target); result metadata carries `sha256` and copy provenance. |
+| setArtifactPinned | `PUT /api/v1/sessions/:sessionId/artifacts/:filename/pinned` | sessionId (path), filename (path), pinned (body) | Pin/unpin an artifact; pinned artifacts survive bulk session cleanup. |
 
 ### Management: sessions
 

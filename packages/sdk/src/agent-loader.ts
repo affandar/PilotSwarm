@@ -22,6 +22,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { fileURLToPath } from "node:url";
 
 // ─── System Agent UUID ──────────────────────────────────────────
 
@@ -366,4 +367,25 @@ export function loadAgentFiles(agentsDir: string): AgentConfig[] {
     }
 
     return agents;
+}
+
+/**
+ * Names of every agent bundled with the SDK itself (system, mgmt, and
+ * optional default-agents tiers), INCLUDING system agents. This is the
+ * reserved-name set agent packages validate against — a package must not
+ * shadow sweeper/resourcemgr/etc. even though those never appear in
+ * creatable catalogs.
+ */
+export function listBundledAgentNames(): string[] {
+    const pluginsRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "plugins");
+    const names: string[] = [];
+    for (const tier of ["system", "mgmt", "default-agents"]) {
+        const agentsDir = path.join(pluginsRoot, tier, "agents");
+        if (!fs.existsSync(agentsDir)) continue;
+        for (const agent of loadAgentFiles(agentsDir)) {
+            names.push(agent.name);
+            if (agent.id && agent.id !== agent.name) names.push(agent.id);
+        }
+    }
+    return names;
 }

@@ -1,0 +1,5 @@
+{
+  "name": "editorial-desk",
+  "version": "0.2.0",
+  "description": "An offline copy desk: line, structure, and coordinating editors backed by deterministic prose-analysis tools, a house style-desk MCP server, and an optional caveman-speak compression pass."
+}

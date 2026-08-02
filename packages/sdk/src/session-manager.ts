@@ -181,6 +181,11 @@ export class SessionManager {
         }
     }
     private sessions = new Map<string, ManagedSession>();
+
+    /** Live in-memory session count — worker-registry health reporting. */
+    get activeSessionCount(): number {
+        return this.sessions.size;
+    }
     /**
      * Records which CopilotClient each warm session is bound to (keyed by
      * the GitHub Copilot token). When the resolved token for a session

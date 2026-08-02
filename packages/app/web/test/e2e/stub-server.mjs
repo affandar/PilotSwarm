@@ -12,6 +12,42 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST = path.resolve(__dirname, "../../dist");
 
+// These tests run against the BUILT bundle, so a stale dist means every one of
+// them passes against the previous build - silently, and with total conviction.
+// That happened: a run reported four passes for an interaction whose code was
+// not in the bundle at all. `npm run test:e2e` builds first; this catches a
+// bare `npx playwright test`.
+const SOURCE_DIRS = [
+    path.resolve(__dirname, "../../src"),
+    path.resolve(__dirname, "../../../ui/core/src"),
+    path.resolve(__dirname, "../../../ui/react/src"),
+];
+
+function newestMtime(dir) {
+    let newest = 0;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) newest = Math.max(newest, newestMtime(full));
+        else newest = Math.max(newest, fs.statSync(full).mtimeMs);
+    }
+    return newest;
+}
+
+function assertFreshBundle() {
+    if (!fs.existsSync(DIST)) {
+        throw new Error("packages/app/web/dist is missing — run `npm run build:web` (or `npm run test:e2e`, which builds first).");
+    }
+    const built = newestMtime(DIST);
+    const source = Math.max(...SOURCE_DIRS.filter((dir) => fs.existsSync(dir)).map(newestMtime));
+    if (source > built) {
+        const age = Math.round((source - built) / 1000);
+        throw new Error(
+            `packages/app/web/dist is ${age}s older than the sources it is built from. `
+            + "These tests would assert against the PREVIOUS build. Run `npm run test:e2e` (it builds first).",
+        );
+    }
+}
+
 const MIME = {
     ".html": "text/html; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
@@ -24,7 +60,14 @@ const MIME = {
 
 // Six by default — enough for the layout tests. The perf test asks for a
 // realistic fleet size, where per-row cost actually shows up.
-const makeSessions = (count) => Array.from({ length: count }, (_, i) => ({
+// `groupMembers` files chosen sessions into a folder up front (index -> groupId),
+// so a test can drag onto a folder's MEMBERS and not just its header row.
+// `parents` nests sessions (childIndex -> parentIndex) so the list renders a
+// real subtree - the shape the nested-session "well" is drawn around.
+const makeSessions = (count, groupMembers = {}, parents = {}) => Array.from({ length: count }, (_, i) => ({
+    // The WIRE field is viewerGroupId (placement is viewer-private); the
+    // client deliberately ignores a raw groupId on the session DTO.
+    viewerGroupId: groupMembers[i] || null,
     sessionId: `1111111${i}-2222-3333-4444-55555555555${i}`,
     title: i === 0
         // A deliberately long title: the pane header must ellipsize it rather
@@ -35,7 +78,7 @@ const makeSessions = (count) => Array.from({ length: count }, (_, i) => ({
     model: "github-copilot:claude-sonnet-5",
     agentId: null,
     isSystem: false,
-    parentSessionId: null,
+    parentSessionId: parents[i] == null ? null : `1111111${parents[i]}-2222-3333-4444-55555555555${parents[i]}`,
     createdAt: 1785000000000,
     updatedAt: 1785000000000 + i,
     // Real rows carry usage, so the ctx column and the detail box render the
@@ -89,6 +132,25 @@ const makeTranscript = (count, systemEvery = 0) => Array.from({ length: count },
     },
 }));
 
+// Worker registry rows (migration 0040), shaped exactly as cms_list_workers
+// returns them: write-once `info`, a `health` snapshot, and per-domain `state`.
+// `nowMs` is passed in so heartbeats read as seconds old rather than years.
+const makeWorkers = (count, nowMs) => Array.from({ length: count }, (_, i) => ({
+    workerNodeId: `copilot-runtime-worker-66f68f955c-${"abcdefgh"[i % 8]}${i}lvb`,
+    pool: "aks-default",
+    phase: i === 0 ? "starting" : "ready",
+    updatedAt: new Date(nowMs - ((i % 3) * 9_000)).toISOString(),
+    owner: null,
+    info: { sdkVersion: "0.5.29", runtime: { substrate: "aks" }, consumes: ["agent-packages"] },
+    health: {
+        uptimeS: 96_600 + i,
+        rssBytes: (208 + (i * 6)) * 1024 * 1024,
+        activeSessions: 0,
+        eventLoopDelayP99Ms: 20.12 + (i / 100),
+    },
+    state: { "agent-packages": { epoch: 13, installed: { a: { status: "ok" }, b: { status: "ok" }, c: { status: "ok" } } } },
+}));
+
 const API = {
     "/api/health": { ok: true, started: true, mode: "remote" },
     "/api/auth-config": { enabled: false, provider: "none", displayName: "No auth", client: null },
@@ -109,25 +171,69 @@ const API = {
     },
 };
 
-function rpc(method, SESSIONS) {
+function rpc(method, SESSIONS, PROFILE_SETTINGS = {}) {
     switch (method) {
         case "listSessions": return { sessions: SESSIONS, hasMore: false };
         case "listModels": return [];
         case "listArtifacts": return [];
         case "getSessionEvents": return [];
-        case "getCurrentUserProfile": return { ok: true, profileSettings: {} };
+        case "getCurrentUserProfile": return { ok: true, profileSettings: PROFILE_SETTINGS };
         default: return {};
     }
 }
 
-export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 0, systemEvery = 0 } = {}) {
-    const SESSIONS = makeSessions(Math.max(1, sessionCount));
+export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 0, systemEvery = 0, groups = [], themeId = null, groupMembers = {}, admin = false, parents = {} } = {}) {
+    assertFreshBundle();
+    const SESSIONS = makeSessions(Math.max(1, sessionCount), groupMembers, parents);
+    const WORKERS = admin ? makeWorkers(8, Date.now()) : [];
+    let liveGroups = groups;
+    let groupFetches = 0;
     const TRANSCRIPT = makeTranscript(Math.max(0, transcriptTurns), systemEvery);
+    // Placement calls the drag tests assert against: [{ sessionIds, groupId }].
+    const placements = [];
     const server = http.createServer((req, res) => {
         const url = new URL(req.url, "http://localhost");
         const pathname = url.pathname;
 
         if (pathname.startsWith("/api/")) {
+            // Session groups: list them, and RECORD placement calls so a test
+            // can prove a drag reached the API with the right group id.
+            if (/\/management\/session-groups$/.test(pathname) && req.method === "GET") {
+                groupFetches += 1;
+                res.writeHead(200, { "content-type": "application/json" });
+                // `liveGroups` is mutable so a test can simulate the transient
+                // EMPTY-but-successful listing that makes folders vanish.
+                res.end(JSON.stringify({ ok: true, result: liveGroups }));
+                return;
+            }
+            if (/\/management\/session-groups\/place$/.test(pathname)) {
+                let raw = "";
+                req.on("data", (chunk) => { raw += chunk; });
+                req.on("end", () => {
+                    let parsed = {};
+                    try { parsed = JSON.parse(raw || "{}"); } catch { /* record the attempt anyway */ }
+                    placements.push(parsed);
+                    res.writeHead(200, { "content-type": "application/json" });
+                    res.end(JSON.stringify({ ok: true, result: (parsed.sessionIds || []).map((id) => ({ rootSessionId: id, placed: true, reason: null })) }));
+                });
+                return;
+            }
+            // /me/profile — the last-segment heuristic maps it to "profile",
+            // not the op name, so it needs its own route. This is where the
+            // viewer's themeId comes from.
+            if (/\/me\/profile$/.test(pathname)) {
+                res.writeHead(200, { "content-type": "application/json" });
+                res.end(JSON.stringify({ ok: true, result: { isAdmin: admin, profileSettings: themeId ? { themeId } : {} } }));
+                return;
+            }
+            // GET /workers — the worker registry (migration 0040). Admin-gated
+            // in production; here it simply answers when the stub was started
+            // with { admin: true }.
+            if (/\/workers$/.test(pathname)) {
+                res.writeHead(200, { "content-type": "application/json" });
+                res.end(JSON.stringify({ ok: true, result: WORKERS }));
+                return;
+            }
             if (/\/events$/.test(pathname)) {
                 res.writeHead(200, { "content-type": "application/json" });
                 res.end(JSON.stringify({ ok: true, result: TRANSCRIPT }));
@@ -167,7 +273,7 @@ export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 
             if (body === undefined) {
                 // Everything else: derive from the last path segment, which is
                 // enough for the read-only surfaces these tests exercise.
-                body = { ok: true, ...rpc(pathname.split("/").pop(), SESSIONS) };
+                body = { ok: true, ...rpc(pathname.split("/").pop(), SESSIONS, themeId ? { themeId } : {}) };
             }
             res.writeHead(200, { "content-type": "application/json" });
             res.end(JSON.stringify(body));
@@ -188,7 +294,13 @@ export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 
 
     return new Promise((resolve) => {
         server.listen(port, "127.0.0.1", () => {
-            resolve({ server, port: server.address().port });
+            resolve({
+                server,
+                port: server.address().port,
+                placements,
+                setGroups: (next) => { liveGroups = next; },
+                groupFetches: () => groupFetches,
+            });
         });
     });
 }

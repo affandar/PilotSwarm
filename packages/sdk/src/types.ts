@@ -693,6 +693,30 @@ export interface PilotSwarmWorkerOptions {
      */
     workerLockTimeoutMs?: number;
     workerNodeId?: string;
+    /**
+     * Dynamically install registry agent packages
+     * (docs/proposals/agent-packages.md). When set, the worker materializes
+     * every enabled package's active version into `cacheDir` before plugin
+     * loading completes, and re-converges on registry-epoch changes without
+     * a restart. Off by default — zero behavior change unless opted in.
+     */
+    agentPackages?: {
+        /** Unpack cache. Default: <sessionStateDir>/../agent-packages */
+        cacheDir?: string;
+        /**
+         * Registry heartbeat interval (ms) — the worker-registry beat that
+         * also converges agent packages. Default 20 000; 0 disables the
+         * timer (manual refreshAgentPackages only).
+         */
+        refreshIntervalMs?: number;
+    };
+    /**
+     * Worker-registry pool (docs/proposals/worker-registry.md): directive
+     * targeting + operator grouping. Default "default".
+     */
+    workerPool?: string;
+    /** Worker-registry owner principal — user-owned workers (laptops). */
+    workerOwner?: { provider: string; subject: string } | null;
     /** Azure Blob Storage connection string for the built-in blob-backed session store. */
     blobConnectionString?: string;
     /** Blob container name for the built-in blob-backed session store. */

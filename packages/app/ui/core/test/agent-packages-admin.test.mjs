@@ -1,0 +1,358 @@
+/**
+ * Agent-packages UI core — picker grouping + the Admin → Agents view-models.
+ *
+ * Guards the both-hosts contract: everything the web workspace and the TUI
+ * lines-builder render comes from selectAdminConsole / the picker selector,
+ * so these tests are the parity floor for BOTH surfaces.
+ */
+
+import test from "node:test";
+import assert from "node:assert/strict";
+import {
+    PilotSwarmUiController,
+    appReducer,
+    createInitialState,
+    createStore,
+    selectAdminConsole,
+    selectSessionAgentPickerModal,
+} from "../src/index.js";
+
+const ALICE = { provider: "test", subject: "alice", email: "alice@test", isAdmin: false };
+
+// Owner keys join provider and subject with U+0001 (see ownerKeyForOwner).
+const ownerKey = (subject) => `test${subject}`;
+
+function makeController(transportOverrides = {}) {
+    const transport = {
+        listSessions: async () => [],
+        subscribeSession: () => () => {},
+        getCurrentUserProfile: async () => ({ ...ALICE, githubCopilotKeySet: false, profileSettings: {} }),
+        listCreatableAgents: async () => [],
+        getSessionCreationPolicy: () => ({ creation: { allowGeneric: true } }),
+        ...transportOverrides,
+    };
+    const store = createStore(appReducer, createInitialState());
+    const controller = new PilotSwarmUiController({ store, transport });
+    return { controller, transport, store };
+}
+
+const CATALOG = [
+    { name: "builtin-bot", title: "Builtin Bot", description: "Baked in", source: "builtin" },
+    { name: "shared-triager", title: "Shared Triager", source: "package", scope: "shared", packageName: "incident-kit", packageSemver: "1.4.0" },
+    { name: "my-scraper", title: "My Scraper", source: "package", scope: "user", packageName: "hn-scraper", packageSemver: "0.2.1" },
+];
+
+// An ADMIN sees every user's user-scoped packages, so "scope is user" is not
+// "mine". The transport knows the viewer and says so; grouping on scope alone
+// filed other people's agents onto the caller's shelf.
+test("another user's user-scoped agent is Shared, not My agents", async () => {    const { controller, store } = makeController({
+        listCreatableAgents: async () => [
+            { name: "mine-bot", title: "Mine Bot", source: "package", scope: "user", mine: true, packageName: "my-kit", packageSemver: "1.0.0" },
+            { name: "theirs-bot", title: "Theirs Bot", source: "package", scope: "user", mine: false, packageName: "their-kit", packageSemver: "1.0.0" },
+        ],
+    });
+    await controller.openSessionAgentPicker();
+
+    const items = store.getState().ui.modal.items;
+    const groupOf = (agentName) => items.find((item) => item.agentName === agentName)?.group;
+    assert.equal(groupOf("mine-bot"), "mine", "my own user-scoped package stays under My agents");
+    assert.equal(groupOf("theirs-bot"), "shared", "another user's user-scoped package must not be My agents");
+    assert.deepEqual(
+        items.map((item) => item.kind === "generic" ? "generic" : item.agentName),
+        ["theirs-bot", "mine-bot", "generic"],
+        "shared segment first, then mine",
+    );
+});
+
+test("picker groups Shared → My agents → Generic with heading rows", async () => {
+    const { controller, store } = makeController({
+        listCreatableAgents: async () => CATALOG,
+    });
+    await controller.openSessionAgentPicker();
+
+    const modal = store.getState().ui.modal;
+    assert.equal(modal.type, "sessionAgentPicker");
+    assert.deepEqual(
+        modal.items.map((item) => item.kind === "generic" ? "generic" : item.agentName),
+        ["builtin-bot", "shared-triager", "my-scraper", "generic"],
+        "items pre-sorted: shared (builtin + shared packages), then mine, then generic",
+    );
+
+    const view = selectSessionAgentPickerModal(store.getState());
+    assert.ok(Array.isArray(view.rowItemIndexes), "grouped picker emits rowItemIndexes");
+    const headings = view.rowItemIndexes
+        .map((itemIndex, rowIndex) => (itemIndex === null ? rowIndex : null))
+        .filter((rowIndex) => rowIndex !== null);
+    assert.equal(headings.length, 3, "Shared, My agents, and the generic separator");
+    const headingTexts = headings.map((rowIndex) => view.rows[rowIndex].map((run) => run.text).join(""));
+    assert.match(headingTexts[0], /Shared/);
+    assert.match(headingTexts[1], /My agents/);
+
+    // Every non-heading row maps back to a real item.
+    for (const itemIndex of view.rowItemIndexes) {
+        if (itemIndex !== null) assert.ok(modal.items[itemIndex], "row maps to an item");
+    }
+
+    // Detail pane names the package for package agents.
+    store.dispatch({ type: "ui/modal", modal: { ...modal, selectedIndex: 1 } });
+    const detail = selectSessionAgentPickerModal(store.getState());
+    const detailText = detail.detailsLines.map((line) => line.map((run) => run.text).join("")).join("\n");
+    assert.match(detailText, /incident-kit@1\.4\.0 · shared/);
+});
+
+function loadedPackagesState(store) {
+    store.dispatch({ type: "admin/visibility", visible: true });
+    store.dispatch({
+        type: "admin/profile/loaded",
+        profile: { ...ALICE, githubCopilotKeySet: false, profileSettings: {} },
+    });
+    store.dispatch({
+        type: "admin/packages/loaded",
+        list: [
+            {
+                packageId: "p1", sourceId: "src-1", name: "incident-kit", scope: "shared",
+                owner: { provider: "test", subject: "alice" }, enabled: true,
+                createdBy: "alice@test", createdAt: "2026-07-12T00:00:00Z",
+                active: {
+                    versionId: "v2", semver: "1.4.0", sha256: "a1b2c3d4e5f60718", sizeBytes: 4096,
+                    artifactFilename: "incident-kit@1.4.0.a1b2c3d4e5f6.tar.gz", commitSha: null,
+                    manifest: { description: "Incident agents", agents: [{ name: "shared-triager", tools: ["t1"] }] },
+                    createdAt: "2026-07-27T00:00:00Z", createdBy: "alice@test",
+                },
+            },
+            {
+                packageId: "p2", sourceId: null, name: "other-kit", scope: "user",
+                owner: { provider: "test", subject: "bob" }, enabled: false,
+                createdBy: "bob@test", createdAt: "2026-07-10T00:00:00Z",
+                active: null,
+            },
+        ],
+        workerState: [
+            { workerNodeId: "w1", epoch: 4, installed: { "incident-kit": { semver: "1.4.0", status: "ok" } }, updatedAt: new Date().toISOString() },
+            { workerNodeId: "w2", epoch: 4, installed: { "incident-kit": { semver: "1.3.2", status: "ok" } }, updatedAt: new Date().toISOString() },
+            // Retired pod from a previous rollout — outside the liveness
+            // window, must NOT count toward fleet totals.
+            { workerNodeId: "w-old", epoch: 3, installed: { "incident-kit": { semver: "1.4.0", status: "ok" } }, updatedAt: "2026-07-27T03:00:00Z" },
+        ],
+    });
+}
+
+test("admin settings tree groups packages by scope with badges and counts", () => {
+    const store = createStore(appReducer, createInitialState());
+    loadedPackagesState(store);
+
+    const view = selectAdminConsole(store.getState());
+    const tree = view.settingsTree;
+    assert.deepEqual(tree.filter((r) => r.kind === "section").map((r) => r.label), ["GitHub Keys", "Agents"]);
+    const shared = tree.find((r) => r.id === "group:shared");
+    const user = tree.find((r) => r.id === "group:user");
+    const others = tree.find((r) => r.id === "group:others");
+    assert.equal(shared.count, 1);
+    // "User" is the VIEWER's own private packages. Someone else's private
+    // package (bob's) is not part of alice's workspace — it is listed under
+    // "Other users" instead of cluttering her own section.
+    assert.equal(user.count, 0, "alice owns no user-scope packages");
+    assert.equal(others.count, 1, "bob's private package is grouped separately");
+    const pkgRow = tree.find((r) => r.id === "pkg:incident-kit");
+    assert.equal(pkgRow.scope, "shared");
+    assert.equal(pkgRow.semver, "1.4.0");
+    assert.equal(pkgRow.canManage, true, "owner manages their package");
+    const foreign = tree.find((r) => r.id === "pkg:other-kit");
+    assert.equal(foreign.canManage, false, "non-owner non-admin cannot manage");
+    assert.equal(foreign.enabled, false);
+});
+
+test("package detail VM: versions and fleet adoption", () => {
+    const store = createStore(appReducer, createInitialState());
+    loadedPackagesState(store);
+    store.dispatch({ type: "admin/packages/select", name: "incident-kit" });
+    store.dispatch({
+        type: "admin/packages/detail/loaded",
+        name: "incident-kit",
+        detail: {
+            packageId: "p1", sourceId: "src-1", name: "incident-kit", scope: "shared",
+            owner: { provider: "test", subject: "alice" }, enabled: true,
+            createdBy: "alice@test", createdAt: "2026-07-12T00:00:00Z", activeVersionId: "v2",
+            versions: [
+                { versionId: "v2", semver: "1.4.0", sha256: "a1b2c3d4e5f60718", sizeBytes: 4096, artifactFilename: "f2", commitSha: null, manifest: { description: "Incident agents", agents: [{ name: "shared-triager" }] }, createdAt: "2026-07-27T00:00:00Z", createdBy: "alice@test" },
+                { versionId: "v1", semver: "1.3.2", sha256: "ffff0000ffff0000", sizeBytes: 2048, artifactFilename: "f1", commitSha: null, manifest: {}, createdAt: "2026-07-19T00:00:00Z", createdBy: "alice@test" },
+            ],
+        },
+    });
+
+    const view = selectAdminConsole(store.getState());
+    assert.equal(view.section, "packages", "selecting a package switches the section");
+    const detail = view.packages.detail;
+    assert.equal(detail.activeSemver, "1.4.0");
+    assert.equal(detail.activeSha12, "a1b2c3d4e5f6");
+    assert.equal(detail.versions.length, 2);
+    assert.equal(detail.versions[0].active, true);
+    assert.equal(detail.versions[1].active, false);
+    assert.equal(detail.fleet.text, "1/2 workers current",
+        "fleet counts only LIVE workers (fresh heartbeat) that are current+ok — the retired pod row is excluded");
+    // Packages are imported client-side and published as artifacts — there
+    // is no server-side source row to display any more.
+    assert.equal(detail.source, undefined);
+    assert.equal(detail.canManage, true);
+});
+
+test("workspace VM honors expandedDirs and file preview state", () => {
+    const store = createStore(appReducer, createInitialState());
+    loadedPackagesState(store);
+    store.dispatch({ type: "admin/packages/select", name: "incident-kit" });
+    store.dispatch({
+        type: "admin/packages/tree/loaded",
+        name: "incident-kit",
+        tree: {
+            name: "incident-kit", semver: "1.4.0", sha256: "a1b2c3d4e5f60718",
+            dirs: ["agents", "skills", "skills/ops"],
+            files: [
+                { path: "plugin.json", size: 100 },
+                { path: "agents/triager.agent.md", size: 2100 },
+                { path: "skills/ops/SKILL.md", size: 3400 },
+            ],
+        },
+    });
+
+    let view = selectAdminConsole(store.getState());
+    let paths = view.packages.workspace.treeRows.map((r) => r.path);
+    assert.ok(paths.includes("agents/triager.agent.md"), "top-level dirs start expanded");
+    assert.ok(!paths.includes("skills/ops/SKILL.md"), "deeper levels start collapsed");
+
+    store.dispatch({ type: "admin/packages/toggleDir", dir: "skills/ops" });
+    view = selectAdminConsole(store.getState());
+    paths = view.packages.workspace.treeRows.map((r) => r.path);
+    assert.ok(paths.includes("skills/ops/SKILL.md"), "expanding a dir reveals its files");
+
+    store.dispatch({ type: "admin/packages/file/loading", path: "plugin.json" });
+    store.dispatch({
+        type: "admin/packages/file/loaded",
+        file: { path: "plugin.json", size: 100, truncated: false, encoding: "utf8", content: '{"name":"incident-kit"}' },
+    });
+    view = selectAdminConsole(store.getState());
+    assert.equal(view.packages.workspace.file.language, "json");
+    assert.match(view.packages.workspace.file.text, /incident-kit/);
+
+    // A stale file load (path no longer selected) must be ignored.
+    store.dispatch({ type: "admin/packages/file/loading", path: "agents/triager.agent.md" });
+    store.dispatch({
+        type: "admin/packages/file/loaded",
+        file: { path: "plugin.json", size: 100, truncated: false, encoding: "utf8", content: "stale" },
+    });
+    view = selectAdminConsole(store.getState());
+    assert.equal(view.packages.workspace.file, null, "stale load is dropped while the new file loads");
+});
+
+test("the owner filter hides other people's private agents, never yours or shared", () => {
+    const store = createStore(appReducer, createInitialState());
+    loadedPackagesState(store);
+    store.dispatch({ type: "auth/principal", principal: { provider: "test", subject: "alice", displayName: "Alice Anderson" } });
+
+    const idsFor = () => selectAdminConsole(store.getState()).settingsTree.map((row) => row.id);
+    // The reducer reads `filter`, not `ownerFilter`.
+    const setFilter = (filter) => store.dispatch({ type: "sessions/ownerFilter", filter });
+
+    // Narrowed to Alice: Bob's private package is not part of her workspace.
+    // The deployment's SHARED package still is - it belongs to no one person.
+    setFilter({ all: false, includeMe: true, includeShared: true, ownerKeys: [] });
+    assert.ok(!idsFor().includes("pkg:other-kit"), "bob's private package is filtered out");
+    assert.ok(idsFor().includes("pkg:incident-kit"), "a shared package is the deployment's, never filtered");
+    assert.equal(idsFor().includes("group:others"), false, "the Other users group goes with it");
+
+    // Asking for Bob brings his back - that is what the filter means.
+    setFilter({ all: false, includeMe: true, includeShared: true, ownerKeys: [ownerKey("bob")] });
+    assert.ok(idsFor().includes("pkg:other-kit"), "asking for bob shows bob's package");
+
+    // `all` is the unfiltered view.
+    setFilter({ all: true });
+    assert.ok(idsFor().includes("pkg:other-kit"));
+});
+
+test("user-scope packages carry the owner's initials; shared ones keep the scope badge", () => {
+    const store = createStore(appReducer, createInitialState());
+    store.dispatch({
+        type: "admin/packages/loaded",
+        list: [
+            {
+                packageId: "p1", name: "incident-kit", scope: "shared", enabled: true,
+                owner: { provider: "test", subject: "alice", displayName: "Alice Anderson" },
+                active: { semver: "1.4.0", sha256: "a".repeat(64), manifest: { agents: [] } },
+            },
+            {
+                // The shape the API actually returns: `owner` is the authz
+                // principal — provider + an opaque directory subject, no name
+                // and no address. `createdBy` is the only human identity on
+                // the row, which is why it leads.
+                packageId: "p2", name: "other-kit", scope: "user", enabled: true,
+                owner: { provider: "entra", subject: "aee30e06-3c52-4faf-8c96-e681a7cbb32d" },
+                createdBy: "bob@test", active: null,
+            },
+            {
+                packageId: "p3", name: "third-kit", scope: "user", enabled: true,
+                owner: { provider: "entra", subject: "e8677004-a702-46f8-a39e-ca3e64efe63d" },
+                createdBy: "carol@test", active: null,
+            },
+        ],
+    });
+    store.dispatch({ type: "sessions/ownerFilter", filter: { all: true } });
+
+    const tree = selectAdminConsole(store.getState()).settingsTree;
+    const shared = tree.find((row) => row.id === "pkg:incident-kit");
+    const bobs = tree.find((row) => row.id === "pkg:other-kit");
+    const carols = tree.find((row) => row.id === "pkg:third-kit");
+
+    // Initials come from the createdBy email when no richer identity exists,
+    // and are UPPERCASE — they render as a monogram avatar.
+    assert.equal(bobs.ownerBadge.initials, "BO");
+    assert.equal(bobs.ownerBadge.name, "bob@test");
+    assert.notEqual(bobs.ownerBadge.initials, "?");
+
+    // Colour is the part that actually distinguishes owners: two people must
+    // not land on the same hue for the badge to mean anything.
+    assert.equal(typeof bobs.ownerBadge.hue, "number");
+    assert.notEqual(bobs.ownerBadge.hue, carols.ownerBadge.hue);
+
+    // A shared package belongs to the deployment, not a person.
+    assert.equal(shared.ownerBadge, null);
+});
+
+test("Update opens the add dialog bound to one package", () => {
+    const { controller, store } = makeController();
+    controller.openAdminUpdatePackage("incident-kit", "shared");
+
+    const dialog = store.getState().admin.packages.addDialog;
+    assert.equal(dialog.open, true);
+    assert.equal(dialog.updateName, "incident-kit");
+    assert.equal(dialog.scope, "shared", "an update never silently re-scopes the package");
+
+    // Adding is still the unbound form.
+    controller.openAdminAddPackage();
+    assert.equal(store.getState().admin.packages.addDialog.updateName, null);
+});
+
+/**
+ * The Admin Console REPLACES the workspace, so selecting the new session is
+ * not enough: creating from the console left it selected behind a pane that
+ * cannot show it, and the create looked like it had done nothing.
+ */
+for (const [label, run] of [
+    ["createSession", (c) => c.createSession({})],
+    ["createSessionForAgent", (c) => c.createSessionForAgent("greeter", {})],
+]) {
+    test(`${label} returns to the workspace when the Admin Console is open`, async () => {
+        const { controller, store } = makeController({
+            createSession: async () => ({ sessionId: "new-1" }),
+            createSessionForAgent: async () => ({ sessionId: "new-1" }),
+            getSession: async () => ({ sessionId: "new-1", title: "New", status: "idle" }),
+            getSessionEvents: async () => [],
+        });
+
+        store.dispatch({ type: "admin/visibility", visible: true });
+        assert.equal(store.getState().admin.visible, true, "console is open before the create");
+
+        await run(controller);
+
+        assert.equal(store.getState().admin.visible, false, "the console must step aside for the new session");
+        assert.equal(store.getState().sessions.activeSessionId, "new-1", "and the new session is the active one");
+    });
+}

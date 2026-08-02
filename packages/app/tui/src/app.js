@@ -1,7 +1,7 @@
 import React from "react";
 import { useInput, useStdin } from "ink";
 import { UiPlatformProvider, SharedPilotSwarmApp } from "pilotswarm/ui-react";
-import { UI_COMMANDS } from "pilotswarm/ui-core";
+import { UI_COMMANDS, selectNodeMapView } from "pilotswarm/ui-core";
 import { PILOTSWARM_CLI_VERSION_LABEL } from "./version.js";
 
 const MOUSE_INPUT_PATTERN = /\u001b\[<(\d+);(\d+);(\d+)([mM])/gu;
@@ -325,8 +325,45 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             return;
         }
         if (adminVisible) {
+            const adminSection = ["packages", "workers"].includes(adminState?.section) ? adminState.section : "ghcp";
             if (key.escape) {
                 controller.handleCommand(UI_COMMANDS.CLOSE_ADMIN_CONSOLE).catch(() => {});
+                return;
+            }
+            // Settings-tree section toggles (Agents ⟷ GitHub Keys ⟷ Workers).
+            if (plainShortcut && input === "a" && adminSection !== "packages") {
+                controller.handleCommand(UI_COMMANDS.ADMIN_SHOW_PACKAGES).catch(() => {});
+                return;
+            }
+            if (plainShortcut && input === "g" && adminSection !== "ghcp") {
+                controller.handleCommand(UI_COMMANDS.ADMIN_SHOW_GHCP).catch(() => {});
+                return;
+            }
+            if (plainShortcut && input === "w" && adminSection !== "workers"
+                && adminState?.profile?.isAdmin) {
+                controller.handleCommand(UI_COMMANDS.ADMIN_SHOW_WORKERS).catch(() => {});
+                return;
+            }
+            if (adminSection === "workers") {
+                if (plainShortcut && input === "r") {
+                    controller.handleCommand(UI_COMMANDS.ADMIN_WORKERS_REFRESH).catch(() => {});
+                    return;
+                }
+                return;
+            }
+            if (adminSection === "packages") {
+                if (plainShortcut && (input === "j" || key.downArrow)) {
+                    controller.handleCommand(UI_COMMANDS.ADMIN_PACKAGES_NEXT).catch(() => {});
+                    return;
+                }
+                if (plainShortcut && (input === "k" || key.upArrow)) {
+                    controller.handleCommand(UI_COMMANDS.ADMIN_PACKAGES_PREV).catch(() => {});
+                    return;
+                }
+                if (plainShortcut && input === "r") {
+                    controller.handleCommand(UI_COMMANDS.ADMIN_PACKAGES_REFRESH).catch(() => {});
+                    return;
+                }
                 return;
             }
             if (plainShortcut && input === "e") {
@@ -583,6 +620,12 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
         }
         if (focus === "inspector" && inspectorTab === "stats" && input === "f") {
             controller.handleCommand(UI_COMMANDS.TOGGLE_STATS_VIEW).catch(() => {});
+            return;
+        }
+        // Node Map: digits pick a node by its listed ordinal (toggle to clear).
+        if (focus === "inspector" && inspectorTab === "nodes" && plainShortcut && /^[1-9]$/.test(input || "")) {
+            const node = selectNodeMapView(controller.getState()).nodes[Number(input) - 1];
+            if (node) controller.selectNodeMapNode(node.label);
             return;
         }
         if (focus === "inspector" && inspectorTab === "files" && input === "f") {

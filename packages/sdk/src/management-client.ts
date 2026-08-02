@@ -470,9 +470,17 @@ export class PilotSwarmManagementClient {
         assertUnambiguousProvider(options, "PilotSwarmManagementClient");
         if (isWebOptions(options)) {
             // Web mode — the supported public mode: talk to a deployment's
-            // Web API instead of the datastore. The returned object carries
-            // the same management surface (see WebPilotSwarmManagementClient
-            // for the few direct-mode-only methods).
+            // Web API instead of the datastore.
+            //
+            // Prefer `createManagementClient(options)` in new code: it
+            // returns the honestly-typed WebPilotSwarmManagementClient
+            // (including its generated `ops` surface) instead of casting it
+            // to this class. The cast below is compile-time verified — see
+            // _WebSatisfiesManagementSurface in web-management-client.ts —
+            // so every method this type declares either works over HTTP or
+            // throws a typed WEB_MODE_UNSUPPORTED error; the documented
+            // KnownDivergences are the sync model-catalog reads, which are
+            // async over HTTP.
             return new WebPilotSwarmManagementClient(options) as unknown as PilotSwarmManagementClient;
         }
         this.config = options;
@@ -2608,4 +2616,26 @@ export class PilotSwarmManagementClient {
             throw new Error("ManagementClient not started. Call start() first.");
         }
     }
+}
+
+/**
+ * Construct a management client with an honest return type.
+ *
+ * Web options yield the WebPilotSwarmManagementClient itself — including its
+ * generated `ops` surface (one wire-shaped method per protocol-table
+ * operation) — rather than a cast to the direct class. Direct options yield
+ * the direct client.
+ *
+ * `new PilotSwarmManagementClient(options)` remains supported and behaves
+ * identically at runtime; this factory exists so web-mode callers get the
+ * type that tells the truth.
+ */
+export function createManagementClient(options: PilotSwarmWebOptions): WebPilotSwarmManagementClient;
+export function createManagementClient(options: PilotSwarmManagementClientOptions): PilotSwarmManagementClient;
+export function createManagementClient(
+    options: PilotSwarmManagementClientOptions | PilotSwarmWebOptions,
+): PilotSwarmManagementClient | WebPilotSwarmManagementClient {
+    return isWebOptions(options)
+        ? new WebPilotSwarmManagementClient(options)
+        : new PilotSwarmManagementClient(options);
 }

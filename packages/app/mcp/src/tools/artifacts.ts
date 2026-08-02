@@ -13,8 +13,9 @@ import { jsonResult, errorResult, withToolErrors } from "../util/respond.js";
  * download route for binaries rather than base64-inflating MCP responses.
  */
 export function registerArtifactTools(server: McpServer, ctx: ServerContext) {
-    const api = ctx.api;
-    if (!api) return;
+    const web = ctx.web;
+    if (!web) return;
+    const ops = web.ops;
 
     server.registerTool(
         "list_artifacts",
@@ -26,7 +27,7 @@ export function registerArtifactTools(server: McpServer, ctx: ServerContext) {
             },
         },
         withToolErrors(async ({ session_id }) => {
-            const artifacts = await api.call("listArtifacts", { sessionId: session_id });
+            const artifacts = await ops.listArtifacts({ sessionId: session_id });
             const list = Array.isArray(artifacts) ? artifacts : (artifacts?.artifacts ?? []);
             return jsonResult({ count: list.length, artifacts: list });
         }),
@@ -52,7 +53,7 @@ export function registerArtifactTools(server: McpServer, ctx: ServerContext) {
             const result: Record<string, unknown> = { session_id, filename };
             let meta: unknown;
             try {
-                meta = await api.call("getArtifactMetadata", { sessionId: session_id, filename });
+                meta = await ops.getArtifactMetadata({ sessionId: session_id, filename });
             } catch (err: unknown) {
                 return errorResult(err instanceof Error ? err.message : String(err), { session_id, filename });
             }
@@ -67,7 +68,7 @@ export function registerArtifactTools(server: McpServer, ctx: ServerContext) {
             }
             if (wants.has("text")) {
                 try {
-                    result.text = await api.call("downloadArtifact", { sessionId: session_id, filename });
+                    result.text = await ops.downloadArtifact({ sessionId: session_id, filename });
                 } catch (err: unknown) {
                     result.text = null;
                     result.text_error = err instanceof Error ? err.message : String(err);
@@ -75,7 +76,7 @@ export function registerArtifactTools(server: McpServer, ctx: ServerContext) {
             }
             if (wants.has("base64")) {
                 try {
-                    const read = await api.call("readArtifactBase64", { sessionId: session_id, filename, maxBytes: max_bytes });
+                    const read = await ops.readArtifactBase64({ sessionId: session_id, filename, maxBytes: max_bytes });
                     result.base64 = (read as any)?.base64;
                     result.truncated = (read as any)?.truncated;
                 } catch (err: unknown) {
@@ -103,7 +104,7 @@ export function registerArtifactTools(server: McpServer, ctx: ServerContext) {
             },
         },
         withToolErrors(async ({ session_id, filename, content, content_type, content_encoding }) => {
-            const meta = await api.call("uploadArtifact", {
+            const meta = await ops.uploadArtifact({
                 sessionId: session_id,
                 filename,
                 content,
@@ -130,14 +131,14 @@ export function registerArtifactTools(server: McpServer, ctx: ServerContext) {
             },
         },
         withToolErrors(async ({ from_session_id, from_filename, to_session_id, to_filename, expected_sha256 }) => {
-            const meta = await api.call("copyArtifact", {
+            const meta = await ops.copyArtifact({
                 fromSessionId: from_session_id,
                 fromFilename: from_filename,
                 toSessionId: to_session_id,
                 toFilename: to_filename,
             }) as { filename?: string; sha256?: string } | null;
             if (expected_sha256 && meta?.sha256 !== expected_sha256) {
-                await api.call("deleteArtifact", { sessionId: to_session_id, filename: meta?.filename ?? to_filename ?? from_filename });
+                await ops.deleteArtifact({ sessionId: to_session_id, filename: meta?.filename ?? to_filename ?? from_filename });
                 return errorResult(
                     `SHA_MISMATCH: copied bytes hash ${meta?.sha256}, expected ${expected_sha256}. The copy was deleted.`,
                     { from_session_id, from_filename },
@@ -161,7 +162,7 @@ export function registerArtifactTools(server: McpServer, ctx: ServerContext) {
             },
         },
         withToolErrors(async ({ session_id, filename, pinned }) => {
-            const meta = await api.call("setArtifactPinned", { sessionId: session_id, filename, pinned: pinned !== false });
+            const meta = await ops.setArtifactPinned({ sessionId: session_id, filename, pinned: pinned !== false });
             return jsonResult({ pinned: pinned !== false, meta });
         }),
     );
@@ -177,7 +178,7 @@ export function registerArtifactTools(server: McpServer, ctx: ServerContext) {
             },
         },
         withToolErrors(async ({ session_id, filename }) => {
-            await api.call("deleteArtifact", { sessionId: session_id, filename });
+            await ops.deleteArtifact({ sessionId: session_id, filename });
             return jsonResult({ deleted: true, filename });
         }),
     );

@@ -33,10 +33,13 @@
 export { PilotSwarmClient, PilotSwarmSession } from "./client.js";
 export type { SessionEventHandler } from "./client.js";
 export { PilotSwarmWorker } from "./worker.js";
-export { PilotSwarmManagementClient } from "./management-client.js";
+export { PilotSwarmManagementClient, createManagementClient } from "./management-client.js";
 export type { PilotSwarmWebOptions } from "./web/api-connection.js";
 export { WebPilotSwarmClient, WebPilotSwarmSession } from "./web/web-client.js";
 export { WebPilotSwarmManagementClient } from "./web/web-management-client.js";
+export type { SharedManagementSurface } from "./web/web-management-client.js";
+export { createManagementOps } from "./web/generated-op-methods.js";
+export type { ManagementOps } from "./web/generated-op-methods.js";
 export { WebFactStore, WebEnhancedFactStore, createWebFactStore } from "./web/web-fact-store.js";
 export { WebGraphStore, createWebGraphStore } from "./web/web-graph-store.js";
 export type {
@@ -161,7 +164,7 @@ export {
 
 // Skills loader
 export { loadSkills, loadSkillsSync, composeDeclaredSkillsPrompt } from "./skills.js";
-export { loadAgentFiles, systemAgentUUID, systemChildAgentUUID } from "./agent-loader.js";
+export { loadAgentFiles, systemAgentUUID, systemChildAgentUUID, listBundledAgentNames } from "./agent-loader.js";
 export { loadMcpConfig } from "./mcp-loader.js";
 export type { Skill } from "./skills.js";
 // Local-mode user principal constant (Admin Console / per-user GitHub Copilot key)
@@ -240,6 +243,63 @@ export type {
 } from "./transcript-selection.js";
 
 export { SessionDumper } from "./session-dumper.js";
+
+// ─── Agent packages (docs/proposals/agent-packages.md) ───────────
+export {
+    agentPackagesArtifactSessionId,
+    agentPackageArtifactFilename,
+    agentPackageTarSha256,
+    isValidSemver,
+    compareSemver,
+    normalizeAgentName,
+    packAgentPackage,
+    readAgentPackageTarGz,
+    extractAgentPackageTarGz,
+    validateAgentPackageDir,
+    // A manifest-layout package only validates against its staged canonical
+    // tree, so any caller validating before publish needs to stage first —
+    // otherwise it reports failures that publishing would have resolved.
+    stageAgentPackageDir,
+    AGENT_PACKAGE_MAX_COMPRESSED_BYTES,
+} from "./agent-package-format.js";
+export type {
+    AgentPackageIssue,
+    AgentPackageManifest,
+    AgentPackageValidation,
+    PackedAgentPackage,
+} from "./agent-package-format.js";
+export {
+    publishAgentPackageDir,
+    publishPackedAgentPackage,
+    fetchAgentPackageTarGz,
+    deleteAgentPackageEverywhere,
+    AgentPackageValidationError,
+} from "./agent-package-service.js";
+export type { PublishOutcome } from "./agent-package-service.js";
+export {
+    installAgentPackages,
+    loadAgentPackageTools,
+} from "./agent-package-installer.js";
+export type {
+    AgentPackageInstallResult,
+    InstalledAgentPackage,
+} from "./agent-package-installer.js";
+export type {
+    WorkerRow,
+    WorkerPhase,
+    WorkerHeartbeatInput,
+    EffectiveDirective,
+    FleetDirectiveRow,
+    AgentPackageScope,
+    AgentPrincipal,
+    AgentPackageSummary,
+    AgentPackageDetail,
+    AgentPackageVersionRow,
+    AgentPackageInstallEntry,
+    AgentWorkerStateRow,
+    PublishAgentPackageInput,
+    PublishAgentPackageResult,
+} from "./cms.js";
 
 // Re-export defineTool from Copilot SDK for convenience
 export { defineTool } from "@github/copilot-sdk";

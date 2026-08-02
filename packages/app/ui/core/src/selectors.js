@@ -1,4 +1,5 @@
 import { INSPECTOR_TABS, FOCUS_REGIONS } from "./commands.js";
+import { isManuallyOrderableSession } from "./session-tree.js";
 import {
     createSplashCard,
     isRehydrationNoticeText,
@@ -216,13 +217,129 @@ function initialsFromText(value) {
         .split(/[^A-Za-z0-9]+/u)
         .map((part) => part.trim())
         .filter(Boolean);
-    if (parts.length >= 2) return `${parts[0][0]}${parts[1][0]}`.toLowerCase();
+    // UPPERCASE: these render as a monogram avatar, where lowercase reads as
+    // a typo rather than a name. Two letters from "First Last", else the
+    // first two of a single token.
+    if (parts.length >= 2) return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
     const compact = (parts[0] || text).replace(/[^A-Za-z0-9]/gu, "");
-    return compact.slice(0, 2).toLowerCase();
+    return compact.slice(0, 2).toUpperCase();
 }
 
 function ownerInitials(owner) {
     return initialsFromText(owner?.displayName) || initialsFromText(owner?.email) || "?";
+}
+
+/**
+ * Which sibling list a row is ordered within — the unit a drag may rearrange.
+ *
+ * Rows only ever sort against their own siblings, and the bands keep the
+ * kinds apart, so the container is what decides whether a drop means "put it
+ * here" (same container ⇒ reorder) or "file it in there" (different one ⇒
+ * the folder gesture). Pinned rows form their own band and therefore their
+ * own list, which is why the pin state is part of the key.
+ *
+ * Returns null for rows that cannot be ordered at all.
+ */
+export function manualOrderContainerKey(session, pinned = false) {
+    if (!isManuallyOrderableSession(session)) return null;
+    if (pinned) return "pinned";
+    if (session.isGroup) return "folders";
+    if (session.groupId) return `g:${session.groupId}`;
+    return "";
+}
+
+/**
+ * Identity directory built from the sessions already in state.
+ *
+ * Session owners arrive as FULL principals — provider, subject, email and
+ * displayName — while an agent package carries only `{provider, subject}`
+ * plus a createdBy email. Resolving the package's principal against this
+ * directory recovers the real name, which is what makes initials come out as
+ * a person's initials ("Affan Dar" → AD) rather than the first two letters of
+ * an alias ("daraffan@…" → DA). No fetch: the data is already loaded.
+ */
+/**
+ * The one owner-badge descriptor both lists render from. Same person ⇒ same
+ * initials and same colour, wherever they appear.
+ */
+export function ownerBadgeFor(owner, { isMine = false } = {}) {
+    if (!owner) return null;
+    const name = ownerDisplayName(owner, owner?.email || "");
+    return {
+        initials: ownerInitials(owner),
+        hue: ownerBadgeHue(ownerBadgeKey(owner, owner?.email)),
+        name: name || "unknown user",
+        isMine: Boolean(isMine),
+    };
+}
+
+function ownerDirectoryFromSessions(byId) {
+    const directory = new Map();
+    for (const session of Object.values(byId || {})) {
+        const owner = session?.owner;
+        if (!owner?.subject) continue;
+        if (!owner.displayName && !owner.email) continue;
+        const key = ownerKeyForOwner(owner);
+        if (key && !directory.has(key)) directory.set(key, owner);
+    }
+    return directory;
+}
+
+/**
+ * A package's owner, resolved to the richest identity available.
+ *
+ * A DISPLAY NAME beats an email, because initials should be the person's
+ * ("Affan Dar" → AD), not the first two letters of their alias
+ * ("daraffan@…" → DA) — which is exactly the mismatch that made the same
+ * person read differently in the session list and the package list.
+ */
+function resolvePackageOwner(pkg, directory) {
+    // The server resolves this now (migration 0041 joins the users table, the
+    // same way the session view always has), so owner arrives with a real
+    // display name and the two lists agree by construction.
+    if (pkg?.owner?.displayName || pkg?.owner?.email) return pkg.owner;
+    // Deployments still on an older schema return a bare principal. Recover
+    // the name from sessions already in state where we can, and fall back to
+    // the createdBy alias only when nothing better exists.
+    const fromDirectory = directory?.get?.(ownerKeyForOwner(pkg?.owner)) || null;
+    if (fromDirectory) return fromDirectory;
+    return pkg?.createdBy ? { email: pkg.createdBy } : null;
+}
+
+/**
+ * Owner badge palette. Colour is derived from a stable identity key so the
+ * same person is the same colour everywhere and across reloads — the point of
+ * the badge is telling owners APART at a glance, which two-letter initials
+ * alone do poorly (and did not do at all while they were all "?").
+ *
+ * Eight hues, all legible on both the light and dark portal grounds; the
+ * viewer's own rows are styled separately by the caller, so this palette
+ * never has to encode "mine".
+ */
+const OWNER_BADGE_HUES = 8;
+
+export function ownerBadgeHue(key) {
+    const text = String(key || "").trim().toLowerCase();
+    if (!text) return 0;
+    // FNV-1a: tiny, dependency-free, and stable across processes — a hash that
+    // changed between the TUI and the portal would defeat the whole purpose.
+    let hash = 0x811c9dc5;
+    for (let i = 0; i < text.length; i += 1) {
+        hash ^= text.charCodeAt(i);
+        hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+    return hash % OWNER_BADGE_HUES;
+}
+
+/** Stable identity key for badge colouring: the email/name that names a human. */
+export function ownerBadgeKey(owner, createdBy) {
+    return String(
+        createdBy
+        || owner?.email
+        || owner?.displayName
+        || (owner?.provider && owner?.subject ? `${owner.provider}:${owner.subject}` : "")
+        || "",
+    ).trim().toLowerCase();
 }
 
 function shouldDecorateSessionOwners(state) {
@@ -381,6 +498,11 @@ function buildSessionTitle(session, brandingTitle) {
 
 function matchesOwnerFilterDirect(session, ownerFilter = {}, auth = {}, ownerOverride = undefined) {
     if (!ownerFilter || ownerFilter.all === true) return true;
+    // A group is the VIEWER'S OWN private organization — the server lists only
+    // your groups, and the row itself carries no owner. Owner filters are about
+    // whose sessions to show, so they must never hide your own folders (the
+    // group's members are still filtered on their own merits).
+    if (session?.isGroup) return true;
     if (session?.isSystem) return ownerFilter.includeSystem === true;
     const ownerKey = ownerKeyForOwner(ownerOverride !== undefined ? ownerOverride : session?.owner);
     if (!ownerKey) return ownerFilter.includeUnowned === true;
@@ -595,7 +717,11 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
         : "";
 
     if (depthPrefix) {
-        prefixRuns.push({ text: depthPrefix, color: "gray" });
+        // `role` lets a host drop this run without losing the rest: the portal
+        // draws nesting as a surface (the "well") and would otherwise show a
+        // box-drawing character inside it. The TUI renders text+colour and
+        // ignores the field, so its glyphs are untouched.
+        prefixRuns.push({ text: depthPrefix, color: "gray", role: "depth" });
     }
 
     const pinnedSet = new Set(Array.isArray(state.sessions?.pinnedIds) ? state.sessions.pinnedIds : []);
@@ -604,12 +730,11 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
     const isSelected = selectedSet.has(entry.sessionId);
     const isPinned = pinnedSet.has(entry.sessionId);
 
-    if (selectMode) {
-        prefixRuns.push({
-            text: isSelected ? "[x] " : "[ ] ",
-            color: isSelected ? "cyan" : "gray",
-            bold: isSelected,
-        });
+    // Multi-selection reads as a selection BAR on the chosen rows (plus the
+    // host's own row styling) — not a checkbox column that shifts every row
+    // the moment selection mode turns on.
+    if (isSelected) {
+        prefixRuns.push({ text: "▌", color: "cyan", bold: true });
     }
 
     // Pin column renders first on top-level non-system rows so pinned and
@@ -638,9 +763,13 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
         prefixRuns.push({ text: "⚗ ", color: "magenta", bold: true });
     } else {
         const icon = sessionStatusIcon(session, mode);
+        // role:"status" so a host can render this as a MARK rather than a
+        // character — the portal draws a dot, since "~" vs "*" is unreadable
+        // without a legend. The TUI renders text+colour and ignores the field.
         prefixRuns.push({
             text: icon ? `${icon} ` : "  ",
             color: sessionStatusColor(session, mode),
+            role: "status",
         });
     }
 
@@ -674,10 +803,13 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
     // Bracketed + bold so it reads as an owner badge, not part of the title.
     // The current viewer's own sessions get a distinct color so "mine" pops.
     if (shouldDecorateSessionOwners(state) && !session?.isSystem && !session?.isGroup) {
-        const initials = effectiveOwner ? ownerInitials(effectiveOwner) : "?";
         const viewerKey = ownerKeyForOwner(state?.auth?.principal);
-        const isMine = viewerKey && ownerKeyForOwner(effectiveOwner) === viewerKey;
-        titleRuns.push({ text: `[${initials}] `, color: isMine ? "green" : "cyan", bold: true });
+        const isMine = Boolean(viewerKey && ownerKeyForOwner(effectiveOwner) === viewerKey);
+        const initials = effectiveOwner ? ownerInitials(effectiveOwner) : "?";
+        // Tagged so the PORTAL can drop this run and draw a real avatar in its
+        // place, while the TUI — which can only print text — keeps the chip.
+        // Both read from the same descriptor, so they cannot disagree.
+        titleRuns.push({ text: `[${initials}] `, color: isMine ? "green" : "cyan", bold: true, ownerChip: true });
     }
     if (hasRealTitle) {
         titleRuns.push({ text: rawTitle, color: mainColor, bold: Boolean(session?.isSystem || session?.isGroup) });
@@ -881,9 +1013,16 @@ export function selectSessionRows(state) {
         sessionRowMemo.set(state.sessions.flat, memo);
     }
 
-    return state.sessions.flat.map((entry) => {
-        const session = state.sessions.byId[entry.sessionId];
-        const active = entry.sessionId === state.sessions.activeSessionId;
+    return state.sessions.flat.filter((entry) => (
+        // A row whose session is in neither place can render nothing but an
+        // owner chip and a dash - the "[?]" ghost. Drop it rather than show it.
+        Boolean(state.sessions.byId[entry.sessionId] || entry.standIn)
+    )).map((entry) => {
+        const session = state.sessions.byId[entry.sessionId] || entry.standIn;
+        // The LIST highlight can be cleared (click empty space) without
+        // detaching the session — the chat and inspector panes keep it.
+        const active = entry.sessionId === state.sessions.activeSessionId
+            && !state.sessions.listDeselected;
         const pinned = pinnedSet.has(entry.sessionId);
         const selected = selectedSet.has(entry.sessionId);
         // Every input the row below is derived from. Identity comparison is
@@ -911,6 +1050,9 @@ export function selectSessionRows(state) {
             status: session?.status,
             statusColor: sessionStatusColor(session, state.connection?.mode || "local"),
             active,
+            // The RAW group id (rows are keyed "group:<uuid>"); the placement
+            // API and drag hit-testing both need the bare id.
+            groupId: session?.groupId || entry?.groupId || null,
             isSystem: Boolean(session?.isSystem),
             isGroup: Boolean(session?.isGroup),
             hasChildren: entry.hasChildren,
@@ -918,6 +1060,18 @@ export function selectSessionRows(state) {
             pinned,
             selected,
             canPin: canPinSessionRow(session),
+            // Manual-ordering affordances. Derived HERE so the drag layer and
+            // the tree agree on what may move — a UI that permits a drag the
+            // tree then ignores is worse than offering no drag at all.
+            // The avatar the portal draws in place of the tagged text run.
+            ownerBadge: (shouldDecorateSessionOwners(state) && !session?.isSystem && !session?.isGroup && effectiveSessionOwner(session, state.sessions.byId))
+                ? ownerBadgeFor(effectiveSessionOwner(session, state.sessions.byId), {
+                    isMine: Boolean(ownerKeyForOwner(state?.auth?.principal)
+                        && ownerKeyForOwner(effectiveSessionOwner(session, state.sessions.byId)) === ownerKeyForOwner(state?.auth?.principal)),
+                })
+                : null,
+            orderable: isManuallyOrderableSession(session),
+            orderContainer: manualOrderContainerKey(session, pinned),
         };
         memo.set(entry.sessionId, { deps, row });
         return row;
@@ -2969,6 +3123,75 @@ export function selectActiveActivity(state) {
     return history?.activity || [];
 }
 
+/**
+ * Worker details — the pane that REPLACES Activity while the Node Map is up.
+ * Registry specs for the selected node, then the sessions executing on it.
+ */
+export function selectWorkerDetailsPane(state) {
+    const view = selectNodeMapView(state);
+    const node = view.selected ? view.nodes.find((candidate) => candidate.label === view.selected) : null;
+    const title = buildPaneTitleRuns("Worker", "gray");
+    if (!node) {
+        title.push({ text: " none", color: "gray" });
+        return {
+            title,
+            lines: [{
+                text: view.degraded && view.registryError
+                    ? `No worker selected — ${view.registryError}`
+                    : "No workers to show yet.",
+                color: "gray",
+            }],
+        };
+    }
+    title.push({ text: ` ${node.label}`, color: "cyan" });
+    const lines = [];
+    const spec = (label, value, color = "white") => {
+        if (value === null || value === undefined || value === "") return;
+        lines.push([{ text: `${label.padEnd(10)} `, color: "gray" }, { text: String(value), color }]);
+    };
+    if (node.registered) {
+        spec("Node", node.workerNodeId);
+        spec("Phase", node.phase, node.phase === "draining" ? "red" : node.phase === "starting" ? "yellow" : "green");
+        spec("Pool", node.pool);
+        if (node.owner) spec("Owner", node.owner);
+        spec("Heartbeat", node.live ? `${node.agoText ?? "now"} · live` : `${node.agoText ?? "unknown"} · stale`, node.live ? "green" : "red");
+        spec("Uptime", node.uptimeText);
+        spec("Memory", [node.rssText ? `rss ${node.rssText}` : null, node.heapText ? `heap ${node.heapText}` : null].filter(Boolean).join(" · ") || null);
+        spec("Loop p99", node.eventLoopText);
+        spec("SDK", node.sdkVersion);
+        spec("Runtime", node.substrate);
+        if (node.capabilities.length) spec("Caps", node.capabilities.join(", "));
+        if (node.consumes.length) spec("Consumes", node.consumes.join(", "));
+        if (node.pkgEpoch !== null) {
+            const ok = node.pkgInstalled.filter((pkg) => pkg.status === "ok").length;
+            const bad = node.pkgInstalled.length - ok;
+            spec("Packages", `epoch ${node.pkgEpoch} · ${ok} ok${bad ? ` · ${bad} error` : ""}`, bad ? "red" : "white");
+            for (const pkg of node.pkgInstalled) {
+                lines.push([
+                    { text: "           ", color: "gray" },
+                    { text: `${pkg.status === "error" ? "✗" : "✓"} `, color: pkg.status === "error" ? "red" : "green" },
+                    { text: `${pkg.name}${pkg.semver ? `@${pkg.semver}` : ""}`, color: pkg.status === "error" ? "red" : "white" },
+                ]);
+                if (pkg.error) lines.push([{ text: `             ${pkg.error}`, color: "red" }]);
+            }
+            if (node.pkgLastError) lines.push([{ text: `           last refresh error: ${node.pkgLastError}`, color: "red" }]);
+        }
+    } else {
+        lines.push({ text: "Not in the worker registry — derived from recent activity only.", color: "gray" });
+    }
+    lines.push({ text: "", color: "gray" });
+    lines.push([{ text: `EXECUTING (${node.executing.length})`, color: "cyan", bold: true }]);
+    for (const entry of node.executing) {
+        lines.push(entry.active
+            ? buildActiveHighlightLine(entry.text)
+            : { text: entry.text, color: entry.color, bold: entry.bold });
+    }
+    if (node.executing.length === 0) {
+        lines.push({ text: `Nothing executing in the ${view.windowLabel} window.`, color: "gray" });
+    }
+    return { title, lines };
+}
+
 export function selectActivityPane(state, maxLines = 12) {
     const activity = selectActiveActivity(state);
     const session = selectActiveSession(state);
@@ -3510,6 +3733,28 @@ export function selectFilesView(state, options = {}) {
  * editing / saving / error), and a small set of "actions" describing
  * what keybindings or buttons are currently meaningful.
  */
+function adminPkgDate(value) {
+    if (!value) return "—";
+    const date = value instanceof Date ? value : new Date(value);
+    return Number.isNaN(date.getTime()) ? "—" : date.toISOString().slice(0, 10);
+}
+
+function adminPkgSize(bytes) {
+    const n = Number(bytes) || 0;
+    if (n <= 0) return "0 B";
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function adminPkgLanguage(filePath) {
+    const lower = String(filePath || "").toLowerCase();
+    if (lower.endsWith(".md")) return "markdown";
+    if (lower.endsWith(".json")) return "json";
+    if (/\.(mjs|cjs|js)$/.test(lower)) return "javascript";
+    return "text";
+}
+
 export function selectAdminConsole(state) {
     const admin = state.admin || {};
     const profile = admin.profile || null;
@@ -3546,7 +3791,380 @@ export function selectAdminConsole(state) {
                     ? "Configured (overrides env GITHUB_TOKEN for this user)"
                     : "Not configured (using env GITHUB_TOKEN fallback)");
 
+    // ── Agent packages view-model (Admin → Agents) ───────────────
+    const pkgState = admin.packages || {};
+    const pkgList = Array.isArray(pkgState.list) ? pkgState.list : [];
+    const ownsPackage = (pkg) => Boolean(
+        isAdmin
+        || (pkg?.owner && principal
+            && pkg.owner.provider === principal.provider
+            && pkg.owner.subject === principal.subject),
+    );
+    // Built once per render, not per row.
+    const ownerDirectory = ownerDirectoryFromSessions(state?.sessions?.byId);
+    const packageRow = (pkg) => ({
+        name: pkg.name,
+        scope: pkg.scope === "shared" ? "shared" : "user",
+        enabled: Boolean(pkg.enabled),
+        semver: pkg.active?.semver || null,
+        sha7: pkg.active?.sha256 ? String(pkg.active.sha256).slice(0, 7) : null,
+        agentCount: Array.isArray(pkg.active?.manifest?.agents) ? pkg.active.manifest.agents.length : 0,
+        canManage: ownsPackage(pkg),
+        // A user-scope package belongs to a PERSON, so it carries the same
+        // owner-initials chip the session rows use. Shared packages belong to
+        // the deployment and keep the scope badge instead.
+        // Resolved against the session-owner directory so the initials are the
+        // PERSON's, matching the session list exactly.
+        ownerBadge: pkg.scope === "shared" ? null : ownerBadgeFor(resolvePackageOwner(pkg, ownerDirectory)),
+        // Highlight only while the Agents section is active — otherwise the
+        // GitHub Keys screen shows a double selection.
+        selected: admin.section === "packages" && pkgState.selectedName === pkg.name,
+    });
+    // Admins are served every user-scope package, but another person's private
+    // agents are not part of YOUR workspace — keep them out of the main tree
+    // and behind an explicit "Other users" group so the list stays yours.
+    const isMinePackage = (pkg) => Boolean(
+        pkg?.owner && principal
+        && pkg.owner.provider === principal.provider
+        && pkg.owner.subject === principal.subject,
+    );
+    // The owner filter is a statement about WHOSE work you want to see, and it
+    // means the same thing here: with Sean filtered out, Sean's private agents
+    // are not part of your workspace either.
+    //
+    // NOT matchesOwnerFilterDirect: for sessions, `includeShared` means "things
+    // other people shared WITH me", a real relation that earns them a place in
+    // your list. Another person's private package has no such relation — you
+    // only see it because you are an admin — so reusing that rule would let
+    // every other user's package through and the filter would do nothing.
+    // Someone else's agents appear only when you asked for that someone (or
+    // for everyone). Your own and the deployment's shared packages are always
+    // yours to see, exactly as session groups are exempt.
+    const ownerFilter = state.sessions?.ownerFilter;
+    const passesOwnerFilter = (pkg) => {
+        if (!ownerFilter || ownerFilter.all === true) return true;
+        const ownerKey = ownerKeyForOwner(pkg?.owner);
+        if (!ownerKey) return ownerFilter.includeUnowned === true;
+        return Array.isArray(ownerFilter.ownerKeys) && ownerFilter.ownerKeys.includes(ownerKey);
+    };
+    const sharedRows = pkgList.filter((pkg) => pkg.scope === "shared").map(packageRow);
+    const userRows = pkgList
+        .filter((pkg) => pkg.scope !== "shared" && isMinePackage(pkg))
+        .map(packageRow);
+    const otherUserRows = pkgList
+        .filter((pkg) => pkg.scope !== "shared" && !isMinePackage(pkg) && passesOwnerFilter(pkg))
+        .map((pkg) => ({ ...packageRow(pkg), ownerLabel: pkg?.createdBy || pkg?.owner?.subject || "another user" }));
+
+    // Settings tree — the session-list-slot navigation. Rendered by both
+    // hosts; `kind` drives affordances (section rows switch panes, package
+    // rows select a package).
+    const section = ["packages", "workers"].includes(admin.section) ? admin.section : "ghcp";
+    const settingsTree = [
+        { id: "ghcp", kind: "section", depth: 0, label: "GitHub Keys", selected: section === "ghcp" },
+        { id: "agents", kind: "section", depth: 0, label: "Agents", selected: section === "packages" && !pkgState.selectedName },
+        { id: "group:shared", kind: "group", depth: 1, label: "Shared", count: sharedRows.length },
+        ...sharedRows.map((row) => ({ id: `pkg:${row.name}`, kind: "package", depth: 2, label: row.name, ...row })),
+        { id: "group:user", kind: "group", depth: 1, label: "User", count: userRows.length },
+        ...userRows.map((row) => ({ id: `pkg:${row.name}`, kind: "package", depth: 2, label: row.name, ...row })),
+        ...(otherUserRows.length > 0
+            ? [
+                { id: "group:others", kind: "group", depth: 1, label: "Other users", count: otherUserRows.length },
+                ...otherUserRows.map((row) => ({ id: `pkg:${row.name}`, kind: "package", depth: 2, label: row.name, ...row })),
+            ]
+            : []),
+        // The worker registry is a hard-gated admin read; hide the section
+        // entirely from non-admins rather than showing a doomed pane.
+        ...(isAdmin ? [{ id: "workers", kind: "section", depth: 0, label: "Workers", selected: section === "workers" }] : []),
+    ];
+
+    // Detail view-model for the selected package.
+    const detail = pkgState.detail || null;
+    let packageDetail = null;
+    if (pkgState.selectedName) {
+        const summary = pkgList.find((pkg) => pkg.name === pkgState.selectedName) || null;
+        const activeVersion = detail?.versions?.find((v) => v.versionId === detail.activeVersionId) || null;
+        const manifest = activeVersion?.manifest || summary?.active?.manifest || {};
+        // Workers are ephemeral pods: rows for retired pod names linger until
+        // the server-side prune, so fleet adoption counts only workers whose
+        // heartbeat (updated_at, touched every ~20s poll) is fresh.
+        const FLEET_LIVENESS_MS = 90_000;
+        const liveCutoff = Date.now() - FLEET_LIVENESS_MS;
+        const workerRows = (Array.isArray(pkgState.workerState) ? pkgState.workerState : [])
+            .filter((worker) => {
+                const at = worker?.updatedAt instanceof Date ? worker.updatedAt : new Date(worker?.updatedAt ?? 0);
+                return !Number.isNaN(at.getTime()) && at.getTime() >= liveCutoff;
+            });
+        const fleetTotal = workerRows.length;
+        const fleetCurrent = activeVersion
+            ? workerRows.filter((worker) => worker.installed?.[pkgState.selectedName]?.semver === activeVersion.semver
+                && worker.installed?.[pkgState.selectedName]?.status === "ok").length
+            : 0;
+        const canManage = detail ? ownsPackage(detail) : (summary ? ownsPackage(summary) : false);
+        packageDetail = {
+            name: pkgState.selectedName,
+            loading: Boolean(pkgState.detailLoading),
+            error: pkgState.detailError || null,
+            scope: (detail?.scope || summary?.scope) === "shared" ? "shared" : "user",
+            enabled: detail ? Boolean(detail.enabled) : Boolean(summary?.enabled),
+            canManage,
+            createdBy: detail?.createdBy || summary?.createdBy || null,
+            createdAtText: adminPkgDate(detail?.createdAt || summary?.createdAt),
+            description: typeof manifest.description === "string" ? manifest.description : "",
+            activeSemver: activeVersion?.semver || summary?.active?.semver || null,
+            activeSha12: activeVersion?.sha256 ? String(activeVersion.sha256).slice(0, 12) : null,
+            sizeText: adminPkgSize(activeVersion?.sizeBytes ?? summary?.active?.sizeBytes),
+            agents: Array.isArray(manifest.agents)
+                ? manifest.agents.map((agent) => ({
+                    name: agent.name,
+                    description: agent.description || "",
+                    toolCount: Array.isArray(agent.tools) ? agent.tools.length : 0,
+                    skillCount: Array.isArray(agent.skills) ? agent.skills.length : 0,
+                }))
+                : [],
+            versions: (detail?.versions || []).map((version) => ({
+                semver: version.semver,
+                sha12: String(version.sha256 || "").slice(0, 12),
+                dateText: adminPkgDate(version.createdAt),
+                active: version.versionId === detail?.activeVersionId,
+            })),
+            fleet: fleetTotal > 0 && activeVersion
+                ? { current: fleetCurrent, total: fleetTotal, text: `${fleetCurrent}/${fleetTotal} workers current` }
+                : null,
+            actionPending: pkgState.action?.pending || null,
+            actionError: pkgState.action?.error || null,
+        };
+    }
+
+    // Workspace view-model: nested tree rows honoring expandedDirs + preview.
+    const workspaceState = pkgState.workspace || {};
+    let workspace = null;
+    if (pkgState.selectedName) {
+        const tree = workspaceState.tree;
+        const expanded = new Set(workspaceState.expandedDirs || []);
+        const treeRows = [];
+        if (tree) {
+            const visible = (relPath) => {
+                const parts = relPath.split("/");
+                for (let i = 1; i < parts.length; i++) {
+                    if (!expanded.has(parts.slice(0, i).join("/"))) return false;
+                }
+                return true;
+            };
+            const treeDirs = Array.isArray(tree.dirs) ? tree.dirs : [];
+            const treeFiles = Array.isArray(tree.files) ? tree.files : [];
+            // Segment-aware sort: "/" must sort before every sibling char or a
+            // dir separates from its children (agents/ vs agents-guide.md).
+            const sortKey = (value) => String(value).split("/").join("\u0000");
+            const nodes = [
+                ...treeDirs.map((dir) => ({ type: "dir", path: dir })),
+                ...treeFiles.map((file) => ({ type: "file", path: file.path, size: file.size })),
+            ].sort((a, b) => (sortKey(a.path) < sortKey(b.path) ? -1 : 1));
+            for (const node of nodes) {
+                if (!visible(node.path)) continue;
+                const depth = node.path.split("/").length - 1;
+                treeRows.push({
+                    type: node.type,
+                    path: node.path,
+                    label: node.path.split("/").pop() + (node.type === "dir" ? "/" : ""),
+                    depth,
+                    expanded: node.type === "dir" ? expanded.has(node.path) : undefined,
+                    sizeText: node.type === "file" ? adminPkgSize(node.size) : null,
+                    selected: workspaceState.selectedPath === node.path,
+                });
+            }
+        }
+        const file = workspaceState.file;
+        workspace = {
+            loading: Boolean(workspaceState.treeLoading),
+            error: workspaceState.treeError || null,
+            semver: workspaceState.tree?.semver || null,
+            treeRows,
+            file: file
+                ? {
+                    path: file.path,
+                    sizeText: adminPkgSize(file.size),
+                    truncated: Boolean(file.truncated),
+                    isBinary: file.encoding === "base64",
+                    text: file.encoding === "base64" ? null : String(file.content || ""),
+                    language: adminPkgLanguage(file.path),
+                }
+                : null,
+            fileLoading: Boolean(workspaceState.fileLoading),
+            fileError: workspaceState.fileError || null,
+            selectedPath: workspaceState.selectedPath || null,
+        };
+    }
+
+    // ── Worker registry (Admin → Workers) ────────────────────────
+    // Rows self-prune server-side after 1h; the UI additionally marks a
+    // worker live only when its heartbeat is younger than the same 90s
+    // window the fleet-adoption count uses.
+    const workersState = admin.workers || {};
+    const workerList = Array.isArray(workersState.list) ? workersState.list : [];
+    const WORKERS_LIVE_MS = 90_000;
+    const workersNow = Date.now();
+    const workerAgo = (ms) => {
+        if (!Number.isFinite(ms) || ms < 0) return "—";
+        if (ms < 60_000) return `${Math.round(ms / 1000)}s ago`;
+        if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m ago`;
+        return `${Math.round(ms / 3_600_000)}h ago`;
+    };
+    const workerUptime = (seconds) => {
+        if (!Number.isFinite(seconds) || seconds < 0) return null;
+        if (seconds < 60) return `${Math.round(seconds)}s`;
+        if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+        const h = Math.floor(seconds / 3600);
+        return h < 48 ? `${h}h ${Math.floor((seconds % 3600) / 60)}m` : `${Math.floor(h / 24)}d ${h % 24}h`;
+    };
+    const workerRegistryRows = workerList
+        .map((worker) => {
+            const at = worker?.updatedAt instanceof Date ? worker.updatedAt : new Date(worker?.updatedAt ?? 0);
+            const ageMs = Number.isNaN(at.getTime()) ? Number.NaN : workersNow - at.getTime();
+            const health = worker?.health || {};
+            const info = worker?.info || {};
+            const pkg = worker?.state?.["agent-packages"] || null;
+            const installed = pkg?.installed && typeof pkg.installed === "object" ? Object.values(pkg.installed) : [];
+            const pkgErrors = installed.filter((entry) => entry?.status === "error").length;
+            return {
+                id: String(worker?.workerNodeId ?? ""),
+                pool: String(worker?.pool ?? "default"),
+                phase: ["starting", "ready", "draining"].includes(worker?.phase) ? worker.phase : "ready",
+                live: Number.isFinite(ageMs) && ageMs <= WORKERS_LIVE_MS,
+                agoText: workerAgo(ageMs),
+                uptimeText: workerUptime(health.uptimeS),
+                rssText: adminPkgSize(health.rssBytes),
+                sessions: Number.isFinite(health.activeSessions) ? health.activeSessions : null,
+                eventLoopText: Number.isFinite(health.eventLoopDelayP99Ms) ? `${health.eventLoopDelayP99Ms}ms` : null,
+                sdkVersion: typeof info.sdkVersion === "string" ? info.sdkVersion : null,
+                substrate: typeof info.runtime?.substrate === "string" ? info.runtime.substrate : null,
+                consumes: Array.isArray(info.consumes) ? info.consumes : [],
+                owner: worker?.owner?.subject ? String(worker.owner.subject) : null,
+                pkgEpoch: Number.isFinite(pkg?.epoch) ? pkg.epoch : null,
+                pkgText: pkg
+                    ? `${installed.length - pkgErrors} ok${pkgErrors ? ` · ${pkgErrors} error` : ""}`
+                    : null,
+            };
+        })
+        .sort((a, b) => (a.pool === b.pool ? (a.id < b.id ? -1 : 1) : (a.pool < b.pool ? -1 : 1)));
+    const liveWorkerRows = workerRegistryRows.filter((row) => row.live);
+    const workersView = {
+        loading: Boolean(workersState.loading),
+        error: workersState.error || null,
+        empty: workerRegistryRows.length === 0 && !workersState.loading,
+        rows: workerRegistryRows,
+        counts: {
+            registered: workerRegistryRows.length,
+            live: liveWorkerRows.length,
+            ready: liveWorkerRows.filter((row) => row.phase === "ready").length,
+            starting: liveWorkerRows.filter((row) => row.phase === "starting").length,
+            draining: liveWorkerRows.filter((row) => row.phase === "draining").length,
+            pools: [...new Set(liveWorkerRows.map((row) => row.pool))].length,
+        },
+        summaryText: workerRegistryRows.length
+            ? `${liveWorkerRows.length} live / ${workerRegistryRows.length} registered`
+            : null,
+    };
+
+    const packagesView = {
+        loading: Boolean(pkgState.loading),
+        error: pkgState.error || null,
+        empty: pkgList.length === 0 && !pkgState.loading,
+        sharedCount: sharedRows.length,
+        userCount: userRows.length,
+        selectedName: pkgState.selectedName || null,
+        detail: packageDetail,
+        workspace,
+        addDialog: {
+            open: Boolean(pkgState.addDialog?.open),
+            kind: pkgState.addDialog?.kind || "repo",
+            scope: pkgState.addDialog?.scope || "user",
+            repoUrl: pkgState.addDialog?.repoUrl || "",
+            ref: pkgState.addDialog?.ref || "",
+            path: pkgState.addDialog?.path || "",
+            url: pkgState.addDialog?.url || "",
+            authToken: pkgState.addDialog?.authToken || "",
+            submitting: Boolean(pkgState.addDialog?.submitting),
+            progress: pkgState.addDialog?.progress || null,
+            error: pkgState.addDialog?.error || null,
+        },
+    };
+
     const actions = [];
+    if (section === "workers") {
+        actions.push({ id: "workersRefresh", label: "Refresh workers", key: "r" });
+        actions.push({ id: "showPackages", label: "Agents", key: "a" });
+        actions.push({ id: "showGhcp", label: "GitHub Keys", key: "g" });
+        actions.push({ id: "close", label: "Close console", key: "Esc" });
+        return {
+            visible: Boolean(admin.visible),
+            loading: Boolean(admin.loading),
+            loadError: admin.loadError || null,
+            principal,
+            isAdmin,
+            section,
+            settingsTree,
+            packages: packagesView,
+            workers: workersView,
+            ghcpKey: {
+                configured: Boolean(profile?.githubCopilotKeySet),
+                targetConfigured,
+                storeAsSystem,
+                editing: false,
+                draft: "",
+                cursorIndex: 0,
+                saving: false,
+                error: null,
+                statusText: ghcpStatusText,
+            },
+            systemGhcpKey: {
+                supported: Boolean(systemGhcpKey.supported),
+                loading: Boolean(systemGhcpKey.loading),
+                configured: Boolean(systemGhcpKey.configured),
+                changedBy: systemGhcpKey.changedBy || null,
+                changedAt: systemGhcpKey.changedAt || null,
+                error: systemGhcpKey.error || null,
+            },
+            actions,
+        };
+    }
+    if (section === "packages") {
+        actions.push({ id: "packagesRefresh", label: "Refresh packages", key: "r" });
+        actions.push({ id: "packagesNext", label: "Next package", key: "j" });
+        actions.push({ id: "packagesPrev", label: "Previous package", key: "k" });
+        actions.push({ id: "showGhcp", label: "GitHub Keys", key: "g" });
+        actions.push({ id: "close", label: "Close console", key: "Esc" });
+        return {
+            visible: Boolean(admin.visible),
+            loading: Boolean(admin.loading),
+            loadError: admin.loadError || null,
+            principal,
+            isAdmin,
+            section,
+            settingsTree,
+            packages: packagesView,
+            workers: workersView,
+            ghcpKey: {
+                configured: Boolean(profile?.githubCopilotKeySet),
+                targetConfigured,
+                storeAsSystem,
+                editing: false,
+                draft: "",
+                cursorIndex: 0,
+                saving: false,
+                error: null,
+                statusText: ghcpStatusText,
+            },
+            systemGhcpKey: {
+                supported: Boolean(systemGhcpKey.supported),
+                loading: Boolean(systemGhcpKey.loading),
+                configured: Boolean(systemGhcpKey.configured),
+                changedBy: systemGhcpKey.changedBy || null,
+                changedAt: systemGhcpKey.changedAt || null,
+                error: systemGhcpKey.error || null,
+            },
+            actions,
+        };
+    }
     if (!ghcpKey.editing) {
         actions.push({ id: "edit", label: targetConfigured ? `Replace ${keyNoun}` : `Set ${keyNoun}`, key: "e" });
         if (targetConfigured) {
@@ -3559,12 +4177,19 @@ export function selectAdminConsole(state) {
     }
     actions.push({ id: "close", label: "Close console", key: ghcpKey.editing ? "Ctrl+Esc" : "Esc" });
 
+    if (section === "ghcp") {
+        actions.splice(actions.length - 1, 0, { id: "showPackages", label: "Agents", key: "a" });
+    }
     return {
         visible: Boolean(admin.visible),
         loading: Boolean(admin.loading),
         loadError: admin.loadError || null,
         principal,
         isAdmin,
+        section,
+        settingsTree,
+        packages: packagesView,
+        workers: workersView,
         ghcpKey: {
             configured: Boolean(profile?.githubCopilotKeySet),
             targetConfigured,
@@ -4611,92 +5236,228 @@ function buildNodeMapCell(session, brandingTitle, width, active) {
     };
 }
 
-function buildNodeMapLines(state, maxWidth, options = {}) {
-    const allowWideColumns = Boolean(options?.allowWideColumns);
-    const orderedSessionIds = buildOrderedSessionIds(state);
-    if (orderedSessionIds.length === 0) {
-        return [plainInspectorLine("No sessions available for the node map.", "gray")];
+function nodeMapAgoText(ms) {
+    if (!Number.isFinite(ms) || ms < 0) return null;
+    if (ms < 60_000) return `${Math.round(ms / 1000)}s ago`;
+    if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m ago`;
+    return `${Math.round(ms / 3_600_000)}h ago`;
+}
+
+function nodeMapUptimeText(seconds) {
+    if (!Number.isFinite(seconds) || seconds < 0) return null;
+    if (seconds < 60) return `${Math.round(seconds)}s`;
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+    const h = Math.floor(seconds / 3600);
+    return h < 48 ? `${h}h ${Math.floor((seconds % 3600) / 60)}m` : `${Math.floor(h / 24)}d ${h % 24}h`;
+}
+
+function nodeMapSessionEntry(session, brandingTitle, active) {
+    const label = session?.isSystem
+        ? canonicalSystemTitle(session, brandingTitle)
+        : (session?.title || shortSessionId(session?.sessionId));
+    const prefix = session?.isSystem ? "⚙ " : session?.serviceKind ? "⚗ " : `${sessionStatusIcon(session) || "."} `;
+    return {
+        sessionId: session?.sessionId || null,
+        text: `${prefix}${label}`,
+        color: session?.isSystem ? "yellow" : sessionStatusColor(session),
+        bold: Boolean(session?.isSystem),
+        active: Boolean(active),
+    };
+}
+
+/**
+ * Node Map view-model — registry-first (docs/proposals/worker-registry.md).
+ *
+ * Nodes lead with the WORKER REGISTRY: every registered worker with phase,
+ * pool, and health specs, unioned with any node seen in recent activity
+ * history (covers deployments/credentials without registry access — the view
+ * degrades to activity-derived nodes rather than going blank). Sessions map
+ * onto nodes exactly the way the legacy grid mapped them: last known
+ * workerNodeId in the recent window. Both hosts render from this one VM.
+ */
+export function selectNodeMapView(state) {
+    const recentWindow = getRecentActivityWindow(state);
+    const brandingTitle = state.branding?.title || "PilotSwarm";
+    const activeSessionId = state.sessions.activeSessionId;
+    const registry = Array.isArray(state.admin?.workers?.list) ? state.admin.workers.list : [];
+    const now = Date.now();
+    const NODE_LIVE_MS = 90_000;
+
+    const byLabel = new Map();
+    for (const worker of registry) {
+        const label = shortNodeLabel(worker?.workerNodeId);
+        if (!label) continue;
+        const at = worker?.updatedAt instanceof Date ? worker.updatedAt.getTime() : new Date(worker?.updatedAt ?? 0).getTime();
+        const ageMs = Number.isFinite(at) ? now - at : Number.NaN;
+        const health = worker?.health || {};
+        byLabel.set(label, {
+            label,
+            workerNodeId: String(worker?.workerNodeId ?? ""),
+            registered: true,
+            live: Number.isFinite(ageMs) && ageMs <= NODE_LIVE_MS,
+            phase: ["starting", "ready", "draining"].includes(worker?.phase) ? worker.phase : "ready",
+            pool: String(worker?.pool ?? "default"),
+            agoText: nodeMapAgoText(ageMs),
+            uptimeText: nodeMapUptimeText(health.uptimeS),
+            rssText: Number.isFinite(health.rssBytes) ? adminPkgSize(health.rssBytes) : null,
+            heapText: Number.isFinite(health.heapUsedBytes) ? adminPkgSize(health.heapUsedBytes) : null,
+            eventLoopText: Number.isFinite(health.eventLoopDelayP99Ms) ? `${health.eventLoopDelayP99Ms}ms` : null,
+            sessions: Number.isFinite(health.activeSessions) ? health.activeSessions : null,
+            sdkVersion: typeof worker?.info?.sdkVersion === "string" ? worker.info.sdkVersion : null,
+            substrate: typeof worker?.info?.runtime?.substrate === "string" ? worker.info.runtime.substrate : null,
+            capabilities: worker?.info?.capabilities && typeof worker.info.capabilities === "object"
+                ? Object.entries(worker.info.capabilities).filter(([, on]) => Boolean(on)).map(([cap]) => cap).sort()
+                : [],
+            consumes: Array.isArray(worker?.info?.consumes) ? worker.info.consumes : [],
+            owner: worker?.owner?.subject ? String(worker.owner.subject) : null,
+            pkgEpoch: Number.isFinite(worker?.state?.["agent-packages"]?.epoch) ? worker.state["agent-packages"].epoch : null,
+            pkgInstalled: worker?.state?.["agent-packages"]?.installed && typeof worker.state["agent-packages"].installed === "object"
+                ? Object.entries(worker.state["agent-packages"].installed).map(([name, entry]) => ({
+                    name,
+                    semver: entry?.semver ?? null,
+                    status: entry?.status === "error" ? "error" : "ok",
+                    error: entry?.error ? String(entry.error) : null,
+                }))
+                : [],
+            pkgLastError: worker?.state?.["agent-packages"]?.lastError ? String(worker.state["agent-packages"].lastError) : null,
+            executing: [],
+        });
+    }
+    for (const label of buildNodeMapNodeUnionForWindow(state, recentWindow)) {
+        if (byLabel.has(label)) continue;
+        byLabel.set(label, {
+            label, workerNodeId: null, registered: false, live: true,
+            phase: null, pool: null, agoText: null, uptimeText: null,
+            rssText: null, heapText: null, eventLoopText: null, sessions: null,
+            sdkVersion: null, substrate: null, capabilities: [], consumes: [],
+            owner: null, pkgEpoch: null, pkgInstalled: [], pkgLastError: null,
+            executing: [],
+        });
     }
 
-    const recentWindow = getRecentActivityWindow(state);
-    const nodeSessionMap = new Map();
-    const knownNodes = buildNodeMapNodeUnionForWindow(state, recentWindow);
+    // Sessions → nodes: last known workerNodeId inside the recent window.
     let missingHistoryCount = 0;
-    let inWindowSessionCount = 0;
-
-    for (const sessionId of orderedSessionIds) {
+    for (const sessionId of buildOrderedSessionIds(state)) {
         const session = state.sessions.byId[sessionId];
         if (!session) continue;
         const history = state.history.bySessionId.get(sessionId);
         if (!history?.events) missingHistoryCount += 1;
         const nodeLabel = getLastKnownSessionNode(history, recentWindow);
-        if (!nodeLabel || !knownNodes.includes(nodeLabel)) continue;
-        inWindowSessionCount += 1;
-        if (!nodeSessionMap.has(nodeLabel)) {
-            nodeSessionMap.set(nodeLabel, []);
+        const node = nodeLabel ? byLabel.get(nodeLabel) : null;
+        if (!node) continue;
+        node.executing.push(nodeMapSessionEntry(session, brandingTitle, sessionId === activeSessionId));
+    }
+
+    const nodes = Array.from(byLabel.values()).sort((a, b) => {
+        if (a.registered !== b.registered) return a.registered ? -1 : 1;
+        if (a.live !== b.live) return a.live ? -1 : 1;
+        const poolCmp = String(a.pool ?? "~").localeCompare(String(b.pool ?? "~"));
+        if (poolCmp !== 0) return poolCmp;
+        return a.label.localeCompare(b.label);
+    });
+    nodes.forEach((node, index) => { node.ordinal = index + 1; });
+
+    const registeredNodes = nodes.filter((node) => node.registered);
+    // A node is always selected while the Node Map is up: the remembered
+    // choice when it is still in the fleet, otherwise the first row. The
+    // remembered value is never cleared, so switching away and back restores
+    // it — and a worker that vanishes falls back instead of blanking.
+    const remembered = state.ui?.nodeMapSelectedNode;
+    const selected = (remembered && nodes.some((node) => node.label === remembered))
+        ? remembered
+        : (nodes[0]?.label ?? null);
+
+    return {
+        windowLabel: recentWindow.label,
+        degraded: registeredNodes.length === 0,
+        registryError: state.admin?.workers?.error || null,
+        registryFetchedAt: state.admin?.workers?.fetchedAt || 0,
+        registryLoading: Boolean(state.admin?.workers?.loading),
+        registryAttempts: state.admin?.workers?.attempts || 0,
+        registryLastAttemptAt: state.admin?.workers?.lastAttemptAt || 0,
+        registryLastSkip: state.admin?.workers?.lastSkip || null,
+        registered: registeredNodes.length,
+        liveCount: registeredNodes.filter((node) => node.live).length,
+        executingTotal: nodes.reduce((sum, node) => sum + node.executing.length, 0),
+        missingHistoryCount,
+        selected,
+        nodes,
+    };
+}
+
+function buildNodeMapLines(state, maxWidth, options = {}) {
+    void options;
+    const view = selectNodeMapView(state);
+    if (view.nodes.length === 0) {
+        return [plainInspectorLine(
+            view.degraded
+                ? `No workers registered and no worker activity in the ${view.windowLabel} window.`
+                : `No worker activity in the ${view.windowLabel} window.`,
+            "gray")];
+    }
+
+    const lines = [];
+    lines.push([{
+        text: view.degraded
+            ? `Nodes (activity-derived) · window ${view.windowLabel}`
+            : `Nodes · ${view.liveCount} live / ${view.registered} registered · window ${view.windowLabel}`,
+        color: "gray",
+    }]);
+    if (view.degraded) {
+        // Say WHY the registry is absent — three different failures used to
+        // collapse into one silent "(activity-derived)" header.
+        if (view.registryError) {
+            lines.push([{ text: `! worker registry unavailable: ${view.registryError}`, color: "red" }]);
+        } else if (view.registryFetchedAt) {
+            lines.push([{ text: "registry reachable but EMPTY — no worker has heartbeated in the last hour", color: "yellow" }]);
+        } else if (view.registryLoading) {
+            lines.push([{ text: "registry request in flight… (times out red after 10s)", color: "yellow" }]);
+        } else if (view.registryAttempts === 0) {
+            // No attempt has EVER been recorded: the refresh call is not
+            // reaching the controller at all (host wiring), which used to be
+            // indistinguishable from "the fetch failed".
+            lines.push([{ text: "registry refresh has NEVER been attempted in this tab — reload; if it persists the refresh call is not reaching the controller", color: "red" }]);
+        } else {
+            const ago = view.registryLastAttemptAt ? Math.round((Date.now() - view.registryLastAttemptAt) / 1000) : null;
+            lines.push([{
+                text: `registry attempted ${view.registryAttempts}× (last ${ago === null ? "?" : `${ago}s`} ago${view.registryLastSkip ? `, skipped: ${view.registryLastSkip}` : ""}) but no rows and no error — reload if this persists`,
+                color: "yellow",
+            }]);
         }
-        nodeSessionMap.get(nodeLabel).push(session);
     }
+    lines.push(plainInspectorLine("", "gray"));
 
-    if (knownNodes.length === 0) {
-        return [plainInspectorLine(`No worker activity in the ${recentWindow.label} window.`, "gray")];
-    }
-
-    const availableWidth = Math.max(18, maxWidth);
-    const maxColumns = Math.max(1, Math.floor((availableWidth + 1) / 10));
-    let nodeLabels = knownNodes;
-    if (!allowWideColumns && knownNodes.length > maxColumns) {
-        const visibleCount = Math.max(0, maxColumns - 1);
-        const overflowSessions = [];
-        const visibleLabels = knownNodes.slice(0, visibleCount);
-        for (const hiddenLabel of knownNodes.slice(visibleCount)) {
-            overflowSessions.push(...(nodeSessionMap.get(hiddenLabel) || []));
+    for (const node of view.nodes) {
+        const isSelected = node.label === view.selected;
+        const dot = node.live ? "●" : "○";
+        const dotColor = !node.live ? "gray" : node.phase === "draining" ? "red" : node.phase === "starting" ? "yellow" : "green";
+        const runs = [
+            { text: isSelected ? "› " : "  ", color: "green", bold: isSelected, nodeSelect: node.label, nodeSelected: isSelected },
+            { text: node.ordinal <= 9 ? `${node.ordinal} ` : "  ", color: "gray", nodeSelect: node.label },
+            { text: `${dot} `, color: dotColor, nodeSelect: node.label },
+            { text: node.label.padEnd(7), color: isSelected ? "white" : node.live ? "white" : "gray", bold: isSelected, nodeSelect: node.label },
+        ];
+        if (node.registered) {
+            runs.push({ text: ` ${(node.phase || "").padEnd(8)}`, color: dotColor, nodeSelect: node.label });
+            runs.push({ text: ` ${node.pool}`, color: "gray", nodeSelect: node.label });
+            const specs = [
+                node.executing.length ? `${node.executing.length} sess` : null,
+                node.rssText, node.uptimeText ? `up ${node.uptimeText}` : null, node.agoText,
+            ].filter(Boolean).join(" · ");
+            if (specs) runs.push({ text: `  ${specs}`, color: "gray", nodeSelect: node.label });
+        } else {
+            runs.push({ text: "  activity only", color: "gray", nodeSelect: node.label });
+            if (node.executing.length) runs.push({ text: ` · ${node.executing.length} sess`, color: "gray", nodeSelect: node.label });
         }
-        nodeSessionMap.set("…", overflowSessions);
-        nodeLabels = [...visibleLabels, "…"];
+        lines.push(trimTrailingRunPad(runs));
     }
 
-    const gapWidth = Math.max(0, nodeLabels.length - 1);
-    const colWidth = Math.max(8, Math.floor((availableWidth - gapWidth) / Math.max(1, nodeLabels.length)));
-    const maxRows = nodeLabels.reduce(
-        (max, nodeLabel) => Math.max(max, (nodeSessionMap.get(nodeLabel) || []).length),
-        0,
-    );
+    lines.push(plainInspectorLine("", "gray"));
+    lines.push(plainInspectorLine("Click a node (or press 1-9) — its details fill the pane below.", "gray"));
 
-    const lines = [
-        plainInspectorLine(`Window: ${recentWindow.label}`, "gray"),
-        buildNodeMapHeaderLine(nodeLabels, colWidth),
-        plainInspectorLine(nodeLabels.map(() => "─".repeat(colWidth)).join(" "), "gray"),
-    ];
-
-    for (let rowIndex = 0; rowIndex < maxRows; rowIndex += 1) {
-        const rowRuns = [];
-        nodeLabels.forEach((nodeLabel, columnIndex) => {
-            if (columnIndex > 0) rowRuns.push({ text: " ", color: null });
-            const session = (nodeSessionMap.get(nodeLabel) || [])[rowIndex];
-            if (!session) {
-                rowRuns.push({ text: " ".repeat(colWidth), color: null });
-                return;
-            }
-            rowRuns.push(buildNodeMapCell(
-                session,
-                state.branding?.title || "PilotSwarm",
-                colWidth,
-                session.sessionId === state.sessions.activeSessionId,
-            ));
-        });
-        lines.push(rowRuns);
+    if (view.missingHistoryCount > 0) {
+        lines.push(plainInspectorLine(`Loading worker history for ${view.missingHistoryCount} session(s)…`, "gray"));
     }
-
-    if (missingHistoryCount > 0) {
-        lines.push(plainInspectorLine("", "gray"));
-        lines.push(plainInspectorLine(`Loading worker history for ${missingHistoryCount} session(s)…`, "gray"));
-    }
-    if (inWindowSessionCount === 0) {
-        lines.push(plainInspectorLine("", "gray"));
-        lines.push(plainInspectorLine(`No sessions mapped onto worker nodes in the ${recentWindow.label} window.`, "gray"));
-    }
-
     return lines;
 }
 
@@ -4804,18 +5565,40 @@ export function selectSessionAgentPickerModal(state, maxWidth = 76) {
     const items = Array.isArray(modal.items) ? modal.items : [];
     const selectedIndex = Math.max(0, Number(modal.selectedIndex) || 0);
     const contentWidth = Math.max(24, maxWidth - 4);
-    const rows = items.map((item, index) => {
+    // Items arrive pre-sorted Shared → My agents → Generic (controller);
+    // emit a non-clickable heading row at each group boundary. rowItemIndexes
+    // maps rendered rows back to item indexes (null = heading) — the same
+    // mechanism the model picker uses.
+    const GROUP_HEADINGS = { shared: "Shared", mine: "My agents", generic: "" };
+    // Package-scope vocabulary only makes sense when packages exist: a pure
+    // baked deployment keeps the classic flat list, no headings.
+    const hasPackageItems = items.some((item) => item?.packageName);
+    const rows = [];
+    const rowItemIndexes = [];
+    let lastGroup = null;
+    items.forEach((item, index) => {
+        const group = item?.group || "shared";
+        if (hasPackageItems && group !== lastGroup) {
+            const heading = GROUP_HEADINGS[group] ?? "";
+            rows.push([{ text: heading ? `── ${heading} ──` : "──", color: "gray" }]);
+            rowItemIndexes.push(null);
+            lastGroup = group;
+        }
         const isSelected = index === selectedIndex;
+        const suffix = item?.kind === "generic"
+            ? " [generic]"
+            : item?.packageName
+                ? ` ${item.packageName} ${item.packageSemver || ""}`.trimEnd()
+                : ` (${item?.agentName || item?.id || "agent"})`;
         const labelRuns = fitRuns([
             { text: item?.kind === "generic" ? "○ " : "· ", color: "gray" },
             { text: item?.title || item?.agentName || item?.id || "Agent", color: "white", bold: true },
-            ...(item?.kind === "generic"
-                ? [{ text: " [generic]", color: "gray" }]
-                : [{ text: ` (${item?.agentName || item?.id || "agent"})`, color: "gray" }]),
+            { text: suffix, color: "gray" },
         ], contentWidth);
-        return isSelected
+        rows.push(isSelected
             ? buildActiveHighlightLine(labelRuns.map((run) => run.text).join("").padEnd(contentWidth, " "))
-            : labelRuns;
+            : labelRuns);
+        rowItemIndexes.push(index);
     });
 
     const selectedItem = items[selectedIndex] || null;
@@ -4831,6 +5614,9 @@ export function selectSessionAgentPickerModal(state, maxWidth = 76) {
             ...(selectedItem.kind === "generic"
                 ? [[{ text: "Open-ended session", color: "gray" }]]
                 : [[{ text: selectedItem.agentName || selectedItem.id || "agent", color: "gray" }]]),
+            ...(selectedItem.packageName
+                ? [[{ text: `Package: ${selectedItem.packageName}@${selectedItem.packageSemver || "?"} · ${selectedItem.packageScope || "shared"}`, color: "gray" }]]
+                : (selectedItem.kind === "agent" ? [[{ text: "Built-in agent", color: "gray" }]] : [])),
             ...(selectedModel ? [[{ text: `Model: ${selectedModel}`, color: "gray" }]] : []),
             ...(selectedReasoningEffort ? [[{ text: `Reasoning: ${selectedReasoningEffort}`, color: "gray" }]] : []),
             [{ text: "", color: "gray" }],
@@ -4852,10 +5638,12 @@ export function selectSessionAgentPickerModal(state, maxWidth = 76) {
         ]
         : [[{ text: "No agent selected.", color: "gray" }]];
 
+    const selectedRowIndex = rowItemIndexes.indexOf(selectedIndex);
     return {
         title: modal.title || "Select agent for new session",
         rows,
-        selectedRowIndex: selectedIndex,
+        rowItemIndexes,
+        selectedRowIndex: selectedRowIndex >= 0 ? selectedRowIndex : 0,
         detailsTitle: "Agent Details",
         detailsLines,
         idealWidth: Math.min(

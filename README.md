@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.29** — Copilot runtime upgraded (CLI 1.0.73, SDK 1.0.7) with every PilotSwarm tool pinned out of the new tool-search deferral, so the model always sees the full toolset. Deleting a finished session now cleans up its whole subtree instead of orphaning it. Splitter drags stop rebuilding Intl date formatters per row — the last big fixed cost in resize responsiveness.
+> **Latest release: v0.5.30** — Drag to reorder the session list and it stays that way, across devices; expansion state and your last selection survive a reload. Owner avatars name the person, not their alias, and read the same in every pane. The agents CLI talks to the Web API by default, and three artifact operations that were unreachable over HTTP now work.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 
@@ -188,6 +188,7 @@ Common entry points:
 - [User Guide](docs/user-guide/README.md) — scenario-based walkthroughs of the TUI and browser portal, simple to advanced
 - [Working On PilotSwarm](./docs/developer/contributing/working-on-pilotswarm.md) — contributors working on the SDK, TUI, providers, prompts, or orchestration
 - [Builder Agent Templates](./docs/developer/building/builder-agents.md) — copyable Copilot custom agents for users building apps on top of PilotSwarm
+- [Building Agent Packages](./docs/building-agent-packages.md) — author an uploadable agent package (agents, skills, worker tools, MCP servers); written to be handed straight to a coding assistant
 - [Building SDK Apps](./docs/developer/building/sdk-apps.md) — app developers using `PilotSwarmClient` and `PilotSwarmWorker`
 - [Building Agents For SDK Apps](./docs/developer/building/sdk-agents.md) — the clearest path for authoring `default.agent.md`, named agents, skills, and tools
 - [Building CLI Apps](./docs/developer/building/cli-apps.md) — plugin- and worker-module-driven apps on the shipped TUI

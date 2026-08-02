@@ -1,6 +1,8 @@
 import {
     PilotSwarmClient,
     PilotSwarmManagementClient,
+    WebPilotSwarmManagementClient,
+    createManagementClient,
     createFactStoreForUrl,
     createWebFactStore,
     createGraphStoreForUrl,
@@ -11,6 +13,7 @@ import {
     ModelProviderRegistry,
     loadSkills,
     loadAgentFiles,
+    type SharedManagementSurface,
     type FactStore,
     type EnhancedFactStore,
     type GraphStore,
@@ -20,9 +23,42 @@ import { createApiTokenProvider } from "./auth.js";
 
 type AgentConfig = ReturnType<typeof loadAgentFiles>[number];
 
-export interface ServerContext {
+/**
+ * The web-mode handles, present or absent TOGETHER.
+ *
+ * `api` and `web` are the same deployment connection seen two ways, so a
+ * context can never hold one without the other. Expressing that as a union
+ * rather than two independent nullable fields means `if (ctx.api)` narrows
+ * `ctx.web` to non-null for free — no `!` assertions — and a future edit that
+ * sets one without the other stops compiling instead of crashing at runtime.
+ */
+type WebHandles =
+    | {
+        /**
+         * Web API client. Backs the fact/graph stores and binary artifact
+         * streaming; operation calls go through `web.ops` instead.
+         */
+        api: ApiClient;
+        /**
+         * The honestly-typed web client — the same instance as `mgmt`.
+         * Carries `web.ops`, the generated wire-shaped method per
+         * protocol-table operation, which is how tools reach operations the
+         * ergonomic surface does not wrap.
+         */
+        web: WebPilotSwarmManagementClient;
+    }
+    | { api: null; web: null };
+
+export type ServerContext = ServerContextBase & WebHandles;
+
+interface ServerContextBase {
     client: PilotSwarmClient;
-    mgmt: PilotSwarmManagementClient;
+    /**
+     * The management surface shared by both modes — every method works (or
+     * refuses with a typed WEB_MODE_UNSUPPORTED error) whichever mode this
+     * process runs in. No casts anywhere on this path.
+     */
+    mgmt: SharedManagementSurface;
     facts: FactStore;
     /**
      * The same store as `facts`, narrowed once at boot via
@@ -39,13 +75,6 @@ export interface ServerContext {
      */
     graph: GraphStore | null;
     /**
-     * Web API client (web mode only; null in direct mode). Escape hatch for
-     * operations the web management client does not wrap (artifacts, system
-     * ops) — `api.call(<operation>, params)` dispatches any operation in the
-     * protocol table.
-     */
-    api: ApiClient | null;
-    /**
      * Whether this process's credential carries the deployment's admin role.
      * Web mode: `role === "admin" || role === "anonymous"` from /auth/me
      * (mirrors the server's isAdminAuth). Direct mode: always true — a
@@ -53,6 +82,8 @@ export interface ServerContext {
      * [admin]-tagged tools register iff true.
      */
     admin: boolean;
+    /** Agent-package management tool tier ("off" | "read" | "full"). */
+    agentMgmt: "off" | "read" | "full";
     /**
      * The caller's normalized role (`admin` | `user` | `anonymous` | null),
      * and the deployment's ownership/visibility posture. Web mode reads these
@@ -97,14 +128,21 @@ export interface CreateContextOptions {
     apiUrl?: string;
     modelProvidersPath?: string;
     pluginDirs?: string[];
+    /**
+     * Agent-package management surface (docs/proposals/agent-packages.md):
+     * "off" registers nothing, "read" only listing/inspection, "full" (the
+     * default) adds publish/sync/scope/pin/delete.
+     */
+    agentMgmt?: "off" | "read" | "full";
 }
 
 export async function createContext(opts: CreateContextOptions): Promise<ServerContext> {
     let client: PilotSwarmClient;
-    let mgmt: PilotSwarmManagementClient;
+    let mgmt: SharedManagementSurface;
+    // One value, so the api/web pair can only ever be set together.
+    let handles: WebHandles = { api: null, web: null };
     let facts: FactStore;
     let graph: GraphStore | null = null;
-    let api: ApiClient | null = null;
     let admin = false;
     let ctxRole: string | null = null;
     let ctxAuthz = { ownershipEnforced: false, defaultVisibility: "private", systemVisibility: "read" };
@@ -115,9 +153,14 @@ export async function createContext(opts: CreateContextOptions): Promise<ServerC
         const getAccessToken = await createApiTokenProvider(opts.apiUrl) ?? undefined;
         client = new PilotSwarmClient({ apiUrl: opts.apiUrl, getAccessToken } as any);
         await client.start();
-        mgmt = new PilotSwarmManagementClient({ apiUrl: opts.apiUrl, getAccessToken } as any);
-        await mgmt.start();
-        api = new ApiClient({ apiUrl: opts.apiUrl, getAccessToken });
+        // ONE connection and token pipeline for the whole process: the
+        // management client, the fact/graph stores, and ctx.api all share
+        // this ApiClient.
+        const api = new ApiClient({ apiUrl: opts.apiUrl, getAccessToken });
+        const web = createManagementClient({ apiUrl: opts.apiUrl, getAccessToken, api });
+        handles = { api, web };
+        await web.start();
+        mgmt = web;
         facts = await createWebFactStore(api);
 
         // Graph: capability-probed against the deployment (null ⇒ no graph
@@ -159,7 +202,7 @@ export async function createContext(opts: CreateContextOptions): Promise<ServerC
         // truth in web mode — local plugin dirs may diverge from what
         // createSessionForAgent will accept.
         try {
-            const creatable: any[] = await api.call("listCreatableAgents");
+            const creatable: any[] = await web.ops.listCreatableAgents();
             if (Array.isArray(creatable)) {
                 webAgents = creatable.map((a: any) => ({
                     name: a.name ?? a.id,
@@ -278,11 +321,13 @@ export async function createContext(opts: CreateContextOptions): Promise<ServerC
     return {
         client,
         mgmt,
+        // Spread as a pair — api and web cannot drift apart.
+        ...handles,
         facts,
         enhancedFacts,
         graph,
-        api,
         admin,
+        agentMgmt: opts.agentMgmt ?? "full",
         role: ctxRole,
         authz: ctxAuthz,
         webMode: Boolean(opts.apiUrl),

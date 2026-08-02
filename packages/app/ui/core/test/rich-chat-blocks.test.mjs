@@ -6,7 +6,7 @@
 // uses. The TUI never calls this selector.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { appReducer, buildHistoryModel, createInitialState, decodeHtmlEntitiesForDisplay, selectChatBlocks, selectChatLines } from "../src/index.js";
+import { appReducer, buildHistoryModel, createInitialState, decodeHtmlEntitiesForDisplay, getTheme, selectChatBlocks, selectChatLines } from "../src/index.js";
 
 function evt(seq, eventType, data) {
     return { sessionId: "s1", seq, eventType, data, createdAt: 1_700_000_000_000 + seq * 1000 };
@@ -64,25 +64,26 @@ test("epoch dividers and system-notice messages stay on the line path", () => {
     assert.equal(blocks[2].text, "resuming now");
 });
 
-// "rich" must be accepted by EVERY gate on the chatViewMode path. Missing the
-// reducer's guard made the toolbar toggle a silent no-op: the controller
-// allowed the mode, dispatched, and the reducer dropped the action.
-test("rich is a first-class chatViewMode through reducer and boot state", () => {
+// "rich" is a THEME property now (theme.richChat on workspace-dark-rich),
+// not a chatViewMode. The mode path must REJECT it everywhere, and stored
+// profiles that still say "rich" quietly land on the transcript.
+test("rich is a theme property, not a chatViewMode", () => {
     const initial = createInitialState({});
     assert.equal(initial.ui.chatViewMode, "transcript");
 
-    const rich = appReducer(initial, { type: "ui/chatViewMode", mode: "rich" });
-    assert.equal(rich.ui.chatViewMode, "rich", "reducer must accept the rich mode");
+    const afterRich = appReducer(initial, { type: "ui/chatViewMode", mode: "rich" });
+    assert.equal(afterRich.ui.chatViewMode, "transcript", "reducer rejects the retired mode");
 
-    const back = appReducer(rich, { type: "ui/chatViewMode", mode: "transcript" });
-    assert.equal(back.ui.chatViewMode, "transcript", "toggling back still works");
+    const summary = appReducer(initial, { type: "ui/chatViewMode", mode: "summary" });
+    assert.equal(summary.ui.chatViewMode, "summary", "summary/transcript still toggle");
 
-    // Unknown modes are still rejected.
-    assert.equal(appReducer(rich, { type: "ui/chatViewMode", mode: "bogus" }).ui.chatViewMode, "rich");
+    // Persisted "rich" from an old profile degrades to transcript on boot.
+    assert.equal(createInitialState({ chatViewMode: "rich" }).ui.chatViewMode, "transcript");
+    assert.equal(createInitialState({ chatViewMode: "summary" }).ui.chatViewMode, "summary");
 
-    // Survives a reload (persisted profile settings → createInitialState).
-    assert.equal(createInitialState({ chatViewMode: "rich" }).ui.chatViewMode, "rich");
-    assert.equal(createInitialState({ chatViewMode: "bogus" }).ui.chatViewMode, "transcript");
+    // The rich transcript rides the dedicated theme's flag.
+    assert.equal(getTheme("workspace-dark-rich")?.richChat, true, "rich theme carries the flag");
+    assert.equal(getTheme("workspace-dark")?.richChat, false, "plain workspace stays terminal-style");
 });
 
 test("empty chat yields no blocks and line/block parity holds for prose", () => {

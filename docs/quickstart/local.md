@@ -39,6 +39,86 @@ npm install
 npm run build
 ```
 
+### Installing the CLI on its own
+
+You do **not** need the repo to use the CLI. To talk to a deployment that
+someone else runs — create sessions, manage agent packages, open the TUI —
+install the `pilotswarm` package globally:
+
+```bash
+npm install -g pilotswarm
+
+pilotswarm --version
+pilotswarm auth login --api-url https://<your-portal>
+pilotswarm agents list
+```
+
+That package provides four binaries: `pilotswarm` (TUI + subcommands),
+`pilotswarm-cli` (alias), `pilotswarm-web` (portal server), and
+`pilotswarm-mcp` (MCP server).
+
+**Pin the version** when you want repeatable installs rather than the moving
+`latest` tag: `npm install -g pilotswarm@0.5.29`.
+
+#### If your network blocks the public npm registry
+
+Corporate-managed devices are often blocked from `registry.npmjs.org` and
+routed through an internal mirror, which may also hold newly published
+versions for several days. Two fallbacks, in order of preference:
+
+**1. Install through your mirror.** Point npm at it for this install only:
+
+```bash
+npm install -g pilotswarm --registry https://<your-npm-mirror>/
+```
+
+If the mirror 404s on a recent version, it has not cleared the mirror's
+quarantine window yet — install the latest version it does carry:
+
+```bash
+npm view pilotswarm versions --registry https://<your-npm-mirror>/ | tail -5
+npm install -g pilotswarm@<version-it-has> --registry https://<your-npm-mirror>/
+```
+
+**2. Download the tarball and install from the file.** Every npm package is a
+plain `.tgz`, so any HTTP client can fetch it and npm can install from disk —
+no registry access needed at install time:
+
+```bash
+# Resolve the tarball URL (swap in your mirror if npmjs.org is blocked)
+npm view pilotswarm dist.tarball
+# → https://registry.npmjs.org/pilotswarm/-/pilotswarm-0.5.29.tgz
+
+curl -fL -o pilotswarm.tgz https://registry.npmjs.org/pilotswarm/-/pilotswarm-0.5.29.tgz
+npm install -g ./pilotswarm.tgz
+```
+
+The URL is predictable — `<registry>/pilotswarm/-/pilotswarm-<version>.tgz` —
+so you can construct it by hand for any version, and carry the file to an
+air-gapped machine. `npm install -g ./file.tgz` still resolves that package's
+**dependencies** from your configured registry; on a fully offline host, use
+`npm pack` on a connected machine and copy the whole `node_modules` tree, or
+run from a clone as below.
+
+#### Running from a clone (unreleased changes)
+
+A global install gives you the last **published** release. To use changes that
+have not shipped yet — including subcommands added since that release — run
+the repo's entry point directly:
+
+```bash
+node /path/to/pilotswarm/packages/app/tui/bin/tui.js agents list
+```
+
+An alias makes this painless:
+
+```bash
+alias psw='node /path/to/pilotswarm/packages/app/tui/bin/tui.js'
+```
+
+If you have both a global install and a clone, remember the global one wins on
+`PATH`. `npm uninstall -g pilotswarm` removes it (and all four binaries).
+
 ### Using as a dependency in another project
 
 If you're building your own app on top of the runtime:

@@ -1,9 +1,9 @@
-// The session "Lifecycle" menu (formerly "Terminate") surfaces Regenerate
-// alongside the terminal dispositions. These cover the shared ui-core wiring
-// that both the portal and the TUI drive: the picker advertises regenerate for
-// an eligible single session, the pick routes through the confirm modal, and
-// confirming reaches transport.regenerateSession — the surface no operator-path
-// test exercises.
+// The session picker is TERMINAL-only ("Terminate"): complete / cancel /
+// delete. Regenerate is not a disposition — it moved to Manage session
+// (General), which drives the same controller path. These cover the shared
+// ui-core wiring both hosts use: the picker no longer advertises regenerate,
+// while the regenerate action itself still routes through the confirm modal
+// and reaches transport.regenerateSession.
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -42,7 +42,7 @@ async function seedActive(controller, store, session) {
     store.dispatch({ type: "sessions/selected", sessionId: session.sessionId });
 }
 
-test("Lifecycle picker offers Regenerate for an eligible single session", async () => {
+test("the picker is terminal-only and titled Terminate", async () => {
     const session = { sessionId: "s1", title: "Worker", status: "idle" };
     const { controller, store } = makeController({ sessions: [session] });
     await seedActive(controller, store, session);
@@ -51,8 +51,8 @@ test("Lifecycle picker offers Regenerate for an eligible single session", async 
 
     const modal = store.getState().ui.modal;
     assert.equal(modal?.type, "terminatePicker");
-    assert.equal(modal.canRegenerate, true, "regenerate is offered when the transport supports it");
-    assert.match(modal.title, /^Lifecycle \(/, "picker is titled Lifecycle, not Terminate");
+    assert.equal(modal.canRegenerate, false, "regenerate is not a terminal disposition — it lives in Manage session");
+    assert.match(modal.title, /^Terminate \(/, "picker is titled Terminate");
 });
 
 test("Picking Regenerate confirms then calls transport.regenerateSession", async () => {
@@ -75,7 +75,7 @@ test("Picking Regenerate confirms then calls transport.regenerateSession", async
     assert.equal(store.getState().ui.modal, null, "modal closes after confirm");
 });
 
-test("Regenerate is withheld when the deployment lacks the transport method", async () => {
+test("Regenerate stays withheld when the deployment lacks the transport method", async () => {
     const session = { sessionId: "s1", title: "Worker", status: "idle" };
     const { controller, store } = makeController({ sessions: [session], regenerateSession: undefined });
     await seedActive(controller, store, session);

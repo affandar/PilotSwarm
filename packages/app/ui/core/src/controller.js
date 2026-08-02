@@ -1,4 +1,6 @@
 import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./commands.js";
+import { parseAgentSourceLink } from "./repo-links.js";
+import { importPackageFilesFromLink, readImportedPackageName } from "./repo-import.js";
 import {
     appendEventToHistory,
     buildHistoryModel,
@@ -102,6 +104,16 @@ function normalizeSessionListRow(session) {
 
 function sessionGroupIdFromRowId(sessionId) {
     return String(sessionId || "").startsWith("group:") ? String(sessionId).slice("group:".length) : null;
+}
+
+// A folder's row id ("group:<uuid>") is a CLIENT-SIDE row, not a session. Feed
+// one to a per-session endpoint and the server correctly answers 404 — which
+// the data loops read as "this session was deleted" and evict the row. The
+// folder then vanished a few ms after every refresh re-added it, and its
+// members reflowed under the folder above. Every per-session path must skip
+// these ids.
+function isSessionGroupRowId(sessionId) {
+    return sessionGroupIdFromRowId(sessionId) !== null;
 }
 
 // Per-row placement skip reasons ('system', 'not_found') folded into a short
@@ -2031,6 +2043,9 @@ export class PilotSwarmUiController {
      */
     handleSessionGone(sessionId) {
         if (!sessionId) return;
+        // A folder row can never be "gone" from the session catalog: it is not
+        // a session. Only sessions/groupsLoaded may remove one.
+        if (isSessionGroupRowId(sessionId)) return;
         if (this.activeSessionSubscriptionId === sessionId) {
             this.detachActiveSession();
         }
@@ -2050,16 +2065,44 @@ export class PilotSwarmUiController {
     }
 
     async refreshSessions() {
+        // FIRST, above every early return below (a selected group or a
+        // navigation-intent branch returns before the tail): the worker
+        // registry must refresh on every tick of the loop that provably runs.
+        this.refreshWorkerRegistryIfStale().catch(() => {});
+        // Refreshes OVERLAP. The catalog loop ticks every 4s and a dozen
+        // actions call this directly, while one run awaits several sequential
+        // round-trips (N catalog pages, the folder list, up to two getSession
+        // fetches) — easily longer than the tick. Without an ordering guard a
+        // slow run applies a snapshot taken BEFORE a folder existed (or before
+        // a member moved) on top of a newer one, and since groupsLoaded is
+        // authoritative — "folders it omits are gone" — the folder is deleted,
+        // its members reflow to the top level, and the next tick puts it back.
+        // That is the flicker. Stamp each run and let only the newest apply.
+        const refreshSeq = (this.sessionRefreshSeq = (this.sessionRefreshSeq || 0) + 1);
         const preRefreshState = this.getState();
         const recoveringConnection = !preRefreshState.connection.connected || Boolean(preRefreshState.connection.error);
         const shouldClearRefreshFailureBanner = preRefreshState.ui.statusText === SESSION_REFRESH_FAILED_STATUS;
         const previousActive = this.getState().sessions.activeSessionId;
         let sessions = (await loadSessionCatalogPageWindow(this.transport)).map(normalizeSessionListRow);
+        // Folders are NOT merged into the session payload any more: they live
+        // in their own state slice, so a session refresh cannot drop them. A
+        // failed fetch is "no news" and simply leaves the slice alone.
+        //
+        // This still dispatches BEFORE sessions/loaded, and must: sessions/loaded
+        // seeds default collapse state and the default selection from the rows
+        // it can see, so with no folder rows in state it collapses nothing and
+        // auto-selects a folder MEMBER — which then holds the folder open
+        // forever to keep the selection visible. What it could not do from
+        // state alone is judge which folders are still claimed, since the store
+        // still holds the PREVIOUS membership at this point; the incoming rows
+        // ride along on the action for exactly that.
+        let pendingGroupRows = null;
         if (typeof this.transport.listSessionGroups === "function") {
-            const groups = await this.transport.listSessionGroups().catch(() => []);
-            const groupRows = (Array.isArray(groups) ? groups : []).map(sessionGroupToRow).filter(Boolean);
-            if (groupRows.length > 0) {
-                sessions = [...groupRows, ...sessions];
+            try {
+                const groups = await this.transport.listSessionGroups();
+                pendingGroupRows = (Array.isArray(groups) ? groups : []).map(sessionGroupToRow).filter(Boolean);
+            } catch (error) {
+                console.warn(`[PilotSwarmUi] session-group fetch failed, keeping the known folders: ${error?.message || error}`);
             }
         }
         // A pending deep-link target may be readable but absent from the
@@ -2095,6 +2138,7 @@ export class PilotSwarmUiController {
         const active = previousActive;
         if (
             active
+            && !isSessionGroupRowId(active)
             && !sessions.some((session) => session?.sessionId === active)
             && typeof this.transport.getSession === "function"
         ) {
@@ -2103,12 +2147,20 @@ export class PilotSwarmUiController {
                 sessions = [...sessions, normalizeSessionListRow(activeSession)];
             }
         }
+        // Everything above is READ-ONLY on the store (bar the navigation-intent
+        // failures, which are keyed to a specific session and stay true). From
+        // here down the run WRITES, so a run that a newer one has overtaken
+        // must stop: its snapshot is older than what the store already holds.
+        if (refreshSeq !== this.sessionRefreshSeq) return;
         if (recoveringConnection) {
             this.dispatch({
                 type: "connection/ready",
                 workersOnline: typeof this.transport.getWorkerCount === "function" ? this.transport.getWorkerCount() : null,
                 ...(shouldClearRefreshFailureBanner ? { statusText: "Connected" } : {}),
             });
+        }
+        if (pendingGroupRows) {
+            this.dispatch({ type: "sessions/groupsLoaded", groups: pendingGroupRows, sessions });
         }
         this.dispatch({ type: "sessions/loaded", sessions });
         this.refreshOpenSessionOwnerFilterModal();
@@ -2162,6 +2214,26 @@ export class PilotSwarmUiController {
         await this.syncVisibleSessionDetails(syncedIds).catch(() => {});
         this.ensureInspectorData().catch(() => {});
         this.evictStaleSessionState();
+    }
+
+    /**
+     * Refresh the worker registry at most every 20s. Never throws.
+     * Records EVERY attempt (including skips and why) so the Node Map can
+     * distinguish "the refresh never ran" from "the fetch failed" — the two
+     * used to look identical in the UI.
+     */
+    async refreshWorkerRegistryIfStale() {
+        const workers = this.getState().admin?.workers;
+        if (workers?.loading) {
+            this.dispatch({ type: "admin/workers/attempt", skip: "already in flight" });
+            return;
+        }
+        if (workers?.fetchedAt && (Date.now() - workers.fetchedAt) < 20_000) {
+            this.dispatch({ type: "admin/workers/attempt", skip: "fresh" });
+            return;
+        }
+        this.dispatch({ type: "admin/workers/attempt", skip: null });
+        await this.refreshAdminWorkers();
     }
 
     /**
@@ -2246,7 +2318,8 @@ export class PilotSwarmUiController {
         const sessionIds = [...new Set(
             visibleRows
                 .map((row) => row.sessionId)
-                .filter((sessionId) => sessionId && !excludedIds.has(sessionId)),
+                // Folder rows are visible rows but not sessions.
+                .filter((sessionId) => sessionId && !isSessionGroupRowId(sessionId) && !excludedIds.has(sessionId)),
         )];
         if (sessionIds.length === 0) return;
 
@@ -2395,6 +2468,15 @@ export class PilotSwarmUiController {
             return;
         }
         if (targetTab === "nodes") {
+            // Registry-first: the node list leads with the worker registry
+            // (specs, phases, health). Refresh it on the same cadence the
+            // history loads ride, throttled to the ~20s heartbeat interval;
+            // non-admin transports fail quietly and the view degrades to
+            // history-derived nodes.
+            // No silent skip here: refreshAdminWorkers itself reports every
+            // outcome (missing method, error, empty) so the pane can never sit
+            // on a pristine "not fetched yet" state with nothing explaining it.
+            void this.refreshWorkerRegistryIfStale().catch(() => {});
             // Only fetch history for visible session rows — not the entire catalog.
             // With hundreds of sessions, fetching all of them every 4s causes unbounded memory growth.
             const state = this.getState();
@@ -2573,11 +2655,24 @@ export class PilotSwarmUiController {
     async openAdminConsole() {
         this.dispatch({ type: "admin/visibility", visible: true });
         await this.refreshAdminProfile().catch(() => {});
+        void this.refreshAdminAgentPackages().catch(() => {});
     }
 
     /** Close the Admin Console and return to the standard workspace. */
     closeAdminConsole() {
         this.dispatch({ type: "admin/visibility", visible: false });
+    }
+
+    /**
+     * Land on a freshly created session. Selecting it is not enough: the
+     * Admin Console REPLACES the workspace, so creating from there left the
+     * new session selected behind a pane that does not show it — the create
+     * appeared to do nothing but print a status line. Any workspace-replacing
+     * surface has to be dismissed here, not just the focus moved.
+     */
+    revealCreatedSession() {
+        if (this.getState().admin?.visible) this.closeAdminConsole();
+        this.setFocus(FOCUS_REGIONS.PROMPT);
     }
 
     /**
@@ -2628,6 +2723,292 @@ export class PilotSwarmUiController {
     setAdminGhcpKeyStoreAsSystem(value) {
         if (value && !this.getState().admin?.profile?.isAdmin) return;
         this.dispatch({ type: "admin/ghcpKey/setSystemTarget", value: Boolean(value) });
+    }
+
+    // ── Agent packages (Admin → Agents) ──────────────────────────
+
+    setAdminSection(section) {
+        this.dispatch({ type: "admin/section", section });
+        if (section === "packages") {
+            const pkgs = this.getState().admin?.packages;
+            if (!pkgs?.fetchedAt) void this.refreshAdminAgentPackages().catch(() => {});
+        }
+        if (section === "workers") {
+            // Always refetch on entry: liveness is heartbeat recency, so rows
+            // fetched minutes ago render as a dead fleet ("0 live").
+            void this.refreshAdminWorkers().catch(() => {});
+        }
+    }
+
+    /** Node Map: select a node (toggles off when re-selected). Scopes Activity. */
+    selectNodeMapNode(label) {
+        this.dispatch({ type: "ui/nodeMapSelect", label: label ? String(label) : null });
+    }
+
+    /** Reload the worker registry (Admin → Workers). Admin-gated server-side. */
+    async refreshAdminWorkers() {
+        if (typeof this.transport.listWorkers !== "function") {
+            this.dispatch({ type: "admin/workers/loadFailed", error: "The worker registry is not available on this deployment." });
+            return;
+        }
+        this.dispatch({ type: "admin/workers/loading" });
+        try {
+            // Bounded on purpose: a request that neither resolves nor rejects
+            // (wedged token refresh, dead socket) left the Node Map in a
+            // permanent "not fetched yet" limbo. Ten seconds is an answer.
+            const list = await Promise.race([
+                Promise.resolve().then(() => this.transport.listWorkers()),
+                new Promise((_, reject) => {
+                    const t = setTimeout(() => reject(new Error("request timed out after 10s (connection or auth renewal wedged — try a hard refresh)")), 10_000);
+                    if (typeof t?.unref === "function") t.unref();
+                }),
+            ]);
+            console.info(`[PilotSwarmUi] worker registry: ${Array.isArray(list) ? list.length : 0} row(s)`);
+            this.dispatch({ type: "admin/workers/loaded", list });
+        } catch (error) {
+            // Loud on purpose: the Node Map silently degrading to
+            // activity-derived nodes hid a real fetch failure in prod.
+            console.warn(`[PilotSwarmUi] worker-registry fetch failed: ${error?.message || error}`);
+            this.dispatch({ type: "admin/workers/loadFailed", error: error?.message || String(error) });
+        }
+    }
+
+    /** Reload the package list + sources (+ fleet state when permitted). */
+    async refreshAdminAgentPackages() {
+        if (typeof this.transport.listAgentPackages !== "function") {
+            this.dispatch({ type: "admin/packages/loadFailed", error: "Agent packages are not available on this deployment." });
+            return;
+        }
+        this.dispatch({ type: "admin/packages/loading" });
+        try {
+            const [list, workerState] = await Promise.all([
+                this.transport.listAgentPackages(),
+                typeof this.transport.listAgentWorkerState === "function"
+                    ? this.transport.listAgentWorkerState().catch(() => [])
+                    : [],
+            ]);
+            this.dispatch({ type: "admin/packages/loaded", list, workerState });
+        } catch (error) {
+            this.dispatch({ type: "admin/packages/loadFailed", error: error?.message || String(error) });
+        }
+    }
+
+    /** Select a package: loads its detail and workspace tree. */
+    async selectAdminPackage(name) {
+        this.dispatch({ type: "admin/packages/select", name });
+        if (!name) return;
+        await Promise.all([
+            (async () => {
+                try {
+                    const detail = await this.transport.getAgentPackage(name);
+                    if (!detail) throw new Error(`package "${name}" not found`);
+                    this.dispatch({ type: "admin/packages/detail/loaded", name, detail });
+                } catch (error) {
+                    this.dispatch({ type: "admin/packages/detail/loadFailed", name, error: error?.message || String(error) });
+                }
+            })(),
+            (async () => {
+                try {
+                    const tree = await this.transport.getAgentPackageTree(name);
+                    // A slower tree for a PREVIOUS selection must not clobber
+                    // the current package's workspace (stale-response race).
+                    if (this.getState().admin?.packages?.selectedName !== name) return;
+                    this.dispatch({ type: "admin/packages/tree/loaded", name, tree });
+                    // Default preview: plugin.json (always present in a valid package).
+                    const first = tree?.files?.find((f) => f.path === "plugin.json") ?? tree?.files?.[0];
+                    if (first) void this.selectAdminPackageFile(first.path);
+                } catch (error) {
+                    this.dispatch({ type: "admin/packages/tree/loadFailed", name, error: error?.message || String(error) });
+                }
+            })(),
+        ]);
+    }
+
+    /** TUI keyboard selection: move through the settings-tree package rows. */
+    async stepAdminPackageSelection(delta) {
+        const pkgs = this.getState().admin?.packages;
+        if (!pkgs?.list?.length) return;
+        // Same shared→user projection the settings tree renders, so j/k walks
+        // the list in VISUAL order regardless of transport ordering.
+        const names = [
+            ...pkgs.list.filter((p) => p.scope === "shared"),
+            ...pkgs.list.filter((p) => p.scope !== "shared"),
+        ].map((p) => p.name);
+        const index = names.indexOf(pkgs.selectedName);
+        const next = names[Math.min(names.length - 1, Math.max(0, (index < 0 ? (delta > 0 ? -1 : 0) : index) + delta))];
+        if (next && next !== pkgs.selectedName) await this.selectAdminPackage(next);
+    }
+
+    toggleAdminPackageDir(dir) {
+        this.dispatch({ type: "admin/packages/toggleDir", dir });
+    }
+
+    async selectAdminPackageFile(filePath) {
+        const pkgs = this.getState().admin?.packages;
+        const name = pkgs?.selectedName;
+        if (!name || !filePath) return;
+        this.dispatch({ type: "admin/packages/file/loading", path: filePath });
+        try {
+            const file = await this.transport.getAgentPackageFile(name, null, filePath);
+            this.dispatch({ type: "admin/packages/file/loaded", file });
+        } catch (error) {
+            this.dispatch({ type: "admin/packages/file/loadFailed", path: filePath, error: error?.message || String(error) });
+        }
+    }
+
+    /**
+     * One entry point for package mutations so pending/error state stays
+     * uniform: kind = promote | demote | pin | enable | disable | delete.
+     * (No "sync": packages are imported client-side and published as
+     * artifacts — re-import from the link to update.)
+     */
+    async runAdminPackageAction(kind, arg = null) {
+        const pkgs = this.getState().admin?.packages;
+        const name = pkgs?.selectedName;
+        if (!name) return;
+        this.dispatch({ type: "admin/packages/action/pending", action: kind });
+        try {
+            switch (kind) {
+                case "promote":
+                    await this.transport.setAgentPackageScope(name, "shared");
+                    break;
+                case "demote":
+                    await this.transport.setAgentPackageScope(name, "user");
+                    break;
+                case "pin":
+                    await this.transport.pinAgentPackageVersion(name, arg);
+                    break;
+                case "enable":
+                case "disable":
+                    await this.transport.setAgentPackageEnabled(name, kind === "enable");
+                    break;
+                case "delete":
+                    await this.transport.deleteAgentPackage(name);
+                    break;
+                default:
+                    throw new Error(`unknown package action: ${kind}`);
+            }
+            this.dispatch({ type: "admin/packages/action/done" });
+            await this.refreshAdminAgentPackages();
+            if (kind !== "delete") await this.selectAdminPackage(name);
+        } catch (error) {
+            this.dispatch({ type: "admin/packages/action/failed", error: error?.message || String(error) });
+        }
+    }
+
+    /** Surface an add-dialog problem (used by the web layer's read phase). */
+    failAdminAddPackage(message) {
+        this.dispatch({ type: "admin/packages/addDialog/failed", error: message });
+    }
+
+    /** Publish an uploaded folder ([{path, contentBase64}]) as a package. */
+    async submitAdminUploadPackage(files, scope) {
+        const dialog = this.getState().admin?.packages?.addDialog;
+        if (!dialog?.open || dialog.submitting) return;
+        if (typeof this.transport.uploadAgentPackage !== "function") {
+            this.dispatch({ type: "admin/packages/addDialog/failed", error: "Folder upload is not available on this deployment." });
+            return;
+        }
+        this.dispatch({ type: "admin/packages/addDialog/submitting" });
+        try {
+            const outcome = await this.transport.uploadAgentPackage(files, scope === "shared" ? "shared" : "user");
+            this.dispatch({ type: "admin/packages/addDialog/close" });
+            await this.refreshAdminAgentPackages();
+            if (outcome?.name) await this.selectAdminPackage(outcome.name);
+        } catch (error) {
+            const validation = Array.isArray(error?.validation?.errors)
+                ? `\n${error.validation.errors.map((e) => `[${e.code}] ${e.message}`).join("\n")}`
+                : "";
+            this.dispatch({ type: "admin/packages/addDialog/failed", error: `${error?.message || error}${validation}` });
+        }
+    }
+
+    openAdminAddPackage() {
+        this.dispatch({ type: "admin/packages/addDialog/open" });
+    }
+
+    /**
+     * Publish a new version of an existing package. Same dialog, same import
+     * path — the only difference is that the destination is already chosen, so
+     * the scope is inherited and the manifest name is checked on submit.
+     */
+    openAdminUpdatePackage(name, scope = "user") {
+        const packageName = String(name || "").trim();
+        if (!packageName) return;
+        this.dispatch({ type: "admin/packages/addDialog/open", updateName: packageName, scope });
+    }
+
+    closeAdminAddPackage() {
+        this.dispatch({ type: "admin/packages/addDialog/close" });
+    }
+
+    setAdminAddPackageField(field, value) {
+        this.dispatch({ type: "admin/packages/addDialog/setField", field, value });
+    }
+
+    /**
+     * Import a package from a pasted repo link — IN THIS BROWSER, as the
+     * signed-in user — and publish it through the standard upload path.
+     * Nothing about the repo is stored server-side: no source row, no token.
+     * A pasted PAT is used for this import only and never leaves the tab.
+     */
+    async submitAdminAddPackage() {
+        const dialog = this.getState().admin?.packages?.addDialog;
+        if (!dialog?.open || dialog.submitting) return;
+        if (typeof this.transport.uploadAgentPackage !== "function") {
+            this.dispatch({ type: "admin/packages/addDialog/failed", error: "Package upload is not available on this deployment." });
+            return;
+        }
+        const link = String(dialog.repoUrl || "").trim();
+        const parsed = parseAgentSourceLink(link);
+        if (parsed.error) {
+            this.dispatch({ type: "admin/packages/addDialog/failed", error: parsed.error });
+            return;
+        }
+        this.dispatch({ type: "admin/packages/addDialog/submitting" });
+        try {
+            const pat = String(dialog.authToken || "").trim();
+            let token = pat || null;
+            let tokenKind = "pat";
+            if (!token && parsed.kind === "ado") {
+                // No PAT: read the repo with the viewer's own Entra token.
+                this.dispatch({ type: "admin/packages/addDialog/progress", message: "getting an Azure DevOps token for your account…" });
+                token = typeof this.transport.getRepoAccessToken === "function"
+                    ? await this.transport.getRepoAccessToken("ado")
+                    : null;
+                tokenKind = "bearer";
+            }
+            const { files } = await importPackageFilesFromLink(link, {
+                token,
+                tokenKind,
+                onProgress: (message) => this.dispatch({ type: "admin/packages/addDialog/progress", message }),
+            });
+            // Updating names its target up front, and a package's identity is
+            // its manifest name — so a folder that builds a DIFFERENT package
+            // would quietly create a second one instead of updating this. Say
+            // so rather than publishing the surprise.
+            if (dialog.updateName) {
+                const manifestName = readImportedPackageName(files);
+                if (manifestName && manifestName !== dialog.updateName) {
+                    this.dispatch({
+                        type: "admin/packages/addDialog/failed",
+                        error: `That folder builds "${manifestName}", not "${dialog.updateName}". `
+                            + "Use Add package to publish it as its own package.",
+                    });
+                    return;
+                }
+            }
+            this.dispatch({ type: "admin/packages/addDialog/progress", message: `publishing ${files.length} file(s)…` });
+            const outcome = await this.transport.uploadAgentPackage(files, dialog.scope === "shared" ? "shared" : "user");
+            this.dispatch({ type: "admin/packages/addDialog/close" });
+            await this.refreshAdminAgentPackages();
+            if (outcome?.name) await this.selectAdminPackage(outcome.name);
+        } catch (error) {
+            const validation = Array.isArray(error?.validation?.errors)
+                ? `\n${error.validation.errors.map((issue) => `[${issue.code}] ${issue.message}`).join("\n")}`
+                : "";
+            this.dispatch({ type: "admin/packages/addDialog/failed", error: `${error?.message || error}${validation}` });
+        }
     }
 
     beginAdminEditGhcpKey() {
@@ -3639,6 +4020,7 @@ export class PilotSwarmUiController {
 
     scheduleSessionDetailSync(sessionId, delayMs = 250) {
         if (typeof this.transport.getSession !== "function" || !sessionId) return;
+        if (isSessionGroupRowId(sessionId)) return;
         if (this.activeSessionDetailTimer) clearTimeout(this.activeSessionDetailTimer);
         this.activeSessionDetailSessionId = sessionId;
         this.activeSessionDetailTimer = setTimeout(() => {
@@ -3659,6 +4041,7 @@ export class PilotSwarmUiController {
 
     async syncSessionDetail(sessionId) {
         if (typeof this.transport.getSession !== "function" || !sessionId) return;
+        if (isSessionGroupRowId(sessionId)) return;
         let session = null;
         try {
             session = await this.transport.getSession(sessionId);
@@ -3685,7 +4068,7 @@ export class PilotSwarmUiController {
             await this.placeCreatedSessionInGroup(created, requestOptions.groupId ?? null);
             await this.refreshSessions();
             await this.loadSession(created.sessionId);
-            this.setFocus(FOCUS_REGIONS.PROMPT);
+            this.revealCreatedSession();
             this.dispatch({ type: "ui/status", text: `Created session ${created.sessionId.slice(0, 8)}` });
             return created;
         } catch (error) {
@@ -3704,7 +4087,7 @@ export class PilotSwarmUiController {
             await this.placeCreatedSessionInGroup(created, requestOptions.groupId ?? null);
             await this.refreshSessions();
             await this.loadSession(created.sessionId);
-            this.setFocus(FOCUS_REGIONS.PROMPT);
+            this.revealCreatedSession();
             this.dispatch({
                 type: "ui/status",
                 text: `Created ${formatAgentDisplayTitle(agentName, options.title)} session ${created.sessionId.slice(0, 8)}`,
@@ -3732,9 +4115,16 @@ export class PilotSwarmUiController {
 
     getMovableGroupSessionSelection() {
         const state = this.getState();
+        // Deselected means deselected. The active session still drives the
+        // chat and inspector panes after an empty-space click, but it is no
+        // longer a LIST selection — so list actions must not silently act on
+        // it. With nothing selected the folder button offers only "New Group".
+        const activeIds = state.sessions.activeSessionId && !state.sessions.listDeselected
+            ? [state.sessions.activeSessionId]
+            : [];
         const selectedIds = Array.isArray(state.sessions.selectedIds) && state.sessions.selectedIds.length > 0
             ? state.sessions.selectedIds
-            : (state.sessions.activeSessionId ? [state.sessions.activeSessionId] : []);
+            : activeIds;
         return selectedIds
             .map((id) => state.sessions.byId[id])
             .filter((session) => session && !session.isSystem && !session.isGroup && !session.parentSessionId);
@@ -3745,8 +4135,9 @@ export class PilotSwarmUiController {
         const eligible = this.getMovableGroupSessionSelection();
 
         if (eligible.length === 0) {
-            this.dispatch({ type: "ui/status", text: "Select a top-level non-system session to move" });
-            return null;
+            // Nothing selected is a legitimate intent: make an empty folder to
+            // drag sessions into, rather than scolding the user.
+            return this.openCreateEmptyGroupModal();
         }
         if (typeof this.transport.listSessionGroups !== "function") {
             this.dispatch({ type: "ui/status", text: "Session groups are not supported by this transport" });
@@ -3810,6 +4201,29 @@ export class PilotSwarmUiController {
 
     async createSessionGroupFromSelection() {
         return this.openMoveToGroupModal();
+    }
+
+    /** Name-and-create an EMPTY group (no sessions), ready to drag into. */
+    async openCreateEmptyGroupModal() {
+        if (typeof this.transport.createSessionGroup !== "function") {
+            this.dispatch({ type: "ui/status", text: "Session grouping is not supported by this transport" });
+            return null;
+        }
+        const state = this.getState();
+        this.dispatch({
+            type: "ui/modal",
+            modal: {
+                type: "sessionGroupName",
+                title: "New Group",
+                previousFocus: state.ui.focusRegion,
+                sessionIds: [],
+                value: "",
+                cursorIndex: 0,
+                maxLength: 80,
+            },
+        });
+        this.dispatch({ type: "ui/status", text: "Name the new group and press Enter" });
+        return null;
     }
 
     async moveSessionsToGroup(groupId, sessionIds, { statusTitle = null } = {}) {
@@ -3958,7 +4372,15 @@ export class PilotSwarmUiController {
                 description: `${(modal.sessionIds || []).length} grouped session${(modal.sessionIds || []).length === 1 ? "" : "s"}`,
                 sessionIds: modal.sessionIds || [],
             });
-            await this.moveSessionsToGroup(group.groupId, modal.sessionIds || [], { statusTitle: group.title || title });
+            const ids = modal.sessionIds || [];
+            if (ids.length === 0) {
+                // An empty folder is the point — refresh so it appears, and
+                // say so instead of reporting "nothing to move".
+                this.dispatch({ type: "ui/status", text: `Created group "${group.title || title}"` });
+                await this.refreshSessions().catch(() => {});
+            } else {
+                await this.moveSessionsToGroup(group.groupId, ids, { statusTitle: group.title || title });
+            }
         } catch (error) {
             this.dispatch({ type: "ui/status", text: `Move failed: ${error?.message || String(error)}` });
         }
@@ -3995,7 +4417,7 @@ export class PilotSwarmUiController {
     }
 
     setChatViewMode(mode) {
-        if (mode !== "summary" && mode !== "transcript" && mode !== "rich") return;
+        if (mode !== "summary" && mode !== "transcript") return;
         if (this.getActiveSession()?.isGroup) return;
         this.dispatch({ type: "ui/chatViewMode", mode });
     }
@@ -4021,24 +4443,14 @@ export class PilotSwarmUiController {
             return;
         }
 
-        const items = [];
-        if (allowGeneric) {
-            items.push({
-                id: "__generic__",
-                kind: "generic",
-                title: "Generic Session",
-                description: "Open-ended session with no specialized agent boundary.",
-                tools: [],
-                splash: null,
-                splashMobile: null,
-                initialPrompt: null,
-            });
-        }
-
+        // Display order IS item order (Shared → My agents → Generic) so
+        // keyboard navigation walks the list visually; the selector only
+        // inserts non-clickable group headings between the segments.
+        const agentItems = [];
         for (const agent of agents) {
             const agentName = String(agent?.name || "").trim();
             if (!agentName) continue;
-            items.push({
+            agentItems.push({
                 id: agentName,
                 kind: "agent",
                 agentName,
@@ -4048,6 +4460,39 @@ export class PilotSwarmUiController {
                 splash: typeof agent?.splash === "string" && agent.splash.trim() ? agent.splash : null,
                 splashMobile: typeof agent?.splashMobile === "string" && agent.splashMobile.trim() ? agent.splashMobile : null,
                 initialPrompt: typeof agent?.initialPrompt === "string" && agent.initialPrompt.trim() ? agent.initialPrompt : null,
+                // Agent-package provenance (docs/proposals/agent-packages.md):
+                // "mine" = my user-scope package agents; everything else
+                // (baked/built-in + shared packages) groups under Shared.
+                //
+                // Ownership is the transport's call — it knows the viewer. An
+                // admin sees OTHER users' user-scoped packages, so scope alone
+                // put their agents under "My agents". A transport that does not
+                // report `mine` is single-user or legacy, where user-scope does
+                // mean mine.
+                group: agent?.source === "package" && agent?.scope === "user" && agent?.mine !== false
+                    ? "mine"
+                    : "shared",
+                packageName: agent?.packageName || null,
+                packageSemver: agent?.packageSemver || null,
+                packageScope: agent?.scope || null,
+                builtin: agent?.source !== "package",
+            });
+        }
+        const items = [
+            ...agentItems.filter((item) => item.group === "shared"),
+            ...agentItems.filter((item) => item.group === "mine"),
+        ];
+        if (allowGeneric) {
+            items.push({
+                id: "__generic__",
+                kind: "generic",
+                group: "generic",
+                title: "Generic Session",
+                description: "Open-ended session with no specialized agent boundary.",
+                tools: [],
+                splash: null,
+                splashMobile: null,
+                initialPrompt: null,
             });
         }
 
@@ -4899,16 +5344,15 @@ export class PilotSwarmUiController {
             type: "ui/modal",
             modal: {
                 type: "terminatePicker",
-                title: `Lifecycle (${shortSessionIdValue(sessionId)})`,
+                title: `Terminate (${shortSessionIdValue(sessionId)})`,
                 sessionId,
                 previousFocus: state.ui.focusRegion,
                 sessionTitle: String(session.title || "").trim(),
                 state: String(session.state || "").trim(),
-                // Regenerate (epoch rebirth) is a single-session, non-system,
-                // non-group action; the picker surfaces it above the terminal
-                // dispositions when the transport supports it. Service sessions
-                // (⚗ machinery, e.g. the distiller itself) are never regenerated.
-                canRegenerate: typeof this.transport.regenerateSession === "function" && !session.serviceKind,
+                // Regenerate is NOT a terminal disposition — it lives in
+                // Manage session (General) where the rest of the "change this
+                // session" actions are. This picker is purely terminal.
+                canRegenerate: false,
             },
         });
     }
@@ -7715,6 +8159,27 @@ export class PilotSwarmUiController {
                 return;
             case UI_COMMANDS.ADMIN_REFRESH_PROFILE:
                 await this.refreshAdminProfile();
+                return;
+            case UI_COMMANDS.ADMIN_SHOW_GHCP:
+                this.setAdminSection("ghcp");
+                return;
+            case UI_COMMANDS.ADMIN_SHOW_PACKAGES:
+                this.setAdminSection("packages");
+                return;
+            case UI_COMMANDS.ADMIN_SHOW_WORKERS:
+                this.setAdminSection("workers");
+                return;
+            case UI_COMMANDS.ADMIN_WORKERS_REFRESH:
+                await this.refreshAdminWorkers();
+                return;
+            case UI_COMMANDS.ADMIN_PACKAGES_REFRESH:
+                await this.refreshAdminAgentPackages();
+                return;
+            case UI_COMMANDS.ADMIN_PACKAGES_NEXT:
+                await this.stepAdminPackageSelection(1);
+                return;
+            case UI_COMMANDS.ADMIN_PACKAGES_PREV:
+                await this.stepAdminPackageSelection(-1);
                 return;
             case UI_COMMANDS.ADMIN_BEGIN_EDIT_GHCP_KEY:
                 this.beginAdminEditGhcpKey();

@@ -120,6 +120,57 @@ test("new-group creation omits the owner key and places the selection", async ()
     assert.deepEqual(calls.placeSessionsInGroup, [[["s1"], "ng"]]);
 });
 
+test("with the list deselected the folder button offers only New Group", async () => {
+    const { controller, store, calls } = makePlacementController({
+        sessions: [{ sessionId: "s1", title: "S1", status: "idle", owner: ALICE }],
+        groups: [{ groupId: "g1", title: "G1", memberCount: 0 }],
+    });
+
+    await controller.refreshSessions();
+    store.dispatch({ type: "sessions/selected", sessionId: "s1" });
+    // Clicking empty space in the list: the active session still drives chat
+    // and the inspector, but it is no longer a LIST selection.
+    store.dispatch({ type: "sessions/listDeselect" });
+    assert.equal(store.getState().sessions.activeSessionId, "s1");
+
+    await controller.openMoveToGroupModal();
+
+    // Not the move picker (which would offer [No Group] and G1, and would
+    // silently move the still-active session) - straight to naming a folder.
+    const modal = store.getState().ui.modal;
+    assert.equal(modal?.type, "sessionGroupName");
+    assert.equal(modal?.title, "New Group");
+    assert.deepEqual(modal?.sessionIds, []);
+
+    store.dispatch({ type: "ui/modal", modal: { ...modal, value: "Docs" } });
+    await controller.confirmSessionGroupNameModal();
+
+    // An EMPTY folder, and the still-active session is not swept into it.
+    assert.equal(calls.createSessionGroup.length, 1);
+    assert.equal(calls.createSessionGroup[0].title, "Docs");
+    assert.deepEqual(calls.createSessionGroup[0].sessionIds ?? [], []);
+    assert.deepEqual(calls.placeSessionsInGroup, []);
+});
+
+test("selecting a row again re-arms the folder button as a move", async () => {
+    const { controller, store } = makePlacementController({
+        sessions: [{ sessionId: "s1", title: "S1", status: "idle", owner: ALICE }],
+        groups: [{ groupId: "g1", title: "G1", memberCount: 0 }],
+    });
+
+    await controller.refreshSessions();
+    store.dispatch({ type: "sessions/selected", sessionId: "s1" });
+    store.dispatch({ type: "sessions/listDeselect" });
+    // Clicking the SAME row again cannot go through loadSession (it is still
+    // the active session, so that short-circuits); listReselect is what a
+    // plain click dispatches to bring the highlight back.
+    store.dispatch({ type: "sessions/listReselect" });
+    assert.equal(store.getState().sessions.listDeselected, false);
+
+    await controller.openMoveToGroupModal();
+    assert.equal(store.getState().ui.modal?.type, "sessionGroupPicker");
+});
+
 test("ungrouping dispatches placeSessionsInGroup with a null groupId", async () => {
     const { controller, store, calls } = makePlacementController({
         sessions: [{ sessionId: "s1", title: "S1", status: "idle", owner: ALICE, viewerGroupId: "g1" }],

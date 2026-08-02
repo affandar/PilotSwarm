@@ -1,0 +1,160 @@
+/**
+ * A session group is the viewer's OWN private organization, so an owner
+ * filter must never hide it. The server lists only your groups and the row
+ * carries no owner, so any filter narrower than "all" used to drop the
+ * folder while its member sessions stayed visible at top level — the
+ * "created a group, it flickers in then vanishes" bug.
+ */
+
+import test from "node:test";
+import assert from "node:assert/strict";
+import { appReducer, createInitialState, createStore, selectSessionRows } from "../src/index.js";
+
+const me = { provider: "entra", subject: "user-1" };
+const groupRow = {
+    sessionId: "group:g1", groupId: "g1", isGroup: true, title: "Test Group",
+    status: "group", owner: null, memberCount: 7, createdAt: 1, updatedAt: 2,
+};
+const mine = { sessionId: "s1", title: "mine", status: "idle", owner: me };
+
+function rowsWith(filter) {
+    const store = createStore(appReducer, createInitialState());
+    store.dispatch({ type: "auth/principal", principal: me });
+    store.dispatch({ type: "sessions/loaded", sessions: [groupRow, mine] });
+    store.dispatch({ type: "sessions/ownerFilter", filter });
+    return selectSessionRows(store.getState()).map((row) => row.sessionId);
+}
+
+test("an ownerless group row survives every owner filter", () => {
+    for (const [label, filter] of [
+        ["all", { all: true }],
+        ["mine only", { all: false, includeMe: true }],
+        ["shared only", { all: false, includeShared: true }],
+        ["explicit owner keys", { all: false, ownerKeys: ["entra:someone-else"] }],
+        ["system only", { all: false, includeSystem: true }],
+    ]) {
+        assert.ok(rowsWith(filter).includes("group:g1"), `group must stay visible under "${label}"`);
+    }
+});
+
+test("the filter still applies to the group's members", () => {
+    const shown = rowsWith({ all: false, ownerKeys: ["entra:someone-else"] });
+    assert.equal(shown.includes("s1"), false, "a session owned by someone else is still filtered out");
+});
+
+test("a session refresh that carries no folders does not delete them", () => {
+    const store = createStore(appReducer, createInitialState());
+    store.dispatch({ type: "auth/principal", principal: me });
+    store.dispatch({ type: "sessions/groupsLoaded", groups: [groupRow] });
+    store.dispatch({ type: "sessions/loaded", sessions: [mine] });
+
+    // This is the flicker: the catalog refresh rebuilds byId from its payload,
+    // which never contains folders. They must survive it.
+    assert.ok(selectSessionRows(store.getState()).map((r) => r.sessionId).includes("group:g1"),
+        "folder survives a session refresh that omits it");
+
+    // Repeated refreshes keep it — the state slice is the source of truth.
+    store.dispatch({ type: "sessions/loaded", sessions: [mine] });
+    store.dispatch({ type: "sessions/loaded", sessions: [mine] });
+    assert.ok(selectSessionRows(store.getState()).map((r) => r.sessionId).includes("group:g1"));
+
+    // Only a successful group fetch removes a folder.
+    store.dispatch({ type: "sessions/groupsLoaded", groups: [] });
+    assert.equal(selectSessionRows(store.getState()).map((r) => r.sessionId).includes("group:g1"), false,
+        "deleting the folder server-side does remove it");
+});
+
+test("clicking empty space clears the list highlight but keeps the session attached", () => {
+    const store = createStore(appReducer, createInitialState());
+    store.dispatch({ type: "sessions/loaded", sessions: [mine] });
+    store.dispatch({ type: "sessions/selected", sessionId: "s1" });
+    assert.equal(selectSessionRows(store.getState())[0].active, true);
+
+    store.dispatch({ type: "sessions/listDeselect" });
+    assert.equal(selectSessionRows(store.getState())[0].active, false, "no row is highlighted");
+    assert.equal(store.getState().sessions.activeSessionId, "s1",
+        "the session stays attached so chat/inspector keep rendering it");
+
+    // Selecting a row re-arms the highlight.
+    store.dispatch({ type: "sessions/selected", sessionId: "s1" });
+    assert.equal(selectSessionRows(store.getState())[0].active, true);
+});
+
+test("an empty group listing does not delete a folder its members still claim", () => {
+    const store = createStore(appReducer, createInitialState());
+    store.dispatch({ type: "sessions/groupsLoaded", groups: [groupRow] });
+    store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "child", title: "in folder", status: "idle", groupId: "g1" }] });
+
+    // A successful-but-EMPTY listing. Deleting the folder here was visibly
+    // destructive: the titled row was replaced by a generic stand-in, and
+    // because collapse state is keyed by row id, pruning the entry took the
+    // group's COLLAPSED state with it — so the group sprang open and spilled
+    // its members into the list.
+    store.dispatch({ type: "sessions/groupsLoaded", groups: [] });
+
+    const state = store.getState();
+    const folder = state.sessions.byId["group:g1"];
+    assert.ok(folder, "the folder survives");
+    assert.equal(folder.title, groupRow.title, "and keeps its own title, not a stand-in's");
+    assert.ok(state.sessions.collapsedIds.has("group:g1"), "and its collapsed state");
+    // Folders start collapsed, so the member is correctly not rendered — the
+    // invariant is that it is never rendered at TOP level.
+    const rows = selectSessionRows(state);
+    assert.ok(rows.some((row) => row.sessionId === "group:g1" && row.depth === 0), "the folder row is there");
+    assert.equal(rows.some((row) => row.sessionId === "child" && row.depth === 0), false,
+        "a grouped session never appears at top level");
+
+    // Expanding shows it nested, which is where it has been all along.
+    store.dispatch({ type: "sessions/expand", sessionId: "group:g1" });
+    const expanded = selectSessionRows(store.getState());
+    const child = expanded.find((row) => row.sessionId === "child");
+    assert.ok(child && child.depth > 0, "the member is inside the folder");
+});
+
+test("members never vanish when their folder row is missing", () => {
+    const store = createStore(appReducer, createInitialState());
+    store.dispatch({ type: "auth/principal", principal: me });
+    // Sessions arrive already filed into a folder we have NOT fetched yet —
+    // the state right after a move, or any tick where the group fetch lags.
+    store.dispatch({
+        type: "sessions/loaded",
+        sessions: [
+            { sessionId: "a", title: "filed one", status: "idle", groupId: "g-unknown", owner: me },
+            { sessionId: "b", title: "filed two", status: "idle", groupId: "g-unknown", owner: me },
+            // A second owner so rows carry owner chips - that is the form the
+            // bug took: a stand-in the row builder could not resolve rendered
+            // as a bare "[?]" chip with no title and no glyph.
+            { sessionId: "loose", title: "loose", status: "idle", owner: { provider: "github", subject: "someone-else", displayName: "Someone Else" } },
+        ],
+    });
+
+    const ids = selectSessionRows(store.getState()).map((row) => row.sessionId);
+    assert.ok(ids.includes("group:g-unknown"), "a stand-in folder appears for the unknown group");
+    assert.ok(ids.includes("a") && ids.includes("b"), "its members stay visible instead of disappearing");
+    assert.ok(ids.includes("loose"));
+
+    // Depth proves containment still holds: members sit UNDER the folder.
+    const rows = selectSessionRows(store.getState());
+    const folder = rows.find((row) => row.sessionId === "group:g-unknown");
+    const member = rows.find((row) => row.sessionId === "a");
+    assert.equal(folder.depth, 0);
+    assert.ok(member.depth > folder.depth, "members render inside the folder, not beside it");
+
+    // And it must LOOK like a folder. The stand-in lives only in the tree, not
+    // in sessions.byId, so the row builder's lookup found nothing and drew an
+    // identity-less "[?]" line: no glyph, no title, just an unknown-owner chip.
+    const folderText = folder.text || (folder.runs || []).map((run) => run.text).join("");
+    assert.equal(folder.isGroup, true, "the stand-in row is a group row");
+    assert.ok(folderText.includes("🗂"), `stand-in renders as a folder, got: ${JSON.stringify(folderText)}`);
+    assert.ok(!folderText.includes("[?]"), `stand-in must not render as an unknown ghost, got: ${JSON.stringify(folderText)}`);
+
+    // The real folder arrives and replaces the stand-in, title and all.
+    store.dispatch({
+        type: "sessions/groupsLoaded",
+        groups: [{ sessionId: "group:g-unknown", groupId: "g-unknown", isGroup: true, title: "Real Name", status: "group", memberCount: 2, createdAt: 1, updatedAt: 2 }],
+    });
+    const after = selectSessionRows(store.getState());
+    const real = after.find((row) => row.sessionId === "group:g-unknown");
+    assert.match(real.text || real.runs?.map((r) => r.text).join("") || "", /Real Name/);
+    assert.equal(after.filter((row) => row.sessionId === "group:g-unknown").length, 1, "no duplicate folder row");
+});

@@ -11,6 +11,12 @@ if (argv[0] === "auth") {
         console.error(`[pilotswarm] ${error?.message || error}`);
         return 1;
     });
+} else if (argv[0] === "agents") {
+    const { runAgentsCommand } = await import("../src/agents-cli.js");
+    process.exitCode = await runAgentsCommand(argv.slice(1)).catch((error) => {
+        console.error(`[pilotswarm] ${error?.message || error}`);
+        return 1;
+    });
 } else {
     const { parseCliIntoEnv } = await import("../src/bootstrap-env.js");
     const config = parseCliIntoEnv(argv);

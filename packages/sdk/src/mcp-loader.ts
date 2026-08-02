@@ -123,7 +123,22 @@ export function loadMcpConfig(pluginDir: string): Record<string, MCPServerConfig
                 console.warn(`[mcp-loader] Skipping MCP server "${name}": invalid config`);
                 continue;
             }
-            result[name] = expandEnvDeep(config);
+            const expanded = expandEnvDeep(config);
+            // Stdio servers ship their code INSIDE the plugin/package dir and
+            // reference it relatively ("./mcp-servers/x.js"), but the Copilot
+            // CLI spawns them from ITS cwd — and for agent packages the
+            // unpacked cache path varies per worker, so an author cannot
+            // write an absolute cwd. Anchor relative worlds to the dir that
+            // owns the .mcp.json: default a missing cwd to it, resolve a
+            // relative cwd against it.
+            if (typeof expanded?.command === "string") {
+                if (!expanded.cwd) {
+                    expanded.cwd = absDir;
+                } else if (!path.isAbsolute(expanded.cwd)) {
+                    expanded.cwd = path.resolve(absDir, expanded.cwd);
+                }
+            }
+            result[name] = expanded;
         }
 
         return result;

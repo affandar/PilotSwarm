@@ -356,7 +356,51 @@ function PortalForbidden({ branding, authUi, authConfig, error, onSignOut, shell
         ));
 }
 
+/**
+ * This tab's build id: the hash Vite baked into the chunk this module lives
+ * in. Compared against what the server currently serves so a stale tab can
+ * offer a reload. Not displayed — it is a diagnostic, not product copy.
+ */
+const BUILD_ID = (() => {
+    try {
+        const file = new URL(import.meta.url).pathname.split("/").pop() || "";
+        const match = /-([A-Za-z0-9_-]{6,})\.js$/.exec(file);
+        return match ? match[1].slice(0, 6) : "dev";
+    } catch {
+        return "dev";
+    }
+})();
+
+/**
+ * A long-lived tab keeps running the JS it loaded, so a deploy is invisible
+ * until a reload — which reads as "the fix didn't ship". index.html is
+ * served no-store, so its current asset hashes are the truth: poll it and
+ * offer a reload when they no longer match this tab's.
+ */
+function useBuildFreshness() {
+    const [stale, setStale] = React.useState(false);
+    React.useEffect(() => {
+        if (BUILD_ID === "dev" || typeof window === "undefined") return undefined;
+        let cancelled = false;
+        const check = async () => {
+            try {
+                const response = await fetch("/", { cache: "no-store", headers: { accept: "text/html" } });
+                if (!response.ok) return;
+                const html = await response.text();
+                const served = [...html.matchAll(/assets\/[A-Za-z0-9_-]+-([A-Za-z0-9_-]{6,})\.js/g)]
+                    .map((match) => match[1].slice(0, 6));
+                if (!cancelled && served.length > 0 && !served.includes(BUILD_ID)) setStale(true);
+            } catch { /* offline or blocked — try again next tick */ }
+        };
+        void check();
+        const timer = window.setInterval(check, 60_000);
+        return () => { cancelled = true; window.clearInterval(timer); };
+    }, []);
+    return stale;
+}
+
 function PortalHeader({ account, authEnabled, isAdmin = false, branding, onSignOut, versionLabel = null, statusText = "" }) {
+    const buildStale = useBuildFreshness();
     // Admins are marked with a leading "(*)" so elevated rights are visible at a glance.
     const baseName = account?.name || account?.username || "Signed in";
     const name = isAdmin ? `(*) ${baseName}` : baseName;
@@ -382,6 +426,14 @@ function PortalHeader({ account, authEnabled, isAdmin = false, branding, onSignO
                 React.createElement("div", { className: "portal-header-meta" },
                     versionLabel
                         ? React.createElement("span", { className: "portal-header-version" }, versionLabel)
+                        : null,
+                    buildStale
+                        ? React.createElement("button", {
+                            type: "button",
+                            className: "portal-header-refresh",
+                            title: "A newer build is deployed — this tab is still running the one it loaded",
+                            onClick: () => window.location.reload(),
+                        }, "↻ New build — reload")
                         : null,
                     statusText
                         ? React.createElement("span", { className: "portal-header-status" }, statusText)
@@ -417,9 +469,10 @@ function PortalMobileStatus({ statusText, onDismiss }) {
 function PortalWorkspace({ auth, portal, shellStyle }) {
     const transport = React.useMemo(() => new BrowserPortalTransport({
         getAccessToken: auth.getAccessToken,
+        getResourceToken: auth.getResourceToken,
         onUnauthorized: auth.handleUnauthorized,
         onForbidden: auth.handleForbidden,
-    }), [auth.getAccessToken, auth.handleForbidden, auth.handleUnauthorized]);
+    }), [auth.getAccessToken, auth.getResourceToken, auth.handleForbidden, auth.handleUnauthorized]);
     const controller = React.useMemo(() => createWebPilotSwarmController({
         transport,
         mode: "remote",
@@ -428,7 +481,10 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
             splash: portal?.branding?.splash || "{bold}{cyan-fg}PilotSwarm{/cyan-fg}{/bold}",
             splashMobile: portal?.branding?.splashMobile || null,
         },
-    }), [portal?.branding?.splash, portal?.branding?.splashMobile, portal?.branding?.title, transport]);
+        // A layered deployment ships its own agent-authoring guide; the link
+        // in the Add/Update package dialog follows it.
+        docs: portal?.docs || null,
+    }), [portal?.branding?.splash, portal?.branding?.splashMobile, portal?.branding?.title, portal?.docs, transport]);
     const statusText = usePortalControllerStatusText(controller);
     // Dismissing hides the mobile status row until a *different* message
     // arrives (a repeat of the same text stays dismissed).

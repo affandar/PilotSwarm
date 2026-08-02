@@ -142,6 +142,47 @@ The portal (`packages/app/web/`) must interact with PilotSwarm **exclusively thr
 
 Portal auth is provider-based (`packages/app/web/auth/`). Auth providers live in `auth/providers/`, token normalization in `auth/normalize/`, and authorization policy in `auth/authz/engine.js`. Configuration uses **canonical env vars only**: `PORTAL_AUTH_*` and `PORTAL_AUTHZ_*` — never legacy `ENTRA_*` aliases.
 
+## Client Layering Rule — direct vs Web API
+
+Every feature surface goes through the SDK clients, and the **client** is the
+only thing that knows which mode it is in:
+
+- **Direct mode** — `new PilotSwarmClient({ store })` /
+  `new PilotSwarmManagementClient({ store })` talk to PostgreSQL and the other
+  providers directly. This mode is for a **trusted subsystem**: the worker, and
+  the portal/Web API server process itself.
+- **Web API mode** — the *same* constructors, given `{ apiUrl }`, return the web
+  variants (the `isWebOptions()` dispatch in `client.ts` and
+  `management-client.ts`) and talk to `/api/v1`. The Web API server then runs the
+  client in **direct mode inside its own trusted subsystem**. Web mode is the
+  supported public mode.
+
+Rules, in order:
+
+1. **Never reach past the client.** No feature surface may construct
+   `PgSessionCatalog`, a fact store, or any other provider on its own. The only
+   legitimate direct-store consumers are the SDK itself and the direct-mode
+   transport whose whole job is to *be* direct mode.
+2. **The CLI is layered entirely on the client and defaults to Web API mode.** A
+   CLI gesture must never require `DATABASE_URL` to talk to a deployment.
+   `--store` may exist as an explicit operator escape hatch; it must not be the
+   only path.
+3. **A new management operation lands on `PilotSwarmManagementClient` first**,
+   then the Web API route, then MCP / CLI / portal on top of that. An operation
+   that exists only as an HTTP route, or only in direct mode, is incomplete.
+4. Methods with no web equivalent throw `webModeUnsupported(...)` rather than
+   silently degrading.
+
+Known violations to fix rather than copy:
+
+- `packages/app/tui/src/agents-cli.js` (`pilotswarm agents`) breaks (1) and (2):
+  it constructs `PgSessionCatalog` directly and has no Web API mode, so it needs
+  database credentials and bypasses the Web API's creator-or-admin authz.
+- Agent packages break (3): ten Web API routes with **zero**
+  `PilotSwarmManagementClient` methods behind them.
+- No layer exposes a package **artifact download**; the tarball is reachable
+  only file-by-file through the tree/file routes.
+
 ### TUI Keybindings
 
 If you add or change a TUI keybinding, you must update all user-facing keybinding surfaces together:

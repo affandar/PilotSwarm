@@ -68,7 +68,7 @@ export function registerCapabilityTools(server: McpServer, ctx: ServerContext) {
             let embeddedWorkers: number | null = null;
             if (ctx.api) {
                 try {
-                    const w: any = await ctx.api.call("getWorkerCount");
+                    const w: any = await ctx.web.ops.getWorkerCount();
                     embeddedWorkers = typeof w === "number" ? w : (w?.count ?? w?.workers ?? null);
                 } catch {
                     embeddedWorkers = null;

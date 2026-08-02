@@ -23,6 +23,7 @@ import {
     PilotSwarmUiController,
     tokenizeInlineMarkdown,
     selectActivityPane,
+    selectWorkerDetailsPane,
     selectAdminConsole,
     selectArtifactPickerModal,
     selectArtifactUploadModal,
@@ -54,6 +55,7 @@ import {
     defaultOwnerFilterForPrincipal,
     normalizeStoredLayoutAdjustments,
     normalizeStoredPinnedSessionIds,
+    normalizeStoredSessionOrder,
 } from "pilotswarm/ui-core";
 import { useControllerSelector } from "./use-controller-state.js";
 
@@ -210,6 +212,9 @@ function normalizeProfileSettings(settings) {
     if (hasOwn(candidate, "pinnedSessionIds")) {
         normalized.pinnedSessionIds = normalizeStoredPinnedSessionIds(candidate.pinnedSessionIds);
     }
+    if (hasOwn(candidate, "sessionOrder")) {
+        normalized.sessionOrder = normalizeStoredSessionOrder(candidate.sessionOrder);
+    }
     if (hasOwn(candidate, "collapsedSessionIds")) {
         normalized.collapsedSessionIds = normalizeStoredCollapsedSessionIdsToArray(candidate.collapsedSessionIds);
     }
@@ -288,6 +293,7 @@ function profileSettingsFromViewState(state, preservedOtherChatViewMode = null) 
             activityPaneAdjust: state.activityPaneAdjust,
         },
         pinnedSessionIds: state.pinnedIds,
+        sessionOrder: state.manualOrder,
         collapsedSessionIds: state.collapsedSessionIds,
         activeSessionId: state.activeSessionId,
         [chatViewModeKey()]: state.chatViewMode,
@@ -312,6 +318,7 @@ function buildDefaultProfileSettingsFromState(state, preservedOtherChatViewMode 
         sessionOwnerFilter: defaultOwnerFilterForPrincipal(state?.auth?.principal ?? null),
         layoutAdjustments: state?.ui?.layout,
         pinnedSessionIds: state?.sessions?.pinnedIds,
+        sessionOrder: state?.sessions?.manualOrder,
         collapsedSessionIds: state?.sessions?.collapsedIds,
         activeSessionId: state?.sessions?.activeSessionId,
         [chatViewModeKey()]: state?.ui?.chatViewMode,
@@ -344,6 +351,13 @@ function materializeProfileSettings(remoteSettings, defaults) {
         pinnedSessionIds: hasOwn(normalizedRemote, "pinnedSessionIds")
             ? normalizedRemote.pinnedSessionIds
             : normalizedDefaults.pinnedSessionIds,
+        // This merge rebuilds the settings object key by key, so a key omitted
+        // here is DROPPED at startup — and the save effect then writes the
+        // empty value straight back over the stored one. Leaving sessionOrder
+        // out made every placement survive exactly until the next reload.
+        sessionOrder: hasOwn(normalizedRemote, "sessionOrder")
+            ? normalizedRemote.sessionOrder
+            : normalizedDefaults.sessionOrder,
         ...(hasOwn(normalizedRemote, "collapsedSessionIds")
             ? { collapsedSessionIds: normalizedRemote.collapsedSessionIds }
             : {}),
@@ -600,6 +614,14 @@ function applyDocumentTheme(themeId) {
     root.style.setProperty("--ps-modal-selected-background", theme.page.modalSelectedBackground);
     root.style.setProperty("--ps-modal-selected-border", theme.page.modalSelectedBorder);
     root.style.setProperty("--ps-modal-selected-foreground", theme.page.modalSelectedForeground);
+    // Semantic status colours, from the SAME palette the terminal rows read
+    // through resolveColor(). The stylesheet already referenced these names in
+    // a dozen rules; nothing published them, so those rules either fell back to
+    // a hardcoded GitHub hex in every theme or were invalid and did nothing.
+    root.style.setProperty("--ps-accent", theme.tui.cyan);
+    root.style.setProperty("--ps-success", theme.tui.green);
+    root.style.setProperty("--ps-warning", theme.tui.yellow);
+    root.style.setProperty("--ps-danger", theme.tui.red);
     // Expose the theme id so a theme can carry CHROME, not just colours. Win95
     // is defined by its bevels — raised faces, inset wells, square corners —
     // and none of that is expressible as a palette entry.
@@ -2843,6 +2865,40 @@ function Panel({ title, titleRight = null, color = "gray", focused = false, acti
     React.createElement("div", { className: "ps-panel-body" }, children));
 }
 
+/**
+ * Node Map body: the shared lines, with node rows made clickable. A run
+ * carrying `nodeSelect` marks its whole line as a node row — clicking
+ * selects (or toggle-clears) that node, which also scopes the Activity pane.
+ */
+function PortalNodeMapLines({ lines, theme, controller }) {
+    return React.createElement("div", { className: "ps-nodemap" },
+        (lines || []).map((line, index) => {
+            // ScrollLinesPanel normalizes every line to {kind:"runs", runs}
+            // before renderBody — unwrap that shape first, then tolerate the
+            // raw array/object shapes for direct (test) rendering.
+            const runs = Array.isArray(line?.runs) ? line.runs : Array.isArray(line) ? line : [line];
+            const nodeSelect = runs.find((run) => run?.nodeSelect)?.nodeSelect || null;
+            const nodeSelected = runs.some((run) => run?.nodeSelected);
+            const content = React.createElement(Runs, { runs, theme });
+            if (nodeSelect) {
+                return React.createElement("button", {
+                    key: `line:${index}`,
+                    type: "button",
+                    className: `ps-nodemap__row${nodeSelected ? " is-selected" : ""}`,
+                    // pointerdown, not click: the pane claims focus on
+                    // mousedown, and any resulting re-render must not be able
+                    // to eat the click before mouseup lands.
+                    onPointerDown: (event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        controller.selectNodeMapNode(nodeSelect);
+                    },
+                }, content);
+            }
+            return React.createElement("div", { key: `line:${index}`, className: "ps-nodemap__line" }, content);
+        }));
+}
+
 function PortalSequenceLines({ lines, theme, completionByTurn }) {
     const [expanded, setExpanded] = React.useState(() => new Set());
     const toggle = React.useCallback((key) => {
@@ -3039,7 +3095,7 @@ function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, l
                 normalizedSticky.map((line, index) => React.createElement(Line, { key: `sticky:${index}`, line, theme })),
             )
             : null,
-        React.createElement("div", { ref, className: `ps-scroll-panel ${className}${scrollShadow.down ? " is-scrolled-down" : ""}${scrollShadow.up ? " is-scrolled-up" : ""}`.trim(), onScroll: handleBodyScroll, onMouseDown: claimFocus, onTouchStart, onWheel, onTouchMove, onTouchEnd, onTouchCancel: onTouchEnd },
+        React.createElement("div", { ref, className: `ps-scroll-panel ${className}${scrollShadow.down ? " is-scrolled-down" : ""}${scrollShadow.up ? " is-scrolled-up" : ""}`.trim(), "data-session-scroll": focusRegion === "sessions" ? "1" : undefined, onScroll: handleBodyScroll, onMouseDown: claimFocus, onTouchStart, onWheel, onTouchMove, onTouchEnd, onTouchCancel: onTouchEnd },
             typeof renderBody === "function"
                 ? renderBody(normalizedLines, theme)
                 : structuredBlocks
@@ -3154,31 +3210,146 @@ function SessionDetailBox({ session, childCount = 0 }) {
  * fleet. That only holds while every prop is referentially stable — hence the
  * hoisted click handler and ref setter rather than closures built per row.
  */
+/**
+ * True when the primary input is a finger. Drag-to-folder is armed on
+ * pointerdown and needs `touch-action: none` to receive a move stream — which
+ * on a touch screen also means the list can no longer be scrolled by dragging
+ * it, so the gesture is withheld there entirely.
+ */
+function useCoarsePointer() {
+    const query = "(pointer: coarse)";
+    const read = () => (typeof window !== "undefined" && typeof window.matchMedia === "function"
+        ? window.matchMedia(query).matches
+        : false);
+    const [coarse, setCoarse] = React.useState(read);
+    React.useEffect(() => {
+        if (typeof window === "undefined" || typeof window.matchMedia !== "function") return undefined;
+        const media = window.matchMedia(query);
+        const onChange = (event) => setCoarse(event.matches);
+        media.addEventListener?.("change", onChange);
+        return () => media.removeEventListener?.("change", onChange);
+    }, []);
+    return coarse;
+}
+
+const RAIL_ORIGIN_PX = 13;
+const RAIL_STEP_PX = 11;
+const RAIL_WIDTH_PX = 1.5;
+// A nested row's status mark sits ON its deepest rail, so the branch reads as
+// one continuous thread with a node per member rather than a stack of
+// separate glyphs. Ring, not disc: the ring says "on the thread", and it keeps
+// the top-level disc meaning "root" at a glance.
+const RAIL_NODE_SIZE_PX = 7;
+
+function railNodeInsetPx(depth) {
+    return RAIL_ORIGIN_PX + ((depth - 1) * RAIL_STEP_PX) + (RAIL_WIDTH_PX / 2) - (RAIL_NODE_SIZE_PX / 2);
+}
+
 const SessionListRow = React.memo(function SessionListRow({
-    row, theme, rich, structuredRows, mobile, onRowClick, setRef,
+    row, theme, rich, structuredRows, mobile, onRowClick, setRef, drag,
 }) {
+    const depth = Math.max(0, row.depth);
+    const railStyle = React.useMemo(() => {
+        if (depth < 1) return undefined;
+        const levels = Array.from({ length: depth }, (_, level) => level);
+        return {
+            backgroundImage: levels.map(() => "linear-gradient(var(--ps-rail), var(--ps-rail))").join(", "),
+            backgroundSize: levels.map(() => `${RAIL_WIDTH_PX}px 100%`).join(", "),
+            backgroundPosition: levels.map((level) => `${RAIL_ORIGIN_PX + (level * RAIL_STEP_PX)}px 0`).join(", "),
+            backgroundRepeat: "no-repeat",
+        };
+    }, [depth]);
     const ref = React.useCallback((node) => setRef(row.sessionId, node), [setRef, row.sessionId]);
     const onClick = React.useCallback((event) => onRowClick(event, row), [onRowClick, row]);
+    // Pointer-based dragging: HTML5 drag never fired reliably from these
+    // <button> rows, and it cannot render the "N sessions" collection ghost
+    // or a live destination highlight. Pointer events give both.
+    // A folder's drop zone is its WHOLE expanded region — the folder row and
+    // every row nested under it — so releasing over a member files alongside
+    // that member rather than falling through to "remove from folder".
+    //
+    // Both sides of this comparison must be the BARE group id: row.sessionId
+    // for a folder is the prefixed row id ("group:<uuid>") while overGroupId
+    // comes off the DOM as the raw uuid, so matching on sessionId meant the
+    // destination highlight never once rendered.
+    const dropGroupId = row.groupId || null;
+    const inDropZone = Boolean(drag?.dragging && drag.overGroupId && dropGroupId === drag.overGroupId);
+    const isDropTarget = inDropZone && Boolean(row.isGroup);
+    // The insertion line: a 2px rule above the row the dragged one would land
+    // before. Rendered on the ROW rather than as a floating element so it
+    // tracks the list as it scrolls, including during auto-scroll.
+    const insertBefore = Boolean(drag?.dragging && drag.insertBeforeId === row.sessionId);
+    // Dropping at the END of a list: the line goes UNDER the final sibling,
+    // because there is no following row to sit above.
+    const insertAfter = Boolean(drag?.dragging && drag.insertAfterId && drag.insertAfterId === row.sessionId);
+    const onPointerDown = React.useCallback((event) => {
+        // No drag handlers (mobile) → no gesture to claim. Capturing the
+        // pointer there would swallow the touch that should scroll the list.
+        if (!drag?.onPointerDown) return;
+        if (event.button !== 0) return;
+        // Claim the gesture: without this the browser can start a native
+        // selection/element drag on the button and never deliver pointermove.
+        if (event.currentTarget?.setPointerCapture && event.pointerId != null) {
+            try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* not capturable */ }
+        }
+        drag.onPointerDown(event, row);
+    }, [drag, row]);
 
     return React.createElement("button", {
         type: "button",
         ref,
-        className: `ps-list-button ps-session-list-button${row.active ? " is-selected" : ""}${row.selected ? " is-multiselected" : ""}${row.pinned ? " is-pinned" : ""}`,
+        className: `ps-list-button ps-session-list-button${row.active ? " is-selected" : ""}${row.selected ? " is-multiselected" : ""}${row.pinned ? " is-pinned" : ""}${inDropZone ? " is-drop-zone" : ""}${isDropTarget ? " is-drop-target" : ""}${insertBefore ? " is-insert-before" : ""}${insertAfter ? " is-insert-after" : ""}${row.depth > 0 ? " is-nested" : ""}`,
+        // Guide rails: one hairline per ancestor level, painted as background
+        // images so each row covers its OWN full height and the levels join
+        // into continuous lines down the branch. No wrapper element, so the
+        // list stays a flat row sequence.
+        style: railStyle,
         tabIndex: row.active ? 0 : -1,
         "aria-selected": row.active ? "true" : "false",
+        "data-session-id": row.sessionId,
+        "data-group-row": row.isGroup ? "1" : undefined,
+        // The RAW group id: row ids are prefixed ("group:<uuid>") and the
+        // placement API takes the bare uuid. Passing the row id silently
+        // targeted a group that does not exist.
+        "data-group-id": row.isGroup ? (row.groupId || "") : undefined,
+        // Every row that BELONGS to a folder advertises it too, so the hit
+        // test can resolve a destination from anywhere in the folder's region.
+        "data-drop-group": dropGroupId || undefined,
+        // Which sibling list this row sorts in. Reordering only ever compares
+        // siblings, so the drop hit-test uses this to tell "put it here" from
+        // "file it into that folder": a matching container means reorder, a
+        // different one means the folder gesture the drag already had.
+        //   ""            top-level session
+        //   "folders"     a folder row (folders reorder among themselves)
+        //   "g:<uuid>"    a session inside that folder
+        // Sub-agents get no key — they are not movable and must not be a
+        // drop target for ordering either.
+        "data-order-container": row.orderContainer ?? undefined,
+        "data-orderable": row.orderable ? "1" : undefined,
+        onPointerDown,
         onClick,
+        // macOS turns Ctrl+click into a context-menu event, so the click
+        // handler never sees it. Treat it as the multi-select modifier the
+        // user actually pressed.
+        onContextMenu: (event) => {
+            if (!event.ctrlKey) return;
+            event.preventDefault();
+            onRowClick(event, row);
+        },
     },
         React.createElement("div", {
             className: rich ? "ps-session-row-content is-rich" : "ps-line ps-session-row-content",
             style: {
-                paddingInlineStart: rich
-                    ? `${Math.max(0, row.depth) * 14}px`
-                    : `${Math.max(0, row.depth) * 4}px`,
+                // Nested content starts where its node mark does, so the mark
+                // lands centred on the deepest rail and the text clears it.
+                paddingInlineStart: depth > 0 ? `${railNodeInsetPx(depth)}px` : "0px",
             },
         },
             rich
                 ? React.createElement(RichSessionRow, { row, theme, showDetail: mobile })
-                : React.createElement(SessionRowContent, { row, theme, structured: structuredRows, showInlineDetail: mobile })));
+                : React.createElement(SessionRowContent, {
+                    row, theme, structured: structuredRows, showInlineDetail: mobile,
+                })));
 });
 
 function RichSessionRow({ row, theme, showDetail = false }) {
@@ -3201,8 +3372,10 @@ function RichSessionRow({ row, theme, showDetail = false }) {
             kindGlyph
                 ? React.createElement("span", { className: "ps-rich-session-kind" }, kindGlyph)
                 : React.createElement("span", {
-                    className: "ps-rich-session-dot",
-                    style: { background: resolveColor(theme, chrome.statusColor) || undefined },
+                    className: `ps-rich-session-dot${row.depth > 0 ? " is-node" : ""}`,
+                    style: row.depth > 0
+                        ? { borderColor: resolveColor(theme, chrome.statusColor) || undefined }
+                        : { background: resolveColor(theme, chrome.statusColor) || undefined },
                     title: row.status || undefined,
                 }),
             chrome.owner
@@ -3216,7 +3389,7 @@ function RichSessionRow({ row, theme, showDetail = false }) {
                 style: chrome.kind === "session" ? undefined : { color: accent },
                 title: chrome.title,
             }, chrome.title),
-            chrome.pinned ? React.createElement("span", { className: "ps-rich-session-pin", title: "Pinned" }, "📌") : null,
+            chrome.pinned ? React.createElement("span", { className: "ps-rich-session-pin", title: "Pinned" }, React.createElement(PinGlyph)) : null,
             chrome.cron ? React.createElement("span", { className: "ps-rich-session-cron", title: "Scheduled" }, "⏱") : null,
             chrome.childBadge
                 ? React.createElement("span", {
@@ -3236,18 +3409,75 @@ function RichSessionRow({ row, theme, showDetail = false }) {
             : null);
 }
 
+/**
+ * Portal row prefix: drop the "└ " depth glyph (the guide rail says it, and
+ * better — a rail shows a branch that CONTINUES, which the glyph cannot), and
+ * lift the status run out so it can be drawn as a dot instead of "~" / "*",
+ * which is unreadable without a legend.
+ *
+ * Both runs are tagged by the selector precisely so a host can do this; the
+ * TUI renders text+colour, ignores the tags, and keeps its glyphs.
+ */
+function portalRowRuns(runs, theme) {
+    if (!Array.isArray(runs)) return { statusColor: null, rest: runs };
+    let statusColor = null;
+    const rest = [];
+    for (const run of runs) {
+        if (run?.role === "depth") continue;
+        if (run?.role === "status") {
+            statusColor = resolveColor(theme, run.color) || null;
+            continue;
+        }
+        rest.push(run);
+    }
+    return { statusColor, rest };
+}
+
+function StatusDot({ color, node = false }) {
+    return React.createElement("span", {
+        className: `ps-session-status-dot${node ? " is-node" : ""}`,
+        style: color ? (node ? { borderColor: color } : { background: color }) : undefined,
+    });
+}
+
+/**
+ * Owner avatar: a monogram disc, the shape people already read as "who"
+ * in a mail client. Colour carries the identity (two-letter initials
+ * collide constantly); the ring marks the viewer's own rows.
+ *
+ * ONE component for both lists — sessions and agent packages — so the same
+ * person cannot look like two different people in two panes.
+ */
+function OwnerAvatar({ badge, size = "sm" }) {
+    if (!badge) return null;
+    return React.createElement("span", {
+        className: `ps-owner-avatar is-${size}${badge.isMine ? " is-mine" : ""}`,
+        "data-owner-hue": String(badge.hue ?? 0),
+        title: badge.isMine ? `${badge.name} (you)` : badge.name,
+        "aria-label": badge.name,
+    }, badge.initials);
+}
+
+/** Drop the TUI-only text chip; the portal draws OwnerAvatar instead. */
+function withoutOwnerChip(runs) {
+    return Array.isArray(runs) ? runs.filter((run) => !run?.ownerChip) : runs;
+}
 function SessionRowContent({ row, theme, structured = false, showInlineDetail = false }) {
     const hasStructuredRuns = structured && Array.isArray(row.titleRuns);
     if (!hasStructuredRuns) {
-        return Array.isArray(row.runs)
-            ? React.createElement(Runs, { runs: row.runs, theme })
-            : row.text;
+        if (!Array.isArray(row.runs)) return row.text;
+        const plain = portalRowRuns(withoutOwnerChip(row.runs), theme);
+        return React.createElement(React.Fragment, null,
+            plain.statusColor ? React.createElement(StatusDot, { color: plain.statusColor, node: row.depth > 0 }) : null,
+            React.createElement(OwnerAvatar, { badge: row.ownerBadge }),
+            React.createElement(Runs, { runs: plain.rest, theme }));
     }
 
     // Dense row: the title takes one line (clamped by CSS) and the context %
     // is pinned to the right. id · time · model · ctx now live in the panel's
     // detail box rather than unfolding under the row, so selecting a session
     // no longer reflows the list.
+    const title = portalRowRuns(withoutOwnerChip(row.titleRuns), theme);
     const ctxRuns = Array.isArray(row.ctxRuns) ? row.ctxRuns : [];
     const hasCtx = ctxRuns.length > 0;
     // Mobile keeps the inline unfold under the selected row (no detail box).
@@ -3259,7 +3489,9 @@ function SessionRowContent({ row, theme, structured = false, showInlineDetail = 
     return React.createElement(React.Fragment, null,
         React.createElement("div", { className: "ps-session-row-line" },
             React.createElement("div", { className: "ps-session-row-title" },
-                React.createElement(Runs, { runs: row.titleRuns, theme })),
+                title.statusColor ? React.createElement(StatusDot, { color: title.statusColor, node: row.depth > 0 }) : null,
+                React.createElement(OwnerAvatar, { badge: row.ownerBadge }),
+                React.createElement(Runs, { runs: title.rest, theme })),
             hasCtx
                 ? React.createElement("div", { className: "ps-session-row-ctx" },
                     React.createElement(Runs, { runs: ctxRuns, theme }))
@@ -3304,6 +3536,10 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     // Mobile keeps its inline detail line and gets no detail box — a reserved
     // footer would eat a meaningful slice of a phone screen.
     const isMobilePane = String(panelClassName).includes("ps-mobile-session-pane");
+    // Selection reverts to plain taps wherever the primary input is a finger:
+    // the mobile pane, and the chat-focus overlay's list on a phone. Matches
+    // the `(pointer: fine)` guard on touch-action in the stylesheet.
+    const touchInput = isMobilePane || useCoarsePointer();
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
     const sessionButtonRefs = React.useRef(new Map());
@@ -3315,6 +3551,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         filterQuery: state.sessions.filterQuery || "",
         ownerFilter: state.sessions.ownerFilter,
         pinnedIds: state.sessions.pinnedIds,
+        manualOrder: state.sessions.manualOrder,
         selectedIds: state.sessions.selectedIds,
         selectMode: state.sessions.selectMode,
         auth: state.auth,
@@ -3325,7 +3562,11 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         // reads as one product rather than half terminal / half desktop.
         // TODO: promote this to its own `ui.richUi` setting if the two are
         // ever wanted independently.
-        rich: state.ui.chatViewMode === "rich",
+        rich: Boolean(getTheme(state.ui.themeId)?.richChat),
+        // Clicking empty space clears the list highlight; the row VM reads it,
+        // so the reconstruction below must carry it or the click does nothing
+        // visible (the same omission that blinded the Node Map).
+        listDeselected: Boolean(state.sessions.listDeselected),
     }), shallowEqualObject);
     const computedRows = React.useMemo(() => selectSessionRows({
         sessions: {
@@ -3335,8 +3576,10 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             filterQuery: viewState.filterQuery,
             ownerFilter: viewState.ownerFilter,
             pinnedIds: viewState.pinnedIds,
+            manualOrder: viewState.manualOrder,
             selectedIds: viewState.selectedIds,
             selectMode: viewState.selectMode,
+            listDeselected: viewState.listDeselected,
         },
         auth: viewState.auth,
         connection: {
@@ -3347,7 +3590,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         // deployment, while the controller's own calls (which pass real state)
         // produced the branded name.
         branding: viewState.branding,
-    }), [viewState.activeSessionId, viewState.auth, viewState.branding, viewState.connectionMode, viewState.filterQuery, viewState.ownerFilter, viewState.pinnedIds, viewState.selectedIds, viewState.selectMode, viewState.sessionsById, viewState.sessionsFlat]);
+    }), [viewState.activeSessionId, viewState.auth, viewState.branding, viewState.connectionMode, viewState.filterQuery, viewState.listDeselected, viewState.ownerFilter, viewState.pinnedIds, viewState.manualOrder, viewState.selectedIds, viewState.selectMode, viewState.sessionsById, viewState.sessionsFlat]);
     // Hold the previous rows when a poll produced identical output.
     const rows = useStableValue(computedRows);
     const activeSession = viewState.activeSessionId
@@ -3432,13 +3675,21 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         })
         : activeSession?.isGroup ? true : Boolean(activeSession);
     const hasExplicitSelection = selectedCount > 0;
+    // Mirrors getMovableGroupSessionSelection: after an empty-space click the
+    // active session still drives chat and the inspector, but it is no longer
+    // a LIST selection, so the folder button must not act on it.
+    const activeIsGroupable = Boolean(
+        activeSession && !viewState.listDeselected
+        && !activeSession.isSystem && !activeSession.isGroup && !activeSession.parentSessionId,
+    );
     const groupableIds = hasExplicitSelection
         ? viewState.selectedIds.filter((id) => {
             const session = viewState.sessionsById[id];
             return session && !session.isSystem && !session.isGroup && !session.parentSessionId;
         })
-        : (activeSession && !activeSession.isSystem && !activeSession.isGroup && !activeSession.parentSessionId ? [activeSession.sessionId] : []);
-    const canMoveToGroup = groupableIds.length > 0;
+        : (activeIsGroupable ? [activeSession.sessionId] : []);
+    // The folder button is never disabled: with nothing to move it makes an
+    // empty folder to drag into, which is the natural way to get one at all.
     const combinedPanelClassName = `ps-session-pane${viewState.rich ? " is-rich" : ""}${panelClassName ? ` ${panelClassName}` : ""}`;
     // The click handler must be referentially stable or every memoized row
     // re-renders on each keypress, defeating the point. It reads the current
@@ -3446,6 +3697,291 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     // closing over them.
     const clickEnv = React.useRef(null);
     clickEnv.current = { rows, viewState, controller };
+    // ── Drag sessions into / out of groups ────────────────────────────
+    // Pointer-driven so it works from <button> rows, can render a collection
+    // ghost for a multi-selection, and can highlight the destination folder.
+    const [dragState, setDragState] = React.useState({ dragging: false, ids: [], titles: [], overGroupId: null, insertBeforeId: undefined, insertAfterId: null, x: 0, y: 0 });
+    const dragRef = React.useRef(null);
+
+    /**
+     * Scroll the list when the pointer nears its edge, so a row can be dragged
+     * somewhere that is not currently on screen. Speed ramps with how deep
+     * into the edge zone the pointer is — a fixed step is either too slow to
+     * cross a long list or too fast to land precisely.
+     */
+    const autoScrollRef = React.useRef(null);
+    const stopAutoScroll = React.useCallback(() => {
+        if (autoScrollRef.current == null) return;
+        cancelAnimationFrame(autoScrollRef.current);
+        autoScrollRef.current = null;
+    }, []);
+    const updateAutoScroll = React.useCallback((x, y) => {
+        const EDGE_PX = 48;
+        const MAX_STEP_PX = 14;
+        const el = document.elementFromPoint(x, y);
+        const scroller = el?.closest?.("[data-session-scroll]")
+            || document.querySelector("[data-session-scroll]");
+        if (!scroller) { stopAutoScroll(); return; }
+        const box = scroller.getBoundingClientRect();
+        let step = 0;
+        if (y < box.top + EDGE_PX) {
+            step = -MAX_STEP_PX * Math.min(1, (box.top + EDGE_PX - y) / EDGE_PX);
+        } else if (y > box.bottom - EDGE_PX) {
+            step = MAX_STEP_PX * Math.min(1, (y - (box.bottom - EDGE_PX)) / EDGE_PX);
+        }
+        // Record the step BEFORE the early-out: the loop reads it every frame,
+        // so it has to be refreshed on each move or the scroll would keep the
+        // speed (and direction) it had when the pointer first entered the edge.
+        if (dragRef.current) dragRef.current.autoScrollStep = step;
+        if (!dragRef.current) { stopAutoScroll(); return; }
+        if (autoScrollRef.current != null) return; // loop already running
+        const tick = () => {
+            const pending = dragRef.current;
+            if (!pending || !pending.autoScrollStep) { stopAutoScroll(); return; }
+            scroller.scrollTop += pending.autoScrollStep;
+            autoScrollRef.current = requestAnimationFrame(tick);
+        };
+        autoScrollRef.current = requestAnimationFrame(tick);
+    }, [stopAutoScroll]);
+
+    const finishDrag = React.useCallback((commit) => {
+        const pending = dragRef.current;
+        dragRef.current = null;
+        stopAutoScroll();
+        setDragState({ dragging: false, ids: [], titles: [], overGroupId: null, insertBeforeId: undefined, insertAfterId: null, x: 0, y: 0 });
+        if (!commit || !pending?.started || pending.ids.length === 0) return;
+        // Released inside the row's own sibling list → a placement, which is a
+        // local preference: the reducer reorders and the profile write that
+        // follows persists it, so it roams to the user's other surfaces.
+        if (pending.intent === "reorder") {
+            controller.dispatch({
+                type: "sessions/reorder",
+                sessionId: pending.ids[0],
+                beforeSessionId: pending.beforeSessionId,
+            });
+            return;
+        }
+        // file → into that folder; unfile → out of the one it is in. Any
+        // other outcome is not a move at all and must do nothing: falling
+        // through here used to un-file rows on a drop that meant nothing.
+        if (pending.intent !== "file" && pending.intent !== "unfile") return;
+        controller.moveSessionsToGroup(pending.overGroupId, pending.ids).catch((error) => {
+            controller.dispatch({ type: "ui/status", text: `Move failed: ${error?.message || error}` });
+        });
+    }, [controller, stopAutoScroll]);
+
+    // Resolve a destination folder from a point. Any row inside the folder's
+    // expanded region answers, not just the folder row itself: aiming at a
+    // single 20px row to file something is needlessly fiddly, and releasing
+    // over a member obviously means "put it in there too".
+    const resolveDropGroup = React.useCallback((x, y) => {
+        if (typeof x !== "number" || typeof y !== "number") return null;
+        const el = document.elementFromPoint(x, y);
+        const zone = el?.closest?.("[data-drop-group]") || null;
+        return zone?.getAttribute("data-drop-group") || null;
+    }, []);
+
+    /**
+     * Resolve a REORDER destination: which row the dragged one should land
+     * before, within its own sibling list.
+     *
+     * Only rows sharing the dragged row's container answer — that is what
+     * separates "put it here" from the folder-filing gesture, and it is why a
+     * drag inside a folder reorders instead of re-filing into the folder it
+     * is already in. Above a row's midpoint drops before it, below drops
+     * after; past the last sibling drops at the end (null).
+     */
+
+    const resolveReorderTarget = React.useCallback((x, y, container, draggedId) => {
+        if (typeof x !== "number" || typeof y !== "number" || container == null) return undefined;
+        const siblings = Array.from(
+            document.querySelectorAll(`[data-order-container="${CSS.escape(container)}"][data-orderable="1"]`),
+        );
+        if (siblings.length === 0) return undefined;
+        for (const el of siblings) {
+            const box = el.getBoundingClientRect();
+            if (y < box.top + (box.height / 2)) {
+                return { before: el.getAttribute("data-session-id") || null, after: null };
+            }
+        }
+        // Below every sibling ⇒ land last. There is no row to draw a line
+        // ABOVE, so anchor one BELOW the final sibling instead — without it
+        // the one destination that has no "next row" is also the one with no
+        // feedback, and the drop looks like it will do nothing.
+        const last = siblings[siblings.length - 1];
+        const lastId = last?.getAttribute("data-session-id") || null;
+        return { before: null, after: lastId && lastId !== draggedId ? lastId : null };
+    }, []);
+
+    /**
+     * Decide which gesture a point means. ONE function, called from both the
+     * move handler and the release handler — deciding it twice, in two places,
+     * let the release contradict the highlight the user was looking at.
+     *
+     *   file    pointer is inside a folder the row is not already in
+     *   unfile  row lives in a folder and the pointer is outside every folder
+     *   reorder anything else: same folder, or a top-level row over the list
+     *
+     * Filing must be tested FIRST. A reorder target can be resolved almost
+     * anywhere in the list, so letting reorder win meant overGroupId was
+     * always cleared and dropping into a folder never once happened.
+     */
+    const resolveDropIntent = React.useCallback((x, y, pending) => {
+        const overGroupId = resolveDropGroup(x, y);
+        const ownGroupId = pending?.ownGroupId || null;
+        if (overGroupId && overGroupId !== ownGroupId) {
+            return { kind: "file", overGroupId, before: undefined, after: null };
+        }
+        if (!overGroupId && ownGroupId) {
+            return { kind: "unfile", overGroupId: null, before: undefined, after: null };
+        }
+        const canReorder = pending?.orderable && pending.ids.length === 1;
+        const target = canReorder
+            ? resolveReorderTarget(x, y, pending.container, pending.ids[0])
+            : undefined;
+        if (target === undefined) {
+            // Nothing to reorder against (multi-select, or an empty list):
+            // fall back to the folder gesture the drag always had.
+            return { kind: overGroupId ? "file" : "none", overGroupId, before: undefined, after: null };
+        }
+        return { kind: "reorder", overGroupId: null, before: target.before, after: target.after };
+    }, [resolveDropGroup, resolveReorderTarget]);
+
+
+    React.useEffect(() => {
+        if (!dragState.dragging) return undefined;
+        const onMove = (event) => {
+            const pending = dragRef.current;
+            if (!pending) return;
+            const intent = resolveDropIntent(event.clientX, event.clientY, pending);
+            // A reorder is offered only INSIDE the row's own sibling list, and
+            // only for a single row: dropping a multi-selection between two
+            // rows has no obvious meaning, whereas filing several at once into
+            // a folder does. Reorder wins over filing when the pointer is
+            // within the row's own container, which is what lets a member be
+            // rearranged inside the folder it already lives in.
+            pending.intent = intent.kind;
+            pending.overGroupId = intent.overGroupId;
+            pending.beforeSessionId = intent.before;
+            updateAutoScroll(event.clientX, event.clientY);
+            // The copy cursor means "this will go INTO something" — a folder.
+            // A reorder is not a copy and has its own indicator (the insertion
+            // line), so lighting this for reorders showed folder affordances,
+            // and folder wording, everywhere in the list.
+            document.body.classList.toggle("ps-drop-ok", intent.kind === "file");
+            setDragState((cur) => ({
+                ...cur,
+                intent: intent.kind,
+                overGroupId: intent.overGroupId,
+                insertBeforeId: intent.before,
+                insertAfterId: intent.after,
+                x: event.clientX,
+                y: event.clientY,
+            }));
+        };
+        // Resolve the target from the RELEASE coordinates. Relying on the last
+        // pointermove the effect happened to process made the drop depend on
+        // event timing: a fast drag committed with a stale (usually null)
+        // target, which the API then read as "remove from folder" — the drag
+        // appeared to do nothing at all.
+        const onUp = (event) => {
+            const pending = dragRef.current;
+            if (pending && typeof event?.clientX === "number") {
+                // Re-decide the WHOLE gesture, not just the folder: recomputing
+                // one half let the release contradict the highlight the user
+                // was looking at.
+                const intent = resolveDropIntent(event.clientX, event.clientY, pending);
+                pending.intent = intent.kind;
+                pending.overGroupId = intent.overGroupId;
+                pending.beforeSessionId = intent.before;
+            }
+            finishDrag(true);
+        };
+        // Named + removed: an anonymous pointercancel listener leaked one stale
+        // closure PER DRAG, and the next drag's cancel event fired all of them,
+        // aborting it. First drag worked, every one after it died.
+        const onCancel = () => finishDrag(false);
+        const onKey = (event) => { if (event.key === "Escape") finishDrag(false); };
+        window.addEventListener("pointermove", onMove);
+        window.addEventListener("pointerup", onUp);
+        window.addEventListener("pointercancel", onCancel);
+        window.addEventListener("keydown", onKey);
+        document.body.classList.add("ps-dragging-sessions");
+        return () => {
+            window.removeEventListener("pointermove", onMove);
+            window.removeEventListener("pointerup", onUp);
+            window.removeEventListener("pointercancel", onCancel);
+            window.removeEventListener("keydown", onKey);
+            document.body.classList.remove("ps-dragging-sessions");
+            document.body.classList.remove("ps-drop-ok");
+        };
+    }, [dragState.dragging, finishDrag, resolveDropIntent, updateAutoScroll]);
+
+    const dragHandlers = React.useMemo(() => ({
+        dragging: dragState.dragging,
+        overGroupId: dragState.overGroupId,
+        insertBeforeId: dragState.insertBeforeId,
+        insertAfterId: dragState.insertAfterId,
+        // Arm on pointerdown, but only BECOME a drag past a small threshold so
+        // ordinary clicks (and Cmd/Shift multi-select) still work untouched.
+        onPointerDown: (event, row) => {
+            // Folders used to be undraggable because the only gesture was
+            // "file into a folder" and a folder cannot go inside itself. They
+            // ARE reorderable among themselves, so they may now be picked up;
+            // the reorder path is the only one they can complete, because a
+            // folder's container ("folders") never matches a filing target.
+            if (row.isSystem) return;
+            if (!row.orderable && !row.isGroup) {
+                // Sub-agents: not orderable, and filing them makes no sense
+                // either — their place is the shape of the run.
+                if (row.depth > 0) return;
+            }
+            const startX = event.clientX;
+            const startY = event.clientY;
+            const armed = {
+                row,
+                startX,
+                startY,
+                started: false,
+                ids: [],
+                overGroupId: null,
+                beforeSessionId: undefined,
+                orderable: Boolean(row.orderable),
+                container: row.orderContainer ?? null,
+                // The folder the row currently lives in: filing into the
+                // folder it is ALREADY in is a reorder, not a move.
+                ownGroupId: row.groupId || null,
+                intent: "none",
+                autoScrollStep: 0,
+            };
+            const onMove = (moveEvent) => {
+                if (armed.started) return;
+                if (Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY) < 5) return;
+                armed.started = true;
+                const current = clickEnv.current.viewState;
+                const selected = Array.isArray(current.selectedIds) ? current.selectedIds : [];
+                const ids = selected.includes(row.sessionId) && selected.length > 1 ? selected : [row.sessionId];
+                const byId = current.sessionsById || {};
+                armed.ids = ids;
+                dragRef.current = armed;
+                setDragState({
+                    dragging: true,
+                    ids,
+                    titles: ids.map((id) => byId[id]?.title || String(id).slice(0, 8)).slice(0, 3),
+                    overGroupId: null,
+                    x: moveEvent.clientX,
+                    y: moveEvent.clientY,
+                });
+            };
+            const onUp = () => {
+                window.removeEventListener("pointermove", onMove);
+                window.removeEventListener("pointerup", onUp);
+            };
+            window.addEventListener("pointermove", onMove);
+            window.addEventListener("pointerup", onUp);
+        },
+    }), [dragState.dragging, dragState.overGroupId, dragState.insertBeforeId, dragState.insertAfterId]);
+
     const handleRowClick = React.useCallback((event, row) => {
         const { rows: currentRows, viewState: current, controller: ctl } = clickEnv.current;
         // Cmd/Ctrl-click toggles multi-selection (any row).
@@ -3490,7 +4026,13 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             ctl.dispatch({ type: "sessions/selectClear" });
         }
         ctl.setFocus("sessions");
-        if (!row.active) {
+        // A plain click always re-arms the highlight. On the still-active row
+        // (after an empty-space deselect) loadSession would short-circuit and
+        // leave the list looking permanently deselected, so re-arm directly
+        // rather than re-running selection and disturbing chat scroll memory.
+        if (row.sessionId === current.activeSessionId) {
+            ctl.dispatch({ type: "sessions/listReselect" });
+        } else if (!row.active) {
             ctl.loadSession(row.sessionId).catch(() => {});
         }
     }, []);
@@ -3536,8 +4078,8 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                 onClick: () => controller.handleCommand(UI_COMMANDS.CLEAR_SESSION_SELECTION).catch(() => {}),
             })
             : React.createElement(IconButton, {
-                className: "ps-mini-button",
-                icon: "📌",
+                className: "ps-mini-button ps-pin-icon",
+                icon: React.createElement(PinGlyph),
                 onClick: () => controller.handleCommand(UI_COMMANDS.PIN_SESSION).catch(() => {}),
                 disabled: !canPinActiveSession,
                 active: isActivePinned,
@@ -3547,12 +4089,17 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             }),
         React.createElement(IconButton, {
             className: "ps-mini-button",
-            icon: groupableIds.length > 1 ? `⊞${groupableIds.length}` : "⊞",
+            icon: groupableIds.length > 1
+                ? React.createElement("span", { className: "ps-icon-badge" },
+                    React.createElement(FolderGlyph),
+                    React.createElement("span", { className: "ps-icon-badge__count" }, String(groupableIds.length)))
+                : React.createElement(FolderGlyph),
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_MOVE_TO_GROUP).catch(() => {}),
-            disabled: !canMoveToGroup,
-            label: canMoveToGroup
-                ? (groupableIds.length > 1 ? `Move ${groupableIds.length} selected sessions to a group` : "Move this session to a group")
-                : "Select a top-level non-system session to move to a group",
+            label: groupableIds.length > 1
+                ? `Move ${groupableIds.length} selected sessions to a group`
+                : groupableIds.length === 1
+                    ? "Move this session to a group"
+                    : "New group",
         }),
         React.createElement(IconButton, {
             className: "ps-mini-button",
@@ -3580,7 +4127,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         }),
         React.createElement(IconButton, {
             className: "ps-mini-button",
-            icon: activeSession?.isSystem ? "↻" : activeSession?.isGroup ? "⊗" : React.createElement(LifecycleGlyph),
+            icon: activeSession?.isSystem ? "↻" : React.createElement(TerminateGlyph),
             onClick: () => controller.handleCommand(activeSession?.isGroup ? UI_COMMANDS.DELETE_SESSION : UI_COMMANDS.OPEN_TERMINATE_PICKER).catch(() => {}),
             disabled: !canTerminate,
             label: isBulkSelection
@@ -3589,11 +4136,31 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                     ? (activeGroupCanDelete ? "Delete this empty group" : "This group cannot be deleted yet")
                     : activeSession?.isSystem
                         ? "Restart this system session (complete, terminate, or hard delete)"
-                        : "Lifecycle — regenerate context, mark completed, cancel, or delete",
+                        : "Terminate — mark completed, cancel, or delete this session",
         }),
         actions);
 
+    // The drag ghost: a single card for one session, a stacked "collection"
+    // for a multi-selection, plus what it will do when released.
+    const dragGhost = dragState.dragging
+        ? React.createElement("div", {
+            className: "ps-drag-ghost",
+            style: { left: `${dragState.x}px`, top: `${dragState.y}px` },
+        },
+            React.createElement("div", { className: `ps-drag-ghost__stack${dragState.ids.length > 1 ? " is-collection" : ""}` },
+                dragState.ids.length > 1
+                    ? React.createElement("span", { className: "ps-drag-ghost__count" }, String(dragState.ids.length))
+                    : null,
+                React.createElement("span", { className: "ps-drag-ghost__title" },
+                    dragState.ids.length > 1
+                        ? `${dragState.ids.length} sessions`
+                        : (dragState.titles[0] || "session"))),
+            React.createElement("div", { className: "ps-drag-ghost__hint" },
+                dragState.overGroupId ? "Release to file here" : "Release to remove from folder"))
+        : null;
+
     return React.createElement(React.Fragment, null,
+    dragGhost,
     React.createElement(Panel, {
         title: [{ text: "Sessions", color: "yellow", bold: true }],
         color: "yellow",
@@ -3602,7 +4169,18 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         actions: panelActions,
         className: combinedPanelClassName,
     },
-    React.createElement("div", { className: "ps-action-list ps-session-list" },
+    React.createElement("div", {
+        className: `ps-action-list ps-session-list${dragState.dragging ? " is-dragging" : ""}`,
+        // Clicking empty space below the rows clears the list selection while
+        // the other panes keep showing the session. With nothing selected the
+        // folder button offers a new, empty group.
+        onClick: (event) => {
+            // Empty space only: a click that lands on a row bubbles here too.
+            const onRow = event.target instanceof Element && event.target.closest(".ps-session-list-button");
+            if (onRow) return;
+            controller.dispatch({ type: "sessions/listDeselect" });
+        },
+    },
         rows.length === 0
             ? React.createElement("div", { className: "ps-empty-state" }, viewState.filterQuery
                 ? `No sessions matched "@@${viewState.filterQuery}".`
@@ -3616,6 +4194,9 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                 mobile: isMobilePane,
                 onRowClick: handleRowClick,
                 setRef: setSessionButtonRef,
+                // Drag-to-folder is a fine-pointer gesture: arming it on
+                // touch hijacks the finger that should be scrolling the list.
+                drag: touchInput ? null : dragHandlers,
             }))),
     isMobilePane
         ? null
@@ -3708,6 +4289,43 @@ function LinkGlyph() {
     },
     React.createElement("path", { d: "M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" }),
     React.createElement("path", { d: "M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" }));
+}
+
+// Terminate — a trash can. The terminal dispositions live behind it
+// (complete / cancel / delete); regenerate moved to Manage session.
+function TerminateGlyph() {
+    return React.createElement("svg", {
+        className: "ps-share-glyph", viewBox: "0 0 24 24", fill: "none",
+        stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round",
+        "aria-hidden": "true",
+    },
+    React.createElement("path", { d: "M3 6h18" }),
+    React.createElement("path", { d: "M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" }),
+    React.createElement("path", { d: "M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" }),
+    React.createElement("line", { x1: "10", y1: "11", x2: "10", y2: "17" }),
+    React.createElement("line", { x1: "14", y1: "11", x2: "14", y2: "17" }));
+}
+
+// A folder — session groups ARE folders; say so.
+function FolderGlyph() {
+    return React.createElement("svg", {
+        className: "ps-share-glyph", viewBox: "0 0 24 24", fill: "none",
+        stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round",
+        "aria-hidden": "true",
+    },
+    React.createElement("path", { d: "M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" }));
+}
+
+// An actual push-pin (head, shaft, point) — pinned sessions sort to the top.
+function PinGlyph() {
+    return React.createElement("svg", {
+        className: "ps-share-glyph", viewBox: "0 0 24 24", fill: "none",
+        stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round",
+        "aria-hidden": "true",
+    },
+    React.createElement("path", { d: "M9 3h6" }),
+    React.createElement("path", { d: "M10 3v6l-3 3v2h10v-2l-3-3V3" }),
+    React.createElement("line", { x1: "12", y1: "14", x2: "12", y2: "21" }));
 }
 
 // The "lifecycle" glyph (two curved arrows forming a cycle). Fronts the session
@@ -3907,6 +4525,9 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
         ...(canManage ? [{ id: "access", label: "Access" }] : []),
     ];
     const activeTab = tabs.some((t) => t.id === tab) ? tab : "general";
+    // Regenerate is a change-this-session action, so it belongs here rather
+    // than in the terminal picker. Service sessions (⚗ machinery) never regen.
+    const canRegenerate = typeof controller.transport?.regenerateSession === "function";
     const stop = (e) => e.stopPropagation();
     return React.createElement("div", { className: "ps-share-overlay", onClick: onClose },
         React.createElement("div", { className: "ps-share-modal", onClick: stop },
@@ -3914,7 +4535,7 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
                 React.createElement("span", null, "Manage session"),
                 React.createElement("button", { className: "ps-modal-close", onClick: onClose, "aria-label": "Close", title: "Close" }, "✕")),
 
-            // ── Tab bar ───────────────────────────────────────────────
+            // ── Tab bar (part of the frame: it must not scroll away) ──
             React.createElement("div", { className: "ps-manage-tabs", role: "tablist" },
                 tabs.map((t) => React.createElement("button", {
                     key: t.id,
@@ -3925,6 +4546,7 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
                     onClick: () => setTab(t.id),
                 }, t.label))),
 
+            React.createElement("div", { className: "ps-share-modal-body" },
             // ── General: rename + model ───────────────────────────────
             activeTab === "general" ? React.createElement(React.Fragment, null,
                 React.createElement("div", { className: "ps-share-section-label" }, "Name"),
@@ -3940,7 +4562,19 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
                 React.createElement("div", { className: "ps-share-section-sub" }, "The model this session uses on its next turn."),
                 React.createElement("div", { className: "ps-share-add-row" },
                     React.createElement("span", { className: "ps-manage-model-current" }, modelLabel),
-                    React.createElement("button", { className: "ps-mini-button", disabled: busy, onClick: switchModel }, "Switch model…")))
+                    React.createElement("button", { className: "ps-mini-button", disabled: busy, onClick: switchModel }, "Switch model…")),
+                canRegenerate ? React.createElement(React.Fragment, null,
+                    React.createElement("div", { className: "ps-share-section-label" }, "Context"),
+                    React.createElement("div", { className: "ps-share-section-sub" },
+                        "Rebuild this session's working context from its summary. The transcript is archived and the session keeps running — it is not a terminal action."),
+                    React.createElement("div", { className: "ps-share-add-row" },
+                        React.createElement("button", {
+                            className: "ps-mini-button ps-manage-regenerate",
+                            disabled: busy,
+                            onClick: () => { onClose(); controller.handleCommand(UI_COMMANDS.REGENERATE_SESSION).catch(() => {}); },
+                        },
+                        React.createElement(LifecycleGlyph),
+                        React.createElement("span", null, "Regenerate context…")))) : null)
                 : null,
 
             // ── Access (owner / admin only) ───────────────────────────
@@ -3996,14 +4630,18 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
                     "Sharing applies to this session and its sub-agents. Suggestions are people who have "
                     + "signed in before — you can also grant by email to someone who hasn't; it takes effect "
                     + "when they first sign in."),
-                React.createElement("div", { className: "ps-manage-apply-bar" },
+                )
+                : null),
+            // Pinned footer: the commit action never scrolls out of reach.
+            (activeTab === "access" && canManage)
+                ? React.createElement("div", { className: "ps-manage-apply-bar is-footer" },
                     React.createElement("span", { className: "ps-share-section-sub" },
                         accessDirty ? "Unsaved access changes." : "No changes to apply."),
                     React.createElement("button", {
                         className: "ps-mini-button ps-manage-apply",
                         disabled: busy || !accessDirty,
                         onClick: applyAccess,
-                    }, "Apply")))
+                    }, "Apply"))
                 : null,
             error ? React.createElement("div", { className: "ps-share-error" }, error) : null));
 }
@@ -4084,7 +4722,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         () => appendAnimatedDotsToRuns(chrome.titleRight, chrome.animateTitleRight ? animatedDots : ""),
         [animatedDots, chrome.animateTitleRight, chrome.titleRight],
     );
-    const richMode = viewState.chatViewMode === "rich" && !viewState.activeSessionIsGroup;
+    const richMode = Boolean(theme?.richChat) && !viewState.activeSessionIsGroup;
     const [loadingOlder, setLoadingOlder] = React.useState(false);
     // Scroll-up expands the transcript automatically until the soft cap, then
     // refuses — and the portal had no control to ask for more, so a busy
@@ -4696,6 +5334,10 @@ function InspectorPane({ controller, mobile = false, panelClassName = "", extraA
         return {
             inspectorTab,
             statsViewMode: state.ui.statsViewMode,
+            // The Node Map renders from the worker registry: subscribe to it
+            // here or the pane never re-renders when rows arrive.
+            adminWorkers: state.admin?.workers,
+            nodeMapSelectedNode: state.ui.nodeMapSelectedNode,
             activeSessionId: state.sessions.activeSessionId,
             sessionsById: state.sessions.byId,
             sessionsFlat: state.sessions.flat,
@@ -4728,9 +5370,14 @@ function InspectorPane({ controller, mobile = false, panelClassName = "", extraA
         sessionStats: viewState.sessionStats,
         fleetStats: viewState.fleetStats,
         connection: viewState.connection,
+        // selectInspector → buildNodeMapLines reads the registry from here.
+        // Omitting it made the Node Map permanently blind to worker rows
+        // (and to every refresh attempt) no matter what the controller did.
+        admin: { workers: viewState.adminWorkers },
         ui: {
             inspectorTab: viewState.inspectorTab,
             statsViewMode: viewState.statsViewMode,
+            nodeMapSelectedNode: viewState.nodeMapSelectedNode,
             scroll: {
                 inspector: viewState.scroll,
             },
@@ -4746,10 +5393,12 @@ function InspectorPane({ controller, mobile = false, panelClassName = "", extraA
         },
     }), [
         viewState.activeSessionId,
+        viewState.adminWorkers,
         viewState.connection,
         viewState.executionHistoryBySessionId,
         viewState.executionHistoryFormat,
         viewState.fleetStats,
+        viewState.nodeMapSelectedNode,
         viewState.files,
         viewState.historyBySessionId,
         viewState.inspectorTab,
@@ -4780,6 +5429,20 @@ function InspectorPane({ controller, mobile = false, panelClassName = "", extraA
     const renderSequenceBody = React.useCallback((lines, theme) => (
         React.createElement(PortalSequenceLines, { lines, theme, completionByTurn })
     ), [completionByTurn]);
+    const renderNodeMapBody = React.useCallback((lines, theme) => (
+        React.createElement(PortalNodeMapLines, { lines, theme, controller })
+    ), [controller]);
+    // The nodes tab owns its freshness: registry + history load on entry and
+    // every 10s while open, independent of any host sync loop. Errors keep
+    // fetchedAt unset, so each tick retries until the diagnosis line clears.
+    React.useEffect(() => {
+        if (viewState.inspectorTab !== "nodes") return undefined;
+        void controller.ensureInspectorData("nodes");
+        const timer = window.setInterval(() => {
+            void controller.ensureInspectorData("nodes");
+        }, 10_000);
+        return () => window.clearInterval(timer);
+    }, [controller, viewState.inspectorTab]);
 
     if (viewState.inspectorTab === "files" && !inspector.disabled) {
         return React.createElement(FilesPane, { controller, focused: viewState.focused, mobile });
@@ -4839,7 +5502,9 @@ function InspectorPane({ controller, mobile = false, panelClassName = "", extraA
         topContent: React.createElement(InspectorTabs, { activeTab: inspector.activeTab, controller }),
         stickyLines: inspector.stickyLines || [],
         lines: inspector.lines,
-        renderBody: inspector.activeTab === "sequence" ? renderSequenceBody : null,
+        renderBody: inspector.activeTab === "sequence"
+            ? renderSequenceBody
+            : inspector.activeTab === "nodes" ? renderNodeMapBody : null,
         scrollOffset: viewState.scroll,
         scrollMode: inspector.activeTab === "sequence"
             ? "bottom"
@@ -4866,24 +5531,52 @@ function ActivityPane({ controller, panelClassName = "", extraActions = null }) 
             scroll: state.ui.scroll.activity,
             followBottom: state.ui.followBottom?.activity !== false,
             maxLines,
+            // Node-scoped mode (a node picked in the Node Map) turns this pane
+            // into the WORKER DETAILS panel, which needs the registry, the
+            // selection, and every session/history — not just the active one.
+            nodeMapSelectedNode: state.ui.nodeMapSelectedNode,
+            adminWorkers: state.admin?.workers,
+            branding: state.branding,
+            sessionsById: state.sessions.byId,
+            sessionsFlat: state.sessions.flat,
+            historyBySessionId: state.history.bySessionId,
+            inspectorTab: state.ui.inspectorTab,
         };
     }, shallowEqualObject);
+    // On the Node Map tab this pane IS the worker-details pane; Activity
+    // returns the moment the inspector shows anything else.
+    const nodeMode = viewState.inspectorTab === "nodes";
     const selectorState = React.useMemo(() => ({
+        branding: viewState.branding,
+        admin: { workers: viewState.adminWorkers },
+        ui: { nodeMapSelectedNode: viewState.nodeMapSelectedNode },
         sessions: {
             activeSessionId: viewState.activeSessionId,
-            byId: viewState.activeSessionId && viewState.activeSession
-                ? { [viewState.activeSessionId]: viewState.activeSession }
-                : {},
+            byId: nodeMode
+                ? viewState.sessionsById
+                : (viewState.activeSessionId && viewState.activeSession
+                    ? { [viewState.activeSessionId]: viewState.activeSession }
+                    : {}),
+            flat: viewState.sessionsFlat,
         },
         history: {
-            bySessionId: viewState.activeSessionId && viewState.activeHistory
-                ? new Map([[viewState.activeSessionId, viewState.activeHistory]])
-                : new Map(),
+            bySessionId: nodeMode
+                ? viewState.historyBySessionId
+                : (viewState.activeSessionId && viewState.activeHistory
+                    ? new Map([[viewState.activeSessionId, viewState.activeHistory]])
+                    : new Map()),
         },
-    }), [viewState.activeHistory, viewState.activeSession, viewState.activeSessionId]);
+    }), [
+        nodeMode,
+        viewState.activeHistory, viewState.activeSession, viewState.activeSessionId,
+        viewState.adminWorkers, viewState.branding, viewState.historyBySessionId,
+        viewState.nodeMapSelectedNode, viewState.sessionsById, viewState.sessionsFlat,
+    ]);
     const activity = React.useMemo(
-        () => selectActivityPane(selectorState, viewState.maxLines),
-        [selectorState, viewState.maxLines],
+        () => (nodeMode
+            ? selectWorkerDetailsPane(selectorState)
+            : selectActivityPane(selectorState, viewState.maxLines)),
+        [nodeMode, selectorState, viewState.maxLines],
     );
 
     return React.createElement(ScrollLinesPanel, {
@@ -5477,7 +6170,7 @@ function IconButton({ icon, label, onClick, disabled = false, active = false, cl
 }
 
 function Toolbar({ controller, mobile, chatFocusMode = false, onToggleChatFocus = null, chatFocusDisabled = false }) {
-    const richUi = useControllerSelector(controller, (state) => state.ui.chatViewMode === "rich");
+    const richUi = useControllerSelector(controller, (state) => Boolean(getTheme(state.ui.themeId)?.richChat));
     const [headerSlot, setHeaderSlot] = React.useState(null);
     React.useEffect(() => {
         if (typeof document === "undefined") return;
@@ -5496,16 +6189,14 @@ function Toolbar({ controller, mobile, chatFocusMode = false, onToggleChatFocus 
     // Icon-first toolbar: the glyph is the affordance, the label rides a
     // tooltip (desktop hover via title; mobile long-press via IconButton).
     const buttonDefs = [
+        // ONE new-session button, and it opens the chooser. The plain "＋"
+        // (default model, generic agent) and "＋⚙" (choose model, then agent)
+        // were two buttons for one intent, and the pair cost a slot the phone
+        // toolbar could not spare.
         {
             key: "new",
             icon: "＋",
-            label: "New session",
-            onClick: () => controller.handleCommand(UI_COMMANDS.NEW_SESSION).catch(() => {}),
-        },
-        {
-            key: "model",
-            icon: "＋⚙",
-            label: "New session + choose model",
+            label: "New session — choose model and agent",
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_MODEL_PICKER).catch(() => {}),
         },
         {
@@ -5519,16 +6210,6 @@ function Toolbar({ controller, mobile, chatFocusMode = false, onToggleChatFocus 
             icon: "◑",
             label: "Theme",
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_THEME_PICKER).catch(() => {}),
-        },
-        {
-            key: "rich",
-            icon: "Aa",
-            label: chatView.activeSessionIsGroup
-                ? "Groups show group details"
-                : (chatView.mode === "rich" ? "Show terminal transcript" : "Rich chat view (experimental)"),
-            onClick: () => controller.setChatViewMode(chatView.mode === "rich" ? "transcript" : "rich"),
-            disabled: chatView.activeSessionIsGroup,
-            active: chatView.mode === "rich",
         },
         {
             key: "summary",
@@ -5548,13 +6229,16 @@ function Toolbar({ controller, mobile, chatFocusMode = false, onToggleChatFocus 
             disabled: chatFocusDisabled,
             active: chatFocusMode,
         }] : []),
-        {
+        // Admin console is desktop-only: its settings tree, package detail
+        // and file preview need width the phone layout cannot give them, so
+        // the button is omitted rather than shipped half-working.
+        ...(mobile ? [] : [{
             key: "admin",
             icon: "⚙",
             label: adminVisible ? "Close admin console" : "Admin console",
             onClick: () => controller.handleCommand(adminVisible ? UI_COMMANDS.CLOSE_ADMIN_CONSOLE : UI_COMMANDS.OPEN_ADMIN_CONSOLE).catch(() => {}),
             active: adminVisible,
-        },
+        }]),
     ];
 
     const renderButton = (def) => React.createElement(IconButton, {
@@ -5957,6 +6641,10 @@ function ModalLayer({ controller }) {
     const renameInputRef = React.useRef(null);
     const groupNameInputRef = React.useRef(null);
     const listModalRef = React.useRef(null);
+    // Full-text search for the people list in the session filter.
+    const [ownerFilterQuery, setOwnerFilterQuery] = React.useState("");
+    const ownerFilterOpen = modal?.type === "sessionOwnerFilter";
+    React.useEffect(() => { if (!ownerFilterOpen) setOwnerFilterQuery(""); }, [ownerFilterOpen]);
 
     React.useEffect(() => {
         if (modal?.type !== "renameSession" || !modalState.renameSession) return;
@@ -6071,7 +6759,7 @@ function ModalLayer({ controller }) {
                 }))));
 
         return React.createElement("div", { className: "ps-modal-backdrop", onClick: close },
-        React.createElement("div", { className: `ps-modal${modal.type === "themePicker" ? " is-theme-picker" : ""}`, onClick: (event) => event.stopPropagation() },
+        React.createElement("div", { className: `ps-modal is-list${modal.type === "themePicker" ? " is-theme-picker" : ""}`, onClick: (event) => event.stopPropagation() },
             React.createElement("div", { className: "ps-modal-header" },
                 React.createElement("div", { className: "ps-modal-title" }, presentation.title),
                 React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close, "aria-label": "Close", title: "Close" }, "✕"),
@@ -6176,15 +6864,42 @@ function ModalLayer({ controller }) {
     if (modal.type === "sessionOwnerFilter" && modalState.sessionOwnerFilter) {
         const presentation = modalState.sessionOwnerFilter;
         const rows = Array.isArray(presentation.rows) ? presentation.rows : [];
+        // Full-text match over the row's rendered text, so typing "sean" or
+        // part of an email narrows the list. Indexes stay ORIGINAL so toggling
+        // still targets the right filter entry.
+        const needle = ownerFilterQuery.trim().toLowerCase();
+        const rowText = (index) => {
+            const row = rows?.[index];
+            const runs = Array.isArray(row) ? row : normalizeLines([row])[0]?.runs || [];
+            return runs.map((run) => run?.text || "").join("") || String(row?.text || "");
+        };
+        const visibleIndexes = (modal.items || [])
+            .map((item, index) => index)
+            .filter((index) => {
+                if (!needle) return true;
+                const item = (modal.items || [])[index] || {};
+                return `${rowText(index)} ${item.label || ""} ${item.description || ""}`.toLowerCase().includes(needle);
+            });
         return React.createElement("div", { className: "ps-modal-backdrop", onClick: close },
-            React.createElement("div", { className: "ps-modal", onClick: (event) => event.stopPropagation() },
+            React.createElement("div", { className: "ps-modal is-list", onClick: (event) => event.stopPropagation() },
                 React.createElement("div", { className: "ps-modal-header" },
                     React.createElement("div", { className: "ps-modal-title" }, presentation.title),
                     React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close, "aria-label": "Close", title: "Close" }, "✕"),
                 ),
+                React.createElement("input", {
+                    className: "ps-modal-input ps-modal-search",
+                    value: ownerFilterQuery,
+                    placeholder: "Search people…",
+                    autoFocus: true,
+                    onChange: (event) => setOwnerFilterQuery(event.currentTarget.value),
+                    onKeyDown: (event) => { if (event.key === "Escape" && ownerFilterQuery) { event.stopPropagation(); setOwnerFilterQuery(""); } },
+                }),
                 React.createElement("div", { className: "ps-modal-grid" },
                     React.createElement("div", { ref: listModalRef, className: "ps-modal-list" },
-                        (modal.items || []).map((item, index) => React.createElement("button", {
+                        visibleIndexes.length === 0
+                            ? React.createElement("div", { className: "ps-empty-state" }, `No one matches "${ownerFilterQuery}".`)
+                            : null,
+                        visibleIndexes.map((index) => ((item) => React.createElement("button", {
                             key: item.id || index,
                             type: "button",
                             className: `ps-list-button ps-modal-list-button${index === modal.selectedIndex ? " is-selected" : ""}`,
@@ -6196,7 +6911,7 @@ function ModalLayer({ controller }) {
                                     ? rows[index]
                                     : normalizeLines([rows?.[index]])[0]?.runs || [{ text: rows?.[index]?.text || "", color: rows?.[index]?.color }],
                                 theme,
-                            })))),
+                            }))))((modal.items || [])[index] || {})),
                     ),
                     React.createElement("div", { className: "ps-modal-details" },
                         React.createElement("div", { className: "ps-modal-details-title" }, presentation.detailsTitle || "Details"),
@@ -6794,9 +7509,50 @@ function formatAdminPrincipalLabel(principal) {
     return [provider, subject].filter(Boolean).join(":") || "user";
 }
 
-function AdminConsolePanel({ controller }) {
+function AdminConsolePanel({ controller, mobile = false }) {
     const view = useControllerSelector(controller, selectAdminConsole, shallowEqualObject);
     const draftRef = React.useRef(null);
+    const packages = view.packages || {};
+    const showPackages = view.section === "packages";
+    const showWorkers = view.section === "workers";
+    // Workspace pane geometry: user-resizable (drag the pane's left edge for
+    // width, the Preview header for the tree/preview split), persisted.
+    const [wsLayout, setWsLayout] = React.useState(() => {
+        const defaults = { wsWidth: 440, treePct: 44, navWidth: 240 };
+        try {
+            return { ...defaults, ...JSON.parse(window.localStorage.getItem("ps-admin-ws-layout") || "{}") };
+        } catch {
+            return defaults;
+        }
+    });
+    const updateWsLayout = React.useCallback((patch) => {
+        setWsLayout((prev) => {
+            const next = { ...prev, ...patch };
+            next.wsWidth = Math.min(900, Math.max(300, Math.round(next.wsWidth)));
+            next.treePct = Math.min(85, Math.max(15, next.treePct));
+            next.navWidth = Math.min(420, Math.max(170, Math.round(next.navWidth ?? 240)));
+            try { window.localStorage.setItem("ps-admin-ws-layout", JSON.stringify(next)); } catch { /* private mode */ }
+            return next;
+        });
+    }, []);
+    // Settings-tree column resize: drag the tree's right edge (persisted with
+    // the other pane geometry under the sanctioned ps-admin-ws-layout key).
+    const startNavDrag = React.useCallback((event) => {
+        event.preventDefault();
+        document.body.style.cursor = "col-resize";
+        const startX = event.clientX;
+        const startWidth = wsLayout.navWidth ?? 240;
+        const onMove = (move) => updateWsLayout({ navWidth: startWidth + (move.clientX - startX) });
+        const onUp = () => {
+            window.removeEventListener("pointermove", onMove);
+            window.removeEventListener("pointerup", onUp);
+            window.removeEventListener("pointercancel", onUp);
+            document.body.style.cursor = "";
+        };
+        window.addEventListener("pointermove", onMove);
+        window.addEventListener("pointerup", onUp);
+        window.addEventListener("pointercancel", onUp);
+    }, [wsLayout.navWidth, updateWsLayout]);
 
     React.useEffect(() => {
         if (view.ghcpKey.editing) {
@@ -6834,22 +7590,567 @@ function AdminConsolePanel({ controller }) {
 
     const principalLabel = formatAdminPrincipalLabel(view.principal);
 
-    return React.createElement("div", { className: "ps-admin-console" },
-        React.createElement("header", { className: "ps-admin-console__header" },
-            React.createElement("h2", null, "Admin Console"),
+    const header = React.createElement("header", { className: "ps-admin-console__header" },
+        React.createElement("h2", null, "Admin Console"),
+        React.createElement("span", { className: "ps-admin-console__who" }, principalLabel),
+        React.createElement("button", { type: "button", className: "ps-mini-button", onClick: onClose }, "Close"));
+
+    const ghcpSection = React.createElement(AdminGhcpSection, {
+        view, draftRef, onBeginEdit, onCancelEdit, onClear, onSubmit, onDraftChange, onRefresh, controller,
+    });
+
+    const tree = React.createElement(AdminSettingsTree, { controller, view });
+    const detail = React.createElement(AdminPackageDetailPane, { controller, view });
+    const workspacePane = showPackages && packages.selectedName
+        ? React.createElement(AdminPackageWorkspacePane, { controller, view, layout: wsLayout, onLayout: updateWsLayout })
+        : null;
+    const dialog = packages.addDialog?.open
+        ? React.createElement(AdminAddPackageDialog, { controller, dialog: packages.addDialog })
+        : null;
+
+    if (mobile) {
+        // Drill-in stack: settings list → section content; a selected package
+        // stacks detail + files + preview in one scroll with a back action.
+        let body;
+        if (showPackages && packages.selectedName) {
+            body = React.createElement("div", { className: "ps-admin-mobile-stack" },
+                React.createElement("button", {
+                    type: "button", className: "ps-mini-button ps-admin-back",
+                    onClick: () => controller.selectAdminPackage(null),
+                }, "← All packages"),
+                detail,
+                workspacePane);
+        } else if (showPackages) {
+            body = tree;
+        } else if (showWorkers) {
+            body = React.createElement("div", { className: "ps-admin-mobile-stack" }, tree,
+                React.createElement(AdminWorkersPane, { controller, view }));
+        } else {
+            body = React.createElement("div", { className: "ps-admin-mobile-stack" }, tree, ghcpSection);
+        }
+        return React.createElement("div", { className: "ps-admin-console is-mobile" },
+            header,
+            view.loadError ? React.createElement("div", { className: "ps-admin-console__error", role: "alert" }, view.loadError) : null,
+            body,
+            dialog);
+    }
+
+    return React.createElement("div", { className: "ps-admin-console is-workspace" },
+        header,
+        view.loadError ? React.createElement("div", { className: "ps-admin-console__error", role: "alert" }, view.loadError) : null,
+        React.createElement("div", {
+            className: "ps-admin-workspace",
+            style: workspacePane
+                ? { gridTemplateColumns: `${wsLayout.navWidth}px minmax(0, 1fr) minmax(0, ${wsLayout.wsWidth}px)` }
+                : { gridTemplateColumns: `${wsLayout.navWidth}px minmax(0, 1fr)` },
+        },
+            React.createElement("div", { className: "ps-admin-nav" },
+                tree,
+                React.createElement("div", {
+                    className: "ps-admin-nav__resize",
+                    onPointerDown: startNavDrag,
+                    role: "separator",
+                    "aria-orientation": "vertical",
+                    "aria-label": "Resize settings column",
+                })),
+            React.createElement("div", { className: "ps-admin-main" },
+                showPackages ? detail : showWorkers ? React.createElement(AdminWorkersPane, { controller, view }) : ghcpSection),
+            workspacePane),
+        dialog);
+}
+
+function AdminWorkersPane({ controller, view }) {
+    const workers = view.workers || {};
+    const rows = workers.rows || [];
+    const counts = workers.counts || {};
+    // Liveness is heartbeat recency (~20s beats, 90s window): a static
+    // snapshot rots into "0 live" while the pane sits open. Poll while
+    // mounted; the TUI refreshes on `r`.
+    React.useEffect(() => {
+        const timer = window.setInterval(() => {
+            void controller.refreshAdminWorkers();
+        }, 25_000);
+        return () => window.clearInterval(timer);
+    }, [controller]);
+    return React.createElement("div", { className: "ps-admin-detail ps-admin-workers" },
+        React.createElement("div", { className: "ps-admin-workers__head" },
+            React.createElement("h3", null, "Workers"),
+            workers.summaryText
+                ? React.createElement("span", { className: "ps-admin-workers__summary" },
+                    `${workers.summaryText}${counts.pools > 1 ? ` · ${counts.pools} pools` : ""}${counts.draining ? ` · ${counts.draining} draining` : ""}`)
+                : null,
             React.createElement("button", {
-                type: "button",
-                className: "ps-mini-button",
-                onClick: onClose,
-            }, "Close")),
-        React.createElement("section", { className: "ps-admin-console__identity" },
-            React.createElement("dl", null,
-                React.createElement("dt", null, "Signed in as"),
-                React.createElement("dd", null, principalLabel))),
-        view.loadError
-            ? React.createElement("div", { className: "ps-admin-console__error", role: "alert" }, view.loadError)
+                type: "button", className: "ps-mini-button",
+                disabled: Boolean(workers.loading),
+                onClick: () => controller.refreshAdminWorkers(),
+            }, workers.loading ? "Refreshing…" : "Refresh")),
+        workers.error
+            ? React.createElement("div", { className: "ps-admin-console__error", role: "alert" }, workers.error)
             : null,
-        React.createElement("section", { className: "ps-admin-console__section" },
+        workers.empty
+            ? React.createElement("p", { className: "ps-admin-console__hint" },
+                "No workers registered. Workers appear here on their first heartbeat and self-prune after an hour of silence.")
+            : React.createElement("div", { className: "ps-admin-workers__scroll" },
+                React.createElement("table", { className: "ps-admin-workers__table" },
+                    React.createElement("thead", null, React.createElement("tr", null,
+                        ["Worker", "Pool", "Phase", "Heartbeat", "Uptime", "RSS", "Sessions", "Loop p99", "Packages", "SDK"]
+                            .map((label) => React.createElement("th", { key: label }, label)))),
+                    React.createElement("tbody", null, rows.map((row) => React.createElement("tr", {
+                        key: row.id,
+                        className: row.live ? "is-live" : "is-stale",
+                    },
+                        React.createElement("td", { className: "ps-admin-workers__id", title: row.owner ? `owner: ${row.owner}` : undefined },
+                            React.createElement("span", { className: `ps-worker-dot${row.live ? " is-live" : ""}` }),
+                            row.id,
+                            row.substrate && row.substrate !== "kubernetes"
+                                ? React.createElement("span", { className: "ps-admin-workers__substrate" }, row.substrate)
+                                : null),
+                        React.createElement("td", null, row.pool),
+                        React.createElement("td", null,
+                            React.createElement("span", { className: `ps-worker-phase is-${row.phase}` }, row.phase)),
+                        React.createElement("td", null, row.agoText),
+                        React.createElement("td", null, row.uptimeText ?? "—"),
+                        React.createElement("td", null, row.rssText ?? "—"),
+                        React.createElement("td", null, row.sessions ?? "—"),
+                        React.createElement("td", null, row.eventLoopText ?? "—"),
+                        React.createElement("td", { title: row.pkgEpoch != null ? `epoch ${row.pkgEpoch}` : undefined }, row.pkgText ?? "—"),
+                        React.createElement("td", null, row.sdkVersion ?? "—")))))));
+}
+
+function AdminSettingsTree({ controller, view }) {
+    const packages = view.packages || {};
+    return React.createElement("nav", { className: "ps-admin-tree" },
+        React.createElement("div", { className: "ps-admin-tree__label" }, "Settings"),
+        (view.settingsTree || []).map((row) => {
+            if (row.kind === "group") {
+                return React.createElement("div", { key: row.id, className: "ps-admin-tree__group" },
+                    `${row.label}`, React.createElement("span", { className: "ps-admin-tree__count" }, String(row.count ?? 0)));
+            }
+            const onClick = row.kind === "package"
+                ? () => controller.selectAdminPackage(row.name)
+                : () => controller.setAdminSection(row.id === "agents" ? "packages" : row.id === "workers" ? "workers" : "ghcp");
+            return React.createElement("button", {
+                key: row.id,
+                type: "button",
+                className: `ps-admin-tree__row depth-${row.depth}${row.selected ? " is-selected" : ""}${row.kind === "package" && !row.enabled ? " is-disabled" : ""}`,
+                onClick,
+            },
+                // A user-scope package shows WHOSE it is, using the same
+                // owner-initials chip the session rows use, so "[ad]" means
+                // the same thing on both sides of the app. Shared packages
+                // belong to the deployment, so they keep the scope badge.
+                row.kind === "package"
+                    ? (row.ownerBadge
+                        ? React.createElement(OwnerAvatar, { badge: row.ownerBadge })
+                        : React.createElement("span", {
+                            className: "ps-scope-badge is-shared",
+                            title: "shared with the whole deployment",
+                        }, "S"))
+                    : null,
+                React.createElement("span", { className: "ps-admin-tree__name" }, row.label),
+                row.kind === "package" && row.semver
+                    ? React.createElement("span", { className: "ps-admin-tree__ver" }, row.semver)
+                    : null);
+        }),
+        packages.loading ? React.createElement("div", { className: "ps-admin-tree__hint" }, "Loading packages…") : null,
+        packages.error ? React.createElement("div", { className: "ps-admin-tree__hint is-error" }, packages.error) : null,
+        React.createElement("button", {
+            type: "button",
+            className: "ps-admin-tree__add",
+            onClick: () => controller.openAdminAddPackage(),
+        }, "+ Add package"));
+}
+
+function AdminPackageDetailPane({ controller, view }) {
+    const packages = view.packages || {};
+    const detail = packages.detail;
+    if (!packages.selectedName) {
+        return React.createElement("div", { className: "ps-admin-detail is-empty" },
+            React.createElement("h3", null, "Agents"),
+            React.createElement("p", { className: "ps-admin-console__hint" },
+                packages.empty
+                    ? "No agent packages yet. Add one from a GitHub/ADO repo, a tarball URL, or upload a folder — or push from a terminal with `pilotswarm agents push ./my-agents`."
+                    : "Select a package from the tree to see its detail, versions, and files."));
+    }
+    const confirmDelete = () => {
+        const ok = window.confirm(
+            `Delete ${detail.name}? Every version and its artifacts are removed. Live sessions using its agents will fail on their next turn.`,
+        );
+        if (ok) controller.runAdminPackageAction("delete");
+    };
+    const act = (kind, arg) => () => controller.runAdminPackageAction(kind, arg);
+    const pending = detail.actionPending;
+    return React.createElement("div", { className: "ps-admin-detail" },
+        detail.error
+            ? React.createElement("div", { className: "ps-admin-console__error", role: "alert" },
+                `Package load failed: ${detail.error}`)
+            : null,
+        detail.loading
+            ? React.createElement("p", { className: "ps-admin-console__hint" }, "Loading package…")
+            : null,
+        React.createElement("div", { className: "ps-admin-detail__head" },
+            React.createElement("h3", null, detail.name),
+            React.createElement("span", { className: `ps-scope-badge is-${detail.scope}` }, detail.scope),
+            !detail.enabled ? React.createElement("span", { className: "ps-scope-badge is-off" }, "disabled") : null),
+        detail.description ? React.createElement("p", { className: "ps-admin-detail__desc" }, detail.description) : null,
+        React.createElement("dl", { className: "ps-admin-detail__meta" },
+            React.createElement("dt", null, "Version"),
+            React.createElement("dd", null, detail.activeSemver
+                ? `${detail.activeSemver} · sha ${detail.activeSha12 || "?"} · ${detail.sizeText}`
+                : "no active version"),
+            detail.fleet
+                ? [React.createElement("dt", { key: "fk" }, "Fleet"), React.createElement("dd", { key: "fv", className: "is-ok" }, detail.fleet.text)]
+                : null,
+            React.createElement("dt", null, "Created"),
+            React.createElement("dd", null, `${detail.createdBy || "unknown"} · ${detail.createdAtText}`)),
+        detail.agents.length
+            ? React.createElement("div", null,
+                React.createElement("div", { className: "ps-admin-detail__label" }, "Agents in this package"),
+                React.createElement("div", { className: "ps-admin-detail__chips" },
+                    detail.agents.map((agent) => React.createElement("span", { key: agent.name, className: "ps-agent-chip", title: agent.description },
+                        agent.name,
+                        agent.toolCount ? React.createElement("i", null, ` · ${agent.toolCount} tools`) : null))))
+            : null,
+        detail.versions.length
+            ? React.createElement("div", null,
+                React.createElement("div", { className: "ps-admin-detail__label" }, "Versions"),
+                React.createElement("div", { className: "ps-admin-versions" },
+                    detail.versions.map((version) => React.createElement("div", {
+                        key: version.semver,
+                        className: `ps-admin-version${version.active ? " is-active" : ""}`,
+                    },
+                        React.createElement("b", null, version.semver),
+                        React.createElement("span", null, version.sha12),
+                        React.createElement("span", null, version.dateText),
+                        version.active
+                            ? React.createElement("span", { className: "is-ok" }, "● active")
+                            : (detail.canManage
+                                ? React.createElement("button", { type: "button", className: "ps-mini-button", onClick: act("pin", version.semver), disabled: Boolean(pending) }, "Pin")
+                                : null)))))
+            : null,
+        detail.canManage
+            ? React.createElement("div", { className: "ps-admin-detail__actions" },
+                detail.source
+                    ? React.createElement("button", { type: "button", className: "ps-primary-button", onClick: act("sync"), disabled: Boolean(pending) },
+                        pending === "sync" ? "Syncing…" : "Sync now")
+                    : null,
+                // Publishing a new version is the same job as adding one, so it
+                // is the same dialog with the destination already chosen.
+                React.createElement("button", {
+                    type: "button",
+                    className: "ps-primary-button",
+                    onClick: () => controller.openAdminUpdatePackage(detail.name, detail.scope),
+                    disabled: Boolean(pending),
+                    title: `Publish a new version of ${detail.name} from a repo folder`,
+                }, "Update"),
+                React.createElement("button", { type: "button", className: "ps-mini-button", onClick: act(detail.scope === "shared" ? "demote" : "promote"), disabled: Boolean(pending) },
+                    detail.scope === "shared" ? "Demote to user" : "Promote to shared"),
+                React.createElement("button", { type: "button", className: "ps-mini-button", onClick: act(detail.enabled ? "disable" : "enable"), disabled: Boolean(pending) },
+                    detail.enabled ? "Disable" : "Enable"),
+                React.createElement("button", { type: "button", className: "ps-mini-button is-danger", onClick: confirmDelete, disabled: Boolean(pending) }, "Delete"))
+            : React.createElement("p", { className: "ps-admin-console__hint" },
+                "Read-only: only the package creator or an admin can modify it."),
+        detail.actionError
+            ? React.createElement("div", { className: "ps-admin-console__error", role: "alert" }, detail.actionError)
+            : null);
+}
+
+function AdminPackageWorkspacePane({ controller, view, layout = null, onLayout = null }) {
+    const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
+    const theme = getTheme(themeId);
+    const workspace = view.packages?.workspace;
+    const paneRef = React.useRef(null);
+    // Shared pointer-drag: track from pointerdown, apply via onLayout, end on up.
+    const startDrag = React.useCallback((event, apply) => {
+        if (!onLayout) return;
+        event.preventDefault();
+        const startX = event.clientX;
+        const startY = event.clientY;
+        const startLayout = { ...layout };
+        const onMove = (move) => apply(startLayout, move.clientX - startX, move.clientY - startY);
+        const onUp = () => {
+            window.removeEventListener("pointermove", onMove);
+            window.removeEventListener("pointerup", onUp);
+            window.removeEventListener("pointercancel", onUp);
+            document.body.style.cursor = "";
+        };
+        window.addEventListener("pointermove", onMove);
+        window.addEventListener("pointerup", onUp);
+        window.addEventListener("pointercancel", onUp);
+    }, [layout, onLayout]);
+    const onWidthDrag = React.useCallback((event) => {
+        document.body.style.cursor = "col-resize";
+        startDrag(event, (start, dx) => onLayout({ wsWidth: start.wsWidth - dx }));
+    }, [startDrag, onLayout]);
+    const onSplitDrag = React.useCallback((event) => {
+        document.body.style.cursor = "row-resize";
+        const height = paneRef.current?.getBoundingClientRect().height || 600;
+        startDrag(event, (start, _dx, dy) => onLayout({ treePct: start.treePct + (dy / height) * 100 }));
+    }, [startDrag, onLayout]);
+    if (!workspace) return null;
+    return React.createElement("div", {
+        className: "ps-admin-ws",
+        ref: paneRef,
+        style: layout ? { gridTemplateRows: `auto minmax(80px, ${layout.treePct}%) auto minmax(0, 1fr)` } : undefined,
+    },
+        onLayout
+            ? React.createElement("div", {
+                className: "ps-admin-ws__vdivider",
+                title: "Drag to resize the workspace",
+                onPointerDown: onWidthDrag,
+            })
+            : null,
+        React.createElement("div", { className: "ps-admin-ws__head" },
+            `Package workspace${workspace.semver ? ` · ${view.packages.selectedName}@${workspace.semver}` : ""}`),
+        React.createElement("div", { className: "ps-admin-ws__tree" },
+            workspace.loading ? React.createElement("div", { className: "ps-admin-tree__hint" }, "Loading files…") : null,
+            workspace.error ? React.createElement("div", { className: "ps-admin-tree__hint is-error" }, workspace.error) : null,
+            workspace.treeRows.map((row) => React.createElement("button", {
+                key: `${row.type}:${row.path}`,
+                type: "button",
+                style: { paddingLeft: `${8 + (row.depth || 0) * 16}px` },
+                className: `ps-admin-ws__row is-${row.type}${row.selected ? " is-selected" : ""}`,
+                onClick: row.type === "dir"
+                    ? () => controller.toggleAdminPackageDir(row.path)
+                    : () => controller.selectAdminPackageFile(row.path),
+            },
+                React.createElement("span", { className: "ps-admin-ws__caret" },
+                    row.type === "dir" ? (row.expanded ? "▾" : "▸") : ""),
+                React.createElement("span", { className: "ps-admin-ws__name" }, row.label),
+                row.sizeText ? React.createElement("span", { className: "ps-admin-ws__size" }, row.sizeText) : null))),
+        React.createElement("div", {
+            className: `ps-admin-ws__preview-head${onLayout ? " is-resizable" : ""}`,
+            title: onLayout ? "Drag to resize file list vs preview" : undefined,
+            onPointerDown: onLayout ? onSplitDrag : undefined,
+        },
+            workspace.selectedPath ? `Preview · ${workspace.selectedPath}` : "Preview"),
+        React.createElement("div", { className: "ps-admin-ws__preview" },
+            workspace.fileLoading ? React.createElement("div", { className: "ps-admin-tree__hint" }, "Loading…") : null,
+            workspace.fileError ? React.createElement("div", { className: "ps-admin-tree__hint is-error" }, workspace.fileError) : null,
+            workspace.file
+                ? (workspace.file.isBinary
+                    ? React.createElement("div", { className: "ps-admin-tree__hint" }, `Binary file · ${workspace.file.sizeText}`)
+                    : React.createElement(AdminWorkspacePreviewBody, { file: workspace.file, theme }))
+                : null));
+}
+
+/** Split leading `--- … ---` frontmatter off a markdown document. */
+function splitFrontmatter(text) {
+    const match = /^---\n([\s\S]*?)\n---\n?/.exec(text || "");
+    if (!match) return { meta: null, body: text || "" };
+    const rows = match[1].split("\n")
+        .map((line) => /^([A-Za-z0-9_-]+):\s*(.*)$/.exec(line))
+        .filter(Boolean)
+        .map(([, key, value]) => ({ key, value }));
+    // Only claim it as frontmatter when it parses as simple key: value
+    // metadata; anything else stays part of the document verbatim.
+    if (rows.length === 0) return { meta: null, body: text || "" };
+    return { meta: rows, body: (text || "").slice(match[0].length) };
+}
+
+/**
+ * Content-aware package-file preview: markdown renders as a document
+ * (frontmatter as a meta strip), JSON pretty-prints, code highlights.
+ * The TUI keeps its plain-text preview — this is portal presentation only.
+ */
+function AdminWorkspacePreviewBody({ file, theme }) {
+    const language = file.language || "text";
+    const truncatedNote = file.truncated
+        ? React.createElement("div", { className: "ps-admin-tree__hint" }, "… truncated preview")
+        : null;
+    if (language === "markdown") {
+        const { meta, body } = splitFrontmatter(file.text || "");
+        return React.createElement("div", { className: "ps-admin-ws__doc" },
+            meta
+                ? React.createElement("div", { className: "ps-admin-ws__frontmatter" },
+                    meta.map((row) => React.createElement("div", { key: row.key, className: "ps-admin-ws__fm-row" },
+                        React.createElement("span", { className: "ps-admin-ws__fm-key" }, row.key),
+                        React.createElement("span", { className: "ps-admin-ws__fm-val" }, row.value))))
+                : null,
+            React.createElement(MarkdownPreviewContent, { content: body, theme }),
+            truncatedNote);
+    }
+    if (language === "json") {
+        let pretty = file.text || "";
+        if (!file.truncated) {
+            // Re-indent only complete documents; a truncated tail would
+            // just throw and fall back to the raw text anyway.
+            try { pretty = JSON.stringify(JSON.parse(pretty), null, 2); } catch { /* show as-is */ }
+        }
+        return React.createElement("div", { className: "ps-admin-ws__doc" },
+            React.createElement("pre", { className: "ps-admin-ws__code lang-json" },
+                React.createElement("code", null, renderHighlightedCode(pretty, "json", theme))),
+            truncatedNote);
+    }
+    return React.createElement("div", { className: "ps-admin-ws__doc" },
+        React.createElement("pre", { className: `ps-admin-ws__code lang-${language}` },
+            React.createElement("code", null, renderHighlightedCode(file.text || "", language, theme))),
+        truncatedNote);
+}
+
+function AdminAddPackageDialog({ controller, dialog }) {
+    // The authoring guide is DEPLOYMENT config: a layered app ships its own,
+    // carrying the base instructions plus the skills, tools and MCP servers
+    // that only exist on that fleet.
+    const guideUrl = useControllerSelector(controller, (state) => state.docs?.agentPackageGuideUrl || null);
+    const setField = (field) => (event) => controller.setAdminAddPackageField(field, event.target.value);
+    const kinds = [["repo", "GitHub / Azure DevOps"], ["upload", "Upload folder"]];
+    const isRepo = dialog.kind === "repo" || dialog.kind === "github" || dialog.kind === "ado";
+    const folderRef = React.useRef(null);
+    const [reading, setReading] = React.useState(false);
+    const UPLOAD_LIMIT = 2 * 1024 * 1024;
+    const onSubmit = (event) => {
+        event.preventDefault();
+        if (reading || dialog.submitting) return;
+        if (dialog.kind === "upload") {
+            const input = folderRef.current;
+            if (!input?.files?.length) {
+                controller.failAdminAddPackage("Choose a package folder first.");
+                return;
+            }
+            // Filter and size-check BEFORE reading a single byte: a folder
+            // with node_modules must not freeze the tab base64-reading
+            // megabytes the server would reject anyway.
+            const picked = [...input.files]
+                .map((file) => ({
+                    file,
+                    path: file.webkitRelativePath.split("/").slice(1).join("/") || file.name,
+                }))
+                .filter(({ path: rel }) => rel
+                    && !rel.split("/").includes("node_modules")
+                    && !rel.split("/").includes(".git"));
+            const totalBytes = picked.reduce((sum, { file }) => sum + file.size, 0);
+            if (picked.length === 0) {
+                controller.failAdminAddPackage("The chosen folder has no uploadable files.");
+                return;
+            }
+            if (totalBytes > UPLOAD_LIMIT) {
+                controller.failAdminAddPackage(
+                    `Folder is ${(totalBytes / (1024 * 1024)).toFixed(1)} MB after filtering — the upload envelope is 2 MB. Use a repo/URL source or 'pilotswarm agents push' for larger packages.`,
+                );
+                return;
+            }
+            setReading(true);
+            Promise.all(picked.map(({ file, path: rel }) => new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onerror = () => reject(new Error(`could not read ${rel}`));
+                reader.onload = () => resolve({
+                    path: rel,
+                    contentBase64: String(reader.result).split(",", 2)[1] || "",
+                });
+                reader.readAsDataURL(file);
+            })))
+                .then((payload) => controller.submitAdminUploadPackage(payload, dialog.scope))
+                .catch((error) => controller.failAdminAddPackage(error?.message || "Could not read the chosen folder."))
+                .finally(() => setReading(false));
+            return;
+        }
+        controller.submitAdminAddPackage().catch(() => {});
+    };
+    return React.createElement("div", { className: "ps-modal-backdrop", onClick: () => controller.closeAdminAddPackage() },
+        React.createElement("form", {
+            className: "ps-modal ps-admin-add",
+            onClick: (event) => event.stopPropagation(),
+            // A form containing a type=password input is treated as a SIGN-IN
+            // form by Safari/Chrome, which then offer saved credentials on the
+            // nearest text input — the link box. These opt the whole form (and
+            // the password managers) out of that heuristic.
+            autoComplete: "off",
+            onSubmit,
+        },
+            React.createElement("div", { className: "ps-modal-header" },
+                React.createElement("span", null, dialog.updateName ? `Update ${dialog.updateName}` : "Add agent package"),
+                React.createElement("button", { type: "button", className: "ps-mini-button", onClick: () => controller.closeAdminAddPackage() }, "✕")),
+            React.createElement("div", { className: "ps-admin-add__body" },
+                React.createElement("div", { className: "ps-admin-add__tabs" },
+                    kinds.map(([kind, label]) => React.createElement("button", {
+                        key: kind,
+                        type: "button",
+                        className: `ps-admin-add__tab${dialog.kind === kind ? " is-on" : ""}`,
+                        onClick: () => controller.setAdminAddPackageField("kind", kind),
+                    }, label))),
+                isRepo
+                    ? [
+                        React.createElement("label", { key: "u", className: "ps-admin-add__field" }, "Link to plugin.json (or the folder containing it)",
+                            React.createElement("input", {
+                                value: dialog.repoUrl,
+                                onChange: setField("repoUrl"),
+                                placeholder: "https://github.com/org/repo/blob/main/my-agents/plugin.json",
+                                autoFocus: true,
+                                type: "url",
+                                name: "agent-package-link",
+                                autoComplete: "off",
+                                spellCheck: false,
+                                "data-1p-ignore": "true",
+                                "data-lpignore": "true",
+                                "data-bwignore": "true",
+                            })),
+                        React.createElement("div", { key: "h", className: "ps-admin-add__hint" },
+                            "Paste the browser URL — branch and path are read from the link. The files are read "
+                            + "by THIS BROWSER with your access (public GitHub needs nothing; Azure DevOps uses your "
+                            + "signed-in account) and uploaded as a package artifact."),
+                        React.createElement("label", { key: "t", className: "ps-admin-add__field" }, "PAT (only for private GitHub repos, or to override — used here, never stored)",
+                            React.createElement("input", {
+                                type: "password",
+                                value: dialog.authToken,
+                                onChange: setField("authToken"),
+                                name: "agent-package-pat",
+                                // "new-password" is what actually suppresses the
+                                // saved-credential prompt; "off" is ignored for
+                                // password inputs in Safari.
+                                autoComplete: "new-password",
+                                "data-1p-ignore": "true",
+                                "data-lpignore": "true",
+                                "data-bwignore": "true",
+                            })),
+                    ]
+                    : React.createElement("label", { className: "ps-admin-add__field" }, "Package folder with plugin.json — the manifest (≤ 2 MB; node_modules skipped)",
+                            React.createElement("input", { ref: folderRef, type: "file", webkitdirectory: "", directory: "", multiple: true })),
+                React.createElement("div", { className: "ps-admin-add__scope" },
+                    React.createElement("label", null,
+                        React.createElement("input", { type: "radio", name: "pkg-scope", checked: dialog.scope === "shared", disabled: Boolean(dialog.updateName), onChange: () => controller.setAdminAddPackageField("scope", "shared") }),
+                        " Shared — everyone can use it"),
+                    React.createElement("label", null,
+                        React.createElement("input", { type: "radio", name: "pkg-scope", checked: dialog.scope === "user", disabled: Boolean(dialog.updateName), onChange: () => controller.setAdminAddPackageField("scope", "user") }),
+                        " User — only you see it")),
+                dialog.updateName
+                    ? React.createElement("p", { className: "ps-admin-console__hint" },
+                        `Publishes a new version of ${dialog.updateName}. Its scope is unchanged — `
+                        + "use Demote/Promote on the package to move it.")
+                    : null,
+                // The authoring guide, linked where someone actually needs it.
+                // It is written to be handed to a coding assistant as-is, so
+                // the URL is worth being able to copy out of the dialog.
+                guideUrl
+                    ? React.createElement("p", { className: "ps-admin-console__hint" },
+                        "New to this? ",
+                        React.createElement("a", {
+                            href: guideUrl,
+                            target: "_blank",
+                            rel: "noreferrer noopener",
+                        }, "How to build an agent package"),
+                        " — a complete guide you can also hand straight to Claude or Copilot.")
+                    : null,
+                React.createElement("p", { className: "ps-admin-console__hint" },
+                    "Same thing from a terminal: pilotswarm agents push ./my-agents --shared"),
+                dialog.progress && !dialog.error
+                    ? React.createElement("p", { className: "ps-admin-add__progress" }, dialog.progress)
+                    : null,
+                dialog.error
+                    ? React.createElement("pre", { className: "ps-admin-add__error", role: "alert" }, dialog.error)
+                    : null),
+            React.createElement("div", { className: "ps-modal-footer" },
+                React.createElement("button", { type: "button", className: "ps-mini-button", onClick: () => controller.closeAdminAddPackage(), disabled: dialog.submitting }, "Cancel"),
+                React.createElement("button", { type: "submit", className: "ps-primary-button", disabled: dialog.submitting || reading },
+                    reading
+                        ? "Reading folder…"
+                        : dialog.submitting
+                            ? "Importing…"
+                            : dialog.updateName ? "Import & update" : "Import & publish"))));
+}
+
+function AdminGhcpSection({ view, draftRef, onBeginEdit, onCancelEdit, onClear, onSubmit, onDraftChange, onRefresh, controller }) {
+        return React.createElement("section", { className: "ps-admin-console__section" },
             React.createElement("h3", null, "GitHub Copilot key"),
             view.ghcpKey.storeAsSystem
                 ? React.createElement("p", { className: "ps-admin-console__hint" },
@@ -6917,10 +8218,10 @@ function AdminConsolePanel({ controller }) {
                         type: "button",
                         className: "ps-mini-button",
                         onClick: onRefresh,
-                    }, view.loading ? "Refreshing..." : "Refresh"))));
+                    }, view.loading ? "Refreshing..." : "Refresh")));
 }
 
-export function createWebPilotSwarmController({ transport, mode = "remote", branding = null } = {}) {
+export function createWebPilotSwarmController({ transport, mode = "remote", branding = null, docs = null } = {}) {
     clearBrowserPreferenceCache();
     // Rich prose is the right default on a desktop transcript; on a phone the
     // terminal view fits far more per screen and does not reflow wide content.
@@ -6932,6 +8233,7 @@ export function createWebPilotSwarmController({ transport, mode = "remote", bran
     const store = createStore(appReducer, createInitialState({
         mode,
         branding,
+        docs,
         chatViewMode: isNarrowViewport ? "transcript" : "rich",
     }));
     return new PilotSwarmUiController({ store, transport });
@@ -6941,7 +8243,7 @@ export function PilotSwarmWebApp({ controller }) {
     // The rich UI restyles chrome that lives OUTSIDE this tree (the portal
     // header in App.jsx), so the flag rides on <body> and every surface
     // keys off `body.ps-rich-ui` in CSS rather than threading a prop.
-    const richUi = useControllerSelector(controller, (state) => state.ui.chatViewMode === "rich");
+    const richUi = useControllerSelector(controller, (state) => Boolean(getTheme(state.ui.themeId)?.richChat));
     React.useEffect(() => {
         if (typeof document === "undefined") return undefined;
         document.body.classList.toggle("ps-rich-ui", richUi);
@@ -6994,6 +8296,10 @@ export function PilotSwarmWebApp({ controller }) {
         themeId: rootState.ui.themeId,
         ownerFilter: rootState.sessions.ownerFilter,
         pinnedIds: rootState.sessions.pinnedIds,
+        // Without this the profile-save effect reads undefined and a reorder
+        // never persists — the reducer would reorder the list correctly and
+        // the placement would vanish on reload.
+        manualOrder: rootState.sessions.manualOrder,
         // Pass the live Set reference here so shallow-equal sees the same
         // identity across renders (a fresh array would break memoization).
         // Conversion to a sorted array happens inside `normalizeProfileSettings`.
@@ -7098,10 +8404,23 @@ export function PilotSwarmWebApp({ controller }) {
                     appliedProfileSettingsJsonRef.current = settingsJson;
                 }
 
-                const currentSettings = profileSettingsFromViewState(
-                    controller.getState(), otherChatViewModeRef.current,
-                );
-                lastProfileSettingsJsonRef.current = JSON.stringify(currentSettings);
+                // lastProfileSettingsJson is what the SAVE effect diffs against
+                // to decide whether anything needs writing. Refreshing it on
+                // every poll made the poll adopt UNSAVED local state as if it
+                // had been persisted: the save effect then saw no difference,
+                // wrote nothing, and the next reload restored the older stored
+                // value. That is how a fresh selection could take effect on
+                // screen and still be lost on reload.
+                //
+                // So only re-baseline when this poll actually applied remote
+                // settings, or on first hydration (where local state IS the
+                // remote state by definition and there is nothing to lose).
+                if (!profileSettingsHydratedRef.current || !hasPendingLocalWrite) {
+                    const currentSettings = profileSettingsFromViewState(
+                        controller.getState(), otherChatViewModeRef.current,
+                    );
+                    lastProfileSettingsJsonRef.current = JSON.stringify(currentSettings);
+                }
                 profileSettingsHydratedRef.current = true;
             } catch {
                 if (!active) return;
@@ -7149,7 +8468,7 @@ export function PilotSwarmWebApp({ controller }) {
                 });
         }, 400);
         return undefined;
-    }, [controller, state.activeSessionId, state.activityPaneAdjust, state.chatViewMode, state.collapsedSessionIds, state.ownerFilter, state.paneAdjust, state.pinnedIds, state.portalSessionColumnAdjust, state.sessionPaneAdjust, state.themeId]);
+    }, [controller, state.activeSessionId, state.activityPaneAdjust, state.chatViewMode, state.collapsedSessionIds, state.ownerFilter, state.paneAdjust, state.manualOrder, state.pinnedIds, state.portalSessionColumnAdjust, state.sessionPaneAdjust, state.themeId]);
 
     React.useEffect(() => {
         applyDocumentTheme(state.themeId);
@@ -7330,7 +8649,7 @@ export function PilotSwarmWebApp({ controller }) {
         }),
         React.createElement("div", { className: "ps-workspace" },
             state.adminVisible
-                ? React.createElement(AdminConsolePanel, { controller })
+                ? React.createElement(AdminConsolePanel, { controller, mobile })
                 : (filesFullscreenActive
                     ? fullscreenWorkspace
                     : (chatFocusMode

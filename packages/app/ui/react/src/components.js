@@ -12,6 +12,7 @@ import {
     selectChatLines,
     selectOutboxOverlayLines,
     selectActivityPane,
+    selectWorkerDetailsPane,
     selectArtifactUploadModal,
     selectArtifactPickerModal,
     selectFilesFilterModal,
@@ -870,24 +871,44 @@ const ActivityPane = React.memo(function ActivityPane({ controller, width, heigh
             scroll: state.ui.scroll.activity,
             followBottom: state.ui.followBottom?.activity !== false,
             focused: state.ui.focusRegion === "activity",
+            // On the Node Map tab this pane IS the worker-details pane, so it
+            // needs the registry, the selection, and every session/history.
+            inspectorTab: state.ui.inspectorTab,
+            nodeMapSelectedNode: state.ui.nodeMapSelectedNode,
+            adminWorkers: state.admin?.workers,
+            branding: state.branding,
+            historyBySessionId: state.history.bySessionId,
+            sessionsFlat: state.sessions.flat,
         };
     }, shallowEqualObject);
+    const nodeMode = activityState.inspectorTab === "nodes";
     const selectorState = React.useMemo(() => {
         const historyMap = new Map();
         if (activityState.activeSessionId && activityState.activeHistory) {
             historyMap.set(activityState.activeSessionId, activityState.activeHistory);
         }
         return {
+            branding: activityState.branding,
+            admin: { workers: activityState.adminWorkers },
+            ui: { nodeMapSelectedNode: activityState.nodeMapSelectedNode },
             sessions: {
                 activeSessionId: activityState.activeSessionId,
                 byId: activityState.sessionsById,
+                flat: activityState.sessionsFlat,
             },
             history: {
-                bySessionId: historyMap,
+                bySessionId: nodeMode ? activityState.historyBySessionId : historyMap,
             },
         };
-    }, [activityState.activeHistory, activityState.activeSessionId, activityState.sessionsById]);
-    const activity = React.useMemo(() => selectActivityPane(selectorState, maxLines), [maxLines, selectorState]);
+    }, [
+        activityState.activeHistory, activityState.activeSessionId, activityState.sessionsById,
+        activityState.adminWorkers, activityState.branding, activityState.historyBySessionId,
+        activityState.nodeMapSelectedNode, activityState.sessionsFlat, nodeMode,
+    ]);
+    const activity = React.useMemo(
+        () => (nodeMode ? selectWorkerDetailsPane(selectorState) : selectActivityPane(selectorState, maxLines)),
+        [maxLines, nodeMode, selectorState],
+    );
 
     return React.createElement(platform.Panel, {
         title: activity.title,
@@ -1905,6 +1926,150 @@ function formatAdminPrincipalLabelTui(principal) {
     return [provider, subject].filter(Boolean).join(":") || "user";
 }
 
+function buildAdminPackagesLines(view) {
+    // TUI parity for Admin → Agents: the same selector view-model the web
+    // workspace renders, as text — settings tree, selected package detail,
+    // files, and a preview head. Keys: a/g switch sections, j/k select,
+    // r refresh (wired via the ADMIN_* commands).
+    const lines = [];
+    const packages = view.packages || {};
+    lines.push([{ text: "Settings", color: "cyan", bold: true }]);
+    for (const row of view.settingsTree || []) {
+        const indent = "  ".repeat(row.depth || 0);
+        if (row.kind === "group") {
+            lines.push([{ text: `${indent}${row.label} (${row.count ?? 0})`, color: "gray" }]);
+            continue;
+        }
+        const marker = row.selected ? "› " : "  ";
+        const badge = row.kind === "package" ? `[${row.scope === "shared" ? "S" : "U"}] ` : "";
+        const version = row.kind === "package" && row.semver ? `  ${row.semver}` : "";
+        lines.push([
+            { text: `${indent}${marker}`, color: row.selected ? "green" : "gray", bold: row.selected },
+            { text: `${badge}${row.label}${version}${row.kind === "package" && !row.enabled ? "  [disabled]" : ""}`,
+              color: row.selected ? "white" : (row.kind === "package" && !row.enabled ? "gray" : "white"),
+              bold: row.selected },
+        ]);
+    }
+    if (packages.loading) lines.push([{ text: "  loading packages...", color: "gray" }]);
+    if (packages.error) lines.push([{ text: `  ! ${packages.error}`, color: "red" }]);
+    lines.push([{ text: "", color: "gray" }]);
+
+    const detail = packages.detail;
+    if (detail) {
+        lines.push([
+            { text: detail.name, color: "white", bold: true },
+            { text: `  ${detail.scope}${detail.enabled ? "" : "  disabled"}`, color: detail.scope === "shared" ? "cyan" : "yellow" },
+        ]);
+        if (detail.loading) lines.push([{ text: "loading package...", color: "gray" }]);
+        if (detail.error) lines.push([{ text: `! ${detail.error}`, color: "red", bold: true }]);
+        if (detail.description) lines.push([{ text: detail.description, color: "gray" }]);
+        lines.push([
+            { text: "Version ", color: "gray" },
+            { text: detail.activeSemver ? `${detail.activeSemver} · ${detail.activeSha12 || "?"} · ${detail.sizeText}` : "none", color: "white" },
+        ]);
+        if (detail.fleet) lines.push([{ text: "Fleet   ", color: "gray" }, { text: detail.fleet.text, color: "green" }]);
+        if (detail.agents.length) {
+            lines.push([{ text: "Agents  ", color: "gray" }, { text: detail.agents.map((a) => a.name).join(", "), color: "white" }]);
+        }
+        if (detail.versions.length) {
+            lines.push([{ text: "Versions", color: "cyan", bold: true }]);
+            for (const version of detail.versions.slice(0, 6)) {
+                lines.push([
+                    { text: version.active ? " ● " : "   ", color: "green" },
+                    { text: `${version.semver}  ${version.sha12}  ${version.dateText}`, color: version.active ? "white" : "gray" },
+                ]);
+            }
+        }
+        if (detail.actionError) lines.push([{ text: `! ${detail.actionError}`, color: "red" }]);
+        const workspace = packages.workspace;
+        if (workspace?.loading) lines.push([{ text: "loading files...", color: "gray" }]);
+        if (workspace?.error) lines.push([{ text: `! files: ${workspace.error}`, color: "red" }]);
+        if (workspace?.fileError) lines.push([{ text: `! preview: ${workspace.fileError}`, color: "red" }]);
+        if (workspace?.treeRows?.length) {
+            lines.push([{ text: "", color: "gray" }]);
+            lines.push([{ text: `Files · ${packages.selectedName}@${workspace.semver || "?"}`, color: "cyan", bold: true }]);
+            for (const row of workspace.treeRows.slice(0, 14)) {
+                const indent = "  ".repeat(row.depth || 0);
+                lines.push([
+                    { text: `  ${indent}${row.type === "dir" ? (row.expanded ? "▾ " : "▸ ") : "  "}`, color: "gray" },
+                    { text: row.label, color: row.selected ? "green" : (row.type === "dir" ? "cyan" : "white"), bold: row.selected },
+                    ...(row.sizeText ? [{ text: `  ${row.sizeText}`, color: "gray" }] : []),
+                ]);
+            }
+            if (workspace.treeRows.length > 14) {
+                lines.push([{ text: `  … ${workspace.treeRows.length - 14} more`, color: "gray" }]);
+            }
+            if (workspace.file && !workspace.file.isBinary && workspace.file.text) {
+                lines.push([{ text: "", color: "gray" }]);
+                lines.push([{ text: `Preview · ${workspace.file.path}`, color: "cyan", bold: true }]);
+                for (const textLine of workspace.file.text.split("\n").slice(0, 12)) {
+                    lines.push([{ text: `  ${textLine.slice(0, 100)}`, color: "gray" }]);
+                }
+            }
+        }
+    } else {
+        lines.push([{ text: packages.empty
+            ? "No agent packages yet — add one in the portal or `pilotswarm agents push ./dir`."
+            : "Select a package (j/k) to see detail and files.", color: "gray" }]);
+    }
+    lines.push([{ text: "", color: "gray" }]);
+    lines.push([{ text: "Actions", color: "cyan", bold: true }]);
+    lines.push([
+        { text: " j/k ", color: "green", bold: true }, { text: "select  ", color: "gray" },
+        { text: "r ", color: "cyan", bold: true }, { text: "refresh  ", color: "gray" },
+        { text: "g ", color: "yellow", bold: true }, { text: "GitHub Keys  ", color: "gray" },
+        { text: "Esc ", color: "red", bold: true }, { text: "close", color: "gray" },
+    ]);
+    return lines;
+}
+
+function buildAdminWorkersLines(view) {
+    // TUI parity for Admin → Workers: the worker-registry table as text.
+    const lines = [];
+    const workers = view.workers || {};
+    const counts = workers.counts || {};
+    lines.push([
+        { text: "Workers", color: "cyan", bold: true },
+        { text: workers.summaryText ? `  ${workers.summaryText}` : "", color: "gray" },
+    ]);
+    if (workers.loading) lines.push([{ text: "  loading workers...", color: "gray" }]);
+    if (workers.error) lines.push([{ text: `  ! ${workers.error}`, color: "red", bold: true }]);
+    if (workers.empty && !workers.loading) {
+        lines.push([{ text: "  No workers registered — workers appear on their first heartbeat.", color: "gray" }]);
+    }
+    let lastPool = null;
+    for (const row of workers.rows || []) {
+        if (row.pool !== lastPool) {
+            lastPool = row.pool;
+            lines.push([{ text: `  ${row.pool}`, color: "gray", bold: true }]);
+        }
+        const phaseColor = row.phase === "ready" ? "green" : row.phase === "draining" ? "red" : "yellow";
+        lines.push([
+            { text: row.live ? "   ● " : "   ○ ", color: row.live ? "green" : "gray" },
+            { text: row.id, color: row.live ? "white" : "gray", bold: row.live },
+            { text: `  ${row.phase}`, color: phaseColor },
+            { text: `  ${row.agoText}`, color: "gray" },
+            ...(row.uptimeText ? [{ text: `  up ${row.uptimeText}`, color: "gray" }] : []),
+            ...(row.rssText ? [{ text: `  ${row.rssText}`, color: "gray" }] : []),
+            ...(row.sessions != null ? [{ text: `  ${row.sessions} sess`, color: "gray" }] : []),
+            ...(row.pkgText ? [{ text: `  pkgs ${row.pkgText}`, color: row.pkgText.includes("error") ? "red" : "gray" }] : []),
+            ...(row.sdkVersion ? [{ text: `  v${row.sdkVersion}`, color: "gray" }] : []),
+        ]);
+    }
+    if (counts.draining) {
+        lines.push([{ text: `  ${counts.draining} draining`, color: "red" }]);
+    }
+    lines.push([{ text: "", color: "gray" }]);
+    lines.push([{ text: "Actions", color: "cyan", bold: true }]);
+    lines.push([
+        { text: " r ", color: "cyan", bold: true }, { text: "refresh  ", color: "gray" },
+        { text: "a ", color: "yellow", bold: true }, { text: "Agents  ", color: "gray" },
+        { text: "g ", color: "yellow", bold: true }, { text: "GitHub Keys  ", color: "gray" },
+        { text: "Esc ", color: "red", bold: true }, { text: "close", color: "gray" },
+    ]);
+    return lines;
+}
+
 function buildAdminConsoleLines(view) {
     const lines = [];
     lines.push([
@@ -1922,6 +2087,16 @@ function buildAdminConsoleLines(view) {
     if (view.loadError) {
         lines.push([{ text: `! ${view.loadError}`, color: "red", bold: true }]);
         lines.push([{ text: "", color: "gray" }]);
+    }
+
+    if (view.section === "packages") {
+        lines.push(...buildAdminPackagesLines(view));
+        return lines;
+    }
+
+    if (view.section === "workers") {
+        lines.push(...buildAdminWorkersLines(view));
+        return lines;
     }
 
     lines.push([{ text: "GitHub Copilot key", color: "cyan", bold: true }]);
@@ -1957,7 +2132,9 @@ function buildAdminConsoleLines(view) {
             { text: view.loading ? "refreshing..." : "refresh", color: "gray" },
         ]);
         lines.push([
-            { text: " Esc ", color: "red", bold: true },
+            { text: " a ", color: "cyan", bold: true },
+            { text: "Agents (packages)  ", color: "gray" },
+            { text: "Esc ", color: "red", bold: true },
             { text: "close console and return to workspace", color: "gray" },
         ]);
     }

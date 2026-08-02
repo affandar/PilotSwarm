@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { CommandResponse, PilotSwarmManagementClient } from "pilotswarm-sdk";
+import type { CommandResponse, SharedManagementSurface } from "pilotswarm-sdk";
 
 // Local alias matches what mgmt.getCommandResponse() returns. The full
 // SessionCommandResponse type from the SDK is internal; CommandResponse
@@ -54,7 +54,7 @@ const DEFAULT_POLL_INTERVAL_MS = 200;
  * then return the response or throw `CommandRejectedError` /
  * `CommandTimeoutError`.
  *
- * @param mgmt - PilotSwarmManagementClient instance
+ * @param mgmt - management surface (either mode; direct-only in practice — web throws WEB_MODE_UNSUPPORTED on sendCommand)
  * @param sessionId - target session id
  * @param cmd - command name (e.g. "set_model")
  * @param args - command-specific arguments
@@ -66,7 +66,7 @@ const DEFAULT_POLL_INTERVAL_MS = 200;
  * @throws CommandTimeoutError if no response shows up within `timeoutMs`
  */
 export async function sendCommandAndWait(
-    mgmt: PilotSwarmManagementClient,
+    mgmt: SharedManagementSurface,
     sessionId: string,
     cmd: string,
     args?: Record<string, unknown>,

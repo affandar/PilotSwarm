@@ -38,17 +38,11 @@ export function normalizeVisibility(value, fallback) {
     return VISIBILITY_VALUES.has(normalized) ? normalized : fallback;
 }
 
-// Methods reachable only through /api/rpc (not in the OPERATIONS table).
-const RPC_ONLY_ACCESS = {
-    copyArtifact: "session:copy",
-    setArtifactPinned: "session:manage",
-    readArtifactBase64: "session:read",
-};
-
+// Every dispatchable method now has an OPERATIONS row — copyArtifact,
+// setArtifactPinned and readArtifactBase64 were the last /api/rpc-only
+// stragglers (same access classes, now declared in the table). The legacy
+// /api/rpc path keeps working: it resolves access through this same map.
 const ACCESS_BY_METHOD = new Map(OPERATIONS.map((op) => [op.name, { access: op.access, sessionParam: op.sessionParam || "sessionId" }]));
-for (const [name, access] of Object.entries(RPC_ONLY_ACCESS)) {
-    if (!ACCESS_BY_METHOD.has(name)) ACCESS_BY_METHOD.set(name, { access, sessionParam: "sessionId" });
-}
 
 export function getMethodAccess(method) {
     return ACCESS_BY_METHOD.get(method) || null;

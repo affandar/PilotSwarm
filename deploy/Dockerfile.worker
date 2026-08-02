@@ -19,6 +19,15 @@ COPY packages/horizon-store/package.json ./packages/horizon-store/
 COPY scripts/postinstall.js ./scripts/
 # `npm ci` enforces the committed package-lock.json so worker image rebuilds
 # from this SHA are byte-reproducible. Matches deploy/Dockerfile.starter.
+#
+# NPM_REGISTRY lets a build that cannot reach registry.npmjs.org (corporate
+# networks routinely block it) install from a mirror instead. Defaults to the
+# public registry, so an unset build arg behaves exactly as before. npm's
+# replace-registry-host (default `npmjs`) rewrites the lockfile's
+# registry.npmjs.org `resolved` URLs onto the configured registry, so the
+# lockfile stays authoritative and the image stays reproducible.
+ARG NPM_REGISTRY=https://registry.npmjs.org/
+ENV npm_config_registry=${NPM_REGISTRY}
 RUN npm ci --omit=dev --force
 
 # Copy built SDK dist + bundled plugins, worker script, and app plugins

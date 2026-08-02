@@ -8,6 +8,7 @@
  * @module
  */
 
+import { randomUUID } from "crypto";
 import { runCmsMigrations } from "./cms-migrator.js";
 import type { SessionOwnerInfo, SessionSummaryState } from "./types.js";
 
@@ -707,9 +708,221 @@ export interface GraphEdgeSearchUsageRow {
  * Initial implementation: PostgreSQL.
  * Future: CosmosDB, etc.
  */
+// ─── Agent packages (migration 0038) ─────────────────────────────
+
+export type AgentPackageScope = "shared" | "user";
+
+/** Principal pair — the same identity primitive session procs use. */
+export interface AgentPrincipal {
+    provider: string;
+    subject: string;
+    /** Populated on READ via the users join (migration 0041); optional on write. */
+    email?: string | null;
+    /** Populated on READ via the users join (migration 0041); optional on write. */
+    displayName?: string | null;
+}
+
+export interface AgentSourceRow {
+    sourceId: string;
+    kind: "github" | "ado" | "url" | "upload";
+    scope: AgentPackageScope;
+    repoUrl: string | null;
+    ref: string | null;
+    path: string | null;
+    url: string | null;
+    authTokenSet: boolean;
+    autoSync: boolean;
+    lastSyncAt: Date | null;
+    lastSyncStatus: string | null;
+    lastSyncError: string | null;
+    lastCommitSha: string | null;
+    owner: AgentPrincipal | null;
+    createdBy: string | null;
+    createdAt: Date;
+}
+
+export interface AgentPackageVersionRow {
+    versionId: string;
+    semver: string;
+    sha256: string;
+    sizeBytes: number;
+    artifactFilename: string;
+    commitSha: string | null;
+    manifest: Record<string, unknown>;
+    createdAt: Date;
+    createdBy: string | null;
+}
+
+export interface AgentPackageSummary {
+    packageId: string;
+    sourceId: string | null;
+    name: string;
+    scope: AgentPackageScope;
+    owner: AgentPrincipal | null;
+    enabled: boolean;
+    createdBy: string | null;
+    createdAt: Date;
+    /** Active version join; null only for a package with no versions (shouldn't happen). */
+    active: AgentPackageVersionRow | null;
+}
+
+export interface AgentPackageDetail extends Omit<AgentPackageSummary, "active"> {
+    activeVersionId: string | null;
+    /** Full version history, newest first. */
+    versions: AgentPackageVersionRow[];
+}
+
+export interface AgentPackageInstallEntry {
+    name: string;
+    scope: AgentPackageScope;
+    owner: AgentPrincipal | null;
+    semver: string;
+    sha256: string;
+    sizeBytes: number;
+    artifactFilename: string;
+    manifest: Record<string, unknown>;
+}
+
+export interface AgentWorkerStateRow {
+    workerNodeId: string;
+    epoch: number;
+    installed: Record<string, unknown>;
+    updatedAt: Date;
+}
+
+export interface PublishAgentPackageInput {
+    name: string;
+    scope: AgentPackageScope;
+    owner: AgentPrincipal | null;
+    sourceId: string | null;
+    semver: string;
+    sha256: string;
+    sizeBytes: number;
+    artifactFilename: string;
+    commitSha: string | null;
+    manifest: Record<string, unknown>;
+    createdBy: string | null;
+    isAdmin: boolean;
+}
+
+export interface PublishAgentPackageResult {
+    status: "published" | "noop";
+    packageId: string;
+    versionId: string;
+}
+
+// ─── Worker registry (migration 0040) ────────────────────────────
+
+export type WorkerPhase = "starting" | "ready" | "draining";
+
+export interface WorkerRow {
+    workerNodeId: string;
+    pool: string;
+    phase: WorkerPhase;
+    owner: AgentPrincipal | null;
+    registeredAt: Date;
+    updatedAt: Date;
+    info: Record<string, unknown>;
+    health: Record<string, unknown>;
+    state: Record<string, unknown>;
+}
+
+export interface WorkerHeartbeatInput {
+    workerNodeId: string;
+    pool?: string | null;
+    phase?: WorkerPhase;
+    owner?: AgentPrincipal | null;
+    info?: Record<string, unknown>;
+    health?: Record<string, unknown>;
+    state?: Record<string, unknown>;
+}
+
+/** Effective (merged) directive returned to a worker by the heartbeat. */
+export interface EffectiveDirective {
+    domain: string;
+    /** SUM of contributing rows' epochs — changes on any contributing bump. */
+    epoch: number;
+    actuation: "worker" | "external";
+    desired: Record<string, unknown>;
+}
+
+export interface FleetDirectiveRow {
+    domain: string;
+    pool: string;
+    workerNodeId: string;
+    epoch: number;
+    actuation: "worker" | "external";
+    desired: Record<string, unknown>;
+    updatedAt: Date;
+    updatedBy: string | null;
+}
+
 export interface SessionCatalog {
     /** Create schema and tables if they don't exist. */
     initialize(): Promise<void>;
+
+    // ── Worker registry (migration 0040) ─────────────────────
+
+    /**
+     * The one round-trip: upsert this worker's row (info/owner insert-only;
+     * pool/phase/health/state every beat), prune hour-silent rows, and
+     * return the effective directive set (fleet/pool/worker shallow-merge,
+     * epoch = SUM of contributing rows).
+     */
+    workerHeartbeat(input: WorkerHeartbeatInput): Promise<EffectiveDirective[]>;
+    listWorkers(): Promise<WorkerRow[]>;
+    /**
+     * Upsert-and-bump a directive row. pool/workerNodeId default '*';
+     * worker-scoped rows must use pool '*' (canonical form); desired null
+     * keeps the existing payload (doorbell bump). Returns the row's epoch.
+     */
+    fleetDirectiveBump(domain: string, opts?: {
+        pool?: string | null;
+        workerNodeId?: string | null;
+        desired?: Record<string, unknown> | null;
+        actuation?: "worker" | "external";
+        updatedBy?: string | null;
+    }): Promise<number>;
+    getFleetDirectives(): Promise<FleetDirectiveRow[]>;
+
+    // ── Agent packages (migration 0038) ──────────────────────
+
+    /** Current registry epoch — workers poll this single-row read. */
+    agentRegistryEpoch(): Promise<number>;
+    registerAgentSource(source: {
+        sourceId: string;
+        kind: "github" | "ado" | "url" | "upload";
+        scope: AgentPackageScope;
+        repoUrl?: string | null;
+        ref?: string | null;
+        path?: string | null;
+        url?: string | null;
+        authToken?: string | null;
+        autoSync?: boolean;
+        owner: AgentPrincipal | null;
+        createdBy?: string | null;
+    }): Promise<void>;
+    listAgentSources(viewer: AgentPrincipal | null, isAdmin: boolean): Promise<AgentSourceRow[]>;
+    getAgentSource(sourceId: string): Promise<AgentSourceRow | null>;
+    /** Internal-only raw token read for sync fetchers. Never expose via management APIs. */
+    getAgentSourceToken(sourceId: string): Promise<string | null>;
+    updateAgentSourceSync(sourceId: string, status: string, error: string | null, commitSha: string | null): Promise<void>;
+    deleteAgentSource(sourceId: string, actor: AgentPrincipal | null, isAdmin: boolean): Promise<void>;
+
+    /** Atomic publish — see cms_publish_agent_package. Throws AGENT_PACKAGE_* errors. */
+    publishAgentPackage(input: PublishAgentPackageInput): Promise<PublishAgentPackageResult>;
+    listAgentPackages(viewer: AgentPrincipal | null, isAdmin: boolean): Promise<AgentPackageSummary[]>;
+    getAgentPackage(name: string, viewer: AgentPrincipal | null, isAdmin: boolean): Promise<AgentPackageDetail | null>;
+    /** Worker-facing install manifest: every enabled package's active version. */
+    getAgentPackagesInstallManifest(): Promise<AgentPackageInstallEntry[]>;
+    setAgentPackageScope(name: string, scope: AgentPackageScope, actor: AgentPrincipal | null, isAdmin: boolean): Promise<void>;
+    setAgentPackageEnabled(name: string, enabled: boolean, actor: AgentPrincipal | null, isAdmin: boolean): Promise<void>;
+    pinAgentPackageVersion(name: string, semver: string, actor: AgentPrincipal | null, isAdmin: boolean): Promise<void>;
+    /** Returns artifact filenames of deleted versions for post-commit artifact cleanup. */
+    deleteAgentPackage(name: string, actor: AgentPrincipal | null, isAdmin: boolean): Promise<string[]>;
+
+    upsertAgentWorkerState(workerNodeId: string, epoch: number, installed: Record<string, unknown>): Promise<void>;
+    listAgentWorkerState(): Promise<AgentWorkerStateRow[]>;
 
     // ── Writes (called from client, before duroxide calls) ───
 
@@ -1075,6 +1288,27 @@ function sqlForSchema(schema: string) {
             getSessionGraphNodeUsage:   `${s}.cms_get_session_graph_node_usage`,
             getFleetGraphNodeUsage:     `${s}.cms_get_fleet_graph_node_usage`,
             getSessionGraphEdgeSearchUsage: `${s}.cms_get_session_graph_edge_search_usage`,
+            agentRegistryEpoch:         `${s}.cms_agent_registry_epoch`,
+            registerAgentSource:        `${s}.cms_register_agent_source`,
+            listAgentSources:           `${s}.cms_list_agent_sources`,
+            getAgentSource:             `${s}.cms_get_agent_source`,
+            getAgentSourceToken:        `${s}.cms_get_agent_source_token`,
+            updateAgentSourceSync:      `${s}.cms_update_agent_source_sync`,
+            deleteAgentSource:          `${s}.cms_delete_agent_source`,
+            publishAgentPackage:        `${s}.cms_publish_agent_package`,
+            listAgentPackages:          `${s}.cms_list_agent_packages`,
+            getAgentPackage:            `${s}.cms_get_agent_package`,
+            getAgentPackagesInstallManifest: `${s}.cms_get_agent_packages_install_manifest`,
+            setAgentPackageScope:       `${s}.cms_set_agent_package_scope`,
+            setAgentPackageEnabled:     `${s}.cms_set_agent_package_enabled`,
+            pinAgentPackageVersion:     `${s}.cms_pin_agent_package_version`,
+            deleteAgentPackage:         `${s}.cms_delete_agent_package`,
+            upsertAgentWorkerState:     `${s}.cms_upsert_agent_worker_state`,
+            listAgentWorkerState:       `${s}.cms_list_agent_worker_state`,
+            workerHeartbeat:            `${s}.cms_worker_heartbeat`,
+            listWorkers:                `${s}.cms_list_workers`,
+            fleetDirectiveBump:         `${s}.cms_fleet_directive_bump`,
+            getFleetDirectives:         `${s}.cms_get_fleet_directives`,
         },
     };
 }
@@ -2369,6 +2603,264 @@ export class PgSessionCatalog implements SessionCatalog {
         return rows.map(rowToGraphEdgeSearchUsageRow);
     }
 
+    // ── Agent packages (migration 0038) ──────────────────────
+
+    async workerHeartbeat(input: WorkerHeartbeatInput): Promise<EffectiveDirective[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.workerHeartbeat}($1, $2, $3, $4, $5, $6, $7, $8)`,
+            [
+                input.workerNodeId,
+                input.pool ?? null,
+                input.phase ?? "ready",
+                input.owner?.provider ?? null,
+                input.owner?.subject ?? null,
+                JSON.stringify(input.info ?? {}),
+                JSON.stringify(input.health ?? {}),
+                JSON.stringify(input.state ?? {}),
+            ],
+        );
+        return rows.map((row: any) => ({
+            domain: row.domain,
+            epoch: Number(row.epoch) || 0,
+            actuation: row.actuation === "external" ? "external" as const : "worker" as const,
+            desired: row.desired ?? {},
+        }));
+    }
+
+    async listWorkers(): Promise<WorkerRow[]> {
+        const { rows } = await this.pool.query(`SELECT * FROM ${this.sql.fn.listWorkers}()`);
+        return rows.map((row: any) => ({
+            workerNodeId: row.worker_node_id,
+            pool: row.pool,
+            phase: (["starting", "ready", "draining"].includes(row.phase) ? row.phase : "ready") as WorkerPhase,
+            owner: rowToAgentPrincipal(row),
+            registeredAt: new Date(row.registered_at),
+            updatedAt: new Date(row.updated_at),
+            info: row.info ?? {},
+            health: row.health ?? {},
+            state: row.state ?? {},
+        }));
+    }
+
+    async fleetDirectiveBump(domain: string, opts: {
+        pool?: string | null;
+        workerNodeId?: string | null;
+        desired?: Record<string, unknown> | null;
+        actuation?: "worker" | "external";
+        updatedBy?: string | null;
+    } = {}): Promise<number> {
+        const { rows } = await this.pool.query(
+            `SELECT ${this.sql.fn.fleetDirectiveBump}($1, $2, $3, $4, $5, $6) AS epoch`,
+            [
+                domain,
+                opts.pool ?? null,
+                opts.workerNodeId ?? null,
+                opts.desired == null ? null : JSON.stringify(opts.desired),
+                opts.actuation ?? null,
+                opts.updatedBy ?? null,
+            ],
+        );
+        return Number(rows[0]?.epoch) || 0;
+    }
+
+    async getFleetDirectives(): Promise<FleetDirectiveRow[]> {
+        const { rows } = await this.pool.query(`SELECT * FROM ${this.sql.fn.getFleetDirectives}()`);
+        return rows.map((row: any) => ({
+            domain: row.domain,
+            pool: row.pool,
+            workerNodeId: row.worker_node_id,
+            epoch: Number(row.epoch) || 0,
+            actuation: row.actuation === "external" ? "external" as const : "worker" as const,
+            desired: row.desired ?? {},
+            updatedAt: new Date(row.updated_at),
+            updatedBy: row.updated_by ?? null,
+        }));
+    }
+
+    async agentRegistryEpoch(): Promise<number> {
+        const { rows } = await this.pool.query(`SELECT ${this.sql.fn.agentRegistryEpoch}() AS epoch`);
+        return Number(rows[0]?.epoch ?? 0);
+    }
+
+    async registerAgentSource(source: {
+        sourceId: string;
+        kind: "github" | "ado" | "url" | "upload";
+        scope: AgentPackageScope;
+        repoUrl?: string | null;
+        ref?: string | null;
+        path?: string | null;
+        url?: string | null;
+        authToken?: string | null;
+        autoSync?: boolean;
+        owner: AgentPrincipal | null;
+        createdBy?: string | null;
+    }): Promise<void> {
+        await this.pool.query(
+            `SELECT ${this.sql.fn.registerAgentSource}($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+            [
+                source.sourceId, source.kind, source.scope, source.repoUrl ?? null, source.ref ?? null,
+                source.path ?? null, source.url ?? null, source.authToken ?? null,
+                source.autoSync ?? false, source.owner?.provider ?? null,
+                source.owner?.subject ?? null, source.createdBy ?? null,
+            ],
+        );
+    }
+
+    async listAgentSources(viewer: AgentPrincipal | null, isAdmin: boolean): Promise<AgentSourceRow[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.listAgentSources}($1, $2, $3)`,
+            [viewer?.provider ?? null, viewer?.subject ?? null, isAdmin],
+        );
+        return rows.map(rowToAgentSourceRow);
+    }
+
+    async getAgentSource(sourceId: string): Promise<AgentSourceRow | null> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.getAgentSource}($1)`,
+            [sourceId],
+        );
+        return rows.length > 0 ? rowToAgentSourceRow(rows[0]) : null;
+    }
+
+    async getAgentSourceToken(sourceId: string): Promise<string | null> {
+        const { rows } = await this.pool.query(
+            `SELECT ${this.sql.fn.getAgentSourceToken}($1) AS token`,
+            [sourceId],
+        );
+        return rows[0]?.token ?? null;
+    }
+
+    async updateAgentSourceSync(sourceId: string, status: string, error: string | null, commitSha: string | null): Promise<void> {
+        await this.pool.query(
+            `SELECT ${this.sql.fn.updateAgentSourceSync}($1, $2, $3, $4)`,
+            [sourceId, status, error, commitSha],
+        );
+    }
+
+    async deleteAgentSource(sourceId: string, actor: AgentPrincipal | null, isAdmin: boolean): Promise<void> {
+        await this.pool.query(
+            `SELECT ${this.sql.fn.deleteAgentSource}($1, $2, $3, $4)`,
+            [sourceId, actor?.provider ?? null, actor?.subject ?? null, isAdmin],
+        );
+    }
+
+    async publishAgentPackage(input: PublishAgentPackageInput): Promise<PublishAgentPackageResult> {
+        const packageId = randomUUID();
+        const versionId = randomUUID();
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.publishAgentPackage}($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+            [
+                packageId, versionId, input.name, input.scope,
+                input.owner?.provider ?? null, input.owner?.subject ?? null,
+                input.sourceId, input.semver, input.sha256, input.sizeBytes,
+                input.artifactFilename, input.commitSha,
+                JSON.stringify(input.manifest ?? {}), input.createdBy, input.isAdmin,
+            ],
+        );
+        const row = rows[0] ?? {};
+        return {
+            status: row.status === "noop" ? "noop" : "published",
+            packageId: String(row.package_id ?? packageId),
+            versionId: String(row.version_id ?? versionId),
+        };
+    }
+
+    async listAgentPackages(viewer: AgentPrincipal | null, isAdmin: boolean): Promise<AgentPackageSummary[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.listAgentPackages}($1, $2, $3)`,
+            [viewer?.provider ?? null, viewer?.subject ?? null, isAdmin],
+        );
+        return rows.map(rowToAgentPackageSummary);
+    }
+
+    async getAgentPackage(name: string, viewer: AgentPrincipal | null, isAdmin: boolean): Promise<AgentPackageDetail | null> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.getAgentPackage}($1, $2, $3, $4)`,
+            [name, viewer?.provider ?? null, viewer?.subject ?? null, isAdmin],
+        );
+        if (rows.length === 0) return null;
+        const first = rows[0];
+        const versions = rows
+            .filter((r: any) => r.version_id != null)
+            .map(rowToAgentPackageVersion);
+        return {
+            packageId: first.package_id,
+            sourceId: first.source_id ?? null,
+            name: first.name,
+            scope: first.scope === "user" ? "user" : "shared",
+            owner: rowToAgentPrincipal(first),
+            enabled: Boolean(first.enabled),
+            createdBy: first.created_by ?? null,
+            createdAt: new Date(first.created_at),
+            activeVersionId: first.active_version_id ?? null,
+            versions,
+        };
+    }
+
+    async getAgentPackagesInstallManifest(): Promise<AgentPackageInstallEntry[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.getAgentPackagesInstallManifest}()`,
+        );
+        return rows.map((row: any) => ({
+            name: row.name,
+            scope: row.scope === "user" ? "user" as const : "shared" as const,
+            owner: rowToAgentPrincipal(row),
+            semver: row.semver,
+            sha256: row.sha256,
+            sizeBytes: Number(row.size_bytes) || 0,
+            artifactFilename: row.artifact_filename,
+            manifest: row.manifest ?? {},
+        }));
+    }
+
+    async setAgentPackageScope(name: string, scope: AgentPackageScope, actor: AgentPrincipal | null, isAdmin: boolean): Promise<void> {
+        await this.pool.query(
+            `SELECT ${this.sql.fn.setAgentPackageScope}($1, $2, $3, $4, $5)`,
+            [name, scope, actor?.provider ?? null, actor?.subject ?? null, isAdmin],
+        );
+    }
+
+    async setAgentPackageEnabled(name: string, enabled: boolean, actor: AgentPrincipal | null, isAdmin: boolean): Promise<void> {
+        await this.pool.query(
+            `SELECT ${this.sql.fn.setAgentPackageEnabled}($1, $2, $3, $4, $5)`,
+            [name, enabled, actor?.provider ?? null, actor?.subject ?? null, isAdmin],
+        );
+    }
+
+    async pinAgentPackageVersion(name: string, semver: string, actor: AgentPrincipal | null, isAdmin: boolean): Promise<void> {
+        await this.pool.query(
+            `SELECT ${this.sql.fn.pinAgentPackageVersion}($1, $2, $3, $4, $5)`,
+            [name, semver, actor?.provider ?? null, actor?.subject ?? null, isAdmin],
+        );
+    }
+
+    async deleteAgentPackage(name: string, actor: AgentPrincipal | null, isAdmin: boolean): Promise<string[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.deleteAgentPackage}($1, $2, $3, $4)`,
+            [name, actor?.provider ?? null, actor?.subject ?? null, isAdmin],
+        );
+        return rows.map((r: any) => String(r.artifact_filename)).filter(Boolean);
+    }
+
+    async upsertAgentWorkerState(workerNodeId: string, epoch: number, installed: Record<string, unknown>): Promise<void> {
+        await this.pool.query(
+            `SELECT ${this.sql.fn.upsertAgentWorkerState}($1, $2, $3)`,
+            [workerNodeId, epoch, JSON.stringify(installed ?? {})],
+        );
+    }
+
+    async listAgentWorkerState(): Promise<AgentWorkerStateRow[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.listAgentWorkerState}()`,
+        );
+        return rows.map((row: any) => ({
+            workerNodeId: row.worker_node_id,
+            epoch: Number(row.epoch) || 0,
+            installed: row.installed ?? {},
+            updatedAt: new Date(row.updated_at),
+        }));
+    }
+
     async close(): Promise<void> {
         if (this.pool) {
             await this.pool.end();
@@ -2684,6 +3176,84 @@ function rowToUserProfile(row: any): UserProfile {
         githubCopilotKeySet: Boolean(row.github_copilot_key_set),
         createdAt: row.created_at ? new Date(row.created_at) : null,
         updatedAt: row.updated_at ? new Date(row.updated_at) : null,
+    };
+}
+
+// ─── Agent-package row mappers (migration 0038) ──────────────────
+
+function rowToAgentPrincipal(row: any): AgentPrincipal | null {
+    // email/display_name come from the users JOIN added in migration 0041 —
+    // the same join the session view has always used. Without them the UI had
+    // only an opaque directory id and fell back to the created_by alias, so
+    // one person read as "AD" on their sessions and "DA" on their packages.
+    return row.owner_provider && row.owner_subject
+        ? {
+            provider: row.owner_provider,
+            subject: row.owner_subject,
+            email: row.owner_email ?? null,
+            displayName: row.owner_display_name ?? null,
+        }
+        : null;
+}
+
+function rowToAgentSourceRow(row: any): AgentSourceRow {
+    return {
+        sourceId: row.source_id,
+        kind: row.kind,
+        scope: row.scope === "shared" ? "shared" : "user",
+        repoUrl: row.repo_url ?? null,
+        ref: row.ref ?? null,
+        path: row.path ?? null,
+        url: row.url ?? null,
+        authTokenSet: Boolean(row.auth_token_set),
+        autoSync: Boolean(row.auto_sync),
+        lastSyncAt: row.last_sync_at ? new Date(row.last_sync_at) : null,
+        lastSyncStatus: row.last_sync_status ?? null,
+        lastSyncError: row.last_sync_error ?? null,
+        lastCommitSha: row.last_commit_sha ?? null,
+        owner: rowToAgentPrincipal(row),
+        createdBy: row.created_by ?? null,
+        createdAt: new Date(row.created_at),
+    };
+}
+
+function rowToAgentPackageVersion(row: any): AgentPackageVersionRow {
+    return {
+        versionId: row.version_id,
+        semver: row.semver,
+        sha256: row.sha256,
+        sizeBytes: Number(row.size_bytes) || 0,
+        artifactFilename: row.artifact_filename,
+        commitSha: row.commit_sha ?? null,
+        manifest: row.manifest ?? {},
+        createdAt: new Date(row.version_created_at ?? row.created_at),
+        createdBy: row.version_created_by ?? row.created_by ?? null,
+    };
+}
+
+function rowToAgentPackageSummary(row: any): AgentPackageSummary {
+    return {
+        packageId: row.package_id,
+        sourceId: row.source_id ?? null,
+        name: row.name,
+        scope: row.scope === "user" ? "user" : "shared",
+        owner: rowToAgentPrincipal(row),
+        enabled: Boolean(row.enabled),
+        createdBy: row.created_by ?? null,
+        createdAt: new Date(row.created_at),
+        active: row.semver
+            ? {
+                versionId: row.active_version_id,
+                semver: row.semver,
+                sha256: row.sha256,
+                sizeBytes: Number(row.size_bytes) || 0,
+                artifactFilename: row.artifact_filename,
+                commitSha: row.commit_sha ?? null,
+                manifest: row.manifest ?? {},
+                createdAt: new Date(row.version_created_at ?? row.created_at),
+                createdBy: row.version_created_by ?? null,
+            }
+            : null,
     };
 }
 
