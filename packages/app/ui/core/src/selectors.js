@@ -754,8 +754,15 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
     // Multi-selection reads as a selection BAR on the chosen rows (plus the
     // host's own row styling) — not a checkbox column that shifts every row
     // the moment selection mode turns on.
+    // role:"selection" so a host that already SHOWS selection some other way
+    // can drop the glyph instead of paying a cell for it — the same contract
+    // role:"status" and role:"depth" already use. The portal outlines the row,
+    // so the bar there was pure duplication that cost one column: selected
+    // rows truncated one character earlier than their neighbours, which
+    // clipped the pin/folder/system icon on any row whose glyph happened to
+    // land on the boundary. The TUI ignores the tag and keeps the bar.
     if (isSelected) {
-        prefixRuns.push({ text: "▌", color: "cyan", bold: true });
+        prefixRuns.push({ text: "▌", color: "cyan", bold: true, role: "selection" });
     }
 
     // Pin column renders first on top-level non-system rows so pinned and

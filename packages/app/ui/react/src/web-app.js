@@ -3426,6 +3426,9 @@ function portalRowRuns(runs, theme) {
     const rest = [];
     for (const run of runs) {
         if (run?.role === "depth") continue;
+        // The row's own styling already marks selection; drawing the bar too
+        // would cost a column and truncate the row early.
+        if (run?.role === "selection") continue;
         if (run?.role === "status") {
             statusColor = resolveColor(theme, run.color) || null;
             continue;
