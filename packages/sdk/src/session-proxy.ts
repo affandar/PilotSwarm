@@ -41,6 +41,33 @@ import { supportsVersionedSnapshots, writeTurnSentinel } from "./snapshot-protoc
 
 const SYSTEM_AGENT_IDS = new Set(["pilotswarm", "sweeper", "resourcemgr", "facts-manager", "agent-tuner"]);
 
+export type SpawnAgentOutcome =
+    | { ok: true; agentId: string; agentName?: string; task: string }
+    | { ok: false; validationFailure?: boolean; error: string };
+
+/**
+ * Render the LLM-facing spawn_agent report.
+ *
+ * This prose is a compatibility surface: prompts and agents key off the exact wording, so it is
+ * exported purely to keep it under byte-exact test coverage. Pre-flight rejections have always
+ * read "failed \u2014 <reason>" while a thrown error reads "failed: <message>"; the two separators
+ * are not interchangeable.
+ */
+export function renderSpawnAgentReport(outcome: SpawnAgentOutcome): string {
+    if (!outcome.ok) {
+        return outcome.validationFailure
+            ? `[SYSTEM: spawn_agent failed \u2014 ${outcome.error}]`
+            : `[SYSTEM: spawn_agent failed: ${outcome.error}]`;
+    }
+    return `[SYSTEM: Sub-agent spawned successfully.\n` +
+        `  Agent ID: ${outcome.agentId}\n` +
+        `  ${outcome.agentName ? `Agent: ${outcome.agentName}\n  ` : ``}Task: "${outcome.task}"\n` +
+        `  The agent is now running autonomously. Continue your work in this SAME turn and keep following the user's remaining steps. ` +
+        `Do NOT stop just because the child started. If your plan says to pause, call wait or wait_for_agents explicitly. ` +
+        `You can also use check_agents to poll status, ` +
+        `or message_agent to send instructions.]`;
+}
+
 const SESSION_RECOVERY_NOTICE =
     "[SYSTEM: The runtime recovered this session after the live Copilot session was lost on a worker. " +
     "Some very recent in-memory state may have been lost. Re-read the visible conversation and continue carefully from the latest durable state.]";
@@ -1340,8 +1367,11 @@ export function registerActivities(
             return child;
         };
 
-        const controlToolBridge = {
-            spawnAgent: async (args: {
+        // Spawn returns a structured outcome; the native tool's `[SYSTEM: ...]` text is only a
+        // rendering of it. Host adapters consume the structured form directly so that
+        // child-controlled output and user task text can never be reparsed as control data.
+        // See d:/git/waldemort/myplans/copilot-cli-compat/copilot-cli-compat-design.md, "D13".
+        const spawnAgentDetailed = async (args: {
                 agent_name?: string;
                 task?: string;
                 model?: string;
@@ -1354,15 +1384,15 @@ export function registerActivities(
                 try {
                     const childNestingLevel = (input.nestingLevel ?? 0) + 1;
                     if (childNestingLevel > MAX_NESTING_LEVEL) {
-                        return `[SYSTEM: spawn_agent failed — you are already at nesting level ${input.nestingLevel ?? 0} (max ${MAX_NESTING_LEVEL}). ` +
-                            `Sub-agents at this depth cannot spawn further sub-agents. Handle the task directly instead.]`;
+                        return { ok: false as const, validationFailure: true as const, error: `you are already at nesting level ${input.nestingLevel ?? 0} (max ${MAX_NESTING_LEVEL}). ` +
+                            `Sub-agents at this depth cannot spawn further sub-agents. Handle the task directly instead.` };
                     }
 
                     const existingChildren = (await loadDirectChildSessions()).filter(child => !child.isSystem);
                     const activeCount = existingChildren.filter(child => child.status === "running").length;
                     if (activeCount >= MAX_SUB_AGENTS) {
-                        return `[SYSTEM: spawn_agent failed — you already have ${activeCount} running sub-agents (max ${MAX_SUB_AGENTS}). ` +
-                            `Wait for some to complete before spawning more.]`;
+                        return { ok: false as const, validationFailure: true as const, error: `you already have ${activeCount} running sub-agents (max ${MAX_SUB_AGENTS}). ` +
+                            `Wait for some to complete before spawning more.` };
                     }
 
                     let agentTask = args.task || "";
@@ -1406,11 +1436,11 @@ export function registerActivities(
                     if (resolvedAgentName) {
                         const agentDef = resolveAgentConfigInline(resolvedAgentName);
                         if (!agentDef) {
-                            return `[SYSTEM: spawn_agent failed — agent "${resolvedAgentName}" not found. Use ps_list_agents to see available agents.]`;
+                            return { ok: false as const, validationFailure: true as const, error: `agent "${resolvedAgentName}" not found. Use ps_list_agents to see available agents.` };
                         }
                         if (agentDef.system && agentDef.creatable === false) {
-                            return `[SYSTEM: spawn_agent failed — agent "${resolvedAgentName}" is a worker-managed system agent and cannot be spawned from a session. ` +
-                                `If it is missing, the workers likely need to be restarted.]`;
+                            return { ok: false as const, validationFailure: true as const, error: `agent "${resolvedAgentName}" is a worker-managed system agent and cannot be spawned from a session. ` +
+                                `If it is missing, the workers likely need to be restarted.` };
                         }
                         applyAgentDef(agentDef, resolvedAgentName !== args.agent_name);
                     }
@@ -1436,9 +1466,9 @@ export function registerActivities(
                     }
 
                     if (agentModel && !agentModel.includes(":")) {
-                        return `[SYSTEM: spawn_agent failed — model "${agentModel}" is not allowed. ` +
+                        return { ok: false as const, validationFailure: true as const, error: `model "${agentModel}" is not allowed. ` +
                             `When overriding a sub-agent model, first call list_available_models and then use the exact provider:model value from that list. ` +
-                            `If you are unsure, omit model so the sub-agent inherits your current model.]`;
+                            `If you are unsure, omit model so the sub-agent inherits your current model.` };
                     }
 
                     // v1.0.49: same-name duplicate spawns are allowed. The
@@ -1573,17 +1603,24 @@ export function registerActivities(
                     }
 
                     const childOrchId = `session-${childSession.sessionId}`;
-                    return `[SYSTEM: Sub-agent spawned successfully.\n` +
-                        `  Agent ID: ${childOrchId}\n` +
-                        `  ${resolvedAgentName ? `Agent: ${resolvedAgentName}\n  ` : ``}Task: "${agentTask.slice(0, 200)}"\n` +
-                        `  The agent is now running autonomously. Continue your work in this SAME turn and keep following the user's remaining steps. ` +
-                        `Do NOT stop just because the child started. If your plan says to pause, call wait or wait_for_agents explicitly. ` +
-                        `You can also use check_agents to poll status, ` +
-                        `or message_agent to send instructions.]`;
+                    return {
+                        ok: true as const,
+                        agentId: childOrchId,
+                        agentName: resolvedAgentName,
+                        task: agentTask.slice(0, 200),
+                    };
                 } catch (err: any) {
-                    return `[SYSTEM: spawn_agent failed: ${err?.message || String(err)}]`;
+                    return { ok: false as const, error: err?.message || String(err) };
                 }
-            },
+            };
+
+        const formatSpawnAgentReport = (outcome: Awaited<ReturnType<typeof spawnAgentDetailed>>) =>
+            renderSpawnAgentReport(outcome);
+
+        const controlToolBridge = {
+            spawnAgent: async (args: Parameters<typeof spawnAgentDetailed>[0]) =>
+                formatSpawnAgentReport(await spawnAgentDetailed(args)),
+            spawnAgentDetailed,
             setSessionModel: async (args: { model: string; reasoning_effort?: import("./model-providers.js").ReasoningEffort | null }) => {
                 try {
                     const requestedModel = String(args.model || "").trim();
@@ -1709,6 +1746,31 @@ export function registerActivities(
                         `Continue your work in this SAME turn. If you are waiting on the child, call wait_for_agents explicitly rather than stopping here.]`;
                 } catch (err: any) {
                     return `[SYSTEM: message_agent failed: ${err?.message || String(err)}]`;
+                }
+            },
+            // Structured child snapshot. `result`/`error` carry child-controlled text, so the
+            // native report is rendered FROM this — never reparsed back into control data.
+            // See d:/git/waldemort/myplans/copilot-cli-compat/copilot-cli-compat-design.md, "D13".
+            checkAgentsDetailed: async () => {
+                try {
+                    const children = (await loadDirectChildSessions()).filter(child => !child.isSystem);
+                    return {
+                        ok: true as const,
+                        agents: children.map((agent) => ({
+                            agentId: agent.orchId,
+                            title: agent.title ?? undefined,
+                            status: String(agent.status),
+                            contractStatus: agent.contractStatus ?? undefined,
+                            verdict: agent.verdict ?? undefined,
+                            iterations: agent.iterations ?? 0,
+                            contractViolations: Array.isArray(agent.contractViolations)
+                                ? agent.contractViolations.map((violation: any) => String(violation?.code || violation?.message || "violation"))
+                                : undefined,
+                            output: agent.result ?? agent.error ?? undefined,
+                        })),
+                    };
+                } catch (err: any) {
+                    return { ok: false as const, error: err?.message || String(err) };
                 }
             },
             checkAgents: async () => {

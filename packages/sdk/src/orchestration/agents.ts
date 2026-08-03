@@ -5,6 +5,7 @@ import type {
     ChildSessionVerdict,
     SubAgentEntry,
 } from "../types.js";
+import { applyCompatChildConfig } from "../copilot-compat.js";
 import {
     clearPendingChildDigest,
     publishStatus,
@@ -722,6 +723,12 @@ export function* handleSubAgentAction(
                 ...(agentToolNames ? { toolNames: agentToolNames } : {}),
                 ...(result.contract ? { childContract: result.contract } : {}),
             };
+
+            // Post-spread: the spread above copies copilotCliTodoState by reference, so
+            // parent and child would share one mutable list. workspaceBinding stays shared
+            // on purpose — the child is a non-owning user of the parent's workspace.
+            // See d:/git/waldemort/myplans/copilot-cli-compat/copilot-cli-compat-design.md, "D5"/"D6".
+            applyCompatChildConfig(childConfig);
 
             const parentSystemMsg = typeof childConfig.systemMessage === "string"
                 ? childConfig.systemMessage

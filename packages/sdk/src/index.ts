@@ -161,7 +161,45 @@ export {
 
 // Skills loader
 export { loadSkills, loadSkillsSync, composeDeclaredSkillsPrompt } from "./skills.js";
-export { loadAgentFiles, systemAgentUUID, systemChildAgentUUID } from "./agent-loader.js";
+export { loadAgentFiles, parseAgentFrontmatter, systemAgentUUID, systemChildAgentUUID } from "./agent-loader.js";
+export type { AgentFrontmatterParseOptions } from "./agent-loader.js";
+export {
+    COPILOT_CLI_PROFILE,
+    COMPATIBILITY_SCHEMA_VERSION,
+    COMPAT_WORKSPACE_ROOT,
+    COMPAT_WORKSPACE_ACTIVE_DEADLINE_SECONDS,
+    COPILOT_COMPAT_BOUNDS,
+    CompatibilityAdapterRegistry,
+    applyCompatChildConfig,
+    buildCompatSessionConfigFragment,
+    clampCompatBound,
+    classifyDeclaredTools,
+    classifyDesktopOnlyTool,
+    copyTodoStateItems,
+    createUncreatedWorkspaceBinding,
+    formatCompatDiagnostic,
+    isWorkspaceOwner,
+    matchesToolPattern,
+    readCompatSessionState,
+    workspaceLostForNonOwnerDiagnostic,
+} from "./copilot-compat.js";
+export type {
+    ClassifiedTool,
+    ClassificationResult,
+    CompatBound,
+    CompatBoundName,
+    CompatDiagnostic,
+    CompatDiagnosticSeverity,
+    CompatSessionState,
+    CompatToolCategory,
+    CompatibilityProfileName,
+    DesktopOnlyCategory,
+    TodoItem,
+    TodoState,
+    ToolClassificationEnvironment,
+    WorkspaceBinding,
+    WorkspaceBindingStatus,
+} from "./copilot-compat.js";
 export { loadMcpConfig } from "./mcp-loader.js";
 export type { Skill } from "./skills.js";
 // Local-mode user principal constant (Admin Console / per-user GitHub Copilot key)

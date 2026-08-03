@@ -8,7 +8,8 @@ import {
 } from "./orchestration-registry.js";
 import { PgSessionCatalog } from "./cms.js";
 import type { SessionCatalog } from "./cms.js";
-import { loadAgentFiles } from "./agent-loader.js";
+import { loadAgentFiles, type AgentFrontmatterParseOptions } from "./agent-loader.js";
+import { CompatibilityAdapterRegistry, type CompatibilityProfileName } from "./copilot-compat.js";
 import { composeDeclaredSkillsPrompt, loadSkillsSync, type Skill } from "./skills.js";
 import { startSystemAgents } from "./system-agents.js";
 import { loadMcpConfig } from "./mcp-loader.js";
@@ -148,6 +149,12 @@ export class PilotSwarmWorker {
     private _started = false;
     /** Worker-level tool registry — name → Tool. */
     private toolRegistry = new Map<string, Tool<any>>();
+    /** Copilot CLI compatibility adapters, kept out of `toolRegistry` so natives always win. */
+    private compatAdapterRegistry = new CompatibilityAdapterRegistry();
+    /** Load-time frontmatter parse options for plugin agent loading. */
+    private agentFrontmatterParseOptions: AgentFrontmatterParseOptions = {};
+    /** Set once the constructor's startup `_loadPlugins()` has run. */
+    private _startupPluginsLoaded = false;
     /** Loaded skill directories from plugins + direct config. */
     private _loadedSkillDirs: string[] = [];
     /** Loaded skills by name for agent-declared eager prompt injection. */
@@ -202,6 +209,10 @@ export class PilotSwarmWorker {
         };
         const effectiveSessionStateDir = options.sessionStateDir ?? DEFAULT_SESSION_STATE_DIR;
 
+        // MUST precede _loadPlugins(): startup agent loading reads these options, and no
+        // caller holds this instance yet to call setAgentFrontmatterParseOptions().
+        this.agentFrontmatterParseOptions = { ...(options.agentFrontmatterParseOptions ?? {}) };
+
         // Pick blob backing: explicit options win, but we route through
         // createSessionBlobStore() so the MI flag + account URL path
         // works the same way as for env-driven callers (CLI transport).
@@ -233,6 +244,7 @@ export class PilotSwarmWorker {
 
         // Load plugins and merge with direct config — must happen before SessionManager init
         this._loadPlugins();
+        this._startupPluginsLoaded = true;
 
         // Load model providers: explicit file path > auto-discover > env vars
         // fallback. The reloader mtime-watches the resolved file so a
@@ -305,6 +317,44 @@ export class PilotSwarmWorker {
             this.toolRegistry.set((tool as any).name, tool);
         }
         this.sessionManager.setToolRegistry(this.toolRegistry);
+    }
+
+    /**
+     * Register host implementations for a compatibility profile's tool names.
+     *
+     * Deliberately separate from `registerTools()`: adapters live in their own registry
+     * so a native tool of the same name always wins and ordinary resolution is untouched.
+     * See d:/git/waldemort/myplans/copilot-cli-compat/copilot-cli-compat-design.md, "D1".
+     */
+    registerCompatibilityAdapters(profile: CompatibilityProfileName, adapters: Tool<any>[]): void {
+        this.compatAdapterRegistry.register(profile, adapters);
+    }
+
+    /** Adapter names registered for a compatibility profile. */
+    compatibilityAdapterNames(profile: CompatibilityProfileName): string[] {
+        return this.compatAdapterRegistry.names(profile);
+    }
+
+    /** Resolve one compatibility adapter, or undefined when the host registered none. */
+    compatibilityAdapter(profile: CompatibilityProfileName, name: string): Tool<any> | undefined {
+        return this.compatAdapterRegistry.get(profile, name) as Tool<any> | undefined;
+    }
+
+    /**
+     * Opt plugin agent loading into non-default frontmatter parsing.
+     *
+     * Startup plugins are already loaded by the time any caller can reach this, so it
+     * throws rather than appearing to work. Pass `agentFrontmatterParseOptions` to the
+     * constructor instead.
+     */
+    setAgentFrontmatterParseOptions(options: AgentFrontmatterParseOptions): void {
+        if (this._startupPluginsLoaded) {
+            throw new Error(
+                "[PilotSwarmWorker] setAgentFrontmatterParseOptions() cannot affect already-loaded startup plugins. "
+                + "Pass 'agentFrontmatterParseOptions' to the PilotSwarmWorker constructor instead.",
+            );
+        }
+        this.agentFrontmatterParseOptions = { ...options };
     }
 
     /** Store full config (with tools/hooks) for a session. */
@@ -1061,7 +1111,7 @@ export class PilotSwarmWorker {
         const agentsDir = path.join(absDir, "agents");
         if (!fs.existsSync(agentsDir)) return;
 
-        for (const agent of loadAgentFiles(agentsDir)) {
+        for (const agent of loadAgentFiles(agentsDir, this.agentFrontmatterParseOptions)) {
             if (agent.name === "default" || agent.system) {
                 console.warn(`[PilotSwarmWorker] Ignoring bundled default agent ${agent.name}: optional bundled agents must be user-creatable named agents.`);
                 continue;
@@ -1145,7 +1195,7 @@ export class PilotSwarmWorker {
         // Agents — tag each with namespace
         const agentsDir = path.join(absDir, "agents");
         if (fs.existsSync(agentsDir)) {
-            const agents = loadAgentFiles(agentsDir);
+            const agents = loadAgentFiles(agentsDir, this.agentFrontmatterParseOptions);
             for (const agent of agents) {
                 agent.namespace = namespace;
                 const descriptor = this._buildLayerDescriptor(agent, layer, namespace);

@@ -3,6 +3,7 @@ import type { SessionStateStore } from "./session-store.js";
 import type { ReasoningEffort } from "./model-providers.js";
 import type { EmbeddingEndpointConfig } from "./facts-store.js";
 import type { StorageConfig } from "./storage-config.js";
+import type { AgentFrontmatterParseOptions } from "./agent-loader.js";
 
 export const SESSION_STATE_MISSING_PREFIX = "SESSION_STATE_MISSING:";
 
@@ -75,6 +76,49 @@ export interface CapturedEvent {
     data: unknown;
 }
 
+// ─── Sub-agent control hook ──────────────────────────────────────
+
+/**
+ * Structured results for the per-invocation `subagentControl` hook exposed to host adapters.
+ *
+ * These carry explicit success/failure so an adapter never infers either from prose. Fields that
+ * relay child-controlled text (`output`) or user-supplied text (`task`) are confined to labelled
+ * data slots, so they cannot be misread as control structure.
+ * See d:/git/waldemort/myplans/copilot-cli-compat/copilot-cli-compat-design.md, "D13".
+ */
+export type SubagentSpawnResult =
+    | { ok: true; agentId: string; agentName?: string; task: string }
+    | { ok: false; error: string };
+
+export interface SubagentStatusRow {
+    agentId: string;
+    title?: string;
+    status: string;
+    contractStatus?: string;
+    verdict?: string;
+    iterations: number;
+    contractViolations?: string[];
+    output?: string;
+}
+
+export type SubagentStatusResult =
+    | { ok: true; agents: SubagentStatusRow[] }
+    | { ok: false; error: string };
+
+export type SubagentWaitResult =
+    | { ok: true; scheduled: true; agentIds: string[] }
+    | { ok: false; error: string };
+
+/**
+ * Per-invocation delegation surface attached to user-tool invocation contexts. Omitted entirely
+ * for sessions the SDK denied sub-agent tools, so its absence is meaningful.
+ */
+export interface SubagentControl {
+    spawnAgent(args: Record<string, unknown>): Promise<SubagentSpawnResult>;
+    checkAgents(): Promise<SubagentStatusResult>;
+    waitForAgents(args?: { agent_ids?: string[] }): Promise<SubagentWaitResult>;
+}
+
 // ─── Turn Options ────────────────────────────────────────────────
 
 export interface TurnOptions {
@@ -110,6 +154,17 @@ export interface TurnOptions {
             title?: string;
             contract?: Record<string, unknown>;
         }): Promise<string>;
+        /** Structured spawn outcome backing `subagentControl`; `spawnAgent` renders its prose. */
+        spawnAgentDetailed?(args: {
+            agent_name?: string;
+            task?: string;
+            model?: string;
+            reasoning_effort?: ReasoningEffort;
+            system_message?: string;
+            tool_names?: string[];
+            title?: string;
+            contract?: Record<string, unknown>;
+        }): Promise<SubagentSpawnResult>;
         setSessionModel(args: { model: string; reasoning_effort?: ReasoningEffort | null }): Promise<string>;
         /** Session regeneration: enqueue the durable regenerate cmd for THIS session (sender-stamped server-side). */
         regenerateContext?(args: { handoff?: string }): Promise<string>;
@@ -117,6 +172,8 @@ export interface TurnOptions {
         regenerateAgent?(args: { agent_id: string; handoff?: string }): Promise<string>;
         messageAgent(args: { agent_id: string; message: string; contract_patch?: Record<string, unknown> }): Promise<string>;
         checkAgents(): Promise<string>;
+        /** Structured child snapshot backing `subagentControl`; `checkAgents` renders its prose. */
+        checkAgentsDetailed?(): Promise<SubagentStatusResult>;
         resolveWaitForAgents(agentIds?: string[]): Promise<string[]>;
         listSessions(args?: {
             include_system?: boolean;
@@ -186,6 +243,22 @@ export interface SerializableSessionConfig {
     isCrawler?: boolean;
     /** @deprecated Use `isCrawler`; accepted as a compatibility alias. */
     isHarvester?: boolean;
+
+    // ─── Copilot CLI compatibility (all optional; absent when disabled) ───
+    // Absence means absence: a disabled session serializes none of these keys, and
+    // readers that do not understand them must ignore them rather than fail, so
+    // sessions persisted by a newer worker still hydrate on an older one.
+    // See d:/git/waldemort/myplans/copilot-cli-compat/copilot-cli-compat-design.md.
+    /** Active compatibility profile. Present only for compat-enabled sessions. */
+    compatibilityProfile?: import("./copilot-compat.js").CompatibilityProfileName;
+    /** Durable mutable-workspace binding. Shared with children; owned by one session. */
+    workspaceBinding?: import("./copilot-compat.js").WorkspaceBinding;
+    /** Session-local todo list. Deep-cloned into children, never shared. */
+    copilotCliTodoState?: import("./copilot-compat.js").TodoState;
+    /** Load-time declared-tool classification diagnostics for this session. */
+    copilotCliDiagnostics?: import("./copilot-compat.js").CompatDiagnostic[];
+    /** Schema version of the compatibility fields above. */
+    compatibilitySchemaVersion?: 1;
 }
 
 /** Full config — includes non-serializable fields (tools, hooks). Stays in memory. */
@@ -735,6 +808,17 @@ export interface PilotSwarmWorkerOptions {
     aadDbUser?: string;
     /** Optional session state store. When set, enables durable session dehydration without Azure Blob Storage. */
     sessionStore?: SessionStateStore;
+
+    /**
+     * Frontmatter parse options for startup plugin agent loading.
+     *
+     * MUST be supplied here rather than via `setAgentFrontmatterParseOptions()`: the
+     * constructor loads plugins before any caller holds the instance, so a post-construction
+     * setter cannot affect startup-loaded agents. Defaults leave parsing exactly as today.
+     *
+     * See d:/git/waldemort/myplans/copilot-cli-compat/copilot-cli-compat-design.md, "D2".
+     */
+    agentFrontmatterParseOptions?: AgentFrontmatterParseOptions;
 
     /**
      * Wall-clock cap on a single LLM turn, in milliseconds. If a turn takes

@@ -1797,7 +1797,7 @@ export class ManagedSession {
                 ...t,
                 handler: async (args: any, invocation: any) => {
                     if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary((t as any).name ?? "tool");
-                    const augmented = { ...invocation, durableSessionId };
+                    const augmented = { ...invocation, durableSessionId, subagentControl: subagentControlForTurn() };
                     try {
                         return await (t as any).handler(args, augmented);
                     } catch (error) {
@@ -1814,6 +1814,59 @@ export class ManagedSession {
         // depth on top of the pager's CMS-column call-time gate. Generalize to
         // a config.serviceKind check if a second service kind ever appears.
         const isServiceSession = this.config.agentIdentity === "regen-distiller";
+
+        // Non-suspending delegation surface for worker-registered tools.
+        //
+        // spawn_agent/check_agents/wait_for_agents are system tools: they are excluded from the
+        // user toolset, and their real handlers are built per-turn over `turnState` and
+        // `controlBridge` — neither of which a user tool's invocation context can reach. A host
+        // adapter exposing delegation under a different tool name therefore has no truthful
+        // implementation without this hook. It reuses the same control bridge as the native
+        // handlers, so the turn-boundary and control-bridge rules keep exactly one code path.
+        // Consumer: Waldemort's Copilot CLI `agent` adapter — see
+        // d:/git/waldemort/myplans/copilot-cli-compat/copilot-cli-compat-design.md, "D13".
+        //
+        // Returns STRUCTURED results, never the native `[SYSTEM: ...]` prose. That prose embeds
+        // child-controlled output and user task text, so an adapter parsing it could be steered
+        // by untrusted content into fabricating agents or misreporting failure.
+        //
+        // MUST stay non-blocking: `waitForAgents` schedules a durable wait and reports that it
+        // was scheduled. It MUST NOT be read as "the child finished".
+        //
+        // Sessions that get no sub-agent tools get no hook, so an adapter cannot reach
+        // delegation a session was denied.
+        const subagentControlForTurn = () => {
+            if (isServiceSession || isReadOnlyTuner) return undefined;
+            const unavailable = (operation: string) => ({
+                ok: false as const,
+                error: `${operation} is unavailable in this session.`,
+            });
+            return {
+                spawnAgent: async (args: any) => {
+                    if (hasTerminalTurnBoundary(turnState)) return { ok: false as const, error: "spawn_agent is blocked after a turn boundary." };
+                    if (!controlBridge?.spawnAgentDetailed) return unavailable("spawn_agent");
+                    return await controlBridge.spawnAgentDetailed(args ?? {});
+                },
+                checkAgents: async () => {
+                    if (hasTerminalTurnBoundary(turnState)) return { ok: false as const, error: "check_agents is blocked after a turn boundary." };
+                    if (!controlBridge?.checkAgentsDetailed) return unavailable("check_agents");
+                    return await controlBridge.checkAgentsDetailed();
+                },
+                waitForAgents: async (args: any) => {
+                    if (hasTerminalTurnBoundary(turnState)) return { ok: false as const, error: "wait_for_agents is blocked after a turn boundary." };
+                    if (!controlBridge) return unavailable("wait_for_agents");
+                    try {
+                        const resolvedAgentIds = await controlBridge.resolveWaitForAgents(args?.agent_ids);
+                        const agentIds = Array.isArray(resolvedAgentIds) ? resolvedAgentIds : (args?.agent_ids ?? []);
+                        turnState.pendingActions.push({ type: "wait_for_agents", agentIds });
+                        return { ok: true as const, scheduled: true as const, agentIds };
+                    } catch (error: any) {
+                        return { ok: false as const, error: error?.message || String(error) };
+                    }
+                },
+            };
+        };
+
         const mutatingSystemToolNames = new Set(["update_session_summary", "send_session_message", "reply_session_message"]);
         const systemToolsForTurn: Tool<any>[] = isServiceSession ? [] : [
             waitTool,

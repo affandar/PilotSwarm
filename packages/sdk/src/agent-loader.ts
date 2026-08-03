@@ -104,6 +104,11 @@ export interface AgentConfig {
      * Inert for system agents, which already bypass the app default layer.
      */
     inheritAppDefaults?: boolean;
+    /**
+     * Copilot CLI `agents:` declaration, populated only when the loader is called with
+     * `parseAgentsKey`. Absent by default so the disabled parse result is unchanged.
+     */
+    agents?: string[];
     /** If true, this is a system agent started automatically by workers. */
     system?: boolean;
     /** Deterministic ID slug for system agents (e.g. "sweeper"). Used to derive a fixed session UUID. */
@@ -149,15 +154,49 @@ export interface AgentConfig {
 
 // ─── Frontmatter Parser ─────────────────────────────────────────
 
+/** Load-time parse options. Every default reproduces today's parse result exactly. */
+export interface AgentFrontmatterParseOptions {
+    /**
+     * Parse the Copilot CLI `agents:` key into `meta.agents`. Off by default because
+     * the key is dropped today, and the disabled parse result must stay byte-identical.
+     * See d:/git/waldemort/myplans/copilot-cli-compat/copilot-cli-compat-design.md, "D3".
+     */
+    parseAgentsKey?: boolean;
+}
+
+interface AgentFrontmatterMeta {
+    name?: string;
+    description?: string;
+    tools?: string[];
+    skills?: string[];
+    mcpServers?: string[];
+    inheritDefaultMcpServers?: boolean;
+    inheritAppDefaults?: boolean;
+    system?: boolean;
+    id?: string;
+    title?: string;
+    parent?: string;
+    splash?: string;
+    splashMobile?: string;
+    initialPrompt?: string;
+    crawler?: boolean;
+    harvester?: boolean;
+    schemaVersion?: number;
+    version?: string;
+    /** Only populated when `parseAgentsKey` is enabled. */
+    agents?: string[];
+}
+
 /**
  * Parse YAML frontmatter from an .agent.md file.
  * Handles simple `key: value` pairs and YAML list syntax for `tools` and `skills`.
  */
-function parseAgentFrontmatter(content: string): {
-    meta: { name?: string; description?: string; tools?: string[]; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; inheritAppDefaults?: boolean; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; splashMobile?: string; initialPrompt?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string };
+export function parseAgentFrontmatter(content: string, options: AgentFrontmatterParseOptions = {}): {
+    meta: AgentFrontmatterMeta;
     body: string;
 } {
-    const meta: { name?: string; description?: string; tools?: string[]; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; inheritAppDefaults?: boolean; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; splashMobile?: string; initialPrompt?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string } = {};
+    const parseAgentsKey = options.parseAgentsKey === true;
+    const meta: AgentFrontmatterMeta = {};
 
     if (!content.startsWith("---")) {
         return { meta, body: content };
@@ -211,7 +250,8 @@ function parseAgentFrontmatter(content: string): {
         if (trimmed.startsWith("#")) continue;
 
         // YAML list item (e.g. "  - view")
-        if (trimmed.startsWith("- ") && (currentKey === "tools" || currentKey === "skills" || currentKey === "mcpServers")) {
+        if (trimmed.startsWith("- ") && (currentKey === "tools" || currentKey === "skills" || currentKey === "mcpServers"
+            || (parseAgentsKey && currentKey === "agents"))) {
             let item = trimmed.slice(2).trim();
             if ((item.startsWith('"') && item.endsWith('"') && item.length >= 2) ||
                 (item.startsWith("'") && item.endsWith("'") && item.length >= 2)) {
@@ -220,6 +260,9 @@ function parseAgentFrontmatter(content: string): {
             if (currentKey === "tools") {
                 if (!meta.tools) meta.tools = [];
                 meta.tools.push(item);
+            } else if (currentKey === "agents") {
+                if (!meta.agents) meta.agents = [];
+                meta.agents.push(item);
             } else if (currentKey === "skills") {
                 if (!meta.skills) meta.skills = [];
                 meta.skills.push(item);
@@ -264,6 +307,10 @@ function parseAgentFrontmatter(content: string): {
         } else if (key === "tools" && !value) {
             // Will be followed by list items
             meta.tools = [];
+        } else if (parseAgentsKey && key === "agents" && value) {
+            meta.agents = value.replace(/[\[\]]/g, "").split(",").map(s => s.trim()).filter(Boolean);
+        } else if (parseAgentsKey && key === "agents" && !value) {
+            meta.agents = [];
         } else if (key === "skills" && value) {
             meta.skills = value.replace(/[\[\]]/g, "").split(",").map(s => s.trim()).filter(Boolean);
         } else if (key === "skills" && !value) {
@@ -302,9 +349,10 @@ function parseAgentFrontmatter(content: string): {
  * Load all .agent.md files from a directory and convert to CustomAgentConfig[].
  *
  * @param agentsDir - Path to the agents directory.
+ * @param parseOptions - Load-time frontmatter options; defaults reproduce today's parse.
  * @returns Array of agent configs. Files that fail to parse are skipped with a warning.
  */
-export function loadAgentFiles(agentsDir: string): AgentConfig[] {
+export function loadAgentFiles(agentsDir: string, parseOptions: AgentFrontmatterParseOptions = {}): AgentConfig[] {
     const absDir = path.resolve(agentsDir);
 
     if (!fs.existsSync(absDir)) {
@@ -321,7 +369,7 @@ export function loadAgentFiles(agentsDir: string): AgentConfig[] {
 
         try {
             const content = fs.readFileSync(filePath, "utf-8");
-            const { meta, body } = parseAgentFrontmatter(content);
+            const { meta, body } = parseAgentFrontmatter(content, parseOptions);
 
             if (!meta.name) {
                 // Derive name from filename: planner.agent.md → planner
@@ -353,6 +401,7 @@ export function loadAgentFiles(agentsDir: string): AgentConfig[] {
                 description: meta.description,
                 prompt: body,
                 tools: meta.tools && meta.tools.length > 0 ? meta.tools : null,
+                ...(meta.agents && meta.agents.length > 0 ? { agents: meta.agents } : {}),
                 skills: meta.skills && meta.skills.length > 0 ? meta.skills : undefined,
                 mcpServers: meta.mcpServers && meta.mcpServers.length > 0 ? meta.mcpServers : undefined,
                 inheritDefaultMcpServers: meta.inheritDefaultMcpServers,
