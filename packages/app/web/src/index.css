@@ -270,6 +270,18 @@ button {
   height: 24px;
 }
 
+/* A theme-supplied mark fills its frame rather than floating inside it — the
+   icon carries its own ground (see the theme's icon.paths), so leaving the
+   frame's gradient visible around it would read as two nested logos. */
+.portal-logo-frame.has-theme-icon {
+  background: none;
+  padding: 0;
+}
+.portal-logo.portal-logo-theme {
+  width: 100%;
+  height: 100%;
+}
+
 .portal-logo-frame.is-large .portal-logo {
   width: 44px;
   height: 44px;
@@ -784,6 +796,20 @@ button {
 .ps-mobile-pane-fill > .ps-panel {
   flex: 1;
   min-height: 0;
+}
+
+/* Node Map on a phone stacks two panels: the node list on top and the
+   worker-details pane (an ActivityPane) under it, mirroring the desktop
+   layout the "details fill the pane below" hint describes. The list keeps the
+   flexible share and scrolls; the detail pane is capped so a long node list
+   can never push it off-screen — and so it can never swallow the list. */
+.ps-mobile-node-split {
+  gap: 6px;
+}
+
+.ps-mobile-node-split > .ps-panel.ps-mobile-node-detail {
+  flex: 0 1 auto;
+  max-height: 45%;
 }
 
 /* ── Pane spacing, ALL themes ──────────────────────────────────────
@@ -1464,7 +1490,11 @@ body.is-resizing-pane-y * {
 
 .ps-session-pane.ps-chat-focus-pane .ps-action-list.ps-session-list {
   overflow-x: auto;
-  touch-action: pan-x pan-y;
+  /* ONE axis for the browser. Vertical keeps native momentum; horizontal is
+     driven by useHorizontalPanOptIn only for a deliberate sideways swipe.
+     `pan-x pan-y` here offered both axes equally, and since no phone swipe is
+     perfectly vertical, scrolling down kept sliding the list sideways. */
+  touch-action: pan-y;
   /* Keep the horizontal scrollbar from overlaying the last row's meta. */
   padding-bottom: calc(6px + var(--ps-scrollbar-size));
 }
@@ -1527,7 +1557,10 @@ body.is-resizing-pane-y * {
 .ps-session-pane:not(.ps-mobile-session-pane) .ps-session-list {
   overflow-x: auto;
   overflow-y: auto;
-  touch-action: pan-x pan-y;
+  /* See the chat-focus rule above: vertical is the browser's, horizontal is
+     opt-in. Mouse wheel, shift+wheel and the scrollbar are unaffected —
+     touch-action governs touch input only. */
+  touch-action: pan-y;
   /* Keep the horizontal scrollbar from overlaying the last row's meta. */
   padding-bottom: calc(6px + var(--ps-scrollbar-size));
 }
@@ -1827,6 +1860,23 @@ body.is-resizing-pane-y * {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Symbol glyphs — the ⚙ on system rows, the ⏱ on cron rows — default to EMOJI
+   presentation on iOS, and a colour emoji is taller than the monospace line box
+   it sits in, so every system row grew. Measured against a calibration element:
+   the toolbar button renders 34px both here and on the device, while rows
+   rendered 20.7px here and ~35px there — the difference is the glyph.
+
+   `font-variant-emoji: text` asks for the text presentation, which is both
+   shorter and the correct look in a monospace UI. Headless Chromium has no
+   colour-emoji font, so this could not be reproduced locally; it is a no-op
+   wherever the glyphs already render as text. */
+.ps-session-row-title,
+.ps-session-row-title__text,
+.ps-session-row-ctx,
+.ps-session-row-detail {
+  font-variant-emoji: text;
+}
+
 .ps-session-pane.ps-mobile-session-pane .ps-session-row-title {
   display: -webkit-box;
   -webkit-box-orient: vertical;
@@ -1861,6 +1911,21 @@ body.is-resizing-pane-y * {
   border-color: var(--ps-modal-selected-border);
   background: var(--ps-modal-selected-background);
   color: var(--ps-modal-selected-foreground);
+}
+
+/* The inspector tab row is a TAB STRIP, not a row of toggles: one of its
+   buttons is ALWAYS on, because you are always looking at some tab. Sharing
+   `.is-active` with the toolbar's toggle buttons gave the current tab the same
+   saturated "pressed" fill, so it read as a button stuck down rather than as
+   "you are here" — which is exactly how it got reported.
+   Same information, tab grammar instead: a quiet accent-tinted surface with an
+   underline. Only `body.ps-rich-ui` (which already has its own subtle
+   treatment) and the win95/ms-dos skins override this. */
+.ps-tab-row-icons .ps-toolbar-button.is-active {
+  border-color: color-mix(in srgb, var(--ps-panel-accent, var(--ps-border)) 42%, transparent);
+  background: color-mix(in srgb, var(--ps-panel-accent, var(--ps-border)) 12%, transparent);
+  color: var(--ps-foreground);
+  box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--ps-panel-accent, var(--ps-border)) 80%, transparent);
 }
 
 .ps-empty-state {
@@ -2827,9 +2892,25 @@ body.is-resizing-pane-y * {
   }
 
   .ps-mobile-session-pane {
-    /* Fit 4 full session rows. Header (~36px) + 4 rows (~26px each
-     * after panel padding) ≈ 144px. */
+    /* Rows are ~21px after the tightening below, so this now shows about six
+     * of them rather than four. */
     max-height: min(22vh, 148px);
+  }
+
+  /* A phone list is scanned, not aimed at: the row is the touch target and it
+     stays comfortably tappable, but the AIR between rows was doing nothing. */
+  .ps-session-pane.ps-mobile-session-pane .ps-session-list {
+    gap: 0;
+    padding-top: 1px;
+  }
+
+  .ps-session-pane.ps-mobile-session-pane .ps-session-list-button {
+    /* Deliberately not tighter than this. The emoji fix above already takes a
+       system row from ~35px to ~21px on the device; cutting padding to the
+       bone as well lands near 17px, which is a poor finger target. ~19px is
+       the balance — dense to scan, still comfortable to tap. */
+    padding-block: 2px;
+    min-height: 1.35rem;
   }
 
   .ps-mobile-session-pane .ps-panel-body,
@@ -4569,6 +4650,37 @@ body:not(.ps-rich-ui) .ps-mermaid {
   color: #ffffff;
 }
 
+/* ── Selected-row marks: owner disc + status dot ──────────────────
+   Explorer's navy bar is dark and saturated, and both marks were tuned for the
+   page ground: the owner disc (a mid-tone hue) and the muted status dot both
+   sank into it. `.is-selected * { color: #fff }` recoloured text but not these
+   two, which draw with background rather than colour.
+
+   The disc keeps its hue — colour is the owner's identity and must not change
+   per row state — and gains a white hairline so its edge reads against the
+   navy. The dot goes white, matching the row's own text. */
+:root[data-ps-theme="win95"] .ps-list-button.is-selected .ps-owner-avatar,
+:root[data-ps-theme="win95"] .ps-session-list-button.is-selected .ps-owner-avatar {
+  background-color: var(--ps-owner-fg) !important;
+  color: var(--w95-light) !important;
+  box-shadow: 0 0 0 1px var(--w95-light);
+}
+
+:root[data-ps-theme="win95"] .ps-list-button.is-selected .ps-session-status-dot,
+:root[data-ps-theme="win95"] .ps-list-button.is-selected .ps-rich-session-dot,
+:root[data-ps-theme="win95"] .ps-session-list-button.is-selected .ps-session-status-dot,
+:root[data-ps-theme="win95"] .ps-session-list-button.is-selected .ps-rich-session-dot {
+  background-color: var(--w95-light) !important;
+}
+
+:root[data-ps-theme="win95"] .ps-list-button.is-selected .ps-session-status-dot.is-node,
+:root[data-ps-theme="win95"] .ps-list-button.is-selected .ps-rich-session-dot.is-node,
+:root[data-ps-theme="win95"] .ps-session-list-button.is-selected .ps-session-status-dot.is-node,
+:root[data-ps-theme="win95"] .ps-session-list-button.is-selected .ps-rich-session-dot.is-node {
+  background-color: transparent !important;
+  border-color: var(--w95-light) !important;
+}
+
 /* Scrollbars: square, bevelled, no rounding. */
 :root[data-ps-theme="win95"] ::-webkit-scrollbar-thumb {
   background: var(--w95-face);
@@ -4824,6 +4936,43 @@ body:not(.ps-rich-ui) .ps-mermaid {
 :root[data-ps-theme="ms-dos"] .ps-session-list-button.is-selected {
   background-color: var(--dos-fg);
 }
+
+/* ── Selected-row marks: owner disc + status dot ──────────────────
+   The blanket `.is-selected * { background-color: transparent }` above exists
+   so child backgrounds cannot punch holes in the reverse-video bar. But two
+   children ARE their background: the owner disc and the status dot draw
+   nothing else. Blanking them erased the owner chip's colour and made the dot
+   vanish outright on the selected row.
+
+   Both carry meaning — who owns it, what state it is in — so they are restored
+   here with colours picked against the LIGHT selection bar rather than the
+   dark ground. Specificity (0,3,0) beats the `* ` rule (0,2,0), and !important
+   is needed for the same reason it was there: to reach an inline style. */
+:root[data-ps-theme="ms-dos"] .ps-list-button.is-selected .ps-owner-avatar,
+:root[data-ps-theme="ms-dos"] .ps-session-list-button.is-selected .ps-owner-avatar {
+  background-color: var(--ps-owner-fg) !important;
+  color: var(--dos-bright) !important;
+  /* A dark hairline detaches the disc from the light bar it now sits on. */
+  box-shadow: 0 0 0 1px var(--ps-background, #000);
+}
+
+:root[data-ps-theme="ms-dos"] .ps-list-button.is-selected .ps-session-status-dot,
+:root[data-ps-theme="ms-dos"] .ps-list-button.is-selected .ps-rich-session-dot,
+:root[data-ps-theme="ms-dos"] .ps-session-list-button.is-selected .ps-session-status-dot,
+:root[data-ps-theme="ms-dos"] .ps-session-list-button.is-selected .ps-rich-session-dot {
+  /* Reverse video: on the light bar the mark is the dark one. */
+  background-color: var(--ps-background, #000) !important;
+}
+
+:root[data-ps-theme="ms-dos"] .ps-list-button.is-selected .ps-session-status-dot.is-node,
+:root[data-ps-theme="ms-dos"] .ps-list-button.is-selected .ps-rich-session-dot.is-node,
+:root[data-ps-theme="ms-dos"] .ps-session-list-button.is-selected .ps-session-status-dot.is-node,
+:root[data-ps-theme="ms-dos"] .ps-session-list-button.is-selected .ps-rich-session-dot.is-node {
+  /* Nested rows keep the ring shape — only the ring colour flips. */
+  background-color: transparent !important;
+  border-color: var(--ps-background, #000) !important;
+}
+
 
 /* Win95 selection is Explorer's navy bar, so its text is white — same inline
    -style problem, opposite direction. */
@@ -6053,23 +6202,13 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
     font-size: max(16px, 1em);
   }
 
-  /* Session rows are the most-tapped target in the app and were sized for a
-     mouse: 1.55rem of row against a ~44px fingertip. Both selectors are
-     repeated at the specificity of the desktop rules they override, and this
-     block is last in the file, so the taller target wins on touch only. */
-  .ps-session-pane .ps-session-list-button,
-  .ps-session-pane:not(.ps-mobile-session-pane) .ps-session-list-button {
-    min-height: 36px;
-    padding: 6px 10px;
-  }
-
-  /* Pack them tighter: a 4px inter-row gap plus the list's own padding costs
-     nearly a row of vertical space per screen, which is the scarcest thing on
-     a phone. The row itself stays a comfortable target. */
-  .ps-session-pane .ps-action-list {
-    gap: 2px;
-    padding: 4px 8px 8px;
-  }
+  /* Session rows used to be enlarged here (36px tall, 2px gap) to give a
+     fingertip a ~44px target. Reverted deliberately: on a phone the taller
+     rows fit barely half as many sessions per screen, and scanning the list
+     is what that screen is FOR. Touch rows now match desktop density (the
+     base rules: 1.55rem tall, 3px 8px padding, 1px gap) — a smaller target,
+     accepted knowingly in exchange for the density. Re-add an override here
+     if the taps start missing. */
 
   /* Selection was a full 1px inset ring AND a 3px left bar — at phone width
      that reads as a heavy box drawn around the row. The bar alone carries the
@@ -6078,9 +6217,301 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
     box-shadow: inset 2px 0 0 color-mix(in srgb, var(--ps-panel-accent, var(--ps-border)) 90%, transparent);
   }
 
-  /* Taller rows in a fixed-height strip would just show fewer sessions, so
-     the compact strip grows to keep roughly the same number visible. */
+  /* The compact strip is taller on touch than the 14vh base. It grew to offset
+     the enlarged rows above; those are gone now, so the same height simply
+     shows more sessions — which is the point of the density change. */
   .ps-mobile-session-pane {
     max-height: min(22vh, 160px);
   }
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   DOOM — the status bar, not the shooter.
+   Scoped entirely to [data-ps-theme="doom"] so nothing here can reach another
+   theme. The theme FILE carries the palette; this carries the chrome that
+   colours alone cannot express: hammered brown metal, chunky bevels, and the
+   marine's face recessed into the header.
+   ═══════════════════════════════════════════════════════════════════════════ */
+:root[data-ps-theme="doom"] {
+  --doom-face: #8b6f47;      /* lit metal */
+  --doom-band: #6f5432;      /* the STBAR itself */
+  --doom-shadow: #2a1d14;    /* recess */
+  --doom-light: #a4885c;     /* highlight edge */
+  --doom-bone: #d9cba8;
+  --doom-bone-hi: #fff4d6;
+  --doom-blood: #c42222;
+}
+
+/* The header is a band of hammered metal: a fine vertical scratch pattern over
+   a top-lit gradient, capped by a hard shadow line. */
+:root[data-ps-theme="doom"] .portal-header {
+  background:
+    repeating-linear-gradient(90deg, rgba(0, 0, 0, 0.10) 0 2px, transparent 2px 5px),
+    linear-gradient(180deg, var(--doom-face) 0%, var(--doom-band) 38%, #4a3722 100%);
+  border-bottom: 2px solid var(--doom-shadow);
+  box-shadow: inset 0 1px 0 var(--doom-light);
+  color: var(--doom-bone-hi);
+}
+:root[data-ps-theme="doom"] .portal-header-kicker,
+:root[data-ps-theme="doom"] .portal-header-name {
+  color: var(--doom-bone-hi);
+}
+:root[data-ps-theme="doom"] .portal-header-email,
+:root[data-ps-theme="doom"] .portal-header-identity.is-muted {
+  color: #c9ab7c;
+}
+
+/* The face sits in a recess, the way STBAR framed it. */
+:root[data-ps-theme="doom"] .portal-logo-frame {
+  background: var(--doom-shadow);
+  border: 2px solid;
+  border-color: var(--doom-shadow) var(--doom-light) var(--doom-light) var(--doom-shadow);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* Panels are plates bolted onto the ground: square, bevelled, no rounding. */
+:root[data-ps-theme="doom"] .ps-panel {
+  border: 2px solid;
+  border-color: var(--doom-light) var(--doom-shadow) var(--doom-shadow) var(--doom-light);
+  border-radius: 0;
+}
+:root[data-ps-theme="doom"] .ps-panel-header {
+  background:
+    repeating-linear-gradient(90deg, rgba(0, 0, 0, 0.10) 0 2px, transparent 2px 5px),
+    linear-gradient(180deg, var(--doom-face) 0%, var(--doom-band) 100%);
+  border-bottom: 2px solid var(--doom-shadow);
+  box-shadow: inset 0 1px 0 var(--doom-light);
+}
+:root[data-ps-theme="doom"] .ps-panel-title,
+:root[data-ps-theme="doom"] .ps-panel-title * {
+  color: var(--doom-bone-hi);
+}
+
+/* Buttons are stamped metal — raised at rest, pushed in when active. */
+:root[data-ps-theme="doom"] .ps-mini-button,
+:root[data-ps-theme="doom"] .ps-toolbar-button,
+:root[data-ps-theme="doom"] .ps-icon-button,
+:root[data-ps-theme="doom"] .ps-modal-button,
+:root[data-ps-theme="doom"] .ps-modal-close,
+:root[data-ps-theme="doom"] .ps-send-button,
+:root[data-ps-theme="doom"] .portal-primary-button,
+:root[data-ps-theme="doom"] .portal-secondary-button {
+  background: #4a3722;
+  border: 2px solid;
+  border-color: var(--doom-light) var(--doom-shadow) var(--doom-shadow) var(--doom-light);
+  border-radius: 0;
+  color: var(--doom-bone-hi);
+}
+:root[data-ps-theme="doom"] .ps-mini-button:active,
+:root[data-ps-theme="doom"] .ps-toolbar-button:active,
+:root[data-ps-theme="doom"] .ps-icon-button:active,
+:root[data-ps-theme="doom"] .ps-modal-button:active,
+:root[data-ps-theme="doom"] .ps-send-button:active,
+:root[data-ps-theme="doom"] .portal-primary-button:active,
+:root[data-ps-theme="doom"] .portal-secondary-button:active {
+  border-color: var(--doom-shadow) var(--doom-light) var(--doom-light) var(--doom-shadow);
+}
+
+/* Selection is the STBAR band, not a tint. */
+:root[data-ps-theme="doom"] .ps-list-button.is-selected,
+:root[data-ps-theme="doom"] .ps-session-list-button.is-selected {
+  background-color: var(--doom-band);
+  box-shadow: inset 0 1px 0 var(--doom-light);
+}
+:root[data-ps-theme="doom"] .ps-list-button.is-selected,
+:root[data-ps-theme="doom"] .ps-list-button.is-selected *,
+:root[data-ps-theme="doom"] .ps-session-list-button.is-selected,
+:root[data-ps-theme="doom"] .ps-session-list-button.is-selected * {
+  color: var(--doom-bone-hi) !important;
+}
+
+/* ── Selected-row marks ───────────────────────────────────────────
+   The lesson from MS-DOS and Win95, applied up front rather than found later:
+   the two marks that ARE their own background — the status dot and the owner
+   disc — must be restated for any theme that restyles selection, or they
+   vanish silently against the new bar. Colours are chosen against the BAND,
+   not the ground. */
+:root[data-ps-theme="doom"] .ps-session-list-button.is-selected .ps-owner-avatar {
+  background-color: var(--ps-owner-fg) !important;
+  color: var(--doom-bone-hi) !important;
+  /* A BONE ring, not a dark one. The STBAR band is mid-luminance, so several
+     owner hues land within ~1.1:1 of it and the disc disappears as a fill —
+     a dark ring on a mid-brown bar is barely better. Bone reads at 6.4:1
+     against the band and 6.1:1 against the disc, and matches the treatment the
+     status dot gets, so the two marks read as a set. */
+  box-shadow: 0 0 0 1.5px var(--doom-bone-hi);
+}
+:root[data-ps-theme="doom"] .ps-session-list-button.is-selected .ps-session-status-dot,
+:root[data-ps-theme="doom"] .ps-session-list-button.is-selected .ps-rich-session-dot {
+  background-color: var(--doom-bone-hi) !important;
+}
+:root[data-ps-theme="doom"] .ps-session-list-button.is-selected .ps-session-status-dot.is-node,
+:root[data-ps-theme="doom"] .ps-session-list-button.is-selected .ps-rich-session-dot.is-node {
+  background-color: transparent !important;
+  border-color: var(--doom-bone-hi) !important;
+}
+
+/* Composer and inputs are recessed slots. */
+:root[data-ps-theme="doom"] .ps-input,
+:root[data-ps-theme="doom"] .ps-textarea,
+:root[data-ps-theme="doom"] .ps-prompt-input {
+  background: #0d0908;
+  border: 2px solid;
+  border-color: var(--doom-shadow) var(--doom-light) var(--doom-light) var(--doom-shadow);
+  border-radius: 0;
+  color: var(--doom-bone);
+}
+
+/* Scrollbars: square, no rounding, metal thumb. */
+:root[data-ps-theme="doom"] ::-webkit-scrollbar-thumb {
+  background: var(--doom-band);
+  border: 2px solid;
+  border-color: var(--doom-light) var(--doom-shadow) var(--doom-shadow) var(--doom-light);
+  border-radius: 0;
+}
+:root[data-ps-theme="doom"] ::-webkit-scrollbar-track {
+  background: #1c1310;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   WinAMP 2.x — grey rack metal around a pane of lit glass.
+   Scoped to [data-ps-theme="winamp"]. The theme file carries the palette; the
+   BEVEL SYSTEM lives here, and it is what makes this read as a 1997 skin
+   rather than green-on-black. Every raised surface is light-top-left /
+   dark-bottom-right; every recessed one is the inverse.
+   ═══════════════════════════════════════════════════════════════════════════ */
+:root[data-ps-theme="winamp"] {
+  --wa-face: #383838;      /* machined face */
+  --wa-light: #6e6e7a;     /* lit edge */
+  --wa-shadow: #101010;    /* shadowed edge */
+  --wa-glass: #000000;     /* the display */
+  --wa-green: #00e337;
+  --wa-amber: #ffb400;
+  --wa-navy: #0000c6;      /* playlist selection */
+}
+
+/* The header is the title bar: a cool grey gradient with a lit top edge. */
+:root[data-ps-theme="winamp"] .portal-header {
+  background: linear-gradient(180deg, #5a5a66 0%, #3a3a44 48%, #2a2a33 100%);
+  border-bottom: 1px solid var(--wa-shadow);
+  box-shadow: inset 0 1px 0 #74747f;
+  color: #d6d6cc;
+}
+:root[data-ps-theme="winamp"] .portal-header-kicker,
+:root[data-ps-theme="winamp"] .portal-header-name {
+  color: #e4e4ec;
+}
+:root[data-ps-theme="winamp"] .portal-header-email,
+:root[data-ps-theme="winamp"] .portal-header-identity.is-muted {
+  color: #a0a0ac;
+}
+
+/* The mark sits in a recessed bay, the way the visualiser did. */
+:root[data-ps-theme="winamp"] .portal-logo-frame {
+  background: #2b2b2b;
+  border: 1px solid;
+  border-color: var(--wa-shadow) var(--wa-light) var(--wa-light) var(--wa-shadow);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* Panes are units in a rack: raised bevel, square corners, black glass inside. */
+:root[data-ps-theme="winamp"] .ps-panel {
+  border: 2px solid;
+  border-color: var(--wa-light) var(--wa-shadow) var(--wa-shadow) var(--wa-light);
+  border-radius: 0;
+  background: var(--wa-glass);
+}
+:root[data-ps-theme="winamp"] .ps-panel-header {
+  background: linear-gradient(180deg, #4a4a52 0%, #2c2c33 100%);
+  border-bottom: 1px solid var(--wa-shadow);
+  box-shadow: inset 0 1px 0 var(--wa-light);
+}
+:root[data-ps-theme="winamp"] .ps-panel-title,
+:root[data-ps-theme="winamp"] .ps-panel-title * {
+  color: #d6d6cc;
+}
+
+/* Buttons: raised at rest, pushed in when pressed. */
+:root[data-ps-theme="winamp"] .ps-mini-button,
+:root[data-ps-theme="winamp"] .ps-toolbar-button,
+:root[data-ps-theme="winamp"] .ps-icon-button,
+:root[data-ps-theme="winamp"] .ps-modal-button,
+:root[data-ps-theme="winamp"] .ps-modal-close,
+:root[data-ps-theme="winamp"] .ps-send-button,
+:root[data-ps-theme="winamp"] .portal-primary-button,
+:root[data-ps-theme="winamp"] .portal-secondary-button {
+  background: var(--wa-face);
+  border: 1px solid;
+  border-color: var(--wa-light) var(--wa-shadow) var(--wa-shadow) var(--wa-light);
+  border-radius: 0;
+  color: #d6d6cc;
+}
+:root[data-ps-theme="winamp"] .ps-mini-button:active,
+:root[data-ps-theme="winamp"] .ps-toolbar-button:active,
+:root[data-ps-theme="winamp"] .ps-icon-button:active,
+:root[data-ps-theme="winamp"] .ps-modal-button:active,
+:root[data-ps-theme="winamp"] .ps-send-button:active,
+:root[data-ps-theme="winamp"] .portal-primary-button:active,
+:root[data-ps-theme="winamp"] .portal-secondary-button:active {
+  border-color: var(--wa-shadow) var(--wa-light) var(--wa-light) var(--wa-shadow);
+}
+
+/* Selection is the playlist bar: flat navy, white text, no tint. */
+:root[data-ps-theme="winamp"] .ps-list-button.is-selected,
+:root[data-ps-theme="winamp"] .ps-session-list-button.is-selected {
+  background-color: var(--wa-navy);
+  box-shadow: none;
+}
+:root[data-ps-theme="winamp"] .ps-list-button.is-selected,
+:root[data-ps-theme="winamp"] .ps-list-button.is-selected *,
+:root[data-ps-theme="winamp"] .ps-session-list-button.is-selected,
+:root[data-ps-theme="winamp"] .ps-session-list-button.is-selected * {
+  color: #ffffff !important;
+}
+
+/* ── Selected-row marks ───────────────────────────────────────────
+   Measured, not assumed: every one of the eight owner hues lands between
+   1.73:1 and 2.67:1 against the playlist navy, so none survives as a fill.
+   A WHITE ring reads at 11.6:1 against the bar and matches the row's own
+   text, so the disc and the status dot read as a set — the same fix the DOOM
+   theme needed against its brown band, for the same reason. */
+:root[data-ps-theme="winamp"] .ps-session-list-button.is-selected .ps-owner-avatar {
+  background-color: var(--ps-owner-fg) !important;
+  color: #ffffff !important;
+  box-shadow: 0 0 0 1.5px #ffffff;
+}
+:root[data-ps-theme="winamp"] .ps-session-list-button.is-selected .ps-session-status-dot,
+:root[data-ps-theme="winamp"] .ps-session-list-button.is-selected .ps-rich-session-dot {
+  background-color: #ffffff !important;
+}
+:root[data-ps-theme="winamp"] .ps-session-list-button.is-selected .ps-session-status-dot.is-node,
+:root[data-ps-theme="winamp"] .ps-session-list-button.is-selected .ps-rich-session-dot.is-node {
+  background-color: transparent !important;
+  border-color: #ffffff !important;
+}
+
+/* Inputs are recessed slots cut into the face. */
+:root[data-ps-theme="winamp"] .ps-input,
+:root[data-ps-theme="winamp"] .ps-textarea,
+:root[data-ps-theme="winamp"] .ps-prompt-input {
+  background: var(--wa-glass);
+  border: 1px solid;
+  border-color: var(--wa-shadow) var(--wa-light) var(--wa-light) var(--wa-shadow);
+  border-radius: 0;
+  color: var(--wa-green);
+}
+
+/* Scrollbars: square, bevelled, no rounding. */
+:root[data-ps-theme="winamp"] ::-webkit-scrollbar-thumb {
+  background: var(--wa-face);
+  border: 1px solid;
+  border-color: var(--wa-light) var(--wa-shadow) var(--wa-shadow) var(--wa-light);
+  border-radius: 0;
+}
+:root[data-ps-theme="winamp"] ::-webkit-scrollbar-track {
+  background: #1c1c1c;
 }

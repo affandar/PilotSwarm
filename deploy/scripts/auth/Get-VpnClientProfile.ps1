@@ -24,7 +24,7 @@
     credentials.
 
 .PARAMETER EnvName
-    The PilotSwarm stamp name (e.g. `chkrawvpn`). Required.
+    The PilotSwarm stamp name (e.g. `myvpnstamp`). Required.
     The script reads VPN_GATEWAY_ID from
     deploy/.tmp/<EnvName>/bicep-outputs.cache.json.
 
@@ -39,13 +39,13 @@
     Open the output folder in Explorer after extraction (Windows only).
 
 .EXAMPLE
-    .\Get-VpnClientProfile.ps1 -EnvName chkrawvpn
+    .\Get-VpnClientProfile.ps1 -EnvName myvpnstamp
 
     Downloads and extracts the VPN client profile to
-    deploy/envs/local/chkrawvpn/vpn-client/.
+    deploy/envs/local/myvpnstamp/vpn-client/.
 
 .EXAMPLE
-    .\Get-VpnClientProfile.ps1 -EnvName chkrawvpn -Force -OpenFolder
+    .\Get-VpnClientProfile.ps1 -EnvName myvpnstamp -Force -OpenFolder
 
     Re-downloads (clobbers existing), opens the folder when done.
 #>

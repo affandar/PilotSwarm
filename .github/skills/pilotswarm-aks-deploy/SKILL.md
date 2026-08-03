@@ -22,10 +22,19 @@ This skill deploys `pilotswarm` only. Do not roll the same change into downstrea
 - ACR: resolve `ACR_NAME` from `.env.remote`
 - Azure subscription/resource ownership: prove from the active account, ingress IP, and ACR resource rather than assuming a resource group
 - Portal DNS: resolve from live `pilotswarm-portal-ingress` and verify against public DNS
-- Postgres server: `pilotswarm-pg.postgres.database.azure.com` (verify against `.env.remote` `DATABASE_URL`)
+- Postgres server: resolve the host from `.env.remote` `DATABASE_URL`
 - Location: derive from the proven AKS/public-IP resources
 
 Do not hard-code `ACR_NAME` on the deploy command line — `scripts/deploy-aks.sh` sources `.env.remote` after parsing the environment, so the `.env.remote` value wins. Set `ACR_NAME` in `.env.remote` if you need to override the default.
+
+Set `AZURE_SUBSCRIPTION_ID` in `.env.remote`. The `az` CLI keeps its active subscription in `~/.azure` — **global** state shared by every terminal and editor window — so deploying another environment (chk lives in a different subscription) from a second VS Code window silently repoints this one. The deploy scripts pass `--subscription "$AZURE_SUBSCRIPTION_ID"` to every `az acr` call when the variable is set, which turns that drift into a no-op instead of a confusing `The resource with name '<acr>' … could not be found in subscription '…'`. Unset, the scripts fall back to ambient `az` state and the drift returns.
+
+Subscription IDs are not recorded in this repo. Resolve the value the same way this skill resolves every other piece of topology — from the live resources — and put it in `.env.remote`, which is gitignored:
+
+```bash
+az account list --output table          # pick the one owning the ACR below
+az acr show --name "$ACR_NAME" --query id -o tsv   # /subscriptions/<id>/resourceGroups/...
+```
 
 ## Canonical Files
 
@@ -39,7 +48,9 @@ Do not hard-code `ACR_NAME` on the deploy command line — `scripts/deploy-aks.s
   report a cluster deploy complete until the portal-served asset hash has
   changed:
   ```bash
-  curl -sk https://pilotswarm-portal.westus3.cloudapp.azure.com/ | grep -oE "assets/index-[A-Za-z0-9_-]+\.js"
+  PORTAL_HOST=$(kubectl get ingress pilotswarm-portal-ingress -n "$K8S_NAMESPACE" \
+    -o jsonpath='{.spec.rules[0].host}')
+  curl -sk "https://$PORTAL_HOST/" | grep -oE "assets/index-[A-Za-z0-9_-]+\.js"
   ```
 - Remote reset script: `scripts/reset-db-aks.sh` (wraps `scripts/db-reset.js`) — **never part of a deploy**; see the `pilotswarm-aks-reset` skill and the NO RESETS rule below.
 - Worker manifest: `deploy/k8s/worker-deployment.yaml`
@@ -57,6 +68,7 @@ Do not hard-code `ACR_NAME` on the deploy command line — `scripts/deploy-aks.s
 - Use `docker buildx build --platform linux/amd64` for AKS images. Do not use a plain `docker build` from Apple Silicon for cluster deploys.
 - **Images build through an npm mirror, not public npm.** Microsoft-managed devices are hard-blocked from `registry.npmjs.org`, and **containers inherit the block** — a Docker build gets no special egress. Proven 2026-07-31: host `curl` → `http=000` (socket not connected), in-container `fetch` → `ECONNRESET`, in-container `fetch` of `https://packagefeedproxy.microsoft.io/npm/` → `200`. Both Dockerfiles take an `NPM_REGISTRY` build arg (`ARG NPM_REGISTRY` + `ENV npm_config_registry`) that `deploy-aks.sh` and `deploy-portal.sh` pass through from `.env.remote`, where `NPM_REGISTRY=https://packagefeedproxy.microsoft.io/npm/` is set. It defaults to public npm when unset, so unmanaged machines are unaffected. npm's `replace-registry-host` (default `npmjs`) rewrites the lockfile's `resolved` URLs onto the mirror, so `package-lock.json` stays authoritative and integrity hashes still gate every tarball.
   - **Any hand-rolled `docker buildx build` must pass `--build-arg NPM_REGISTRY="$NPM_REGISTRY"`** or it will fail at `npm ci` on a managed device. The repo scripts do this for you, and the manual recipes in this skill, `pilotswarm-corp-aks-deploy`, and `pilotswarm-aks-reset` carry it. The commands in `docs/developer/deploy/aks.md` do NOT — add the arg if you copy from there.
+  - **`az acr build` is the exact opposite: do NOT pass `NPM_REGISTRY`.** The build runs on an Azure build agent with unrestricted access to public npm, so the corp mirror buys nothing there — and its 7-day quarantine actively breaks the build. Sourcing `.env.remote` into the shell that launches `az acr build` is enough to poison it, because the mirror is set there for the *local* path. Observed 2026-08-02: `npm error 404 … GET https://packagefeedproxy.microsoft.io/npm/vite/-/vite-7.3.6.tgz — Cannot find the file … in feed 'npm-public'`, on a version that was fine on public npm. Rule of thumb: **mirror for local builds, public npm for ACR builds.**
   - A cached `npm ci` layer hides all of this — a build can succeed having never touched the network. Do not read a green build as proof the mirror path works; that only holds on a cold cache (`--no-cache`, a lockfile change, a pruned builder, or a fresh clone).
   - Reaching the mirror is not the same as finding your package on it. The feed imposes a deliberate **7-day quarantine** on newly published versions, so a same-week `pilotswarm-sdk` release will 404 there regardless of this wiring.
   - `deploy/Dockerfile.starter` still lacks the arg.
@@ -74,9 +86,9 @@ Do not hard-code `ACR_NAME` on the deploy command line — `scripts/deploy-aks.s
 - After a destructive reset, healthy workers will immediately recreate the built-in system sessions. Verify the fresh root `PilotSwarm Agent` instead of expecting the catalog to stay empty.
 - The AKS rollout needs a valid `acr-pull` registry secret wired into the worker and portal deployments. ACR tokens expire — if pods show `ErrImagePull` / `401 Unauthorized`, refresh the `acr-pull` secret:
   ```bash
-  ACR_TOKEN=$(az acr login --name pilotswarmacr --expose-token --query accessToken -o tsv) && \
+  ACR_TOKEN=$(az acr login --name "$ACR_NAME" --expose-token --query accessToken -o tsv) && \
   kubectl create secret docker-registry acr-pull -n copilot-runtime \
-    --docker-server=pilotswarmacr.azurecr.io \
+    --docker-server="$ACR_NAME.azurecr.io" \
     --docker-username=00000000-0000-0000-0000-000000000000 \
     --docker-password="$ACR_TOKEN" --dry-run=client -o yaml | kubectl apply -f -
   ```
@@ -124,7 +136,7 @@ Do not hard-code `ACR_NAME` on the deploy command line — `scripts/deploy-aks.s
      ```
    - Login to ACR:
      ```bash
-     az acr login --name pilotswarmacr
+     az acr login --name "$ACR_NAME"
      ```
    - Build and push the image:
      ```bash
@@ -132,7 +144,7 @@ Do not hard-code `ACR_NAME` on the deploy command line — `scripts/deploy-aks.s
          --platform linux/amd64 \
          -f deploy/Dockerfile.worker \
          --build-arg NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmjs.org/}" \
-         -t pilotswarmacr.azurecr.io/copilot-runtime-worker:latest \
+         -t "$ACR_NAME.azurecr.io/copilot-runtime-worker:latest" \
          --push .
      ```
    - Apply namespace/deployment manifests and restart the deployment.

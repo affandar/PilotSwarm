@@ -23,7 +23,7 @@ import { createInitialState } from "../../../app/ui/core/src/state.js";
 import { createStore } from "../../../app/ui/core/src/store.js";
 import { assert, assertEqual } from "../helpers/assertions.js";
 
-const AFFAN = { provider: "entra", subject: "e8677004", email: "daraffan@microsoft.com", displayName: "Affan Dar" };
+const AFFAN = { provider: "entra", subject: "e8677004", email: "ada@example.com", displayName: "Ada Lovelace" };
 const BERTAN = { provider: "entra", subject: "1ec5caaa", email: "bertanari@microsoft.com", displayName: "Bertan Ari" };
 const SYSTEM_OWNER = { provider: "system", subject: "system", email: null, displayName: "System" };
 const SYSTEM_OWNER_KEY = "systemsystem";

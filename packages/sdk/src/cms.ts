@@ -469,6 +469,32 @@ export interface UserPrincipal {
 }
 
 /**
+ * The authorization role last OBSERVED for a principal, and when it was last
+ * confirmed.
+ *
+ * `role` is a point-in-time observation, not a fact: the authority is the
+ * identity provider, and this is the most recent thing it told the portal.
+ * `seenAt` is therefore load-bearing — a reader that grants privilege on this
+ * value must decide how stale an observation it will still believe.
+ *
+ * `null` role means "no privilege", and covers three distinct situations that
+ * callers must not try to distinguish: never seen, seen with no role, and
+ * seen with a role outside the known vocabulary.
+ */
+export type UserRoleValue = "admin" | "user" | "anonymous";
+
+export interface UserRoleInfo {
+    role: UserRoleValue | null;
+    seenAt: Date | null;
+}
+
+/** Narrow unknown role text to the stored vocabulary. Anything else is no privilege. */
+export function normalizeUserRole(value: unknown): UserRoleValue | null {
+    const text = typeof value === "string" ? value.trim().toLowerCase() : "";
+    return text === "admin" || text === "user" || text === "anonymous" ? text : null;
+}
+
+/**
  * The first-class "system" user. Platform-managed sessions carry
  * `owner: null` in the catalog; for credential resolution they act as this
  * principal, so an admin-stored GitHub Copilot key on the system user (Admin
@@ -712,6 +738,35 @@ export interface GraphEdgeSearchUsageRow {
 
 export type AgentPackageScope = "shared" | "user";
 
+/**
+ * WHICH copy of a package name an operation means.
+ *
+ * Package identity is `(scope, owner, name)` (migration 0043), so a bare name
+ * is ambiguous the moment a user takes a personal copy of a shared package.
+ *
+ * `null` / omitted is not "any" — it is **resolve**: the actor's own copy if
+ * they have one, otherwise the shared copy. That is the same rule agent
+ * binding uses, so "show me X", "edit X" and "run X" always mean the same
+ * package.
+ *
+ * A selector says which copy is MEANT. It never says which copy may be SEEN —
+ * visibility is re-applied against the resolved row, so naming someone else's
+ * owner triple cannot be used to read their private package.
+ */
+export interface AgentPackageSelector {
+    scope?: AgentPackageScope | null;
+    owner?: AgentPrincipal | null;
+}
+
+/** Flatten a selector into the three positional proc arguments. */
+function selectorArgs(selector?: AgentPackageSelector | null): [string | null, string | null, string | null] {
+    return [
+        selector?.scope ?? null,
+        selector?.owner?.provider ?? null,
+        selector?.owner?.subject ?? null,
+    ];
+}
+
 /** Principal pair — the same identity primitive session procs use. */
 export interface AgentPrincipal {
     provider: string;
@@ -762,6 +817,12 @@ export interface AgentPackageSummary {
     enabled: boolean;
     createdBy: string | null;
     createdAt: Date;
+    /**
+     * This SHARED package is currently overridden for the viewer by their own
+     * enabled copy of the same name. The distinction between "you have two
+     * packages" and "you have one package with a fallback" is worth showing.
+     */
+    shadowed: boolean;
     /** Active version join; null only for a package with no versions (shouldn't happen). */
     active: AgentPackageVersionRow | null;
 }
@@ -773,6 +834,13 @@ export interface AgentPackageDetail extends Omit<AgentPackageSummary, "active"> 
 }
 
 export interface AgentPackageInstallEntry {
+    /**
+     * Stable per-row identity. With per-user namespaces two packages can share
+     * a `name`, so the installer keys its cache directories off this rather
+     * than off the name — otherwise Alice's `triager` and Bob's `triager`
+     * would fight over the same directory.
+     */
+    packageId: string;
     name: string;
     scope: AgentPackageScope;
     owner: AgentPrincipal | null;
@@ -912,14 +980,30 @@ export interface SessionCatalog {
     /** Atomic publish — see cms_publish_agent_package. Throws AGENT_PACKAGE_* errors. */
     publishAgentPackage(input: PublishAgentPackageInput): Promise<PublishAgentPackageResult>;
     listAgentPackages(viewer: AgentPrincipal | null, isAdmin: boolean): Promise<AgentPackageSummary[]>;
-    getAgentPackage(name: string, viewer: AgentPrincipal | null, isAdmin: boolean): Promise<AgentPackageDetail | null>;
+    /**
+     * One package. `selector` picks WHICH copy of the name (own / shared /
+     * a named owner's); omitted means resolve own-then-shared, the same rule
+     * agent binding follows. See {@link AgentPackageSelector}.
+     */
+    getAgentPackage(name: string, viewer: AgentPrincipal | null, isAdmin: boolean, selector?: AgentPackageSelector | null): Promise<AgentPackageDetail | null>;
     /** Worker-facing install manifest: every enabled package's active version. */
     getAgentPackagesInstallManifest(): Promise<AgentPackageInstallEntry[]>;
-    setAgentPackageScope(name: string, scope: AgentPackageScope, actor: AgentPrincipal | null, isAdmin: boolean): Promise<void>;
-    setAgentPackageEnabled(name: string, enabled: boolean, actor: AgentPrincipal | null, isAdmin: boolean): Promise<void>;
-    pinAgentPackageVersion(name: string, semver: string, actor: AgentPrincipal | null, isAdmin: boolean): Promise<void>;
+    /**
+     * Which copy of a package name this viewer gets, as a package id.
+     * `requireEnabled` defaults to true: a disabled personal copy falls
+     * through to shared, which is the recovery path.
+     */
+    resolveAgentPackageId(
+        name: string,
+        viewer: AgentPrincipal | null,
+        selector?: AgentPackageSelector | null,
+        opts?: { requireEnabled?: boolean },
+    ): Promise<string | null>;
+    setAgentPackageScope(name: string, scope: AgentPackageScope, actor: AgentPrincipal | null, isAdmin: boolean, selector?: AgentPackageSelector | null): Promise<void>;
+    setAgentPackageEnabled(name: string, enabled: boolean, actor: AgentPrincipal | null, isAdmin: boolean, selector?: AgentPackageSelector | null): Promise<void>;
+    pinAgentPackageVersion(name: string, semver: string, actor: AgentPrincipal | null, isAdmin: boolean, selector?: AgentPackageSelector | null): Promise<void>;
     /** Returns artifact filenames of deleted versions for post-commit artifact cleanup. */
-    deleteAgentPackage(name: string, actor: AgentPrincipal | null, isAdmin: boolean): Promise<string[]>;
+    deleteAgentPackage(name: string, actor: AgentPrincipal | null, isAdmin: boolean, selector?: AgentPackageSelector | null): Promise<string[]>;
 
     upsertAgentWorkerState(workerNodeId: string, epoch: number, installed: Record<string, unknown>): Promise<void>;
     listAgentWorkerState(): Promise<AgentWorkerStateRow[]>;
@@ -1171,6 +1255,24 @@ export interface SessionCatalog {
      */
     setUserGitHubCopilotKey(principal: UserPrincipal, key: string | null): Promise<UserProfile>;
 
+    /**
+     * Read the last-observed authorization role for a principal.
+     *
+     * Returns `{ role: null }` for an unknown principal, which callers must
+     * treat exactly like a stored `null` — no privilege.
+     */
+    getUserRole(principal: UserPrincipal): Promise<UserRoleInfo>;
+
+    /**
+     * Record the authorization role observed for a principal, replacing any
+     * previous value and refreshing `seenAt`.
+     *
+     * Called by the portal on authenticated requests. It is NOT reachable
+     * through the Web API: a caller able to write its own role would hold a
+     * privilege-escalation primitive.
+     */
+    setUserRole(principal: UserPrincipal, role: string | null): Promise<UserRoleValue | null>;
+
     /** Get skill usage (skill.invoked event aggregation) for a single session. */
     getSessionSkillUsage(sessionId: string, opts?: { since?: Date }): Promise<SkillUsageRow[]>;
 
@@ -1277,6 +1379,8 @@ function sqlForSchema(schema: string) {
             getUserGitHubCopilotKey:    `${s}.cms_get_user_github_copilot_key`,
             setUserProfileSettings:     `${s}.cms_set_user_profile_settings`,
             setUserGitHubCopilotKey:    `${s}.cms_set_user_github_copilot_key`,
+            getUserRole:                `${s}.cms_get_user_role`,
+            setUserRole:                `${s}.cms_set_user_role`,
             upsertSessionMetricSummary: `${s}.cms_upsert_session_metric_summary`,
             pruneDeletedSummaries:      `${s}.cms_prune_deleted_summaries`,
             getSessionSkillUsage:       `${s}.cms_get_session_skill_usage`,
@@ -1298,6 +1402,7 @@ function sqlForSchema(schema: string) {
             publishAgentPackage:        `${s}.cms_publish_agent_package`,
             listAgentPackages:          `${s}.cms_list_agent_packages`,
             getAgentPackage:            `${s}.cms_get_agent_package`,
+            resolveAgentPackageId:      `${s}.cms_resolve_agent_package_id`,
             getAgentPackagesInstallManifest: `${s}.cms_get_agent_packages_install_manifest`,
             setAgentPackageScope:       `${s}.cms_set_agent_package_scope`,
             setAgentPackageEnabled:     `${s}.cms_set_agent_package_enabled`,
@@ -2421,6 +2526,48 @@ export class PgSessionCatalog implements SessionCatalog {
         return profile;
     }
 
+    async getUserRole(principal: UserPrincipal): Promise<UserRoleInfo> {
+        const provider = principal?.provider?.trim();
+        const subject = principal?.subject?.trim();
+        if (!provider || !subject) return { role: null, seenAt: null };
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.getUserRole}($1, $2)`,
+            [provider, subject],
+        );
+        // No row and a NULL role are the same answer. Collapsing them here
+        // keeps every caller from having to remember that they are.
+        if (rows.length === 0) return { role: null, seenAt: null };
+        const seenAtRaw = rows[0]?.role_seen_at;
+        return {
+            role: normalizeUserRole(rows[0]?.role),
+            seenAt: seenAtRaw ? new Date(seenAtRaw) : null,
+        };
+    }
+
+    async setUserRole(principal: UserPrincipal, role: string | null): Promise<UserRoleValue | null> {
+        const provider = principal?.provider?.trim();
+        const subject = principal?.subject?.trim();
+        if (!provider || !subject) {
+            throw new Error("setUserRole: provider and subject are required");
+        }
+        // Normalize on the way in as well as in SQL. The proc is authoritative
+        // (it is what protects the column from any other caller), but doing it
+        // here too means the value returned to the portal is the value stored,
+        // without a read-back.
+        const normalized = normalizeUserRole(role);
+        const { rows } = await this.pool.query(
+            `SELECT ${this.sql.fn.setUserRole}($1, $2, $3, $4, $5) AS role`,
+            [
+                provider,
+                subject,
+                principal.email ?? null,
+                principal.displayName ?? null,
+                normalized,
+            ],
+        );
+        return normalizeUserRole(rows[0]?.role);
+    }
+
     async pruneDeletedSummaries(olderThan: Date): Promise<number> {
         const { rows } = await this.pool.query(
             `SELECT ${this.sql.fn.pruneDeletedSummaries}($1) AS deleted_count`,
@@ -2773,10 +2920,10 @@ export class PgSessionCatalog implements SessionCatalog {
         return rows.map(rowToAgentPackageSummary);
     }
 
-    async getAgentPackage(name: string, viewer: AgentPrincipal | null, isAdmin: boolean): Promise<AgentPackageDetail | null> {
+    async getAgentPackage(name: string, viewer: AgentPrincipal | null, isAdmin: boolean, selector?: AgentPackageSelector | null): Promise<AgentPackageDetail | null> {
         const { rows } = await this.pool.query(
-            `SELECT * FROM ${this.sql.fn.getAgentPackage}($1, $2, $3, $4)`,
-            [name, viewer?.provider ?? null, viewer?.subject ?? null, isAdmin],
+            `SELECT * FROM ${this.sql.fn.getAgentPackage}($1, $2, $3, $4, $5, $6, $7)`,
+            [name, viewer?.provider ?? null, viewer?.subject ?? null, isAdmin, ...selectorArgs(selector)],
         );
         if (rows.length === 0) return null;
         const first = rows[0];
@@ -2792,9 +2939,39 @@ export class PgSessionCatalog implements SessionCatalog {
             enabled: Boolean(first.enabled),
             createdBy: first.created_by ?? null,
             createdAt: new Date(first.created_at),
+            // The single-package read is already selector-resolved, so it IS
+            // the copy the viewer gets — nothing is shadowing it from here.
+            shadowed: false,
             activeVersionId: first.active_version_id ?? null,
             versions,
         };
+    }
+
+    /**
+     * Which package a name means for this viewer, as a package id.
+     *
+     * Exposed because the WORKER needs the same answer the API gives: agent
+     * binding, package reads and package writes must never disagree about
+     * which copy of a name they are talking about.
+     */
+    async resolveAgentPackageId(
+        name: string,
+        viewer: AgentPrincipal | null,
+        selector?: AgentPackageSelector | null,
+        opts?: { requireEnabled?: boolean },
+    ): Promise<string | null> {
+        const { rows } = await this.pool.query(
+            `SELECT ${this.sql.fn.resolveAgentPackageId}($1, $2, $3, $4, $5, $6, $7) AS package_id`,
+            [
+                name,
+                viewer?.provider ?? null,
+                viewer?.subject ?? null,
+                ...selectorArgs(selector),
+                opts?.requireEnabled !== false,
+            ],
+        );
+        const id = rows[0]?.package_id;
+        return id == null ? null : String(id);
     }
 
     async getAgentPackagesInstallManifest(): Promise<AgentPackageInstallEntry[]> {
@@ -2802,6 +2979,7 @@ export class PgSessionCatalog implements SessionCatalog {
             `SELECT * FROM ${this.sql.fn.getAgentPackagesInstallManifest}()`,
         );
         return rows.map((row: any) => ({
+            packageId: row.package_id,
             name: row.name,
             scope: row.scope === "user" ? "user" as const : "shared" as const,
             owner: rowToAgentPrincipal(row),
@@ -2813,31 +2991,31 @@ export class PgSessionCatalog implements SessionCatalog {
         }));
     }
 
-    async setAgentPackageScope(name: string, scope: AgentPackageScope, actor: AgentPrincipal | null, isAdmin: boolean): Promise<void> {
+    async setAgentPackageScope(name: string, scope: AgentPackageScope, actor: AgentPrincipal | null, isAdmin: boolean, selector?: AgentPackageSelector | null): Promise<void> {
         await this.pool.query(
-            `SELECT ${this.sql.fn.setAgentPackageScope}($1, $2, $3, $4, $5)`,
-            [name, scope, actor?.provider ?? null, actor?.subject ?? null, isAdmin],
+            `SELECT ${this.sql.fn.setAgentPackageScope}($1, $2, $3, $4, $5, $6, $7, $8)`,
+            [name, scope, actor?.provider ?? null, actor?.subject ?? null, isAdmin, ...selectorArgs(selector)],
         );
     }
 
-    async setAgentPackageEnabled(name: string, enabled: boolean, actor: AgentPrincipal | null, isAdmin: boolean): Promise<void> {
+    async setAgentPackageEnabled(name: string, enabled: boolean, actor: AgentPrincipal | null, isAdmin: boolean, selector?: AgentPackageSelector | null): Promise<void> {
         await this.pool.query(
-            `SELECT ${this.sql.fn.setAgentPackageEnabled}($1, $2, $3, $4, $5)`,
-            [name, enabled, actor?.provider ?? null, actor?.subject ?? null, isAdmin],
+            `SELECT ${this.sql.fn.setAgentPackageEnabled}($1, $2, $3, $4, $5, $6, $7, $8)`,
+            [name, enabled, actor?.provider ?? null, actor?.subject ?? null, isAdmin, ...selectorArgs(selector)],
         );
     }
 
-    async pinAgentPackageVersion(name: string, semver: string, actor: AgentPrincipal | null, isAdmin: boolean): Promise<void> {
+    async pinAgentPackageVersion(name: string, semver: string, actor: AgentPrincipal | null, isAdmin: boolean, selector?: AgentPackageSelector | null): Promise<void> {
         await this.pool.query(
-            `SELECT ${this.sql.fn.pinAgentPackageVersion}($1, $2, $3, $4, $5)`,
-            [name, semver, actor?.provider ?? null, actor?.subject ?? null, isAdmin],
+            `SELECT ${this.sql.fn.pinAgentPackageVersion}($1, $2, $3, $4, $5, $6, $7, $8)`,
+            [name, semver, actor?.provider ?? null, actor?.subject ?? null, isAdmin, ...selectorArgs(selector)],
         );
     }
 
-    async deleteAgentPackage(name: string, actor: AgentPrincipal | null, isAdmin: boolean): Promise<string[]> {
+    async deleteAgentPackage(name: string, actor: AgentPrincipal | null, isAdmin: boolean, selector?: AgentPackageSelector | null): Promise<string[]> {
         const { rows } = await this.pool.query(
-            `SELECT * FROM ${this.sql.fn.deleteAgentPackage}($1, $2, $3, $4)`,
-            [name, actor?.provider ?? null, actor?.subject ?? null, isAdmin],
+            `SELECT * FROM ${this.sql.fn.deleteAgentPackage}($1, $2, $3, $4, $5, $6, $7)`,
+            [name, actor?.provider ?? null, actor?.subject ?? null, isAdmin, ...selectorArgs(selector)],
         );
         return rows.map((r: any) => String(r.artifact_filename)).filter(Boolean);
     }
@@ -3241,6 +3419,7 @@ function rowToAgentPackageSummary(row: any): AgentPackageSummary {
         enabled: Boolean(row.enabled),
         createdBy: row.created_by ?? null,
         createdAt: new Date(row.created_at),
+        shadowed: Boolean(row.shadowed),
         active: row.semver
             ? {
                 versionId: row.active_version_id,

@@ -15,6 +15,7 @@ import { createInspectTools } from "../../src/index.ts";
 import { preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { withClient } from "../helpers/local-workers.js";
 import { createCatalog } from "../helpers/cms-helpers.js";
+import { TEST_ADMIN_VIEWER } from "../helpers/inspect-viewer.js";
 import {
     assert,
     assertEqual,
@@ -80,7 +81,7 @@ describe("Inspect Tools: read_agent_events", () => {
         const { catalog, parentId, childId, allEvents } = await setupParentChild(env);
 
         try {
-            const tools = createInspectTools({ catalog });
+            const tools = createInspectTools({ resolveViewer: TEST_ADMIN_VIEWER, catalog });
             const tool = findTool(tools, "read_agent_events");
 
             // Tail page (cursor=null) returns the newest events in chronological order.
@@ -147,7 +148,7 @@ describe("Inspect Tools: read_agent_events", () => {
         const { catalog, parentId, childId, allEvents } = await setupParentChild(env);
 
         try {
-            const tools = createInspectTools({ catalog });
+            const tools = createInspectTools({ resolveViewer: TEST_ADMIN_VIEWER, catalog });
             const tool = findTool(tools, "read_agent_events");
 
             // Pick a real event type from the child's events to filter on.
@@ -180,8 +181,8 @@ describe("Inspect Tools: read_agent_events", () => {
         const { catalog, parentId, childId } = await setupParentChild(env);
 
         try {
-            const userTools = createInspectTools({ catalog });
-            const tunerTools = createInspectTools({ catalog, agentIdentity: "agent-tuner" });
+            const userTools = createInspectTools({ resolveViewer: TEST_ADMIN_VIEWER, catalog });
+            const tunerTools = createInspectTools({ resolveViewer: TEST_ADMIN_VIEWER, catalog, agentIdentity: "agent-tuner" });
 
             const userTool = findTool(userTools, "read_agent_events");
             const tunerTool = findTool(tunerTools, "read_agent_events");

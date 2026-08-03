@@ -6,15 +6,32 @@
  * the existing `session_events.seq` cursor.
  *
  * A small read-only subset is exposed to permanent system agents so they can
- * inspect sessions and owner-scoped usage without mutating state.
- * The deeper diagnostic tools remain restricted to the `agent-tuner`
- * system agent. They give the tuner unrestricted, read-only access to CMS
- * state, per-session and fleet metric summaries, duroxide orchestration
- * stats, and execution history for the purpose of diagnosing why a
- * session, agent, or orchestration is not behaving as expected.
+ * inspect sessions and owner-scoped usage without mutating state. The deeper
+ * diagnostic tools are the diagnostic bundle — historically the `agent-tuner`
+ * system agent's alone, and soon an installable package's (see
+ * docs/proposals/agent-authoring-capability.md).
  *
- * Tuner tools never mutate state. The `agent-tuner` agent definition is
- * the only intended consumer.
+ * ── The viewer spine ──────────────────────────────────────────────
+ * These tools used to take no principal at all: `agentIdentity` decided
+ * everything, and the tuner bypassed the one scoping rule that existed. That
+ * was sound only while the sole holder was an ownerless system session. The
+ * moment a USER-owned session holds the diagnostic bundle, "no principal"
+ * becomes "every principal", so every session-touching tool now resolves a
+ * viewer from its session's OWNER and routes through one of three rules:
+ *
+ *   scopeSessions(rows)          — lists: filter to what the viewer may see
+ *   ensureVisible(id)            — direct reads: refuse what they may not
+ *   requireAdmin(tool)           — fleet aggregates, which have neither a
+ *                                  session id nor a session list to filter
+ *
+ * A tool that touches sessions and uses none of the three is a bug; the
+ * inspect-viewer-spine test greps for exactly that.
+ *
+ * The decision itself is NOT reimplemented here — `evaluateSessionAccess`
+ * comes from pilotswarm-sdk/api, the same function the portal's HTTP routes
+ * call, so a rule change lands on both surfaces at once.
+ *
+ * Inspect tools never mutate state.
  *
  * @module
  * @internal
@@ -26,14 +43,37 @@ import type { SessionCatalog, SessionEvent } from "./cms.js";
 import { computeSessionFootprint, FootprintCache } from "./footprint.js";
 import { isEnhancedFactStore } from "./facts-store.js";
 import { formatOwnerBucketLabel, formatSessionOwnerLabel, getSessionOwnerKind, matchesOwnerBucketFilters, matchesSessionOwnerFilters } from "./session-owner-utils.js";
+// One predicate, two surfaces: this is the same function the portal's HTTP
+// layer evaluates for /api/v1 routes.
+import { evaluateSessionAccess, systemSessionsReadable } from "../api/src/session-authz.js";
+import { createAgentManagerTools } from "./agent-manager-tools.js";
 
-const TUNER_AGENT_ID = "agent-tuner";
+/**
+ * Agent ids that hold the manager bundle.
+ *
+ * `agent-tuner` stays listed until every deployment has migrated off the old
+ * built-in system agent; `agent-manager` is the installable package that
+ * replaces it. Both are NAMES, and per §15 A10 a name must never GRANT — so
+ * be clear about what this actually decides: it selects which agents BEHAVE
+ * like managers, not what a manager may do. Authority comes from the viewer
+ * spine and the database's creator-or-admin checks, both of which apply
+ * identically whoever holds these tools. A hostile package declaring the same
+ * id gains nothing its owner did not already have through the portal.
+ */
+const MANAGER_AGENT_IDS = new Set(["agent-tuner", "agent-manager"]);
+
+/**
+ * System agents, which are immune to package operations by construction.
+ *
+ * `agent-tuner` is deliberately NOT here any more: it became an installable
+ * package (phase E), so it has an owner, a version and a lifecycle like any
+ * other package. The remaining four are the agents that hold background jobs.
+ */
 const SYSTEM_AGENT_IDS = new Set([
     "pilotswarm",
     "facts-manager",
     "sweeper",
     "resourcemgr",
-    "agent-tuner",
 ]);
 
 const DEFAULT_LIMIT = 50;
@@ -112,9 +152,52 @@ function serializeEvents(events: SessionEvent[]): { serialized: SerializedEvent[
     return { serialized: out, hasMore };
 }
 
+/**
+ * Who these tools act as. Derived from the SESSION OWNER — never from a tool
+ * argument, or the model could name its own privileges.
+ */
+export interface InspectViewer {
+    provider: string;
+    subject: string;
+    /**
+     * Resolved fresh, not stamped at session creation: a session can outlive
+     * the role that created it, and stamping would let a demoted admin keep
+     * fleet-wide reach for as long as their session stayed alive.
+     */
+    isAdmin: boolean;
+    /**
+     * The first-class System principal (ownerless platform sessions). Reaches
+     * everything, as it does today — the sweeper cannot do its job otherwise.
+     */
+    isSystemPrincipal: boolean;
+}
+
+/**
+ * FAIL CLOSED. Every unknown becomes the least privilege, never the most:
+ * an unresolvable owner is not an admin and owns nothing, so it can read
+ * exactly nothing rather than everything. Returned whenever a resolver is
+ * absent, throws, or yields an identity we cannot use.
+ */
+export const NO_VIEWER: InspectViewer = Object.freeze({
+    provider: "",
+    subject: "",
+    isAdmin: false,
+    isSystemPrincipal: false,
+});
+
 export interface CreateInspectToolsOptions {
     catalog: SessionCatalog;
     agentIdentity?: string;
+    /**
+     * Resolve the acting viewer. Called PER TOOL INVOCATION (implementations
+     * should cache per turn) so a role change takes effect on the next turn
+     * rather than the next session.
+     *
+     * Omitted → NO_VIEWER → session-touching tools refuse. That default is
+     * deliberate: a caller that forgets to pass this gets a useless agent,
+     * not a fleet-wide reader.
+     */
+    resolveViewer?: () => Promise<InspectViewer | null> | InspectViewer | null;
     /**
      * Optional duroxide client used by tuner-only tools that read
      * orchestration stats and execution history. May be omitted for
@@ -128,12 +211,127 @@ export interface CreateInspectToolsOptions {
      * the tuner falls back to the management API surface.
      */
     factStore?: import("./facts-store.js").FactStore;
+    /**
+     * Artifact store, for the write bundle's patch artifacts. Omitted →
+     * `propose_agent_patch` refuses with a clear message rather than throwing.
+     */
+    artifactStore?: import("./session-store.js").ArtifactStore | null;
+    /** The session these tools act in, used to attach patch artifacts. */
+    sessionId?: string;
 }
 
 export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[] {
-    const { catalog, agentIdentity, duroxideClient, factStore } = opts;
-    const isTuner = agentIdentity === TUNER_AGENT_ID;
+    const { catalog, agentIdentity, duroxideClient, factStore, resolveViewer } = opts;
+    const isTuner = MANAGER_AGENT_IDS.has(agentIdentity || "");
     const isSystemAgent = SYSTEM_AGENT_IDS.has(agentIdentity || "");
+    /**
+     * Does this session get the deep diagnostic bundle?
+     *
+     * Named for the CAPABILITY, not the holder. Today the answer is still "is
+     * it the built-in tuner", because that is the only holder that exists —
+     * but the question is now asked in terms that survive the tuner becoming
+     * an installable package, at which point this becomes a check on what the
+     * agent DECLARED rather than on what it is CALLED. That distinction is
+     * load-bearing: with per-user namespaces, two different packages can both
+     * be named `agent-tuner`, so a name can never again be the thing that
+     * grants.
+     *
+     * Widening the bundle no longer widens ACCESS: everything below is
+     * owner-scoped by the viewer spine regardless of who holds it.
+     */
+    const diagnosticBundle = isTuner;
+
+    // ── The viewer spine ─────────────────────────────────────────────────
+    // Resolved per invocation, never captured once: see InspectViewer.
+    const viewerFor = async (): Promise<InspectViewer> => {
+        if (!resolveViewer) return NO_VIEWER;
+        try {
+            const viewer = await resolveViewer();
+            if (!viewer) return NO_VIEWER;
+            // A viewer with no identity that also claims no system standing is
+            // indistinguishable from "we could not work out who this is".
+            if (!viewer.isSystemPrincipal && !(viewer.provider && viewer.subject)) return NO_VIEWER;
+            return viewer;
+        } catch {
+            // Resolution failed (DB blip, deprovisioned owner, provider
+            // outage). Fail closed — the alternative is that an outage grants
+            // fleet-wide read.
+            return NO_VIEWER;
+        }
+    };
+
+    /** RULE 1 — lists. Keep only rows the viewer may read. */
+    const scopeSessions = async <T extends { sessionId: string }>(rows: T[]): Promise<T[]> => {
+        const viewer = await viewerFor();
+        if (viewer.isSystemPrincipal || viewer.isAdmin) return rows;
+        if (viewer === NO_VIEWER) return [];
+        const decisions = await Promise.all(rows.map(async (row) => {
+            try {
+                const snapshot = await catalog.getSessionAccess(row.sessionId, viewer);
+                // A missing snapshot means the row vanished between the list
+                // and the check. evaluateSessionAccess treats null as "nothing
+                // to protect", which is right for a point lookup and wrong
+                // here — omit it rather than leak it.
+                if (!snapshot) return false;
+                return evaluateSessionAccess("session:read", snapshot, {
+                    isAdmin: false,
+                    systemReadable: systemSessionsReadable(),
+                }).allowed;
+            } catch {
+                return false;
+            }
+        }));
+        return rows.filter((_, i) => decisions[i]);
+    };
+
+    /**
+     * RULE 2 — direct reads. `notFound` is preserved deliberately: an
+     * admitted caller must not learn which session ids exist from the shape
+     * of a refusal.
+     */
+    const ensureVisible = async (
+        toolName: string,
+        sessionId: string,
+        accessClass: "session:read" | "session:write" = "session:read",
+    ): Promise<null | { error: string }> => {
+        const viewer = await viewerFor();
+        if (viewer.isSystemPrincipal) return null;
+        if (viewer === NO_VIEWER) {
+            return { error: `${toolName}: no owner identity resolved for this session; inspection is unavailable.` };
+        }
+        let snapshot;
+        try {
+            snapshot = await catalog.getSessionAccess(sessionId, viewer);
+        } catch (err: any) {
+            return { error: `${toolName}: access check failed: ${err?.message || String(err)}` };
+        }
+        if (!snapshot) return { error: `${toolName}: session ${sessionId.slice(0, 8)} not found.` };
+        const decision = evaluateSessionAccess(accessClass, snapshot, {
+            isAdmin: viewer.isAdmin,
+            // Same policy the portal applies, from the same env var: a user who
+            // can see the PilotSwarm root in their session list must not be
+            // told by an agent that it does not exist.
+            systemReadable: systemSessionsReadable(),
+        });
+        if (decision.allowed) return null;
+        if (decision.notFound) return { error: `${toolName}: session ${sessionId.slice(0, 8)} not found.` };
+        return { error: `${toolName}: ${decision.reason || "not permitted."}` };
+    };
+
+    /**
+     * RULE 3 — fleet aggregates. These take no session id and return no
+     * session list, so neither rule above can reach them; without this they
+     * would disclose other users' activity to any holder of the bundle.
+     */
+    const requireAdmin = async (toolName: string): Promise<null | { error: string }> => {
+        const viewer = await viewerFor();
+        if (viewer.isSystemPrincipal || viewer.isAdmin) return null;
+        return {
+            error:
+                `${toolName}: fleet-wide totals are available to administrators only. `
+                + `Use the session- or tree-scoped equivalent for your own sessions.`,
+        };
+    };
 
     const parseSince = (toolName: string, sinceIso?: string): Date | { error: string } | undefined => {
         if (!sinceIso) return undefined;
@@ -142,8 +340,17 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
         return d;
     };
 
+    /**
+     * The lineage gate every ORDINARY agent obeys: self plus descendants.
+     *
+     * The `if (isTuner) return null` bypass that used to head this function is
+     * gone. It was the identity-keyed carve-out this work exists to delete —
+     * and with per-user package namespaces an agent id is not a trustworthy
+     * thing to grant on. Holders of the diagnostic bundle now widen through
+     * `ensureVisible` (owner-scoped), not by being named.
+     */
     const ensureSelfOrDescendant = async (toolName: string, targetSessionId: string, callerSessionId?: string): Promise<null | { error: string }> => {
-        if (isTuner) return null;
+        if (diagnosticBundle) return ensureVisible(toolName, targetSessionId);
         if (!callerSessionId) return { error: `${toolName}: caller session id is required` };
         if (targetSessionId === callerSessionId) return null;
         try {
@@ -215,8 +422,14 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
                 return { error: "read_agent_events: agent_id is required" };
             }
 
-            // Lineage / target gate
-            if (!isTuner) {
+            // Lineage / target gate. The diagnostic bundle widens this to the
+            // owner's whole visible set — but widens it through the viewer
+            // spine, so "wider" still stops at what the owner may read.
+            if (diagnosticBundle) {
+                const denied = await ensureVisible("read_agent_events", targetSessionId);
+                if (denied) return denied;
+            }
+            if (!diagnosticBundle) {
                 if (targetSessionId === callerSessionId) {
                     return { error: "read_agent_events: cannot read your own session events" };
                 }
@@ -245,8 +458,14 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
             } catch (err: any) {
                 return { error: `read_agent_events: session lookup failed: ${err?.message || String(err)}` };
             }
-            if (targetRow?.isSystem && !isTuner && SYSTEM_AGENT_IDS.has(targetRow.agentId ?? "")) {
-                return { error: "read_agent_events: cannot read events for a system agent session" };
+            if (targetRow?.isSystem && SYSTEM_AGENT_IDS.has(targetRow.agentId ?? "")) {
+                // System-agent internals are admin territory. The bundle alone
+                // is not enough — a user-owned holder must not read the
+                // sweeper's reasoning just because it holds the tools.
+                const viewer = await viewerFor();
+                if (!viewer.isSystemPrincipal && !viewer.isAdmin) {
+                    return { error: "read_agent_events: cannot read events for a system agent session" };
+                }
             }
 
             const limit = clampLimit(args.limit);
@@ -336,7 +555,11 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
             const includeSystem = args.include_system !== false;
             const cap = Math.min(Math.max(1, Number(args.limit) || 100), 500);
             try {
-                const rows = await catalog.listSessions();
+                // RULE 1. The owner_query / owner_kind parameters below are
+                // the MODEL's choice and were never enforcement; this is.
+                // Scope first, then apply the model's filters to what is left,
+                // so a filter can only ever narrow an already-legal set.
+                const rows = await scopeSessions(await catalog.listSessions());
                 const filterAgent = (args.agent_id_filter || "").toLowerCase();
                 const filtered = rows.filter((r) => {
                     if (!matchesSessionOwnerFilters(r, {
@@ -385,6 +608,8 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
         },
         handler: async (args: { session_id: string }) => {
             const id = normalizeSessionId(args.session_id);
+            const denied = await ensureVisible("read_session_info", id);   // RULE 2
+            if (denied) return denied;
             try {
                 const row = await catalog.getSession(id);
                 if (!row) return { sessionId: id, exists: false };
@@ -433,6 +658,8 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
             },
         },
         handler: async (args: { include_deleted?: boolean; since_iso?: string; owner_query?: string; owner_kind?: string }) => {
+            const denied = await requireAdmin("read_user_stats");   // RULE 3
+            if (denied) return denied;
             try {
                 const opts: { includeDeleted?: boolean; since?: Date } = {};
                 if (args.include_deleted) opts.includeDeleted = true;
@@ -503,6 +730,8 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
         },
         handler: async (args: { session_id: string }) => {
             const id = normalizeSessionId(args.session_id);
+            const denied = await ensureVisible("read_session_metric_summary", id);   // RULE 2
+            if (denied) return denied;
             try {
                 const summary = await catalog.getSessionMetricSummary(id);
                 if (!summary) return { sessionId: id, exists: false };
@@ -524,6 +753,8 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
         },
         handler: async (args: { session_id: string }) => {
             const id = normalizeSessionId(args.session_id);
+            const denied = await ensureVisible("read_session_tokens_by_model", id);   // RULE 2
+            if (denied) return denied;
             try {
                 const rows = await catalog.getSessionTokensByModel(id);
                 return {
@@ -555,6 +786,8 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
         },
         handler: async (args: { session_id: string; limit?: number }) => {
             const id = normalizeSessionId(args.session_id);
+            const denied = await ensureVisible("read_session_graph_searches", id);   // RULE 2
+            if (denied) return denied;
             try {
                 const events = await catalog.getSessionEvents(id, undefined, args.limit ?? 500);
                 const searches = events
@@ -591,6 +824,8 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
         },
         handler: async (args: { session_id: string }) => {
             const id = normalizeSessionId(args.session_id);
+            const denied = await ensureVisible("read_session_tree_stats", id);   // RULE 2
+            if (denied) return denied;
             try {
                 const tree = await catalog.getSessionTreeStats(id);
                 if (!tree) return { sessionId: id, exists: false };
@@ -613,6 +848,8 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
             },
         },
         handler: async (args: { include_deleted?: boolean; since_iso?: string }) => {
+            const denied = await requireAdmin("read_fleet_stats");   // RULE 3
+            if (denied) return denied;
             try {
                 const opts: { includeDeleted?: boolean; since?: Date } = {};
                 if (args.include_deleted) opts.includeDeleted = true;
@@ -645,6 +882,8 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
         },
         handler: async (args: { session_id: string; since_iso?: string }) => {
             const id = normalizeSessionId(args.session_id);
+            const denied = await ensureVisible("read_session_skill_usage", id);   // RULE 2
+            if (denied) return denied;
             try {
                 const opts: { since?: Date } = {};
                 if (args.since_iso) {
@@ -675,6 +914,8 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
         },
         handler: async (args: { session_id: string; since_iso?: string }) => {
             const id = normalizeSessionId(args.session_id);
+            const denied = await ensureVisible("read_session_tree_skill_usage", id);   // RULE 2
+            if (denied) return denied;
             try {
                 const opts: { since?: Date } = {};
                 if (args.since_iso) {
@@ -703,6 +944,8 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
             },
         },
         handler: async (args: { include_deleted?: boolean; since_iso?: string }) => {
+            const denied = await requireAdmin("read_fleet_skill_usage");   // RULE 3
+            if (denied) return denied;
             try {
                 const opts: { includeDeleted?: boolean; since?: Date } = {};
                 if (args.include_deleted) opts.includeDeleted = true;
@@ -783,6 +1026,8 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
             },
         },
         handler: async (args: { include_deleted?: boolean; since_iso?: string }) => {
+            const denied = await requireAdmin("read_fleet_retrieval_usage");   // RULE 3
+            if (denied) return denied;
             try {
                 const since = parseSince("read_fleet_retrieval_usage", args.since_iso);
                 if (since && "error" in since) return since;
@@ -843,6 +1088,8 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
             },
         },
         handler: async (args: { include_deleted?: boolean; since_iso?: string; limit?: number; node_key_like?: string; kind?: "searched" | "loaded" }) => {
+            const denied = await requireAdmin("read_fleet_graph_node_usage");   // RULE 3
+            if (denied) return denied;
             try {
                 const since = parseSince("read_fleet_graph_node_usage", args.since_iso);
                 if (since && "error" in since) return since;
@@ -956,11 +1203,18 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
         },
     });
 
-    if (!isSystemAgent) {
+    // Ordinary agents get the lineage-scoped surface and stop here.
+    //
+    // `diagnosticBundle` is checked ALONGSIDE `isSystemAgent`, not nested
+    // inside it: the Agent Manager is deliberately not a system agent any
+    // more (phase E made it an installable package with an owner and a
+    // version), so gating the bundle on system membership would have silently
+    // stripped every tool it exists to hold.
+    if (!isSystemAgent && !diagnosticBundle) {
         return [readAgentEventsTool, contextHealthTool, ...lineageRetrievalTools];
     }
 
-    if (!isTuner) {
+    if (!diagnosticBundle) {
         return [readAgentEventsTool, contextHealthTool, ...systemReadTools, ...lineageRetrievalTools];
     }
 
@@ -979,6 +1233,8 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
             },
             handler: async (args: { session_id: string }) => {
                 const id = normalizeSessionId(args.session_id);
+                const denied = await ensureVisible("read_session_facts_stats", id);   // RULE 2
+                if (denied) return denied;
                 try {
                     const rows = await factStore.getSessionFactsStats(id);
                     return {
@@ -1005,6 +1261,8 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
             },
             handler: async (args: { session_id: string }) => {
                 const id = normalizeSessionId(args.session_id);
+                const denied = await ensureVisible("read_session_tree_facts_stats", id);   // RULE 2
+                if (denied) return denied;
                 try {
                     const descendants = await catalog.getDescendantSessionIds(id);
                     const ids = Array.from(new Set([id, ...descendants]));
@@ -1122,6 +1380,8 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
             },
             handler: async (args: { session_id: string }) => {
                 const id = normalizeSessionId(args.session_id);
+                const denied = await ensureVisible("read_orchestration_stats", id);   // RULE 2
+                if (denied) return denied;
                 const orchId = `session-${id}`;
                 try {
                     const [statsRes, infoRes] = await Promise.allSettled([
@@ -1173,6 +1433,8 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
                 offset?: number;
             }) => {
                 const id = normalizeSessionId(args.session_id);
+                const denied = await ensureVisible("read_execution_history", id);   // RULE 2
+                if (denied) return denied;
                 const orchId = `session-${id}`;
                 const cap = Math.min(Math.max(1, Number(args.limit) || 100), 500);
                 const offset = Math.max(0, Number(args.offset) || 0);
@@ -1251,6 +1513,22 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
         });
 
         tools.push(readOrchestrationStatsTool, readExecutionHistoryTool, listOrchestrationsByStatusTool);
+    }
+
+    // ── The WRITE bundle ─────────────────────────────────────────────────
+    //
+    // Gated on the same capability as the deep read bundle, and acting as the
+    // same resolved viewer. It adds no authority: every mutation lands on the
+    // catalog functions the Web API already calls, which enforce
+    // creator-or-admin inside the database. What the gate decides is which
+    // agents BEHAVE like managers, not what a manager is allowed to do.
+    if (diagnosticBundle) {
+        tools.push(...createAgentManagerTools({
+            catalog,
+            artifactStore: opts.artifactStore ?? null,
+            sessionId: opts.sessionId,
+            resolveViewer: viewerFor,
+        }));
     }
 
     return tools;

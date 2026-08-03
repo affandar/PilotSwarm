@@ -1,5 +1,6 @@
 import React from "react";
 import { createWebPilotSwarmController, PilotSwarmWebApp } from "pilotswarm/ui-react";
+import { getTheme } from "pilotswarm/ui-core";
 import { selectSessionFilterExceptionNotice, selectStatusBar } from "pilotswarm/ui-core";
 import { BrowserPortalTransport } from "./browser-transport.js";
 import { usePortalAuth } from "./auth-client.js";
@@ -239,6 +240,40 @@ function usePortalControllerStatusText(controller) {
     return statusText;
 }
 
+/**
+ * The active theme's brand mark, or null.
+ *
+ * A theme may carry its own icon. When it does it OUTRANKS the deployment's
+ * logo — a theme that restyles the entire shell and then leaves a foreign logo
+ * in the corner reads as broken, and the icon is the one piece of branding the
+ * theme is entitled to speak for.
+ *
+ * The deployment's TITLE is untouched: a layered app is still Waldemort, and
+ * renaming it would be a lie. Only the mark follows the theme.
+ */
+function useThemeIcon(controller) {
+    const read = React.useCallback(
+        () => getTheme(controller.getState()?.ui?.themeId)?.icon || null,
+        [controller],
+    );
+    const [icon, setIcon] = React.useState(read);
+    React.useEffect(() => controller.subscribe(() => {
+        const next = read();
+        setIcon((current) => (current === next ? current : next));
+    }), [controller, read]);
+    return icon;
+}
+
+function ThemeIconMark({ icon, className = "portal-logo" }) {
+    return React.createElement("svg", {
+        className: `${className} portal-logo-theme`,
+        viewBox: icon.viewBox,
+        "aria-hidden": "true",
+    }, icon.paths.map((path, index) => React.createElement("path", {
+        key: index, d: path.d, fill: path.fill,
+    })));
+}
+
 function DefaultPortalLogo({ className = "portal-logo" }) {
     return React.createElement("svg", {
         className,
@@ -262,22 +297,27 @@ function DefaultPortalLogo({ className = "portal-logo" }) {
     );
 }
 
-function PortalBrandMark({ branding, size = "compact" }) {
-    const logoUrl = branding?.logoUrl || null;
-    const frameClassName = `portal-logo-frame${size === "large" ? " is-large" : ""}${logoUrl ? " has-image" : ""}`;
+function PortalBrandMark({ branding, size = "compact", themeIcon = null }) {
+    // Precedence: the theme's own mark, then the deployment's logo, then the
+    // built-in swarm. The theme wins because it owns every other pixel of the
+    // shell; the deployment still owns the name beside it.
+    const logoUrl = !themeIcon && branding?.logoUrl ? branding.logoUrl : null;
+    const frameClassName = `portal-logo-frame${size === "large" ? " is-large" : ""}${logoUrl ? " has-image" : ""}${themeIcon ? " has-theme-icon" : ""}`;
     return React.createElement("div", {
         className: frameClassName,
         "aria-hidden": "true",
     },
-    logoUrl
-        ? React.createElement("img", {
-            className: "portal-logo-image",
-            src: logoUrl,
-            alt: "",
-        })
-        : React.createElement(DefaultPortalLogo, {
-            className: "portal-logo",
-        }));
+    themeIcon
+        ? React.createElement(ThemeIconMark, { icon: themeIcon })
+        : logoUrl
+            ? React.createElement("img", {
+                className: "portal-logo-image",
+                src: logoUrl,
+                alt: "",
+            })
+            : React.createElement(DefaultPortalLogo, {
+                className: "portal-logo",
+            }));
 }
 
 function PortalLoadingScreen({ branding, ui, shellStyle, error = null }) {
@@ -399,7 +439,7 @@ function useBuildFreshness() {
     return stale;
 }
 
-function PortalHeader({ account, authEnabled, isAdmin = false, branding, onSignOut, versionLabel = null, statusText = "" }) {
+function PortalHeader({ account, authEnabled, isAdmin = false, branding, onSignOut, versionLabel = null, statusText = "", themeIcon = null }) {
     const buildStale = useBuildFreshness();
     // Admins are marked with a leading "(*)" so elevated rights are visible at a glance.
     const baseName = account?.name || account?.username || "Signed in";
@@ -407,7 +447,7 @@ function PortalHeader({ account, authEnabled, isAdmin = false, branding, onSignO
     const email = account?.username || account?.idTokenClaims?.preferred_username || "";
     return React.createElement("header", { className: "portal-header" },
         React.createElement("div", { className: "portal-header-brand" },
-            React.createElement(PortalBrandMark, { branding }),
+            React.createElement(PortalBrandMark, { branding, themeIcon }),
             React.createElement("div", { className: "portal-header-brand-copy" },
                 React.createElement("span", { className: "portal-header-kicker" }, getWorkspaceTitle(branding)),
                 authEnabled
@@ -486,6 +526,7 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
         docs: portal?.docs || null,
     }), [portal?.branding?.splash, portal?.branding?.splashMobile, portal?.branding?.title, portal?.docs, transport]);
     const statusText = usePortalControllerStatusText(controller);
+    const themeIcon = useThemeIcon(controller);
     // Dismissing hides the mobile status row until a *different* message
     // arrives (a repeat of the same text stays dismissed).
     const [dismissedStatus, setDismissedStatus] = React.useState("");
@@ -523,6 +564,7 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
             onSignOut: auth.signOut,
             versionLabel: PILOTSWARM_PORTAL_VERSION_LABEL,
             statusText,
+            themeIcon,
         }),
         React.createElement(PortalMobileStatus, {
             statusText: mobileStatusText,

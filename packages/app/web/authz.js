@@ -1,4 +1,15 @@
-import { OPERATIONS } from "pilotswarm-sdk/api";
+import {
+    OPERATIONS,
+    evaluateSessionAccess,
+    normalizeVisibility,
+    relationFor,
+    SESSION_VISIBILITY_VALUES,
+} from "pilotswarm-sdk/api";
+
+// The session-tree predicate now lives in the SDK so the WORKER evaluates the
+// same rules for agent tools (Agent Manager proposal §4). Re-exported here so
+// every existing import of this module keeps working unchanged.
+export { evaluateSessionAccess, normalizeVisibility, relationFor };
 
 /**
  * Ownership/visibility authorization for the portal runtime
@@ -20,22 +31,16 @@ function parseBooleanEnv(value, defaultValue) {
     return ["1", "true", "yes", "on"].includes(String(value).trim().toLowerCase());
 }
 
-const VISIBILITY_VALUES = new Set(["private", "shared_read", "shared_write"]);
-
 export function loadAuthzConfig(env = process.env) {
     const rawDefault = String(env.SESSIONS_DEFAULT_VISIBILITY || "").trim().toLowerCase();
+    const visibilityValues = new Set(SESSION_VISIBILITY_VALUES);
     return {
         enforce: parseBooleanEnv(env.AUTHZ_ENFORCE_OWNERSHIP, false),
-        defaultVisibility: VISIBILITY_VALUES.has(rawDefault) ? rawDefault : "private",
+        defaultVisibility: visibilityValues.has(rawDefault) ? rawDefault : "private",
         // "read" (default): system sessions are metadata/content-visible to
         // every admitted user, interaction stays admin-only. "admin": hidden.
         systemVisibility: String(env.SESSIONS_SYSTEM_VISIBILITY || "").trim().toLowerCase() === "admin" ? "admin" : "read",
     };
-}
-
-export function normalizeVisibility(value, fallback) {
-    const normalized = String(value || "").trim().toLowerCase();
-    return VISIBILITY_VALUES.has(normalized) ? normalized : fallback;
 }
 
 // Every dispatchable method now has an OPERATIONS row — copyArtifact,
@@ -62,75 +67,3 @@ function ownerLabel(snapshot) {
     return snapshot?.owner?.displayName || snapshot?.owner?.email || snapshot?.owner?.subject || "another user";
 }
 
-/**
- * The caller's relation to a session tree, recorded on message payloads and
- * shown to the agent in multi-writer sessions.
- */
-export function relationFor(snapshot, { isAdmin } = {}) {
-    if (snapshot?.viewerIsOwner) return "owner";
-    if (isAdmin) return "admin";
-    return "collaborator";
-}
-
-/**
- * Evaluate one session-scoped access class against an access snapshot.
- *
- * @param accessClass "session:read" | "session:write" | "session:manage" | "session:destroy" | "session:share"
- * @param snapshot    result of getSessionAccess (null = missing/deleted session)
- * @param opts        { isAdmin, systemReadable }
- * @returns {{ allowed: boolean, notFound?: boolean, reason?: string, breakGlass?: boolean }}
- */
-export function evaluateSessionAccess(accessClass, snapshot, { isAdmin = false, systemReadable = true } = {}) {
-    if (!snapshot) {
-        // Missing/deleted session: let the underlying operation produce its
-        // own not-found; nothing to protect.
-        return { allowed: true };
-    }
-
-    if (isAdmin) {
-        // Admins pass everything; flag break-glass when this would have been
-        // invisible to a plain user in the same position.
-        const wouldBeInvisible = !snapshot.viewerIsOwner
-            && !snapshot.isSystem
-            && snapshot.visibility === "private"
-            && !snapshot.viewerShareAccess;
-        return { allowed: true, breakGlass: wouldBeInvisible };
-    }
-
-    const isRead = accessClass === "session:read";
-
-    if (snapshot.isSystem) {
-        // When system sessions are hidden from users, every class 404s so a
-        // write attempt can't confirm the session exists (review LOW-2).
-        if (!systemReadable) return { allowed: false, notFound: true };
-        if (isRead) return { allowed: true };
-        return { allowed: false, reason: "System sessions are managed by administrators." };
-    }
-
-    const canRead = snapshot.viewerIsOwner
-        || snapshot.visibility === "shared_read"
-        || snapshot.visibility === "shared_write"
-        || Boolean(snapshot.viewerShareAccess);
-
-    if (isRead) {
-        return canRead ? { allowed: true } : { allowed: false, notFound: true };
-    }
-
-    // Anything beyond read on an unreadable session is also a 404 — the
-    // caller must not learn the session exists from the error shape.
-    if (!canRead) return { allowed: false, notFound: true };
-
-    if (accessClass === "session:write") {
-        const canWrite = snapshot.viewerIsOwner
-            || snapshot.visibility === "shared_write"
-            || snapshot.viewerShareAccess === "write";
-        return canWrite
-            ? { allowed: true }
-            : { allowed: false, reason: `You have read access to this session; write access is required. Ask ${ownerLabel(snapshot)} for write access.` };
-    }
-
-    // manage / destroy / share: owner only (admin handled above).
-    return snapshot.viewerIsOwner
-        ? { allowed: true }
-        : { allowed: false, reason: `Only the session owner (${ownerLabel(snapshot)}) or an admin can do this.` };
-}

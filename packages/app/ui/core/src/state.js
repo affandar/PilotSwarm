@@ -343,6 +343,8 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
                 detail: null,
                 detailLoading: false,
                 detailError: null,
+                /** Raw CHANGELOG.md of the selected package, or null when it has none. */
+                changelog: null,
                 workspace: {
                     tree: null,
                     treeLoading: false,

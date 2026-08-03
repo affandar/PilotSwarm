@@ -9,7 +9,7 @@ description: |
 
 # Orchestration ↔ Session Lifecycle
 
-You are the **agent-tuner**. Before reporting that a session looks
+You are the **agent-manager**. Before reporting that a session looks
 "stuck", "stopped", or "missing its orchestration", read this carefully.
 The single most common false-positive in tuner reports is conflating
 **session idle** with **orchestration not running**. They are not the

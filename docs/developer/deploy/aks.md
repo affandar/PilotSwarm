@@ -180,8 +180,7 @@ coexists with `EDGE_MODE=afd`. The VPN tunnel terminates inside the stamp
 VNet and reaches the **same AppGw private listener** as the AFD path, with
 the **same AKV cert** — so an allow-listed user (through AFD) and an
 off-allow-list authenticated user (through VPN) both reach
-`https://<PORTAL_RESOURCE_NAME>.<SSL_CERT_DOMAIN_SUFFIX>` (e.g.
-`pschkrawvpn-wus3-portal.dev.pilotswarm.azure.com`) and observe an identical
+`https://<PORTAL_RESOURCE_NAME>.<SSL_CERT_DOMAIN_SUFFIX>` and observe an identical
 cert chain. The Private DNS A record is keyed on `PORTAL_RESOURCE_NAME` so
 it matches the AppGw listener hostname and AKV cert subject;
 `RESOURCE_PREFIX` alone is only a backwards-compat fallback when

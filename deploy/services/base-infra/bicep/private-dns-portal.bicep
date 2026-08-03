@@ -31,7 +31,7 @@ param vpnGatewayEnabled bool
 @description('Private DNS zone name to provision (= SSL_CERT_DOMAIN_SUFFIX so the portal cert SAN resolves over the tunnel).')
 param dnsZoneName string
 
-@description('Hostname label for the portal A record. MUST match the AppGw HTTPS listener hostname (= AKV cert subject), which portal/bicep/main.bicep composes as portalResourceName.sslCertificateDomainSuffix (e.g. pschkrawvpn-wus3-portal). Threaded from main.bicep portalResourceName (PORTAL_RESOURCE_NAME env var).')
+@description('Hostname label for the portal A record. MUST match the AppGw HTTPS listener hostname (= AKV cert subject), which portal/bicep/main.bicep composes as portalResourceName.sslCertificateDomainSuffix (e.g. psmystamp-wus3-portal). Threaded from main.bicep portalResourceName (PORTAL_RESOURCE_NAME env var).')
 param recordName string
 
 @description('AppGw private frontend IP address that VPN clients should resolve the portal hostname to.')

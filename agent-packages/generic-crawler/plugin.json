@@ -1,0 +1,6 @@
+{
+    "name": "generic-crawler",
+    "version": "1.0.0",
+    "description": "General-purpose crawler agent for knowledge harvesting.",
+    "agents": ["agents/generic-crawler.agent.md"]
+}

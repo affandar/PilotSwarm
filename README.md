@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.30** — Drag to reorder the session list and it stays that way, across devices; expansion state and your last selection survive a reload. Owner avatars name the person, not their alias, and read the same in every pane. The agents CLI talks to the Web API by default, and three artifact operations that were unreachable over HTTP now work.
+> **Latest release: v0.5.31** — A session could spawn an agent out of another user's private package; agent resolution is now owner-aware and fails closed. Agent packages get per-user namespaces, so your own copy shadows the shared one and disabling it is the way back. The new Agent Manager reads, edits and ships agents behind a reviewable diff, and every package can carry a `CHANGELOG.md` that the portal and TUI display.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 

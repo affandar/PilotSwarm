@@ -84,3 +84,43 @@ export declare class HttpApiTransport {
     stop(): Promise<void>;
     [method: string]: any;
 }
+
+// ── Session-tree access predicate (src/session-authz.js) ──────────
+// Pure; shared by the portal runtime and the worker's agent tools so the
+// "may this principal touch this session?" answer has ONE implementation.
+
+export interface SessionAccessSnapshot {
+    rootSessionId: string;
+    isSystem: boolean;
+    visibility: "private" | "shared_read" | "shared_write";
+    owner: { displayName?: string | null; email?: string | null; subject?: string | null } | null;
+    viewerIsOwner: boolean;
+    viewerShareAccess: "read" | "write" | null;
+}
+
+export interface SessionAccessDecision {
+    allowed: boolean;
+    /** Report NOT_FOUND rather than FORBIDDEN: an admitted caller must not be able to probe which session ids exist. */
+    notFound?: boolean;
+    reason?: string;
+    /** An admin reached something a plain user in the same position could not see. Audit it. */
+    breakGlass?: boolean;
+}
+
+export type SessionAccessClass =
+    | "session:read" | "session:write" | "session:manage" | "session:destroy" | "session:share";
+
+export declare const SESSION_VISIBILITY_VALUES: readonly string[];
+export declare function normalizeVisibility(value: unknown, fallback: string): string;
+export declare function systemSessionsReadable(env?: Record<string, string | undefined>): boolean;
+export declare function relationFor(snapshot: SessionAccessSnapshot | null, opts?: { isAdmin?: boolean }): "owner" | "admin" | "collaborator";
+export declare function evaluateSessionAccess(
+    accessClass: SessionAccessClass,
+    snapshot: SessionAccessSnapshot | null,
+    opts?: { isAdmin?: boolean; systemReadable?: boolean },
+): SessionAccessDecision;
+/** Archive reads are owner-or-admin ONLY — never a share. See proposal §15 A3. */
+export declare function evaluateArchiveAccess(
+    snapshot: SessionAccessSnapshot | null,
+    opts?: { isAdmin?: boolean },
+): SessionAccessDecision;

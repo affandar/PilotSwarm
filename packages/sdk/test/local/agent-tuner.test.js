@@ -25,6 +25,7 @@ import { createInspectTools } from "../../src/index.ts";
 import { preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { withClient } from "../helpers/local-workers.js";
 import { createCatalog } from "../helpers/cms-helpers.js";
+import { TEST_ADMIN_VIEWER, TEST_SYSTEM_VIEWER } from "../helpers/inspect-viewer.js";
 import {
     assert,
     assertEqual,
@@ -85,8 +86,8 @@ describe("Agent Tuner: read-only diagnostic tools", () => {
         const env = getEnv();
         const catalog = await createCatalog(env);
         try {
-            const userTools = createInspectTools({ catalog, agentIdentity: "alpha" });
-            const tunerTools = createInspectTools({ catalog, agentIdentity: "agent-tuner" });
+            const userTools = createInspectTools({ resolveViewer: TEST_ADMIN_VIEWER, catalog, agentIdentity: "alpha" });
+            const tunerTools = createInspectTools({ resolveViewer: TEST_ADMIN_VIEWER, catalog, agentIdentity: "agent-tuner" });
 
             const userNames = userTools.map((t) => t.name).sort();
             const expectedUser = [
@@ -142,7 +143,7 @@ describe("Agent Tuner: read-only diagnostic tools", () => {
                 return rows;
             },
         };
-        const tools = createInspectTools({ catalog, agentIdentity: "agent-tuner" });
+        const tools = createInspectTools({ resolveViewer: TEST_SYSTEM_VIEWER, catalog, agentIdentity: "agent-tuner" });
         const result = await findTool(tools, "read_session_tokens_by_model").handler(
             { session_id: "session-session-123" },
             { sessionId: "tuner-1" },
@@ -163,7 +164,7 @@ describe("Agent Tuner: read-only diagnostic tools", () => {
             // Unrelated caller (not the parent, not in the lineage)
             const unrelatedCallerId = "00000000-0000-0000-0000-000000000abc";
 
-            const userTools = createInspectTools({ catalog, agentIdentity: "alpha" });
+            const userTools = createInspectTools({ resolveViewer: TEST_ADMIN_VIEWER, catalog, agentIdentity: "alpha" });
             const userResult = await findTool(userTools, "read_agent_events").handler(
                 { agent_id: childId, limit: 5 },
                 { sessionId: unrelatedCallerId },
@@ -171,7 +172,7 @@ describe("Agent Tuner: read-only diagnostic tools", () => {
             assertNotNull(userResult.error, "non-tuner caller should be denied");
             assert(/not a descendant/i.test(userResult.error), `error message: ${userResult.error}`);
 
-            const tunerTools = createInspectTools({ catalog, agentIdentity: "agent-tuner" });
+            const tunerTools = createInspectTools({ resolveViewer: TEST_ADMIN_VIEWER, catalog, agentIdentity: "agent-tuner" });
             const tunerResult = await findTool(tunerTools, "read_agent_events").handler(
                 { agent_id: childId, limit: 5 },
                 { sessionId: unrelatedCallerId },
@@ -196,7 +197,7 @@ describe("Agent Tuner: read-only diagnostic tools", () => {
         const env = getEnv();
         const { catalog, parentId, childId } = await setupParentChild(env);
         try {
-            const tools = createInspectTools({ catalog, agentIdentity: "agent-tuner" });
+            const tools = createInspectTools({ resolveViewer: TEST_ADMIN_VIEWER, catalog, agentIdentity: "agent-tuner" });
 
             const info = await findTool(tools, "read_session_info").handler(
                 { session_id: parentId },
@@ -252,7 +253,7 @@ describe("Agent Tuner: read-only diagnostic tools", () => {
         const env = getEnv();
         const catalog = await createCatalog(env);
         try {
-            const userTools = createInspectTools({ catalog, agentIdentity: "alpha" });
+            const userTools = createInspectTools({ resolveViewer: TEST_ADMIN_VIEWER, catalog, agentIdentity: "alpha" });
             for (const name of [
                 "list_all_sessions",
                 "read_session_info",
@@ -276,7 +277,7 @@ describe("Agent Tuner: read-only diagnostic tools", () => {
         const env = getEnv();
         const catalog = await createCatalog(env);
         try {
-            const noClient = createInspectTools({ catalog, agentIdentity: "agent-tuner" });
+            const noClient = createInspectTools({ resolveViewer: TEST_SYSTEM_VIEWER, catalog, agentIdentity: "agent-tuner" });
             for (const name of ["read_orchestration_stats", "read_execution_history", "list_orchestrations_by_status"]) {
                 assertEqual(findTool(noClient, name), undefined, `${name} should be absent without duroxide client`);
             }
@@ -288,7 +289,7 @@ describe("Agent Tuner: read-only diagnostic tools", () => {
                 async readExecutionHistory() { return [{ eventId: 1, kind: "OrchestratorStarted", timestampMs: 0 }]; },
                 async listInstancesByStatus() { return [{ instanceId: "session-foo", status: "Running" }]; },
             };
-            const withClientTools = createInspectTools({ catalog, agentIdentity: "agent-tuner", duroxideClient: fakeClient });
+            const withClientTools = createInspectTools({ resolveViewer: TEST_SYSTEM_VIEWER, catalog, agentIdentity: "agent-tuner", duroxideClient: fakeClient });
 
             const stats = await findTool(withClientTools, "read_orchestration_stats").handler(
                 { session_id: "abc" },

@@ -115,7 +115,7 @@ param frontDoorId string = ''
 @description('Microsoft Entra (AAD) tenant ID threaded from the deploy-time AZURE_TENANT_ID env var via the base-infra params template. Currently consumed only by the VPN gateway module; the keyvault/postgres modules keep their own subscription().tenantId defaults. Empty default keeps non-VPN stamps byte-equivalent at the param layer.')
 param tenantId string = ''
 
-@description('Portal short hostname (e.g. pschkrawvpn-wus3-portal), threaded from the deploy-time PORTAL_RESOURCE_NAME env var. Used as the A-record label in the VPN-mode private DNS zone so VPN clients resolve the SAME hostname the AppGw listener serves (matching the AKV cert subject portalResourceName.sslCertificateDomainSuffix set in portal/bicep/main.bicep). Empty default keeps non-VPN stamps byte-equivalent.')
+@description('Portal short hostname (e.g. psmystamp-wus3-portal), threaded from the deploy-time PORTAL_RESOURCE_NAME env var. Used as the A-record label in the VPN-mode private DNS zone so VPN clients resolve the SAME hostname the AppGw listener serves (matching the AKV cert subject portalResourceName.sslCertificateDomainSuffix set in portal/bicep/main.bicep). Empty default keeps non-VPN stamps byte-equivalent.')
 param portalResourceName string = ''
 
 // ==============================================================================

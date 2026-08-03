@@ -108,6 +108,16 @@ const BREAK_GLASS_AUDITED = {
     listSessionShares: true,
 };
 
+// How often an unchanged role is re-confirmed in the users table.
+//
+// This is a heartbeat, not a cache of the decision: the request's own
+// authorization always comes from the token it just presented. What it bounds
+// is how stale `role_seen_at` can be for an ACTIVE portal user, which is in
+// turn what the worker's staleness ceiling is measured against — so it must
+// stay comfortably below that ceiling. A role that CHANGED bypasses this
+// entirely and writes at once.
+const SIGNIN_ROLE_REFRESH_MS = 5 * 60 * 1000;
+
 export class PortalRuntime {
     constructor({ store, mode, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser } = {}) {
         this.transport = new NodeSdkTransport({ store, mode, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser });
@@ -118,6 +128,51 @@ export class PortalRuntime {
         // Throttle repeated break-glass audit rows for the same actor+session
         // (the portal polls events continuously while a session is open).
         this._breakGlassSeen = new Map(); // key -> expiry epoch ms
+        // Last role written per principal, so the sign-in write does not fire
+        // on every poll. See noteSignInRole.
+        this._signInRoleSeen = new Map(); // key -> { role, at }
+    }
+
+    // ── Sign-in role persistence ────────────────────────────────────────
+
+    /**
+     * Record the role this request authenticated with, so the WORKER can see
+     * it later.
+     *
+     * The portal knows the role because it just validated a token; a worker
+     * holds a session OWNER and no token, and runs turns where no request
+     * exists at all (cron firings, sub-agent turns, crash recovery, replay).
+     * The users table is the only place the two can meet.
+     *
+     * Fire-and-forget and best-effort: this is an observation, never part of
+     * the request's own authorization decision, so a write failure must not
+     * fail the request. The worker fails closed on a missing or stale role.
+     *
+     * Throttled per principal: an open portal polls continuously, and a DB
+     * write per poll would be pure noise. A CHANGED role always writes
+     * immediately — a demotion must not wait out the refresh interval.
+     */
+    noteSignInRole(authContext) {
+        if (typeof this.transport.recordUserRole !== "function") return;
+        const principal = normalizeSessionOwner(authContext);
+        if (!principal) return;
+        const role = authContext?.authorization?.role ?? null;
+
+        const key = `${principal.provider}\u0001${principal.subject}`;
+        const now = Date.now();
+        const last = this._signInRoleSeen.get(key);
+        if (last && last.role === role && now - last.at < SIGNIN_ROLE_REFRESH_MS) return;
+        if (this._signInRoleSeen.size > 5000) this._signInRoleSeen.clear();
+        this._signInRoleSeen.set(key, { role, at: now });
+
+        this.start()
+            .then(() => this.transport.recordUserRole(principal, role))
+            .catch(() => {
+                // Let the next request retry rather than caching a failure as
+                // if it had been written.
+                const current = this._signInRoleSeen.get(key);
+                if (current && current.at === now) this._signInRoleSeen.delete(key);
+            });
     }
 
     // ── Authorization (security model) ──────────────────────────────────

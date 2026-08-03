@@ -219,7 +219,7 @@ couple of conventions — because the consumer is an LLM, not a dashboard:
 - `description`: a one-paragraph, LLM-parseable self-description of the
   backend and how to interpret the rest of the blob, e.g. *"This is a
   Postgres-backed session snapshot store (schema pilotswarm_snapshots on
-  db pilotswarm-pg). Each session is one row holding a compressed tar;
+  db `<pg-server>`). Each session is one row holding a compressed tar;
   `version` is a monotonic CAS counter advanced once per committed turn.
   Large `deadTupleRatio` suggests autovacuum lag on the snapshot table."*
 - Backend-specific keys carry whatever is cheap and diagnostic: PG —

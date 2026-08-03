@@ -7,18 +7,20 @@
 
 ## What was deployed (and how)
 
-- Cluster: context `pilotswarm-aks`, namespace `copilot-runtime`, ACR
-  `pilotswarmacr` (subscription `043a8e55-…`, RG `pilotswarm-rg`), config from
-  `.env.remote`. Portal DNS `pilotswarm-portal.westus3.cloudapp.azure.com`.
+- Cluster: context, namespace, ACR, resource group and portal DNS all resolve
+  from `.env.remote` (`K8S_CONTEXT`, `K8S_NAMESPACE`, `ACR_NAME`,
+  `AZURE_SUBSCRIPTION_ID`). Resource names are not recorded here — this repo
+  is public.
 - Path used: the legacy shell scripts (this cluster is NOT GitOps/Flux).
   - Portal: `./scripts/deploy-portal.sh` (build + push + roll; refreshes the
     `copilot-runtime-secrets` K8s secret from `.env.remote`; no data touched).
   - Worker: `./scripts/deploy-aks.sh --skip-tests` (build + push +
     roll; **data preserved** — verified: workers reused persisted system
     sessions `22013ffb`/`bdad2272`).
-- Both scripts honor `K8S_CONTEXT=pilotswarm-aks` from `.env.remote`, so the
-  global kube context does not need switching. `az account set --subscription
-  043a8e55-…` IS required first (pilotswarmacr is not in the default sub).
+- Both scripts honor `K8S_CONTEXT` from `.env.remote`, so the
+  global kube context does not need switching. Naming the subscription IS
+  required (the ACR is not in the default sub) — the scripts now pass
+  `--subscription "$AZURE_SUBSCRIPTION_ID"` from `.env.remote`.
 - Verified live: `/api/v1/health` → `apiVersion:1`; `/api/v1/auth/config` →
   entra client config; protected `/api/v1/*` → 401 without a token; 8/8 workers
   Running, 0 restarts, no api-client import errors.
@@ -49,12 +51,14 @@ Target: `.github/skills/pilotswarm-aks-deploy/SKILL.md` (and its agent).
 3. **No ingress change.** Explicitly state `/api/v1` + `/api/v1/ws` need no new
    ingress rules — the existing `/`-prefix rule and 3600s WS timeout cover them;
    readiness stays `/api/health`. (Verified in this deploy.)
-4. **ACR subscription gotcha.** Note that `pilotswarmacr` is in subscription
-   `043a8e55-…`; run `az account set` before `deploy-*.sh` or `az acr login`
-   fails with "registry could not be found in subscription".
+4. **ACR subscription gotcha.** The ACR is not in the default
+   subscription, so `az acr login` fails with "registry could not be found in
+   subscription" whenever ambient `az` state points elsewhere. Set
+   `AZURE_SUBSCRIPTION_ID` in `.env.remote`; the deploy scripts pass it to
+   every `az` call.
 5. **Operator TUI over the API** (`pilotswarm-tui` skill / docs): operators can
    now connect with `pilotswarm remote --api-url
-   https://pilotswarm-portal.westus3.cloudapp.azure.com` + `pilotswarm auth
+   https://<portal-host>` + `pilotswarm auth
    login` (entra device code) instead of `--store $DATABASE_URL`. No DB
    credentials needed. Requires the portal app registration to allow public
    client flows (device-code grant) — see `pilotswarm-portal-app-reg` skill;

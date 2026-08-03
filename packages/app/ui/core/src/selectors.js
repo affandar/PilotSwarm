@@ -256,7 +256,7 @@ export function manualOrderContainerKey(session, pinned = false) {
  * plus a createdBy email. Resolving the package's principal against this
  * directory recovers the real name, which is what makes initials come out as
  * a person's initials ("Affan Dar" → AD) rather than the first two letters of
- * an alias ("daraffan@…" → DA). No fetch: the data is already loaded.
+ * an alias ("ada@…" → AD). No fetch: the data is already loaded.
  */
 /**
  * The one owner-badge descriptor both lists render from. Same person ⇒ same
@@ -290,7 +290,7 @@ function ownerDirectoryFromSessions(byId) {
  *
  * A DISPLAY NAME beats an email, because initials should be the person's
  * ("Affan Dar" → AD), not the first two letters of their alias
- * ("daraffan@…" → DA) — which is exactly the mismatch that made the same
+ * ("ada@…" → AD) — which is exactly the mismatch that made the same
  * person read differently in the session list and the package list.
  */
 function resolvePackageOwner(pkg, directory) {
@@ -342,29 +342,50 @@ export function ownerBadgeKey(owner, createdBy) {
     ).trim().toLowerCase();
 }
 
-function shouldDecorateSessionOwners(state) {
-    // Decorate owners only when the list actually surfaces more than one
-    // distinct human owner — otherwise the owner chip is pure noise on every
-    // row (you are always "you"). A narrowed owner filter is an explicit
-    // multi-user context, so honor that too.
-    // A narrowed filter counts as an explicit multi-user context ONLY when it
-    // names specific owners. The DEFAULT signed-in filter already sets
-    // `all: false` AND `includeShared: true` (see
-    // defaultOwnerFilterForPrincipal), so testing either of those tagged every
-    // row in a single-user deployment with a pointless "you are you" chip.
-    // Everything else falls through to counting DISTINCT owners below, which
-    // is what the chip actually communicates.
-    const ownerFilter = state.sessions?.ownerFilter;
-    if (Array.isArray(ownerFilter?.ownerKeys) && ownerFilter.ownerKeys.length > 0) return true;
+/**
+ * Distinct HUMAN owners **in the list** — where "the list" means the rows the
+ * owner filter admits, whether or not they happen to be on screen.
+ *
+ * That distinction is the whole rule, and the two halves pull in opposite
+ * directions on purpose:
+ *   - **Collapsing** a folder hides rows that are still in the list, so they
+ *     still count. A chip that appeared on expand and vanished on collapse
+ *     would be worse than no chip.
+ *   - **Filtering** takes rows out of the list entirely, so they stop counting.
+ *     Narrowing to "me + System" leaves one human, and one human needs no chip.
+ *
+ * "Human" excludes:
+ *   - `isSystem` rows (the permanent system agents);
+ *   - rows owned by the first-class System principal. Sessions a system agent
+ *     spawns on a user's behalf are NOT flagged isSystem — deliberately, so
+ *     they stay deletable (see SYSTEM_OWNER_KEY) — so gating on the flag alone
+ *     let "System" through as a second "person";
+ *   - unowned rows, whose owner key is null.
+ */
+function distinctHumanOwnerCount(state, stopAt = Infinity) {
+    const byId = state?.sessions?.byId;
+    const ownerFilter = state?.sessions?.ownerFilter || { all: true };
+    const auth = state?.auth || {};
     const owners = new Set();
-    for (const session of Object.values(state.sessions?.byId || {})) {
+    for (const session of Object.values(byId || {})) {
         if (!session || session.isSystem || session.isGroup) continue;
         const key = ownerKeyForOwner(session.owner);
-        if (!key) continue;
+        if (!key || key === SYSTEM_OWNER_KEY) continue;
+        // Only rows the filter admits. Uses the same predicate the rows
+        // themselves are filtered with, so the tally can never disagree with
+        // what is actually listed.
+        if (!matchesOwnerFilterDirect(session, ownerFilter, auth)) continue;
         owners.add(key);
-        if (owners.size > 1) return true;
+        if (owners.size >= stopAt) break;
     }
-    return false;
+    return owners.size;
+}
+
+function shouldDecorateSessionOwners(state) {
+    // One rule: the chip earns its place when the list holds more than one
+    // distinct human owner. Otherwise it is noise on every row — you are
+    // always "you".
+    return distinctHumanOwnerCount(state, 2) > 1;
 }
 
 function groupMemberSessions(group, byId = {}) {
@@ -3802,6 +3823,18 @@ export function selectAdminConsole(state) {
     );
     // Built once per render, not per row.
     const ownerDirectory = ownerDirectoryFromSessions(state?.sessions?.byId);
+    // Same rule as the session list: the owner chip only earns its place when
+    // this list actually holds more than one owner. Shared packages belong to
+    // the deployment, not a person, so they neither carry a chip nor count
+    // toward the tally.
+    const distinctPackageOwners = new Set();
+    for (const pkg of pkgList) {
+        if (pkg?.scope === "shared") continue;
+        const key = ownerKeyForOwner(pkg?.owner) || String(pkg?.createdBy || "").trim().toLowerCase();
+        if (!key || key === SYSTEM_OWNER_KEY) continue;
+        distinctPackageOwners.add(key);
+    }
+    const decoratePackageOwners = distinctPackageOwners.size > 1;
     const packageRow = (pkg) => ({
         name: pkg.name,
         scope: pkg.scope === "shared" ? "shared" : "user",
@@ -3815,7 +3848,9 @@ export function selectAdminConsole(state) {
         // the deployment and keep the scope badge instead.
         // Resolved against the session-owner directory so the initials are the
         // PERSON's, matching the session list exactly.
-        ownerBadge: pkg.scope === "shared" ? null : ownerBadgeFor(resolvePackageOwner(pkg, ownerDirectory)),
+        ownerBadge: (pkg.scope === "shared" || !decoratePackageOwners)
+            ? null
+            : ownerBadgeFor(resolvePackageOwner(pkg, ownerDirectory)),
         // Highlight only while the Agents section is active — otherwise the
         // GitHub Keys screen shows a double selection.
         selected: admin.section === "packages" && pkgState.selectedName === pkg.name,
@@ -4074,6 +4109,14 @@ export function selectAdminConsole(state) {
         selectedName: pkgState.selectedName || null,
         detail: packageDetail,
         workspace,
+        /**
+         * The package's own CHANGELOG.md, when it ships one.
+         *
+         * Passed through verbatim rather than parsed: it is authored markdown,
+         * and the renderer only needs to pick out headings and the signature
+         * line. Null when the package carries no changelog.
+         */
+        changelog: pkgState.changelog || null,
         addDialog: {
             open: Boolean(pkgState.addDialog?.open),
             kind: pkgState.addDialog?.kind || "repo",
@@ -7255,7 +7298,10 @@ export function selectInspector(state, options = {}) {
                 ]
                 : activeTab === "history"
                     ? [
-                        ...buildPaneTitleRuns(compactSecondaryMeta ? "History" : `History: ${shortId}`, "magenta"),
+                        // Named for what it actually shows: the durable Duroxide
+                        // event log. The compact branch abbreviates rather than
+                        // truncates — the full name overruns a narrow inspector.
+                        ...buildPaneTitleRuns(compactSecondaryMeta ? "Duroxide Events" : `Duroxide Event History: ${shortId}`, "magenta"),
                     ]
                     : activeTab === "stats"
                         ? [

@@ -5,10 +5,19 @@ import { SESSION_STATE_MISSING_PREFIX, type AbortTurnResult, type ManagedSession
 import type { ModelProviderRegistry } from "./model-providers.js";
 import { createFactTools } from "./facts-tools.js";
 import { createGraphTools } from "./graph-tools.js";
-import { createInspectTools } from "./inspect-tools.js";
+import { createInspectTools, NO_VIEWER, type InspectViewer } from "./inspect-tools.js";
 import { pinToolsNeverDefer } from "./tool-pinning.js";
 import type { SessionCatalog } from "./cms.js";
 import { SYSTEM_USER_PRINCIPAL } from "./cms.js";
+import { evaluateRoleObservation } from "../api/src/session-authz.js";
+
+/**
+ * How long a resolved inspect viewer may be reused before it is looked up
+ * again. Bounds how long a privilege change takes to bite; short enough that
+ * a demotion lands within a turn or two, long enough that a chatty diagnostic
+ * turn does not re-query per tool call.
+ */
+const INSPECT_VIEWER_TTL_MS = 30_000;
 import type { FactStore } from "./facts-store.js";
 import { isEnhancedFactStore } from "./facts-store.js";
 import type { GraphStore } from "./graph-store.js";
@@ -155,6 +164,18 @@ function buildEffectivePromptLayers(workerDefaults: WorkerDefaults, config: Seri
  * @internal
  */
 export class SessionManager {
+    /**
+     * Resolved inspect viewers, keyed by session id. Static so it is shared
+     * across manager instances in a worker process.
+     *
+     * The TTL alone does NOT bound this map: it is only consulted on read, so
+     * a session touched once and never again leaves its entry behind forever.
+     * A long-lived worker sees an unbounded number of session ids, so entries
+     * are swept on insert once the map crosses a threshold.
+     */
+    private static _inspectViewerCache = new Map<string, { at: number; viewer: InspectViewer }>();
+    private static readonly INSPECT_VIEWER_CACHE_SWEEP_AT = 2_000;
+
     private clients = new Map<string, CopilotClient>();
     /**
      * Backward-compat accessor for the default-token CopilotClient.
@@ -231,6 +252,16 @@ export class SessionManager {
         this.workerDefaults = workerDefaults ?? {};
         this.sessionStateDir = sessionStateDir ?? DEFAULT_SESSION_STATE_DIR;
     }
+
+    /**
+     * Artifact store, assigned by the worker after construction.
+     *
+     * Set here rather than taken as a constructor argument because the worker
+     * builds its store after the SessionManager, and the only consumer is the
+     * write bundle's patch artifacts — which degrade to a clear refusal when
+     * it is absent rather than failing a turn.
+     */
+    artifactStore: import("./session-store.js").ArtifactStore | null = null;
 
     /** Store full config (with tools/hooks) for a session. Called by PilotSwarmClient. */
     setConfig(sessionId: string, config: ManagedSessionConfig): void {
@@ -1074,6 +1105,10 @@ export class SessionManager {
             );
         }
         // Tuner sessions are read-only by design — no spawn / message / cancel.
+        // The old read-only tuner had its mutating tools stripped here. The
+        // Agent Manager that replaces it is deliberately NOT read-only — its
+        // whole purpose is to change agents — so the strip applies only to the
+        // legacy id, and dies with it.
         const isTunerSession = effectiveSerializableConfig.agentIdentity === "agent-tuner";
         const mutatingSystemToolNames = new Set(["update_session_summary", "send_session_message", "reply_session_message"]);
         const userTools = config.tools ?? [];
@@ -1169,6 +1204,16 @@ export class SessionManager {
                 agentIdentity: effectiveSerializableConfig.agentIdentity,
                 duroxideClient: this._duroxideClient ?? undefined,
                 factStore: this.factStore ?? undefined,
+                // The viewer spine. Inspect tools act as this session's OWNER,
+                // never as "whatever the model asked for" — resolved per
+                // invocation so a role change lands on the next turn instead
+                // of outliving the session. See createInspectTools' docstring.
+                resolveViewer: () => this._resolveInspectViewer(sessionId),
+                // The write bundle attaches patch artifacts to THIS session,
+                // so a human reviews the proposed change where the
+                // conversation that produced it already is.
+                artifactStore: this.artifactStore ?? null,
+                sessionId,
             })
             : [];
         // Service sessions (tree-scoped machinery, e.g. the regen distiller)
@@ -1896,6 +1941,104 @@ export class SessionManager {
                 return mergePromptSections([currentContent, overlay]) ?? currentContent;
             },
         };
+    }
+
+    /**
+     * Who the inspect tools act as, for one session.
+     *
+     * Cached for INSPECT_VIEWER_TTL_MS, not for the session's life: a
+     * privilege value must be able to go stale DOWNWARD promptly. Captured at
+     * creation, it would let a demoted admin keep fleet-wide reach for as long
+     * as they kept a session open; on a short TTL the worst case is bounded by
+     * the TTL. The bound is the point, so it is a named constant, not a magic
+     * number buried in a call.
+     *
+     * ADMIN COMES FROM THE USERS TABLE, not from a token. A worker holds an
+     * owner and never sees a request — cron firings, sub-agent turns, crash
+     * recovery and replay all run turns with no HTTP request behind them at
+     * all — so the portal records the role it authenticated with
+     * (`cms_set_user_role`, migration 0042) and the worker reads that
+     * observation here.
+     *
+     * Two ways it fails closed, both deliberate:
+     *   - No recorded role (never signed in, unknown principal, read failure)
+     *     is plain user, never admin.
+     *   - A role older than ROLE_MAX_AGE_MS is discarded. An observation that
+     *     nothing has re-confirmed in half a day is not evidence of current
+     *     privilege.
+     */
+    private async _resolveInspectViewer(sessionId: string): Promise<InspectViewer> {
+        const cached = SessionManager._inspectViewerCache.get(sessionId);
+        if (cached && Date.now() - cached.at < INSPECT_VIEWER_TTL_MS) return cached.viewer;
+
+        let viewer: InspectViewer = NO_VIEWER;
+        try {
+            const row = await this.sessionCatalog?.getSession(sessionId);
+            const owner = row?.owner;
+            if (owner?.provider && owner?.subject) {
+                const isSystemPrincipal = owner.provider === SYSTEM_USER_PRINCIPAL.provider
+                    && owner.subject === SYSTEM_USER_PRINCIPAL.subject;
+                viewer = {
+                    provider: owner.provider,
+                    subject: owner.subject,
+                    // The System principal already reaches everything through
+                    // isSystemPrincipal; asking the users table about it would
+                    // only add a query whose answer changes nothing.
+                    isAdmin: isSystemPrincipal ? false : await this._resolveOwnerIsAdmin(owner),
+                    isSystemPrincipal,
+                };
+            } else if (row?.isSystem) {
+                // Ownerless platform sessions act as the System principal, the
+                // same way they already do for credential resolution.
+                viewer = { provider: "system", subject: "system", isAdmin: false, isSystemPrincipal: true };
+            }
+        } catch {
+            // Fail closed: NO_VIEWER reads nothing.
+            viewer = NO_VIEWER;
+        }
+        SessionManager._cacheInspectViewer(sessionId, viewer);
+        return viewer;
+    }
+
+    /**
+     * Store a resolved viewer, sweeping expired entries first when the map has
+     * grown past the sweep threshold. Expiry is by the same TTL the read path
+     * enforces, so a swept entry could never have been served anyway.
+     */
+    private static _cacheInspectViewer(sessionId: string, viewer: InspectViewer): void {
+        const now = Date.now();
+        if (SessionManager._inspectViewerCache.size >= SessionManager.INSPECT_VIEWER_CACHE_SWEEP_AT) {
+            for (const [id, entry] of SessionManager._inspectViewerCache) {
+                if (now - entry.at >= INSPECT_VIEWER_TTL_MS) SessionManager._inspectViewerCache.delete(id);
+            }
+            // Everything was live (a genuinely huge concurrent working set).
+            // Drop it all rather than grow without bound; the cost is one
+            // re-resolution per session, never a wrong answer.
+            if (SessionManager._inspectViewerCache.size >= SessionManager.INSPECT_VIEWER_CACHE_SWEEP_AT) {
+                SessionManager._inspectViewerCache.clear();
+            }
+        }
+        SessionManager._inspectViewerCache.set(sessionId, { at: now, viewer });
+    }
+
+    /**
+     * Is this owner currently an administrator, per the last role the portal
+     * observed for them?
+     *
+     * The decision itself lives in `evaluateRoleObservation` next to the other
+     * shared authz predicates — the same reason `evaluateSessionAccess` moved
+     * there in phase A. A security rule with two implementations has one that
+     * is wrong.
+     */
+    private async _resolveOwnerIsAdmin(owner: { provider: string; subject: string }): Promise<boolean> {
+        if (typeof this.sessionCatalog?.getUserRole !== "function") return false;
+        try {
+            const observation = await this.sessionCatalog.getUserRole(owner);
+            return evaluateRoleObservation(observation, { principal: owner }).isAdmin;
+        } catch {
+            // A read failure is not evidence of privilege.
+            return false;
+        }
     }
 
     private _buildSystemMessage(

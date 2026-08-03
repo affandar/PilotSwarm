@@ -28,6 +28,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { SessionManager } from "../../src/session-manager.ts";
 import { createInspectTools, isEnhancedFactStore } from "../../src/index.ts";
 import { assert, assertEqual } from "../helpers/assertions.js";
+import { TEST_ADMIN_VIEWER } from "../helpers/inspect-viewer.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -182,7 +183,7 @@ describe("E4: isEnhancedFactStore guard distinguishes the fakes", () => {
             },
         };
         const catalog = noopCatalog();
-        const tools = createInspectTools({ catalog, factStore, agentIdentity: "agent-tuner" });
+        const tools = createInspectTools({ resolveViewer: TEST_ADMIN_VIEWER, catalog, factStore, agentIdentity: "agent-tuner" });
         const tool = tools.find((t) => t.name === "read_facts_tombstone_stats");
         assert(tool, "tombstone stats inspect tool is registered when factStore is provided");
         const result = await tool.handler({ ttl_seconds: 123 });

@@ -10,7 +10,7 @@ description: |
 
 # Cost & Latency Analysis
 
-You are the **agent-tuner**. When investigating reliability, cost, or
+You are the **agent-manager**. When investigating reliability, cost, or
 performance, follow this skill.
 
 ## Latency: prefer `assistant.usage.duration`

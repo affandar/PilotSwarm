@@ -80,17 +80,28 @@ describe("agent-package registry", () => {
                 "AGENT_PACKAGE_SEMVER_CONFLICT",
             );
 
-            // A stranger cannot publish into someone else's package…
-            await expectRegistryError(
-                catalog.publishAgentPackage(publishInput(name, "1.1.0", { owner: STRANGER })),
-                "AGENT_PACKAGE_FORBIDDEN",
+            // A stranger publishing the same NAME no longer collides with the
+            // owner's package — it lands in the stranger's own namespace (0043).
+            // This is the headline of per-user namespaces: the first publisher
+            // of a word no longer owns it deployment-wide.
+            const strangerCopy = await catalog.publishAgentPackage(
+                publishInput(name, "1.1.0", { owner: STRANGER }),
             );
+            assertEqual(strangerCopy.status, "published");
+            assert(strangerCopy.packageId !== first.packageId,
+                "same name + different owner must be a DIFFERENT package, not a hijack");
 
-            // …but an admin can.
+            // The owner's copy is untouched by the stranger's publish.
+            const ownerAfter = await catalog.getAgentPackage(name, OWNER, false);
+            assertEqual(ownerAfter.packageId, first.packageId);
+            assertEqual(ownerAfter.versions.length, 1, "stranger's version must not appear in the owner's package");
+
+            // An admin can still publish into the owner's package, by naming it.
             const adminPush = await catalog.publishAgentPackage(
-                publishInput(name, "1.1.0", { owner: STRANGER, isAdmin: true }),
+                publishInput(name, "1.1.0", { owner: OWNER, isAdmin: true }),
             );
             assertEqual(adminPush.status, "published");
+            assertEqual(adminPush.packageId, first.packageId);
 
             // Publishing activates the published version.
             const detail = await catalog.getAgentPackage(name, OWNER, false);
@@ -102,19 +113,48 @@ describe("agent-package registry", () => {
         }
     });
 
-    it("scope changes ride promote/demote, never publish", { timeout: TIMEOUT }, async () => {
+    it("scope is part of identity: a user copy and a shared copy coexist", { timeout: TIMEOUT }, async () => {
         const env = await getEnv();
         const catalog = await createCatalog(env);
         try {
             const name = `pkg-scope-${env.runId}`;
-            await catalog.publishAgentPackage(publishInput(name, "1.0.0"));
-            await expectRegistryError(
-                catalog.publishAgentPackage(publishInput(name, "1.1.0", { scope: "shared" })),
-                "AGENT_PACKAGE_SCOPE_MISMATCH",
+            const userCopy = await catalog.publishAgentPackage(publishInput(name, "1.0.0"));
+
+            // AGENT_PACKAGE_SCOPE_MISMATCH is gone by design (0043). Under
+            // global uniqueness, publishing the same name at a different scope
+            // was a conflict; now scope is part of identity, so this simply
+            // creates the shared package alongside the user one — which is how
+            // a user keeps a personal copy of something also published fleet-wide.
+            const sharedCopy = await catalog.publishAgentPackage(
+                publishInput(name, "1.1.0", { scope: "shared", isAdmin: true }),
             );
-            await catalog.setAgentPackageScope(name, "shared", OWNER, false);
-            const bumped = await catalog.publishAgentPackage(publishInput(name, "1.1.0", { scope: "shared" }));
-            assertEqual(bumped.status, "published");
+            assertEqual(sharedCopy.status, "published");
+            assert(sharedCopy.packageId !== userCopy.packageId,
+                "user-scope and shared-scope copies of a name are different packages");
+
+            // Resolution: the owner's own copy shadows the shared one.
+            const resolvedForOwner = await catalog.getAgentPackage(name, OWNER, false);
+            assertEqual(resolvedForOwner.packageId, userCopy.packageId,
+                "own enabled copy shadows shared");
+
+            // Disabling the personal copy is the recovery path: shared takes over.
+            await catalog.setAgentPackageEnabled(name, false, OWNER, false, { scope: "user" });
+            const resolvedAfterDisable = await catalog.getAgentPackage(name, OWNER, false);
+            assertEqual(resolvedAfterDisable.packageId, sharedCopy.packageId,
+                "a disabled personal copy falls through to shared");
+
+            // An explicit selector still reaches the disabled copy — otherwise
+            // disabling one would be irreversible.
+            const pinned = await catalog.getAgentPackage(name, OWNER, false, { scope: "user" });
+            assertEqual(pinned.packageId, userCopy.packageId);
+            assertEqual(pinned.enabled, false);
+
+            // Promotion is exclusive: shared already holds the name.
+            await catalog.setAgentPackageEnabled(name, true, OWNER, false, { scope: "user" });
+            await expectRegistryError(
+                catalog.setAgentPackageScope(name, "shared", OWNER, false, { scope: "user" }),
+                "AGENT_PACKAGE_NAME_TAKEN",
+            );
         } finally {
             await catalog.close();
         }
@@ -140,10 +180,17 @@ describe("agent-package registry", () => {
                 catalog.publishAgentPackage(publishInput(name, "1.1.0", { owner: null })),
                 "AGENT_PACKAGE_FORBIDDEN",
             );
+            // Under namespaces a null non-admin principal has no namespace of
+            // its own, so a name it does not own reads as NOT_FOUND rather than
+            // FORBIDDEN. That is both correct (the name does not exist for this
+            // caller) and better — a refusal no longer confirms the package is
+            // there.
             await expectRegistryError(
                 catalog.setAgentPackageScope(name, "shared", null, false),
-                "AGENT_PACKAGE_FORBIDDEN",
+                "AGENT_PACKAGE_NOT_FOUND",
             );
+            // Admins keep reaching NULL-owner packages, which is what stops
+            // 0043 from orphaning rows that predate owner stamping.
             await catalog.setAgentPackageScope(name, "shared", null, true);
 
             // And a null non-admin viewer sees only shared packages.
@@ -249,14 +296,25 @@ describe("agent-package registry", () => {
             await catalog.publishAgentPackage(publishInput(name, "1.0.0"));
             await catalog.publishAgentPackage(publishInput(name, "1.1.0"));
 
+            // A stranger naming someone else's package resolves inside their
+            // OWN namespace, where it does not exist — so NOT_FOUND, not
+            // FORBIDDEN. The refusal no longer discloses that the package
+            // exists at all.
             await expectRegistryError(
                 catalog.setAgentPackageScope(name, "shared", STRANGER, false),
-                "AGENT_PACKAGE_FORBIDDEN",
+                "AGENT_PACKAGE_NOT_FOUND",
             );
             await expectRegistryError(
                 catalog.deleteAgentPackage(name, STRANGER, false),
-                "AGENT_PACKAGE_FORBIDDEN",
+                "AGENT_PACKAGE_NOT_FOUND",
             );
+            // A stranger who HAS a copy of the name must still not reach the
+            // owner's: same word, different package.
+            await catalog.publishAgentPackage(publishInput(name, "9.0.0", { owner: STRANGER }));
+            await catalog.deleteAgentPackage(name, STRANGER, false);
+            assert(await catalog.getAgentPackage(name, OWNER, false),
+                "deleting your own copy must not touch anyone else's");
+
             await expectRegistryError(
                 catalog.deleteAgentPackage(`missing-${env.runId}`, OWNER, false),
                 "AGENT_PACKAGE_NOT_FOUND",

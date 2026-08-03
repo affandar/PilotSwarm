@@ -102,6 +102,13 @@ export async function startServer(opts = {}) {
         }
         req.auth = auth;
         req.authClaims = auth.principal?.rawClaims || null;
+        // Persist the role this token carried so the worker can resolve
+        // `isAdmin` for sessions this principal owns. Fire-and-forget: it is
+        // an observation, not part of this request's authorization — so it is
+        // called optionally. A runtime without the method (tests, embedders
+        // supplying their own) must not turn every authenticated request into
+        // a 500.
+        runtime.noteSignInRole?.(auth);
         next();
     }
 

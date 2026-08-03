@@ -2128,6 +2128,10 @@ export function appReducer(state, action) {
                         detail: null,
                         detailLoading: Boolean(action.name),
                         detailError: null,
+                        // Cleared on every selection: showing the previous
+                        // package's history under a new package is worse than
+                        // showing none.
+                        changelog: null,
                         action: { pending: null, error: null },
                         workspace: {
                             tree: null, treeLoading: Boolean(action.name), treeError: null,
@@ -2145,6 +2149,21 @@ export function appReducer(state, action) {
         case "admin/packages/detail/loadFailed": {
             if (state.admin.packages.selectedName !== action.name) return state;
             return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, detail: null, detailLoading: false, detailError: action.error || "Failed to load package" } } };
+        }
+        case "admin/packages/changelog/loaded": {
+            // Stale-response guard, same as the tree: a slow changelog for a
+            // previously-selected package must not surface under the current one.
+            if (state.admin.packages.selectedName !== action.name) return state;
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    packages: {
+                        ...state.admin.packages,
+                        changelog: action.content || null,
+                    },
+                },
+            };
         }
         case "admin/packages/tree/loaded": {
             if (state.admin.packages.selectedName !== action.name) return state;

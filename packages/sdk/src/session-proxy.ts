@@ -1,6 +1,7 @@
 import { isSessionLockAcquireTimeoutError, type SessionManager } from "./session-manager.js";
 import type { SessionStateStore } from "./session-store.js";
 import { resolveEffectiveSpawnOwner, type SessionCatalog } from "./cms.js";
+import { parseAgentFqn } from "./agent-fqn.js";
 import type { StorageConfig } from "./storage-config.js";
 import { SESSION_STATE_MISSING_PREFIX, sanitizePromptAttachmentRefs, IMAGE_ATTACHMENT_CONTENT_TYPES, ATTACHMENT_MAX_BYTES, ATTACHMENTS_MAX_TOTAL_BYTES, type AbortTurnResult, type PromptAttachmentRef, type SerializableSessionConfig, type TurnResult, type OrchestrationInput } from "./types.js";
 import type { ArtifactStore } from "./session-store.js";
@@ -39,7 +40,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { attemptStoreRecovery, runTurnCommit, runTurnPreamble, type TurnLifecycleContext } from "./session-lifecycle.js";
 import { supportsVersionedSnapshots, writeTurnSentinel } from "./snapshot-protocol.js";
 
-const SYSTEM_AGENT_IDS = new Set(["pilotswarm", "sweeper", "resourcemgr", "facts-manager", "agent-tuner"]);
+const SYSTEM_AGENT_IDS = new Set(["pilotswarm", "sweeper", "resourcemgr", "facts-manager"]);
 
 const SESSION_RECOVERY_NOTICE =
     "[SYSTEM: The runtime recovered this session after the live Copilot session was lost on a worker. " +
@@ -730,9 +731,17 @@ export function createSessionManagerProxy(ctx: any) {
         spawnChildSession(parentSessionId: string, config: any, task: string, nestingLevel?: number, isSystem?: boolean, title?: string, agentId?: string, splash?: string, titleIsExplicit?: boolean) {
             return ctx.scheduleActivity("spawnChildSession", { parentSessionId, config, task, nestingLevel, isSystem, title, agentId, splash, titleIsExplicit });
         },
-    /** Resolve a loaded agent config by name. Returns null if not found. */
+    /**
+     * Resolve a loaded agent config by name. Returns null if not found.
+     *
+     * `callerSessionId` comes from the orchestration INSTANCE, never from the
+     * model: it is what lets the activity refuse to hand a private package's
+     * agent to somebody else's session. Threading it here rather than through
+     * the orchestration generator keeps the yield sequence byte-identical, so
+     * this is not an orchestration version change.
+     */
     resolveAgentConfig(agentName: string) {
-        return ctx.scheduleActivity("resolveAgentConfig", { agentName });
+        return ctx.scheduleActivity("resolveAgentConfig", { agentName, callerSessionId: ctx.instanceId });
     },
         /** Send a message to a session via the PilotSwarmClient SDK. */
         sendToSession(sessionId: string, message: string) {
@@ -3107,31 +3116,126 @@ export function registerActivities(
     // callers can surface a clear error instead of spawning them.
     runtime.registerActivity("resolveAgentConfig", async (
         _activityCtx: any,
-        input: { agentName: string },
+        input: { agentName: string; callerSessionId?: string },
     ): Promise<{ name: string; prompt: string; tools?: string[]; initialPrompt?: string; title?: string; system?: boolean; id?: string; parent?: string; splash?: string; splashMobile?: string; namespace?: string; promptLayerKind?: "app-agent" | "app-system-agent" | "pilotswarm-system-agent"; creatable?: boolean } | null> => {
         const agents: Array<any> = [
             ...(userAgents ?? []).map(a => ({ ...a, system: false, creatable: true })),
             ...(systemAgents ?? []).map(a => ({ ...a, creatable: false })),
         ];
         const normalize = (value?: string) => (value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
-        // Support qualified names: "smelter:supervisor" → namespace="smelter", name="supervisor"
+
+        // Parse the reference. `a:b` has meant `namespace:agent` since long
+        // before FQNs existed, so the parser reports that shape as AMBIGUOUS
+        // and we keep the namespace reading first — an existing binding must
+        // not change meaning because per-user namespaces shipped.
+        const fqn = parseAgentFqn(input.agentName);
         let lookupNamespace: string | undefined;
         let rawName = input.agentName;
-        if (input.agentName.includes(":")) {
-            const parts = input.agentName.split(":");
-            lookupNamespace = parts[0];
-            rawName = parts.slice(1).join(":");
+        /** `__shared:` explicitly asks past the caller's own copy. */
+        let sharedOnly = false;
+        if (fqn.kind === "shared") {
+            rawName = fqn.name;
+            sharedOnly = true;
+        } else if (fqn.kind === "bare") {
+            rawName = fqn.name;
+        } else if (fqn.kind === "ambiguous" || fqn.kind === "owner") {
+            rawName = fqn.name;
+            lookupNamespace = fqn.namespaceRef ?? fqn.ownerRef;
+        } else {
+            // Invalid (reserved prefix, bad semver, malformed). Fall back to
+            // the raw string so a legitimately odd agent name still resolves
+            // the way it always did; a reserved name simply will not match.
+            rawName = input.agentName;
         }
+
         const lookup = normalize(rawName);
         // Also try without trailing "agent" suffix for fuzzy matching
         // (LLM often says "Sweeper agent" which normalizes to "sweeperagent", but id is "sweeper")
         const lookupBase = lookup.replace(/agent$/, "");
-        const agent = agents.find(a => {
-            // If namespace qualifier provided, check it matches
-            if (lookupNamespace && normalize(a.namespace) !== normalize(lookupNamespace)) return false;
-            const candidates = [a.name, a.id, a.title].map(normalize).filter(Boolean);
+
+        /**
+         * PACKAGE PRIVACY, enforced at RESOLUTION rather than at creation.
+         *
+         * Workers install every enabled package, including other users'
+         * user-scope ones, so `userAgents` is a fleet-wide list with no
+         * tenancy in it. The Web API filters package agents when a session is
+         * created (`_authorizePackageAgentCreate`), but `spawn_agent` reaches
+         * this activity directly and never passes through that filter — so a
+         * name match alone would hand Alice's private agent, prompt and all,
+         * to Bob's session.
+         *
+         * It has to be enforced HERE and not at spawn time: the return value
+         * carries the agent's full prompt, and merely returning it writes that
+         * prompt into the caller's orchestration history.
+         *
+         * Deployment-owned plugin agents carry no package owner and stay
+         * public, exactly as before.
+         */
+        let callerOwnerKey: string | null = null;
+        let callerResolved = false;
+        const ownerKeyOf = (owner?: { provider?: string; subject?: string } | null) =>
+            owner?.provider && owner?.subject ? `${owner.provider}\u0001${owner.subject}` : null;
+        /** Resolve the caller's owner once per invocation, memoized and fail-closed. */
+        const callerOwnerKeyOnce = async (): Promise<string | null> => {
+            if (!callerResolved) {
+                callerResolved = true;
+                try {
+                    const row = input.callerSessionId
+                        ? await catalog?.getSession(input.callerSessionId)
+                        : null;
+                    callerOwnerKey = ownerKeyOf(row?.owner as any);
+                } catch {
+                    // Fail closed: an unresolvable caller gets no private agents.
+                    callerOwnerKey = null;
+                }
+            }
+            return callerOwnerKey;
+        };
+        const visibleToCaller = async (agent: any): Promise<boolean> => {
+            const agentOwnerKey = ownerKeyOf(agent?.packageOwner);
+            if (agent?.packageScope !== "user" || !agentOwnerKey) return true;
+            const key = await callerOwnerKeyOnce();
+            return key !== null && key === agentOwnerKey;
+        };
+
+        const candidatesFor = (a: any) => [a.name, a.id, a.title].map(normalize).filter(Boolean);
+        const nameMatches = (a: any) => {
+            const candidates = candidatesFor(a);
             return candidates.includes(lookup) || (lookupBase && candidates.includes(lookupBase));
+        };
+
+        let matches = agents.filter(a => {
+            if (lookupNamespace && normalize(a.namespace) !== normalize(lookupNamespace)) return false;
+            return nameMatches(a);
         });
+
+        // An ambiguous `a:b` that matched nothing as `namespace:agent` gets its
+        // second reading — `owner:package` — rather than just failing. Order,
+        // not guesswork: the old meaning always wins when it resolves.
+        if (matches.length === 0 && fqn.kind === "ambiguous") {
+            matches = agents.filter(nameMatches);
+        }
+
+        if (sharedOnly) {
+            // `__shared:x` means the deployment's copy, explicitly. This is the
+            // one thing bare-name precedence otherwise takes away: without it,
+            // a user with their own copy could never reach the shared one.
+            matches = matches.filter(a => a.packageScope !== "user");
+        } else {
+            // SHADOWING, at the agent level: the caller's own copy comes first,
+            // then everything public. Same rule the registry resolver applies,
+            // so "run X" and "show me X" cannot disagree about which X.
+            const callerKey = await callerOwnerKeyOnce();
+            matches = [
+                ...matches.filter(a => a.packageScope === "user" && ownerKeyOf(a.packageOwner) === callerKey && callerKey !== null),
+                ...matches.filter(a => !(a.packageScope === "user" && ownerKeyOf(a.packageOwner) === callerKey && callerKey !== null)),
+            ];
+        }
+
+        let agent: any = undefined;
+        for (const candidate of matches) {
+            if (await visibleToCaller(candidate)) { agent = candidate; break; }
+        }
         if (!agent) return null;
         return {
             name: agent.name,

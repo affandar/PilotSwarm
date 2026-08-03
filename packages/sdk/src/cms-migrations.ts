@@ -220,6 +220,16 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "agent_package_owner_identity",
             sql: migration_0041_agent_package_owner_identity(schema),
         },
+        {
+            version: "0042",
+            name: "user_role_from_signin",
+            sql: migration_0042_user_role_from_signin(schema),
+        },
+        {
+            version: "0043",
+            name: "agent_package_namespaces",
+            sql: migration_0043_agent_package_namespaces(schema),
+        },
     ];
 }
 
@@ -8209,7 +8219,7 @@ $$ LANGUAGE plpgsql;
 //
 // An agent package stored only its owner PRINCIPAL (provider + subject —
 // an opaque directory id) plus a created_by email, so the UI had no human
-// name to render and fell back to the email's local part: "daraffan@…"
+// name to render and fell back to the email's local part: "ada@…"
 // became "DA" where the same person's sessions correctly showed "AD" for
 // "Affan Dar".
 //
@@ -8280,6 +8290,650 @@ CREATE OR REPLACE FUNCTION ${s}.cms_get_agent_package(
        AND (p.scope = 'shared' OR p_is_admin
             OR (p.owner_provider = BTRIM(p_viewer_provider) AND p.owner_subject = BTRIM(p_viewer_subject)))
      ORDER BY v.created_at DESC;
+$$ LANGUAGE sql;
+`;
+}
+
+// ─── Migration 0042: persist the authorization role at sign-in ───
+//
+// The worker had no way to know whether a session's owner is an admin.
+// The portal resolves the role from the request JWT (Entra app roles, or the
+// email allowlist) and never persisted it, so a worker — which holds an
+// owner, not a token, and runs turns on the far side of a durable queue where
+// no request exists at all (cron, sub-agent turns, crash recovery, replay) —
+// had nothing to read. Agent inspect tools were therefore user-scoped for
+// everyone, admins included.
+//
+// This stores the LAST OBSERVED role for a principal, refreshed on every
+// authenticated portal request. Two properties make that safe to rely on:
+//
+//   - `role` is OVERWRITTEN, never COALESCE'd. A demotion (admin → user) must
+//     land, and a COALESCE-style merge like cms_register_user's display-field
+//     rule would silently preserve the higher privilege forever. This is why
+//     the role does NOT ride along on cms_register_user: that function is
+//     called by sightings which carry no role at all (share grants, session
+//     creates), and any of them would either wipe a good role or force the
+//     merge semantics we must not have here.
+//
+//   - `role_seen_at` records when the value was last CONFIRMED, not when it
+//     last changed, so readers can fail closed on a stale row. It is bumped
+//     on every write even when the role is unchanged.
+//
+// Unrecognized role text normalizes to NULL rather than being stored verbatim:
+// an unknown role must read as "no privilege", never as an opaque value some
+// later caller might compare loosely.
+function migration_0042_user_role_from_signin(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- 0042_user_role_from_signin: last-observed authorization role per user.
+
+ALTER TABLE ${s}.users ADD COLUMN IF NOT EXISTS role TEXT;
+ALTER TABLE ${s}.users ADD COLUMN IF NOT EXISTS role_seen_at TIMESTAMPTZ;
+
+-- ── cms_set_user_role ────────────────────────────────────────────
+-- Upserts the user (reusing the standard sighting path so email/display_name
+-- stay fresh) and then REPLACES the role outright.
+--
+-- Returns the stored role so the caller can cheaply detect a change without a
+-- second round-trip.
+CREATE OR REPLACE FUNCTION ${s}.cms_set_user_role(
+    p_provider     TEXT,
+    p_subject      TEXT,
+    p_email        TEXT,
+    p_display_name TEXT,
+    p_role         TEXT
+) RETURNS TEXT AS $$
+DECLARE
+    v_user_id BIGINT;
+    v_role    TEXT := LOWER(NULLIF(BTRIM(p_role), ''));
+BEGIN
+    -- Anything outside the known vocabulary is stored as NULL (= no
+    -- privilege). 'anonymous' is a real value: it is what an auth-disabled
+    -- deployment issues, and the portal treats it as full access, so the
+    -- worker must be able to see the same thing rather than guess.
+    IF v_role IS NOT NULL AND v_role NOT IN ('admin', 'user', 'anonymous') THEN
+        v_role := NULL;
+    END IF;
+
+    v_user_id := ${s}.cms_register_user(p_provider, p_subject, p_email, p_display_name);
+
+    UPDATE ${s}.users
+    SET role         = v_role,
+        role_seen_at = now(),
+        updated_at   = now()
+    WHERE user_id = v_user_id;
+
+    RETURN v_role;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── cms_get_user_role ────────────────────────────────────────────
+-- Narrow read for the worker's viewer resolver. Deliberately NOT folded into
+-- cms_get_user_profile: that would change an existing return type (requiring
+-- a DROP) and would hand the role to every profile reader, including the
+-- management surface, where it has no business being.
+--
+-- Returns no row for an unknown principal — the caller must treat "no row"
+-- and "NULL role" alike, as no privilege.
+CREATE OR REPLACE FUNCTION ${s}.cms_get_user_role(
+    p_provider TEXT,
+    p_subject  TEXT
+) RETURNS TABLE (
+    role         TEXT,
+    role_seen_at TIMESTAMPTZ
+) AS $$
+DECLARE
+    v_provider TEXT := NULLIF(BTRIM(p_provider), '');
+    v_subject  TEXT := NULLIF(BTRIM(p_subject),  '');
+BEGIN
+    IF v_provider IS NULL OR v_subject IS NULL THEN
+        RETURN;
+    END IF;
+
+    RETURN QUERY
+    SELECT u.role, u.role_seen_at
+    FROM ${s}.users u
+    WHERE u.provider = v_provider AND u.subject = v_subject;
+END;
+$$ LANGUAGE plpgsql;
+`;
+}
+
+// ─── Migration 0043: per-user agent package namespaces ───────────
+//
+// Package identity was globally unique on `name` alone, so the first person
+// to publish "triager" owned that word for the whole deployment. Identity
+// becomes the triple (scope, owner, name): every user gets their own
+// namespace, and `shared` is the deployment-wide one.
+//
+// Two rules carry the whole design:
+//
+//   1. RESOLUTION — a viewer's own ENABLED copy shadows the shared copy.
+//      That single rule delivers download-modify-independently, and doubles
+//      as recovery: disable a broken personal copy and the shared one takes
+//      over again with no other action.
+//
+//   2. PROMOTION IS EXCLUSIVE — user→shared refuses when a shared package
+//      already holds the name, because `shared` is the one namespace that
+//      still has to be globally unique.
+//
+// Every mutation proc previously keyed off `p_name` alone, which is now
+// ambiguous (your "triager" and mine). They all gain an explicit SELECTOR —
+// (scope, owner_provider, owner_subject) — where a NULL scope means "resolve
+// it for the actor the same way resolution works everywhere else". Adding
+// parameters creates an OVERLOAD rather than replacing the function, so each
+// old signature is dropped explicitly first.
+//
+// The install manifest also starts returning `package_id`. Workers install
+// every enabled package to disk, and with namespaces two packages can share
+// a name — a stable per-row key is what keeps them from colliding in the
+// cache directory.
+function migration_0043_agent_package_namespaces(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- 0043_agent_package_namespaces: identity becomes (scope, owner, name).
+
+-- ── The uniqueness swap ──────────────────────────────────────────
+--
+-- The old constraint came from \`name TEXT NOT NULL UNIQUE\` in the 0038
+-- CREATE TABLE, so PostgreSQL named it. Look it up by DEFINITION rather than
+-- by guessing the generated name: a schema restored from a dump, or created
+-- by a different PostgreSQL version, may not have named it identically.
+DO $mig$
+DECLARE
+    v_con TEXT;
+BEGIN
+    SELECT c.conname INTO v_con
+      FROM pg_constraint c
+     WHERE c.conrelid = '${s}.agent_packages'::regclass
+       AND c.contype = 'u'
+       AND pg_get_constraintdef(c.oid) = 'UNIQUE (name)';
+    IF v_con IS NOT NULL THEN
+        EXECUTE format('ALTER TABLE ${s}.agent_packages DROP CONSTRAINT %I', v_con);
+    END IF;
+END
+$mig$;
+
+-- Shared is still globally unique — it is the deployment's own namespace.
+CREATE UNIQUE INDEX IF NOT EXISTS agent_packages_shared_name_uniq
+    ON ${s}.agent_packages (name) WHERE scope = 'shared';
+
+-- User scope is unique PER OWNER. Existing rows were globally unique, so this
+-- index cannot conflict on the way in — there is nothing to reconcile.
+CREATE UNIQUE INDEX IF NOT EXISTS agent_packages_user_name_uniq
+    ON ${s}.agent_packages (owner_provider, owner_subject, name) WHERE scope = 'user';
+
+-- ── The resolver ─────────────────────────────────────────────────
+--
+-- One place decides which copy a name refers to, so reads, writes and the
+-- worker's agent lookup can never disagree about it.
+--
+-- p_sel_scope NULL  → resolve: the viewer's own copy, else shared.
+-- p_sel_scope given → pin exactly that copy (this is what an FQN compiles to).
+--
+-- p_require_enabled exists because SHADOWING IS ENABLE-SENSITIVE: a disabled
+-- personal copy must fall through to shared (that is the recovery path),
+-- while a mutation has to find the disabled row in order to re-enable it.
+CREATE OR REPLACE FUNCTION ${s}.cms_resolve_agent_package_id(
+    p_name             TEXT,
+    p_viewer_provider  TEXT,
+    p_viewer_subject   TEXT,
+    p_sel_scope        TEXT,
+    p_sel_owner_provider TEXT,
+    p_sel_owner_subject  TEXT,
+    p_require_enabled  BOOLEAN
+) RETURNS TEXT AS $$
+DECLARE
+    v_viewer_p TEXT := NULLIF(BTRIM(p_viewer_provider), '');
+    v_viewer_s TEXT := NULLIF(BTRIM(p_viewer_subject), '');
+    v_sel_p    TEXT := NULLIF(BTRIM(p_sel_owner_provider), '');
+    v_sel_s    TEXT := NULLIF(BTRIM(p_sel_owner_subject), '');
+    v_id       TEXT;
+BEGIN
+    IF p_sel_scope = 'shared' THEN
+        SELECT p.package_id INTO v_id FROM ${s}.agent_packages p
+         WHERE p.name = p_name AND p.scope = 'shared'
+           AND (NOT p_require_enabled OR p.enabled);
+        RETURN v_id;
+    END IF;
+
+    IF p_sel_scope = 'user' THEN
+        -- An explicit user-scope selection with no owner named means "mine".
+        IF v_sel_p IS NULL OR v_sel_s IS NULL THEN
+            v_sel_p := v_viewer_p;
+            v_sel_s := v_viewer_s;
+        END IF;
+        IF v_sel_p IS NULL OR v_sel_s IS NULL THEN
+            RETURN NULL;
+        END IF;
+        SELECT p.package_id INTO v_id FROM ${s}.agent_packages p
+         WHERE p.name = p_name AND p.scope = 'user'
+           AND p.owner_provider = v_sel_p AND p.owner_subject = v_sel_s
+           AND (NOT p_require_enabled OR p.enabled);
+        RETURN v_id;
+    END IF;
+
+    -- Unpinned: own copy shadows shared.
+    IF v_viewer_p IS NOT NULL AND v_viewer_s IS NOT NULL THEN
+        SELECT p.package_id INTO v_id FROM ${s}.agent_packages p
+         WHERE p.name = p_name AND p.scope = 'user'
+           AND p.owner_provider = v_viewer_p AND p.owner_subject = v_viewer_s
+           AND (NOT p_require_enabled OR p.enabled);
+        IF v_id IS NOT NULL THEN
+            RETURN v_id;
+        END IF;
+    END IF;
+
+    SELECT p.package_id INTO v_id FROM ${s}.agent_packages p
+     WHERE p.name = p_name AND p.scope = 'shared'
+       AND (NOT p_require_enabled OR p.enabled);
+    RETURN v_id;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── Mutations: every one now takes a selector ────────────────────
+--
+-- Dropped first because the argument lists grew; CREATE OR REPLACE would
+-- leave the old arity behind as a live overload, and a caller that missed
+-- the update would silently keep hitting the name-only version.
+DROP FUNCTION IF EXISTS ${s}.cms_agent_package_authz(TEXT, TEXT, TEXT, BOOLEAN);
+DROP FUNCTION IF EXISTS ${s}.cms_set_agent_package_scope(TEXT, TEXT, TEXT, TEXT, BOOLEAN);
+DROP FUNCTION IF EXISTS ${s}.cms_set_agent_package_enabled(TEXT, BOOLEAN, TEXT, TEXT, BOOLEAN);
+DROP FUNCTION IF EXISTS ${s}.cms_pin_agent_package_version(TEXT, TEXT, TEXT, TEXT, BOOLEAN);
+DROP FUNCTION IF EXISTS ${s}.cms_delete_agent_package(TEXT, TEXT, TEXT, BOOLEAN);
+
+CREATE OR REPLACE FUNCTION ${s}.cms_agent_package_authz(
+    p_name TEXT, p_actor_provider TEXT, p_actor_subject TEXT, p_is_admin BOOLEAN,
+    p_sel_scope TEXT, p_sel_owner_provider TEXT, p_sel_owner_subject TEXT
+) RETURNS ${s}.agent_packages AS $$
+DECLARE
+    v_pkg ${s}.agent_packages;
+    v_id  TEXT;
+    v_count INT;
+BEGIN
+    -- require_enabled = FALSE: a disabled copy must still be reachable, or
+    -- disabling one would be irreversible.
+    v_id := ${s}.cms_resolve_agent_package_id(
+        p_name, p_actor_provider, p_actor_subject,
+        p_sel_scope, p_sel_owner_provider, p_sel_owner_subject, FALSE);
+
+    -- ADMIN FALLBACK, and it is load-bearing rather than a convenience.
+    --
+    -- Ordinary resolution walks "my copy, then shared", which is right for a
+    -- user: a name they do not own and that is not shared genuinely does not
+    -- exist in their namespace. But that rule would strand two real classes
+    -- of row with no owner triple to select them by:
+    --
+    --   * NULL-owner packages, which pre-date owner stamping or were minted
+    --     by an admin in a no-auth deployment;
+    --   * another user's private package, which an admin must still be able
+    --     to disable or delete during an incident.
+    --
+    -- Without this they would be invisible AND undeletable after 0043 — a
+    -- migration that quietly orphans existing data. Ambiguity is refused
+    -- rather than guessed: if several copies share the name, the admin has
+    -- to say which one.
+    IF v_id IS NULL AND p_is_admin AND p_sel_scope IS NULL THEN
+        SELECT count(*) INTO v_count FROM ${s}.agent_packages p WHERE p.name = p_name;
+        IF v_count > 1 THEN
+            RAISE EXCEPTION 'AGENT_PACKAGE_AMBIGUOUS: % copies of "%" exist; name an owner or scope to pick one', v_count, p_name;
+        END IF;
+        SELECT p.package_id INTO v_id FROM ${s}.agent_packages p WHERE p.name = p_name;
+    END IF;
+
+    IF v_id IS NULL THEN
+        RAISE EXCEPTION 'AGENT_PACKAGE_NOT_FOUND: package "%" does not exist', p_name;
+    END IF;
+
+    SELECT * INTO v_pkg FROM ${s}.agent_packages WHERE package_id = v_id FOR UPDATE;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'AGENT_PACKAGE_NOT_FOUND: package "%" does not exist', p_name;
+    END IF;
+
+    IF NOT p_is_admin AND (
+        v_pkg.owner_provider IS NULL
+        OR v_pkg.owner_provider IS DISTINCT FROM NULLIF(BTRIM(p_actor_provider), '')
+        OR v_pkg.owner_subject IS DISTINCT FROM NULLIF(BTRIM(p_actor_subject), '')
+    ) THEN
+        RAISE EXCEPTION 'AGENT_PACKAGE_FORBIDDEN: only the package creator or an admin can modify "%"', p_name;
+    END IF;
+    RETURN v_pkg;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_set_agent_package_scope(
+    p_name TEXT, p_scope TEXT, p_actor_provider TEXT, p_actor_subject TEXT, p_is_admin BOOLEAN,
+    p_sel_scope TEXT, p_sel_owner_provider TEXT, p_sel_owner_subject TEXT
+) RETURNS VOID AS $$
+DECLARE
+    v_pkg ${s}.agent_packages;
+    v_clash TEXT;
+BEGIN
+    IF p_scope NOT IN ('shared', 'user') THEN
+        RAISE EXCEPTION 'AGENT_PACKAGE_BAD_SCOPE: scope must be shared or user, got "%"', p_scope;
+    END IF;
+    v_pkg := ${s}.cms_agent_package_authz(
+        p_name, p_actor_provider, p_actor_subject, p_is_admin,
+        p_sel_scope, p_sel_owner_provider, p_sel_owner_subject);
+
+    IF p_scope = 'shared' AND v_pkg.scope <> 'shared' THEN
+        -- Promotion is exclusive: shared is the one namespace still globally
+        -- unique, so refuse with a legible error rather than letting the
+        -- partial unique index raise a raw constraint violation.
+        SELECT p.package_id INTO v_clash FROM ${s}.agent_packages p
+         WHERE p.name = p_name AND p.scope = 'shared';
+        IF v_clash IS NOT NULL THEN
+            RAISE EXCEPTION 'AGENT_PACKAGE_NAME_TAKEN: a shared package named "%" already exists; rename before promoting', p_name;
+        END IF;
+    END IF;
+
+    IF p_scope = 'user' AND v_pkg.scope <> 'user' THEN
+        -- Demotion needs an owner to land on, and must not collide with a
+        -- copy that owner already has.
+        IF v_pkg.owner_provider IS NULL OR v_pkg.owner_subject IS NULL THEN
+            RAISE EXCEPTION 'AGENT_PACKAGE_NO_OWNER: "%" has no owner identity to demote to', p_name;
+        END IF;
+        SELECT p.package_id INTO v_clash FROM ${s}.agent_packages p
+         WHERE p.name = p_name AND p.scope = 'user'
+           AND p.owner_provider = v_pkg.owner_provider
+           AND p.owner_subject = v_pkg.owner_subject;
+        IF v_clash IS NOT NULL THEN
+            RAISE EXCEPTION 'AGENT_PACKAGE_NAME_TAKEN: that owner already has a user-scope package named "%"', p_name;
+        END IF;
+    END IF;
+
+    UPDATE ${s}.agent_packages SET scope = p_scope WHERE package_id = v_pkg.package_id;
+    PERFORM ${s}.cms_agent_registry_bump();
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_set_agent_package_enabled(
+    p_name TEXT, p_enabled BOOLEAN, p_actor_provider TEXT, p_actor_subject TEXT, p_is_admin BOOLEAN,
+    p_sel_scope TEXT, p_sel_owner_provider TEXT, p_sel_owner_subject TEXT
+) RETURNS VOID AS $$
+DECLARE
+    v_pkg ${s}.agent_packages;
+BEGIN
+    v_pkg := ${s}.cms_agent_package_authz(
+        p_name, p_actor_provider, p_actor_subject, p_is_admin,
+        p_sel_scope, p_sel_owner_provider, p_sel_owner_subject);
+    UPDATE ${s}.agent_packages SET enabled = p_enabled WHERE package_id = v_pkg.package_id;
+    PERFORM ${s}.cms_agent_registry_bump();
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_pin_agent_package_version(
+    p_name TEXT, p_semver TEXT, p_actor_provider TEXT, p_actor_subject TEXT, p_is_admin BOOLEAN,
+    p_sel_scope TEXT, p_sel_owner_provider TEXT, p_sel_owner_subject TEXT
+) RETURNS VOID AS $$
+DECLARE
+    v_pkg ${s}.agent_packages;
+    v_version_id TEXT;
+BEGIN
+    v_pkg := ${s}.cms_agent_package_authz(
+        p_name, p_actor_provider, p_actor_subject, p_is_admin,
+        p_sel_scope, p_sel_owner_provider, p_sel_owner_subject);
+    SELECT version_id INTO v_version_id FROM ${s}.agent_package_versions
+     WHERE package_id = v_pkg.package_id AND semver = p_semver;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'AGENT_PACKAGE_VERSION_NOT_FOUND: %@% is not a published version', p_name, p_semver;
+    END IF;
+    UPDATE ${s}.agent_packages SET active_version_id = v_version_id WHERE package_id = v_pkg.package_id;
+    PERFORM ${s}.cms_agent_registry_bump();
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_delete_agent_package(
+    p_name TEXT, p_actor_provider TEXT, p_actor_subject TEXT, p_is_admin BOOLEAN,
+    p_sel_scope TEXT, p_sel_owner_provider TEXT, p_sel_owner_subject TEXT
+) RETURNS TABLE(artifact_filename TEXT) AS $$
+DECLARE
+    v_pkg ${s}.agent_packages;
+BEGIN
+    v_pkg := ${s}.cms_agent_package_authz(
+        p_name, p_actor_provider, p_actor_subject, p_is_admin,
+        p_sel_scope, p_sel_owner_provider, p_sel_owner_subject);
+    RETURN QUERY
+        SELECT v.artifact_filename FROM ${s}.agent_package_versions v
+         WHERE v.package_id = v_pkg.package_id;
+    DELETE FROM ${s}.agent_packages WHERE package_id = v_pkg.package_id;
+    PERFORM ${s}.cms_agent_registry_bump();
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── Publish: locks the (name, scope, owner) row, not the name ────
+--
+-- The scope-mismatch error from 0038 is deliberately GONE. Publishing
+-- \`user\` when a \`shared\` package holds the name is no longer a conflict —
+-- it is exactly how a user takes a personal copy of a shared package, which
+-- is the headline feature of this migration.
+DROP FUNCTION IF EXISTS ${s}.cms_publish_agent_package(
+    TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, BIGINT, TEXT, TEXT, JSONB, TEXT, BOOLEAN);
+
+CREATE OR REPLACE FUNCTION ${s}.cms_publish_agent_package(
+    p_package_id TEXT, p_version_id TEXT, p_name TEXT, p_scope TEXT,
+    p_owner_provider TEXT, p_owner_subject TEXT, p_source_id TEXT,
+    p_semver TEXT, p_sha256 TEXT, p_size_bytes BIGINT, p_artifact_filename TEXT,
+    p_commit_sha TEXT, p_manifest JSONB, p_created_by TEXT, p_is_admin BOOLEAN
+) RETURNS TABLE(status TEXT, package_id TEXT, version_id TEXT) AS $$
+DECLARE
+    v_pkg RECORD;
+    v_ver RECORD;
+    v_owner_provider TEXT := NULLIF(BTRIM(p_owner_provider), '');
+    v_owner_subject  TEXT := NULLIF(BTRIM(p_owner_subject), '');
+
+BEGIN
+    IF p_scope NOT IN ('shared', 'user') THEN
+        RAISE EXCEPTION 'AGENT_PACKAGE_BAD_SCOPE: scope must be shared or user, got "%"', p_scope;
+    END IF;
+
+    -- The "__" prefix is reserved for platform sentinels (\`__shared\`, and
+    -- whatever comes later). Enforced HERE, in the database, because it is the
+    -- one gate every publish path goes through — CLI push, portal upload and
+    -- the manager's own import all land on this function. A TypeScript-only
+    -- check would be one forgotten caller away from letting somebody mint a
+    -- package that captures every reference meaning "the deployment's copy".
+    IF LOWER(BTRIM(p_name)) LIKE '\\_\\_%' THEN
+        RAISE EXCEPTION 'AGENT_PACKAGE_RESERVED_NAME: "%" uses the reserved "__" prefix', p_name;
+    END IF;
+
+    -- An owner-less publish is admin-only: a NULL-owner package would be
+    -- unmanageable by its (anonymous) creator afterwards.
+    IF NOT p_is_admin AND (v_owner_provider IS NULL OR v_owner_subject IS NULL) THEN
+        RAISE EXCEPTION 'AGENT_PACKAGE_FORBIDDEN: publishing without an owner identity requires the admin role';
+    END IF;
+
+    <<retry>>
+    LOOP
+        SELECT * INTO v_pkg FROM ${s}.agent_packages p
+         WHERE p.name = p_name
+           AND p.scope = p_scope
+           AND (p_scope = 'shared'
+                OR (p.owner_provider IS NOT DISTINCT FROM v_owner_provider
+                    AND p.owner_subject IS NOT DISTINCT FROM v_owner_subject))
+         FOR UPDATE;
+        IF NOT FOUND THEN
+            -- FOR UPDATE on a missing row takes no lock, so a concurrent first
+            -- publish can beat this INSERT — catch the unique violation and
+            -- loop back to lock the winner's row.
+            BEGIN
+                INSERT INTO ${s}.agent_packages
+                    (package_id, source_id, name, scope, owner_provider, owner_subject, created_by)
+                VALUES (p_package_id, p_source_id, p_name, p_scope,
+                        v_owner_provider, v_owner_subject, p_created_by);
+            EXCEPTION WHEN unique_violation THEN
+                CONTINUE retry;
+            END;
+            INSERT INTO ${s}.agent_package_versions
+                (version_id, package_id, semver, sha256, size_bytes, artifact_filename, commit_sha, manifest, created_by)
+            VALUES (p_version_id, p_package_id, p_semver, p_sha256, p_size_bytes,
+                    p_artifact_filename, p_commit_sha, p_manifest, p_created_by);
+            UPDATE ${s}.agent_packages SET active_version_id = p_version_id WHERE ${s}.agent_packages.package_id = p_package_id;
+            PERFORM ${s}.cms_agent_registry_bump();
+            RETURN QUERY SELECT 'published'::TEXT, p_package_id, p_version_id;
+            RETURN;
+        END IF;
+        EXIT retry;
+    END LOOP;
+
+    IF NOT p_is_admin AND (
+        v_pkg.owner_provider IS NULL
+        OR v_pkg.owner_provider IS DISTINCT FROM v_owner_provider
+        OR v_pkg.owner_subject IS DISTINCT FROM v_owner_subject
+    ) THEN
+        RAISE EXCEPTION 'AGENT_PACKAGE_FORBIDDEN: only the package creator or an admin can publish new versions of "%"', p_name;
+    END IF;
+
+    SELECT * INTO v_ver FROM ${s}.agent_package_versions v
+     WHERE v.package_id = v_pkg.package_id AND v.semver = p_semver;
+    IF FOUND THEN
+        IF v_ver.sha256 = p_sha256 THEN
+            RETURN QUERY SELECT 'noop'::TEXT, v_pkg.package_id, v_ver.version_id;
+            RETURN;
+        END IF;
+        RAISE EXCEPTION 'AGENT_PACKAGE_SEMVER_CONFLICT: %@% is already published with different content — published versions are immutable, bump the version', p_name, p_semver;
+    END IF;
+
+    INSERT INTO ${s}.agent_package_versions
+        (version_id, package_id, semver, sha256, size_bytes, artifact_filename, commit_sha, manifest, created_by)
+    VALUES (p_version_id, v_pkg.package_id, p_semver, p_sha256, p_size_bytes,
+            p_artifact_filename, p_commit_sha, p_manifest, p_created_by);
+    UPDATE ${s}.agent_packages
+       SET active_version_id = p_version_id,
+           source_id = COALESCE(p_source_id, ${s}.agent_packages.source_id)
+     WHERE ${s}.agent_packages.package_id = v_pkg.package_id;
+    PERFORM ${s}.cms_agent_registry_bump();
+    RETURN QUERY SELECT 'published'::TEXT, v_pkg.package_id, p_version_id;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── Reads: a name can now legitimately return two rows ───────────
+--
+-- \`shadowed\` tells a UI that this shared package is currently overridden by
+-- the viewer's own copy, which is the difference between "you have two
+-- packages" and "you have one package with a fallback".
+DROP FUNCTION IF EXISTS ${s}.cms_list_agent_packages(TEXT, TEXT, BOOLEAN);
+DROP FUNCTION IF EXISTS ${s}.cms_get_agent_package(TEXT, TEXT, TEXT, BOOLEAN);
+
+CREATE OR REPLACE FUNCTION ${s}.cms_list_agent_packages(
+    p_viewer_provider TEXT, p_viewer_subject TEXT, p_is_admin BOOLEAN
+) RETURNS TABLE(
+    package_id TEXT, source_id TEXT, name TEXT, scope TEXT,
+    owner_provider TEXT, owner_subject TEXT,
+    owner_email TEXT, owner_display_name TEXT,
+    enabled BOOLEAN, created_by TEXT, created_at TIMESTAMPTZ,
+    active_version_id TEXT, semver TEXT, sha256 TEXT, size_bytes BIGINT,
+    artifact_filename TEXT, commit_sha TEXT, manifest JSONB,
+    version_created_at TIMESTAMPTZ, version_created_by TEXT,
+    shadowed BOOLEAN
+) AS $$
+    SELECT p.package_id, p.source_id, p.name, p.scope,
+           p.owner_provider, p.owner_subject,
+           u.email, u.display_name,
+           p.enabled, p.created_by, p.created_at,
+           v.version_id, v.semver, v.sha256, v.size_bytes,
+           v.artifact_filename, v.commit_sha, v.manifest, v.created_at, v.created_by,
+           (p.scope = 'shared' AND EXISTS (
+                SELECT 1 FROM ${s}.agent_packages o
+                 WHERE o.name = p.name AND o.scope = 'user' AND o.enabled
+                   AND o.owner_provider = BTRIM(p_viewer_provider)
+                   AND o.owner_subject  = BTRIM(p_viewer_subject)
+           )) AS shadowed
+      FROM ${s}.agent_packages p
+      LEFT JOIN ${s}.agent_package_versions v ON v.version_id = p.active_version_id
+      LEFT JOIN ${s}.users u
+             ON u.provider = p.owner_provider AND u.subject = p.owner_subject
+     WHERE p.scope = 'shared'
+        OR p_is_admin
+        OR (p.owner_provider = BTRIM(p_viewer_provider) AND p.owner_subject = BTRIM(p_viewer_subject))
+     ORDER BY p.name, p.scope, p.owner_provider, p.owner_subject;
+$$ LANGUAGE sql;
+
+-- Selector-aware single read. With no selector it returns the copy the viewer
+-- would actually GET, which is what makes "show me package X" agree with
+-- "run agent from package X".
+CREATE OR REPLACE FUNCTION ${s}.cms_get_agent_package(
+    p_name TEXT, p_viewer_provider TEXT, p_viewer_subject TEXT, p_is_admin BOOLEAN,
+    p_sel_scope TEXT, p_sel_owner_provider TEXT, p_sel_owner_subject TEXT
+) RETURNS TABLE(
+    package_id TEXT, source_id TEXT, name TEXT, scope TEXT,
+    owner_provider TEXT, owner_subject TEXT,
+    owner_email TEXT, owner_display_name TEXT,
+    enabled BOOLEAN, created_by TEXT, created_at TIMESTAMPTZ,
+    active_version_id TEXT, version_id TEXT, semver TEXT, sha256 TEXT,
+    size_bytes BIGINT, artifact_filename TEXT, commit_sha TEXT, manifest JSONB,
+    version_created_at TIMESTAMPTZ, version_created_by TEXT
+) AS $$
+DECLARE
+    v_id TEXT;
+    v_count INT;
+BEGIN
+    -- Two-pass on purpose. A read should answer "which copy do I actually
+    -- GET", and shadowing is enable-sensitive — so try the live-resolution
+    -- rule first (enabled only). Falling back to the disabled row second
+    -- means a package whose ONLY copy is disabled is still inspectable;
+    -- without that, disabling your one copy would make it invisible as well
+    -- as inert, and there would be no way back through this API.
+    v_id := ${s}.cms_resolve_agent_package_id(
+        p_name, p_viewer_provider, p_viewer_subject,
+        p_sel_scope, p_sel_owner_provider, p_sel_owner_subject, TRUE);
+    IF v_id IS NULL THEN
+        v_id := ${s}.cms_resolve_agent_package_id(
+            p_name, p_viewer_provider, p_viewer_subject,
+            p_sel_scope, p_sel_owner_provider, p_sel_owner_subject, FALSE);
+    END IF;
+
+    -- Same admin fallback the mutation path uses, and for the same reason:
+    -- an admin must be able to READ the row they are allowed to delete.
+    -- Keeping the two in step matters more than the duplication — a package
+    -- an admin can destroy but cannot inspect is the worse outcome.
+    IF v_id IS NULL AND p_is_admin AND p_sel_scope IS NULL THEN
+        SELECT count(*) INTO v_count FROM ${s}.agent_packages p WHERE p.name = p_name;
+        IF v_count = 1 THEN
+            SELECT p.package_id INTO v_id FROM ${s}.agent_packages p WHERE p.name = p_name;
+        END IF;
+    END IF;
+
+    IF v_id IS NULL THEN
+        RETURN;
+    END IF;
+
+    -- Re-apply the visibility rule against the RESOLVED row. The resolver is
+    -- about which copy a name means, never about whether you may see it —
+    -- keeping those separate is what stops a selector from being a way to
+    -- read someone else's private package by naming their owner triple.
+    RETURN QUERY
+    SELECT p.package_id, p.source_id, p.name, p.scope,
+           p.owner_provider, p.owner_subject,
+           u.email, u.display_name,
+           p.enabled, p.created_by, p.created_at, p.active_version_id,
+           v.version_id, v.semver, v.sha256, v.size_bytes,
+           v.artifact_filename, v.commit_sha, v.manifest, v.created_at, v.created_by
+      FROM ${s}.agent_packages p
+      LEFT JOIN ${s}.agent_package_versions v ON v.package_id = p.package_id
+      LEFT JOIN ${s}.users u
+             ON u.provider = p.owner_provider AND u.subject = p.owner_subject
+     WHERE p.package_id = v_id
+       AND (p.scope = 'shared' OR p_is_admin
+            OR (p.owner_provider = BTRIM(p_viewer_provider) AND p.owner_subject = BTRIM(p_viewer_subject)))
+     ORDER BY v.created_at DESC;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── Install manifest: carries package_id so disk keys stay unique ─
+DROP FUNCTION IF EXISTS ${s}.cms_get_agent_packages_install_manifest();
+
+CREATE OR REPLACE FUNCTION ${s}.cms_get_agent_packages_install_manifest()
+RETURNS TABLE(
+    package_id TEXT, name TEXT, scope TEXT, owner_provider TEXT, owner_subject TEXT,
+    semver TEXT, sha256 TEXT, size_bytes BIGINT, artifact_filename TEXT, manifest JSONB
+) AS $$
+    SELECT p.package_id, p.name, p.scope, p.owner_provider, p.owner_subject,
+           v.semver, v.sha256, v.size_bytes, v.artifact_filename, v.manifest
+      FROM ${s}.agent_packages p
+      JOIN ${s}.agent_package_versions v ON v.version_id = p.active_version_id
+     WHERE p.enabled
+     ORDER BY p.name, p.scope, p.owner_provider, p.owner_subject;
 $$ LANGUAGE sql;
 `;
 }

@@ -4,7 +4,7 @@ description: |
   How to inspect, render, and reason about the shared knowledge GRAPH —
   for the facts-manager (report graph size/health, render the graph as
   Markdown/Mermaid, spot orphan or duplicate entities) and for the
-  agent-tuner (forensics: what graph search a session ran and what it
+  agent-manager (forensics: what graph search a session ran and what it
   returned). Read this before answering any question about graph
   structure, graph contents, or a session's graph-search behaviour.
   Only relevant when a knowledge graph is configured; if the graph tools
@@ -25,7 +25,7 @@ without a graph and nothing here applies — say so plainly instead of guessing.
 
 ## Tools you have (by role)
 
-| Tool | facts-manager | agent-tuner | Purpose |
+| Tool | facts-manager | agent-manager | Purpose |
 |------|:---:|:---:|---------|
 | `graph_search_nodes` | ✓ | ✓ | Find entities by name / kind / seed scope-keys |
 | `graph_search_edges` | ✓ | ✓ | Find relationships by predicate / endpoints |
@@ -41,7 +41,7 @@ without a graph and nothing here applies — say so plainly instead of guessing.
 
 The `read_session_*_retrieval_usage` tools are lineage-gated for non-tuner
 sessions: facts-manager can inspect itself and descendant sessions, while
-agent-tuner can inspect any session. Neither role mutates the graph through this skill. The facts-manager *holds*
+agent-manager can inspect any session. Neither role mutates the graph through this skill. The facts-manager *holds*
 the graph write/delete tools (dormant), plus namespace registry mutation tools
 for explicit operator actions, but graph **building** is a harvester job — do
 not crawl, upsert, archive, or delete here unless an operator explicitly asks.
@@ -90,7 +90,7 @@ graph LR
 Label nodes with `name (kind)` and edges with the predicate. If the region is
 large, render the top entities by degree and say you truncated.
 
-## Graph-search forensics (agent-tuner)
+## Graph-search forensics (agent-manager)
 
 When investigating "why did session X not find what it expected in the graph",
 or "what did this agent actually search for":

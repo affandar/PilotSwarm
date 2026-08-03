@@ -1,5 +1,101 @@
 # Changelog
 
+## 0.5.31 — 2026-08-02
+
+### Security
+
+- **A session could spawn an agent out of another user's private package.**
+  Workers install every enabled agent package — user-scope ones included —
+  because the install manifest is deliberately unfiltered. The Web API refused
+  a foreign user-scope agent at session creation, but `spawn_agent` never went
+  through that check: it reached agent resolution directly and matched purely
+  on name. Any session could therefore spawn an agent from a package it did not
+  own, prompt and all. Agent resolution is now owner-aware, resolved from the
+  calling session rather than from the model's argument, and fails closed when
+  the caller cannot be identified. The fix threads the caller through the
+  orchestration proxy, so the yield sequence is unchanged and no orchestration
+  version bump was required.
+
+- **Admin reach in agent tools was inert.** The viewer spine gave inspect tools
+  a principal, but `isAdmin` was hard-coded false because a worker holds a
+  session owner and never sees a request — cron firings, sub-agent turns, crash
+  recovery and replay all run turns with no HTTP request behind them. The
+  portal now records the role it authenticated with, and the worker reads that
+  observation through a shared predicate. Roles expire rather than persist: an
+  observation nothing has re-confirmed within 12 hours stops conferring admin,
+  which is the fail-closed direction.
+
+### Added
+
+- **Per-user agent package namespaces.** Package identity is now
+  `(scope, owner, name)` instead of a globally unique name, so the first person
+  to publish "triager" no longer owns that word for the whole deployment. Your
+  own enabled copy shadows the shared one — which is also the recovery path:
+  disable a broken personal copy and the shared one takes over with no other
+  action. `__shared:<name>` reaches the deployment copy past your own, and the
+  `__` prefix is reserved at the database so the sentinel cannot be minted by a
+  user.
+
+- **The Agent Manager: an installable agent that reads, edits and ships
+  agents.** It diagnoses a misbehaving session, stages an edit seeded from the
+  bytes actually running, renders the change as reviewable `.patch` artifacts,
+  and publishes a new version once a human approves. It can also author a
+  package from scratch. Importing from a URL reaches only origins the
+  deployment has allowlisted, so a URL injected into a transcript it is reading
+  cannot be fetched at all.
+
+- **Packages carry a `CHANGELOG.md`, and the portal and TUI show it.** It lives
+  inside the artifact, so it is versioned, diffable and travels with the
+  package. Agent-authored versions sign their entry and name the approver,
+  which is how a reader tells an agent edit from a human `agents push`.
+
+### Changed
+
+- `agent-tuner` and `generic-crawler` moved out of the built-in agent sets into
+  `agent-packages/` as installable packages. The permanent system children are
+  now `sweeper`, `resourcemgr` and `facts-manager`. The bundled crawler stays
+  available to `session-policy.json` opt-in, unchanged.
+
+- Retro themes (WinAMP, DOOM, Quake) across desktop, TUI and mobile, each with
+  its own brand mark; a single SVG icon family across the three toolbars; and a
+  mobile pass covering rail icons, list density and node details.
+
+### Fixed
+
+- **An agent `description` written as a YAML block scalar was thrown away.**
+  The loader honoured `|` and `>` only for `splash`, `splashMobile` and
+  `initialPrompt`, so `description: |` stored the literal `"|"` and dropped the
+  indented text — silently, since the value was still a valid string. The
+  Agent Manager was the one package in the repo written that way, so the
+  headline feature listed itself as `|` in every picker, agent listing and
+  `list_registered_agents` response. Block scalars are now recognised for
+  `description` too, and collapse to a single line.
+- The new-session dialog blinked off screen before the agent step.
+- The filter button looked permanently on, and the tab strip looked pressed.
+- The Stats glyph was a cell-signal meter rather than a chart.
+- The owner chip appeared even when there was only one owner, and the owner
+  tally ignored the active filter.
+
+### Known Issues
+
+- **`listSessionsPage` can silently skip a session row.** `updated_at` is
+  stored at microsecond precision but the keyset cursor round-trips through a
+  JS `Date`, which holds milliseconds — so a row sharing the cursor's
+  millisecond matches neither `updated_at < cursor` nor `updated_at = cursor`
+  and drops out of every later page. It needs two sessions updated within the
+  same millisecond at a page boundary, so it surfaces rarely. Pre-existing
+  (not new in 0.5.31) and tracked for 0.5.32; the fix carries the cursor at
+  full precision and touches the SDK, the Web API and the portal together.
+
+### Maintainer Workflow
+
+- Migrations 0042 (sign-in role) and 0043 (package namespaces). 0043 is
+  **forward-only**: it drops the five-argument package stored procedures in
+  favour of eight-argument ones, so rolling a worker image back after applying
+  it breaks package management until the image is rolled forward again.
+- Deploy scripts name the Azure subscription explicitly instead of trusting
+  ambient `~/.azure` state, and stop recording subscription ids in the repo.
+
 ## 0.5.30 — 2026-08-02
 
 ### Added
@@ -43,7 +139,7 @@
 
 ### Fixed
 
-- **Agent-package owners showed the wrong initials** — "daraffan@…" rendered
+- **Agent-package owners showed the wrong initials** — the email alias rendered
   as "DA" where the same person's sessions correctly showed "AD" for "Affan
   Dar". Packages stored only an opaque directory principal; the human identity
   was always in the `users` table, which the session view has joined all

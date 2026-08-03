@@ -12,6 +12,7 @@ import { describe, it, beforeAll } from "vitest";
 import { createFactTools, createGraphTools, createInspectTools } from "../../src/index.ts";
 import { preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { createCatalog } from "../helpers/cms-helpers.js";
+import { TEST_ADMIN_VIEWER } from "../helpers/inspect-viewer.js";
 import {
     assert,
     assertEqual,
@@ -401,7 +402,7 @@ describe("Retrieval Usage Stats", () => {
             await seedSession(catalog, unrelated, { agentId: "beta" });
             await catalog.recordEvents(child, retrievalEvents());
 
-            const ordinaryTools = createInspectTools({ catalog, agentIdentity: "coordinator" });
+            const ordinaryTools = createInspectTools({ resolveViewer: TEST_ADMIN_VIEWER, catalog, agentIdentity: "coordinator" });
             const readUsage = findTool(ordinaryTools, "read_session_retrieval_usage");
             const allowed = await readUsage.handler({ session_id: child }, { sessionId: parent });
             assertEqual(allowed.sessionId, child, "parent can inspect child retrieval usage");
@@ -416,7 +417,7 @@ describe("Retrieval Usage Stats", () => {
             assertEqual(nodeResult.sessionId, child);
             assertGreaterOrEqual(nodeResult.rows.length, 1, "node usage visible to parent");
 
-            const tunerTools = createInspectTools({ catalog, agentIdentity: "agent-tuner" });
+            const tunerTools = createInspectTools({ resolveViewer: TEST_ADMIN_VIEWER, catalog, agentIdentity: "agent-tuner" });
             const fleetUsage = await findTool(tunerTools, "read_fleet_retrieval_usage").handler({});
             assert(Array.isArray(fleetUsage.rows), "tuner fleet retrieval rows returned");
 

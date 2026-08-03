@@ -19,7 +19,7 @@ test("worker → default (no env.OVERLAY logic)", () => {
 test("worker → default regardless of envName", () => {
   const got = resolveOverlayName({
     service: "worker",
-    envName: "chkrawtestps",
+    envName: "mytestenv",
     env: {},
   });
   assert.equal(got, "default");

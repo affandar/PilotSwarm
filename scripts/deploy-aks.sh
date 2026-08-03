@@ -65,7 +65,20 @@ fi
 
 # ─── Configuration ────────────────────────────────────────────────
 
-ACR_NAME="${ACR_NAME:-pilotswarmacr}"
+# No default: registry names identify a specific deployment and this repo is
+# public. Set ACR_NAME in .env.remote (gitignored).
+ACR_NAME="${ACR_NAME:-}"
+
+# The az CLI keeps its active subscription in ~/.azure — GLOBAL state shared
+# by every terminal and editor window. Deploying another environment from a
+# second session silently repoints this one, and the failure surfaces as a
+# confusing "registry not found" (or, worse, would target the wrong place if
+# both subscriptions held a registry of the same name). Name it explicitly.
+AZ_SUB_ARGS=()
+if [ -n "${AZURE_SUBSCRIPTION_ID:-}" ]; then
+    AZ_SUB_ARGS=(--subscription "$AZURE_SUBSCRIPTION_ID")
+fi
+
 IMAGE_NAME="${IMAGE_NAME:-copilot-runtime-worker}"
 NAMESPACE="${K8S_NAMESPACE:-${NAMESPACE:-copilot-runtime}}"
 K8S_CONTEXT="${K8S_CONTEXT:-}"
@@ -74,6 +87,24 @@ KUBECTL=(kubectl)
 if [ -n "$K8S_CONTEXT" ]; then
     KUBECTL+=(--context "$K8S_CONTEXT")
 fi
+
+# ─── Manifest rendering ───────────────────────────────────────────
+# Manifests carry __ACR_NAME__ / __PORTAL_HOST__ placeholders: resource and host
+# names identify a specific deployment and this repo is public. Both resolve
+# from .env.remote (gitignored). An unset value fails here rather than applying
+# a manifest that names a registry or host that does not exist.
+PORTAL_HOST="${PORTAL_HOST:-${PORTAL_ORIGIN#*://}}"
+render_manifest() {
+    if [ -z "$ACR_NAME" ]; then
+        echo "ERROR: ACR_NAME is not set. Add it to .env.remote." >&2; return 1
+    fi
+    if [ -z "$PORTAL_HOST" ]; then
+        echo "ERROR: PORTAL_HOST (or PORTAL_ORIGIN) is not set. Add it to .env.remote." >&2; return 1
+    fi
+    sed -e "s/namespace: copilot-runtime/namespace: $NAMESPACE/g" \
+        -e "s/__ACR_NAME__/$ACR_NAME/g" \
+        -e "s/__PORTAL_HOST__/$PORTAL_HOST/g" "$1"
+}
 
 # ─── Update K8s secret ────────────────────────────────────────────
 
@@ -161,7 +192,7 @@ if [ "$SKIP_BUILD" = false ]; then
     # the network blocks registry.npmjs.org. Unset = the public registry.
     NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmjs.org/}"
     echo "   npm registry: $NPM_REGISTRY"
-    az acr login --name "$ACR_NAME"
+    az acr login --name "$ACR_NAME" "${AZ_SUB_ARGS[@]}"
     docker buildx build \
         --platform linux/amd64 \
         -f deploy/Dockerfile.worker \
@@ -182,7 +213,7 @@ echo "🚀 Deploying to AKS..."
 sed "s/namespace: copilot-runtime/namespace: $NAMESPACE/g; s/name: copilot-runtime$/name: $NAMESPACE/" deploy/k8s/namespace.yaml | "${KUBECTL[@]}" apply -f -
 
 # Apply worker deployment (substitute NAMESPACE into the template)
-sed "s/namespace: copilot-runtime/namespace: $NAMESPACE/g" deploy/k8s/worker-deployment.yaml | "${KUBECTL[@]}" apply -f -
+render_manifest deploy/k8s/worker-deployment.yaml | "${KUBECTL[@]}" apply -f -
 
 # Rollout restart to pick up the new image
 "${KUBECTL[@]}" rollout restart deployment/copilot-runtime-worker -n "$NAMESPACE"

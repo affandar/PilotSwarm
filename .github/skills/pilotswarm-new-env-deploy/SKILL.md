@@ -1,12 +1,12 @@
 ---
 name: pilotswarm-new-env-deploy
-description: "Use when bringing up a fresh, isolated PilotSwarm environment (`mysandbox`, `chkrawps10`, etc.) via the npm Bicep/GitOps orchestrator at `deploy/scripts/deploy.mjs`. Covers `new-env` scaffolding, EDGE_MODE × TLS_SOURCE selection, the `all` aggregate, per-service redeploys with `--steps`, force-redeploy semantics, verification, and teardown. Strictly separate from the legacy bash path operated by `scripts/deploy-aks.sh`."
+description: "Use when bringing up a fresh, isolated PilotSwarm environment (`mysandbox`, `myenv2`, etc.) via the npm Bicep/GitOps orchestrator at `deploy/scripts/deploy.mjs`. Covers `new-env` scaffolding, EDGE_MODE × TLS_SOURCE selection, the `all` aggregate, per-service redeploys with `--steps`, force-redeploy semantics, verification, and teardown. Strictly separate from the legacy bash path operated by `scripts/deploy-aks.sh`."
 ---
 
 # PilotSwarm New-Environment Deploy
 
 Use this skill when the user wants a **brand-new, isolated** PilotSwarm
-environment (e.g. `mysandbox`, `chkrawps10`) into a fresh resource group
+environment (e.g. `mysandbox`, `myenv2`) into a fresh resource group
 — not when they are operating an already-deployed PilotSwarm cluster.
 
 For the **legacy** path (`scripts/deploy-aks.sh`,
@@ -70,7 +70,7 @@ Ask, in order:
      same client id.
    - **Never auto-suggest copying `PORTAL_AUTH_ENTRA_CLIENT_ID` from a
      sibling stamp's `.env` file.** Even when a previous local stamp
-     (e.g. `chkrawps9/.env`) shows a working client id, that app is
+     (e.g. `<stamp>/.env`) shows a working client id, that app is
      bound to that stamp's lifecycle and redirect URIs. Pulling
      non-auth values (subscription, tenant, region) from a reference
      stamp is fine; pulling the client id is not.

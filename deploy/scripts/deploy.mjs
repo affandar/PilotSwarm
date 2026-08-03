@@ -285,7 +285,7 @@ async function main() {
   log("info", `Loaded env: ${sources.local}`);
 
   // 3a) Load any cached Bicep outputs from previous runs in this env. This lets
-  // single-service runs (e.g. `worker chkrawtestps`) re-use upstream
+  // single-service runs (e.g. `worker mytestenv`) re-use upstream
   // GlobalInfra/BaseInfra outputs without re-deploying the whole chain
   // in-process. Cached values do NOT override env-file or CLI values.
   // `--clean` (or deleting deploy/.tmp/<env>/bicep-outputs.cache.json) busts it.

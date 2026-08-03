@@ -45,7 +45,7 @@ spec:
               mountPath: /home/node/.copilot
       containers:
         - name: worker
-          image: pilotswarmacr.azurecr.io/copilot-runtime-worker:latest
+          image: __ACR_NAME__.azurecr.io/copilot-runtime-worker:latest
           imagePullPolicy: Always
           env:
             - name: POD_NAME

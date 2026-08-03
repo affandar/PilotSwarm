@@ -138,6 +138,16 @@ export interface AgentConfig {
 // ─── Frontmatter Parser ─────────────────────────────────────────
 
 /**
+ * Keys whose value may be a YAML block scalar (`|` literal, `>` folded).
+ *
+ * `description` belongs here because a multi-line description is the natural
+ * way to write one, and the failure is silent: the value lands as the literal
+ * "|" and the indented body is dropped on the floor. That shipped — the Agent
+ * Manager's description read "|" in every picker and listing.
+ */
+const BLOCK_SCALAR_KEYS = new Set(["splash", "splashMobile", "initialPrompt", "description"]);
+
+/**
  * Parse YAML frontmatter from an .agent.md file.
  * Handles simple `key: value` pairs and YAML list syntax for `tools` and `skills`.
  */
@@ -170,6 +180,11 @@ function parseAgentFrontmatter(content: string): {
             else if (currentKey === "initialPrompt") {
                 // For > (folded) scalars, collapse newlines to spaces
                 meta.initialPrompt = currentBlockStyle === ">" ? val.replace(/\n/g, " ").trim() : val;
+            }
+            else if (currentKey === "description") {
+                // A description is one paragraph wherever it is displayed, so
+                // both styles collapse to a single line.
+                meta.description = val.replace(/\n/g, " ").trim();
             }
             multilineValue = null;
             currentBlockStyle = null;
@@ -233,7 +248,14 @@ function parseAgentFrontmatter(content: string): {
 
         currentKey = key;
 
-        if (key === "name") meta.name = value;
+        // Block scalars are detected before the per-key branches below: those
+        // assign `value` verbatim, so a `key: |` reaching them would store the
+        // literal "|" and orphan the indented lines that follow.
+        if (BLOCK_SCALAR_KEYS.has(key) && (value === "|" || value === ">")) {
+            currentBlockStyle = value;
+            multilineValue = [];
+        }
+        else if (key === "name") meta.name = value;
         else if (key === "description") meta.description = value;
         else if (key === "system") meta.system = value === "true";
         else if (key === "crawler") meta.crawler = value === "true";
@@ -263,10 +285,6 @@ function parseAgentFrontmatter(content: string): {
             meta.mcpServers = [];
         } else if (key === "inheritDefaultMcpServers") {
             meta.inheritDefaultMcpServers = value === "true";
-        } else if ((key === "splash" || key === "splashMobile" || key === "initialPrompt") && (value === "|" || value === ">")) {
-            // YAML block scalar (| literal, > folded)
-            currentBlockStyle = value;
-            multilineValue = [];
         } else if (key === "splash") {
             meta.splash = value;
         } else if (key === "splashMobile") {

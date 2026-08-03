@@ -647,7 +647,7 @@ The TUI interacts with PilotSwarm **exclusively through the public API** (`Pilot
 ### Kubernetes Config
 
 - **Deployment:** `copilot-runtime-worker`, namespace `copilot-runtime`, 8 replicas
-- **Image:** `pilotswarmacr.azurecr.io/copilot-runtime-worker:latest`
+- **Image:** `<acr>.azurecr.io/copilot-runtime-worker:latest` (`ACR_NAME` from `.env.remote`)
 - **Tolerations:** Azure spot instances
 - **Env:** `POD_NAME` from field ref, secrets from K8s Secret
 

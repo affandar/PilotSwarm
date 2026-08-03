@@ -1,0 +1,7 @@
+{
+    "name": "agent-manager",
+    "version": "1.0.1",
+    "description": "Agents that manage agents — read, write, import and keep agent packages current.",
+    "agents": ["agents/agent-manager.agent.md"],
+    "skills": ["skills/agent-repair-loop"]
+}

@@ -51,6 +51,8 @@ import type {
     GraphEdgeSearchUsageRow,
     UserProfile,
     UserPrincipal,
+    UserRoleInfo,
+    UserRoleValue,
     SessionGroupRow,
     PlacementViewer,
     SessionPlacementResult,
@@ -830,6 +832,33 @@ export class PilotSwarmManagementClient {
     async listAuthzAudit(opts?: { limit?: number; sessionId?: string | null }): Promise<AuthzAuditEntry[]> {
         this._ensureStarted();
         return this._catalog!.listAuthzAudit(opts);
+    }
+
+    /**
+     * Record the authorization role observed for a principal at sign-in.
+     *
+     * DIRECT MODE ONLY, and deliberately not a Web API route: a caller able
+     * to write its own role would hold a privilege-escalation primitive. The
+     * only legitimate writer is the portal process itself, which has just
+     * validated the token the role came from. Same posture as
+     * `recordAuthzAudit`.
+     *
+     * Returns the normalized role that was stored (`null` when the input was
+     * absent or outside the known vocabulary).
+     */
+    async recordUserRole(principal: UserPrincipal, role: string | null): Promise<UserRoleValue | null> {
+        this._ensureStarted();
+        return this._catalog!.setUserRole(principal, role);
+    }
+
+    /**
+     * Read the last-observed authorization role for a principal. `null` role
+     * means no privilege, whether the principal is unknown or simply has no
+     * role recorded.
+     */
+    async getUserRole(principal: UserPrincipal): Promise<UserRoleInfo> {
+        this._ensureStarted();
+        return this._catalog!.getUserRole(principal);
     }
 
     /**

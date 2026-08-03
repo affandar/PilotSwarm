@@ -105,6 +105,11 @@ test("direct-only plumbing refuses loudly with WEB_MODE_UNSUPPORTED", () => {
         "factsCapabilities",
         "listSessionsVisible",
         "recordAuthzAudit",
+        // A remote caller able to write its own role would hold a
+        // privilege-escalation primitive; reading other users' roles is not a
+        // client concern either. Both are portal-internal, direct mode only.
+        "recordUserRole",
+        "getUserRole",
         "dumpSession",
         "sendCommand",
         "getCommandResponse",

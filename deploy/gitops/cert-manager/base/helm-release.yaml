@@ -3,7 +3,7 @@
 # range, so Flux will NEVER auto-upgrade. To adopt a new release:
 #   1. Update this `version:` field to the new exact value.
 #   2. Verify the release notes for breaking changes.
-#   3. Test on a dev cluster (chkrawtestps).
+#   3. Test on a dev cluster (mytestenv).
 #   4. Promote to prod via deploy.mjs.
 #
 # `crds.enabled: true` (chart values) ships the cert-manager CRDs with

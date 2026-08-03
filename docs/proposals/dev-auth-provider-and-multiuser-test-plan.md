@@ -211,8 +211,8 @@ on a real stamp.
 ### Real-Entra confirmation pass (once, before ship)
 
 The dev provider bypasses JWT validation and claims normalization, so one
-pass on pilotswarm-aks with real Entra stays mandatory: `daraffan`
-(admin) + one invited guest user (`user` app role) walk S1/S2/S3/S5 in a
+pass on the live AKS deployment with real Entra stays mandatory: an
+admin + one invited guest user (`user` app role) walk S1/S2/S3/S5 in a
 normal+incognito window pair. Optionally a service principal
 (client-credentials → `PILOTSWARM_API_TOKEN`) covers S7 against real
 tokens — note SPs carry no email claim, so they need an app-role

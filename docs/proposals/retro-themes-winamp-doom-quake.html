@@ -1,0 +1,1032 @@
+<title>Three Retro Themes — WinAMP, DOOM, Quake</title>
+<style>
+  /* ── Page chrome ────────────────────────────────────────────────
+     A specimen book: the only saturated colour on the page comes from
+     the specimens. Warm neutrals — ochre bias in light, red-brown in
+     dark — because all three subjects are CRT-era software. */
+  :root {
+    --paper: #f3f1ec; --paper-2: #e9e6de; --ink: #1a1815;
+    --ink-2: #555044; --ink-3: #8a8375; --rule: #d3cec1; --rule-hard: #b3ac9b;
+    --f-display: Georgia, "Iowan Old Style", "Times New Roman", serif;
+    --f-body: system-ui, -apple-system, "Segoe UI", sans-serif;
+    --f-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --step--1: 0.75rem; --step-0: 0.875rem; --step-1: 1rem;
+    --step-2: 1.35rem; --step-3: 1.95rem; --step-4: 2.9rem;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --paper: #131110; --paper-2: #1c1917; --ink: #eae5db;
+      --ink-2: #a9a294; --ink-3: #756e62; --rule: #2d2823; --rule-hard: #453e35; }
+  }
+  :root[data-theme="dark"] { --paper: #131110; --paper-2: #1c1917; --ink: #eae5db;
+    --ink-2: #a9a294; --ink-3: #756e62; --rule: #2d2823; --rule-hard: #453e35; }
+  :root[data-theme="light"] { --paper: #f3f1ec; --paper-2: #e9e6de; --ink: #1a1815;
+    --ink-2: #555044; --ink-3: #8a8375; --rule: #d3cec1; --rule-hard: #b3ac9b; }
+
+  body { background: var(--paper); color: var(--ink); font-family: var(--f-body);
+    font-size: var(--step-0); line-height: 1.6; margin: 0;
+    padding: 0 clamp(16px, 4vw, 48px) 96px; }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+
+  header.masthead { padding: clamp(40px, 8vw, 88px) 0 0; }
+  .eyebrow { font-family: var(--f-mono); font-size: var(--step--1);
+    letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink-3); margin: 0 0 20px; }
+  h1 { font-family: var(--f-display); font-size: var(--step-4); line-height: 1.04;
+    font-weight: 400; letter-spacing: -0.02em; text-wrap: balance; margin: 0 0 20px; }
+  h1 em { font-style: italic; color: var(--ink-2); }
+  .standfirst { font-size: var(--step-1); color: var(--ink-2); max-width: 62ch; margin: 0 0 10px; }
+  .masthead hr { border: 0; border-top: 1px solid var(--rule-hard); margin: 48px 0 0; }
+
+  .plate { padding: 56px 0; border-bottom: 1px solid var(--rule); }
+  .plate-head { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; margin-bottom: 28px; }
+  @media (min-width: 800px) {
+    .plate-head { grid-template-columns: minmax(0, 20ch) minmax(0, 1fr); gap: 40px; }
+  }
+  .plate-id { display: flex; flex-direction: column; gap: 4px; }
+  h2 { font-family: var(--f-display); font-size: var(--step-3); font-weight: 400;
+    letter-spacing: -0.015em; margin: 0; line-height: 1.1; }
+  .plate-year { font-family: var(--f-mono); font-size: var(--step--1);
+    letter-spacing: 0.12em; color: var(--ink-3); text-transform: uppercase; }
+  .thesis { margin: 0; color: var(--ink-2); max-width: 62ch; }
+  .thesis strong { color: var(--ink); font-weight: 600; }
+
+  /* ── Logo lockup ─────────────────────────────────────────────── */
+  .lockup { display: flex; align-items: center; gap: clamp(18px, 4vw, 40px);
+    flex-wrap: wrap; padding: 22px 24px; margin-bottom: 24px;
+    background: var(--t-bg); border: 1px solid var(--rule-hard); }
+  .lockup-marks { display: flex; align-items: flex-end; gap: 18px; }
+  .lockup-note { font-size: var(--step--1); color: var(--t-muted); max-width: 40ch;
+    font-family: var(--f-mono); line-height: 1.6; }
+  .lockup-note b { color: var(--t-accent); font-weight: 700; }
+  .mark { display: block; }
+  .mark-48 { width: 48px; height: 48px; }
+  .mark-28 { width: 28px; height: 28px; }
+  .mark-16 { width: 16px; height: 16px; }
+
+  /* ── Surface labels + layout ─────────────────────────────────── */
+  .surface-label { font-family: var(--f-mono); font-size: var(--step--1);
+    letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-3);
+    margin: 0 0 8px; display: flex; gap: 10px; align-items: baseline; }
+  .surface-label span { color: var(--ink-3); opacity: 0.72; letter-spacing: 0.04em; text-transform: none; }
+  .surfaces { display: grid; grid-template-columns: minmax(0, 1fr); gap: 26px; margin-top: 26px; }
+  @media (min-width: 1000px) { .surfaces { grid-template-columns: minmax(0, 1fr) 340px; } }
+
+  /* ── Desktop portal ──────────────────────────────────────────── */
+  .scroller { overflow-x: auto; border: 1px solid var(--rule-hard); background: var(--paper-2); }
+  .portal { min-width: 740px; font-family: var(--f-mono); font-size: 11.5px;
+    line-height: 1.45; background: var(--t-bg); color: var(--t-fg);
+    display: flex; flex-direction: column; }
+
+  .p-toast { display: flex; align-items: center; justify-content: space-between;
+    padding: 6px 12px; font-size: 11px; background: var(--t-panel);
+    color: var(--t-muted); border-bottom: 1px solid var(--t-border); }
+  .p-toast b { color: var(--t-accent); font-weight: 700; }
+  .p-toolbar { display: flex; gap: 6px; padding: 8px 12px;
+    background: var(--t-bg); border-bottom: 1px solid var(--t-border); }
+  .p-tool { width: 38px; height: 26px; display: grid; place-items: center;
+    border: 1px solid var(--t-btn-border); background: var(--t-btn);
+    box-shadow: var(--t-btn-shadow); color: var(--t-fg); font-size: 12px; }
+  .p-body { display: grid; grid-template-columns: 292px minmax(0, 1fr); gap: 10px; padding: 10px 12px; }
+  .p-panel { border: 1px solid var(--t-border); background: var(--t-panel);
+    display: flex; flex-direction: column; min-width: 0; }
+  .p-panel-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 6px 8px; background: var(--t-chrome); color: var(--t-chrome-fg);
+    border-bottom: 1px solid var(--t-border); }
+  .p-panel-title { font-weight: 700; letter-spacing: 0.13em; text-transform: uppercase; font-size: 10px; }
+  .p-panel-meta { font-size: 10px; opacity: 0.8; font-weight: 400; letter-spacing: 0; text-transform: none; }
+  .p-btns { display: flex; gap: 3px; }
+  .p-btn { width: 20px; height: 16px; display: grid; place-items: center;
+    border: 1px solid var(--t-btn-border); background: var(--t-btn);
+    box-shadow: var(--t-btn-shadow); font-size: 9px; color: var(--t-chrome-fg); }
+
+  .p-rows { padding: 4px 0; flex: 1; }
+  .row { display: flex; align-items: center; gap: 6px; padding: 2.5px 8px; white-space: nowrap; }
+  .row.sel { background: var(--t-sel-bg); color: var(--t-sel-fg); }
+  .row.sel .meta { color: var(--t-sel-fg); opacity: 0.82; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--dot, var(--t-muted)); flex: none; }
+  .row.sel .dot { background: var(--t-sel-mark); }
+  .disc { width: 14px; height: 14px; border-radius: 50%; background: var(--t-disc);
+    color: var(--t-disc-fg); font-size: 7.5px; font-weight: 700;
+    display: grid; place-items: center; flex: none; }
+  .row.sel .disc { box-shadow: 0 0 0 1px var(--t-sel-mark); }
+  .label { overflow: hidden; text-overflow: ellipsis; }
+  .meta { margin-left: auto; color: var(--t-muted); padding-left: 12px; }
+  .sys { color: var(--t-accent); font-weight: 700; }
+  .fold { color: var(--t-folder); }
+
+  .p-chat { display: flex; flex-direction: column; min-width: 0; }
+  .p-log { flex: 1; padding: 8px 10px; display: flex; flex-direction: column;
+    gap: 7px; background: var(--t-bg); min-height: 178px; }
+  .ts { color: var(--t-muted); }
+  .who-you { color: var(--t-user); font-weight: 700; }
+  .who-ag { color: var(--t-agent); font-weight: 700; }
+  .tick { color: var(--t-ok, var(--t-agent)); }
+  .p-composer { display: flex; align-items: stretch; gap: 7px; padding: 8px 10px;
+    background: var(--t-panel); border-top: 1px solid var(--t-border); }
+  .p-you { align-self: center; font-size: 10px; color: var(--t-muted); letter-spacing: 0.1em; }
+  .p-input { flex: 1; padding: 7px 9px; font-size: 11px; background: var(--t-input-bg);
+    color: var(--t-muted); border: 1px solid var(--t-btn-border);
+    box-shadow: var(--t-input-shadow, none); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .p-send { width: 34px; display: grid; place-items: center; border: 1px solid var(--t-btn-border);
+    background: var(--t-btn); box-shadow: var(--t-btn-shadow); color: var(--t-fg); font-size: 13px; }
+  .p-tabs { display: flex; gap: 6px; padding: 0 12px 12px; }
+  .p-tab { flex: 1; text-align: center; padding: 7px 0; font-size: 11px;
+    border: 1px solid var(--t-btn-border); background: var(--t-btn);
+    box-shadow: var(--t-btn-shadow); color: var(--t-muted); }
+  .p-tab.on { background: var(--t-sel-bg); color: var(--t-sel-fg); font-weight: 700; }
+
+  /* ── TUI ─────────────────────────────────────────────────────── */
+  .tui { font-family: var(--f-mono); font-size: 11.5px; line-height: 1.32;
+    white-space: pre; overflow-x: auto; margin: 0;
+    background: var(--t-bg); color: var(--t-fg);
+    padding: 16px 18px; border: 1px solid var(--rule-hard); }
+  .tui .fr   { color: var(--t-frame); }
+  .tui .hdr  { color: var(--t-fg); font-weight: 700; }
+  .tui .dim  { color: var(--t-muted); }
+  .tui .acc  { color: var(--t-accent); font-weight: 700; }
+  .tui .fold { color: var(--t-folder); }
+  .tui .disc { color: var(--t-disc); font-weight: 700; }
+  .tui .you  { color: var(--t-user); font-weight: 700; }
+  .tui .ag   { color: var(--t-agent); font-weight: 700; }
+  .tui .ok   { color: var(--t-st-ok); }
+  .tui .run  { color: var(--t-st-run); }
+  .tui .wait { color: var(--t-st-wait); }
+  .tui .fail { color: var(--t-st-fail); }
+  .tui .sel  { background: var(--t-sel-bg); color: var(--t-sel-fg); font-weight: 700; }
+
+  /* ── Mobile ──────────────────────────────────────────────────── */
+  .phone { width: 340px; max-width: 100%; border: 1px solid var(--rule-hard);
+    background: var(--t-bg); color: var(--t-fg);
+    font-family: var(--f-mono); font-size: 10.5px; line-height: 1.4;
+    display: flex; flex-direction: column; }
+  .phone .row { gap: 5px; padding: 3px 7px; }
+  .phone .disc { width: 13px; height: 13px; font-size: 7px; }
+  .phone .p-panel-title { font-size: 9px; }
+  .phone .p-panel-meta { font-size: 9px; }
+  .m-toolbar { display: flex; gap: 4px; padding: 6px 8px; border-bottom: 1px solid var(--t-border); }
+  .m-tool { flex: 1; height: 22px; display: grid; place-items: center;
+    border: 1px solid var(--t-btn-border); background: var(--t-btn);
+    box-shadow: var(--t-btn-shadow); color: var(--t-fg); font-size: 11px; }
+  .m-panel { margin: 8px 8px 0; border: 1px solid var(--t-border); background: var(--t-panel); }
+  .m-log { padding: 7px 8px; display: flex; flex-direction: column; gap: 6px;
+    background: var(--t-bg); min-height: 62px; }
+  .phone .p-tabs { padding: 8px; }
+  .phone .p-tab { font-size: 10px; padding: 6px 0; }
+  .phone .p-composer { padding: 6px 7px; }
+  .doom-substrip { display: flex; align-items: baseline; gap: 8px; padding: 4px 9px;
+    background: #2a1d14; border-bottom: 1px solid #6f5432; }
+
+  /* ── Headers: WinAMP ─────────────────────────────────────────── */
+  .wa-titlebar { display: flex; align-items: center; gap: 8px; padding: 3px 5px;
+    background: linear-gradient(180deg, #5a5a66 0%, #3a3a44 48%, #2a2a33 100%);
+    border-bottom: 1px solid #101010; box-shadow: inset 0 1px 0 #74747f; }
+  .wa-grip { flex: 1; height: 7px;
+    background: repeating-linear-gradient(180deg, #6e6e7a 0 1px, transparent 1px 3px); }
+  .wa-word { font-size: 9px; letter-spacing: 0.42em; color: #c9c9d6; font-weight: 700; padding: 0 4px; }
+  .wa-wbtn { width: 11px; height: 10px; background: #3f3f48;
+    border: 1px solid; border-color: #6e6e7a #101010 #101010 #6e6e7a;
+    display: grid; place-items: center; font-size: 7px; color: #c9c9d6; line-height: 1; }
+  .wa-display { display: flex; align-items: center; gap: 12px; padding: 9px 10px;
+    background: #383838; box-shadow: inset 0 1px 0 #5e5e5e, inset 0 -1px 0 #101010;
+    border-bottom: 1px solid #101010; }
+  .wa-glass { flex: 1; min-width: 0; display: flex; align-items: center; gap: 14px;
+    background: #000; padding: 7px 10px;
+    border: 1px solid; border-color: #101010 #5e5e5e #5e5e5e #101010; }
+  .wa-time { font-size: 21px; font-weight: 700; color: #00e337; letter-spacing: 0.06em;
+    font-variant-numeric: tabular-nums; line-height: 1; }
+  .wa-track { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .wa-scroll { font-size: 10.5px; color: #00e337; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .wa-kbps { font-size: 9px; color: #ffb400; letter-spacing: 0.1em; }
+  .wa-tile { flex: none; padding: 3px; background: #2b2b2b;
+    border: 1px solid; border-color: #101010 #5e5e5e #5e5e5e #101010; }
+  .wa-right { display: flex; flex-direction: column; gap: 4px; }
+  .wa-chip { font-size: 9px; padding: 2px 7px; text-align: center; color: #c9c9d6;
+    background: #383838; border: 1px solid; border-color: #6e6e7a #101010 #101010 #6e6e7a; }
+
+  /* ── Headers: DOOM ───────────────────────────────────────────── */
+  .doom-stbar { display: flex; align-items: stretch;
+    background: repeating-linear-gradient(90deg, rgba(0,0,0,0.10) 0 2px, transparent 2px 5px),
+      linear-gradient(180deg, #8b6f47 0%, #6f5432 38%, #4a3722 100%);
+    border-bottom: 2px solid #2a1d14; box-shadow: inset 0 1px 0 #a4885c; padding: 6px 10px; }
+  .doom-cell { display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 1px; padding: 0 14px; }
+  .doom-cell + .doom-cell { border-left: 1px solid rgba(42,29,20,0.55); }
+  .doom-num { font-size: 25px; font-weight: 700; color: #d81f1f; line-height: 1;
+    letter-spacing: -0.02em; font-variant-numeric: tabular-nums; text-shadow: 0 1px 0 #4a0a0a; }
+  .doom-lab { font-size: 8px; letter-spacing: 0.2em; color: #f0e2c0; text-transform: uppercase; }
+  .doom-face { flex: none; padding: 3px; background: #2a1d14;
+    border: 2px solid; border-color: #2a1d14 #a4885c #a4885c #2a1d14; align-self: center; }
+  .doom-ident { display: flex; flex-direction: column; justify-content: center;
+    padding: 0 14px; border-left: 1px solid rgba(42,29,20,0.55); min-width: 0; }
+  .doom-brand { font-size: 10px; font-weight: 700; letter-spacing: 0.24em; color: #f0e2c0; }
+  .doom-user { font-size: 10.5px; color: #fff4d6; font-weight: 700; }
+  .doom-mail { font-size: 9px; color: #c9ab7c; }
+  .doom-keys { display: flex; flex-direction: column; gap: 2px; justify-content: center;
+    padding: 0 12px; margin-left: auto; }
+  .doom-key { width: 15px; height: 6px; border: 1px solid rgba(0,0,0,0.5); }
+  .doom-exit { align-self: center; font-size: 10px; padding: 6px 12px; color: #fff4d6;
+    background: #4a3722; border: 2px solid; border-color: #a4885c #2a1d14 #2a1d14 #a4885c; }
+
+  /* ── Headers: Quake ──────────────────────────────────────────── */
+  .qk-slab { display: flex; align-items: center; gap: 14px; padding: 11px 14px;
+    background: radial-gradient(120% 190% at 22% -40%, rgba(224,149,43,0.16) 0%, transparent 58%),
+      linear-gradient(180deg, #2d251d 0%, #1a1512 60%, #12100d 100%);
+    border-bottom: 1px solid #4a3f33; box-shadow: inset 0 1px 0 rgba(224,149,43,0.28); }
+  .qk-tile { flex: none; padding: 5px; background: #14110e; border: 1px solid #3a3128;
+    box-shadow: inset 0 1px 0 rgba(224,149,43,0.18); }
+  .qk-ident { display: flex; flex-direction: column; line-height: 1.35; min-width: 0; }
+  .qk-brand { font-size: 11px; font-weight: 700; letter-spacing: 0.3em; color: #e0952b; }
+  .qk-user { font-size: 10.5px; color: #d8cbb0; font-weight: 700; }
+  .qk-mail { font-size: 9.5px; color: #7d7362; }
+  .qk-hud { margin-left: auto; display: flex; align-items: baseline; gap: 5px; }
+  .qk-num { font-size: 24px; font-weight: 700; color: #e0952b; line-height: 1;
+    font-variant-numeric: tabular-nums; text-shadow: 0 0 12px rgba(224,149,43,0.45); }
+  .qk-unit { font-size: 9px; letter-spacing: 0.18em; color: #7d7362; text-transform: uppercase; }
+  .qk-exit { font-size: 10px; padding: 6px 13px; color: #d8cbb0;
+    background: #221c17; border: 1px solid #4a3f33; }
+
+  /* ── Tokens + notes ──────────────────────────────────────────── */
+  .tokens { display: flex; flex-wrap: wrap; gap: 0 26px; margin-top: 24px; }
+  .tok { display: grid; grid-template-columns: 16px auto auto; align-items: center;
+    gap: 8px; padding: 6px 0; font-size: var(--step--1);
+    border-bottom: 1px solid var(--rule); flex: 1 1 200px; }
+  .chip { width: 16px; height: 16px; border: 1px solid var(--rule-hard); }
+  .tok-role { color: var(--ink-2); }
+  .tok-hex { font-family: var(--f-mono); font-variant-numeric: tabular-nums;
+    color: var(--ink); margin-left: auto; }
+
+  .hook { margin: 26px 0 0; padding: 16px 20px; background: var(--paper-2);
+    border-left: 2px solid var(--rule-hard); max-width: 80ch; }
+  .hook-label { font-family: var(--f-mono); font-size: var(--step--1);
+    letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-3);
+    display: block; margin-bottom: 6px; }
+  .hook p { margin: 0; color: var(--ink-2); }
+  .hook p + p { margin-top: 10px; }
+  .hook strong { color: var(--ink); font-weight: 600; }
+  .hook code, .closing code { font-family: var(--f-mono); font-size: 0.92em;
+    background: var(--paper); padding: 1px 5px; color: var(--ink); }
+
+  .closing { padding-top: 56px; }
+  h3.sec { font-family: var(--f-display); font-size: var(--step-2); font-weight: 400; margin: 0 0 16px; }
+  .closing p { color: var(--ink-2); max-width: 68ch; }
+  .closing code { background: var(--paper-2); }
+  .verdict { width: 100%; border-collapse: collapse; margin: 18px 0 8px; font-size: var(--step--1); }
+  .verdict th { text-align: left; font-family: var(--f-mono); font-weight: 400;
+    text-transform: uppercase; letter-spacing: 0.12em; color: var(--ink-3);
+    border-bottom: 1px solid var(--rule-hard); padding: 6px 12px 6px 0; }
+  .verdict td { padding: 9px 12px 9px 0; border-bottom: 1px solid var(--rule); color: var(--ink-2); vertical-align: top; }
+  .verdict td:first-child { color: var(--ink); font-weight: 600; white-space: nowrap; }
+
+  /* ══ THEME TOKENS ══════════════════════════════════════════════ */
+  .t-winamp {
+    --t-bg: #000000; --t-panel: #1c1c1c;
+    --t-chrome: linear-gradient(180deg, #4a4a52 0%, #2c2c33 100%);
+    --t-chrome-fg: #d6d6cc; --t-border: #101010; --t-frame: #16a83c;
+    --t-btn: #383838; --t-btn-border: #5e5e5e;
+    --t-btn-shadow: inset 1px 1px 0 #6e6e6e, inset -1px -1px 0 #101010;
+    --t-fg: #00e337; --t-muted: #16a83c; --t-accent: #ffb400; --t-folder: #b6e000;
+    --t-sel-bg: #0000c6; --t-sel-fg: #ffffff; --t-sel-mark: #ffffff;
+    --t-disc: #b6e000; --t-disc-fg: #000000;
+    --t-user: #ffb400; --t-agent: #00e337; --t-ok: #b6e000;
+    --t-st-ok: #00e337; --t-st-run: #b6e000; --t-st-wait: #ffb400; --t-st-fail: #ff3b00;
+    --t-input-bg: #000000;
+    --t-input-shadow: inset 1px 1px 0 #101010, inset -1px -1px 0 #5e5e5e;
+  }
+  .t-doom {
+    --t-bg: #100b09; --t-panel: #1c1310;
+    --t-chrome: linear-gradient(180deg, #7a5c37 0%, #4a3722 100%);
+    --t-chrome-fg: #f0e2c0; --t-border: #6f5432; --t-frame: #8b6f47;
+    --t-btn: #4a3722; --t-btn-border: #8b6f47;
+    --t-btn-shadow: inset 1px 1px 0 #a4885c, inset -1px -1px 0 #2a1d14;
+    --t-fg: #d9cba8; --t-muted: #a08d68; --t-accent: #b81c1c; --t-folder: #e8c020;
+    --t-sel-bg: #6f5432; --t-sel-fg: #fff4d6; --t-sel-mark: #fff4d6;
+    --t-disc: #b81c1c; --t-disc-fg: #fff4d6;
+    --t-user: #e8c020; --t-agent: #d9cba8; --t-ok: #3f9e3f;
+    --t-st-ok: #3f9e3f; --t-st-run: #3050d0; --t-st-wait: #e8c020; --t-st-fail: #b81c1c;
+    --t-input-bg: #0d0908;
+  }
+  .t-quake {
+    --t-bg: #0b0a09; --t-panel: #16130f;
+    --t-chrome: linear-gradient(180deg, #2a231c 0%, #16120f 100%);
+    --t-chrome-fg: #e0952b; --t-border: #4a3f33; --t-frame: #6b6154;
+    --t-btn: #221c17; --t-btn-border: #4a3f33; --t-btn-shadow: none;
+    --t-fg: #b9ac93; --t-muted: #8a7f6c; --t-accent: #e0952b; --t-folder: #c4441a;
+    --t-sel-bg: #3a3128; --t-sel-fg: #f0dfbe; --t-sel-mark: #e0952b;
+    --t-disc: #4a6fd4; --t-disc-fg: #f0f2ff;
+    --t-user: #e0952b; --t-agent: #b9ac93; --t-ok: #8a7f6c;
+    --t-st-ok: #8a7f6c; --t-st-run: #4a6fd4; --t-st-wait: #e0952b; --t-st-fail: #c4441a;
+    --t-input-bg: #100d0b;
+  }
+
+  :focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <p class="eyebrow">PilotSwarm · theme proposal · 3 themes × 3 surfaces</p>
+    <h1>Three machines that <em>sounded</em> like they looked</h1>
+    <p class="standfirst">
+      WinAMP, DOOM and Quake shipped within four years of each other and share
+      almost no visual DNA. That is what makes them a good set: pick any one and
+      you have picked a mood, not a palette shuffle.
+    </p>
+    <p class="standfirst">
+      Each carries its own mark and header architecture, and each is shown on all
+      three surfaces the portal actually ships: <strong>desktop</strong>,
+      <strong>TUI</strong> and <strong>mobile</strong>. The TUI is the honest
+      test — it strips gradients, bevels and shadows, leaving only the palette.
+      A theme that dies there was chrome, not a theme.
+    </p>
+    <hr />
+  </header>
+
+  <!-- ═══════════════════════ WINAMP ═══════════════════════ -->
+  <section class="plate">
+    <div class="plate-head">
+      <div class="plate-id"><h2>WinAMP</h2><span class="plate-year">2.x · 1997</span></div>
+      <p class="thesis">
+        Beveled grey chrome around a pane of black glass. The skin everyone
+        remembers is <strong>not</strong> colourful — it is grey metal with a
+        single lit display, which is exactly the shape of a portal.
+      </p>
+    </div>
+
+    <div class="lockup t-winamp">
+      <div class="lockup-marks"><svg class="mark mark-48" viewBox="0 0 32 32" aria-hidden="true"><rect x="0" y="0" width="32" height="32" fill="#000"/>
+          <rect x="3" y="17" width="4" height="11" fill="#00e337"/>
+          <rect x="9" y="11" width="4" height="17" fill="#7ad91e"/>
+          <rect x="15" y="6" width="4" height="22" fill="#b6e000"/>
+          <rect x="21" y="13" width="4" height="15" fill="#ffb400"/>
+          <rect x="27" y="20" width="3" height="8" fill="#ff3b00"/></svg><svg class="mark mark-28" viewBox="0 0 32 32" aria-hidden="true"><rect x="0" y="0" width="32" height="32" fill="#000"/>
+          <rect x="3" y="17" width="4" height="11" fill="#00e337"/>
+          <rect x="9" y="11" width="4" height="17" fill="#7ad91e"/>
+          <rect x="15" y="6" width="4" height="22" fill="#b6e000"/>
+          <rect x="21" y="13" width="4" height="15" fill="#ffb400"/>
+          <rect x="27" y="20" width="3" height="8" fill="#ff3b00"/></svg><svg class="mark mark-16" viewBox="0 0 32 32" aria-hidden="true"><rect x="0" y="0" width="32" height="32" fill="#000"/>
+          <rect x="3" y="17" width="4" height="11" fill="#00e337"/>
+          <rect x="9" y="11" width="4" height="17" fill="#7ad91e"/>
+          <rect x="15" y="6" width="4" height="22" fill="#b6e000"/>
+          <rect x="21" y="13" width="4" height="15" fill="#ffb400"/>
+          <rect x="27" y="20" width="3" height="8" fill="#ff3b00"/></svg></div>
+      <p class="lockup-note">
+        The mark is a <b>spectrum analyser</b>: one bar per agent, coloured by the
+        status ramp. Five rectangles, so it survives to 16px — and in the TUI it
+        becomes <b>▂▄█▅▂</b>, the one mark here that loses nothing in text.
+      </p>
+    </div>
+
+    <p class="surface-label">Desktop <span>— 1180px</span></p>
+    <div class="scroller">
+      <div class="portal t-winamp">
+        <div class="wa-titlebar">
+          <span class="wa-word">PILOTSWARM</span><span class="wa-grip"></span>
+          <span class="wa-wbtn">_</span><span class="wa-wbtn">▤</span><span class="wa-wbtn">×</span>
+        </div>
+        <div class="wa-display">
+          <span class="wa-tile"><svg class="mark mark-28" viewBox="0 0 32 32" aria-hidden="true"><rect x="0" y="0" width="32" height="32" fill="#000"/>
+          <rect x="3" y="17" width="4" height="11" fill="#00e337"/>
+          <rect x="9" y="11" width="4" height="17" fill="#7ad91e"/>
+          <rect x="15" y="6" width="4" height="22" fill="#b6e000"/>
+          <rect x="21" y="13" width="4" height="15" fill="#ffb400"/>
+          <rect x="27" y="20" width="3" height="8" fill="#ff3b00"/></svg></span>
+          <span class="wa-glass">
+            <span class="wa-time">16%</span>
+            <span class="wa-track">
+              <span class="wa-scroll">*** Ada Lovelace — ada@example.com ***</span>
+              <span class="wa-kbps">7 SESSIONS · 4 RUNNING · STEREO</span>
+            </span>
+          </span>
+          <span class="wa-right"><span class="wa-chip">v0.5.30</span><span class="wa-chip">Sign Out</span></span>
+        </div>
+        <div class="p-toast"><span>Applied theme: <b>WinAMP 2.x</b></span><span>×</span></div>
+        <div class="p-toolbar">
+          <span class="p-tool">+</span><span class="p-tool">▼</span>
+          <span class="p-tool">◐</span><span class="p-tool">≡</span><span class="p-tool">⛶</span>
+        </div>
+        <div class="p-body">
+          <div class="p-panel">
+            <div class="p-panel-bar"><span class="p-panel-title">Sessions</span><span class="p-btns"><span class="p-btn">⚲</span><span class="p-btn">▤</span><span class="p-btn">≡</span><span class="p-btn">∞</span><span class="p-btn">🗑</span></span></div>
+            <div class="p-rows">
+              <div class="row"><span class="sys">◉ PilotSwarm</span><span class="meta">[+4]</span></div>
+              <div class="row"><span class="fold">▣ Kit Navigator</span><span class="meta">12</span></div>
+              <div class="row"><span class="dot" style="--dot:#00e337"></span><span class="disc">AD</span><span class="label">Equity Fundamentals</span><span class="meta">22%</span></div>
+              <div class="row sel"><span class="dot"></span><span class="disc">AD</span><span class="label">regen cross-surface test</span><span class="meta">15%</span></div>
+              <div class="row"><span class="dot" style="--dot:#b6e000"></span><span class="disc">GH</span><span class="label">regen prod validation</span><span class="meta">running</span></div>
+              <div class="row"><span class="dot" style="--dot:#ffb400"></span><span class="disc">AD</span><span class="label">Caveman Editor</span><span class="meta">waiting</span></div>
+              <div class="row"><span class="dot" style="--dot:#ff3b00"></span><span class="disc">GH</span><span class="label">Adversarial review</span><span class="meta">failed</span></div>
+            </div>
+          </div>
+          <div class="p-panel p-chat">
+            <div class="p-panel-bar">
+              <span class="p-panel-title">regen cross-surface test</span>
+              <span class="p-panel-meta">idle · claude-sonnet-5</span>
+            </div>
+            <div class="p-log">
+              <div><span class="ts">[24 Jul 09:40:29]</span> <span class="tick">✓✓</span> <span class="who-you">You:</span> You are a regen cross-surface test session. Reply "ready" and then just answer tersely.</div>
+              <div><span class="ts">[24 Jul 09:40:31]</span> <span class="who-ag">Agent:</span> ready</div>
+              <div><span class="ts">[24 Jul 09:41:23]</span> <span class="tick">✓✓</span> <span class="who-you">You:</span> turn A — reply "A"</div>
+              <div><span class="ts">[24 Jul 09:41:24]</span> <span class="who-ag">Agent:</span> A</div>
+            </div>
+            <div class="p-composer">
+              <span class="p-you">YOU</span><span class="p-input">Type a message and press Enter</span><span class="p-send">›</span>
+            </div>
+          </div>
+        </div>
+        <div class="p-tabs"><span class="p-tab on">Main</span><span class="p-tab">Inspector</span><span class="p-tab">Activity</span></div>
+      </div>
+    </div>
+
+    <div class="surfaces">
+      <div>
+        <p class="surface-label">TUI <span>— 60 columns</span></p>
+        <pre class="tui t-winamp"><span class="fr">┌──────────────────────────────────────────────────────────┐</span>
+<span class="fr">│</span><span class="acc"> ▂▄█▅▂  </span><span class="hdr">PILOTSWARM</span>                   <span class="dim">v0.5.30</span>  <span class="hdr">[Sign Out]</span>  <span class="fr">│</span>
+<span class="fr">│</span>        <span class="hdr">Ada Lovelace</span><span class="dim"> · ada@example.com</span>                    <span class="fr">│</span>
+<span class="fr">├─────────────────────────┬────────────────────────────────┤</span>
+<span class="fr">│</span><span class="hdr"> SESSIONS</span>            <span class="dim">[7]</span> <span class="fr">│</span><span class="hdr"> regen cross-surface test</span>       <span class="fr">│</span>
+<span class="fr">│</span><span class="acc"> ⚙ PilotSwarm</span>      <span class="dim">[+4]</span>  <span class="fr">│</span><span class="dim"> idle · claude-sonnet-5</span>         <span class="fr">│</span>
+<span class="fr">│</span><span class="fold"> ▣ Kit Navigator</span>     <span class="dim">12</span>  <span class="fr">│</span>                                <span class="fr">│</span>
+<span class="fr">│</span> <span class="ok">○</span> <span class="disc">AD</span> Equity Fund    <span class="dim">22%</span> <span class="fr">│</span><span class="dim"> [09:40:29] </span><span class="ok">✓✓</span> <span class="you">You:</span> You are a   <span class="fr">│</span>
+<span class="fr">│</span><span class="sel"> ▶ AD regen cross    15% </span><span class="fr">│</span>            regen cross-surface <span class="fr">│</span>
+<span class="fr">│</span> <span class="run">○</span> <span class="disc">GH</span> regen prod     <span class="dim">run</span> <span class="fr">│</span><span class="dim"> [09:40:31] </span><span class="ag">Agent:</span> ready        <span class="fr">│</span>
+<span class="fr">│</span> <span class="wait">○</span> <span class="disc">AD</span> Caveman Ed     <span class="dim">wai</span> <span class="fr">│</span><span class="dim"> [09:41:23] </span><span class="ok">✓✓</span> <span class="you">You:</span> turn A      <span class="fr">│</span>
+<span class="fr">│</span> <span class="fail">○</span> <span class="disc">GH</span> Adversarial    <span class="dim">fai</span> <span class="fr">│</span><span class="dim"> [09:41:24] </span><span class="ag">Agent:</span> A            <span class="fr">│</span>
+<span class="fr">├─────────────────────────┴────────────────────────────────┤</span>
+<span class="fr">│</span><span class="dim"> YOU </span><span class="acc">▶</span><span class="dim"> Type a message and press Enter</span>                 <span class="hdr">[→]</span> <span class="fr">│</span>
+<span class="fr">└──────────────────────────────────────────────────────────┘</span>
+  <span class="sel"> Main </span><span class="dim"> │ Inspector │ Activity</span>                   <span class="dim">^K commands</span></pre>
+      </div>
+      <div>
+        <p class="surface-label">Mobile <span>— 340px</span></p>
+        <div class="phone t-winamp">
+          <div class="wa-titlebar">
+          <span class="wa-word">PILOTSWARM</span><span class="wa-grip"></span>
+          <span class="wa-wbtn">_</span><span class="wa-wbtn">×</span>
+        </div>
+        <div class="wa-display" style="padding:7px 8px;gap:8px">
+          <span class="wa-tile"><svg class="mark mark-16" viewBox="0 0 32 32" aria-hidden="true"><rect x="0" y="0" width="32" height="32" fill="#000"/>
+          <rect x="3" y="17" width="4" height="11" fill="#00e337"/>
+          <rect x="9" y="11" width="4" height="17" fill="#7ad91e"/>
+          <rect x="15" y="6" width="4" height="22" fill="#b6e000"/>
+          <rect x="21" y="13" width="4" height="15" fill="#ffb400"/>
+          <rect x="27" y="20" width="3" height="8" fill="#ff3b00"/></svg></span>
+          <span class="wa-glass" style="padding:5px 8px;gap:9px">
+            <span class="wa-time" style="font-size:16px">16%</span>
+            <span class="wa-track">
+              <span class="wa-scroll" style="font-size:9.5px">*** Ada Lovelace ***</span>
+              <span class="wa-kbps" style="font-size:8px">7 SESS · 4 RUN</span>
+            </span>
+          </span>
+        </div>
+          <div class="m-toolbar">
+          <span class="m-tool">+</span><span class="m-tool">▼</span><span class="m-tool">◐</span>
+          <span class="m-tool">≡</span><span class="m-tool">⛶</span>
+        </div>
+        <div class="m-panel">
+          <div class="p-panel-bar"><span class="p-panel-title">Sessions</span>
+            <span class="p-btns"><span class="p-btn">⚲</span><span class="p-btn">▤</span><span class="p-btn">≡</span></span></div>
+          <div class="p-rows">
+              <div class="row"><span class="sys">◉ PilotSwarm</span><span class="meta">[+4]</span></div>
+              <div class="row"><span class="fold">▣ Kit Navigator</span><span class="meta">12</span></div>
+              <div class="row"><span class="dot" style="--dot:#00e337"></span><span class="disc">AD</span><span class="label">Equity Fundamentals</span><span class="meta">22%</span></div>
+              <div class="row sel"><span class="dot"></span><span class="disc">AD</span><span class="label">regen cross-surface test</span><span class="meta">15%</span></div>
+              <div class="row"><span class="dot" style="--dot:#b6e000"></span><span class="disc">GH</span><span class="label">regen prod validation</span><span class="meta">running</span></div>
+          </div>
+        </div>
+        <div class="m-panel">
+          <div class="p-panel-bar"><span class="p-panel-title">regen cross-surface</span>
+            <span class="p-panel-meta">idle</span></div>
+          <div class="m-log">
+            <div><span class="ts">[09:41:23]</span> <span class="tick">✓✓</span> <span class="who-you">You:</span> turn A — reply "A"</div>
+            <div><span class="ts">[09:41:24]</span> <span class="who-ag">Agent:</span> A</div>
+          </div>
+          <div class="p-composer">
+            <span class="p-input">Type a message…</span><span class="p-send">›</span>
+          </div>
+        </div>
+        <div class="p-tabs"><span class="p-tab on">Main</span><span class="p-tab">Inspector</span><span class="p-tab">Activity</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tokens">
+      <div class="tok"><span class="chip" style="background:#000000"></span><span class="tok-role">ground — glass</span><span class="tok-hex">#000000</span></div>
+      <div class="tok"><span class="chip" style="background:#383838"></span><span class="tok-role">chrome face</span><span class="tok-hex">#383838</span></div>
+      <div class="tok"><span class="chip" style="background:#00e337"></span><span class="tok-role">display text</span><span class="tok-hex">#00E337</span></div>
+      <div class="tok"><span class="chip" style="background:#0000c6"></span><span class="tok-role">selection bar</span><span class="tok-hex">#0000C6</span></div>
+      <div class="tok"><span class="chip" style="background:#ffb400"></span><span class="tok-role">kbps amber</span><span class="tok-hex">#FFB400</span></div>
+      <div class="tok"><span class="chip" style="background:linear-gradient(90deg,#00e337,#b6e000,#ffb400,#ff3b00)"></span><span class="tok-role">status ramp</span><span class="tok-hex">4 stops</span></div>
+    </div>
+
+    <div class="hook">
+      <span class="hook-label">Across the three surfaces</span>
+      <p>
+        <strong>Desktop</strong> is where it wins: the identity block becomes the
+        now-playing display — context figure as the LED readout, user as the
+        scrolling title, fleet counts where the bitrate goes.
+      </p>
+      <p>
+        <strong>TUI is where it hurts.</strong> Strip the bevels and the black
+        glass and what remains is green text on black — very close to the
+        existing Terminal Green theme, distinguished only by the amber and the
+        ramp. This is the strongest theme on the surface with the most pixels and
+        the weakest on the one with none.
+      </p>
+      <p>
+        <strong>Mobile</strong> holds: the display collapses to one glass strip
+        with a smaller readout, which is exactly what Winamp's own shade mode did.
+      </p>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════ DOOM ═══════════════════════ -->
+  <section class="plate">
+    <div class="plate-head">
+      <div class="plate-id"><h2>DOOM</h2><span class="plate-year">id software · 1993</span></div>
+      <p class="thesis">
+        Warm brown metal and bone-coloured type. DOOM's status bar is the most
+        recognisable strip of UI id ever drew — hammered brown, big red numerals,
+        the marine's face dead centre.
+      </p>
+    </div>
+
+    <div class="lockup t-doom">
+      <div class="lockup-marks"><svg class="mark mark-48" viewBox="0 0 32 32" aria-hidden="true"><rect x="0" y="0" width="32" height="32" fill="#2a1d14"/>
+          <rect x="6" y="6" width="20" height="21" rx="2" fill="#c89a6a"/>
+          <rect x="5" y="7" width="22" height="5" rx="2" fill="#4a2f1a"/>
+          <rect x="9" y="15" width="5" height="3.4" fill="#1a1008"/>
+          <rect x="18" y="15" width="5" height="3.4" fill="#1a1008"/>
+          <rect x="8.5" y="13" width="6" height="1.6" fill="#3a2412" transform="rotate(9 11.5 13.8)"/>
+          <rect x="17.5" y="13" width="6" height="1.6" fill="#3a2412" transform="rotate(-9 20.5 13.8)"/>
+          <rect x="11" y="22" width="10" height="1.8" fill="#7a3a2a"/>
+          <rect x="14.5" y="18.5" width="3" height="2.4" fill="#a8734a"/></svg><svg class="mark mark-28" viewBox="0 0 32 32" aria-hidden="true"><rect x="0" y="0" width="32" height="32" fill="#2a1d14"/>
+          <rect x="6" y="6" width="20" height="21" rx="2" fill="#c89a6a"/>
+          <rect x="5" y="7" width="22" height="5" rx="2" fill="#4a2f1a"/>
+          <rect x="9" y="15" width="5" height="3.4" fill="#1a1008"/>
+          <rect x="18" y="15" width="5" height="3.4" fill="#1a1008"/>
+          <rect x="8.5" y="13" width="6" height="1.6" fill="#3a2412" transform="rotate(9 11.5 13.8)"/>
+          <rect x="17.5" y="13" width="6" height="1.6" fill="#3a2412" transform="rotate(-9 20.5 13.8)"/>
+          <rect x="11" y="22" width="10" height="1.8" fill="#7a3a2a"/>
+          <rect x="14.5" y="18.5" width="3" height="2.4" fill="#a8734a"/></svg><svg class="mark mark-16" viewBox="0 0 32 32" aria-hidden="true"><rect x="0" y="0" width="32" height="32" fill="#2a1d14"/>
+          <rect x="6" y="6" width="20" height="21" rx="2" fill="#c89a6a"/>
+          <rect x="5" y="7" width="22" height="5" rx="2" fill="#4a2f1a"/>
+          <rect x="9" y="15" width="5" height="3.4" fill="#1a1008"/>
+          <rect x="18" y="15" width="5" height="3.4" fill="#1a1008"/>
+          <rect x="8.5" y="13" width="6" height="1.6" fill="#3a2412" transform="rotate(9 11.5 13.8)"/>
+          <rect x="17.5" y="13" width="6" height="1.6" fill="#3a2412" transform="rotate(-9 20.5 13.8)"/>
+          <rect x="11" y="22" width="10" height="1.8" fill="#7a3a2a"/>
+          <rect x="14.5" y="18.5" width="3" height="2.4" fill="#a8734a"/></svg></div>
+      <p class="lockup-note">
+        The mark is <b>the face</b> — the one piece of DOOM's HUD that was never
+        decoration; it reported your state, and could again. It is also the mark
+        that suffers most in text, reduced to <b>[▀▄▀]</b>.
+      </p>
+    </div>
+
+    <p class="surface-label">Desktop <span>— 1180px</span></p>
+    <div class="scroller">
+      <div class="portal t-doom">
+        <div class="doom-stbar">
+          <span class="doom-cell"><span class="doom-num">7</span><span class="doom-lab">Sessions</span></span>
+          <span class="doom-cell"><span class="doom-num">16%</span><span class="doom-lab">Context</span></span>
+          <span class="doom-face"><svg class="mark mark-48" viewBox="0 0 32 32" aria-hidden="true"><rect x="0" y="0" width="32" height="32" fill="#2a1d14"/>
+          <rect x="6" y="6" width="20" height="21" rx="2" fill="#c89a6a"/>
+          <rect x="5" y="7" width="22" height="5" rx="2" fill="#4a2f1a"/>
+          <rect x="9" y="15" width="5" height="3.4" fill="#1a1008"/>
+          <rect x="18" y="15" width="5" height="3.4" fill="#1a1008"/>
+          <rect x="8.5" y="13" width="6" height="1.6" fill="#3a2412" transform="rotate(9 11.5 13.8)"/>
+          <rect x="17.5" y="13" width="6" height="1.6" fill="#3a2412" transform="rotate(-9 20.5 13.8)"/>
+          <rect x="11" y="22" width="10" height="1.8" fill="#7a3a2a"/>
+          <rect x="14.5" y="18.5" width="3" height="2.4" fill="#a8734a"/></svg></span>
+          <span class="doom-ident">
+            <span class="doom-brand">PILOTSWARM</span>
+            <span class="doom-user">Ada Lovelace</span>
+            <span class="doom-mail">ada@example.com</span>
+          </span>
+          <span class="doom-cell"><span class="doom-num">4</span><span class="doom-lab">Running</span></span>
+          <span class="doom-keys">
+            <span class="doom-key" style="background:#3050d0"></span>
+            <span class="doom-key" style="background:#e8c020"></span>
+            <span class="doom-key" style="background:#b81c1c"></span>
+          </span>
+          <span class="doom-exit">Sign Out</span>
+        </div>
+        <div class="p-toast"><span>Applied theme: <b>DOOM</b> · v0.5.30</span><span>×</span></div>
+        <div class="p-toolbar">
+          <span class="p-tool">+</span><span class="p-tool">▼</span>
+          <span class="p-tool">◐</span><span class="p-tool">≡</span><span class="p-tool">⛶</span>
+        </div>
+        <div class="p-body">
+          <div class="p-panel">
+            <div class="p-panel-bar"><span class="p-panel-title">Sessions</span><span class="p-btns"><span class="p-btn">⚲</span><span class="p-btn">▤</span><span class="p-btn">≡</span><span class="p-btn">∞</span><span class="p-btn">🗑</span></span></div>
+            <div class="p-rows">
+              <div class="row"><span class="sys">◉ PilotSwarm</span><span class="meta">[+4]</span></div>
+              <div class="row"><span class="fold">▣ Kit Navigator</span><span class="meta">12</span></div>
+              <div class="row"><span class="dot" style="--dot:#3f9e3f"></span><span class="disc">AD</span><span class="label">Equity Fundamentals</span><span class="meta">22%</span></div>
+              <div class="row sel"><span class="dot"></span><span class="disc">AD</span><span class="label">regen cross-surface test</span><span class="meta">15%</span></div>
+              <div class="row"><span class="dot" style="--dot:#3050d0"></span><span class="disc">GH</span><span class="label">regen prod validation</span><span class="meta">running</span></div>
+              <div class="row"><span class="dot" style="--dot:#e8c020"></span><span class="disc">AD</span><span class="label">Caveman Editor</span><span class="meta">waiting</span></div>
+              <div class="row"><span class="dot" style="--dot:#b81c1c"></span><span class="disc">GH</span><span class="label">Adversarial review</span><span class="meta">failed</span></div>
+            </div>
+          </div>
+          <div class="p-panel p-chat">
+            <div class="p-panel-bar">
+              <span class="p-panel-title">regen cross-surface test</span>
+              <span class="p-panel-meta">idle · claude-sonnet-5</span>
+            </div>
+            <div class="p-log">
+              <div><span class="ts">[24 Jul 09:40:29]</span> <span class="tick">✓✓</span> <span class="who-you">You:</span> You are a regen cross-surface test session. Reply "ready" and then just answer tersely.</div>
+              <div><span class="ts">[24 Jul 09:40:31]</span> <span class="who-ag">Agent:</span> ready</div>
+              <div><span class="ts">[24 Jul 09:41:23]</span> <span class="tick">✓✓</span> <span class="who-you">You:</span> turn A — reply "A"</div>
+              <div><span class="ts">[24 Jul 09:41:24]</span> <span class="who-ag">Agent:</span> A</div>
+            </div>
+            <div class="p-composer">
+              <span class="p-you">YOU</span><span class="p-input">Type a message and press Enter</span><span class="p-send">›</span>
+            </div>
+          </div>
+        </div>
+        <div class="p-tabs"><span class="p-tab on">Main</span><span class="p-tab">Inspector</span><span class="p-tab">Activity</span></div>
+      </div>
+    </div>
+
+    <div class="surfaces">
+      <div>
+        <p class="surface-label">TUI <span>— 60 columns</span></p>
+        <pre class="tui t-doom"><span class="fr">┌──────────────────────────────────────────────────────────┐</span>
+<span class="fr">│</span><span class="acc"> [▀▄▀]  </span><span class="hdr">PILOTSWARM</span>                   <span class="dim">v0.5.30</span>  <span class="hdr">[Sign Out]</span>  <span class="fr">│</span>
+<span class="fr">│</span>        <span class="hdr">Ada Lovelace</span><span class="dim"> · ada@example.com</span>                    <span class="fr">│</span>
+<span class="fr">├─────────────────────────┬────────────────────────────────┤</span>
+<span class="fr">│</span><span class="hdr"> SESSIONS</span>            <span class="dim">[7]</span> <span class="fr">│</span><span class="hdr"> regen cross-surface test</span>       <span class="fr">│</span>
+<span class="fr">│</span><span class="acc"> ⚙ PilotSwarm</span>      <span class="dim">[+4]</span>  <span class="fr">│</span><span class="dim"> idle · claude-sonnet-5</span>         <span class="fr">│</span>
+<span class="fr">│</span><span class="fold"> ▣ Kit Navigator</span>     <span class="dim">12</span>  <span class="fr">│</span>                                <span class="fr">│</span>
+<span class="fr">│</span> <span class="ok">○</span> <span class="disc">AD</span> Equity Fund    <span class="dim">22%</span> <span class="fr">│</span><span class="dim"> [09:40:29] </span><span class="ok">✓✓</span> <span class="you">You:</span> You are a   <span class="fr">│</span>
+<span class="fr">│</span><span class="sel"> ▶ AD regen cross    15% </span><span class="fr">│</span>            regen cross-surface <span class="fr">│</span>
+<span class="fr">│</span> <span class="run">○</span> <span class="disc">GH</span> regen prod     <span class="dim">run</span> <span class="fr">│</span><span class="dim"> [09:40:31] </span><span class="ag">Agent:</span> ready        <span class="fr">│</span>
+<span class="fr">│</span> <span class="wait">○</span> <span class="disc">AD</span> Caveman Ed     <span class="dim">wai</span> <span class="fr">│</span><span class="dim"> [09:41:23] </span><span class="ok">✓✓</span> <span class="you">You:</span> turn A      <span class="fr">│</span>
+<span class="fr">│</span> <span class="fail">○</span> <span class="disc">GH</span> Adversarial    <span class="dim">fai</span> <span class="fr">│</span><span class="dim"> [09:41:24] </span><span class="ag">Agent:</span> A            <span class="fr">│</span>
+<span class="fr">├─────────────────────────┴────────────────────────────────┤</span>
+<span class="fr">│</span><span class="dim"> YOU </span><span class="acc">▶</span><span class="dim"> Type a message and press Enter</span>                 <span class="hdr">[→]</span> <span class="fr">│</span>
+<span class="fr">└──────────────────────────────────────────────────────────┘</span>
+  <span class="sel"> Main </span><span class="dim"> │ Inspector │ Activity</span>                   <span class="dim">^K commands</span></pre>
+      </div>
+      <div>
+        <p class="surface-label">Mobile <span>— 340px</span></p>
+        <div class="phone t-doom">
+          <div class="doom-stbar" style="padding:5px 7px">
+          <span class="doom-face" style="padding:2px"><svg class="mark mark-28" viewBox="0 0 32 32" aria-hidden="true"><rect x="0" y="0" width="32" height="32" fill="#2a1d14"/>
+          <rect x="6" y="6" width="20" height="21" rx="2" fill="#c89a6a"/>
+          <rect x="5" y="7" width="22" height="5" rx="2" fill="#4a2f1a"/>
+          <rect x="9" y="15" width="5" height="3.4" fill="#1a1008"/>
+          <rect x="18" y="15" width="5" height="3.4" fill="#1a1008"/>
+          <rect x="8.5" y="13" width="6" height="1.6" fill="#3a2412" transform="rotate(9 11.5 13.8)"/>
+          <rect x="17.5" y="13" width="6" height="1.6" fill="#3a2412" transform="rotate(-9 20.5 13.8)"/>
+          <rect x="11" y="22" width="10" height="1.8" fill="#7a3a2a"/>
+          <rect x="14.5" y="18.5" width="3" height="2.4" fill="#a8734a"/></svg></span>
+          <span class="doom-cell" style="padding:0 9px"><span class="doom-num" style="font-size:19px">7</span><span class="doom-lab" style="font-size:7px">Sessions</span></span>
+          <span class="doom-cell" style="padding:0 9px"><span class="doom-num" style="font-size:19px">16%</span><span class="doom-lab" style="font-size:7px">Context</span></span>
+          <span class="doom-keys" style="padding:0 8px">
+            <span class="doom-key" style="background:#3050d0;width:12px"></span>
+            <span class="doom-key" style="background:#e8c020;width:12px"></span>
+            <span class="doom-key" style="background:#b81c1c;width:12px"></span>
+          </span>
+        </div>
+        <div class="doom-substrip"><span class="doom-user">Ada Lovelace</span><span class="doom-mail">ada@example.com</span></div>
+          <div class="m-toolbar">
+          <span class="m-tool">+</span><span class="m-tool">▼</span><span class="m-tool">◐</span>
+          <span class="m-tool">≡</span><span class="m-tool">⛶</span>
+        </div>
+        <div class="m-panel">
+          <div class="p-panel-bar"><span class="p-panel-title">Sessions</span>
+            <span class="p-btns"><span class="p-btn">⚲</span><span class="p-btn">▤</span><span class="p-btn">≡</span></span></div>
+          <div class="p-rows">
+              <div class="row"><span class="sys">◉ PilotSwarm</span><span class="meta">[+4]</span></div>
+              <div class="row"><span class="fold">▣ Kit Navigator</span><span class="meta">12</span></div>
+              <div class="row"><span class="dot" style="--dot:#3f9e3f"></span><span class="disc">AD</span><span class="label">Equity Fundamentals</span><span class="meta">22%</span></div>
+              <div class="row sel"><span class="dot"></span><span class="disc">AD</span><span class="label">regen cross-surface test</span><span class="meta">15%</span></div>
+              <div class="row"><span class="dot" style="--dot:#3050d0"></span><span class="disc">GH</span><span class="label">regen prod validation</span><span class="meta">running</span></div>
+          </div>
+        </div>
+        <div class="m-panel">
+          <div class="p-panel-bar"><span class="p-panel-title">regen cross-surface</span>
+            <span class="p-panel-meta">idle</span></div>
+          <div class="m-log">
+            <div><span class="ts">[09:41:23]</span> <span class="tick">✓✓</span> <span class="who-you">You:</span> turn A — reply "A"</div>
+            <div><span class="ts">[09:41:24]</span> <span class="who-ag">Agent:</span> A</div>
+          </div>
+          <div class="p-composer">
+            <span class="p-input">Type a message…</span><span class="p-send">›</span>
+          </div>
+        </div>
+        <div class="p-tabs"><span class="p-tab on">Main</span><span class="p-tab">Inspector</span><span class="p-tab">Activity</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tokens">
+      <div class="tok"><span class="chip" style="background:#100b09"></span><span class="tok-role">ground</span><span class="tok-hex">#100B09</span></div>
+      <div class="tok"><span class="chip" style="background:#6f5432"></span><span class="tok-role">STBAR brown</span><span class="tok-hex">#6F5432</span></div>
+      <div class="tok"><span class="chip" style="background:#d9cba8"></span><span class="tok-role">bone type</span><span class="tok-hex">#D9CBA8</span></div>
+      <div class="tok"><span class="chip" style="background:#3050d0"></span><span class="tok-role">keycard — blue</span><span class="tok-hex">#3050D0</span></div>
+      <div class="tok"><span class="chip" style="background:#e8c020"></span><span class="tok-role">keycard — yellow</span><span class="tok-hex">#E8C020</span></div>
+      <div class="tok"><span class="chip" style="background:#b81c1c"></span><span class="tok-role">keycard — red</span><span class="tok-hex">#B81C1C</span></div>
+    </div>
+
+    <div class="hook">
+      <span class="hook-label">Across the three surfaces</span>
+      <p>
+        <strong>Desktop</strong> is the STBAR outright: numeric cells split by
+        hammered seams, face recessed dead centre, keycards stacked right as live
+        status lamps. Counts that hide in a corner today become big red numerals.
+      </p>
+      <p>
+        <strong>TUI survives better than expected.</strong> Bone-on-brown needs
+        no gradient, and the keycard triad still reads as three coloured marks in
+        a column. What is lost is the face and the metal — so the TUI is DOOM's
+        palette without DOOM's furniture.
+      </p>
+      <p>
+        <strong>Mobile is where it strains.</strong> Five numeric cells do not fit
+        340px, so the bar sheds the identity to a second strip and keeps face,
+        two counts and the keys. It works, but it is the only theme here that
+        needs a different header <em>layout</em> on a phone rather than a smaller one.
+      </p>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════ QUAKE ═══════════════════════ -->
+  <section class="plate">
+    <div class="plate-head">
+      <div class="plate-id"><h2>Quake</h2><span class="plate-year">id software · 1996</span></div>
+      <p class="thesis">
+        The murky one. Quake's palette is famously desaturated — wet stone, rust,
+        and a single amber light source. The design idea is
+        <strong>restraint</strong>: one colour, held back.
+      </p>
+    </div>
+
+    <div class="lockup t-quake">
+      <div class="lockup-marks"><svg class="mark mark-48" viewBox="0 0 32 32" aria-hidden="true"><rect x="0" y="0" width="32" height="32" fill="#0b0a09"/>
+          <circle cx="15" cy="14" r="8.6" fill="none" stroke="#6b6154" stroke-width="5.2"/>
+          <rect x="17.6" y="17" width="5.4" height="12.4" rx="0.6" fill="#6b6154" transform="rotate(-38 20.3 23.2)"/>
+          <circle cx="15" cy="14" r="2.7" fill="#e0952b"/>
+          <circle cx="15" cy="14" r="5" fill="none" stroke="rgba(224,149,43,0.22)" stroke-width="3"/></svg><svg class="mark mark-28" viewBox="0 0 32 32" aria-hidden="true"><rect x="0" y="0" width="32" height="32" fill="#0b0a09"/>
+          <circle cx="15" cy="14" r="8.6" fill="none" stroke="#6b6154" stroke-width="5.2"/>
+          <rect x="17.6" y="17" width="5.4" height="12.4" rx="0.6" fill="#6b6154" transform="rotate(-38 20.3 23.2)"/>
+          <circle cx="15" cy="14" r="2.7" fill="#e0952b"/>
+          <circle cx="15" cy="14" r="5" fill="none" stroke="rgba(224,149,43,0.22)" stroke-width="3"/></svg><svg class="mark mark-16" viewBox="0 0 32 32" aria-hidden="true"><rect x="0" y="0" width="32" height="32" fill="#0b0a09"/>
+          <circle cx="15" cy="14" r="8.6" fill="none" stroke="#6b6154" stroke-width="5.2"/>
+          <rect x="17.6" y="17" width="5.4" height="12.4" rx="0.6" fill="#6b6154" transform="rotate(-38 20.3 23.2)"/>
+          <circle cx="15" cy="14" r="2.7" fill="#e0952b"/>
+          <circle cx="15" cy="14" r="5" fill="none" stroke="rgba(224,149,43,0.22)" stroke-width="3"/></svg></div>
+      <p class="lockup-note">
+        A heavy stone <b>Q</b> with the tail driven through it like a nail, lit
+        from a single amber core — the same amber the HUD numerals use, so mark
+        and figures read as one light source. In text: <b>─[Q]─</b>.
+      </p>
+    </div>
+
+    <p class="surface-label">Desktop <span>— 1180px</span></p>
+    <div class="scroller">
+      <div class="portal t-quake">
+        <div class="qk-slab">
+          <span class="qk-tile"><svg class="mark mark-48" viewBox="0 0 32 32" aria-hidden="true"><rect x="0" y="0" width="32" height="32" fill="#0b0a09"/>
+          <circle cx="15" cy="14" r="8.6" fill="none" stroke="#6b6154" stroke-width="5.2"/>
+          <rect x="17.6" y="17" width="5.4" height="12.4" rx="0.6" fill="#6b6154" transform="rotate(-38 20.3 23.2)"/>
+          <circle cx="15" cy="14" r="2.7" fill="#e0952b"/>
+          <circle cx="15" cy="14" r="5" fill="none" stroke="rgba(224,149,43,0.22)" stroke-width="3"/></svg></span>
+          <span class="qk-ident">
+            <span class="qk-brand">PILOTSWARM</span>
+            <span class="qk-user">Ada Lovelace</span>
+            <span class="qk-mail">ada@example.com</span>
+          </span>
+          <span class="qk-hud">
+            <span class="qk-num">7</span><span class="qk-unit">sessions</span>
+            <span class="qk-num" style="margin-left:14px">16</span><span class="qk-unit">% ctx</span>
+          </span>
+          <span class="qk-exit">Sign Out</span>
+        </div>
+        <div class="p-toast"><span>Applied theme: <b>Quake</b> · v0.5.30</span><span>×</span></div>
+        <div class="p-toolbar">
+          <span class="p-tool">+</span><span class="p-tool">▼</span>
+          <span class="p-tool">◐</span><span class="p-tool">≡</span><span class="p-tool">⛶</span>
+        </div>
+        <div class="p-body">
+          <div class="p-panel">
+            <div class="p-panel-bar"><span class="p-panel-title">Sessions</span><span class="p-btns"><span class="p-btn">⚲</span><span class="p-btn">▤</span><span class="p-btn">≡</span><span class="p-btn">∞</span><span class="p-btn">🗑</span></span></div>
+            <div class="p-rows">
+              <div class="row"><span class="sys">◉ PilotSwarm</span><span class="meta">[+4]</span></div>
+              <div class="row"><span class="fold">▣ Kit Navigator</span><span class="meta">12</span></div>
+              <div class="row"><span class="dot" style="--dot:#8a7f6c"></span><span class="disc">AD</span><span class="label">Equity Fundamentals</span><span class="meta">22%</span></div>
+              <div class="row sel"><span class="dot"></span><span class="disc">AD</span><span class="label">regen cross-surface test</span><span class="meta">15%</span></div>
+              <div class="row"><span class="dot" style="--dot:#4a6fd4"></span><span class="disc">GH</span><span class="label">regen prod validation</span><span class="meta">running</span></div>
+              <div class="row"><span class="dot" style="--dot:#e0952b"></span><span class="disc">AD</span><span class="label">Caveman Editor</span><span class="meta">waiting</span></div>
+              <div class="row"><span class="dot" style="--dot:#c4441a"></span><span class="disc">GH</span><span class="label">Adversarial review</span><span class="meta">failed</span></div>
+            </div>
+          </div>
+          <div class="p-panel p-chat">
+            <div class="p-panel-bar">
+              <span class="p-panel-title">regen cross-surface test</span>
+              <span class="p-panel-meta">idle · claude-sonnet-5</span>
+            </div>
+            <div class="p-log">
+              <div><span class="ts">[24 Jul 09:40:29]</span> <span class="tick">✓✓</span> <span class="who-you">You:</span> You are a regen cross-surface test session. Reply "ready" and then just answer tersely.</div>
+              <div><span class="ts">[24 Jul 09:40:31]</span> <span class="who-ag">Agent:</span> ready</div>
+              <div><span class="ts">[24 Jul 09:41:23]</span> <span class="tick">✓✓</span> <span class="who-you">You:</span> turn A — reply "A"</div>
+              <div><span class="ts">[24 Jul 09:41:24]</span> <span class="who-ag">Agent:</span> A</div>
+            </div>
+            <div class="p-composer">
+              <span class="p-you">YOU</span><span class="p-input">Type a message and press Enter</span><span class="p-send">›</span>
+            </div>
+          </div>
+        </div>
+        <div class="p-tabs"><span class="p-tab on">Main</span><span class="p-tab">Inspector</span><span class="p-tab">Activity</span></div>
+      </div>
+    </div>
+
+    <div class="surfaces">
+      <div>
+        <p class="surface-label">TUI <span>— 60 columns</span></p>
+        <pre class="tui t-quake"><span class="fr">┌──────────────────────────────────────────────────────────┐</span>
+<span class="fr">│</span><span class="acc"> ─[Q]─  </span><span class="hdr">PILOTSWARM</span>                   <span class="dim">v0.5.30</span>  <span class="hdr">[Sign Out]</span>  <span class="fr">│</span>
+<span class="fr">│</span>        <span class="hdr">Ada Lovelace</span><span class="dim"> · ada@example.com</span>                    <span class="fr">│</span>
+<span class="fr">├─────────────────────────┬────────────────────────────────┤</span>
+<span class="fr">│</span><span class="hdr"> SESSIONS</span>            <span class="dim">[7]</span> <span class="fr">│</span><span class="hdr"> regen cross-surface test</span>       <span class="fr">│</span>
+<span class="fr">│</span><span class="acc"> ⚙ PilotSwarm</span>      <span class="dim">[+4]</span>  <span class="fr">│</span><span class="dim"> idle · claude-sonnet-5</span>         <span class="fr">│</span>
+<span class="fr">│</span><span class="fold"> ▣ Kit Navigator</span>     <span class="dim">12</span>  <span class="fr">│</span>                                <span class="fr">│</span>
+<span class="fr">│</span> <span class="ok">○</span> <span class="disc">AD</span> Equity Fund    <span class="dim">22%</span> <span class="fr">│</span><span class="dim"> [09:40:29] </span><span class="ok">✓✓</span> <span class="you">You:</span> You are a   <span class="fr">│</span>
+<span class="fr">│</span><span class="sel"> ▶ AD regen cross    15% </span><span class="fr">│</span>            regen cross-surface <span class="fr">│</span>
+<span class="fr">│</span> <span class="run">○</span> <span class="disc">GH</span> regen prod     <span class="dim">run</span> <span class="fr">│</span><span class="dim"> [09:40:31] </span><span class="ag">Agent:</span> ready        <span class="fr">│</span>
+<span class="fr">│</span> <span class="wait">○</span> <span class="disc">AD</span> Caveman Ed     <span class="dim">wai</span> <span class="fr">│</span><span class="dim"> [09:41:23] </span><span class="ok">✓✓</span> <span class="you">You:</span> turn A      <span class="fr">│</span>
+<span class="fr">│</span> <span class="fail">○</span> <span class="disc">GH</span> Adversarial    <span class="dim">fai</span> <span class="fr">│</span><span class="dim"> [09:41:24] </span><span class="ag">Agent:</span> A            <span class="fr">│</span>
+<span class="fr">├─────────────────────────┴────────────────────────────────┤</span>
+<span class="fr">│</span><span class="dim"> YOU </span><span class="acc">▶</span><span class="dim"> Type a message and press Enter</span>                 <span class="hdr">[→]</span> <span class="fr">│</span>
+<span class="fr">└──────────────────────────────────────────────────────────┘</span>
+  <span class="sel"> Main </span><span class="dim"> │ Inspector │ Activity</span>                   <span class="dim">^K commands</span></pre>
+      </div>
+      <div>
+        <p class="surface-label">Mobile <span>— 340px</span></p>
+        <div class="phone t-quake">
+          <div class="qk-slab" style="padding:9px 10px;gap:10px">
+          <span class="qk-tile" style="padding:3px"><svg class="mark mark-28" viewBox="0 0 32 32" aria-hidden="true"><rect x="0" y="0" width="32" height="32" fill="#0b0a09"/>
+          <circle cx="15" cy="14" r="8.6" fill="none" stroke="#6b6154" stroke-width="5.2"/>
+          <rect x="17.6" y="17" width="5.4" height="12.4" rx="0.6" fill="#6b6154" transform="rotate(-38 20.3 23.2)"/>
+          <circle cx="15" cy="14" r="2.7" fill="#e0952b"/>
+          <circle cx="15" cy="14" r="5" fill="none" stroke="rgba(224,149,43,0.22)" stroke-width="3"/></svg></span>
+          <span class="qk-ident">
+            <span class="qk-brand" style="font-size:9.5px">PILOTSWARM</span>
+            <span class="qk-user" style="font-size:10px">Ada Lovelace</span>
+          </span>
+          <span class="qk-hud"><span class="qk-num" style="font-size:19px">7</span><span class="qk-unit">sess</span></span>
+        </div>
+          <div class="m-toolbar">
+          <span class="m-tool">+</span><span class="m-tool">▼</span><span class="m-tool">◐</span>
+          <span class="m-tool">≡</span><span class="m-tool">⛶</span>
+        </div>
+        <div class="m-panel">
+          <div class="p-panel-bar"><span class="p-panel-title">Sessions</span>
+            <span class="p-btns"><span class="p-btn">⚲</span><span class="p-btn">▤</span><span class="p-btn">≡</span></span></div>
+          <div class="p-rows">
+              <div class="row"><span class="sys">◉ PilotSwarm</span><span class="meta">[+4]</span></div>
+              <div class="row"><span class="fold">▣ Kit Navigator</span><span class="meta">12</span></div>
+              <div class="row"><span class="dot" style="--dot:#8a7f6c"></span><span class="disc">AD</span><span class="label">Equity Fundamentals</span><span class="meta">22%</span></div>
+              <div class="row sel"><span class="dot"></span><span class="disc">AD</span><span class="label">regen cross-surface test</span><span class="meta">15%</span></div>
+              <div class="row"><span class="dot" style="--dot:#4a6fd4"></span><span class="disc">GH</span><span class="label">regen prod validation</span><span class="meta">running</span></div>
+          </div>
+        </div>
+        <div class="m-panel">
+          <div class="p-panel-bar"><span class="p-panel-title">regen cross-surface</span>
+            <span class="p-panel-meta">idle</span></div>
+          <div class="m-log">
+            <div><span class="ts">[09:41:23]</span> <span class="tick">✓✓</span> <span class="who-you">You:</span> turn A — reply "A"</div>
+            <div><span class="ts">[09:41:24]</span> <span class="who-ag">Agent:</span> A</div>
+          </div>
+          <div class="p-composer">
+            <span class="p-input">Type a message…</span><span class="p-send">›</span>
+          </div>
+        </div>
+        <div class="p-tabs"><span class="p-tab on">Main</span><span class="p-tab">Inspector</span><span class="p-tab">Activity</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tokens">
+      <div class="tok"><span class="chip" style="background:#0b0a09"></span><span class="tok-role">ground</span><span class="tok-hex">#0B0A09</span></div>
+      <div class="tok"><span class="chip" style="background:#4a3f33"></span><span class="tok-role">stone edge</span><span class="tok-hex">#4A3F33</span></div>
+      <div class="tok"><span class="chip" style="background:#b9ac93"></span><span class="tok-role">parchment type</span><span class="tok-hex">#B9AC93</span></div>
+      <div class="tok"><span class="chip" style="background:#e0952b"></span><span class="tok-role">HUD amber</span><span class="tok-hex">#E0952B</span></div>
+      <div class="tok"><span class="chip" style="background:#4a6fd4"></span><span class="tok-role">quad blue — running only</span><span class="tok-hex">#4A6FD4</span></div>
+      <div class="tok"><span class="chip" style="background:#c4441a"></span><span class="tok-role">lava</span><span class="tok-hex">#C4441A</span></div>
+    </div>
+
+    <div class="hook">
+      <span class="hook-label">Across the three surfaces</span>
+      <p>
+        <strong>Desktop</strong> is a stone slab lit from one corner — the only
+        gradient in the theme, doing a bevel's job without one. Counts sit in HUD
+        amber with a faint bloom, the same light as the mark's core.
+      </p>
+      <p>
+        <strong>TUI is where it quietly wins.</strong> Nothing here depended on a
+        gradient, so almost nothing is lost: amber on stone, parchment text, and
+        the single quad-blue dot still pulling the eye to the running session.
+        This is the only one of the three that looks like the same theme on all
+        three surfaces.
+      </p>
+      <p>
+        <strong>Mobile</strong> is a straight shrink — logo, name, one amber
+        figure. No layout change needed, because there was never more than one
+        idea in the header.
+      </p>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════ CLOSING ═══════════════════════ -->
+  <section class="closing">
+    <h3 class="sec">What the three surfaces settled</h3>
+    <p>
+      Rendering the TUI changed the ranking twice. On desktop alone WinAMP is the
+      most impressive of the three; across all three surfaces it is the least
+      consistent, because everything that makes it WinAMP is chrome the terminal
+      cannot draw.
+    </p>
+
+    <table class="verdict">
+      <tr><th>Theme</th><th>Desktop</th><th>TUI</th><th>Mobile</th><th>Build</th></tr>
+      <tr>
+        <td>Quake</td>
+        <td>Strong — one lit slab</td>
+        <td><strong>Identical in feel</strong></td>
+        <td>Straight shrink</td>
+        <td>~½ day</td>
+      </tr>
+      <tr>
+        <td>WinAMP</td>
+        <td><strong>Best of the three</strong></td>
+        <td>Near Terminal Green</td>
+        <td>Shade mode, holds</td>
+        <td>~2 days</td>
+      </tr>
+      <tr>
+        <td>DOOM</td>
+        <td>Loudest, most fun</td>
+        <td>Palette survives, furniture does not</td>
+        <td>Needs its own layout</td>
+        <td>~2–3 days</td>
+      </tr>
+    </table>
+
+    <h3 class="sec" style="margin-top:40px">Recommendation</h3>
+    <p>
+      <strong>Quake first</strong>, and now for a stronger reason than cost: it is
+      the only one of the three that is recognisably the same theme in a terminal,
+      on a phone and on a desktop. Its restraint is not timidity — it is what
+      makes it portable across surfaces that have wildly different capabilities.
+    </p>
+    <p>
+      <strong>WinAMP second</strong>, with eyes open: it will be the one people
+      screenshot, and the one that disappoints in the TUI. If that matters, its
+      terminal variant should lean much harder on the amber and the status ramp
+      than the desktop one does, so it is not mistaken for Terminal Green.
+    </p>
+    <p>
+      <strong>DOOM last.</strong> Most fun, least restful, and the only theme
+      needing a genuinely different header layout on mobile rather than a smaller
+      one — which is where the extra day goes.
+    </p>
+
+    <h3 class="sec" style="margin-top:40px">What building one costs</h3>
+    <p>
+      Themes are data: one file under
+      <code>packages/app/ui/core/src/themes/</code> exporting
+      <code>createTheme({ id, label, description, page, terminal })</code>, plus
+      one import in <code>themes/index.js</code>. <code>ms-dos.js</code> and
+      <code>win95.js</code> are the models. The <code>terminal</code> block is
+      what drives the TUI column above, so it is not an afterthought — it is half
+      the theme.
+    </p>
+
+    <div class="hook">
+      <span class="hook-label">Learned the hard way, today</span>
+      <p>
+        Both existing retro themes carry
+        <code>.is-selected * { background-color: transparent }</code> to stop child
+        backgrounds punching holes in the selection bar — and it silently erased
+        the two elements that <strong>are</strong> their background: the status dot
+        and the owner disc. Measured in a browser, both were fully transparent on
+        the selected row in MS-DOS and Win95 alike. Any theme that restyles
+        selection must explicitly restate those two marks, or they vanish and
+        nothing complains.
+      </p>
+    </div>
+
+    <p style="margin-top:28px">
+      One live constraint: the suite enforces a muted-text contrast floor
+      (<code>theme-muted-contrast.test.js</code>). Authentic CGA dark grey already
+      failed it once and MS-DOS carries a documented deviation. Expect the same
+      for DOOM's darker browns and Quake's stone greys — the honest move is to
+      deviate and say so in a comment, as <code>ms-dos.js</code> does.
+    </p>
+  </section>
+
+</div>

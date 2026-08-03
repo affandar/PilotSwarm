@@ -8,7 +8,7 @@ deployed; the only cluster dependency is the portal that is already running.
 ```
 MCP host (Claude Code / Copilot / VS Code)
    └─ spawns → pilotswarm-mcp (local, stdio)
-                  └─ HTTPS → https://pilotswarm-portal.westus3.cloudapp.azure.com/api/v1
+                  └─ HTTPS → https://<your-portal-host>/api/v1
                               (your Entra identity; your role = your tool surface)
 ```
 
@@ -27,7 +27,7 @@ to run this against a real deployment.
 2. **Authenticate once** against the deployment:
 
    ```bash
-   node packages/app/tui/bin/pilotswarm.js auth login --api-url https://pilotswarm-portal.westus3.cloudapp.azure.com
+   node packages/app/tui/bin/pilotswarm.js auth login --api-url https://<your-portal-host>
    ```
 
    This caches a refresh token under `~/.config/pilotswarm/auth/`; the MCP

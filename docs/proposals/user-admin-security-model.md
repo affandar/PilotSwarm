@@ -79,7 +79,7 @@ In scope — a **curious or careless admitted user** (or their compromised
 token / a prompt-injected agent driving the Web API with their token):
 reading colleagues' session transcripts and artifacts, steering or deleting
 others' sessions, exfiltrating private facts. Multi-user deployments on a
-shared stamp (the pilotswarm-aks posture) are the target environment.
+shared stamp (the live AKS posture) are the target environment.
 
 Out of scope — hostile tenants running untrusted plugin code (that is
 [multitenant-pilotswarm.md](./multitenant-pilotswarm.md)'s isolation problem);
@@ -607,8 +607,8 @@ write grants, owner-priority prompting, admin break-glass, tree semantics,
 MCP parity, lifecycle, dark-launch diff) live in
 [dev-auth-provider-and-multiuser-test-plan.md](./dev-auth-provider-and-multiuser-test-plan.md).
 
-One **real-Entra confirmation pass** on pilotswarm-aks remains mandatory
-before ship (the dev provider bypasses JWT validation): `daraffan`
+One **real-Entra confirmation pass** on the live AKS deployment remains mandatory
+before ship (the dev provider bypasses JWT validation): an admin
 (admin) plus one invited guest user (`user` app role), walking the core
 scenarios in a normal+incognito pair; optionally a service principal via
 client-credentials for headless coverage (SP tokens carry no email claim —

@@ -1,55 +1,76 @@
 # PilotSwarm AKS Topology
 
+This describes the **shape** of a PilotSwarm AKS deployment, not the identity of
+any particular one. This repo is public, so no subscription, tenant, resource,
+host, or IP names are recorded here.
+
+## Placeholders
+
+Every `<placeholder>` below resolves from `.env.remote` (gitignored) or from the
+live resources. The deploy scripts read the same variables, so what you put in
+`.env.remote` is the single source of truth.
+
+| Placeholder | `.env.remote` variable | Otherwise resolve with |
+|---|---|---|
+| `<subscription>` | `AZURE_SUBSCRIPTION_ID` | `az account list -o table` |
+| `<resource-group>` | — | `az group list -o table` |
+| `<region>` | — | `az group show -n <resource-group> --query location -o tsv` |
+| `<cluster>` | `K8S_CONTEXT` | `az aks list -o table` |
+| `<acr>` | `ACR_NAME` | `az acr list -o table` |
+| `<pg-server>` | host inside `DATABASE_URL` | `az postgres flexible-server list -o table` |
+| `<storage-account>` | inside `AZURE_STORAGE_CONNECTION_STRING` | `az storage account list -o table` |
+| `<portal-host>` | — | `kubectl get ingress -n copilot-runtime -o wide` |
+| `<namespace>` | `K8S_NAMESPACE` | — |
+
 ## Subscription & Resource Group
 
 | Field | Value |
 |-------|-------|
-| Subscription | Azure PostgreSQL AI Playground (`043a8e55-a702-4610-bffb-f2cc510c4340`) |
-| Resource Group | `pilotswarm-rg` |
-| Location | `westus3` |
-| AKS Managed RG | `MC_pilotswarm-rg_pilotswarm-aks_westus3` (auto-managed) |
+| Subscription | `<subscription>` |
+| Resource Group | `<resource-group>` |
+| Location | `<region>` |
+| AKS Managed RG | `MC_<resource-group>_<cluster>_<region>` (auto-managed) |
 
 ## Resources
 
 | Resource | Name | SKU / Config |
 |----------|------|-------------|
-| VNet | `pilotswarm-vnet` | Address space: `10.16.0.0/12` |
-| NSG | `pilotswarm-nsg` | Attached to `aks-subnet` |
-| AKS | `pilotswarm-aks` | K8s 1.33, Azure CNI, Standard tier |
-| ACR | `pilotswarmacr` | Basic, admin enabled (for pull secret) |
-| Postgres Flex | `pilotswarm-pg` | v17, `Standard_D2ads_v5`, 64 GB |
-| Storage | `pilotswarmsessions` | StorageV2, Standard_LRS |
+| VNet | `<prefix>-vnet` | Address space: `10.16.0.0/12` |
+| NSG | `<prefix>-nsg` | Attached to `aks-subnet` |
+| AKS | `<cluster>` | K8s 1.33, Azure CNI, Standard tier |
+| ACR | `<acr>` | Basic, admin enabled (for pull secret) |
+| Postgres Flex | `<pg-server>` | v17, `Standard_D2ads_v5`, 64 GB |
+| Storage | `<storage-account>` | StorageV2, Standard_LRS |
 | Blob Container | `copilot-sessions` | Session dehydration blobs |
 
 ## Network Topology
 
 ```
                     ┌─────────────────────────────────────────────┐
-                    │  Azure PostgreSQL AI Playground              │
-                    │  Subscription: 043a8e55-...                 │
-                    │  Resource Group: pilotswarm-rg               │
+                    │  Subscription: <subscription>                │
+                    │  Resource Group: <resource-group>            │
                     └─────────────────────────────────────────────┘
 
   ┌──────────────────────────────────────────────────────────────────────────┐
-  │  pilotswarm-vnet  (10.16.0.0/12)                                        │
+  │  <prefix>-vnet  (10.16.0.0/12)                                          │
   │                                                                          │
   │  ┌────────────────────────────────────────────────────────────────────┐  │
   │  │  aks-subnet  (10.16.0.0/16)                                        │  │
-  │  │  NSG: pilotswarm-nsg                                               │  │
+  │  │  NSG: <prefix>-nsg                                                 │  │
   │  │                                                                     │  │
   │  │  AKS Nodes (Azure CNI — pods get VNet IPs directly):               │  │
-  │  │    ├─ aks-...-vmss000000  10.16.0.33                               │  │
-  │  │    └─ aks-...-vmss000001  10.16.0.4                                │  │
+  │  │    ├─ aks-...-vmss000000                                           │  │
+  │  │    └─ aks-...-vmss000001                                           │  │
   │  │                                                                     │  │
   │  │  Pods (namespace: copilot-runtime):                                │  │
-  │  │    ├─ 6x copilot-runtime-worker    (Running)                       │  │
+  │  │    ├─ Nx copilot-runtime-worker    (Running)                       │  │
   │  │    └─ 1x pilotswarm-portal         (Running, port 3001)            │  │
   │  │                                                                     │  │
   │  │  Services:                                                          │  │
-  │  │    ├─ pilotswarm-portal  ClusterIP (10.0.115.116:3001)             │  │
+  │  │    ├─ pilotswarm-portal  ClusterIP (:3001)                         │  │
   │  │    └─ nginx (app-routing-system ns)                                │  │
-  │  │        Public LB: 20.106.114.177 (static)                         │  │
-  │  │        DNS: pilotswarm-portal.westus3.cloudapp.azure.com           │  │
+  │  │        Public LB: <static public IP>                               │  │
+  │  │        DNS: <portal-host>                                          │  │
   │  │        Ports: 80, 443                                               │  │
   │  │        TLS: Let's Encrypt (cert-manager, auto-renewed)             │  │
   │  │                                                                     │  │
@@ -61,26 +82,26 @@
                          │ (outbound)
                          ▼
   ┌──────────────────────────────────────┐
-  │  pilotswarm-pg.postgres.database.    │
+  │  <pg-server>.postgres.database.      │
   │    azure.com                          │
   │  PG Flex v17, Standard_D2ads_v5      │
   │  Firewall: AllowAzureServices (0/0)  │
   └──────────────────────────────────────┘
 
   ┌──────────────────────────────────────┐
-  │  pilotswarmsessions (StorageV2)      │
+  │  <storage-account> (StorageV2)       │
   │  Container: copilot-sessions         │
   │  SKU: Standard_LRS                   │
   └──────────────────────────────────────┘
 
   ┌──────────────────────────────────────┐
-  │  pilotswarmacr (ACR Basic)           │
+  │  <acr> (ACR Basic)                   │
   │  Images: copilot-runtime-worker,     │
   │          pilotswarm-portal           │
   └──────────────────────────────────────┘
 ```
 
-## NSG Rules (pilotswarm-nsg)
+## NSG Rules
 
 | Priority | Name | Direction | Access | Source |
 |----------|------|-----------|--------|--------|
@@ -97,9 +118,9 @@ NRMS rules (101–109) are corp-managed and auto-applied. Rules 110/120 are cust
 
 | Field | Value |
 |-------|-------|
-| Name | `pilotswarm-aks` |
-| FQDN | `pilotswarm-pilotswarm-rg-043a8e-au3kq85k.hcp.westus3.azmk8s.io` |
-| Kubernetes | 1.33.7 |
+| Name | `<cluster>` |
+| FQDN | `az aks show -g <resource-group> -n <cluster> --query fqdn -o tsv` |
+| Kubernetes | 1.33.x |
 | Network Plugin | Azure CNI |
 | Service CIDR | `10.0.0.0/16` |
 | DNS Service IP | `10.0.0.10` |
@@ -113,42 +134,41 @@ NRMS rules (101–109) are corp-managed and auto-applied. Rules 110/120 are cust
 
 | Deployment | Replicas | Image |
 |-----------|----------|-------|
-| copilot-runtime-worker | 6 | `pilotswarmacr.azurecr.io/copilot-runtime-worker:latest` |
-| pilotswarm-portal | 1 | `pilotswarmacr.azurecr.io/pilotswarm-portal:latest` |
+| copilot-runtime-worker | N | `<acr>.azurecr.io/copilot-runtime-worker:latest` |
+| pilotswarm-portal | 1 | `<acr>.azurecr.io/pilotswarm-portal:latest` |
 
 ### Services
 
-| Service | Type | ClusterIP | External IP | Port |
-|---------|------|-----------|-------------|------|
-| pilotswarm-portal | ClusterIP | 10.0.115.116 | — | 3001 |
-| nginx (app-routing-system) | LoadBalancer (public) | 10.0.255.72 | 20.106.114.177 (static) | 80, 443 |
+| Service | Type | External IP | Port |
+|---------|------|-------------|------|
+| pilotswarm-portal | ClusterIP | — | 3001 |
+| nginx (app-routing-system) | LoadBalancer (public) | static public IP | 80, 443 |
 
 ### Ingress
 
 | Ingress | Class | Host | TLS |
 |---------|-------|------|-----|
-| pilotswarm-portal | webapprouting.kubernetes.azure.com | pilotswarm-portal.westus3.cloudapp.azure.com | Let's Encrypt (cert-manager, secret: `portal-tls`) |
+| pilotswarm-portal | webapprouting.kubernetes.azure.com | `<portal-host>` | Let's Encrypt (cert-manager, secret: `portal-tls`) |
 
 ### Secrets
 
 | Secret | Type | Keys |
 |--------|------|------|
 | copilot-runtime-secrets | Opaque | DATABASE_URL, GITHUB_TOKEN, AZURE_STORAGE_CONNECTION_STRING, AZURE_STORAGE_CONTAINER, AZURE_OAI_KEY, AZURE_MODEL_ROUTER_KEY, AZURE_FW_GLM5_KEY, AZURE_KIMI_K25_KEY, PORTAL_AUTH_PROVIDER, PORTAL_AUTH_ENTRA_TENANT_ID, PORTAL_AUTH_ENTRA_CLIENT_ID, PORTAL_AUTHZ_ADMIN_GROUPS, PORTAL_AUTHZ_USER_GROUPS, K8S_CONTEXT (15 total) |
-| acr-pull | docker-registry | ACR admin credentials for `pilotswarmacr.azurecr.io` |
+| acr-pull | docker-registry | ACR admin credentials for `<acr>.azurecr.io` |
 
 ### Managed Identity Roles
 
 | Identity | Role | Scope |
 |----------|------|-------|
-| AKS cluster (`7ca38093-...`) | Network Contributor | `pilotswarm-vnet` |
-| Kubelet (`f336af95-...`) | AcrPull | `pilotswarmacr` (via `--attach-acr`) |
+| AKS cluster | Network Contributor | `<prefix>-vnet` |
+| Kubelet | AcrPull | `<acr>` (via `--attach-acr`) |
 
 ## Entra ID (Portal Auth)
 
-| Field | Value |
-|-------|-------|
-| Tenant | `72f988bf-86f1-41af-91ab-2d7cd011db47` (Microsoft) |
-| Client ID | `afe6edbf-7324-4cc8-a1ef-7ae0d87ce18f` |
+Tenant and client ids live in `.env.remote` / the `copilot-runtime-secrets`
+secret as `PORTAL_AUTH_ENTRA_TENANT_ID` and `PORTAL_AUTH_ENTRA_CLIENT_ID`. They
+are not recorded here.
 
 ## Access Status
 
@@ -162,11 +182,14 @@ NRMS rules (101–109) are corp-managed and auto-applied. Rules 110/120 are cust
 
 ## Access Control Summary
 
-Access is gated by the NSG on the AKS subnet. The portal uses a **public LoadBalancer** — the NSG `pilotswarm-nsg` allows CorpNetSaw/CorpNetPublic and denies Internet. Entra ID provides application-level auth. No `loadBalancerSourceRanges`, no VPN routing dependencies, no VNet peering needed.
+Access is gated by the NSG on the AKS subnet. The portal uses a **public
+LoadBalancer** — the NSG allows CorpNetSaw/CorpNetPublic and denies Internet.
+Entra ID provides application-level auth. No `loadBalancerSourceRanges`, no VPN
+routing dependencies, no VNet peering needed.
 
 For non-corp IPs, add a temporary NSG rule:
 ```bash
-az network nsg rule create --resource-group pilotswarm-rg --nsg-name pilotswarm-nsg \
+az network nsg rule create --resource-group <resource-group> --nsg-name <prefix>-nsg \
   --name Allow-Temp-ExternalIP --priority 200 --direction Inbound --access Allow \
   --protocol Tcp --source-address-prefixes <IP> --destination-port-ranges 443 80
 ```

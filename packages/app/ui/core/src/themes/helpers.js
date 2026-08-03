@@ -41,7 +41,7 @@ export function isThemeLight(theme) {
     return getRelativeLuminance(background) >= 0.5;
 }
 
-export function createTheme({ id, label, description, page, terminal, tui = {}, richChat = false }) {
+export function createTheme({ id, label, description, page, terminal, tui = {}, richChat = false, icon = null }) {
     const baseTui = {
         background: page?.background || terminal?.background || "#000000",
         surface: terminal?.background || page?.background || "#000000",
@@ -76,6 +76,12 @@ export function createTheme({ id, label, description, page, terminal, tui = {}, 
         // Portal-only: this theme renders the chat transcript in the rich
         // (desktop-style) view. The TUI ignores it.
         richChat: Boolean(richChat),
+        // Portal-only: an optional brand mark carried BY the theme. When set it
+        // outranks the deployment's own logo, because a theme that restyles the
+        // whole shell and then leaves a foreign logo in the corner reads as
+        // broken. Data, not markup — ui/core has no framework and must not
+        // inject HTML. Shape: { viewBox, paths: [{ d, fill }] }.
+        icon: icon || null,
         page,
         terminal,
         tui: {

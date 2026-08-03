@@ -5,6 +5,7 @@ import { PilotSwarmManagementClient, PgSessionCatalogProvider } from "../../src/
 import { createInspectTools } from "../../src/index.ts";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { assert, assertEqual } from "../helpers/assertions.js";
+import { TEST_ADMIN_VIEWER } from "../helpers/inspect-viewer.js";
 
 const TIMEOUT = 180_000;
 const getEnv = useSuiteEnv(import.meta.url);
@@ -262,7 +263,7 @@ describe("session owner catalog", () => {
                 snapshotSizeBytes: 512,
             });
 
-            const tools = createInspectTools({ catalog, agentIdentity: "pilotswarm" });
+            const tools = createInspectTools({ resolveViewer: TEST_ADMIN_VIEWER, catalog, agentIdentity: "pilotswarm" });
 
             const list = await findTool(tools, "list_all_sessions").handler({
                 owner_query: "owner-filter@example.com",

@@ -50,26 +50,26 @@
     Override the role 'value' the script treats as user. Default: user
 
 .EXAMPLE
-    .\Set-PortalAuthAssignments.ps1 -EnvName chkentra `
-        -AdminAssignments chkraw@microsoft.com
+    .\Set-PortalAuthAssignments.ps1 -EnvName myentra `
+        -AdminAssignments admin@example.com
 
-    Adds chkraw@microsoft.com to the admin role on the chkentra
+    Adds admin@example.com to the admin role on the myentra
     stamp's portal app.
 
 .EXAMPLE
-    .\Set-PortalAuthAssignments.ps1 -EnvName chkentra `
+    .\Set-PortalAuthAssignments.ps1 -EnvName myentra `
         -AdminAssignments alice@contoso.com,bob@contoso.com `
         -UserAssignments "Portal Beta Users"
 
     Adds two users to admin and one group (by display name) to user.
 
 .EXAMPLE
-    .\Set-PortalAuthAssignments.ps1 -EnvName chkentra -List
+    .\Set-PortalAuthAssignments.ps1 -EnvName myentra -List
 
     Prints current admin/user assignments without modifying anything.
 
 .EXAMPLE
-    .\Set-PortalAuthAssignments.ps1 -EnvName chkentra `
+    .\Set-PortalAuthAssignments.ps1 -EnvName myentra `
         -AdminAssignments alice@contoso.com -Remove
 
     Removes alice@contoso.com from the admin role.

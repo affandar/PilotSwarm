@@ -2814,6 +2814,29 @@ export class PilotSwarmUiController {
                     // the current package's workspace (stale-response race).
                     if (this.getState().admin?.packages?.selectedName !== name) return;
                     this.dispatch({ type: "admin/packages/tree/loaded", name, tree });
+                    // The package's own CHANGELOG, when it ships one. Loaded
+                    // alongside the tree rather than on demand because it is
+                    // the first thing a reviewer wants: what changed, why, and
+                    // whether an agent or a human authored it.
+                    const hasChangelog = tree?.files?.some((f) => f.path === "CHANGELOG.md");
+                    if (hasChangelog && typeof this.transport.getAgentPackageFile === "function") {
+                        void (async () => {
+                            try {
+                                const file = await this.transport.getAgentPackageFile(name, null, "CHANGELOG.md");
+                                if (this.getState().admin?.packages?.selectedName !== name) return;
+                                this.dispatch({
+                                    type: "admin/packages/changelog/loaded",
+                                    name,
+                                    content: typeof file === "string" ? file : (file?.content ?? file?.text ?? ""),
+                                });
+                            } catch {
+                                // A missing/unreadable changelog is not an error
+                                // worth interrupting package browsing for.
+                            }
+                        })();
+                    } else {
+                        this.dispatch({ type: "admin/packages/changelog/loaded", name, content: null });
+                    }
                     // Default preview: plugin.json (always present in a valid package).
                     const first = tree?.files?.find((f) => f.path === "plugin.json") ?? tree?.files?.[0];
                     if (first) void this.selectAdminPackageFile(first.path);
@@ -4422,16 +4445,53 @@ export class PilotSwarmUiController {
         this.dispatch({ type: "ui/chatViewMode", mode });
     }
 
-    async openSessionAgentPicker(options = {}) {
-        const agents = typeof this.transport.listCreatableAgents === "function"
-            ? await this.transport.listCreatableAgents()
-            : [];
+    /**
+     * Opens the agent step of the new-session flow.
+     *
+     * This step needs a network round trip (listCreatableAgents) before it can
+     * render, and it is reached from the middle of a modal chain. Callers used
+     * to close the current step BEFORE awaiting it, which left the overlay
+     * unmounted for the length of that fetch — the dialog visibly blinked out
+     * and back on the way to the agent list.
+     *
+     * So nothing is dismissed until we know what replaces it: on success the
+     * new modal REPLACES the open one in a single dispatch and the overlay
+     * never leaves the screen; only the paths that open no modal at all close
+     * it. `previousFocus` is threaded from the previous step because that step
+     * is deliberately still up, so it cannot be recovered from focus state.
+     */
+    async openSessionAgentPicker(options = {}, previousFocusOverride = null) {
+        const previousFocus = previousFocusOverride ?? this.getState().ui.focusRegion;
+        const dismiss = () => {
+            this.dispatch({ type: "ui/modal", modal: null });
+            if (previousFocus) {
+                this.setFocus(previousFocus);
+            }
+        };
+
+        let agents = [];
+        try {
+            agents = typeof this.transport.listCreatableAgents === "function"
+                ? await this.transport.listCreatableAgents()
+                : [];
+        } catch (error) {
+            // The previous step is deliberately still on screen. If the fetch
+            // fails we own dismissing it — otherwise the flow strands on a step
+            // whose Enter key has already been consumed.
+            dismiss();
+            this.dispatch({
+                type: "ui/status",
+                text: `Could not load agents: ${error?.message || error}`,
+            });
+            return;
+        }
         const sessionPolicy = typeof this.transport.getSessionCreationPolicy === "function"
             ? this.transport.getSessionCreationPolicy()
             : null;
         const allowGeneric = sessionPolicy?.creation?.allowGeneric ?? true;
 
         if (!Array.isArray(agents) || agents.length === 0) {
+            dismiss();
             if (!allowGeneric) {
                 this.dispatch({
                     type: "ui/status",
@@ -4503,7 +4563,7 @@ export class PilotSwarmUiController {
                 title: "Select agent for new session",
                 items,
                 selectedIndex: 0,
-                previousFocus: this.getState().ui.focusRegion,
+                previousFocus,
                 sessionOptions: options,
             },
         });
@@ -4526,13 +4586,17 @@ export class PilotSwarmUiController {
         await this.openSessionAgentPicker(options);
     }
 
-    async openReasoningEffortPicker(modelItem, sessionOptions = {}) {
+    // previousFocus rides along the whole chain: each step is left on screen
+    // until its successor is ready (see openSessionAgentPicker), so a later
+    // step cannot read the pre-modal focus back off the state.
+    async openReasoningEffortPicker(modelItem, sessionOptions = {}, previousFocusOverride = null) {
+        const previousFocus = previousFocusOverride ?? this.getState().ui.focusRegion;
         const supported = normalizeReasoningEfforts(modelItem?.supportedReasoningEfforts);
         const selectedEffort = sessionOptions?.reasoningEffort || resolveDefaultReasoningEffort(modelItem);
         if (!supported.length || !selectedEffort) {
             // No effort step for this model — fall through to the context-tier
             // step, which handles both the new-session and switch-model flows.
-            await this.openContextTierPicker(modelItem, sessionOptions);
+            await this.openContextTierPicker(modelItem, sessionOptions, previousFocus);
             return;
         }
 
@@ -4552,7 +4616,7 @@ export class PilotSwarmUiController {
                     : `Reasoning effort for ${modelItem?.modelName || modelItem?.qualifiedName || "model"}`,
                 items,
                 selectedIndex,
-                previousFocus: this.getState().ui.focusRegion,
+                previousFocus,
                 modelItem,
                 sessionOptions,
             },
@@ -4560,21 +4624,26 @@ export class PilotSwarmUiController {
         this.dispatch({ type: "ui/status", text: "Select a reasoning effort and press Enter" });
     }
 
-    async openContextTierPicker(modelItem, sessionOptions = {}) {
+    async openContextTierPicker(modelItem, sessionOptions = {}, previousFocusOverride = null) {
         // Context-window tier step of the new-session flow. Only models whose
         // catalog entry declares supportedContextTiers get this picker; all
         // others skip straight to the agent picker. The preselected tier is
         // the catalog default ("default", the smaller window).
+        const previousFocus = previousFocusOverride ?? this.getState().ui.focusRegion;
         const supported = normalizeContextTiers(modelItem?.supportedContextTiers);
         const selectedTier = sessionOptions?.contextTier || resolveDefaultContextTier(modelItem);
         if (!supported.length || !selectedTier) {
             // Model declares no context-window tiers — skip straight to applying
             // the switch (switch flow) or to the agent picker (new-session flow).
             if (sessionOptions?.mode === "switchModel") {
+                this.dispatch({ type: "ui/modal", modal: null });
+                if (previousFocus) {
+                    this.setFocus(previousFocus);
+                }
                 await this.switchSessionModel({ ...sessionOptions, model: modelItem?.id });
                 return;
             }
-            await this.openSessionAgentPicker(sessionOptions);
+            await this.openSessionAgentPicker(sessionOptions, previousFocus);
             return;
         }
 
@@ -4593,7 +4662,7 @@ export class PilotSwarmUiController {
                 title: `Context window for ${modelItem?.modelName || modelItem?.qualifiedName || "model"}`,
                 items,
                 selectedIndex,
-                previousFocus: this.getState().ui.focusRegion,
+                previousFocus,
                 modelItem,
                 sessionOptions,
             },
@@ -5914,17 +5983,20 @@ export class PilotSwarmUiController {
                 });
                 return;
             }
+            // Each successor opener replaces this modal itself, so the overlay
+            // is NOT dismissed here: doing that before an awaited step blinked
+            // the dialog off screen for the length of the step's fetch.
             const previousFocus = modal.previousFocus;
-            this.dispatch({ type: "ui/modal", modal: null });
-            if (previousFocus) {
-                this.setFocus(previousFocus);
-            }
             if (!item) {
                 if (modal.sessionOptions?.mode === "switchModel") {
+                    this.dispatch({ type: "ui/modal", modal: null });
+                    if (previousFocus) {
+                        this.setFocus(previousFocus);
+                    }
                     this.dispatch({ type: "ui/status", text: "No model selected" });
                     return;
                 }
-                await this.openSessionAgentPicker({});
+                await this.openSessionAgentPicker({}, previousFocus);
                 return;
             }
             const defaultReasoning = resolveDefaultReasoningEffort(item);
@@ -5933,49 +6005,49 @@ export class PilotSwarmUiController {
                     ...(modal.sessionOptions || {}),
                     model: item.id,
                     reasoningEffort: defaultReasoning ?? null,
-                });
+                }, previousFocus);
                 return;
             }
             await this.openReasoningEffortPicker(item, {
                 ...(modal.sessionOptions || {}),
                 model: item.id,
                 ...(defaultReasoning ? { reasoningEffort: defaultReasoning } : {}),
-            });
+            }, previousFocus);
             return;
         }
         if (modal.type === "reasoningEffortPicker") {
             const item = modal.items?.[modal.selectedIndex || 0];
             const previousFocus = modal.previousFocus;
             const sessionOptions = modal.sessionOptions || {};
-            this.dispatch({ type: "ui/modal", modal: null });
-            if (previousFocus) {
-                this.setFocus(previousFocus);
-            }
+            // Not dismissed here — the tier step (or the agent step it falls
+            // through to) replaces this modal in one dispatch.
             await this.openContextTierPicker(modal.modelItem, {
                 ...sessionOptions,
                 ...(item?.id ? { reasoningEffort: item.id } : {}),
-            });
+            }, previousFocus);
             return;
         }
         if (modal.type === "contextTierPicker") {
             const item = modal.items?.[modal.selectedIndex || 0];
             const previousFocus = modal.previousFocus;
             const sessionOptions = modal.sessionOptions || {};
-            this.dispatch({ type: "ui/modal", modal: null });
-            if (previousFocus) {
-                this.setFocus(previousFocus);
-            }
             const nextOptions = {
                 ...sessionOptions,
                 ...(item?.id ? { contextTier: item.id } : {}),
             };
-            // Switch-model flow ends here — apply the model/effort/tier switch.
-            // New-session flow continues to the agent picker.
+            // Switch-model flow ends here — apply the model/effort/tier switch,
+            // so this one DOES close the overlay. The new-session flow continues
+            // to the agent picker, which replaces the modal itself once its
+            // agent list has loaded.
             if (sessionOptions?.mode === "switchModel") {
+                this.dispatch({ type: "ui/modal", modal: null });
+                if (previousFocus) {
+                    this.setFocus(previousFocus);
+                }
                 await this.switchSessionModel({ ...nextOptions, model: modal.modelItem?.id || sessionOptions.model });
                 return;
             }
-            await this.openSessionAgentPicker(nextOptions);
+            await this.openSessionAgentPicker(nextOptions, previousFocus);
             return;
         }
         if (modal.type === "sessionAgentPicker") {

@@ -95,21 +95,23 @@ const INSPECTOR_TAB_LABELS = {
     sequence: "Sequence",
     logs: "Logs",
     nodes: "Node Map",
-    history: "History",
+    history: "Duroxide Event History",
     files: "Files",
     stats: "Stats",
 };
 // Glyphs for the icon-only Inspector tab row (labels move into hover/long-press
 // tooltips via IconButton, matching the session toolbar treatment).
-// Monochrome line-art codepoints only — emoji-default glyphs (📄 📊 🗑 ⏹) get
-// force-rendered as colored emoji on iOS and clash with the rest of the UI.
+// COMPONENTS, not codepoints: the text glyphs this row used to carry rendered a
+// stroke-weight lighter than the SVG session-toolbar icons, fell back per
+// platform, and duplicated each other ("≣" was both Logs and the header Summary
+// button). Function declarations hoist, so referencing them up here is fine.
 const INSPECTOR_TAB_ICONS = {
-    sequence: "⇶",
-    logs: "≣",
-    nodes: "⬡",
-    history: "⟲",
-    files: "⧉",
-    stats: "▁▄▇",
+    sequence: SequenceGlyph,
+    logs: LogsGlyph,
+    nodes: NodeMapGlyph,
+    history: DuroxideGlyph,
+    files: FilesGlyph,
+    stats: StatsGlyph,
 };
 
 function cycleTabs(tabs, current, delta) {
@@ -3539,10 +3541,86 @@ function useStableValue(value) {
     return ref.current;
 }
 
+/**
+ * Vertical-primary touch scrolling with an explicit horizontal opt-in.
+ *
+ * The session list has `width: max-content` rows, so it overflows sideways
+ * whenever a title is long. Declaring `touch-action: pan-x pan-y` told the
+ * browser both axes were equally on offer, and on a phone a swipe is never
+ * perfectly vertical — so scrolling down kept sliding the list sideways.
+ *
+ * The fix is to give the browser ONE axis (`touch-action: pan-y`, set in CSS,
+ * which keeps native vertical momentum) and drive horizontal ourselves, only
+ * for a gesture that is unambiguously sideways. Once a gesture commits to an
+ * axis it keeps it until the finger lifts: to scroll across you stop and make
+ * a deliberate left/right swipe, which is exactly the intent.
+ */
+const PAN_COMMIT_PX = 10;      // ignore the first few px — every swipe starts noisy
+const PAN_HORIZONTAL_RATIO = 1.6;   // |dx| must beat |dy| by this much to go sideways
+
+function useHorizontalPanOptIn(ref) {
+    React.useEffect(() => {
+        const el = ref.current;
+        if (!el) return undefined;
+
+        let startX = 0;
+        let startY = 0;
+        let lastX = 0;
+        let axis = null;   // null = undecided, "x" | "y" = committed for this gesture
+
+        const onTouchStart = (event) => {
+            if (event.touches.length !== 1) { axis = "y"; return; }
+            const touch = event.touches[0];
+            startX = lastX = touch.clientX;
+            startY = touch.clientY;
+            axis = null;
+        };
+
+        const onTouchMove = (event) => {
+            if (axis === "y" || event.touches.length !== 1) return;
+            const touch = event.touches[0];
+            const dx = touch.clientX - startX;
+            const dy = touch.clientY - startY;
+
+            if (axis === null) {
+                if (Math.abs(dx) < PAN_COMMIT_PX && Math.abs(dy) < PAN_COMMIT_PX) return;
+                // Ties, and anything close to a tie, go to vertical. Vertical is
+                // the primary axis; sideways has to be asked for.
+                axis = Math.abs(dx) > Math.abs(dy) * PAN_HORIZONTAL_RATIO ? "x" : "y";
+                lastX = touch.clientX;
+                if (axis === "y") return;
+            }
+
+            // Committed horizontal: the browser is not panning this axis, so we
+            // do it. preventDefault stops the gesture also scrolling an
+            // ancestor sideways.
+            el.scrollLeft -= touch.clientX - lastX;
+            lastX = touch.clientX;
+            if (event.cancelable) event.preventDefault();
+        };
+
+        const onTouchEnd = () => { axis = null; };
+
+        el.addEventListener("touchstart", onTouchStart, { passive: true });
+        el.addEventListener("touchmove", onTouchMove, { passive: false });
+        el.addEventListener("touchend", onTouchEnd, { passive: true });
+        el.addEventListener("touchcancel", onTouchEnd, { passive: true });
+        return () => {
+            el.removeEventListener("touchstart", onTouchStart);
+            el.removeEventListener("touchmove", onTouchMove);
+            el.removeEventListener("touchend", onTouchEnd);
+            el.removeEventListener("touchcancel", onTouchEnd);
+        };
+    }, [ref]);
+}
+
 function SessionPane({ controller, actions = null, panelClassName = "", structuredRows = false }) {
     // Mobile keeps its inline detail line and gets no detail box — a reserved
     // footer would eat a meaningful slice of a phone screen.
     const isMobilePane = String(panelClassName).includes("ps-mobile-session-pane");
+    // Vertical is the primary scroll axis; sideways takes a deliberate swipe.
+    const sessionListRef = React.useRef(null);
+    useHorizontalPanOptIn(sessionListRef);
     // Selection reverts to plain taps wherever the primary input is a finger:
     // the mobile pane, and the chat-focus overlay's list on a phone. Matches
     // the `(pointer: fine)` guard on touch-action in the stylesheet.
@@ -4134,7 +4212,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         }),
         React.createElement(IconButton, {
             className: "ps-mini-button",
-            icon: activeSession?.isSystem ? "↻" : React.createElement(TerminateGlyph),
+            icon: React.createElement(activeSession?.isSystem ? RestartGlyph : TerminateGlyph),
             onClick: () => controller.handleCommand(activeSession?.isGroup ? UI_COMMANDS.DELETE_SESSION : UI_COMMANDS.OPEN_TERMINATE_PICKER).catch(() => {}),
             disabled: !canTerminate,
             label: isBulkSelection
@@ -4177,6 +4255,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         className: combinedPanelClassName,
     },
     React.createElement("div", {
+        ref: sessionListRef,
         className: `ps-action-list ps-session-list${dragState.dragging ? " is-dragging" : ""}`,
         // Clicking empty space below the rows clears the list selection while
         // the other panes keep showing the session. With nothing selected the
@@ -4271,20 +4350,189 @@ const VISIBILITY_META = {
     shared_write: { glyph: "✎", label: "Shared · write" },
 };
 
-// The "manage" glyph (sliders) for the Manage session button — reads as
-// settings/controls rather than the narrower share-nodes glyph.
-function ManageGlyph() {
+// Shared wrapper for the line-art icon family. Same props PinGlyph shipped
+// inline, so every glyph inherits .ps-share-glyph sizing and currentColor.
+function Glyph({ children }) {
     return React.createElement("svg", {
         className: "ps-share-glyph", viewBox: "0 0 24 24", fill: "none",
         stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round",
         "aria-hidden": "true",
+    }, children);
+}
+
+// The "manage" glyph for the Manage session button. A wrench, not sliders:
+// sliders are the second most common FILTER icon in the wild, so they collided
+// with the funnel on the header toolbar. A wrench reads as "configure this one
+// session" and stays distinct from the cog, which opens the admin console.
+function ManageGlyph() {
+    return React.createElement(Glyph, null,
+    React.createElement("path", { d: "M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" }));
+}
+
+// Filter — the funnel. Plain, with no "a filter is applied" dot or active
+// state: there is no cheap way to tell a narrowed list from the default one.
+// The owner filter starts at `all: false` for every signed-in user (see
+// defaultOwnerFilterForPrincipal), so any "is it filtered" test built on it
+// reads true from the moment the app loads and the button looks stuck on.
+function FunnelGlyph() {
+    return React.createElement(Glyph, null,
+    React.createElement("path", { d: "M21 4H3l7.2 8.5V19l3.6 2v-8.5L21 4z" }));
+}
+
+// Summary — a written summary. Was "≣", the same codepoint the Logs tab used.
+function SummaryGlyph() {
+    return React.createElement(Glyph, null,
+    React.createElement("path", { d: "M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" }),
+    React.createElement("path", { d: "M14 3v5h5" }),
+    React.createElement("line", { x1: "8.5", y1: "13", x2: "15.5", y2: "13" }),
+    React.createElement("line", { x1: "8.5", y1: "17", x2: "13", y2: "17" }));
+}
+
+// Back to the transcript. Replaces the 💬 emoji, which iOS force-renders in
+// colour against an otherwise monochrome row (see the note on the tab table).
+function TranscriptGlyph() {
+    return React.createElement(Glyph, null,
+    React.createElement("path", { d: "M21 14.5a2.5 2.5 0 0 1-2.5 2.5H8l-5 4V5.5A2.5 2.5 0 0 1 5.5 3h13A2.5 2.5 0 0 1 21 5.5z" }));
+}
+
+function PlusGlyph() {
+    return React.createElement(Glyph, null,
+    React.createElement("line", { x1: "12", y1: "5", x2: "12", y2: "19" }),
+    React.createElement("line", { x1: "5", y1: "12", x2: "19", y2: "12" }));
+}
+
+// Theme picker. Deliberately a contrast disc rather than a sun/moon: the picker
+// offers DOOM, WinAMP, win95 and friends, not a light/dark binary.
+function ContrastGlyph() {
+    return React.createElement(Glyph, null,
+    React.createElement("circle", { cx: "12", cy: "12", r: "9" }),
+    React.createElement("path", { d: "M12 3a9 9 0 0 1 0 18z", fill: "currentColor" }));
+}
+
+function ExpandGlyph() {
+    return React.createElement(Glyph, null,
+    React.createElement("path", { d: "M8 3H5a2 2 0 0 0-2 2v3" }),
+    React.createElement("path", { d: "M16 3h3a2 2 0 0 1 2 2v3" }),
+    React.createElement("path", { d: "M21 16v3a2 2 0 0 1-2 2h-3" }),
+    React.createElement("path", { d: "M3 16v3a2 2 0 0 0 2 2h3" }));
+}
+
+function CollapseGlyph() {
+    return React.createElement(Glyph, null,
+    React.createElement("path", { d: "M8 3v3a2 2 0 0 1-2 2H3" }),
+    React.createElement("path", { d: "M21 8h-3a2 2 0 0 1-2-2V3" }),
+    React.createElement("path", { d: "M16 21v-3a2 2 0 0 1 2-2h3" }),
+    React.createElement("path", { d: "M3 16h3a2 2 0 0 1 2 2v3" }));
+}
+
+function CogGlyph() {
+    return React.createElement(Glyph, null,
+    React.createElement("circle", { cx: "12", cy: "12", r: "3" }),
+    React.createElement("path", { d: "M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" }));
+}
+
+// Restart a system session. Was "↻" — the one text codepoint in an otherwise
+// all-SVG row, so it rendered a weight lighter and sat a pixel high.
+function RestartGlyph() {
+    return React.createElement(Glyph, null,
+    React.createElement("path", { d: "M21 12a9 9 0 1 1-2.64-6.36" }),
+    React.createElement("path", { d: "M21 3v5h-5" }));
+}
+
+function UploadGlyph() {
+    return React.createElement(Glyph, null,
+    React.createElement("path", { d: "M12 16V4" }),
+    React.createElement("path", { d: "M7.5 8.5L12 4l4.5 4.5" }),
+    React.createElement("path", { d: "M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" }));
+}
+
+function DownloadGlyph() {
+    return React.createElement(Glyph, null,
+    React.createElement("path", { d: "M12 4v12" }),
+    React.createElement("path", { d: "M7.5 11.5L12 16l4.5-4.5" }),
+    React.createElement("path", { d: "M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" }));
+}
+
+// ── Inspector tab glyphs ────────────────────────────────────────────────────
+
+// Two lifelines with a call and a return — an actual sequence diagram, rather
+// than the "⇶" stack of arrows, which only said "forward". The lifelines sit at
+// x4.5/x19.5 (a 15-unit gap): at the original 10 the arrowheads all but touched
+// them and the glyph read as one dense block at 18px.
+function SequenceGlyph() {
+    return React.createElement(Glyph, null,
+    React.createElement("line", { x1: "4.5", y1: "3", x2: "4.5", y2: "21" }),
+    React.createElement("line", { x1: "19.5", y1: "3", x2: "19.5", y2: "21" }),
+    React.createElement("path", { d: "M4.5 8.5h13" }),
+    React.createElement("path", { d: "M15 6l2.5 2.5-2.5 2.5" }),
+    React.createElement("path", { d: "M19.5 15.5h-13" }),
+    React.createElement("path", { d: "M9 13l-2.5 2.5 2.5 2.5" }));
+}
+
+// A side panel with its list rail — fronts the mobile "Sessions" toggle, which
+// opens exactly that. Paired with CollapseGlyph for "Exit focus" so the two
+// rail buttons match the icon vocabulary of the main toolbar.
+function SidebarGlyph() {
+    return React.createElement(Glyph, null,
+    React.createElement("path", { d: "M3 5.5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" }),
+    React.createElement("path", { d: "M9.5 3.5v17" }));
+}
+
+// Logs are console output; a prompt chevron says that and nothing else.
+function LogsGlyph() {
+    return React.createElement(Glyph, null,
+    React.createElement("path", { d: "M4 17l6-6-6-6" }),
+    React.createElement("line", { x1: "12", y1: "19", x2: "20", y2: "19" }));
+}
+
+// Three connected nodes. A bare "⬡" was a shape, not a map.
+function NodeMapGlyph() {
+    return React.createElement(Glyph, null,
+    React.createElement("circle", { cx: "6", cy: "6", r: "2.6" }),
+    React.createElement("circle", { cx: "18", cy: "6", r: "2.6" }),
+    React.createElement("circle", { cx: "12", cy: "18", r: "2.6" }),
+    React.createElement("line", { x1: "8.6", y1: "6", x2: "15.4", y2: "6" }),
+    React.createElement("line", { x1: "7.4", y1: "8.3", x2: "10.6", y2: "15.7" }),
+    React.createElement("line", { x1: "16.6", y1: "8.3", x2: "13.4", y2: "15.7" }));
+}
+
+// The Duroxide brand mark reduced to the 24 grid: hexagon ring, gear, and the
+// sweep arrow breaking out at the lower right. FILLS, not strokes — a 2px
+// stroked gear at r=3 is unreadable by the time the row renders it at 18px.
+// Monochrome currentColor, so it inherits every theme including win95 and DOOM.
+const DUROXIDE_HEX = "M12 2.3 20.4 7.15v9.7L12 21.7 3.6 16.85V7.15Z";
+const DUROXIDE_GEAR = "M15.2 10.1A4.2 4.2 0 0 1 15.2 11.9L14.23 11.69A3.2 3.2 0 0 1 13.8 12.73L14.64 13.26A4.2 4.2 0 0 1 13.36 14.54L12.83 13.7A3.2 3.2 0 0 1 11.79 14.13L12 15.1A4.2 4.2 0 0 1 10.2 15.1L10.41 14.13A3.2 3.2 0 0 1 9.37 13.7L8.84 14.54A4.2 4.2 0 0 1 7.56 13.26L8.4 12.73A3.2 3.2 0 0 1 7.97 11.69L7 11.9A4.2 4.2 0 0 1 7 10.1L7.97 10.31A3.2 3.2 0 0 1 8.4 9.27L7.56 8.74A4.2 4.2 0 0 1 8.84 7.46L9.37 8.3A3.2 3.2 0 0 1 10.41 7.87L10.2 6.9A4.2 4.2 0 0 1 12 6.9L11.79 7.87A3.2 3.2 0 0 1 12.83 8.3L13.36 7.46A4.2 4.2 0 0 1 14.64 8.74L13.8 9.27A3.2 3.2 0 0 1 14.23 10.31ZM12.8 11A1.7 1.7 0 0 0 9.4 11A1.7 1.7 0 0 0 12.8 11Z";
+const DUROXIDE_ARROW = "M7.23 15.01A5.7 5.7 0 0 1 17.76 14.55L19.11 15.04L15.1 16.57L14.71 13.44L16.06 13.93A3.9 3.9 0 0 0 8.87 14.25Z";
+function DuroxideGlyph() {
+    return React.createElement("svg", {
+        className: "ps-share-glyph", viewBox: "0 0 24 24", fill: "none",
+        stroke: "currentColor", "aria-hidden": "true",
     },
-    React.createElement("line", { x1: "4", y1: "6", x2: "20", y2: "6" }),
-    React.createElement("line", { x1: "4", y1: "12", x2: "20", y2: "12" }),
-    React.createElement("line", { x1: "4", y1: "18", x2: "20", y2: "18" }),
-    React.createElement("circle", { cx: "9", cy: "6", r: "2", fill: "currentColor" }),
-    React.createElement("circle", { cx: "15", cy: "12", r: "2", fill: "currentColor" }),
-    React.createElement("circle", { cx: "8", cy: "18", r: "2", fill: "currentColor" }));
+    React.createElement("path", { d: DUROXIDE_HEX, strokeWidth: "1.9", strokeLinejoin: "round" }),
+    React.createElement("path", { d: DUROXIDE_GEAR, fill: "currentColor", stroke: "none", fillRule: "evenodd" }),
+    React.createElement("path", { d: DUROXIDE_ARROW, fill: "currentColor", stroke: "none" }));
+}
+
+// Two overlapping PAGES — the front one folded — so the tab reads as "several
+// artifacts". The old "⧉" is the stacked-squares glyph every other app means
+// "duplicate" by, which made a destination look like an action.
+function FilesGlyph() {
+    return React.createElement(Glyph, null,
+    React.createElement("path", { d: "M9 2.8h4.2L17 6.6v8.6a1.8 1.8 0 0 1-1.8 1.8H15" }),
+    React.createElement("path", { d: "M4.5 9.4a1.8 1.8 0 0 1 1.8-1.8h4.2l3.8 3.8v8a1.8 1.8 0 0 1-1.8 1.8H6.3a1.8 1.8 0 0 1-1.8-1.8z" }),
+    React.createElement("path", { d: "M10.5 7.6v3.8h3.8" }));
+}
+
+// Solid bars on a baseline. Three things made the first attempt at this read as
+// a cell-signal meter instead: monotonically ascending heights, round caps, and
+// nothing anchoring the bars. So these are solid square-shouldered rects with
+// the middle bar tallest, sitting on a rule.
+function StatsGlyph() {
+    return React.createElement(Glyph, null,
+    React.createElement("rect", { x: "4.2", y: "12", width: "3.6", height: "8", rx: "0.6", fill: "currentColor", stroke: "none" }),
+    React.createElement("rect", { x: "10.2", y: "6.5", width: "3.6", height: "13.5", rx: "0.6", fill: "currentColor", stroke: "none" }),
+    React.createElement("rect", { x: "16.2", y: "9.5", width: "3.6", height: "10.5", rx: "0.6", fill: "currentColor", stroke: "none" }),
+    React.createElement("path", { d: "M3 21h18" }));
 }
 
 // The standard "link" glyph (two chain segments). Used for the Copy link button.
@@ -4961,7 +5209,7 @@ function InspectorTabs({ activeTab, controller }) {
     return React.createElement("div", { className: "ps-tab-row ps-tab-row-icons" },
         visibleTabs.map((tab) => React.createElement(IconButton, {
             key: tab,
-            icon: INSPECTOR_TAB_ICONS[tab] || "•",
+            icon: INSPECTOR_TAB_ICONS[tab] ? React.createElement(INSPECTOR_TAB_ICONS[tab]) : "•",
             label: INSPECTOR_TAB_LABELS[tab] || tab,
             active: activeTab === tab,
             onClick: () => {
@@ -5073,7 +5321,7 @@ function FilesPane({ controller, focused, mobile = false, previewOnly = false, n
                 }, `${markedSet.size} marked`),
                 viewState.canDeleteArtifacts
                     ? React.createElement(IconButton, {
-                        icon: "🗑",
+                        icon: React.createElement(TerminateGlyph),
                         label: `Delete ${markedSet.size} marked`,
                         onClick: () => controller.deleteMarkedArtifacts().catch(() => {}),
                     })
@@ -5097,19 +5345,21 @@ function FilesPane({ controller, focused, mobile = false, previewOnly = false, n
             },
         }),
         React.createElement(IconButton, {
-            icon: "↥",
+            icon: React.createElement(UploadGlyph),
             label: "Upload",
             onClick: openUploadPicker,
             disabled: !viewState.canBrowserUpload && !viewState.canPathUpload,
         }),
         React.createElement(IconButton, {
-            icon: "↧",
+            icon: React.createElement(DownloadGlyph),
             label: "Download",
             onClick: () => controller.handleCommand(UI_COMMANDS.DOWNLOAD_SELECTED_FILE).catch(() => {}),
             disabled: !hasSelection,
         }),
+        // Trash, not "✕" — the bulk-delete two buttons away was already a trash
+        // can, and "✕" means "clear marks" in this same row.
         viewState.canDeleteArtifacts ? React.createElement(IconButton, {
-            icon: "✕",
+            icon: React.createElement(TerminateGlyph),
             label: "Delete",
             onClick: () => controller.handleCommand(UI_COMMANDS.DELETE_SELECTED_FILE).catch(() => {}),
             disabled: !hasSelection,
@@ -5121,7 +5371,7 @@ function FilesPane({ controller, focused, mobile = false, previewOnly = false, n
             disabled: !hasSelection,
         }) : null,
         React.createElement(IconButton, {
-            icon: "▾",
+            icon: React.createElement(FunnelGlyph),
             label: "Filter",
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_FILES_FILTER).catch(() => {}),
         }),
@@ -5129,7 +5379,7 @@ function FilesPane({ controller, focused, mobile = false, previewOnly = false, n
         // back affordance belongs to the mobile overlay, which renders its own
         // top bar — putting it here too would change desktop behavior.
         React.createElement(IconButton, {
-            icon: viewState.fullscreen ? "⇱" : "⛶",
+            icon: React.createElement(viewState.fullscreen ? CollapseGlyph : ExpandGlyph),
             label: viewState.fullscreen ? "Exit fullscreen" : "Fullscreen",
             onClick: () => controller.handleCommand(UI_COMMANDS.TOGGLE_FILE_PREVIEW_FULLSCREEN).catch(() => {}),
         }));
@@ -5466,7 +5716,9 @@ function InspectorPane({ controller, mobile = false, panelClassName = "", extraA
         }));
         actions.push(React.createElement(IconButton, {
             key: "filter",
-            icon: "▾",
+            // Same funnel as the session and artifact filters — filtering should
+            // look identical wherever it appears.
+            icon: React.createElement(FunnelGlyph),
             label: "Filter",
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_LOG_FILTER).catch(() => {}),
         }));
@@ -5615,17 +5867,12 @@ function ChatFocusOverlay({ controller, pane, onClose, mobile = false }) {
 
     let content = null;
     if (pane === "sessions") {
+        // No close button: the rail's own Sessions toggle already closes this,
+        // and a second ✕ crowded a header that already carries five actions.
         content = React.createElement(SessionPane, {
             controller,
             panelClassName: "ps-chat-focus-pane",
             structuredRows: mobile,
-            actions: React.createElement("button", {
-                type: "button",
-                className: "ps-mini-button ps-overlay-close",
-                onClick: onClose,
-                "aria-label": "Close",
-                title: "Close",
-            }, "✕"),
         });
     } else if (pane === "inspector") {
         content = React.createElement(InspectorPane, {
@@ -5663,18 +5910,23 @@ function ChatFocusOverlay({ controller, pane, onClose, mobile = false }) {
 function ChatFocusWorkspace({ controller, openPane, onTogglePane, onExitFocus, mobile = false }) {
     const focusRegion = useControllerSelector(controller, (state) => state.ui.focusRegion);
 
+    // Icons, not words: two text buttons ate a whole row of phone height, and
+    // IconButton carries the label as a hover tooltip / long-press on touch.
     const rail = mobile
         ? React.createElement("div", { className: "ps-chat-focus-rail" },
-            React.createElement("button", {
-                type: "button",
+            React.createElement(IconButton, {
                 className: "ps-mini-button ps-chat-focus-button",
+                icon: React.createElement(CollapseGlyph),
+                label: "Exit focus mode",
                 onClick: onExitFocus,
-            }, "Exit Focus"),
-            React.createElement("button", {
-                type: "button",
-                className: `ps-mini-button ps-chat-focus-button${openPane === "sessions" ? " is-active" : ""}`,
+            }),
+            React.createElement(IconButton, {
+                className: "ps-mini-button ps-chat-focus-button",
+                icon: React.createElement(SidebarGlyph),
+                label: openPane === "sessions" ? "Hide sessions" : "Show sessions",
+                active: openPane === "sessions",
                 onClick: () => onTogglePane("sessions"),
-            }, "Sessions"))
+            }))
         : React.createElement("div", { className: "ps-chat-focus-rail" },
             CHAT_FOCUS_PANES.map((pane) => React.createElement("button", {
                 key: pane.id,
@@ -6202,25 +6454,25 @@ function Toolbar({ controller, mobile, chatFocusMode = false, onToggleChatFocus 
         // toolbar could not spare.
         {
             key: "new",
-            icon: "＋",
+            icon: React.createElement(PlusGlyph),
             label: "New session — choose model and agent",
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_MODEL_PICKER).catch(() => {}),
         },
         {
             key: "filter",
-            icon: "▾",
+            icon: React.createElement(FunnelGlyph),
             label: "Filter sessions",
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_SESSION_FILTER).catch(() => {}),
         },
         {
             key: "theme",
-            icon: "◑",
+            icon: React.createElement(ContrastGlyph),
             label: "Theme",
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_THEME_PICKER).catch(() => {}),
         },
         {
             key: "summary",
-            icon: chatView.mode === "summary" ? "💬" : "≣",
+            icon: React.createElement(chatView.mode === "summary" ? TranscriptGlyph : SummaryGlyph),
             label: chatView.activeSessionIsGroup
                 ? "Groups show group details"
                 : (chatView.mode === "summary" ? "Show chat transcript" : "Show summary"),
@@ -6230,7 +6482,7 @@ function Toolbar({ controller, mobile, chatFocusMode = false, onToggleChatFocus 
         },
         ...(onToggleChatFocus ? [{
             key: "focus",
-            icon: chatFocusMode ? "⇱" : "⛶",
+            icon: React.createElement(chatFocusMode ? CollapseGlyph : ExpandGlyph),
             label: chatFocusMode ? "Exit focus mode" : "Focus the chat pane",
             onClick: onToggleChatFocus,
             disabled: chatFocusDisabled,
@@ -6241,7 +6493,7 @@ function Toolbar({ controller, mobile, chatFocusMode = false, onToggleChatFocus 
         // the button is omitted rather than shipped half-working.
         ...(mobile ? [] : [{
             key: "admin",
-            icon: "⚙",
+            icon: React.createElement(CogGlyph),
             label: adminVisible ? "Close admin console" : "Admin console",
             onClick: () => controller.handleCommand(adminVisible ? UI_COMMANDS.CLOSE_ADMIN_CONSOLE : UI_COMMANDS.OPEN_ADMIN_CONSOLE).catch(() => {}),
             active: adminVisible,
@@ -8631,8 +8883,18 @@ export function PilotSwarmWebApp({ controller }) {
     // workspace keeps rendering underneath so backing out restores it intact.
     if (filesFullscreenActive && !mobile) mobileContent = React.createElement("div", { className: "ps-mobile-pane-fill" },
         React.createElement(InspectorPane, { controller, mobile: true }));
-    else if (mobilePane === "inspector") mobileContent = React.createElement("div", { className: "ps-mobile-pane-fill" },
-        React.createElement(InspectorPane, { controller, mobile: true }));
+    // Node Map is the one inspector tab whose detail lives in ANOTHER pane: the
+    // Activity pane doubles as worker details, and on desktop it sits directly
+    // below the inspector, which is what the "details fill the pane below" hint
+    // means. On a phone Activity is a separate bottom tab, so tapping a node
+    // filled a pane you could not see. Stack them here instead — the node list
+    // scrolls, the details sit under it.
+    else if (mobilePane === "inspector") mobileContent = (state.inspectorTab === "nodes")
+        ? React.createElement("div", { className: "ps-mobile-pane-fill ps-mobile-node-split" },
+            React.createElement(InspectorPane, { controller, mobile: true }),
+            React.createElement(ActivityPane, { controller, panelClassName: "ps-mobile-node-detail" }))
+        : React.createElement("div", { className: "ps-mobile-pane-fill" },
+            React.createElement(InspectorPane, { controller, mobile: true }));
     else if (mobilePane === "activity") mobileContent = React.createElement("div", { className: "ps-mobile-pane-fill" },
         React.createElement(ActivityPane, { controller }));
     else mobileContent = React.createElement(MobileWorkspace, { controller });

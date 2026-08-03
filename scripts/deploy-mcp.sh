@@ -13,7 +13,7 @@
 #   - .env.remote with K8S_CONTEXT (or current kubectl context targeting the cluster)
 #   - az CLI logged in, ACR accessible, docker running (unless --skip-build)
 #   - Outbound Entra credential: run once locally
-#       pilotswarm auth login --api-url https://pilotswarm-portal.westus3.cloudapp.azure.com
+#       pilotswarm auth login --api-url "$PORTAL_ORIGIN"
 #     The cached token file is pushed as the pilotswarm-mcp-auth secret. The
 #     account you log in with is the identity the MCP server acts as — give it
 #     the admin app role for the full god-mode surface.
@@ -22,8 +22,6 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 IMAGE_NAME="pilotswarm-portal"
-PORTAL_ORIGIN="https://pilotswarm-portal.westus3.cloudapp.azure.com"
-AUTH_CACHE_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/pilotswarm/auth/https_pilotswarm-portal.westus3.cloudapp.azure.com.json"
 
 SKIP_BUILD=false
 for arg in "$@"; do
@@ -43,11 +41,54 @@ if [ -n "$ENV_FILE" ]; then
     done < "$ENV_FILE"
 fi
 
-ACR_NAME="${ACR_NAME:-pilotswarmacr}"
+# No default: registry names identify a specific deployment and this repo is
+# public. Set ACR_NAME in .env.remote (gitignored).
+ACR_NAME="${ACR_NAME:-}"
+
+# The az CLI keeps its active subscription in ~/.azure — GLOBAL state shared
+# by every terminal and editor window. Deploying another environment from a
+# second session silently repoints this one, and the failure surfaces as a
+# confusing "registry not found" (or, worse, would target the wrong place if
+# both subscriptions held a registry of the same name). Name it explicitly.
+AZ_SUB_ARGS=()
+if [ -n "${AZURE_SUBSCRIPTION_ID:-}" ]; then
+    AZ_SUB_ARGS=(--subscription "$AZURE_SUBSCRIPTION_ID")
+fi
+
 NAMESPACE="${K8S_NAMESPACE:-${NAMESPACE:-copilot-runtime}}"
 K8S_CONTEXT="${K8S_CONTEXT:-}"
 KUBECTL=(kubectl)
 if [ -n "$K8S_CONTEXT" ]; then KUBECTL+=(--context "$K8S_CONTEXT"); fi
+
+# ─── Manifest rendering ───────────────────────────────────────────
+# Manifests carry __ACR_NAME__ / __PORTAL_HOST__ placeholders: resource and host
+# names identify a specific deployment and this repo is public. Both resolve
+# from .env.remote (gitignored). An unset value fails here rather than applying
+# a manifest that names a registry or host that does not exist.
+PORTAL_HOST="${PORTAL_HOST:-${PORTAL_ORIGIN#*://}}"
+render_manifest() {
+    if [ -z "$ACR_NAME" ]; then
+        echo "ERROR: ACR_NAME is not set. Add it to .env.remote." >&2; return 1
+    fi
+    if [ -z "$PORTAL_HOST" ]; then
+        echo "ERROR: PORTAL_HOST (or PORTAL_ORIGIN) is not set. Add it to .env.remote." >&2; return 1
+    fi
+    sed -e "s/namespace: copilot-runtime/namespace: $NAMESPACE/g" \
+        -e "s/__ACR_NAME__/$ACR_NAME/g" \
+        -e "s/__PORTAL_HOST__/$PORTAL_HOST/g" "$1"
+}
+
+# Host names identify a specific deployment and this repo is public, so the
+# portal origin comes from .env.remote (gitignored) rather than a baked-in
+# default. The auth cache path is derived from it exactly as the CLI derives
+# it: scheme://host → scheme_host.json.
+PORTAL_ORIGIN="${PORTAL_ORIGIN:-}"
+if [ -z "$PORTAL_ORIGIN" ]; then
+    echo "ERROR: PORTAL_ORIGIN is not set. Add it to .env.remote, e.g."
+    echo "       PORTAL_ORIGIN=https://<your-portal-host>"
+    exit 1
+fi
+AUTH_CACHE_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/pilotswarm/auth/${PORTAL_ORIGIN//:\/\//_}.json"
 
 # ─── Preflight: outbound Entra credential ─────────────────────────
 if [ ! -f "$AUTH_CACHE_FILE" ]; then
@@ -64,7 +105,7 @@ if [ "$SKIP_BUILD" = false ]; then
     (cd packages/app/mcp && ../../../node_modules/.bin/tsc)
 
     echo "🐳 Building and pushing image (includes mcp dist)..."
-    az acr login --name "$ACR_NAME"
+    az acr login --name "$ACR_NAME" "${AZ_SUB_ARGS[@]}"
     docker buildx build \
         --platform linux/amd64 \
         -f deploy/Dockerfile.portal \
@@ -94,7 +135,7 @@ MCP_KEY="${PILOTSWARM_MCP_KEY:-${EXISTING_KEY:-$(openssl rand -hex 32)}}"
 
 # ─── Deploy ───────────────────────────────────────────────────────
 echo "🚀 Deploying MCP server..."
-sed "s/namespace: copilot-runtime/namespace: $NAMESPACE/g" deploy/k8s/mcp-deployment.yaml | "${KUBECTL[@]}" apply -f -
+render_manifest deploy/k8s/mcp-deployment.yaml | "${KUBECTL[@]}" apply -f -
 "${KUBECTL[@]}" rollout restart deployment/pilotswarm-mcp -n "$NAMESPACE" 2>/dev/null || true
 "${KUBECTL[@]}" rollout status deployment/pilotswarm-mcp -n "$NAMESPACE" --timeout=180s
 

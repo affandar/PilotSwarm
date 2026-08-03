@@ -36,7 +36,7 @@ On your first turn, identify which sub-path the user wants. Ask if ambiguous:
 
 | Signal | Path | Skill to consult |
 |---|---|---|
-| "new env", "sandbox", "stamp", `new-env`, fresh RG name, `chkrawps*`-style names | **new-env (fresh)** | `pilotswarm-new-env-deploy` |
+| "new env", "sandbox", "stamp", `new-env`, fresh RG name, per-developer stamp names | **new-env (fresh)** | `pilotswarm-new-env-deploy` |
 | "redeploy / roll out / update / patch <service> to/on `ps<stamp>`", "rebuild and push the worker image to my stamp", any reference to an existing `deploy/envs/local/<stamp>/` directory or `ps<stamp>-*` resource | **new-env (rollout to existing)** | `pilotswarm-new-env-deploy` — §"Per-service redeploys" |
 | Anything mentioning **VPN**, P2S, Entra-ID VPN auth, `VPN_GATEWAY_ENABLED`, `GatewaySubnet`, "trusted-bypass for off-allow-list users", or hybrid AFD+VPN ingress | **new-env (fresh or rollout)** — VPN-enabled variant | `pilotswarm-new-env-deploy` — §"Optional: VPN Gateway P2S" (Step 4) |
 | Bare "the cluster" / "prod" / "live" with no stamp qualifier, references to `scripts/deploy-aks.sh` or `scripts/deploy-portal.sh`, or to k8s manifests under `deploy/k8s/` | **legacy bash** (out of scope here) | hand off to `pilotswarm-aks-deployer` agent (skills: `pilotswarm-aks-deploy`, `pilotswarm-aks-reset`) |

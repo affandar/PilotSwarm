@@ -26,6 +26,13 @@ export function createConnectionHandler(runtime, { allowThemeMessages = false } 
             ws.close(auth.status === 403 ? 4403 : 4401, auth.error || (auth.status === 403 ? "Forbidden" : "Unauthorized"));
             return;
         }
+        // Same sign-in role capture as the HTTP `requireAuth` path. This is
+        // the OTHER authenticated entry point, and it must not be forgotten:
+        // a client that connects once and then lives on the socket would
+        // otherwise never re-confirm its role, and the worker — which expires
+        // stale observations — would quietly drop that user's agent sessions
+        // to non-admin while the portal still showed them as admin.
+        runtime.noteSignInRole?.(auth);
 
         const sessionSubscriptions = new Map();
         let logUnsubscribe = null;

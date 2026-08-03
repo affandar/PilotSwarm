@@ -1,7 +1,6 @@
 # Proposal: VPN access management via per-stamp custom audience app
 
 **Status:** Proposed (follow-up to PR #53 "VPN P2S Ingress")
-**Author:** chkraw
 **Date:** 2026-06-18
 **Related:** [`docs/deploying-to-aks.md`](../developer/deploy/aks.md) → "Optional: VPN Gateway P2S", [`docs/portal-entra-app-roles.md`](../developer/deploy/entra-app-roles.md), `.github/skills/pilotswarm-portal-auth-assignments/`, `deploy/scripts/auth/Set-PortalAuthAssignments.ps1`
 

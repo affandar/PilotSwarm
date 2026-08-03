@@ -22,10 +22,10 @@ spec:
   ingressClassName: webapprouting.kubernetes.azure.com
   tls:
   - hosts:
-    - pilotswarm-portal.westus3.cloudapp.azure.com
+    - __PORTAL_HOST__
     secretName: keyvault-pilotswarm-portal-tls
   rules:
-  - host: pilotswarm-portal.westus3.cloudapp.azure.com
+  - host: __PORTAL_HOST__
     http:
       paths:
       - path: /

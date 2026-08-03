@@ -203,6 +203,11 @@ export class PilotSwarmWorker {
     private _allowedAgentNamesLive: string[] = [];
     /** Constructor-time pluginDirs snapshot — package dirs are appended per refresh. */
     private _basePluginDirs: string[] = [];
+    /**
+     * Installed-package dir → owning scope/owner, for agents loaded from
+     * agent packages. Empty for plugin dirs the deployment configured itself.
+     */
+    private _packageDirOwners = new Map<string, { scope: "shared" | "user"; owner: { provider: string; subject: string } | null }>();
     /** Agent-package dynamic install state (docs/proposals/agent-packages.md). */
     private _agentPackagesCacheDir: string | null = null;
     private _agentPackagesRefreshMs = 20_000;
@@ -682,6 +687,8 @@ export class PilotSwarmWorker {
         // Auto-register artifact tools (blob storage or local filesystem)
         if (this.artifactStore) {
             const artifactTools = createArtifactTools({ blobStore: this.artifactStore });
+            // The write bundle attaches patch artifacts through the same store.
+            if (this.sessionManager) this.sessionManager.artifactStore = this.artifactStore ?? null;
             this.registerTools(artifactTools);
         }
 
@@ -1009,6 +1016,20 @@ export class PilotSwarmWorker {
                 }
             }
             const okDirs = result.packages.filter((p) => p.status === "ok").map((p) => p.dir);
+
+            // Which installed dir came from which package OWNER.
+            //
+            // The install manifest is deliberately unfiltered — workers hold
+            // every enabled package, including other users' private ones — so
+            // the ONLY thing that can keep a user-scope agent private is
+            // knowing who owns it at resolution time. Without this map the
+            // provenance is lost the moment a package becomes "just another
+            // plugin dir", and every loaded agent looks equally public.
+            this._packageDirOwners = new Map(
+                result.packages
+                    .filter((p) => p.status === "ok")
+                    .map((p) => [p.dir, { scope: p.scope, owner: p.owner }]),
+            );
 
             // Synchronous swap — no await between reset and reload, so no
             // turn can observe the intermediate empty state.
@@ -1493,6 +1514,15 @@ export class PilotSwarmWorker {
                         kind: "app-agent",
                         descriptor,
                     };
+                    // Stamp package provenance so agent resolution can tell a
+                    // deployment-wide agent from one that belongs to a single
+                    // user. Absent for plain plugin dirs, which are part of
+                    // the deployment and public to it by construction.
+                    const provenance = this._packageDirOwners.get(absDir);
+                    if (provenance && provenance.scope === "user" && provenance.owner) {
+                        (agent as any).packageScope = "user";
+                        (agent as any).packageOwner = provenance.owner;
+                    }
                     this._rawLoadedAgents.push(agent);
                 }
             }

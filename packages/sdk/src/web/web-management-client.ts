@@ -591,6 +591,14 @@ export class WebPilotSwarmManagementClient {
         throw webModeUnsupported("recordAuthzAudit", "the portal records authz audit server-side");
     }
 
+    recordUserRole(): never {
+        throw webModeUnsupported("recordUserRole", "the portal records the sign-in role server-side; a remote writer would be privilege escalation");
+    }
+
+    getUserRole(): never {
+        throw webModeUnsupported("getUserRole", "the caller's own role is on /api/auth/me; other users' roles are not exposed");
+    }
+
     normalizeModel(): never {
         throw webModeUnsupported("normalizeModel", "model normalization happens server-side");
     }

@@ -108,6 +108,31 @@ test("both chat view modes render", () => {
     }
 });
 
+// The suite rendered at 1440px only, so every mobile-only branch — the mobile
+// toolbar, MobileWorkspace, the chat-focus rail, the phone session pane — was
+// unguarded. `viewport` starts at 0x0 and effects do not run under SSR, so the
+// width falls through to window.innerWidth: setting that is enough to take the
+// mobile path. Restored afterwards so the desktop tests keep their width.
+test("the mobile layout renders on every inspector tab", () => {
+    const desktopWidth = globalThis.window.innerWidth;
+    globalThis.window.innerWidth = 390;
+    try {
+        for (const tab of INSPECTOR_TABS) {
+            const controller = makeController();
+            controller.dispatch({ type: "ui/inspectorTab", inspectorTab: tab });
+            assert.doesNotThrow(() => render(controller), `mobile inspector tab "${tab}" must render`);
+        }
+    } finally {
+        globalThis.window.innerWidth = desktopWidth;
+    }
+});
+
+// NOT covered here, and deliberately so rather than covered badly: the
+// chat-focus rail and the Node Map's mobile split both hang off component-local
+// useState (chatFocusMode, mobilePane) with no reducer action behind them, so
+// SSR always renders the default branch. A test that dispatched at them would
+// pass while exercising nothing. They need a browser-driven test to be real.
+
 test("the full-screen artifact preview renders", () => {
     const controller = makeController();
     controller.dispatch({ type: "ui/inspectorTab", inspectorTab: "files" });

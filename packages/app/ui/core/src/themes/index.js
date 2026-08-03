@@ -15,6 +15,8 @@ import terminalGreenTheme from "./terminal-green.js";
 import highContrastMonoTheme from "./high-contrast-mono.js";
 import win95Theme from "./win95.js";
 import msDosTheme from "./ms-dos.js";
+import doomTheme from "./doom.js";
+import winampTheme from "./winamp.js";
 
 const THEMES = Object.freeze([
     workspaceDarkTheme,
@@ -34,6 +36,8 @@ const THEMES = Object.freeze([
     highContrastMonoTheme,
     win95Theme,
     msDosTheme,
+    doomTheme,
+    winampTheme,
 ].sort((left, right) => left.label.localeCompare(right.label, undefined, { sensitivity: "base" })));
 
 const THEME_MAP = new Map(THEMES.map((theme) => [theme.id, theme]));

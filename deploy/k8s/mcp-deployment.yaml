@@ -32,7 +32,7 @@ spec:
     spec:
       containers:
         - name: mcp
-          image: pilotswarmacr.azurecr.io/pilotswarm-portal:latest
+          image: __ACR_NAME__.azurecr.io/pilotswarm-portal:latest
           imagePullPolicy: Always
           command:
             - /bin/sh
@@ -42,8 +42,8 @@ spec:
               cp /auth-seed/* "$XDG_CONFIG_HOME/pilotswarm/auth/" 2>/dev/null || true;
               exec node packages/app/mcp/dist/bin/pilotswarm-mcp.js
               --transport http --port 3100 --host 0.0.0.0
-              --api-url https://pilotswarm-portal.westus3.cloudapp.azure.com
-              --allowed-hosts pilotswarm-portal.westus3.cloudapp.azure.com
+              --api-url https://__PORTAL_HOST__
+              --allowed-hosts __PORTAL_HOST__
               --log-level info
           ports:
             - containerPort: 3100
@@ -124,10 +124,10 @@ spec:
   ingressClassName: webapprouting.kubernetes.azure.com
   tls:
     - hosts:
-        - pilotswarm-portal.westus3.cloudapp.azure.com
+        - __PORTAL_HOST__
       secretName: keyvault-pilotswarm-portal-tls
   rules:
-    - host: pilotswarm-portal.westus3.cloudapp.azure.com
+    - host: __PORTAL_HOST__
       http:
         paths:
           - path: /mcp

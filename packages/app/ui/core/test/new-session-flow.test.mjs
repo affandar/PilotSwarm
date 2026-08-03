@@ -223,3 +223,60 @@ test("Switch Model clears reasoning effort when the target model has no efforts"
     assert.equal(calls.setSessionModel[0].options.source, "ui");
     assert.equal(store.getState().ui.modal, null);
 });
+
+// The agent step needs a network round trip before it can render. The flow used
+// to close the current step FIRST and then await that fetch, so the dialog blinked
+// off screen for the length of the round trip and came back as the agent list.
+// The overlay must stay mounted across the whole chain: assert that ui.modal is
+// never null while the agent list is still in flight.
+test("the dialog never blanks between the model steps and the agent step", async () => {
+    let releaseAgents;
+    const agentsInFlight = new Promise((resolve) => { releaseAgents = resolve; });
+    const model = { qualifiedName: "openai:gpt-test", providerId: "openai", modelName: "gpt-test" };
+    const { controller, store } = makeController({
+        getSessionCreationPolicy: () => ({ creation: { allowGeneric: false } }),
+        listModels: async () => [model],
+        getDefaultModel: () => "openai:gpt-test",
+        getModelsByProvider: () => [{ providerId: "openai", type: "openai", models: [model] }],
+        listCreatableAgents: async () => {
+            await agentsInFlight;
+            return [{ name: "alpha", title: "Alpha" }];
+        },
+    });
+
+    await controller.openNewSessionFlow();
+    assert.equal(store.getState().ui.modal?.type, "modelPicker");
+
+    // Confirm the model. The agent fetch is deliberately left hanging.
+    const advanced = controller.confirmModal();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const midFlight = store.getState().ui.modal;
+    assert.notEqual(midFlight, null, "overlay must stay mounted while agents load");
+    assert.ok(
+        midFlight.type !== "sessionAgentPicker",
+        "the agent picker cannot be up yet — its list has not resolved",
+    );
+
+    releaseAgents();
+    await advanced;
+    assert.equal(store.getState().ui.modal?.type, "sessionAgentPicker");
+});
+
+test("a failed agent fetch dismisses the flow instead of stranding it", async () => {
+    const model = { qualifiedName: "openai:gpt-test", providerId: "openai", modelName: "gpt-test" };
+    const { controller, store } = makeController({
+        getSessionCreationPolicy: () => ({ creation: { allowGeneric: false } }),
+        listModels: async () => [model],
+        getDefaultModel: () => "openai:gpt-test",
+        getModelsByProvider: () => [{ providerId: "openai", type: "openai", models: [model] }],
+        listCreatableAgents: async () => { throw new Error("boom"); },
+    });
+
+    await controller.openNewSessionFlow();
+    await controller.confirmModal();
+
+    assert.equal(store.getState().ui.modal, null, "a dead fetch must not leave a stuck dialog");
+    assert.match(String(store.getState().ui.statusText || ""), /Could not load agents/);
+});

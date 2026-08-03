@@ -42,8 +42,11 @@ my-kit/
 ```
 
 - `name` — **DNS label**: lowercase letters, digits, hyphens; no dots,
-  underscores, capitals, or leading/trailing hyphen. Globally unique per
-  deployment. It becomes the namespace shown next to your agents.
+  underscores, capitals, or leading/trailing hyphen. Unique per
+  `(scope, owner)` — **not** deployment-wide, so you and the shared
+  deployment can both publish a `triager` (§9). A leading `__` is reserved
+  for the platform and rejected. It becomes the namespace shown next to your
+  agents.
 - `version` — **concrete semver** (`1.2.3` or `1.2.3-dev.1`). No ranges, no
   `v` prefix. `name@version` is the immutable identity (see §7).
 - `description` — strongly recommended; listings are blank without it.
@@ -245,6 +248,11 @@ export default {
   retry).
 - Every upload is normalized to a canonical tarball and hashed; the sha you
   see in the UI identifies the exact content.
+- **Ship a `CHANGELOG.md`.** It lives inside the package, so it is versioned,
+  diffable, and travels with the artifact; the portal and TUI render it on the
+  package detail page. The Agent Manager (§11) refuses to publish a version
+  that has no entry, and signs its own entries with the approver's name —
+  which is how a reader tells an agent edit from a human `agents push`.
 
 ## 8. Hard limits and forbidden content
 
@@ -295,9 +303,13 @@ pilotswarm agents validate ./my-kit
 3. **MCP** (for assistants driving PilotSwarm): the `push_agent_package`
    tool takes inline base64 files, ≤ 2 MB total.
 
-**Scopes**: `shared` = every user sees and can use the agents; `user` = only
-you. Promote/demote later from the package detail page; running sessions are
-never affected by scope changes.
+**Scopes and namespaces**: `shared` = every user sees and can use the agents;
+`user` = only you. Package identity is `(scope, owner, name)`, so the first
+person to publish `triager` does not own that word for the whole deployment.
+Where both exist, **your own enabled copy shadows the shared one** — which is
+also the recovery path: disable your personal copy and the shared one takes
+over, with no other action. Promote/demote later from the package detail page;
+running sessions are never affected by scope changes.
 
 ## 10. What happens after publish
 
@@ -309,7 +321,20 @@ never affected by scope changes.
   every other package keeps working.
 - Users bind to your agent with its name (`create_session {agent: "greeter"}`
   via MCP, the portal's agent picker, or the TUI). The package name appears
-  as the agent's namespace.
+  as the agent's namespace. A bare name resolves to **your own enabled copy
+  first, then the shared one**; these forms reach past that default:
+
+  | Form | Resolves to |
+  |---|---|
+  | `<package>` | your own enabled copy, else the deployment's |
+  | `__shared:<package>` | the deployment-wide copy, explicitly |
+  | `<owner>:<package>` | a named owner's copy |
+  | `<any of the above>:<semver>` | pinned to one version |
+
+  `__` is reserved at the database for both package names and user subjects,
+  so `__shared` cannot be minted by a user. A bare two-segment `a:b` keeps its
+  long-standing reading as `namespace:agent` first, and is only tried as
+  `owner:package` after that.
 - Disabling or deleting a package removes its agents fleet-wide on the next
   poll; sessions already running fail their next turn's agent resolution.
 - Every publish path — CLI, portal import, portal folder upload, MCP —
@@ -386,6 +411,15 @@ pinning to it. `list` and `show` take `--json`.
   authentication and authorization entirely** — operator break-glass, not a
   normal path. It announces itself on stderr whenever it engages, including
   when it is selected by a `DATABASE_URL` left in your shell.
+
+**Or let an agent do it.** The `agent-manager` package (in `agent-packages/`
+in this repo) installs an agent that reads, edits and ships packages on your
+behalf: it diagnoses a misbehaving session, stages an edit seeded from the
+bytes actually running, renders the change as reviewable `.patch` artifacts,
+and publishes a new version only once a human approves. It can also author a
+package from scratch. Importing from a URL reaches only origins the
+deployment has allowlisted in `.agent_packages.json`, so a URL injected into a
+transcript it is reading cannot be fetched at all.
 
 ## 12. Complete worked example
 
@@ -496,4 +530,5 @@ Before telling the user the package is ready:
 - [ ] `worker-module.js` and `mcp-servers/*.js` are valid ESM with **no bare imports**.
 - [ ] `pilotswarm agents validate ./my-kit` prints no errors.
 - [ ] Version bumped if this `name@version` was ever published with different content.
+- [ ] `CHANGELOG.md` has an entry for the version being published (§7).
 - [ ] After publishing: `pilotswarm agents tree <name>` shows exactly the files you intended — no stray directories, nothing missing (§11).

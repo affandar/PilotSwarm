@@ -45,8 +45,31 @@ export interface AgentPackageInstallResult {
     pluginDirs: string[];
 }
 
+/**
+ * Cache directory name for one installed package.
+ *
+ * The OWNER DISCRIMINATOR is load-bearing, not cosmetic. With per-user
+ * namespaces (migration 0043) two people can publish the same `name`, and if
+ * their content is byte-identical the old `name@semver.sha` key resolved to
+ * the SAME directory for both. That collapses package provenance — and
+ * provenance is the only thing keeping a user-scope agent private, because the
+ * worker holds every tenant's packages at once. Two owners sharing a directory
+ * meant one of them being denied their own agent.
+ *
+ * Shared packages keep the historical bare `name@semver.sha` shape, so
+ * existing caches for them stay valid and are not needlessly re-downloaded.
+ */
 function cacheDirNameFor(entry: AgentPackageInstallEntry): string {
-    return `${entry.name}@${entry.semver}.${entry.sha256.slice(0, 12)}`;
+    const base = `${entry.name}@${entry.semver}.${entry.sha256.slice(0, 12)}`;
+    if (entry.scope !== "user" || !entry.owner) return base;
+    // Short, stable, filesystem-safe: the package id already IS the identity
+    // of (scope, owner, name), so it needs no further encoding.
+    return `${base}.u${String(entry.packageId).replace(/[^A-Za-z0-9]/g, "").slice(0, 12)}`;
+}
+
+/** The GC key for a cache dir: everything before the version marker. */
+function cacheDirPackageName(dirName: string): string {
+    return dirName.split("@")[0];
 }
 
 function readMetaSha(dir: string): string | null {
@@ -132,12 +155,15 @@ export async function installAgentPackages(opts: {
     // Prune cache dirs whose PACKAGE no longer exists in the manifest at all.
     // Old-version dirs of live packages are kept deliberately: warm sessions'
     // stdio MCP servers may still run from them; pods recycle the rest.
-    const liveNames = new Set(manifest.map((entry) => `${entry.name}@`));
+    //
+    // Keyed on the package NAME rather than the full dir key, because the key
+    // now carries an owner discriminator: pruning on the whole key would
+    // delete every older version the moment one was superseded.
+    const liveNames = new Set(manifest.map((entry) => entry.name));
     try {
         for (const dirName of fs.readdirSync(opts.cacheDir)) {
             if (dirName.startsWith(".")) continue;
-            const owner = `${dirName.split("@")[0]}@`;
-            if (!liveNames.has(owner)) {
+            if (!liveNames.has(cacheDirPackageName(dirName))) {
                 fs.rmSync(path.join(opts.cacheDir, dirName), { recursive: true, force: true });
             }
         }

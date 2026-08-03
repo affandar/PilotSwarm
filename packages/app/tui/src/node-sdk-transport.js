@@ -1172,6 +1172,10 @@ export class NodeSdkTransport {
         return this.mgmt.recordAuthzAudit(entry);
     }
 
+    async recordUserRole(principal, role) {
+        return this.mgmt.recordUserRole(principal, role);
+    }
+
     async listAuthzAudit(opts) {
         return this.mgmt.listAuthzAudit(opts);
     }

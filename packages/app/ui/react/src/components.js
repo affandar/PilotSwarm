@@ -2007,6 +2007,31 @@ function buildAdminPackagesLines(view) {
                 }
             }
         }
+        // The package's own CHANGELOG, last in the pane.
+        //
+        // Bottom placement is deliberate: it is the narrative, read after the
+        // facts above it. An agent-authored version signs its entry here, so
+        // this is also where a reviewer learns whether a human or the Agent
+        // Manager wrote the version they are looking at.
+        if (packages.changelog) {
+            const entryLines = String(packages.changelog).split("\n");
+            lines.push([{ text: "", color: "gray" }]);
+            lines.push([{ text: "Changelog", color: "cyan", bold: true }]);
+            for (const raw of entryLines.slice(0, 20)) {
+                const text = raw.slice(0, 100);
+                if (/^##+\s/.test(raw)) {
+                    // Version headings carry the semver — the anchor a reader scans for.
+                    lines.push([{ text: `  ${text.replace(/^#+\s*/, "")}`, color: "white", bold: true }]);
+                } else if (/^_?signed:/i.test(raw.trim())) {
+                    lines.push([{ text: `  ${text}`, color: "green" }]);
+                } else {
+                    lines.push([{ text: `  ${text}`, color: "gray" }]);
+                }
+            }
+            if (entryLines.length > 20) {
+                lines.push([{ text: `  … ${entryLines.length - 20} more lines`, color: "gray" }]);
+            }
+        }
     } else {
         lines.push([{ text: packages.empty
             ? "No agent packages yet — add one in the portal or `pilotswarm agents push ./dir`."

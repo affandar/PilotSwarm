@@ -83,8 +83,8 @@ for your environment.
 
 The script takes one identifier: `-EnvName <stamp-name>`. Examples:
 
-- `chkrawvpn` (matches `deploy/envs/local/chkrawvpn/.env`)
-- `pschkrawvpn` (same stamp under a different name)
+- `<stamp>` (matches `deploy/envs/local/<stamp>/.env`)
+- `ps<stamp>` (the same stamp under a different name)
 
 ## Worked examples
 

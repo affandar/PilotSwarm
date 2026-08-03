@@ -55,7 +55,7 @@ only on first-of-its-kind deploys.
 
 ## Observed instances
 
-Both observed on stamp `chkrawps2` (westus3) on 2026-05-04 during the Phase 1
+Both observed on a test stamp on 2026-05-04 during the Phase 1
 Foundry rollout:
 
 - **Worker**: After the deploy that introduced `AZURE_OAI_KEY` to the SPC,
@@ -65,9 +65,9 @@ Foundry rollout:
   `kubectl rollout restart deploy/copilot-runtime-worker` resolved it: new
   pods read the now-stable Secret correctly and the Foundry providers
   loaded.
-- **Portal**: Same deploy added `daraffan@microsoft.com` to
+- **Portal**: Same deploy added an admin's email to
   `PORTAL_AUTHZ_ADMIN_GROUPS`. The K8s Secret showed both admins; the
-  running pod's env showed only `chkraw@microsoft.com`. A
+  running pod's env showed only the previous value. A
   `kubectl rollout restart deploy/pilotswarm-portal` picked up the new
   admin allowlist.
 
