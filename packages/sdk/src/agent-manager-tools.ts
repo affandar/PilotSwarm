@@ -25,7 +25,7 @@ import type { SessionCatalog, AgentPackageSelector, AgentPrincipal } from "./cms
 import type { ArtifactStore } from "./session-store.js";
 import { readAgentPackageTarGz } from "./agent-package-format.js";
 import { fetchAgentPackageTarGz, publishAgentPackageDir } from "./agent-package-service.js";
-import { diffPackageTrees, patchArtifacts, entriesToMap } from "./agent-package-diff.js";
+import { diffPackageTrees, patchArtifacts, entriesToMap, type PackageEntry } from "./agent-package-diff.js";
 import { guardedImportFetch } from "./agent-package-import-fetch.js";
 import { loadImportPolicy, type ImportPolicy } from "./agent-package-import-policy.js";
 import { parseAgentFqn } from "./agent-fqn.js";
@@ -39,6 +39,76 @@ import { parseAgentFqn } from "./agent-fqn.js";
  */
 export const STAGING_ARTIFACT = "agent-package-staging.json";
 
+/**
+ * Agent ids that hold the manager bundle.
+ *
+ * Lives here rather than in inspect-tools so BOTH halves of a manager tool can
+ * gate on one list: the declaration (this bundle) and the per-turn handler
+ * (managed-session). Declaring a tool the model cannot see but whose handler is
+ * still registered is a latent capability, so the two must agree.
+ *
+ * Per §15 A10 a name must never GRANT: this selects which agents BEHAVE like
+ * managers, not what a manager may do. Every one of these tools re-checks
+ * authority against the live catalog (owner-or-admin, system sessions
+ * refused), so a package declaring this id gains nothing its owner did not
+ * already have.
+ */
+export const MANAGER_AGENT_IDS = new Set(["agent-tuner", "agent-manager"]);
+
+/**
+ * May the calling principal act on `target`?
+ *
+ * The DECISION only — the caller does the IO and hands in what it read. Kept
+ * pure and exported so the rule is directly testable: it is the gate on
+ * messaging a session as its user and on completing/cancelling/deleting one,
+ * and a gate nobody can unit-test is a gate nobody can trust.
+ *
+ * Owner-or-admin, deliberately narrower than "can read". Visibility includes
+ * sessions shared WITH you, and being allowed to watch a run is not being
+ * allowed to type into it or end it.
+ */
+export function decideSessionControl(args: {
+    /** The target session row, or null when it was not found. */
+    target: { isSystem?: boolean; owner?: { provider?: string; subject?: string } | null } | null;
+    /** Short id, for the message only. */
+    targetIdLabel: string;
+    /** The calling session's owner, or null when it could not be resolved. */
+    caller: { provider?: string; subject?: string } | null;
+    callerIsAdmin: boolean;
+    /** Lifecycle operations refuse system sessions; messaging does not use this. */
+    refuseSystem?: boolean;
+}): { ok: true } | { ok: false; reason: string } {
+    const { target, targetIdLabel, caller, callerIsAdmin, refuseSystem } = args;
+    if (!target) return { ok: false, reason: `session ${targetIdLabel} not found` };
+
+    // Checked BEFORE ownership and before admin, so being an admin is not a
+    // way to reach one. System sessions hold the deployment's background
+    // machinery and the fleet recreates them anyway.
+    if (refuseSystem && target.isSystem) {
+        return {
+            ok: false,
+            reason: `session ${targetIdLabel} is a system session — its lifecycle belongs to the deployment, not to any user or admin`,
+        };
+    }
+
+    // Fail closed: an unidentifiable caller drives nothing.
+    if (!caller?.provider || !caller?.subject) {
+        return { ok: false, reason: "this session's owner could not be identified" };
+    }
+
+    if (target.owner?.provider === caller.provider && target.owner?.subject === caller.subject) {
+        return { ok: true };
+    }
+    if (callerIsAdmin) return { ok: true };
+
+    return { ok: false, reason: `you neither own session ${targetIdLabel} nor hold the admin role` };
+}
+
+/** Does this agent identity hold the manager bundle? */
+export function holdsManagerBundle(agentIdentity?: string | null): boolean {
+    return MANAGER_AGENT_IDS.has(String(agentIdentity ?? ""));
+}
+
 /** The changelog every package carries. Read before editing, appended on publish. */
 export const CHANGELOG_PATH = "CHANGELOG.md";
 
@@ -47,6 +117,16 @@ interface StagedEdit {
     fromSemver: string | null;
     /** path → UTF-8 content. Authored content is text; binaries are not authorable. */
     files: Record<string, string>;
+    /**
+     * Whose package this edit is FOR, when that is not the editor.
+     *
+     * Publishing defaults to the caller as owner, which is right for your own
+     * work and wrong for an administrator repairing someone else's agent: the
+     * fix would land in the admin's namespace, the owner would keep running
+     * the broken version, and nothing would report a problem. Recording the
+     * target at seed time keeps "fix Bob's agent" landing on Bob's agent.
+     */
+    targetOwner?: { provider: string; subject: string } | null;
 }
 
 export interface AgentManagerViewer {
@@ -108,6 +188,65 @@ export function selectorFromReference(reference: string, viewer: AgentManagerVie
     }
 }
 
+/**
+ * Resolve a reference, including one naming ANOTHER owner.
+ *
+ * `selectorFromReference` stays sync and directory-free, so it can only ever
+ * resolve the viewer's own copy. That is the right answer for a normal user —
+ * their manager reaches their own packages and the shared ones, nothing else.
+ *
+ * An administrator is a different case: their manager is meant to reach the
+ * whole fleet, and refusing `<owner>:<package>` left admins able to LIST
+ * another user's package (`cms_list_agent_packages` returns everything when
+ * `p_is_admin`) while being unable to open it. The database already accepts an
+ * owner selector and already gates on `p_is_admin`; only this layer said no.
+ *
+ * The owner is resolved through the users table — by subject, email, or
+ * display name — so an admin can name a person the way a person is named.
+ * Resolution is by lookup, never by trusting the string: a non-admin keeps the
+ * original refusal, and an unmatched name is an error rather than a fallback
+ * to the viewer's own copy.
+ */
+export async function resolveReference(
+    reference: string,
+    viewer: AgentManagerViewer,
+    catalog: Pick<SessionCatalog, "listKnownUsers">,
+): Promise<{ name: string; selector: AgentPackageSelector | null; semver?: string; error?: string }> {
+    const base = selectorFromReference(reference, viewer);
+    if (!base.error) return base;
+
+    const fqn = parseAgentFqn(reference);
+    const ownerRef = fqn.ownerRef?.trim();
+    // Only a cross-owner reference is rescuable, and only for the fleet-wide
+    // principals. Everything else keeps the message it already had.
+    if (!ownerRef || !(viewer.isAdmin || viewer.isSystemPrincipal)) return base;
+
+    let users: Awaited<ReturnType<SessionCatalog["listKnownUsers"]>>;
+    try {
+        users = await catalog.listKnownUsers({ limit: 1000 });
+    } catch (err: any) {
+        return { name: fqn.name, selector: null, error: `could not resolve owner "${ownerRef}": ${err?.message || String(err)}` };
+    }
+
+    const needle = ownerRef.toLowerCase();
+    const match = users.find((u) =>
+        u.subject?.toLowerCase() === needle
+        || u.email?.toLowerCase() === needle
+        || u.displayName?.toLowerCase() === needle);
+    if (!match) {
+        return {
+            name: fqn.name,
+            selector: null,
+            error: `no user matches "${ownerRef}". Name the owner by subject, email, or display name.`,
+        };
+    }
+    return {
+        name: fqn.name,
+        selector: { scope: "user", owner: { provider: match.provider, subject: match.subject } },
+        semver: fqn.semver,
+    };
+}
+
 const principalOf = (viewer: AgentManagerViewer): AgentPrincipal | null =>
     viewer.provider && viewer.subject ? { provider: viewer.provider, subject: viewer.subject } : null;
 
@@ -160,8 +299,11 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
 
     const readAgentPackageTool = defineTool("read_agent_package", {
         description:
-            "One package with its full version history. Accepts a bare name (your copy, else shared) "
-            + "or `__shared:<name>` to reach the deployment copy past your own.",
+            "One package with its full version history. Accepts a bare name (your copy, else shared), "
+            + "`__shared:<name>` to reach the deployment copy past your own, or `<owner>:<name>` "
+            + "naming a person by subject, email, or display name. "
+            + "An administrator reaches every user's packages — a bare name resolving someone else's "
+            + "package is the intended fleet-wide reach, not a leak.",
         parameters: {
             type: "object" as const,
             properties: { package: { type: "string", description: "Package name or __shared:<name>." } },
@@ -169,7 +311,7 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
         },
         handler: async (args: { package: string }) => {
             const viewer = await resolveViewer();
-            const ref = selectorFromReference(args.package, viewer);
+            const ref = await resolveReference(args.package, viewer, catalog);
             if (ref.error) return { error: `read_agent_package: ${ref.error}` };
             try {
                 const detail = await catalog.getAgentPackage(ref.name, principalOf(viewer), viewer.isAdmin, ref.selector);
@@ -207,9 +349,9 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
         },
         handler: async (args: { left: string; left_semver?: string; right?: string; right_semver?: string }) => {
             const viewer = await resolveViewer();
-            const leftRef = selectorFromReference(args.left, viewer);
+            const leftRef = await resolveReference(args.left, viewer, catalog);
             if (leftRef.error) return { error: `diff_agent_versions: ${leftRef.error}` };
-            const rightRef = selectorFromReference(args.right ?? args.left, viewer);
+            const rightRef = await resolveReference(args.right ?? args.left, viewer, catalog);
             if (rightRef.error) return { error: `diff_agent_versions: ${rightRef.error}` };
             try {
                 const left = await entriesForVersion(leftRef.name, leftRef.selector, args.left_semver ?? leftRef.semver, viewer);
@@ -255,7 +397,7 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
             const viewer = await resolveViewer();
             if (!opts.sessionId) return { error: "propose_agent_patch: no session to attach artifacts to." };
             if (!artifactStore) return { error: "propose_agent_patch: no artifact store is configured." };
-            const ref = selectorFromReference(args.package, viewer);
+            const ref = await resolveReference(args.package, viewer, catalog);
             if (ref.error) return { error: `propose_agent_patch: ${ref.error}` };
             try {
                 const from = await entriesForVersion(ref.name, ref.selector, args.from_semver, viewer);
@@ -265,7 +407,7 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
                 // not an error.
                 if ("error" in from && args.to_semver) return { error: `propose_agent_patch (base): ${from.error}` };
 
-                let toEntries;
+                let toEntries: PackageEntry[];
                 let label: string;
                 if (args.to_semver) {
                     const to = await entriesForVersion(ref.name, ref.selector, args.to_semver, viewer);
@@ -277,7 +419,7 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
                     if (!staged || staged.package !== ref.name) {
                         return { error: `propose_agent_patch: nothing staged for "${ref.name}". Use stage_agent_package_edit first.` };
                     }
-                    toEntries = Object.entries(staged.files).map(([p, content]) => ({ path: p, content: Buffer.from(content, "utf8") })) as any;
+                    toEntries = Object.entries(staged.files).map(([p, content]) => ({ path: p, content: Buffer.from(content, "utf8") }));
                     label = "staged edit";
                 }
 
@@ -344,7 +486,7 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
         },
         handler: async (args: { package: string; path: string; semver?: string }) => {
             const viewer = await resolveViewer();
-            const ref = selectorFromReference(args.package, viewer);
+            const ref = await resolveReference(args.package, viewer, catalog);
             if (ref.error) return { error: `read_agent_package_file: ${ref.error}` };
             try {
                 const got = await entriesForVersion(ref.name, ref.selector, args.semver ?? ref.semver, viewer);
@@ -391,7 +533,7 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
         handler: async (args: { package: string; from_package?: string; from_semver?: string; files?: Record<string, string>; remove?: string[]; reset?: boolean }) => {
             const viewer = await resolveViewer();
             if (!artifactStore || !opts.sessionId) return { error: "stage_agent_package_edit: no artifact store on this session." };
-            const ref = selectorFromReference(args.package, viewer);
+            const ref = await resolveReference(args.package, viewer, catalog);
             if (ref.error) return { error: `stage_agent_package_edit: ${ref.error}` };
             try {
                 let staged = args.reset ? null : await loadStaging();
@@ -400,7 +542,7 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
                 }
 
                 if (args.from_package) {
-                    const seedRef = selectorFromReference(args.from_package, viewer);
+                    const seedRef = await resolveReference(args.from_package, viewer, catalog);
                     if (seedRef.error) return { error: `stage_agent_package_edit: ${seedRef.error}` };
                     const seed = await entriesForVersion(seedRef.name, seedRef.selector, args.from_semver ?? seedRef.semver, viewer);
                     if ("error" in seed) return { error: `stage_agent_package_edit (seed): ${seed.error}` };
@@ -410,6 +552,12 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
                         if (!buf.includes(0)) staged.files[p] = buf.toString("utf8");
                     }
                     staged.fromSemver = seed.version.semver;
+                    // Seeded from someone else's copy (only an admin can reach
+                    // one) — remember whose, so the publish lands there.
+                    const seedOwner = seedRef.selector?.owner;
+                    staged.targetOwner = seedOwner && seedOwner.subject !== viewer.subject
+                        ? { provider: seedOwner.provider, subject: seedOwner.subject }
+                        : null;
                 }
 
                 for (const [p, content] of Object.entries(args.files ?? {})) {
@@ -479,7 +627,15 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
                     fs.writeFileSync(target, content, "utf8");
                 }
 
-                const owner = principalOf(viewer);
+                // Publish to the package's real owner when this edit was
+                // seeded from someone else's copy. Only the fleet-wide
+                // principals can have staged such a seed in the first place,
+                // and the database re-checks creator-or-admin under a row
+                // lock, so this widens nothing on its own.
+                const target = staged.targetOwner;
+                const owner = target && (viewer.isAdmin || viewer.isSystemPrincipal)
+                    ? { provider: target.provider, subject: target.subject }
+                    : principalOf(viewer);
                 const outcome = await publishAgentPackageDir(
                     { catalog, artifactStore },
                     {
@@ -522,7 +678,7 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
         },
         handler: async (args: { package: string; enabled: boolean }) => {
             const viewer = await resolveViewer();
-            const ref = selectorFromReference(args.package, viewer);
+            const ref = await resolveReference(args.package, viewer, catalog);
             if (ref.error) return { error: `set_agent_package_enabled: ${ref.error}` };
             try {
                 await catalog.setAgentPackageEnabled(ref.name, args.enabled, principalOf(viewer), viewer.isAdmin, ref.selector);
@@ -544,7 +700,7 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
         },
         handler: async (args: { package: string; semver: string }) => {
             const viewer = await resolveViewer();
-            const ref = selectorFromReference(args.package, viewer);
+            const ref = await resolveReference(args.package, viewer, catalog);
             if (ref.error) return { error: `pin_agent_package_version: ${ref.error}` };
             try {
                 await catalog.pinAgentPackageVersion(ref.name, args.semver, principalOf(viewer), viewer.isAdmin, ref.selector);
@@ -578,7 +734,7 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
 
                 let comparison: unknown = undefined;
                 if (args.compare_to) {
-                    const ref = selectorFromReference(args.compare_to, viewer);
+                    const ref = await resolveReference(args.compare_to, viewer, catalog);
                     if (ref.error) return { error: `import_agent_package: ${ref.error}` };
                     const current = await entriesForVersion(ref.name, ref.selector, undefined, viewer);
                     if (!("error" in current)) {
@@ -606,6 +762,116 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
         },
     });
 
+    /**
+     * The DECLARATION half of create_agent_session.
+     *
+     * The real handler needs the inline SDK client, which only exists inside
+     * the turn runner, so it is swapped in per turn from the control bridge —
+     * the same split `spawn_agent`, `wait` and `ask_user` already use. The
+     * declaration lives HERE rather than with the system tools because this
+     * bundle is identity-gated to manager agents: putting it in the system set
+     * would hand every agent in the deployment the ability to create top-level
+     * sessions, which is not a capability the design grants them.
+     *
+     * If this stub ever runs, the wiring is missing — say so rather than
+     * silently reporting success for a session that was never created.
+     */
+    const createAgentSessionTool = defineTool("create_agent_session", {
+        description:
+            "Create a TOP-LEVEL session running an agent — the way a user actually runs it, "
+            + "with no parent above it. Use this to VERIFY a package you just published: spawn_agent "
+            + "would only make a child of you, which is not the same thing. "
+            + "The session is owned by this session's owner and does NOT report back to you — "
+            + "watch it with read_session_info / read_agent_events on the returned id. "
+            + "Publishes converge on the next registry poll (<30s), so poll read_agent_package until "
+            + "the active version is the one you published BEFORE creating the session, or you will be "
+            + "testing the old definition and the edit will look like it did nothing.",
+        parameters: {
+            type: "object" as const,
+            properties: {
+                agent_name: { type: "string", description: "Agent to run, e.g. `triager` or `__shared:triager`." },
+                prompt: { type: "string", description: "Opening message. Defaults to the agent's own initialPrompt." },
+                title: { type: "string", description: "Optional session title." },
+                model: { type: "string", description: "Optional exact provider:model from list_available_models." },
+                reasoning_effort: {
+                    type: "string",
+                    enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+                    description: "Optional reasoning effort for the new session.",
+                },
+                test_of: { type: "string", description: "Tag the session as a verification run, e.g. `triager@1.2.0`, so the sweeper can reap it." },
+                key: { type: "string", description: "Idempotency key. The same agent_name+key reuses the live session instead of creating another; change it to get a fresh one." },
+            },
+            required: ["agent_name"],
+        },
+        handler: async () => ({
+            error: "create_agent_session is not wired in this session (no control bridge). "
+                + "No session was created.",
+        }),
+    });
+
+    /**
+     * DECLARATION half of message_agent_session (real handler per turn, as
+     * above).
+     *
+     * Drives a session as its USER — the other half of the test loop, since a
+     * verification run you cannot talk to only tells you the agent boots.
+     * Authorization is owner-or-admin and is enforced in the bridge against
+     * the live catalog, never here: this schema is only what the model sees.
+     */
+    const messageAgentSessionTool = defineTool("message_agent_session", {
+        description:
+            "Send a message to a session AS ITS USER — it lands in that session's chat as a user turn. "
+            + "Use it to drive a session you created with create_agent_session, or any session you own. "
+            + "Allowed only if you OWN the target session or hold the admin role; otherwise it refuses and sends nothing. "
+            + "This is not `send_session_message` (an auditable cross-session request) and not `message_agent` "
+            + "(your own children only). The target runs on its own schedule — poll read_session_info / "
+            + "read_agent_events for what it did rather than assuming a reply.",
+        parameters: {
+            type: "object" as const,
+            properties: {
+                session_id: { type: "string", description: "Target session id." },
+                message: { type: "string", description: "The message, exactly as a user would type it." },
+            },
+            required: ["session_id", "message"],
+        },
+        handler: async () => ({
+            error: "message_agent_session is not wired in this session (no control bridge). "
+                + "Nothing was sent.",
+        }),
+    });
+
+    /**
+     * DECLARATION half of manage_agent_session (real handler per turn).
+     *
+     * The sub-agent lifecycle tools only reach the caller's own children, so
+     * a manager could create a top-level test session and then had no way to
+     * clean it up. Authorization is enforced in the bridge against the live
+     * catalog: owner-or-admin, and system sessions refused for everyone.
+     */
+    const manageAgentSessionTool = defineTool("manage_agent_session", {
+        description:
+            "Complete, cancel or delete a session — including a top-level one. "
+            + "Use it to clean up test sessions you created with create_agent_session. "
+            + "`complete` marks it finished, `cancel` stops it, `delete` removes it (cancelling descendants first). "
+            + "Allowed only on a session you OWN, or on any session if you hold the admin role; "
+            + "SYSTEM sessions are refused for everyone, admins included. "
+            + "It refuses rather than partially acting, and the target settles on its own schedule — "
+            + "poll read_session_info to confirm rather than assuming.",
+        parameters: {
+            type: "object" as const,
+            properties: {
+                session_id: { type: "string", description: "Target session id." },
+                action: { type: "string", enum: ["complete", "cancel", "delete"], description: "What to do." },
+                reason: { type: "string", description: "Why — recorded on the session." },
+            },
+            required: ["session_id", "action"],
+        },
+        handler: async () => ({
+            error: "manage_agent_session is not wired in this session (no control bridge). "
+                + "Nothing was changed.",
+        }),
+    });
+
     return [
         listAgentPackagesTool,
         readAgentPackageTool,
@@ -617,5 +883,8 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
         setEnabledTool,
         pinVersionTool,
         importAgentPackageTool,
+        createAgentSessionTool,
+        messageAgentSessionTool,
+        manageAgentSessionTool,
     ];
 }

@@ -1,7 +1,11 @@
 import { isSessionLockAcquireTimeoutError, type SessionManager } from "./session-manager.js";
 import type { SessionStateStore } from "./session-store.js";
 import { resolveEffectiveSpawnOwner, type SessionCatalog } from "./cms.js";
+// One predicate, every surface: the portal, the viewer spine and the control
+// bridge all decide "is this principal an admin?" the same way.
+import { evaluateRoleObservation } from "../api/src/session-authz.js";
 import { parseAgentFqn } from "./agent-fqn.js";
+import { decideSessionControl } from "./agent-manager-tools.js";
 import type { StorageConfig } from "./storage-config.js";
 import { SESSION_STATE_MISSING_PREFIX, sanitizePromptAttachmentRefs, IMAGE_ATTACHMENT_CONTENT_TYPES, ATTACHMENT_MAX_BYTES, ATTACHMENTS_MAX_TOTAL_BYTES, type AbortTurnResult, type PromptAttachmentRef, type SerializableSessionConfig, type TurnResult, type OrchestrationInput } from "./types.js";
 import type { ArtifactStore } from "./session-store.js";
@@ -1349,7 +1353,275 @@ export function registerActivities(
             return child;
         };
 
+        /**
+         * Is the manager session's owner allowed to drive `targetSessionId`
+         * as its user?
+         *
+         * Owner-or-admin, deliberately narrower than "can read". Visibility
+         * includes sessions shared WITH you, and being allowed to watch a run
+         * is not the same as being allowed to type into it. The decision uses
+         * the same role predicate the portal and the viewer spine use, so a
+         * demotion lands here too — it is never a name that grants.
+         */
+        const canDriveSession = async (
+            targetSessionId: string,
+            opts?: { refuseSystem?: boolean },
+        ): Promise<{ ok: true } | { ok: false; reason: string }> => {
+            if (!catalog) return { ok: false, reason: "no session catalog on this worker" };
+            const target = await catalog.getSession(targetSessionId).catch(() => null);
+            const me = await resolveEffectiveSpawnOwner(
+                (id) => catalog!.getSession(id),
+                input.sessionId,
+            ).catch(() => null);
+
+            let isAdmin = false;
+            if (me?.provider && me?.subject && typeof (catalog as any).getUserRole === "function") {
+                try {
+                    const observation = await (catalog as any).getUserRole(me);
+                    isAdmin = evaluateRoleObservation(observation, { principal: me }).isAdmin;
+                } catch {
+                    isAdmin = false;   // a read failure is not evidence of privilege
+                }
+            }
+
+            // The rule itself lives in agent-manager-tools as a pure function
+            // so it can be tested directly; this half is only the IO.
+            return decideSessionControl({
+                target: target as any,
+                targetIdLabel: targetSessionId.slice(0, 8),
+                caller: me,
+                callerIsAdmin: isAdmin,
+                refuseSystem: opts?.refuseSystem,
+            });
+        };
+
         const controlToolBridge = {
+            /**
+             * Send a message to a session AS ITS USER.
+             *
+             * The message lands in the target's chat as a user turn, which is
+             * what makes the Agent Manager able to actually drive a
+             * verification run rather than only watch one. Distinct from
+             * `send_session_message`, which is an auditable cross-session
+             * REQUEST envelope, and from `message_agent`, which only reaches
+             * your own children.
+             *
+             * Gated on owner-or-admin (see canDriveSession) — typing into
+             * someone else's session is a write, not a read.
+             */
+            messageAgentSession: async (args: { session_id: string; message: string }) => {
+                try {
+                    const targetId = String(args.session_id || "").trim();
+                    const message = String(args.message ?? "");
+                    if (!targetId) return "Error: session_id is required.";
+                    if (!message.trim()) return "Error: message must not be empty.";
+
+                    const verdict = await canDriveSession(targetId);
+                    if (!verdict.ok) {
+                        return `[SYSTEM: message_agent_session refused — ${verdict.reason}. Nothing was sent.]`;
+                    }
+
+                    const target = await catalog!.getSession(targetId).catch(() => null);
+                    if (target && ["failed", "terminated"].includes(String(target.state))) {
+                        return `[SYSTEM: message_agent_session failed — session ${targetId.slice(0, 8)} is ${target.state} and cannot accept messages.]`;
+                    }
+
+                    const sdkClient = await getInlineClient();
+                    await (sdkClient as any)._getDuroxideClient().enqueueEvent(
+                        `session-${targetId}`,
+                        "messages",
+                        JSON.stringify({ prompt: message }),
+                    );
+                    return `[SYSTEM: delivered to ${targetId} as a user message. `
+                        + `It runs on its own schedule — read_session_info / read_agent_events to see what it did.]`;
+                } catch (error: any) {
+                    return `[SYSTEM: message_agent_session failed — ${error?.message || String(error)}]`;
+                }
+            },
+
+            /**
+             * complete / cancel / delete a session the caller is entitled to.
+             *
+             * The existing complete_agent / cancel_agent / delete_agent tools
+             * resolve through `resolveManagedChild`, so they only ever reach
+             * the caller's OWN children — a manager could create a top-level
+             * test session and then had no way to clean it up. Same authority
+             * rule as messaging (owner-or-admin), plus a hard refusal on
+             * system sessions for every principal.
+             *
+             * The command shapes mirror the sub-agent tools exactly (`done`,
+             * `cancel`, `delete`), so a session ends the same way regardless
+             * of which surface asked.
+             */
+            manageAgentSession: async (args: { session_id: string; action: string; reason?: string }) => {
+                try {
+                    const targetId = String(args.session_id || "").trim();
+                    const action = String(args.action || "").trim().toLowerCase();
+                    if (!targetId) return "Error: session_id is required.";
+                    if (!["complete", "cancel", "delete"].includes(action)) {
+                        return `Error: action must be one of complete, cancel, delete (got "${action}").`;
+                    }
+                    if (targetId === input.sessionId) {
+                        return `[SYSTEM: manage_agent_session refused — that is THIS session. Ending your own session from inside a turn is not supported; finish the turn instead.]`;
+                    }
+
+                    const verdict = await canDriveSession(targetId, { refuseSystem: true });
+                    if (!verdict.ok) {
+                        return `[SYSTEM: manage_agent_session refused — ${verdict.reason}. Nothing was changed.]`;
+                    }
+
+                    const target = await catalog!.getSession(targetId).catch(() => null);
+                    const sdkClient = await getInlineClient();
+                    const reason = args.reason ?? `${action} requested by agent-manager`;
+
+                    if (action === "delete") {
+                        // A terminal session has no live orchestration to ask,
+                        // so the row is removed directly — mirroring
+                        // deleteAgent rather than inventing a second rule.
+                        if (target && ["completed", "failed", "cancelled", "terminated"].includes(String(target.state))) {
+                            await sdkClient.deleteSession(targetId);
+                            return `[SYSTEM: session ${targetId.slice(0, 8)} was already ${target.state} and has been deleted. Reason: ${reason}]`;
+                        }
+                        await sdkClient._getDuroxideClient().enqueueEvent(
+                            `session-${targetId}`,
+                            "messages",
+                            JSON.stringify({ type: "cmd", cmd: "delete", id: `delete-mgr-${Date.now()}`, args: { reason } }),
+                        );
+                        return `[SYSTEM: graceful deletion requested for ${targetId}. It cancels its descendants first, then deletes itself. Poll read_session_info to confirm. Reason: ${reason}]`;
+                    }
+
+                    const cmd = action === "complete" ? "done" : "cancel";
+                    await sdkClient._getDuroxideClient().enqueueEvent(
+                        `session-${targetId}`,
+                        "messages",
+                        JSON.stringify({ type: "cmd", cmd, id: `${cmd}-mgr-${Date.now()}`, args: { reason } }),
+                    );
+                    return `[SYSTEM: ${action} requested for ${targetId}. It settles on its own schedule — poll read_session_info to confirm. Reason: ${reason}]`;
+                } catch (error: any) {
+                    return `[SYSTEM: manage_agent_session failed — ${error?.message || String(error)}]`;
+                }
+            },
+
+            /**
+             * Create a TOP-LEVEL session — the Agent Manager's test loop (§7).
+             *
+             * `spawn_agent` can only ever produce a child, so a manager could
+             * not verify a published agent the way a user actually runs it:
+             * as a root session, with no parent transcript above it and no
+             * sub-agent preamble injected into its system message. Those
+             * differences are exactly what a verification run needs to be free
+             * of, which is why this is a separate capability rather than a
+             * flag on spawn.
+             *
+             * IDEMPOTENCY. This runs inline inside the `runTurn` activity, so
+             * a turn that crashes after the create and is retried would
+             * otherwise create a SECOND root session — and unlike a child, a
+             * stray root is not reaped with its parent. The session id is
+             * therefore derived deterministically from (manager session,
+             * agent, key), and an existing live session with that id is
+             * reused rather than duplicated. This is the same trick
+             * spawnChildSession already uses for deterministic system
+             * children.
+             */
+            createAgentSession: async (args: {
+                agent_name: string;
+                prompt?: string;
+                title?: string;
+                model?: string;
+                reasoning_effort?: import("./model-providers.js").ReasoningEffort;
+                test_of?: string;
+                key?: string;
+            }) => {
+                try {
+                    const agentName = String(args.agent_name || "").trim();
+                    if (!agentName) return "Error: agent_name is required.";
+
+                    const agentDef = resolveAgentConfigInline(agentName);
+                    if (!agentDef) {
+                        return `[SYSTEM: create_agent_session failed — agent "${agentName}" not found. Use list_agent_packages / ps_list_agents to see what is installed.]`;
+                    }
+                    // A worker-managed system agent is not a thing a user can
+                    // run either, so it is not a valid verification target.
+                    if (agentDef.system && agentDef.creatable === false) {
+                        return `[SYSTEM: create_agent_session failed — "${agentName}" is a worker-managed system agent and cannot be created as a top-level session.]`;
+                    }
+                    if (args.model && !args.model.includes(":")) {
+                        return `[SYSTEM: create_agent_session failed — model "${args.model}" is not allowed. Call list_available_models and use an exact provider:model value.]`;
+                    }
+
+                    // Owned by the MANAGER SESSION'S OWNER, never by "whoever
+                    // the model named" — the same rule the viewer spine uses.
+                    // An admin's manager therefore creates test sessions owned
+                    // by the admin, not silently owned by the package's owner.
+                    const owner = catalog
+                        ? await resolveEffectiveSpawnOwner(
+                            (id) => catalog!.getSession(id),
+                            input.sessionId,
+                        ).catch(() => null)
+                        : null;
+
+                    const slug = `agent-session:${agentName}:${String(args.key || "default")}`;
+                    const newSessionId = systemChildAgentUUID(input.sessionId, slug);
+
+                    if (catalog) {
+                        const existing = await catalog.getSession(newSessionId).catch(() => null);
+                        if (existing && !["completed", "failed", "terminated"].includes(existing.state)) {
+                            return `[SYSTEM: create_agent_session reused the existing live session ${newSessionId} for ${agentName} (key="${String(args.key || "default")}"). Pass a different key to create another.]`;
+                        }
+                    }
+
+                    const sdkClient = await getInlineClient();
+                    const normalizedModel = sessionManager.normalizeModelRef(args.model);
+
+                    // No parentSessionId and nestingLevel 0 — that IS what
+                    // makes this a root. The sub-agent preamble that
+                    // spawnAgent builds is deliberately NOT applied.
+                    const created = await sdkClient.createSession({
+                        sessionId: newSessionId,
+                        nestingLevel: 0,
+                        ...(normalizedModel ? { model: normalizedModel } : {}),
+                        ...(args.reasoning_effort ? { reasoningEffort: args.reasoning_effort } : {}),
+                        boundAgentName: agentDef.name,
+                        promptLayering: { kind: "app-agent" as const },
+                        ...(agentDef.tools ? { toolNames: agentDef.tools } : {}),
+                        agentId: agentDef.id ?? agentName,
+                        ...(owner ? { owner } : {}),
+                    });
+
+                    if (catalog) {
+                        const meta: Record<string, any> = {
+                            agentId: agentDef.id ?? agentName,
+                            title: typeof args.title === "string" && args.title.trim()
+                                ? args.title.trim()
+                                : `${agentDef.title || agentName}: ${newSessionId.slice(0, 8)}`,
+                        };
+                        if (agentDef.splash) meta.splash = agentDef.splash;
+                        if (agentDef.splashMobile) meta.splashMobile = agentDef.splashMobile;
+                        // `testOf` is what lets the sweeper reap verification
+                        // sessions instead of leaving them to accumulate as
+                        // ordinary top-level rows in the user's list.
+                        if (args.test_of) meta.metadata = { testOf: String(args.test_of) };
+                        await cmsRetryBestEffort(
+                            `createAgentSession.updateSession meta session=${newSessionId}`,
+                            () => catalog!.updateSession(newSessionId, meta),
+                            (msg) => activityCtx.traceInfo(msg),
+                        );
+                    }
+
+                    const bootstrap = typeof args.prompt === "string" && args.prompt.trim()
+                        ? args.prompt.trim()
+                        : (agentDef.initialPrompt || `You are the ${agentDef.name} agent. Begin your work.`);
+                    await created.send(bootstrap, { bootstrap: true });
+
+                    return `[SYSTEM: created top-level session ${newSessionId} running "${agentName}"`
+                        + `${args.test_of ? ` (testOf: ${args.test_of})` : ""}. `
+                        + `It is a ROOT session owned by this session's owner — it is not your child, so it will not report back to you. `
+                        + `Watch it with read_session_info / read_agent_events on ${newSessionId}.]`;
+                } catch (error: any) {
+                    return `[SYSTEM: create_agent_session failed — ${error?.message || String(error)}]`;
+                }
+            },
+
             spawnAgent: async (args: {
                 agent_name?: string;
                 task?: string;

@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.31** — A session could spawn an agent out of another user's private package; agent resolution is now owner-aware and fails closed. Agent packages get per-user namespaces, so your own copy shadows the shared one and disabling it is the way back. The new Agent Manager reads, edits and ships agents behind a reviewable diff, and every package can carry a `CHANGELOG.md` that the portal and TUI display.
+> **Latest release: v0.5.32** — The Agent Manager could not read any package: a field-name mismatch made every read come back empty and every version diff report "identical" despite different hashes. It now creates, drives and ends top-level sessions for its own verification loop, gated owner-or-admin with system sessions refused for everyone. Pins survive a restart and reach your other devices, and a package changelog no longer vanishes on publish.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 

@@ -53,8 +53,38 @@ function isPinnableSession(session) {
     );
 }
 
+/**
+ * Keep a pin unless the row is loaded AND demonstrably no longer pinnable.
+ *
+ * Same rule, and the same reasoning, as pruneCollapsedIds below: a row missing
+ * from the current listing has NOT been unpinned. Not-loaded, filtered out,
+ * on another page, or simply slower to arrive are indistinguishable from here,
+ * and none of them is the user changing their mind.
+ *
+ * This ran unguarded on every `sessions/loaded`, so any listing that did not
+ * happen to contain the pinned row dropped the pin — and because pinnedIds is
+ * a dependency of the profile-save effect, the emptied list was then written
+ * back to the server as the user's preference. That is a one-way ratchet: the
+ * pin did not survive a restart, and the destroyed preference propagated to
+ * every other device, which is why a pin set on the desktop never reached the
+ * phone.
+ *
+ * A session that is genuinely present and NOT pinnable (moved into a group or
+ * under a parent, or a system row) is a real signal, so that still drops.
+ */
 function prunePinnedIds(ids, byId) {
-    return pruneIdList(ids, byId).filter((sessionId) => isPinnableSession(byId[sessionId]));
+    const out = [];
+    const seen = new Set();
+    for (const id of ids || []) {
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        const session = byId?.[id];
+        // Absent from this listing tells us nothing — keep it. A stale id
+        // matches no row and hoists nothing; a wrongly dropped one costs the
+        // user their pin permanently.
+        if (!session || isPinnableSession(session)) out.push(id);
+    }
+    return out;
 }
 
 

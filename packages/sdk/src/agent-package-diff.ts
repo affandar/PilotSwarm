@@ -45,13 +45,27 @@ export interface PackageDiff {
     truncated?: { omitted: number };
 }
 
+/**
+ * An entry as either producer spells it.
+ *
+ * TWO shapes reach this module and they do not agree: `readAgentPackageTarGz`
+ * emits `{name, body}`, while a staged edit is built as `{path, content}`.
+ * The union is declared so the compiler checks both — the earlier version read
+ * `path`/`content` through `as any`, which silently dropped every tar entry
+ * (the map came out empty, so file reads reported "not in package" and every
+ * diff reported "identical" even across different hashes).
+ */
+export type PackageEntry = ExtractedTarEntry | { path: string; content: Buffer | string };
+
 /** A tar entry list reduced to path → bytes, ignoring the packer's ordering. */
-export function entriesToMap(entries: ExtractedTarEntry[]): Map<string, Buffer> {
+export function entriesToMap(entries: PackageEntry[]): Map<string, Buffer> {
     const map = new Map<string, Buffer>();
     for (const entry of entries ?? []) {
-        const p = String((entry as any).path ?? "").replace(/^\.\//, "");
+        const named = entry as Partial<ExtractedTarEntry> & { path?: string; content?: Buffer | string };
+        const p = String(named.path ?? named.name ?? "").replace(/^\.\//, "");
         if (!p || p.endsWith("/")) continue;
-        map.set(p, Buffer.isBuffer((entry as any).content) ? (entry as any).content : Buffer.from((entry as any).content ?? ""));
+        const raw = named.content ?? named.body;
+        map.set(p, Buffer.isBuffer(raw) ? raw : Buffer.from(raw ?? ""));
     }
     return map;
 }
@@ -148,8 +162,8 @@ export function unifiedDiff(
  * is the noise this module exists to avoid.
  */
 export function diffPackageTrees(
-    left: ExtractedTarEntry[],
-    right: ExtractedTarEntry[],
+    left: PackageEntry[],
+    right: PackageEntry[],
 ): PackageDiff {
     const a = entriesToMap(left);
     const b = entriesToMap(right);

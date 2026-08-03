@@ -46,7 +46,9 @@ import { formatOwnerBucketLabel, formatSessionOwnerLabel, getSessionOwnerKind, m
 // One predicate, two surfaces: this is the same function the portal's HTTP
 // layer evaluates for /api/v1 routes.
 import { evaluateSessionAccess, systemSessionsReadable } from "../api/src/session-authz.js";
-import { createAgentManagerTools } from "./agent-manager-tools.js";
+// MANAGER_AGENT_IDS lives there so the declaration and the per-turn handler
+// in managed-session gate on the SAME list.
+import { createAgentManagerTools, MANAGER_AGENT_IDS } from "./agent-manager-tools.js";
 
 /**
  * Agent ids that hold the manager bundle.
@@ -60,7 +62,6 @@ import { createAgentManagerTools } from "./agent-manager-tools.js";
  * identically whoever holds these tools. A hostile package declaring the same
  * id gains nothing its owner did not already have through the portal.
  */
-const MANAGER_AGENT_IDS = new Set(["agent-tuner", "agent-manager"]);
 
 /**
  * System agents, which are immune to package operations by construction.

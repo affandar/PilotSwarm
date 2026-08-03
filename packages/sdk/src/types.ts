@@ -100,6 +100,30 @@ export interface TurnOptions {
     attachments?: Array<{ data: string; mimeType: string; displayName?: string }>;
     /** Worker-owned inline implementations for non-suspending control tools. */
     controlToolBridge?: {
+        /**
+         * Create a TOP-LEVEL session running an agent (the Agent Manager's
+         * verification loop). Distinct from spawnAgent, which can only ever
+         * produce a child of the calling session.
+         */
+        createAgentSession?(args: {
+            agent_name: string;
+            prompt?: string;
+            title?: string;
+            model?: string;
+            reasoning_effort?: ReasoningEffort;
+            test_of?: string;
+            key?: string;
+        }): Promise<string>;
+        /**
+         * Send a message to a session as its USER. Gated owner-or-admin in the
+         * bridge implementation, against the live catalog.
+         */
+        messageAgentSession?(args: { session_id: string; message: string }): Promise<string>;
+        /**
+         * complete / cancel / delete a session. Owner-or-admin, and system
+         * sessions are refused for every principal.
+         */
+        manageAgentSession?(args: { session_id: string; action: string; reason?: string }): Promise<string>;
         spawnAgent(args: {
             agent_name?: string;
             task?: string;

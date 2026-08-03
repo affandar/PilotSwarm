@@ -1,5 +1,82 @@
 # Changelog
 
+## 0.5.32 — 2026-08-03
+
+### Fixed
+
+- **The Agent Manager could not read any package.** `entriesToMap` looked up
+  `path`/`content` through `as any` casts while the tar reader emits
+  `name`/`body`, so every entry was skipped and the map came back empty for
+  *every* package. File reads reported "not in package" with an empty
+  `available` list, and — worse — `diff_agent_versions` returned
+  `identical: true` for two versions with different sha256, because a diff of
+  two empty maps finds nothing. A silent wrong answer, not an error. The casts
+  are gone and both producer shapes are a declared union, so the compiler
+  checks them.
+- **`CHANGELOG.md` was silently dropped from manifest-mode packages.** Only
+  declared paths were staged, so a package that did not list its changelog in
+  `include` shipped without it — while `publish_agent_package` *requires* a
+  changelog entry. The check passed and the artifact lost the file. It is now
+  staged whenever present, and manifest strictness is otherwise unchanged.
+- **A pinned session did not survive a restart, and never reached your other
+  devices.** Any listing that did not happen to contain the pinned row dropped
+  the pin, and because `pinnedIds` feeds the profile-save effect the emptied
+  list was written back to the server as the user's preference — a one-way
+  ratchet that also propagated the loss to every device. Pins now follow the
+  same rule collapse state already used: a row absent from a listing has not
+  been unpinned. A row that is present and genuinely no longer pinnable (moved
+  into a group, became a child, is a system row) still drops.
+- **An admin could list another user's package but not open it.** The database
+  has gated on `p_is_admin` all along; only the reference resolver refused, so
+  fleet-wide reach stopped at the first read. An owner may now be named by
+  subject, email, or display name — resolved by lookup, never by trusting the
+  string, and an unmatched name is an error rather than a silent fallback to
+  the caller's own copy.
+- **An admin repairing someone else's package forked it into their own
+  namespace.** Publishing always set the caller as owner, so the real owner
+  kept running the broken version with nothing reporting a problem. An edit
+  seeded from another owner's package now publishes back to *that* owner.
+
+### Added
+
+- **`create_agent_session`** — the Agent Manager can create TOP-LEVEL sessions.
+  §7 of the design specified this test loop but the tool was never built, so
+  verifying a published agent meant running it as a sub-agent, with a preamble
+  and parent transcript a real user session does not have. Session ids are
+  derived from (manager session, agent, key) so a retried turn reuses rather
+  than stranding a second root; `test_of` tags a run for sweeper reaping.
+- **`message_agent_session`** — drive a session as its user. A verification run
+  you cannot talk to only proves the agent boots.
+- **`manage_agent_session`** — complete, cancel or delete a session. The
+  sub-agent lifecycle tools only ever reached the caller's own children.
+- All three are **owner-or-admin**, and lifecycle operations refuse **system
+  sessions for every principal, admins included** — checked before the admin
+  test, so being an admin is not a way to reach one. The decision is a pure,
+  exported, unit-tested function shared with the bridge.
+
+### Changed
+
+- **Manager tools are gated in both halves.** The declarations were already
+  restricted to manager agents, but the per-turn handlers were registered for
+  every session — a registered handler is a capability even when the model
+  cannot see the schema. Both now gate on one shared list.
+- **The Agent Manager warns about its own blast radius.** Its splash states, on
+  desktop and mobile, that it reaches every session the account can see and can
+  cancel and delete them. A new prompt section requires an explicit yes before
+  any destructive action, named to the specific target, asked before the call
+  and not in the same turn; unattended runs report what they would have done
+  rather than doing it. Reads stay unrestricted.
+
+### Known Issues
+
+- **`listSessionsPage` can silently skip a session row.** `updated_at` is
+  stored at microsecond precision but the keyset cursor round-trips through a
+  JS `Date`, which holds milliseconds, so a row sharing the cursor's
+  millisecond matches neither branch of the comparison and drops out of every
+  later page. Needs two sessions updated within the same millisecond at a page
+  boundary, so it surfaces rarely. Pre-existing; the fix carries the cursor at
+  full precision across the SDK, the Web API and the portal.
+
 ## 0.5.31 — 2026-08-02
 
 ### Security

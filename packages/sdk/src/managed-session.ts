@@ -1,4 +1,7 @@
 import { defineTool, type Tool, type CopilotSession } from "@github/copilot-sdk";
+// One list gates BOTH halves of every manager tool: the declaration in the
+// manager bundle and the per-turn handler below.
+import { holdsManagerBundle } from "./agent-manager-tools.js";
 import type { CycleReport, TurnAction, TurnResult, TurnOptions, ManagedSessionConfig, CapturedEvent } from "./types.js";
 import type { ReasoningEffort } from "./model-providers.js";
 
@@ -1814,6 +1817,11 @@ export class ManagedSession {
         // depth on top of the pager's CMS-column call-time gate. Generalize to
         // a config.serviceKind check if a second service kind ever appears.
         const isServiceSession = this.config.agentIdentity === "regen-distiller";
+        // The manager tools are DECLARED only in the manager bundle, but a
+        // registered handler is a capability even when the model cannot see
+        // the schema. Gate both halves on the same list so there is no tool
+        // that exists-but-is-hidden in an ordinary session.
+        const isManagerSession = holdsManagerBundle(this.config.agentIdentity);
         const mutatingSystemToolNames = new Set(["update_session_summary", "send_session_message", "reply_session_message"]);
         const systemToolsForTurn: Tool<any>[] = isServiceSession ? [] : [
             waitTool,
@@ -1845,10 +1853,97 @@ export class ManagedSession {
                     deleteAgentTool,
                 ];
 
+        // create_agent_session: DECLARED in the manager bundle (which is
+        // identity-gated), REAL handler wired here, where the control bridge
+        // exists. Appended last so it replaces the bundle's stub in the
+        // handler map. Only a manager agent declares it, so a session without
+        // the declaration never sees the tool even though the handler is
+        // present.
+        const createAgentSessionForTurn: Tool<any>[] = (!isServiceSession && isManagerSession && controlBridge?.createAgentSession)
+            ? [defineTool("create_agent_session", {
+                description: "Create a TOP-LEVEL session running an agent (see the declaration in the manager bundle).",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        agent_name: { type: "string" },
+                        prompt: { type: "string" },
+                        title: { type: "string" },
+                        model: { type: "string" },
+                        reasoning_effort: {
+                            type: "string",
+                            enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+                        },
+                        test_of: { type: "string" },
+                        key: { type: "string" },
+                    },
+                    required: ["agent_name"],
+                },
+                handler: async (args: {
+                    agent_name: string;
+                    prompt?: string;
+                    title?: string;
+                    model?: string;
+                    reasoning_effort?: ReasoningEffort;
+                    test_of?: string;
+                    key?: string;
+                }) => {
+                    if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("create_agent_session");
+                    const reasoningEffort = args.reasoning_effort ? normalizeReasoningEffort(args.reasoning_effort) : undefined;
+                    if (args.reasoning_effort && !reasoningEffort) {
+                        return "Error: reasoning_effort must be one of none, minimal, low, medium, high, xhigh, max.";
+                    }
+                    return await controlBridge.createAgentSession!({
+                        ...args,
+                        ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+                    });
+                },
+            })]
+            : [];
+
+        const messageAgentSessionForTurn: Tool<any>[] = (!isServiceSession && isManagerSession && controlBridge?.messageAgentSession)
+            ? [defineTool("message_agent_session", {
+                description: "Send a message to a session as its user (see the declaration in the manager bundle).",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        session_id: { type: "string" },
+                        message: { type: "string" },
+                    },
+                    required: ["session_id", "message"],
+                },
+                handler: async (args: { session_id: string; message: string }) => {
+                    if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("message_agent_session");
+                    return await controlBridge.messageAgentSession!(args);
+                },
+            })]
+            : [];
+
+        const manageAgentSessionForTurn: Tool<any>[] = (!isServiceSession && isManagerSession && controlBridge?.manageAgentSession)
+            ? [defineTool("manage_agent_session", {
+                description: "Complete, cancel or delete a session (see the declaration in the manager bundle).",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        session_id: { type: "string" },
+                        action: { type: "string", enum: ["complete", "cancel", "delete"] },
+                        reason: { type: "string" },
+                    },
+                    required: ["session_id", "action"],
+                },
+                handler: async (args: { session_id: string; action: string; reason?: string }) => {
+                    if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("manage_agent_session");
+                    return await controlBridge.manageAgentSession!(args);
+                },
+            })]
+            : [];
+
         const allTools: Tool<any>[] = [
             ...wrappedUserTools,
             ...systemToolsForTurn,
             ...subAgentToolsForTurn,
+            ...createAgentSessionForTurn,
+            ...messageAgentSessionForTurn,
+            ...manageAgentSessionForTurn,
         ];
 
         // Re-register tools for this turn (may have changed). Tool

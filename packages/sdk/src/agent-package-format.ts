@@ -408,6 +408,9 @@ export interface AgentPackageLayout {
 
 export const AGENT_PACKAGE_LAYOUT_FIELDS = ["agents", "skills", "mcpConfig", "mcpServers", "tools", "include"] as const;
 
+/** The per-package changelog. Always staged when present — see stageAgentPackageDir. */
+export const PACKAGE_CHANGELOG_FILE = "CHANGELOG.md";
+
 function normalizeLayoutPath(value: unknown, field: string, issues: AgentPackageIssue[]): string | null {
     if (typeof value !== "string" || value.trim() === "") {
         issues.push({ code: "invalid_layout_path", message: `plugin.json "${field}" entries must be non-empty strings (got ${JSON.stringify(value)})`, file: "plugin.json" });
@@ -564,6 +567,20 @@ export function stageAgentPackageDir(rootDir: string): StagedAgentPackage {
     }
     for (const rel of layout.include) {
         if (place(rel, rel, { field: "include" })) canonical.include.push(rel);
+    }
+
+    // The changelog ships whether or not the manifest remembered to declare
+    // it. Manifest mode is otherwise strict — only declared paths are staged —
+    // which silently dropped every CHANGELOG.md not listed in `include`, the
+    // one file the portal and TUI render per package and the one the Agent
+    // Manager refuses to publish without. Enforcing an entry and then dropping
+    // the file is the worst combination: the check passes and the artifact
+    // ships without it.
+    if (!canonical.include.includes(PACKAGE_CHANGELOG_FILE)
+        && fs.existsSync(path.join(rootDir, PACKAGE_CHANGELOG_FILE))) {
+        if (place(PACKAGE_CHANGELOG_FILE, PACKAGE_CHANGELOG_FILE, { dir: false, field: "include" })) {
+            canonical.include.push(PACKAGE_CHANGELOG_FILE);
+        }
     }
 
     if (issues.some((issue) => issue.code !== "missing_description")) {

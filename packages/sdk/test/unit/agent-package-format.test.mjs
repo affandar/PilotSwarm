@@ -584,3 +584,69 @@ test("convention packages stay byte-identical (no layout fields, no re-staging)"
         readAgentPackageTarGz(packAgentPackage(dir).targz).find((e) => e.name === "plugin.json").body.toString("utf8"));
     assert.equal(packedManifest.agents, undefined, "convention plugin.json is not rewritten");
 });
+
+// ─── the changelog always ships ──────────────────────────────────
+//
+// Manifest mode publishes exactly what the manifest declares, which quietly
+// dropped CHANGELOG.md for every package that did not list it in `include` —
+// including ones the Agent Manager published, since it REQUIRES a changelog
+// entry and then shipped an artifact without the file. A check that passes
+// while the artifact loses the file is worse than no check.
+
+test("manifest mode stages CHANGELOG.md even when the manifest omits it", () => {
+    const dir = tmpdir();
+    fs.mkdirSync(path.join(dir, "agents"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "plugin.json"), JSON.stringify({
+        name: "clog-kit", version: "1.0.0", description: "d",
+        agents: ["agents/a.agent.md"],
+    }));
+    fs.writeFileSync(path.join(dir, "agents", "a.agent.md"),
+        "---\nschemaVersion: 1\nversion: 1.0.0\nname: a\ndescription: d\n---\nbody\n");
+    fs.writeFileSync(path.join(dir, "CHANGELOG.md"), "## 1.0.0\n- first\n");
+    fs.writeFileSync(path.join(dir, "scratch.txt"), "must not ship");
+
+    const staged = stageAgentPackageDir(dir);
+    const names = readAgentPackageTarGz(packAgentPackage(staged.dir).targz).map((e) => e.name);
+
+    assert.ok(names.includes("CHANGELOG.md"), `CHANGELOG.md must ship, got ${names.join(", ")}`);
+    assert.equal(
+        fs.readFileSync(path.join(staged.dir, "CHANGELOG.md"), "utf8"),
+        "## 1.0.0\n- first\n",
+    );
+    // Auto-including the changelog must not turn manifest mode into a
+    // ship-everything mode.
+    assert.ok(!names.includes("scratch.txt"), "an undeclared file must still be excluded");
+});
+
+test("a manifest that already declares CHANGELOG.md ships exactly one copy", () => {
+    const dir = tmpdir();
+    fs.mkdirSync(path.join(dir, "agents"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "plugin.json"), JSON.stringify({
+        name: "clog-kit", version: "1.0.0", description: "d",
+        agents: ["agents/a.agent.md"],
+        include: ["CHANGELOG.md"],
+    }));
+    fs.writeFileSync(path.join(dir, "agents", "a.agent.md"),
+        "---\nschemaVersion: 1\nversion: 1.0.0\nname: a\ndescription: d\n---\nbody\n");
+    fs.writeFileSync(path.join(dir, "CHANGELOG.md"), "## 1.0.0\n- first\n");
+
+    const staged = stageAgentPackageDir(dir);
+    const names = readAgentPackageTarGz(packAgentPackage(staged.dir).targz)
+        .filter((e) => e.name === "CHANGELOG.md");
+    assert.equal(names.length, 1);
+});
+
+test("no CHANGELOG on disk stays no CHANGELOG in the artifact", () => {
+    const dir = tmpdir();
+    fs.mkdirSync(path.join(dir, "agents"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "plugin.json"), JSON.stringify({
+        name: "clog-kit", version: "1.0.0", description: "d",
+        agents: ["agents/a.agent.md"],
+    }));
+    fs.writeFileSync(path.join(dir, "agents", "a.agent.md"),
+        "---\nschemaVersion: 1\nversion: 1.0.0\nname: a\ndescription: d\n---\nbody\n");
+
+    const staged = stageAgentPackageDir(dir);
+    const names = readAgentPackageTarGz(packAgentPackage(staged.dir).targz).map((e) => e.name);
+    assert.ok(!names.includes("CHANGELOG.md"));
+});
