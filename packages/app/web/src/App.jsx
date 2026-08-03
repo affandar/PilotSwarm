@@ -401,11 +401,26 @@ function PortalForbidden({ branding, authUi, authConfig, error, onSignOut, shell
  * in. Compared against what the server currently serves so a stale tab can
  * offer a reload. Not displayed — it is a diagnostic, not product copy.
  */
-const BUILD_ID = (() => {
+/**
+ * This tab's own bundle filename, e.g. "index-B-TEKrRB.js".
+ *
+ * The WHOLE filename, deliberately. This used to parse the content hash out
+ * and compare six characters of it, with one regex for our own filename and a
+ * different one for the hashes in index.html — and the two disagreed whenever
+ * the hash itself contained a hyphen, which Vite's base64url alphabet emits
+ * routinely. For "index-B-TEKrRB.js" the self-regex matched from the FIRST
+ * hyphen ("B-TEKr") while the served-regex backtracked to the LAST ("TEKrRB"),
+ * so the tab could never find itself in the served list and every user saw
+ * "New build — reload" forever, on a build that was already current. Reloading
+ * could not clear it, because the next load hit the same mismatch.
+ *
+ * Comparing filenames needs no hash grammar at all, so no alphabet change can
+ * reintroduce this.
+ */
+const BUILD_FILE = (() => {
     try {
         const file = new URL(import.meta.url).pathname.split("/").pop() || "";
-        const match = /-([A-Za-z0-9_-]{6,})\.js$/.exec(file);
-        return match ? match[1].slice(0, 6) : "dev";
+        return /\.js$/.test(file) ? file : "dev";
     } catch {
         return "dev";
     }
@@ -420,16 +435,20 @@ const BUILD_ID = (() => {
 function useBuildFreshness() {
     const [stale, setStale] = React.useState(false);
     React.useEffect(() => {
-        if (BUILD_ID === "dev" || typeof window === "undefined") return undefined;
+        if (BUILD_FILE === "dev" || typeof window === "undefined") return undefined;
         let cancelled = false;
         const check = async () => {
             try {
                 const response = await fetch("/", { cache: "no-store", headers: { accept: "text/html" } });
                 if (!response.ok) return;
                 const html = await response.text();
-                const served = [...html.matchAll(/assets\/[A-Za-z0-9_-]+-([A-Za-z0-9_-]{6,})\.js/g)]
-                    .map((match) => match[1].slice(0, 6));
-                if (!cancelled && served.length > 0 && !served.includes(BUILD_ID)) setStale(true);
+                // Entry filenames only — same shape as BUILD_FILE, no hash parsing.
+                const served = [...html.matchAll(/assets\/([A-Za-z0-9_.-]+\.js)/g)]
+                    .map((match) => match[1]);
+                // Only ever ADVERTISE staleness, never retract it: a flaky poll
+                // that briefly returns a partial document must not flip the
+                // banner off while the tab really is behind.
+                if (!cancelled && served.length > 0 && !served.includes(BUILD_FILE)) setStale(true);
             } catch { /* offline or blocked — try again next tick */ }
         };
         void check();

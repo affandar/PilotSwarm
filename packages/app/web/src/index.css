@@ -4793,7 +4793,11 @@ body:not(.ps-rich-ui) .ps-mermaid {
 
 :root[data-ps-theme="ms-dos"] .ps-panel-title,
 :root[data-ps-theme="ms-dos"] .ps-panel-title * {
-  color: var(--dos-bright);
+  /* !important because the title renders as TUI colour runs with an
+     INLINE style attribute — a plain declaration loses to it, which
+     left the session title in its terminal accent (cyan) on this
+     theme's tan header, effectively unreadable. */
+  color: var(--dos-bright) !important;
   font-weight: 400;   /* text mode had one weight */
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -6286,7 +6290,11 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
 }
 :root[data-ps-theme="doom"] .ps-panel-title,
 :root[data-ps-theme="doom"] .ps-panel-title * {
-  color: var(--doom-bone-hi);
+  /* !important because the title renders as TUI colour runs with an
+     INLINE style attribute — a plain declaration loses to it, which
+     left the session title in its terminal accent (cyan) on this
+     theme's tan header, effectively unreadable. */
+  color: var(--doom-bone-hi) !important;
 }
 
 /* Buttons are stamped metal — raised at rest, pushed in when active. */
@@ -6432,7 +6440,11 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
 }
 :root[data-ps-theme="winamp"] .ps-panel-title,
 :root[data-ps-theme="winamp"] .ps-panel-title * {
-  color: #d6d6cc;
+  /* !important because the title renders as TUI colour runs with an
+     INLINE style attribute — a plain declaration loses to it, which
+     left the session title in its terminal accent (cyan) on this
+     theme's tan header, effectively unreadable. */
+  color: #d6d6cc !important;
 }
 
 /* Buttons: raised at rest, pushed in when pressed. */
