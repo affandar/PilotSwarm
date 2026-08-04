@@ -27,13 +27,35 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const webApp = fs.readFileSync(path.resolve(here, "../../react/src/web-app.js"), "utf8");
 const css = fs.readFileSync(path.resolve(here, "../../../web/src/index.css"), "utf8");
 
-/** The shipped rule, mirrored: manage is owner-or-admin, never system/group. */
+/**
+ * The shipped rule, mirrored. System sessions are ADMIN-modifiable and
+ * read-only for everyone else — the same policy evaluateSessionAccess already
+ * enforces server-side ("System sessions are managed by administrators").
+ */
 const canModify = ({ isSystem = false, isGroup = false, isAdminViewer = false, ownsIt = false }) =>
-    Boolean(!isSystem && !isGroup && (isAdminViewer || ownsIt));
+    Boolean(!isGroup && (isSystem ? isAdminViewer : (isAdminViewer || ownsIt)));
 
-test("a system session cannot be managed — not even by an admin", () => {
-    assert.equal(canModify({ isSystem: true, isAdminViewer: true }), false);
+test("an admin CAN manage a system session", () => {
+    // The regression this replaces: the client was stricter than the server,
+    // so an entitled admin got a dead button and no route to the capability.
+    assert.equal(canModify({ isSystem: true, isAdminViewer: true }), true);
+});
+
+test("a non-admin cannot manage a system session, even one it appears to own", () => {
     assert.equal(canModify({ isSystem: true, ownsIt: true }), false);
+    assert.equal(canModify({ isSystem: true }), false);
+});
+
+test("the client gate matches the server rule for system sessions", () => {
+    // Drift in either direction is a bug: stricter hides a real capability,
+    // looser produces a button that 403s.
+    const serverAllowsWrite = ({ isSystem, isAdmin }) => (isAdmin ? true : (isSystem ? false : null));
+    for (const isAdmin of [true, false]) {
+        const server = serverAllowsWrite({ isSystem: true, isAdmin });
+        if (server === null) continue;
+        assert.equal(canModify({ isSystem: true, isAdminViewer: isAdmin }), server,
+            `client and server disagree for isAdmin=${isAdmin}`);
+    }
 });
 
 test("an ordinary session is manageable by its owner or an admin, nobody else", () => {
@@ -45,7 +67,7 @@ test("an ordinary session is manageable by its owner or an admin, nobody else", 
 test("the disabled tooltip explains the system-session case", () => {
     // The regression: the tooltip used to advertise rename/model/sharing while
     // the button did nothing.
-    assert.match(webApp, /System sessions are fleet machinery/);
+    assert.match(webApp, /System sessions are managed by administrators/);
     assert.match(webApp, /Only this session's owner or an admin can manage it/);
 });
 

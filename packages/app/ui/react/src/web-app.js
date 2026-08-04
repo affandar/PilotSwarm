@@ -3739,9 +3739,21 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         && String(activeSession.owner.provider) === String(authPrincipal.provider)
         && String(activeSession.owner.subject) === String(authPrincipal.subject),
     );
+    // System sessions are ADMIN-modifiable and read-only for everyone else —
+    // which is exactly what the server already enforces in
+    // evaluateSessionAccess: an admin passes every class, and for a non-admin
+    // a system session allows read and refuses every write with "System
+    // sessions are managed by administrators."
+    //
+    // This gate used to be STRICTER than the server, excluding isSystem for
+    // everybody, so an admin who was entitled to rename or re-model the
+    // sweeper had the button disabled with no way to reach the capability.
+    // Client and server now agree; the server remains the enforcement point.
     const canModifyActiveSession = Boolean(
-        activeSession && !activeSession.isSystem && !activeSession.isGroup
-        && (isAdminViewer || ownsActiveSession),
+        activeSession && !activeSession.isGroup
+        && (activeSession.isSystem
+            ? isAdminViewer
+            : (isAdminViewer || ownsActiveSession)),
     );
     const selectedCount = Array.isArray(viewState.selectedIds) ? viewState.selectedIds.length : 0;
     const isBulkSelection = selectedCount > 1;
@@ -4202,7 +4214,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             label: isBulkSelection
                 ? "Disabled while multiple sessions are selected"
                 : activeSession?.isSystem
-                    ? "System sessions are fleet machinery — they cannot be renamed, re-modelled or shared"
+                    ? "System sessions are managed by administrators"
                     : activeSession?.isGroup
                         ? "Folders cannot be managed here — use the folder controls"
                         : !canModifyActiveSession
