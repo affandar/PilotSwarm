@@ -555,6 +555,30 @@ button {
   line-height: 1;
 }
 
+/* A disabled toolbar button must LOOK disabled.
+   Only .ps-load-older-button and .ps-stop-button had a :disabled rule, so a
+   disabled icon button rendered identically to a live one — same colour, same
+   cursor, same hover. The Manage button on a system session is the case that
+   surfaced it: it is disabled by design, but it read as "pressing it does
+   nothing" rather than "this is not available here". */
+.ps-toolbar-button:disabled,
+.ps-mini-button:disabled,
+.ps-modal-button:disabled,
+.ps-mobile-nav-button:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+/* Hover must not animate a button that cannot be pressed. */
+.ps-toolbar-button:disabled:hover,
+.ps-mini-button:disabled:hover,
+.ps-modal-button:disabled:hover,
+.ps-mobile-nav-button:disabled:hover {
+  background: inherit;
+  border-color: inherit;
+  transform: none;
+}
+
 .ps-workspace {
   flex: 1;
   min-height: 0;

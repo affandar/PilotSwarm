@@ -4194,7 +4194,20 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             icon: React.createElement(ManageGlyph),
             onClick: () => setManageOpen(true),
             disabled: !canModifyActiveSession || isBulkSelection,
-            label: isBulkSelection ? "Disabled while multiple sessions are selected" : "Manage session — rename, switch model, and sharing",
+            // A disabled control has to say WHY. This label used to describe
+            // the ENABLED behaviour in every disabled case except bulk
+            // selection, so on a system session the tooltip promised "rename,
+            // switch model, and sharing" while the click did nothing — which
+            // reads as a broken dialog rather than an unavailable action.
+            label: isBulkSelection
+                ? "Disabled while multiple sessions are selected"
+                : activeSession?.isSystem
+                    ? "System sessions are fleet machinery — they cannot be renamed, re-modelled or shared"
+                    : activeSession?.isGroup
+                        ? "Folders cannot be managed here — use the folder controls"
+                        : !canModifyActiveSession
+                            ? "Only this session's owner or an admin can manage it"
+                            : "Manage session — rename, switch model, and sharing",
         }),
         React.createElement(IconButton, {
             className: "ps-mini-button",
