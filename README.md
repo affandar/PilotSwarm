@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.32** — The Agent Manager could not read any package: a field-name mismatch made every read come back empty and every version diff report "identical" despite different hashes. It now creates, drives and ends top-level sessions for its own verification loop, gated owner-or-admin with system sessions refused for everyone. Pins survive a restart and reach your other devices, and a package changelog no longer vanishes on publish.
+> **Latest release: v0.5.33** — A portal fix release. The "New build — reload" banner could latch on forever and no reload would clear it; multi-selecting sessions clipped their icons; the session title was unreadable on the DOOM theme; and admins could not manage system sessions because the client gate was stricter than the server, on a button that gave no sign it was disabled.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 

@@ -1,5 +1,67 @@
 # Changelog
 
+## 0.5.33 — 2026-08-03
+
+A portal fix release. Four bugs, all reported from real use on a live
+deployment, all in how the UI *presents* state rather than in the state itself.
+
+### Fixed
+
+- **"New build — reload" latched on forever.** The banner parsed a content hash
+  out of the tab's own bundle filename with one regex, and out of `index.html`
+  with a different one. They disagree when the hash contains a hyphen AND the
+  tail after the LAST hyphen is six or more characters: the self-regex matches
+  from the FIRST hyphen, the served-regex backtracks to the LAST. A deployment
+  serving `index-B-TEKrRB.js` compared `B-TEKr` against `TEKrRB`, so the tab
+  could never find itself among the served bundles and the banner never
+  cleared — and reloading could not fix it, because the next load hit the same
+  mismatch. Whether a given build tripped it came down to whether its hash
+  happened to contain a hyphen, which is why it looked arbitrary. Whole
+  filenames are compared now, so there is no hash grammar left to disagree
+  about.
+
+- **The session title was unreadable on the DOOM theme.** A pane title renders
+  as terminal colour runs carrying an INLINE `style` attribute, which beats a
+  plain CSS declaration — so the theme's forced title colour lost and the title
+  stayed terminal-cyan on a tan header. `win95` had already hit this and
+  carried `!important`; `doom`, `winamp` and `ms-dos` had not.
+
+- **Multi-selecting sessions clipped their icons.** The selection bar was
+  emitted as a prefix text run, costing a character cell — but the portal
+  already draws selection three ways on the row itself, including a 3px inset
+  left rail that IS the bar. Since the row truncates to a fixed width, that
+  duplicate cell made selected rows truncate one character earlier than their
+  neighbours, clipping the pin, folder or system glyph on any row whose icon
+  landed on the boundary. The run is now tagged `role: "selection"` and the
+  portal drops it, the same contract `role: "status"` and `role: "depth"`
+  already use. The TUI ignores the tag and keeps its bar.
+
+- **Admins could not manage system sessions, and nothing said why.** Two
+  separate faults. The client gate was stricter than the server: it excluded
+  system sessions for *everybody*, while `evaluateSessionAccess` grants an
+  admin every access class and refuses a non-admin with "System sessions are
+  managed by administrators." An entitled admin therefore got a dead button
+  and no route to the capability. And the button did not look disabled —
+  there was no `:disabled` rule for toolbar or mini buttons — while its
+  tooltip described the ENABLED behaviour, so pressing it read as a broken
+  dialog rather than an unavailable action. Client and server now agree, the
+  server remains the enforcement point, and a disabled control dims itself and
+  names its actual reason.
+
+### Known Issues
+
+- **A SKILL.md `description` written as a YAML block scalar is stored as the
+  literal `"|"`.** Same class as the agent-description bug fixed in 0.5.32, but
+  in `skills.ts`'s own frontmatter parser, which has no block-scalar handling
+  at all.
+- **Deleting a system session returns 500 rather than a clean 4xx.**
+  `deleteSession` refuses by design (`if (session.isSystem) throw`), but the
+  throw surfaces as an opaque internal error. The `protectSystem` session-policy
+  field is declared in types and read nowhere; the hardcoded check is the only
+  enforcement.
+- **`listSessionsPage` can silently skip a session row** when two sessions share
+  the cursor's millisecond at a page boundary. Carried from 0.5.32.
+
 ## 0.5.32 — 2026-08-03
 
 ### Fixed
