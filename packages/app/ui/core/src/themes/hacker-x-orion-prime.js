@@ -1,9 +1,10 @@
-import { createTheme } from "./helpers.js";
+import { createTheme, THEME_GROUP_VSCODE } from "./helpers.js";
 
 const hackerXOrionPrimeTheme = createTheme({
     id: "hacker-x-orion-prime",
     label: "Hacker X - Orion Prime",
     description: "Deep-space navy palette with electric cyan, violet, and amber accents.",
+    group: THEME_GROUP_VSCODE,
     page: {
         background: "#0a0f1e",
         foreground: "#e8f2ff",

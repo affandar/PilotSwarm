@@ -1,9 +1,10 @@
-import { createTheme } from "./helpers.js";
+import { createTheme, THEME_GROUP_RETRO } from "./helpers.js";
 
 const terminalGreenTheme = createTheme({
     id: "terminal-green",
     label: "Terminal Green",
     description: "Classic black terminal with phosphor green text, amber warnings, and crisp operator contrast.",
+    group: THEME_GROUP_RETRO,
     page: {
         background: "#020503",
         foreground: "#c9f7d3",

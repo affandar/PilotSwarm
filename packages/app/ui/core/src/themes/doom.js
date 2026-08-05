@@ -1,4 +1,4 @@
-import { createTheme } from "./helpers.js";
+import { createTheme, THEME_GROUP_RETRO } from "./helpers.js";
 
 // DOOM (id Software, 1993) — the status bar, not the shooter.
 //
@@ -19,6 +19,7 @@ const doomTheme = createTheme({
     id: "doom",
     label: "DOOM",
     description: "STBAR brown metal, bone type, and the three keycards as the status palette.",
+    group: THEME_GROUP_RETRO,
     // The face, drawn as data rather than markup so ui/core stays free of any
     // framework and nothing has to inject raw HTML. The portal renders it in
     // place of the deployment's logo; the TUI ignores it.

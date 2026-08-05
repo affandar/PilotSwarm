@@ -165,7 +165,7 @@ export {
 
 // Skills loader
 export { loadSkills, loadSkillsSync, composeDeclaredSkillsPrompt } from "./skills.js";
-export { loadAgentFiles, systemAgentUUID, systemChildAgentUUID, listBundledAgentNames } from "./agent-loader.js";
+export { loadAgentFiles, systemAgentUUID, systemChildAgentUUID, listBundledAgentNames, agentSupportsDirectStart } from "./agent-loader.js";
 export { loadMcpConfig } from "./mcp-loader.js";
 export type { Skill } from "./skills.js";
 // Local-mode user principal constant (Admin Console / per-user GitHub Copilot key)

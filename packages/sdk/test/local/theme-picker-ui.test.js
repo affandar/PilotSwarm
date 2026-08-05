@@ -6,7 +6,7 @@ import { selectStatusBar, selectThemePickerModal } from "../../../app/ui/core/sr
 import { computeLegacyLayout } from "../../../app/ui/core/src/layout.js";
 import { createInitialState } from "../../../app/ui/core/src/state.js";
 import { createStore } from "../../../app/ui/core/src/store.js";
-import { DEFAULT_THEME_ID, listThemes } from "../../../app/ui/core/src/themes/index.js";
+import { DEFAULT_THEME_ID, listThemes, THEME_GROUP_ORDER } from "../../../app/ui/core/src/themes/index.js";
 import { assert, assertEqual, assertIncludes, assertNotNull } from "../helpers/assertions.js";
 
 function createController() {
@@ -81,9 +81,30 @@ describe("theme picker UI behavior", () => {
         assertEqual(modal.items[modal.selectedIndex]?.id, DEFAULT_THEME_ID, "current theme should be preselected");
         assertNotNull(modal.items.find((theme) => theme.id === "noctis-obscuro"), "theme picker should include Noctis Obscuro");
 
-        const labels = modal.items.map((theme) => theme.label);
-        const sortedLabels = [...labels].sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" }));
-        assert(JSON.stringify(labels) === JSON.stringify(sortedLabels), "theme picker should list themes alphabetically");
+        // Grouped, then alphabetical INSIDE each group — the portal draws a
+        // heading wherever the group changes, so a flat alphabetical sort
+        // (what this asserted before groups existed) would interleave the
+        // sections and repeat their headings.
+        const groups = modal.items.map((theme) => theme.group);
+        const groupOrder = groups.filter((group, index) => group !== groups[index - 1]);
+        assertEqual(
+            JSON.stringify(groupOrder),
+            JSON.stringify([...new Set(groups)]),
+            "each theme group should appear as one contiguous run",
+        );
+        assertEqual(
+            JSON.stringify(groupOrder),
+            JSON.stringify(THEME_GROUP_ORDER.filter((group) => groups.includes(group))),
+            "groups should follow the declared display order",
+        );
+        for (const group of groupOrder) {
+            const labels = modal.items.filter((theme) => theme.group === group).map((theme) => theme.label);
+            const sorted = [...labels].sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" }));
+            assert(
+                JSON.stringify(labels) === JSON.stringify(sorted),
+                `theme picker should list ${group} themes alphabetically`,
+            );
+        }
 
         const selector = selectThemePickerModal(state);
         assertNotNull(selector, "theme picker selector should render");

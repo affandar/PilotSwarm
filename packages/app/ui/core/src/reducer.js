@@ -321,14 +321,18 @@ function mergeDefinedSessionFields(previousSession = {}, nextSession = {}) {
     return merged;
 }
 
+// Mirrors selectors' getSessionVisualStatus — the two must agree or the row
+// label (debounced, from here) and the summary label (immediate, from there)
+// will disagree mid-turn.
 function computeRawSessionVisualStatus(session) {
     if (!session) return "unknown";
     const status = session.status || "unknown";
-    if (
-        session.cronActive === true
-        && (status === "waiting" || status === "idle" || status === "unknown")
-    ) {
+    const dormant = status === "waiting" || status === "idle" || status === "unknown";
+    if (session.cronActive === true && dormant) {
         return "cron_waiting";
+    }
+    if (dormant && (Number(session.activeChildCount) || 0) > 0) {
+        return "awaiting_children";
     }
     return status;
 }
@@ -394,6 +398,76 @@ function mergeSessionRowVisualStatus(previousSession, nextSession, nowMs) {
         rowVisualStatusCandidate: desiredStatus,
         rowVisualStatusCandidateSince: candidateSince,
     };
+}
+
+// A sub-agent that finishes its task stays alive and IDLE waiting for follow-up
+// (see managed-session's spawn_agent contract), so "has children" says nothing
+// about whether work is still happening below. Only these two statuses mean the
+// parent is genuinely blocked on someone else.
+const ACTIVE_DESCENDANT_STATUSES = new Set(["running", "input_required"]);
+
+/**
+ * Stamp `activeChildCount` — the number of running/input_required descendants,
+ * at any depth — onto every session that has one. selectors' visual-status
+ * derivation reads it to distinguish "idle because it is waiting on its
+ * children" from "idle because there is nothing to do".
+ *
+ * Counted transitively so the whole ancestor chain lights up: without that, a
+ * parent whose direct child is itself only waiting on a grandchild would read
+ * as plain idle and the delegation would look dead.
+ *
+ * Returns `byId` unchanged when nothing moved, so this stays free for the
+ * common poll that changes nothing.
+ */
+function applyActiveDescendantCounts(byId) {
+    const counts = new Map();
+    for (const session of Object.values(byId || {})) {
+        if (!session?.sessionId || session.isGroup) continue;
+        if (!ACTIVE_DESCENDANT_STATUSES.has(session.status)) continue;
+        // A malformed parent chain (self-parent, cycle) would spin forever;
+        // `seen` bounds the walk to one visit per ancestor.
+        const seen = new Set([session.sessionId]);
+        let parentId = session.parentSessionId;
+        while (parentId && byId[parentId] && !seen.has(parentId)) {
+            seen.add(parentId);
+            counts.set(parentId, (counts.get(parentId) || 0) + 1);
+            parentId = byId[parentId].parentSessionId;
+        }
+    }
+
+    let changed = false;
+    const next = {};
+    for (const [sessionId, session] of Object.entries(byId || {})) {
+        const nextCount = counts.get(sessionId) || 0;
+        const previousCount = Number(session?.activeChildCount) || 0;
+        if (nextCount === previousCount) {
+            next[sessionId] = session;
+            continue;
+        }
+        changed = true;
+        next[sessionId] = nextCount > 0
+            ? { ...session, activeChildCount: nextCount }
+            : { ...session, activeChildCount: undefined };
+    }
+    return changed ? next : byId;
+}
+
+/**
+ * Run the row-status debounce across a whole map. A session going running or
+ * idle moves its ANCESTORS' visual status too (they gain or lose
+ * awaiting_children), and those ancestors are not in the payload that caused
+ * the change — so the debounce has to be re-evaluated for everyone, not just
+ * the rows that arrived.
+ */
+function applyRowVisualStatuses(previousById = {}, nextById = {}, nowMs) {
+    let changed = false;
+    const out = {};
+    for (const [sessionId, session] of Object.entries(nextById)) {
+        const merged = mergeSessionRowVisualStatus(previousById[sessionId], session, nowMs);
+        out[sessionId] = merged;
+        if (merged !== session) changed = true;
+    }
+    return changed ? out : nextById;
 }
 
 function normalizedPendingQuestionText(pendingQuestion) {
@@ -681,6 +755,10 @@ export function appReducer(state, action) {
                 },
             };
 
+        case "ui/touchScale":
+            if (Boolean(action.enabled) === Boolean(state.ui.touchScale)) return state;
+            return { ...state, ui: { ...state.ui, touchScale: Boolean(action.enabled) } };
+
         case "profileSettings/apply": {
             const settings = action.settings && typeof action.settings === "object" && !Array.isArray(action.settings)
                 ? action.settings
@@ -690,8 +768,10 @@ export function appReducer(state, action) {
                 && settings.themeId.trim();
             const hasOwnerFilter = Object.prototype.hasOwnProperty.call(settings, "sessionOwnerFilter");
             const hasLayout = Object.prototype.hasOwnProperty.call(settings, "layoutAdjustments");
-            // "rich" retired as a view mode (now theme.richChat) — stored
-            // profiles that still say "rich" simply keep the transcript.
+            // "rich" was retired as a view mode — stored profiles that still
+            // say "rich" fall through to the transcript below.
+            const hasTouchScale = Object.prototype.hasOwnProperty.call(settings, "touchScale")
+                && typeof settings.touchScale === "boolean";
             const hasChatViewMode = Object.prototype.hasOwnProperty.call(settings, "chatViewMode")
                 && (settings.chatViewMode === "summary" || settings.chatViewMode === "transcript");
             const hasPins = Object.prototype.hasOwnProperty.call(settings, "pinnedSessionIds");
@@ -755,6 +835,7 @@ export function appReducer(state, action) {
                 ui: {
                     ...selection.ui,
                     themeId: hasTheme ? settings.themeId.trim() : selection.ui.themeId,
+                    touchScale: hasTouchScale ? settings.touchScale : selection.ui.touchScale,
                     chatViewMode: hasChatViewMode ? settings.chatViewMode : selection.ui.chatViewMode,
                     layout: nextLayout,
                 },
@@ -1105,8 +1186,13 @@ export function appReducer(state, action) {
             const hadRow = Boolean(state.sessions.byId[goneId]);
             const wasActive = state.sessions.activeSessionId === goneId;
             if (!hadRow && !wasActive) return state;
-            const byId = { ...state.sessions.byId };
-            delete byId[goneId];
+            const evictedById = { ...state.sessions.byId };
+            delete evictedById[goneId];
+            // Re-derive: the evicted row may have been the running CHILD that
+            // put an ancestor into awaiting_children, and that ancestor is not
+            // named in this action. Without it the parent reads "waiting on 1"
+            // with nothing left to wait for until the next poll.
+            const byId = applyActiveDescendantCounts(evictedById);
             const selectedIds = Array.isArray(state.sessions.selectedIds)
                 ? state.sessions.selectedIds.filter((id) => id !== goneId)
                 : state.sessions.selectedIds;
@@ -1134,13 +1220,7 @@ export function appReducer(state, action) {
             }
             for (const session of action.sessions) {
                 const previous = state.sessions.byId[session.sessionId];
-                const merged = mergeSessionRowVisualStatus(
-                    previous,
-                    mergeDefinedSessionFields(previous, session),
-                    nowMs,
-                );
-                byId[session.sessionId] = merged;
-                if (!anyChanged && merged !== previous) anyChanged = true;
+                byId[session.sessionId] = mergeDefinedSessionFields(previous, session);
             }
             if (
                 state.sessions.activeSessionId
@@ -1153,9 +1233,17 @@ export function appReducer(state, action) {
                 };
                 anyChanged = true;
             }
+            // Descendant counts BEFORE row visual status: awaiting_children is
+            // derived from activeChildCount, so stamping it after the debounce
+            // ran would leave every parent one poll behind its own children.
+            const countedById = applyActiveDescendantCounts(byId);
+            const rowStatusById = applyRowVisualStatuses(state.sessions.byId, countedById, nowMs);
+            for (const [sessionId, session] of Object.entries(rowStatusById)) {
+                if (session !== state.sessions.byId[sessionId]) { anyChanged = true; break; }
+            }
             // Check if session set changed (added/removed)
             const prevIds = Object.keys(state.sessions.byId);
-            const nextIds = Object.keys(byId);
+            const nextIds = Object.keys(rowStatusById);
             if (prevIds.length !== nextIds.length) anyChanged = true;
             if (!anyChanged) {
                 for (const id of nextIds) {
@@ -1163,7 +1251,7 @@ export function appReducer(state, action) {
                 }
             }
             if (!anyChanged) return state;
-            const mergedSessions = Object.values(byId);
+            const mergedSessions = Object.values(rowStatusById);
             const hasExistingOrder = Object.keys(state.sessions.orderById || {}).length > 0;
             const initialCollapsedIds = collectDefaultCollapsedSessionIds(mergedSessions);
             const previousCollapsedIdsExplicit = Boolean(state.sessions.collapsedIdsExplicit);
@@ -1205,12 +1293,12 @@ export function appReducer(state, action) {
             // Drop pins/selection for sessions that no longer exist; only
             // keep pins on top-level rows (groups and ungrouped top-level
             // sessions). Sessions inside containers lose their pins.
-            const survivingPins = prunePinnedIds(state.sessions.pinnedIds, byId);
-            const survivingSelected = pruneIdList(state.sessions.selectedIds, byId);
+            const survivingPins = prunePinnedIds(state.sessions.pinnedIds, rowStatusById);
+            const survivingSelected = pruneIdList(state.sessions.selectedIds, rowStatusById);
             const flat = buildSessionTree(mergedSessions, collapsedIds, orderById, survivingPins, state.sessions.manualOrder);
             const nextSessions = {
                 ...state.sessions,
-                byId,
+                byId: rowStatusById,
                 collapsedIds,
                 collapsedIdsExplicit: previousCollapsedIdsExplicit,
                 listingSeen: true,
@@ -1314,16 +1402,25 @@ export function appReducer(state, action) {
         case "sessions/merged": {
             if (!action.session?.sessionId) return state;
             const previousSession = state.sessions.byId[action.session.sessionId];
-            const mergedSession = mergeSessionRowVisualStatus(
-                previousSession,
-                mergeDefinedSessionFields(previousSession, action.session),
+            const mergedSession = mergeDefinedSessionFields(previousSession, action.session);
+            // A single session going running/idle changes its ANCESTORS' counts
+            // and therefore their visual status, so both passes run over the
+            // whole map rather than the one row. buildSessionTree below is
+            // already an O(n) pass over the same map, so this adds no new
+            // complexity class.
+            const byId = applyRowVisualStatuses(
+                state.sessions.byId,
+                applyActiveDescendantCounts({
+                    ...state.sessions.byId,
+                    [action.session.sessionId]: mergedSession,
+                }),
                 Date.now(),
             );
-            if (mergedSession === previousSession) return state;
-            const byId = {
-                ...state.sessions.byId,
-                [action.session.sessionId]: mergedSession,
-            };
+            let anyRowChanged = false;
+            for (const [sessionId, session] of Object.entries(byId)) {
+                if (session !== state.sessions.byId[sessionId]) { anyRowChanged = true; break; }
+            }
+            if (!anyRowChanged) return state;
             const survivingPins = prunePinnedIds(state.sessions.pinnedIds, byId);
             const {
                 orderById,

@@ -162,7 +162,8 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             nodeMapSelectedNode: null,
             sequenceExpandedTurns: [],
             sequenceSelectedTurn: null,
-            // "rich" is a THEME property now (theme.richChat), not a view mode.
+            // "rich" was retired as a view mode; a persisted "rich" falls
+            // through to the transcript.
             chatViewMode: chatViewMode === "summary" ? "summary" : "transcript",
             statsViewMode: "session",
             prompt: "",
@@ -174,6 +175,10 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // A persisted theme id may name a theme that no longer ships —
             // fall back to the default instead of crashing theme consumers.
             themeId: getTheme(themeId)?.id || DEFAULT_THEME_ID,
+            // Touch-friendly scale: bumps type and control sizes one step. A phone in
+            // portrait is not the only case — a wall display or a shared screen wants
+            // the same thing — so it is a preference, not a viewport query.
+            touchScale: false,
             modal: null,
             fullscreenPane: null,
             layout: {

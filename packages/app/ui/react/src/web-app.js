@@ -28,7 +28,6 @@ import {
     selectArtifactPickerModal,
     selectArtifactUploadModal,
     selectLiveActivityLines,
-    selectChatBlocks,
     selectChatLines,
     selectChatPaneChrome,
     selectOutboxOverlayLines,
@@ -49,6 +48,7 @@ import {
     selectSessionGroupPickerModal,
     selectSessionOwnerFilterModal,
     selectSessionRows,
+    selectSessionStatusSummary,
     selectStatusBar,
     selectThemePickerModal,
     selectConfirmModal,
@@ -199,6 +199,9 @@ function normalizeProfileSettings(settings) {
     if (typeof candidate.themeId === "string" && candidate.themeId.trim()) {
         normalized.themeId = candidate.themeId.trim();
     }
+    if (typeof candidate.touchScale === "boolean") {
+        normalized.touchScale = candidate.touchScale;
+    }
     if (hasOwn(candidate, "sessionOwnerFilter") && candidate.sessionOwnerFilter && typeof candidate.sessionOwnerFilter === "object") {
         const storedFilter = candidate.sessionOwnerFilter;
         // Profiles saved before the "Shared with me" bucket existed have no
@@ -287,6 +290,7 @@ function hasOwn(value, key) {
 function profileSettingsFromViewState(state, preservedOtherChatViewMode = null) {
     return normalizeProfileSettings({
         themeId: state.themeId,
+        touchScale: state.touchScale,
         sessionOwnerFilter: state.ownerFilter,
         layoutAdjustments: {
             paneAdjust: state.paneAdjust,
@@ -311,6 +315,7 @@ function profileSettingsFromViewState(state, preservedOtherChatViewMode = null) 
 function buildDefaultProfileSettingsFromState(state, preservedOtherChatViewMode = null) {
     return normalizeProfileSettings({
         themeId: state?.ui?.themeId,
+        touchScale: state?.ui?.touchScale,
         // Derive the owner-filter default from the RESOLVED principal, never a
         // snapshot of state.sessions.ownerFilter — at mount that snapshot is
         // still {all:true} (principal not yet applied), and using it as the
@@ -591,6 +596,15 @@ function compactTitleRuns(title, maxWidth = 40) {
         compactRuns.pop();
     }
     return compactRuns.length > 0 ? compactRuns : title;
+}
+
+function applyTouchScale(enabled) {
+    if (typeof document === "undefined") return;
+    // One attribute, one CSS block. Everything the scale touches — type ramp,
+    // control padding, hit targets — is already expressed as a custom property
+    // or a class the stylesheet owns, so this needs no per-component wiring.
+    if (enabled) document.documentElement.dataset.psTouch = "1";
+    else delete document.documentElement.dataset.psTouch;
 }
 
 function applyDocumentTheme(themeId) {
@@ -2508,108 +2522,6 @@ function StructuredChatBlocks({ lines, theme, controller = null }) {
     return React.createElement(StructuredBlockList, { blocks, theme, controller });
 }
 
-// Rich (desktop-style) chat transcript. Consumes selectChatBlocks: plain
-// user/assistant prose renders as proportional-type markdown messages;
-// every other block (splash, thinking cards, system cards, epoch dividers)
-// reuses the structured line renderer so the terminal-era special cases
-// keep exactly one implementation.
-/**
- * One rich message, memoized.
- *
- * The body runs markdown through MarkdownPreviewContent — the single most
- * expensive thing in the transcript — and a pane resize used to re-run it for
- * every loaded message. `selectChatBlocks` now returns identity-stable blocks,
- * so this bails out instead. Every prop must stay referentially stable for
- * that to hold: `theme` comes from a Map, `controller` is a singleton, and
- * `continued` is hoisted to a boolean because it depends on the PREVIOUS block
- * and would otherwise have to be recomputed inside.
- */
-const RichChatMessage = React.memo(function RichChatMessage({ block, theme, controller, continued }) {
-    const header = block.header || {};
-    const roleClass = block.role === "user" ? " is-user" : " is-assistant";
-    const pendingClass = block.pendingPhase ? ` is-${block.pendingPhase}` : "";
-    const text = String(block.text || "");
-    // A speaker label only earns its place when it disambiguates: another human
-    // in a shared session. The viewer's own turns and the agent's are obvious
-    // from side and styling.
-    const showLabel = block.role === "user" && header.fromOtherPerson;
-    return React.createElement("article", {
-        className: `ps-rich-msg${roleClass}${pendingClass}${continued ? " is-continued" : ""}`,
-    },
-                    React.createElement("header", { className: "ps-rich-msg-head" },
-                        showLabel
-                            ? React.createElement("span", {
-                                className: "ps-rich-msg-label",
-                                style: { color: resolveColor(theme, header.roleColor) || undefined },
-                            }, header.roleLabel)
-                            : null,
-                        // Delivery glyph + timestamp are on-demand detail:
-                        // revealed on hover so a quiet transcript stays quiet.
-                        React.createElement("span", { className: "ps-rich-msg-meta" },
-                            header.glyph
-                                ? React.createElement("span", {
-                                    className: "ps-rich-msg-glyph",
-                                    title: block.pendingPhase || undefined,
-                                    style: { color: resolveColor(theme, header.glyphColor) || undefined },
-                                }, header.glyph)
-                                : null,
-                            header.time
-                                ? React.createElement("span", { className: "ps-rich-msg-time" }, header.time)
-                                : null)),
-                    text.trim()
-                        ? React.createElement("div", { className: "ps-rich-msg-body" },
-                            React.createElement(MarkdownPreviewContent, { content: text, theme }))
-                        : null,
-        block.attachments
-            ? React.createElement(ArtifactImageStrip, {
-                controller,
-                sessionId: block.attachments.sessionId,
-                attachments: block.attachments.attachments,
-            })
-            : null);
-});
-
-/** A non-message block (splash, system card, divider), memoized the same way. */
-const RichChatLineBlock = React.memo(function RichChatLineBlock({ block, theme, controller }) {
-    const lines = React.useMemo(() => normalizeLines(block.lines || []), [block.lines]);
-    return React.createElement("div", {
-        className: `ps-rich-lineblock is-${block.variant || "event"}`,
-    }, React.createElement(StructuredChatBlocks, { lines, theme, controller }));
-});
-
-function RichChatBlocks({ blocks, theme, controller = null }) {
-    return React.createElement("div", { className: "ps-rich-chat" },
-        (blocks || []).map((block, index) => {
-            if (block.kind === "message") {
-                // Consecutive turns from the same speaker read as one
-                // continuous passage — no repeated header, tighter spacing.
-                // Computed here because it reads the previous block; passing it
-                // down as a boolean is what keeps the child memoizable.
-                const previous = blocks[index - 1];
-                const header = block.header || {};
-                const showLabel = block.role === "user" && header.fromOtherPerson;
-                const continued = Boolean(previous
-                    && previous.kind === "message"
-                    && previous.role === block.role
-                    && !(previous.header && previous.header.fromOtherPerson)
-                    && !showLabel);
-                return React.createElement(RichChatMessage, {
-                    key: block.id != null ? `msg:${block.id}` : `msg:${index}`,
-                    block,
-                    theme,
-                    controller,
-                    continued,
-                });
-            }
-            return React.createElement(RichChatLineBlock, {
-                key: `lines:${index}`,
-                block,
-                theme,
-                controller,
-            });
-        }));
-}
-
 // Authenticated artifact thumbnails: bytes are fetched through the transport
 // (Bearer token) and served to <img> as object URLs. Module-level cache so
 // scrolling the transcript doesn't refetch; oldest entries are revoked at cap.
@@ -2818,19 +2730,6 @@ function StructuredBlockList({ blocks, theme, controller = null }) {
 
             return React.createElement(Line, { key: `line:${index}`, line: block.line, theme });
         }));
-}
-
-// Pane titles carry terminal-style bracketed runs (" [+3]", " [5f086c7c]").
-// The rich view keeps the information but drops the brackets — a web title
-// bar shows a count and an id, it does not draw them in ASCII delimiters.
-function unbracketTitleRuns(runs) {
-    if (!Array.isArray(runs)) return runs;
-    return runs.map((run) => {
-        const text = String(run?.text ?? "");
-        const match = /^(\s*)\[(.+)\](\s*)$/.exec(text);
-        if (!match) return run;
-        return { ...run, text: `${match[1]}${match[2]}${match[3]}` };
-    });
 }
 
 function Panel({ title, titleRight = null, color = "gray", focused = false, actions = null, children, theme, className = "" }) {
@@ -3118,7 +3017,6 @@ function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, l
 // title in proportional type, and the id/age/model metadata demoted to a
 // muted second line under the selected row. Depth becomes real indentation
 // with a guide rail rather than an ASCII "└" prefix.
-const SESSION_KIND_GLYPHS = { group: "🗂", system: "⚙", service: "⚗" };
 
 /**
  * Selected-session details, pinned to the bottom of the Sessions panel.
@@ -3188,6 +3086,8 @@ function SessionDetailBox({ session, childCount = 0 }) {
         ? (session.memberCount == null ? null : String(session.memberCount))
         : (childCount > 0 ? String(childCount) : null);
 
+    const statusSummary = selectSessionStatusSummary(session);
+
     return React.createElement("div", { className: "ps-session-detail-box" },
         // The row above ellipsizes to one line, so this is the only place the
         // whole name is legible. Two lines are RESERVED whether or not they are
@@ -3198,7 +3098,10 @@ function SessionDetailBox({ session, childCount = 0 }) {
         field("Context", context, percent != null && percent >= 85 ? "is-hot" : percent != null && percent >= 70 ? "is-warm" : ""),
         field("Cron", cron, session?.cronActive === true ? "is-armed" : ""),
         field("Agent", session?.agentId),
-        field("Status", session?.status),
+        // "when, and what it is doing" in one row. The status comes from the
+        // shared derivation rather than the raw field — see
+        // selectSessionStatusSummary for why raw made this flip idle/waiting.
+        field("Updated", statusSummary ? `${statusSummary.relative} (${statusSummary.status})` : null),
         field("Children", children),
         field("Access", access));
 }
@@ -3248,7 +3151,7 @@ function railNodeInsetPx(depth) {
 }
 
 const SessionListRow = React.memo(function SessionListRow({
-    row, theme, rich, structuredRows, mobile, onRowClick, setRef, drag,
+    row, theme, structuredRows, mobile, onRowClick, setRef, drag,
 }) {
     const depth = Math.max(0, row.depth);
     const railStyle = React.useMemo(() => {
@@ -3340,76 +3243,17 @@ const SessionListRow = React.memo(function SessionListRow({
         },
     },
         React.createElement("div", {
-            className: rich ? "ps-session-row-content is-rich" : "ps-line ps-session-row-content",
+            className: "ps-line ps-session-row-content",
             style: {
                 // Nested content starts where its node mark does, so the mark
                 // lands centred on the deepest rail and the text clears it.
                 paddingInlineStart: depth > 0 ? `${railNodeInsetPx(depth)}px` : "0px",
             },
         },
-            rich
-                ? React.createElement(RichSessionRow, { row, theme, showDetail: mobile })
-                : React.createElement(SessionRowContent, {
-                    row, theme, structured: structuredRows, showInlineDetail: mobile,
-                })));
+            React.createElement(SessionRowContent, {
+                row, theme, structured: structuredRows, showInlineDetail: mobile,
+            })));
 });
-
-function RichSessionRow({ row, theme, showDetail = false }) {
-    const chrome = row.chrome;
-    if (!chrome) return React.createElement(SessionRowContent, { row, theme, structured: true, showInlineDetail: showDetail });
-
-    const kindGlyph = SESSION_KIND_GLYPHS[chrome.kind] || null;
-    const accent = resolveColor(theme, chrome.accentColor) || undefined;
-    // Mobile has no room for a detail box, so it keeps the inline detail line
-    // it always had. Desktop moves that content to the panel footer.
-    const detailRuns = showDetail && Array.isArray(row.detailRuns) ? row.detailRuns : [];
-
-    return React.createElement("div", { className: "ps-rich-session-row" },
-        React.createElement("div", { className: "ps-rich-session-main" },
-            chrome.selectMode
-                ? React.createElement("span", {
-                    className: `ps-rich-session-check${chrome.checked ? " is-checked" : ""}`,
-                }, chrome.checked ? "✓" : "")
-                : null,
-            kindGlyph
-                ? React.createElement("span", { className: "ps-rich-session-kind" }, kindGlyph)
-                : React.createElement("span", {
-                    className: `ps-rich-session-dot${row.depth > 0 ? " is-node" : ""}`,
-                    style: row.depth > 0
-                        ? { borderColor: resolveColor(theme, chrome.statusColor) || undefined }
-                        : { background: resolveColor(theme, chrome.statusColor) || undefined },
-                    title: row.status || undefined,
-                }),
-            chrome.owner
-                ? React.createElement("span", {
-                    className: `ps-rich-session-owner${chrome.owner.isMine ? " is-mine" : ""}`,
-                    title: chrome.owner.initials,
-                }, chrome.owner.initials)
-                : null,
-            React.createElement("span", {
-                className: `ps-rich-session-title${chrome.untitled ? " is-untitled" : ""}`,
-                style: chrome.kind === "session" ? undefined : { color: accent },
-                title: chrome.title,
-            }, chrome.title),
-            chrome.pinned ? React.createElement("span", { className: "ps-rich-session-pin", title: "Pinned" }, React.createElement(PinGlyph)) : null,
-            chrome.cron ? React.createElement("span", { className: "ps-rich-session-cron", title: "Scheduled" }, "⏱") : null,
-            chrome.childBadge
-                ? React.createElement("span", {
-                    className: "ps-rich-session-count",
-                    style: { color: resolveColor(theme, chrome.childBadge.color) || undefined },
-                }, chrome.childBadge.text)
-                : null,
-            chrome.ctx
-                ? React.createElement("span", {
-                    className: "ps-rich-session-ctx",
-                    style: { color: resolveColor(theme, chrome.ctx.color) || undefined },
-                }, chrome.ctx.text)
-                : null),
-        detailRuns.length > 0
-            ? React.createElement("div", { className: "ps-rich-session-detail" },
-                React.createElement(Runs, { runs: detailRuns, theme }))
-            : null);
-}
 
 /**
  * Portal row prefix: drop the "└ " depth glyph (the guide rail says it, and
@@ -3646,11 +3490,6 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         connectionMode: state.connection?.mode || "local",
         modalOpen: Boolean(state.ui.modal),
         focused: state.ui.focusRegion === "sessions",
-        // The rich chat view also restyles the session list, so the portal
-        // reads as one product rather than half terminal / half desktop.
-        // TODO: promote this to its own `ui.richUi` setting if the two are
-        // ever wanted independently.
-        rich: Boolean(getTheme(state.ui.themeId)?.richChat),
         // Clicking empty space clears the list highlight; the row VM reads it,
         // so the reconstruction below must carry it or the click does nothing
         // visible (the same omission that blinded the Node Map).
@@ -3790,7 +3629,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         : (activeIsGroupable ? [activeSession.sessionId] : []);
     // The folder button is never disabled: with nothing to move it makes an
     // empty folder to drag into, which is the natural way to get one at all.
-    const combinedPanelClassName = `ps-session-pane${viewState.rich ? " is-rich" : ""}${panelClassName ? ` ${panelClassName}` : ""}`;
+    const combinedPanelClassName = `ps-session-pane${panelClassName ? ` ${panelClassName}` : ""}`;
     // The click handler must be referentially stable or every memoized row
     // re-renders on each keypress, defeating the point. It reads the current
     // rows/viewState from a ref that is refreshed on every render instead of
@@ -3815,15 +3654,40 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         cancelAnimationFrame(autoScrollRef.current);
         autoScrollRef.current = null;
     }, []);
+    /**
+     * The element that actually scrolls the session list.
+     *
+     * Walked up from the list itself rather than resolved from the pointer:
+     * `[data-session-scroll]` is only stamped on the pane while it holds
+     * focus, and the pane and the list inside it BOTH declare overflow — which
+     * of the two really scrolls depends on how the flex layout resolved. The
+     * old lookup could land on the one whose scrollHeight equals its
+     * clientHeight, where `scrollTop +=` is silently a no-op and the list just
+     * sat there while you dragged past its edge.
+     */
+    const findSessionScroller = React.useCallback(() => {
+        let node = sessionListRef.current;
+        while (node && node !== document.body) {
+            const overflowY = window.getComputedStyle(node).overflowY;
+            if (/(auto|scroll|overlay)/.test(overflowY) && node.scrollHeight - node.clientHeight > 1) {
+                return node;
+            }
+            node = node.parentElement;
+        }
+        return null;
+    }, []);
+
     const updateAutoScroll = React.useCallback((x, y) => {
         const EDGE_PX = 48;
         const MAX_STEP_PX = 14;
-        const el = document.elementFromPoint(x, y);
-        const scroller = el?.closest?.("[data-session-scroll]")
-            || document.querySelector("[data-session-scroll]");
+        const scroller = findSessionScroller();
         if (!scroller) { stopAutoScroll(); return; }
         const box = scroller.getBoundingClientRect();
         let step = 0;
+        // Each branch's own guard already makes its numerator positive, and
+        // Math.min caps the ramp at full speed — so dragging PAST the edge, the
+        // case this exists for, keeps scrolling at MAX_STEP rather than
+        // accelerating without bound.
         if (y < box.top + EDGE_PX) {
             step = -MAX_STEP_PX * Math.min(1, (box.top + EDGE_PX - y) / EDGE_PX);
         } else if (y > box.bottom - EDGE_PX) {
@@ -3842,7 +3706,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             autoScrollRef.current = requestAnimationFrame(tick);
         };
         autoScrollRef.current = requestAnimationFrame(tick);
-    }, [stopAutoScroll]);
+    }, [findSessionScroller, stopAutoScroll]);
 
     const finishDrag = React.useCallback((commit) => {
         const pending = dragRef.current;
@@ -3928,6 +3792,18 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
      */
     const resolveDropIntent = React.useCallback((x, y, pending) => {
         const overGroupId = resolveDropGroup(x, y);
+        // A FOLDER has a groupId of its own — its own id. Feeding that through
+        // the filing branches below meant every position in the list resolved
+        // to "file into that other folder" or "take it out of itself", and a
+        // folder could never once be reordered. Folders nest in nothing, so
+        // reorder is the only gesture they have.
+        if (pending?.isGroup) {
+            const target = pending.ids.length === 1
+                ? resolveReorderTarget(x, y, pending.container, pending.ids[0])
+                : undefined;
+            if (target === undefined) return { kind: "none", overGroupId: null, before: undefined, after: null };
+            return { kind: "reorder", overGroupId: null, before: target.before, after: target.after };
+        }
         const ownGroupId = pending?.ownGroupId || null;
         if (overGroupId && overGroupId !== ownGroupId) {
             return { kind: "file", overGroupId, before: undefined, after: null };
@@ -4048,6 +3924,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                 beforeSessionId: undefined,
                 orderable: Boolean(row.orderable),
                 container: row.orderContainer ?? null,
+                isGroup: Boolean(row.isGroup),
                 // The folder the row currently lives in: filing into the
                 // folder it is ALREADY in is a reorder, not a move.
                 ownGroupId: row.groupId || null,
@@ -4146,21 +4023,56 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         }
     }, []);
 
+    // Which (session, focus, modal) combination has already been pulled into
+    // view. Anything else re-arms the reveal; a bare list refresh does not.
+    const revealedRowKeyRef = React.useRef(null);
+    const activeRowRevealKey = `${viewState.activeSessionId || ""}${viewState.focused ? 1 : 0}${viewState.modalOpen ? 1 : 0}`;
+
     React.useEffect(() => {
-        if (viewState.modalOpen || !viewState.focused || !viewState.activeSessionId) return;
+        if (viewState.modalOpen || !viewState.focused || !viewState.activeSessionId) {
+            // Disarm, so returning from a modal (or refocusing the pane) counts
+            // as a fresh arming. Without this the ref still holds the key from
+            // before the modal opened, the comparison below matches, and the
+            // row is never brought back into view on the way out.
+            revealedRowKeyRef.current = null;
+            return;
+        }
         const activeButton = sessionButtonRefs.current.get(viewState.activeSessionId);
+        // The row is not rendered yet. On a page reload the active session id
+        // is restored from the profile BEFORE the listing arrives, so the first
+        // run lands here — leaving the key un-consumed is what lets the reveal
+        // retry once `sessionsFlat` brings the row in.
         if (!activeButton) return;
 
-        if (document.activeElement !== activeButton) {
+        // Everything below runs ONCE per arming. This effect is woken by every
+        // list refresh (~4×/sec while a session streams), and moving DOM focus
+        // on each of those was actively dangerous: the Manage and Copy-link
+        // dialogs are local React state rather than `ui.modal`, so
+        // `viewState.modalOpen` is false while they are open — focus was ripped
+        // out of their text inputs mid-keystroke, and because the global
+        // shortcut handler decides "am I editable?" from the event target, the
+        // rest of what the user typed ran as commands (d = complete,
+        // D = delete). Scrolling on every refresh has a milder failure but the
+        // same shape: the list yanks back to the active row while the user is
+        // deliberately scrolled away browsing older sessions.
+        if (revealedRowKeyRef.current === activeRowRevealKey) return;
+        revealedRowKeyRef.current = activeRowRevealKey;
+
+        // Never take focus off something the user is typing into. Belt and
+        // braces on top of the arming guard, for any future caller of this
+        // effect that fires while a local dialog is up.
+        const focused = document.activeElement;
+        const isTypingTarget = Boolean(focused && (
+            focused.tagName === "INPUT"
+            || focused.tagName === "TEXTAREA"
+            || focused.tagName === "SELECT"
+            || focused.isContentEditable
+        ));
+        if (focused !== activeButton && !isTypingTarget) {
             activeButton.focus({ preventScroll: true });
         }
-        // Only pull the active row into view when the active session itself
-        // changes (or on focus/modal transitions). Re-running scrollIntoView
-        // on every `sessions/loaded` refresh would yank the list back to the
-        // active row even when the user has deliberately scrolled away to
-        // browse older sessions in a long list.
         activeButton.scrollIntoView({ block: "nearest" });
-    }, [viewState.activeSessionId, viewState.focused, viewState.modalOpen]);
+    }, [activeRowRevealKey, viewState.activeSessionId, viewState.focused, viewState.modalOpen, viewState.sessionsFlat]);
 
     const panelActions = React.createElement(React.Fragment, null,
         isBulkSelection
@@ -4269,7 +4181,14 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                         ? `${dragState.ids.length} sessions`
                         : (dragState.titles[0] || "session"))),
             React.createElement("div", { className: "ps-drag-ghost__hint" },
-                dragState.overGroupId ? "Release to file here" : "Release to remove from folder"))
+                // Read the resolved INTENT, not just the folder under the
+                // pointer. Folders always resolve to reorder with a null
+                // overGroupId, so the old test labelled every folder drag
+                // "Release to remove from folder" — a folder is in no folder.
+                dragState.intent === "file" ? "Release to file here"
+                    : dragState.intent === "unfile" ? "Release to remove from folder"
+                    : dragState.intent === "reorder" ? "Release to move here"
+                    : "Release to cancel"))
         : null;
 
     return React.createElement(React.Fragment, null,
@@ -4303,7 +4222,6 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                 key: row.sessionId,
                 row,
                 theme,
-                rich: viewState.rich,
                 structuredRows,
                 mobile: isMobilePane,
                 onRowClick: handleRowClick,
@@ -5005,7 +4923,6 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         () => appendAnimatedDotsToRuns(chrome.titleRight, chrome.animateTitleRight ? animatedDots : ""),
         [animatedDots, chrome.animateTitleRight, chrome.titleRight],
     );
-    const richMode = Boolean(theme?.richChat) && !viewState.activeSessionIsGroup;
     const [loadingOlder, setLoadingOlder] = React.useState(false);
     // Scroll-up expands the transcript automatically until the soft cap, then
     // refuses — and the portal had no control to ask for more, so a busy
@@ -5015,23 +4932,10 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         viewState.activeHistory?.hasOlderEvents
         && Number(viewState.activeHistory?.loadedEventCount || 0) >= AUTO_HISTORY_EVENT_SOFT_CAP,
     );
-    const richBlocks = React.useMemo(
-        () => (richMode ? selectChatBlocks(selectorState, viewState.contentWidth, { tableMode: "sentinel" }) : null),
-        [richMode, selectorState, viewState.contentWidth],
+    const lines = React.useMemo(
+        () => selectChatLines(selectorState, viewState.contentWidth, { tableMode: "sentinel" }),
+        [selectorState, viewState.contentWidth],
     );
-    const lines = React.useMemo(() => {
-        if (richBlocks) {
-            // Rich mode paints from `richBlocks` via renderBody; these
-            // pseudo-lines exist only as the scroll-sync change signal
-            // (autoscroll-to-bottom fires when a block grows or arrives).
-            return richBlocks.map((block, index) => ({
-                text: block.kind === "message"
-                    ? `m:${block.id ?? index}:${(block.text || "").length}:${block.pendingPhase || ""}`
-                    : `l:${index}:${(block.lines || []).length}`,
-            }));
-        }
-        return selectChatLines(selectorState, viewState.contentWidth, { tableMode: "sentinel" });
-    }, [richBlocks, selectorState, viewState.contentWidth]);
     const spinnerFrame = useSpinnerFrame(viewState.activeSessionStatus === "running");
     const liveActivityLines = React.useMemo(
         () => selectLiveActivityLines(selectorState, { spinnerFrame, maxWidth: viewState.contentWidth }),
@@ -5100,10 +5004,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
 
     return React.createElement(ScrollLinesPanel, {
         controller,
-        title: (() => {
-            const baseTitle = mobile ? compactTitleRuns(chrome.title, 28) : chrome.title;
-            return richMode ? unbracketTitleRuns(baseTitle) : baseTitle;
-        })(),
+        title: mobile ? compactTitleRuns(chrome.title, 28) : chrome.title,
         titleRight: mobile && titleRight ? compactTitleRuns(titleRight, 18) : titleRight,
         // Chat/Summary toggling lives on the top toolbar so the pane chrome
         // stays clean. The toolbar button is disabled for group sessions.
@@ -5115,8 +5016,8 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         scrollOffset: viewState.scroll,
         scrollMode: "bottom",
         paneKey: "chat",
-        className: richMode ? "is-wrapped is-rich" : "is-wrapped",
-        panelClassName: richMode ? "ps-chat-panel is-rich" : "ps-chat-panel",
+        className: "is-wrapped",
+        panelClassName: "ps-chat-panel",
         bottomContent: composer,
         topContent: showLoadOlder
             ? React.createElement("div", { className: "ps-load-older-bar" },
@@ -5133,13 +5034,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
                 }, loadingOlder ? "Loading older messages…" : "↑ Load older messages"))
             : null,
         structuredBlocks: true,
-        renderBody: richBlocks
-            ? (_bodyLines, bodyTheme) => React.createElement(RichChatBlocks, {
-                blocks: richBlocks,
-                theme: bodyTheme,
-                controller,
-            })
-            : null,
+        renderBody: null,
     });
 }
 
@@ -6457,7 +6352,6 @@ function IconButton({ icon, label, onClick, disabled = false, active = false, cl
 }
 
 function Toolbar({ controller, mobile, chatFocusMode = false, onToggleChatFocus = null, chatFocusDisabled = false }) {
-    const richUi = useControllerSelector(controller, (state) => Boolean(getTheme(state.ui.themeId)?.richChat));
     const [headerSlot, setHeaderSlot] = React.useState(null);
     React.useEffect(() => {
         if (typeof document === "undefined") return;
@@ -6466,7 +6360,7 @@ function Toolbar({ controller, mobile, chatFocusMode = false, onToggleChatFocus 
         // rich view had already handed that row back to the panes. Mobile keeps
         // the inline strip; there is no header room for it on a phone.
         setHeaderSlot(!mobile ? document.getElementById("ps-header-toolbar-slot") : null);
-    }, [richUi, mobile]);
+    }, [mobile]);
     const adminVisible = useControllerSelector(controller, (state) => Boolean(state.admin?.visible));
     const chatView = useControllerSelector(controller, (state) => ({
         mode: state.ui.chatViewMode || "transcript",
@@ -6902,6 +6796,7 @@ function MobileNav({ activePane, setActivePane, controller }) {
 
 function ModalLayer({ controller }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
+    const touchScale = useControllerSelector(controller, (state) => Boolean(state.ui.touchScale));
     const theme = getTheme(themeId);
     const modalState = useControllerSelector(controller, (state) => ({
         rawModal: state.ui.modal,
@@ -7005,7 +6900,22 @@ function ModalLayer({ controller }) {
 
     const close = () => controller.handleCommand(UI_COMMANDS.CLOSE_MODAL).catch(() => {});
 
-    const renderListModal = (presentation, confirmLabel = "Apply") => {
+    // Display preferences that belong beside the theme rather than in a
+    // settings screen of their own. Rendered in the theme picker's footer: it
+    // is the "how this looks" surface, and a checkbox there is discoverable in
+    // a way a keyboard-only command never is.
+    const renderTouchScaleToggle = () => React.createElement("label", {
+        className: "ps-modal-toggle",
+        title: "Larger type and bigger hit targets, for phones and touch screens.",
+    },
+        React.createElement("input", {
+            type: "checkbox",
+            checked: touchScale,
+            onChange: (event) => controller.dispatch({ type: "ui/touchScale", enabled: event.target.checked }),
+        }),
+        React.createElement("span", null, "Mobile"));
+
+    const renderListModal = (presentation, confirmLabel = "Apply", footerExtras = null) => {
         const rows = Array.isArray(presentation.rows) ? presentation.rows : [];
         const rowItemIndexes = Array.isArray(presentation.rowItemIndexes) ? presentation.rowItemIndexes : null;
         const usesHangingIndent = modal.type === "modelPicker" || modal.type === "reasoningEffortPicker" || modal.type === "contextTierPicker" || modal.type === "sessionAgentPicker";
@@ -7026,24 +6936,48 @@ function ModalLayer({ controller }) {
                     key: item?.id || `row:${rowIndex}`,
                     type: "button",
                     className: `ps-list-button ps-modal-list-button${itemIndex === modal.selectedIndex ? " is-selected" : ""}${usesHangingIndent ? " is-hanging" : ""}${item?.disabled ? " is-disabled" : ""}`,
-                    onClick: () => controller.dispatch({ type: "ui/modalSelection", index: itemIndex }),
+                    // A section header is a disclosure control: one click opens
+                    // or closes it. Selecting it and making the user hit the
+                    // footer button would be a two-step for something that
+                    // reads as a twisty.
+                    onClick: () => {
+                        controller.dispatch({ type: "ui/modalSelection", index: itemIndex });
+                        if (item?.kind === "section") controller.toggleAgentPickerSection(item.sectionKey);
+                    },
                 },
                 React.createElement("div", { className: "ps-line ps-modal-list-line" },
                     React.createElement(Runs, { runs, theme })));
             })
-            : (modal.items || []).map((item, index) => React.createElement("button", {
-                key: item.id || index,
-                type: "button",
-                className: `ps-list-button ps-modal-list-button${index === modal.selectedIndex ? " is-selected" : ""}${usesHangingIndent ? " is-hanging" : ""}${item?.disabled ? " is-disabled" : ""}`,
-                onClick: () => controller.dispatch({ type: "ui/modalSelection", index }),
-            },
-            React.createElement("div", { className: "ps-line ps-modal-list-line" },
-                React.createElement(Runs, {
-                    runs: Array.isArray(rows?.[index])
-                        ? rows[index]
-                        : normalizeLines([rows?.[index]])[0]?.runs || [{ text: rows?.[index]?.text || "", color: rows?.[index]?.color }],
-                    theme,
-                }))));
+            : (modal.items || []).flatMap((item, index, allItems) => {
+                const button = React.createElement("button", {
+                    key: item.id || index,
+                    type: "button",
+                    className: `ps-list-button ps-modal-list-button${index === modal.selectedIndex ? " is-selected" : ""}${usesHangingIndent ? " is-hanging" : ""}${item?.disabled ? " is-disabled" : ""}`,
+                    onClick: () => controller.dispatch({ type: "ui/modalSelection", index }),
+                },
+                React.createElement("div", { className: "ps-line ps-modal-list-line" },
+                    React.createElement(Runs, {
+                        runs: Array.isArray(rows?.[index])
+                            ? rows[index]
+                            : normalizeLines([rows?.[index]])[0]?.runs || [{ text: rows?.[index]?.text || "", color: rows?.[index]?.color }],
+                        theme,
+                    })));
+                // A group heading is emitted BETWEEN buttons, never as one of
+                // them: `index` still addresses items 1:1, so selectedIndex,
+                // arrow-key navigation and the scroll-into-view math are all
+                // untouched by grouping. Only lists whose items carry a
+                // `group` (today: the theme picker) get headings at all.
+                const startsGroup = item?.group && item.group !== allItems[index - 1]?.group;
+                if (!startsGroup) return [button];
+                return [
+                    React.createElement("div", {
+                        key: `group:${item.group}`,
+                        className: "ps-modal-list-group",
+                        "aria-hidden": "true",
+                    }, item.group),
+                    button,
+                ];
+            });
 
         return React.createElement("div", { className: "ps-modal-backdrop", onClick: close },
         React.createElement("div", { className: `ps-modal is-list${modal.type === "themePicker" ? " is-theme-picker" : ""}`, onClick: (event) => event.stopPropagation() },
@@ -7061,6 +6995,7 @@ function ModalLayer({ controller }) {
                 ),
             ),
             React.createElement("div", { className: "ps-modal-footer" },
+                footerExtras,
                 React.createElement("button", { type: "button", className: "ps-modal-button", onClick: close }, "Cancel"),
                 React.createElement("button", {
                     type: "button",
@@ -7125,7 +7060,7 @@ function ModalLayer({ controller }) {
             ));
     }
     if (modal.type === "themePicker" && modalState.themePicker) {
-        return renderListModal(modalState.themePicker, "Apply Theme");
+        return renderListModal(modalState.themePicker, "Apply Theme", renderTouchScaleToggle());
     }
     // In switch-model mode the model/reasoning pickers retarget an existing
     // session, so the confirm action is "Switch Model", not "Create Session".
@@ -7140,7 +7075,14 @@ function ModalLayer({ controller }) {
         return renderListModal(modalState.contextTierPicker, pickerConfirmLabel);
     }
     if (modal.type === "sessionAgentPicker" && modalState.sessionAgentPicker) {
-        return renderListModal(modalState.sessionAgentPicker, "Create Session");
+        // The primary button follows the selection: on a section it is the
+        // disclosure, not a create, and labelling it "Create Session" would
+        // promise something Enter does not do there.
+        const picked = modal.items?.[modal.selectedIndex || 0];
+        const confirmLabel = picked?.kind === "section"
+            ? (picked.collapsed ? "Open" : "Close")
+            : "Create Session";
+        return renderListModal(modalState.sessionAgentPicker, confirmLabel);
     }
     if (modal.type === "sessionGroupPicker" && modalState.sessionGroupPicker) {
         return renderListModal(modalState.sessionGroupPicker, "Move");
@@ -7526,6 +7468,18 @@ function useKeyboardShortcuts(controller, mobile) {
                 if (event.key === "Tab") {
                     event.preventDefault();
                     controller.handleCommand(UI_COMMANDS.MODAL_PANE_NEXT).catch(() => {});
+                    return;
+                }
+                // Disclosure keys for the agent picker. Scoped to that modal:
+                // every other list modal is flat, and left/right there would
+                // either do nothing or fight the Tab pane-cycling. Without
+                // this the picker's own hint ("Enter or → to open") named a
+                // key nothing listened for.
+                if (modal.type === "sessionAgentPicker" && (event.key === "ArrowRight" || event.key === "ArrowLeft")) {
+                    event.preventDefault();
+                    controller.handleCommand(
+                        event.key === "ArrowRight" ? UI_COMMANDS.MODAL_PANE_NEXT : UI_COMMANDS.MODAL_PANE_PREV,
+                    ).catch(() => {});
                     return;
                 }
                 if (event.key === "ArrowUp" || event.key === "k") {
@@ -8527,16 +8481,6 @@ export function createWebPilotSwarmController({ transport, mode = "remote", bran
 }
 
 export function PilotSwarmWebApp({ controller }) {
-    // The rich UI restyles chrome that lives OUTSIDE this tree (the portal
-    // header in App.jsx), so the flag rides on <body> and every surface
-    // keys off `body.ps-rich-ui` in CSS rather than threading a prop.
-    const richUi = useControllerSelector(controller, (state) => Boolean(getTheme(state.ui.themeId)?.richChat));
-    React.useEffect(() => {
-        if (typeof document === "undefined") return undefined;
-        document.body.classList.toggle("ps-rich-ui", richUi);
-        return () => document.body.classList.remove("ps-rich-ui");
-    }, [richUi]);
-
     const viewportRef = React.useRef(null);
     const mainGridRef = React.useRef(null);
     const viewport = useMeasuredViewport(viewportRef);
@@ -8581,6 +8525,7 @@ export function PilotSwarmWebApp({ controller }) {
     const [chatFocusPane, setChatFocusPane] = React.useState(null);
     const state = useControllerSelector(controller, (rootState) => ({
         themeId: rootState.ui.themeId,
+        touchScale: Boolean(rootState.ui.touchScale),
         ownerFilter: rootState.sessions.ownerFilter,
         pinnedIds: rootState.sessions.pinnedIds,
         // Without this the profile-save effect reads undefined and a reorder
@@ -8755,11 +8700,12 @@ export function PilotSwarmWebApp({ controller }) {
                 });
         }, 400);
         return undefined;
-    }, [controller, state.activeSessionId, state.activityPaneAdjust, state.chatViewMode, state.collapsedSessionIds, state.ownerFilter, state.paneAdjust, state.manualOrder, state.pinnedIds, state.portalSessionColumnAdjust, state.sessionPaneAdjust, state.themeId]);
+    }, [controller, state.activeSessionId, state.activityPaneAdjust, state.chatViewMode, state.collapsedSessionIds, state.ownerFilter, state.paneAdjust, state.manualOrder, state.pinnedIds, state.portalSessionColumnAdjust, state.sessionPaneAdjust, state.themeId, state.touchScale]);
 
     React.useEffect(() => {
         applyDocumentTheme(state.themeId);
-    }, [state.themeId]);
+        applyTouchScale(state.touchScale);
+    }, [state.themeId, state.touchScale]);
 
     // Follow focus only on an actual TRANSITION, never on the first run.
     //

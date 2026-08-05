@@ -464,6 +464,16 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                 controller.handleCommand(UI_COMMANDS.MODAL_PANE_NEXT).catch(() => {});
                 return;
             }
+            // Agent-picker disclosure. The block this sits in ends in a
+            // `return`, so arrows never reach the pane handler below — the
+            // picker's "Enter or → to open" hint named a key the TUI dropped
+            // on the floor.
+            if (modal.type === "sessionAgentPicker" && (key.leftArrow || key.rightArrow)) {
+                controller.handleCommand(
+                    key.rightArrow ? UI_COMMANDS.MODAL_PANE_NEXT : UI_COMMANDS.MODAL_PANE_PREV,
+                ).catch(() => {});
+                return;
+            }
             if (modal.type === "sessionOwnerFilter") {
                 if (input === " ") {
                     controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM).catch(() => {});

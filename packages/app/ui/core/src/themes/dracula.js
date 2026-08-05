@@ -1,9 +1,10 @@
-import { createTheme } from "./helpers.js";
+import { createTheme, THEME_GROUP_VSCODE } from "./helpers.js";
 
 const draculaTheme = createTheme({
     id: "dracula",
     label: "Dracula",
     description: "Classic Dracula contrast with neon green, pink, and violet accents.",
+    group: THEME_GROUP_VSCODE,
     page: {
         background: "#282a36",
         foreground: "#f8f8f2",

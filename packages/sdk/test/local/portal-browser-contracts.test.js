@@ -157,7 +157,13 @@ describe("portal browser contracts", () => {
         assertIncludes(webApp, 'querySelector(".ps-list-button.is-selected")', "portal list modals should keep the selected row visible in the browser");
         assertIncludes(webApp, 'selected.scrollIntoView({ block: "nearest" });', "portal list modals should scroll the selected option into view");
         assertIncludes(webApp, "modalOpen: Boolean(state.ui.modal)", "portal focus-managed panes should know when a modal is open");
-        assertIncludes(webApp, "if (viewState.modalOpen || !viewState.focused || !viewState.activeSessionId) return;", "session-pane focus management should stand down while modals are open");
+        // The GUARD, not its formatting. This used to pin the single-line
+        // `... ) return;` form, which broke the moment the effect grew a body —
+        // it now disarms the reveal ref before returning, so a modal round-trip
+        // re-reveals the active row. The contract is that the effect still
+        // stands down on all three conditions, which is what these assert.
+        assertIncludes(webApp, "viewState.modalOpen || !viewState.focused || !viewState.activeSessionId", "session-pane focus management should stand down while modals are open");
+        assertIncludes(webApp, "revealedRowKeyRef.current = null", "standing down must DISARM the reveal, or returning from a modal never re-reveals the row");
         assertIncludes(webApp, "if (!active || promptState.modalOpen || !promptState.focused || !inputNode) return;", "prompt focus management should stand down while modals are open");
         // The portal panes hand shared selectors a RECONSTRUCTED state object.
         // Anything a selector reads but the reconstruction omits is invisible

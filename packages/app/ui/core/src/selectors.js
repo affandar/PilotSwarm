@@ -80,11 +80,28 @@ function shouldCompactPaneTitleMetadata(width) {
 function getSessionVisualStatus(session) {
     if (!session) return "unknown";
     const status = session.status || "unknown";
-    if (
-        session.cronActive === true
-        && (status === "waiting" || status === "idle" || status === "unknown")
-    ) {
+    const dormant = status === "waiting" || status === "idle" || status === "unknown";
+    if (session.cronActive === true && dormant) {
         return "cron_waiting";
+    }
+    // `activeChildCount` is stamped by the reducer (applyActiveDescendantCounts)
+    // and counts only running/input_required descendants — a sub-agent that has
+    // finished stays alive and idle, so a plain child count would leave every
+    // parent stuck in this state forever. Checked after cron so a scheduled
+    // session keeps reading as scheduled.
+    if (dormant && (Number(session.activeChildCount) || 0) > 0) {
+        return "awaiting_children";
+    }
+    return status;
+}
+
+function sessionStatusLabelForVisualStatus(session, status) {
+    if (status === "cron_waiting") return "waiting";
+    if (status === "awaiting_children") {
+        // The row status is debounced (see mergeSessionRowVisualStatus), so it
+        // can outlive the count that produced it by a few seconds.
+        const active = Number(session?.activeChildCount) || 0;
+        return active > 0 ? `waiting on ${active}` : "waiting on children";
     }
     return status;
 }
@@ -92,7 +109,37 @@ function getSessionVisualStatus(session) {
 function getSessionSummaryStatusLabel(session) {
     const status = getSessionVisualStatus(session);
     if (!status || status === "unknown") return "";
-    return status === "cron_waiting" ? "waiting" : status;
+    return sessionStatusLabelForVisualStatus(session, status);
+}
+
+/**
+ * The label + timestamp the session-detail box shows, as ONE derivation shared
+ * with the list row.
+ *
+ * The detail box used to print `session.status` raw, and that is why it flipped
+ * between "idle" and "waiting" while a turn sat parked: two writers disagree
+ * mid-turn — the 4s catalog poll carries the CMS row state, the post-event
+ * detail sync carries the live orchestration customStatus — and whichever
+ * landed last won. The list has never had that problem because it reads the
+ * DEBOUNCED status (mergeSessionRowVisualStatus holds a change for 5s for
+ * exactly this reason) and because the cron-aware derivation folds
+ * idle/waiting/unknown into one steady state for a scheduled session.
+ *
+ * Reading raw meant the box opted out of both. This is the same accessor the
+ * row uses, so the two can no longer disagree with each other either.
+ */
+export function selectSessionStatusSummary(session) {
+    if (!session) return null;
+    const timestampMs = session.updatedAt
+        || session.summaryUpdatedAt
+        || session.latestSummaryUpdatedAt
+        || session.createdAt
+        || 0;
+    return {
+        status: getSessionRowStatusLabel(session) || "unknown",
+        timestampMs: timestampMs || null,
+        relative: timestampMs ? formatRelativeTime(timestampMs) : "—",
+    };
 }
 
 function getSessionRowStatusLabel(session) {
@@ -104,7 +151,7 @@ function getSessionRowStatusLabel(session) {
     // already smoothed. The summary view keeps the immediate raw label above.
     const status = getSessionRowVisualStatus(session);
     if (!status || status === "unknown") return "";
-    return status === "cron_waiting" ? "waiting" : status;
+    return sessionStatusLabelForVisualStatus(session, status);
 }
 
 function getSessionRowVisualStatus(session) {
@@ -132,6 +179,7 @@ function getSessionVisualKind(session, mode = "local") {
         mode === "remote"
         && isTerminalOrchestrationStatus(session?.orchestrationStatus)
         && status !== "cron_waiting"
+        && status !== "awaiting_children"
         && status !== "waiting"
         && status !== "input_required"
     ) {
@@ -151,6 +199,7 @@ function getSessionRowVisualKind(session, mode = "local") {
         mode === "remote"
         && isTerminalOrchestrationStatus(session?.orchestrationStatus)
         && status !== "cron_waiting"
+        && status !== "awaiting_children"
         && status !== "waiting"
         && status !== "input_required"
     ) {
@@ -165,6 +214,9 @@ function sessionStatusColor(session, mode = "local") {
     switch (getSessionRowVisualKind(session, mode)) {
         case "running": return "green";
         case "cron_waiting": return "yellow";
+        // Distinct from both running (this session is not doing the work) and
+        // waiting (nothing is happening) — something IS running, one level down.
+        case "awaiting_children": return "magenta";
         case "waiting": return "yellow";
         case "input_required": return "cyan";
         case "cancelled": return "gray";
@@ -181,6 +233,7 @@ function sessionStatusIcon(session, mode = "local") {
     switch (getSessionRowVisualKind(session, mode)) {
         case "running": return "*";
         case "cron_waiting": return "~";
+        case "awaiting_children": return ">";
         case "waiting": return "~";
         case "input_required": return "?";
         case "cancelled": return "x";
@@ -242,7 +295,11 @@ function ownerInitials(owner) {
  */
 export function manualOrderContainerKey(session, pinned = false) {
     if (!isManuallyOrderableSession(session)) return null;
-    if (pinned) return "pinned";
+    // Pinned folders and pinned sessions are SEPARATE bands (rankSessionBand
+    // 1 and 2), so they cannot share a container: the drag would offer drop
+    // positions among the pinned sessions that the sort then refuses, and the
+    // row landed somewhere other than the insertion line the user aimed at.
+    if (pinned) return session.isGroup ? "pinned:folders" : "pinned:sessions";
     if (session.isGroup) return "folders";
     if (session.groupId) return `g:${session.groupId}`;
     return "";
@@ -591,10 +648,18 @@ function buildTotalDescendantCounts(byId) {
     const { childMap } = buildChildMaps(byId);
     const counts = new Map();
 
+    // `visiting` bounds a malformed parent chain (self-parent, cycle). Without
+    // it the recursion below never terminates and the whole UI hangs on a
+    // RangeError rather than rendering a slightly wrong count.
+    const visiting = new Set();
+
     function countFor(sessionId) {
         if (counts.has(sessionId)) return counts.get(sessionId);
+        if (visiting.has(sessionId)) return 0;
+        visiting.add(sessionId);
         const children = childMap.get(sessionId) || [];
         const total = children.reduce((sum, childId) => sum + 1 + countFor(childId), 0);
+        visiting.delete(sessionId);
         counts.set(sessionId, total);
         return total;
     }
@@ -2705,238 +2770,6 @@ export function selectChatLines(state, maxWidth = 80, options = {}) {
     return memoize(lines.length > 0 ? lines : [{ text: "No messages yet.", color: "gray" }]);
 }
 
-// True when a chat message is plain user/assistant prose the rich (block)
-// renderer can format as markdown directly. Everything with terminal-era
-// special handling — splash art, thinking cards, chrome-less summaries,
-// system/PilotSwarm cards, asked-and-answered exchanges, embedded
-// [SYSTEM: …] notice segments — stays on the line renderer, which already
-// knows every edge case.
-function isRichRenderableChatMessage(message) {
-    if (!message) return false;
-    if (message.kind === "epoch-divider" || message.kind === "regen-refused" || message.kind === "regen-failed") return false;
-    if (message.splash || message.thinking || message.noChrome) return false;
-    if (message.role !== "user" && message.role !== "assistant") return false;
-    if (message.role === "user" && parseAskedAndAnsweredExchange(message?.text || "")) return false;
-    const segments = splitSystemNoticeSegments(message?.text || "");
-    if (segments.some((segment) => segment.kind === "system")) return false;
-    return true;
-}
-
-/**
- * Message-level view of the active chat for the rich (desktop-style) web
- * renderer. Returns an ordered array of blocks:
- *
- *   { kind: "message", id, role, header, text, pendingPhase, attachments }
- *     — plain user/assistant prose. `header` is describeChatMessageHeader()
- *       output; `text` is the artifact-link-decorated markdown source the
- *       renderer formats itself; `attachments` is { sessionId, attachments }
- *       (the sentinel shape) or null.
- *
- *   { kind: "lines", variant, lines }
- *     — everything else (splash, thinking cards, system cards, dividers),
- *       pre-rendered through the exact same line builders the terminal
- *       transcript uses, so no edge case has two implementations.
- *
- * The TUI never calls this; selectChatLines remains the terminal path.
- */
-// Rich message blocks, cached on the message object. Keyed weakly so entries
-// die with the transcript they came from.
-const chatMessageBlockCache = new WeakMap();
-
-export function selectChatBlocks(state, maxWidth = 80, options = {}) {
-    const messages = selectActiveChat(state);
-    if (!messages || messages.length === 0) return [];
-
-    const viewerKey = ownerKeyForOwner(state?.auth?.principal);
-    const activeSessionId = state?.sessions?.activeSessionId;
-    const activeSession = activeSessionId ? state?.sessions?.byId?.[activeSessionId] : null;
-    const ownerKey = ownerKeyForOwner(activeSession?.owner);
-    const sharedContext = Boolean(activeSession && (
-        (activeSession.visibility && activeSession.visibility !== "private")
-        || (ownerKey && viewerKey && ownerKey !== viewerKey)
-    ));
-    const buildOptions = {
-        ...(options?.tableMode ? { tableMode: options.tableMode } : {}),
-        ...(viewerKey ? { viewerKey } : {}),
-        ...(ownerKey ? { ownerKey } : {}),
-        ...(sharedContext ? { sharedContext: true } : {}),
-    };
-
-    const blocks = [];
-    for (const message of messages) {
-        // Fast path FIRST. Classifying a message as rich-renderable scans its
-        // text (asked-and-answered parsing, system-notice splitting), and that
-        // ran for every message on every call — so a pane-splitter drag paid
-        // it across the whole transcript per width step. A cache entry only
-        // exists for a message already classified rich, and `kind` is part of
-        // what is compared, so a hit is safe to take before classifying.
-        // Object.is, NOT ===: `createdAt` is NaN whenever the source event had
-        // no parseable timestamp, and NaN === NaN is false, so a plain equality
-        // check could never hit for those messages — the cache would silently
-        // do nothing while still costing a lookup. Same trap as comparing
-        // Infinity by subtraction.
-        const cached = message ? chatMessageBlockCache.get(message) : null;
-        if (cached
-            && Object.is(cached.text, message.text)
-            && Object.is(cached.kind, message.kind)
-            && Object.is(cached.role, message.role)
-            && Object.is(cached.id, message.id)
-            && Object.is(cached.pendingPhase, message.pendingPhase)
-            && Object.is(cached.stopped, message.stopped)
-            // The header is derived from these, and the chips from attachments.
-            // Messages are mutated in place (pendingPhase provably is), so every
-            // field the block is built from has to be compared — not just the
-            // obvious ones.
-            && Object.is(cached.createdAt, message.createdAt)
-            && Object.is(cached.time, message.time)
-            && Object.is(cached.sender, message.sender)
-            && Object.is(cached.attachments, message.attachments)
-            && Object.is(cached.tableMode, buildOptions.tableMode)
-            && Object.is(cached.viewerKey, buildOptions.viewerKey)
-            && Object.is(cached.ownerKey, buildOptions.ownerKey)
-            && Object.is(cached.sharedContext, buildOptions.sharedContext)) {
-            blocks.push(cached.block);
-            continue;
-        }
-
-        if (message?.kind === "epoch-divider") {
-            blocks.push({ kind: "lines", variant: "divider", lines: [buildEpochDividerLine(message, maxWidth)] });
-            continue;
-        }
-        if (message?.kind === "regen-failed") {
-            blocks.push({ kind: "lines", variant: "divider", lines: [buildRegenFailedLine(message, maxWidth)] });
-            continue;
-        }
-        if (message?.kind === "regen-refused") {
-            blocks.push({ kind: "lines", variant: "divider", lines: [buildRegenRefusedLine(message, maxWidth)] });
-            continue;
-        }
-        if (isRichRenderableChatMessage(message)) {
-            // A rich message block does NOT depend on maxWidth — the browser
-            // wraps this text with CSS; only the terminal needs a column count.
-            // Rebuilding it on every width step meant dragging a pane splitter
-            // re-parsed artifact links and re-derived headers for the entire
-            // loaded transcript to produce byte-identical output. Cache on the
-            // message itself, keyed by the inputs that CAN change it.
-            const attachmentLines = buildAttachmentChipLines(message, { tableMode: "sentinel" });
-            const attachmentSentinel = attachmentLines.find((line) => line?.kind === "imageAttachments") || null;
-            const block = {
-                kind: "message",
-                id: message?.id ?? null,
-                role: message.role,
-                header: describeChatMessageHeader(message, buildOptions),
-                text: decorateArtifactLinksForChat(message?.text || ""),
-                pendingPhase: message?.pendingPhase || null,
-                attachments: attachmentSentinel
-                    ? { sessionId: attachmentSentinel.sessionId, attachments: attachmentSentinel.attachments }
-                    : null,
-            };
-            chatMessageBlockCache.set(message, {
-                block,
-                text: message.text,
-                kind: message.kind,
-                createdAt: message.createdAt,
-                time: message.time,
-                sender: message.sender,
-                attachments: message.attachments,
-                role: message.role,
-                id: message.id,
-                pendingPhase: message.pendingPhase,
-                stopped: message.stopped,
-                tableMode: buildOptions.tableMode,
-                viewerKey: buildOptions.viewerKey,
-                ownerKey: buildOptions.ownerKey,
-                sharedContext: buildOptions.sharedContext,
-            });
-            blocks.push(block);
-            continue;
-        }
-        const lineBlock = cachedLineBlock(message, maxWidth, buildOptions);
-        if (lineBlock) blocks.push(lineBlock);
-    }
-    return blocks;
-}
-
-/**
- * Non-message blocks (thinking cards, system cards, splash, chrome-less
- * summaries) go through the terminal line builders, which DO depend on width —
- * so unlike message blocks these cannot be made width-independent. What they
- * can avoid is being rebuilt when the width has not moved, which is every poll:
- * the poll replaces `session`, the portal's useMemo sees a new selectorState,
- * and the whole transcript is re-derived. Measured at 1500 messages with 10%
- * line blocks that was 1.17ms a time, and 5.26ms at 50%.
- *
- * Only the LAST width is kept per message. A drag sweeps widths and will miss
- * on every step — that work is genuinely required, since these lines are
- * wrapped to a column count.
- *
- * The compared fields were enumerated from buildChatMessageLines and the
- * builders it delegates to (message/thinking/system-notice cards). `stopped` is
- * included because history.js sets it IN PLACE on an existing message.
- */
-const chatLineBlockCache = new WeakMap();
-
-function cachedLineBlock(message, maxWidth, buildOptions) {
-    if (!message || typeof message !== "object") {
-        const lines = buildChatMessageLines(message, maxWidth, buildOptions);
-        return lines.length > 0 ? { kind: "lines", variant: "event", lines } : null;
-    }
-    const cached = chatLineBlockCache.get(message);
-    if (cached
-        && Object.is(cached.maxWidth, maxWidth)
-        && Object.is(cached.text, message.text)
-        && Object.is(cached.mobileText, message.mobileText)
-        && Object.is(cached.role, message.role)
-        && Object.is(cached.time, message.time)
-        && Object.is(cached.createdAt, message.createdAt)
-        && Object.is(cached.splash, message.splash)
-        && Object.is(cached.thinking, message.thinking)
-        && Object.is(cached.thinkingLabel, message.thinkingLabel)
-        && Object.is(cached.progressKind, message.progressKind)
-        && Object.is(cached.noChrome, message.noChrome)
-        && Object.is(cached.cardTitle, message.cardTitle)
-        && Object.is(cached.cardTitleColor, message.cardTitleColor)
-        && Object.is(cached.cardBorderColor, message.cardBorderColor)
-        && Object.is(cached.stopped, message.stopped)
-        && Object.is(cached.tableMode, buildOptions.tableMode)
-        && Object.is(cached.viewerKey, buildOptions.viewerKey)
-        && Object.is(cached.ownerKey, buildOptions.ownerKey)
-        && Object.is(cached.sharedContext, buildOptions.sharedContext)) {
-        return cached.block;
-    }
-    const lines = buildChatMessageLines(message, maxWidth, buildOptions);
-    const block = lines.length > 0 ? { kind: "lines", variant: "event", lines } : null;
-    chatLineBlockCache.set(message, {
-        block,
-        maxWidth,
-        text: message.text,
-        mobileText: message.mobileText,
-        role: message.role,
-        time: message.time,
-        createdAt: message.createdAt,
-        splash: message.splash,
-        thinking: message.thinking,
-        thinkingLabel: message.thinkingLabel,
-        progressKind: message.progressKind,
-        noChrome: message.noChrome,
-        cardTitle: message.cardTitle,
-        cardTitleColor: message.cardTitleColor,
-        cardBorderColor: message.cardBorderColor,
-        stopped: message.stopped,
-        tableMode: buildOptions.tableMode,
-        viewerKey: buildOptions.viewerKey,
-        ownerKey: buildOptions.ownerKey,
-        sharedContext: buildOptions.sharedContext,
-    });
-    return block;
-}
-
-// A centered inline rule ("──── label ────") for transcript markers. The dash
-// runs are CAPPED (not stretched to maxWidth): the web portal wraps by pixel
-// width, and a maxWidth-long "─" run overflows a narrower pane and wraps the
-// rule mid-label. A short symmetric rule reads as a divider on every width, and
-// when the label alone will not fit it is rendered bare (wraps as plain text,
-// never as dangling dash fragments).
 function buildRuleLine(label, color, maxWidth) {
     const safeWidth = Math.max(24, Number(maxWidth) || 80);
     const room = safeWidth - label.length;
@@ -4390,7 +4223,9 @@ export function selectStatusBar(state) {
     if (state.ui.modal?.type === "sessionAgentPicker") {
         return {
             left: "Select an agent for the new session",
-            right: "up/down move · enter create · esc cancel",
+            // Enter no longer always creates — on a section header it opens or
+            // closes — and the disclosure keys have to be named somewhere.
+            right: "up/down move · ←/→ open/close · enter start · esc cancel",
         };
     }
     if (state.ui.modal?.type === "sessionGroupPicker") {
@@ -5615,36 +5450,52 @@ export function selectSessionAgentPickerModal(state, maxWidth = 76) {
     const items = Array.isArray(modal.items) ? modal.items : [];
     const selectedIndex = Math.max(0, Number(modal.selectedIndex) || 0);
     const contentWidth = Math.max(24, maxWidth - 4);
-    // Items arrive pre-sorted Shared → My agents → Generic (controller);
-    // emit a non-clickable heading row at each group boundary. rowItemIndexes
-    // maps rendered rows back to item indexes (null = heading) — the same
-    // mechanism the model picker uses.
-    const GROUP_HEADINGS = { shared: "Shared", mine: "My agents", generic: "" };
-    // Package-scope vocabulary only makes sense when packages exist: a pure
-    // baked deployment keeps the classic flat list, no headings.
-    const hasPackageItems = items.some((item) => item?.packageName);
+    // Items ARE rows, headings included: navigation walks onto a heading and
+    // Enter toggles it, so every section is reachable from the keyboard.
+    // rowItemIndexes stays 1:1 for the renderers that map a click back to an
+    // item (the same mechanism the model picker uses).
     const rows = [];
     const rowItemIndexes = [];
-    let lastGroup = null;
     items.forEach((item, index) => {
-        const group = item?.group || "shared";
-        if (hasPackageItems && group !== lastGroup) {
-            const heading = GROUP_HEADINGS[group] ?? "";
-            rows.push([{ text: heading ? `── ${heading} ──` : "──", color: "gray" }]);
-            rowItemIndexes.push(null);
-            lastGroup = group;
-        }
         const isSelected = index === selectedIndex;
-        const suffix = item?.kind === "generic"
-            ? " [generic]"
-            : item?.packageName
-                ? ` ${item.packageName} ${item.packageSemver || ""}`.trimEnd()
-                : ` (${item?.agentName || item?.id || "agent"})`;
-        const labelRuns = fitRuns([
-            { text: item?.kind === "generic" ? "○ " : "· ", color: "gray" },
-            { text: item?.title || item?.agentName || item?.id || "Agent", color: "white", bold: true },
-            { text: suffix, color: "gray" },
-        ], contentWidth);
+        const indent = " ".repeat(Math.max(0, Number(item?.depth) || 0) * 2);
+        let labelRuns;
+
+        if (item?.kind === "section") {
+            const arrow = item.collapsed ? "▸" : "▾";
+            // Only when the row's scope disagrees with the shelf it is on:
+            // an admin sees other users' user-scoped packages, and those land
+            // under Shared while not being shared at all. Otherwise the
+            // section heading already carries it.
+            const scopeBadge = item.sectionKind === "package" && item.packageScope === "user" && !item.mine
+                ? " [private]"
+                : "";
+            // The count runs INLINE after the title, not right-aligned with
+            // padding. `contentWidth` is a character count, and the portal's
+            // row is a fluid-width button — padding a row out to a guessed
+            // column width simply overflowed it, and the run wrapped mid-phrase
+            // ("2 / entries · 4 agents"). Inline can only ever break at a
+            // space.
+            labelRuns = fitRuns([
+                { text: `${indent}${arrow} `, color: "cyan" },
+                { text: item.title || "Section", color: "white", bold: true },
+                ...(scopeBadge ? [{ text: scopeBadge, color: "cyan" }] : []),
+                ...(item.meta ? [{ text: `  ·  ${item.meta}`, color: "gray" }] : []),
+            ], contentWidth);
+        } else {
+            const callable = item?.kind === "generic" || item?.supportsDirectStart !== false;
+            // A sub-agent that cannot be started is shown, not hidden — seeing
+            // what a package is made of is most of the value of grouping it.
+            // Dimming plus the └ connector carries it; the detail pane spells
+            // out why. An extra "called only" tag on the row was redundant with
+            // both, and read as a sentence fragment.
+            const glyph = item?.kind === "generic" ? "○ " : (item?.depth || 0) > 0 && item?.parentAgentName ? "└ " : "★ ";
+            labelRuns = fitRuns([
+                { text: `${indent}${glyph}`, color: callable ? "yellow" : "gray" },
+                { text: item?.title || item?.agentName || item?.id || "Agent", color: callable ? "white" : "gray", bold: callable },
+            ], contentWidth);
+        }
+
         rows.push(isSelected
             ? buildActiveHighlightLine(labelRuns.map((run) => run.text).join("").padEnd(contentWidth, " "))
             : labelRuns);
@@ -5654,7 +5505,29 @@ export function selectSessionAgentPickerModal(state, maxWidth = 76) {
     const selectedItem = items[selectedIndex] || null;
     const selectedModel = modal.sessionOptions?.model || null;
     const selectedReasoningEffort = modal.sessionOptions?.reasoningEffort || null;
-    const detailsLines = selectedItem
+    const detailsLines = selectedItem?.kind === "section"
+        ? [
+            [{ text: selectedItem.title || "Section", color: "white", bold: true }],
+            ...(selectedItem.sectionKind === "package"
+                ? [
+                    [{ text: `${selectedItem.packageName || "package"}@${selectedItem.packageSemver || "?"}`, color: "gray" }],
+                    ...(selectedItem.ownerLabel ? [[{ text: `Published by ${selectedItem.ownerLabel}`, color: "gray" }]] : []),
+                ]
+                : [[{
+                    text: selectedItem.sectionKind === "builtin"
+                        ? "Agents baked into this deployment."
+                        : "Agent packages installed on this deployment.",
+                    color: "gray",
+                }]]),
+            [{ text: "", color: "gray" }],
+            [{ text: selectedItem.meta || "", color: "gray" }],
+            [{ text: "", color: "gray" }],
+            [{
+                text: selectedItem.collapsed ? "Enter or → to open." : "Enter or ← to close.",
+                color: "gray",
+            }],
+        ]
+        : selectedItem
         ? [
             [{
                 text: selectedItem.title || selectedItem.agentName || selectedItem.id || "Agent",
@@ -5667,6 +5540,12 @@ export function selectSessionAgentPickerModal(state, maxWidth = 76) {
             ...(selectedItem.packageName
                 ? [[{ text: `Package: ${selectedItem.packageName}@${selectedItem.packageSemver || "?"} · ${selectedItem.packageScope || "shared"}`, color: "gray" }]]
                 : (selectedItem.kind === "agent" ? [[{ text: "Built-in agent", color: "gray" }]] : [])),
+            ...(selectedItem.startedBy?.length
+                ? [[{ text: `Started by: ${selectedItem.startedBy.join(", ")}`, color: "gray" }]]
+                : []),
+            ...(selectedItem.kind !== "generic" && selectedItem.supportsDirectStart === false
+                ? [[{ text: "Cannot be started on its own", color: "yellow" }]]
+                : []),
             ...(selectedModel ? [[{ text: `Model: ${selectedModel}`, color: "gray" }]] : []),
             ...(selectedReasoningEffort ? [[{ text: `Reasoning: ${selectedReasoningEffort}`, color: "gray" }]] : []),
             [{ text: "", color: "gray" }],
@@ -7632,6 +7511,10 @@ export function selectThemePickerModal(state, maxWidth = 80) {
     const detailsLines = selectedItem
         ? [
             [{ text: `theme: ${selectedItem.description || "Shared theme for the portal and native TUI."}`, color: "white" }],
+            // The portal draws group headings between rows; the TUI list is a
+            // flat scroller with no room for them, so the group is surfaced
+            // here instead. The ORDER still clusters by group in both.
+            ...(selectedItem.group ? [[{ text: `group: ${selectedItem.group}`, color: "gray" }]] : []),
             { text: "", color: "gray" },
             [{
                 text: previewingTheme

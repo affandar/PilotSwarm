@@ -604,6 +604,13 @@ export interface AgentPackageIssue {
 export interface AgentPackageManifest {
     name: string;
     version: string;
+    /**
+     * Friendly display name from plugin.json. The picker groups agents into a
+     * section per package, and a DNS-label package name ("finance-research-lab")
+     * is a poor section header — this is what people actually recognise. Falls
+     * back to `name` when unset.
+     */
+    title?: string;
     description?: string;
     agents: Array<{
         name: string;
@@ -620,6 +627,13 @@ export interface AgentPackageManifest {
         splash?: string;
         splashMobile?: string;
         initialPrompt?: string;
+        // Composition. `startedBy` names the agents that spawn this one, which
+        // is what lets the picker nest a package's sub-agents under their entry
+        // point instead of listing every agent flat. Both ride the manifest for
+        // the same reason splash does: the picker reads the catalog, never the
+        // package's agent files.
+        startedBy?: string[];
+        supportsDirectStart?: boolean;
     }>;
     skills: Array<{ name: string; description?: string }>;
     mcpServers: string[];
@@ -933,6 +947,7 @@ export async function validateAgentPackageDir(
         ? {
             name: pluginJson.name,
             version: pluginJson.version,
+            title: typeof pluginJson.title === "string" && pluginJson.title.trim() ? pluginJson.title.trim() : undefined,
             description: typeof pluginJson.description === "string" ? pluginJson.description : undefined,
             agents: agents.map((a) => ({
                 name: a.name,
@@ -944,6 +959,8 @@ export async function validateAgentPackageDir(
                 splash: a.splash,
                 splashMobile: a.splashMobile,
                 initialPrompt: a.initialPrompt,
+                startedBy: a.startedBy,
+                supportsDirectStart: a.supportsDirectStart,
             })),
             skills: skills.map((s) => ({ name: s.name, description: s.description })),
             mcpServers: mcpServerNames,

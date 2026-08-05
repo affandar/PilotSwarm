@@ -1,9 +1,10 @@
-import { createTheme } from "./helpers.js";
+import { createTheme, THEME_GROUP_VSCODE } from "./helpers.js";
 
 const githubDarkTheme = createTheme({
     id: "github-dark",
     label: "GitHub Dark",
     description: "GitHub dark palette with soft blue accents and cool neutrals.",
+    group: THEME_GROUP_VSCODE,
     page: {
         background: "#0d1117",
         foreground: "#e6edf3",

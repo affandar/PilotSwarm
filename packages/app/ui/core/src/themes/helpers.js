@@ -1,3 +1,20 @@
+// Picker groups. These sort by PROVENANCE, not by look: "VS Code" is a port of
+// a theme people already know from their editor, "Retro" is an homage to a
+// specific machine or piece of software, and everything PilotSwarm made for
+// itself falls to "Others". Sorting by look instead would put Terminal Green
+// and Hacker X - Matrix together and then have nowhere to put GitHub Light.
+export const THEME_GROUP_VSCODE = "VS Code";
+export const THEME_GROUP_RETRO = "Retro";
+export const THEME_GROUP_OTHER = "Others";
+
+// Display order for the picker. Not alphabetical: "Others" is the leftover
+// bucket and reads wrong anywhere but last.
+export const THEME_GROUP_ORDER = Object.freeze([
+    THEME_GROUP_VSCODE,
+    THEME_GROUP_RETRO,
+    THEME_GROUP_OTHER,
+]);
+
 function freezeTheme(theme) {
     return Object.freeze({
         ...theme,
@@ -41,7 +58,7 @@ export function isThemeLight(theme) {
     return getRelativeLuminance(background) >= 0.5;
 }
 
-export function createTheme({ id, label, description, page, terminal, tui = {}, richChat = false, icon = null }) {
+export function createTheme({ id, label, description, group = THEME_GROUP_OTHER, page, terminal, tui = {}, icon = null }) {
     const baseTui = {
         background: page?.background || terminal?.background || "#000000",
         surface: terminal?.background || page?.background || "#000000",
@@ -73,9 +90,10 @@ export function createTheme({ id, label, description, page, terminal, tui = {}, 
         id,
         label,
         description,
-        // Portal-only: this theme renders the chat transcript in the rich
-        // (desktop-style) view. The TUI ignores it.
-        richChat: Boolean(richChat),
+        // Which section of the picker this theme lands in. Defaulting to
+        // "Others" rather than throwing means a theme added without a group
+        // still shows up — it just shows up in the leftover bucket.
+        group,
         // Portal-only: an optional brand mark carried BY the theme. When set it
         // outranks the deployment's own logo, because a theme that restyles the
         // whole shell and then leaves a foreign logo in the corner reads as

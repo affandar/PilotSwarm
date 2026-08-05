@@ -2,6 +2,8 @@
 schemaVersion: 2
 version: 0.1.0
 name: line-editor
+startedBy:
+  - editor-in-chief
 title: Line Editor
 description: Sentence-level editing — verbs, hedges, length, and terminology — with before/after measurements and a redline.
 tools:

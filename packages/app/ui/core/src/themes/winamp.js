@@ -1,4 +1,4 @@
-import { createTheme } from "./helpers.js";
+import { createTheme, THEME_GROUP_RETRO } from "./helpers.js";
 
 // WinAMP 2.x (Nullsoft, 1997) — grey rack metal around a pane of lit glass.
 //
@@ -19,6 +19,7 @@ const winampTheme = createTheme({
     id: "winamp",
     label: "WinAMP",
     description: "Bevelled grey chrome, black glass panes, phosphor green, and the spectrum ramp as the status palette.",
+    group: THEME_GROUP_RETRO,
     // The spectrum analyser: one bar per agent, coloured along the status
     // ramp. Five rectangles, so it stays legible at favicon size — and it is
     // the rare mark that could legitimately animate off live fleet load.

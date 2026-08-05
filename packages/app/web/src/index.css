@@ -31,6 +31,12 @@
      and every one of them carried its own inline fallback, so "the mono face"
      was really four slightly different lists. */
   --ps-mono: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
+  /* Scroll-past-end room at the foot of the session list. At the bottom of a
+     long list the last row otherwise sits flush against the detail box below
+     it, which reads as "the list is cut off" rather than "this is the end".
+     Roughly two rows of slack — enough to feel deliberate, not enough to look
+     like a rendering gap. */
+  --ps-list-tail: 40px;
   /* ── Elevation ──────────────────────────────────────────────────────────
      Derived from the palette rather than declared per theme. Light themes
      were white-on-white-on-white: page, panes, panel headers and the composer
@@ -549,11 +555,35 @@ button {
 .ps-tab,
 .ps-filter-option,
 .ps-modal-close {
-  padding: 6px 10px;
-  min-height: 34px;
-  font-size: 0.92rem;
+  padding: var(--ps-control-padding, 6px 10px);
+  min-height: var(--ps-control-min-height, 34px);
+  font-size: var(--ps-control-font-size, 0.92rem);
   line-height: 1;
 }
+
+/* TOUCH SCALE — one step up the ramp, everywhere at once.
+   Every size the scale touches is already a custom property or a rule the
+   stylesheet owns, so this is a single block rather than a per-component
+   prop threaded through the tree. 44px is Apple's and Google's minimum
+   comfortable hit target; the type ramp moves with it so the controls do not
+   end up as big empty boxes around small labels. */
+:root[data-ps-touch="1"] {
+  --ps-font-size-chat: 15.5px;
+  --ps-font-size-base: 14.5px;
+  --ps-font-size-dense: 13.5px;
+  --ps-line-height-base: 1.36;
+  --ps-line-height-dense: 1.26;
+  --ps-control-padding: 9px 14px;
+  --ps-control-min-height: 44px;
+  --ps-control-font-size: 1.02rem;
+  /* Rows are taller here, so two rows of slack is more pixels. */
+  --ps-list-tail: 56px;
+}
+
+/* The phone step-down later in this file sets the same three variables at
+   `:root` (0,1,0). The attribute selector above is (0,2,0), so it wins on
+   specificity regardless of source order — a phone, the exact device this
+   toggle exists for, keeps the larger ramp. */
 
 /* A disabled toolbar button must LOOK disabled.
    Only .ps-load-older-button and .ps-stop-button had a :disabled rule, so a
@@ -1519,8 +1549,11 @@ body.is-resizing-pane-y * {
      `pan-x pan-y` here offered both axes equally, and since no phone swipe is
      perfectly vertical, scrolling down kept sliding the list sideways. */
   touch-action: pan-y;
-  /* Keep the horizontal scrollbar from overlaying the last row's meta. */
-  padding-bottom: calc(6px + var(--ps-scrollbar-size));
+  /* Keep the horizontal scrollbar from overlaying the last row's meta, plus
+     the scroll-past-end tail. Padding rather than a spacer element: it grows
+     the scrollable height, so the list scrolls INTO the space instead of the
+     space always sitting there and stealing rows from a short list. */
+  padding-bottom: calc(6px + var(--ps-scrollbar-size) + var(--ps-list-tail));
 }
 
 .ps-session-pane.ps-chat-focus-pane .ps-session-list-button {
@@ -1585,8 +1618,11 @@ body.is-resizing-pane-y * {
      opt-in. Mouse wheel, shift+wheel and the scrollbar are unaffected —
      touch-action governs touch input only. */
   touch-action: pan-y;
-  /* Keep the horizontal scrollbar from overlaying the last row's meta. */
-  padding-bottom: calc(6px + var(--ps-scrollbar-size));
+  /* Keep the horizontal scrollbar from overlaying the last row's meta, plus
+     the scroll-past-end tail. Padding rather than a spacer element: it grows
+     the scrollable height, so the list scrolls INTO the space instead of the
+     space always sitting there and stealing a row from a short list. */
+  padding-bottom: calc(6px + var(--ps-scrollbar-size) + var(--ps-list-tail));
 }
 
 .ps-session-pane:not(.ps-mobile-session-pane) .ps-session-list-button {
@@ -1854,7 +1890,10 @@ body.is-resizing-pane-y * {
    above take over, so a horizontal scrollbar appears. */
 .ps-workspace-main-grid.is-session-wrap .ps-session-pane .ps-session-list {
   overflow-x: hidden;
-  padding-bottom: 6px;
+  /* No horizontal scrollbar to clear in this variant, but the tail still
+     applies — this rule overrides padding-bottom outright, so omitting it here
+     would silently drop the slack in wrap mode only. */
+  padding-bottom: calc(6px + var(--ps-list-tail));
 }
 
 .ps-workspace-main-grid.is-session-wrap .ps-session-pane .ps-session-list-button {
@@ -1943,8 +1982,7 @@ body.is-resizing-pane-y * {
    saturated "pressed" fill, so it read as a button stuck down rather than as
    "you are here" — which is exactly how it got reported.
    Same information, tab grammar instead: a quiet accent-tinted surface with an
-   underline. Only `body.ps-rich-ui` (which already has its own subtle
-   treatment) and the win95/ms-dos skins override this. */
+   underline. Only the win95/ms-dos skins override this. */
 .ps-tab-row-icons .ps-toolbar-button.is-active {
   border-color: color-mix(in srgb, var(--ps-panel-accent, var(--ps-border)) 42%, transparent);
   background: color-mix(in srgb, var(--ps-panel-accent, var(--ps-border)) 12%, transparent);
@@ -2632,6 +2670,33 @@ body.is-resizing-pane-y * {
   gap: 12px;
 }
 
+/* A display preference sitting in a modal footer. `margin-right: auto` pins it
+   to the left so the two action buttons stay together on the right, where the
+   footer's space-between would otherwise push them apart around it. */
+.ps-modal-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-right: auto;
+  color: var(--ps-modal-muted);
+  font-size: var(--ps-control-font-size, 0.92rem);
+  cursor: pointer;
+  user-select: none;
+}
+
+.ps-modal-toggle input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--ps-modal-selected-background);
+}
+
+:root[data-ps-touch="1"] .ps-modal-toggle input {
+  width: 19px;
+  height: 19px;
+}
+
 .ps-modal-title,
 .ps-modal-details-title,
 .ps-filter-title {
@@ -2926,6 +2991,9 @@ body.is-resizing-pane-y * {
   .ps-session-pane.ps-mobile-session-pane .ps-session-list {
     gap: 0;
     padding-top: 1px;
+    /* The home indicator overlaps the last few pixels of the viewport, so the
+       tail absorbs that as well as giving the list its end-of-scroll slack. */
+    padding-bottom: calc(var(--ps-list-tail) + env(safe-area-inset-bottom));
   }
 
   .ps-session-pane.ps-mobile-session-pane .ps-session-list-button {
@@ -3194,6 +3262,11 @@ body.is-resizing-pane-y * {
   /* Fixed height so switching General/Access never resizes the dialog; the
      shorter tab pads, the taller one scrolls within. */
   height: min(540px, 85vh);
+  /* ...but never taller than the overlay's content box. The height above is
+     FIXED, not a max, so on any viewport where 85vh exceeds what the padded
+     overlay can give it, a centred flex child overflows both ends and the
+     action row goes off-screen with no way to reach it. */
+  max-height: 100%;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -3203,6 +3276,30 @@ body.is-resizing-pane-y * {
   box-shadow: 0 28px 80px rgba(0, 0, 0, 0.4);
   padding: 18px;
   color: var(--ps-foreground);
+}
+
+/* The Manage-session dialog is a SEPARATE overlay (.ps-share-*), so it never
+   inherited .ps-modal's iOS fix and kept clipping its own action row —
+   reported live, with the dialog cut off and no way to scroll to the rest.
+   Its height is FIXED rather than a max, so the ceiling has to be applied to
+   `height`; a `max-height` clamp alone would not move it.
+
+   This block MUST stay below the base rule above. Media queries contribute no
+   specificity, so an override written earlier in the file simply loses to a
+   same-specificity base rule written later — which is exactly what happened on
+   the first attempt at this fix: the svh ceiling shipped as dead CSS while
+   looking correct in the source. */
+@media (max-width: 920px) {
+  .ps-share-overlay {
+    padding: 12px;
+    /* The home-indicator strip is not part of svh on iOS. */
+    padding-bottom: max(12px, env(safe-area-inset-bottom));
+  }
+
+  .ps-share-modal {
+    height: min(540px, 82svh);
+    padding: 12px;
+  }
 }
 
 .ps-share-modal-head {
@@ -3488,573 +3585,13 @@ body.is-resizing-pane-y * {
   display: block;
 }
 
-/* ── Rich chat (desktop-style transcript, chatViewMode="rich") ─────────────
-   Prose switches to a proportional reading face inside a centered measure;
-   code, tables, and terminal-era line blocks (cards, dividers, splash) keep
-   the monospace stack so they render exactly as the transcript view does. */
-
-.ps-chat-panel.is-rich .ps-scroll-panel {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter,
-    "Helvetica Neue", Arial, sans-serif;
-  font-size: var(--ps-font-size-chat);
-  line-height: 1.65;
-}
-
-.ps-rich-chat {
-  display: flex;
-  flex-direction: column;
-  width: 100%;
-  padding: 6px 10px 14px;
-}
-
-/* Offscreen transcript blocks skip layout entirely.
- *
- * The transcript is not virtualised — every loaded block is in the DOM — and
- * resizing the pane changes the wrap width, so the browser re-lays-out ALL of
- * them on every frame of the drag. That cost is linear in node count
- * (~1.55ms per 1000 nodes measured), and a long session's window can reach
- * 10k events, which is where resize turns to slideshow. With this, only the
- * blocks actually on screen are laid out: measured 49.6ms -> 2.9ms for a
- * 30k-node transcript, 86.9ms -> 8.2ms at 60k.
- *
- * `auto` on contain-intrinsic-size makes the browser remember each block's
- * real height once it has been measured, so the scrollbar does not drift as
- * blocks fall in and out of the rendered set; 200px is only the first guess, chosen from the measured average block height.
- * Browsers without content-visibility just keep today's behaviour. */
-.ps-rich-chat > * {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 200px;
-}
 
 /* Phones have no width to spare: the transcript already sits inside the
    panel's own border, so side padding here is nearly pure loss. */
-@media (max-width: 920px) {
-  .ps-rich-chat {
-    padding-inline: 2px;
-  }
-}
 
-.ps-rich-msg {
-  display: flex;
-  flex-direction: column;
-  margin-top: 10px;
-  min-width: 0;
-}
-
-.ps-rich-msg-head {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  margin-bottom: 2px;
-  font-size: 0.93rem;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-}
-
-.ps-rich-msg-label {
-  font-weight: 700;
-}
-
-.ps-rich-msg-time,
-.ps-rich-msg-glyph {
-  font-size: 0.89rem;
-  text-transform: none;
-  letter-spacing: 0;
-}
-
-.ps-rich-msg-time {
-  color: var(--ps-muted);
-}
-
-/* User messages: right-shifted tinted bubble, Claude-desktop style. */
-.ps-rich-msg.is-user {
-  align-self: flex-end;
-  align-items: flex-end;
-  max-width: 78%;
-}
-
-.ps-rich-msg.is-user .ps-rich-msg-body {
-  background: color-mix(in srgb, var(--ps-selection-background) 13%, transparent);
-  border: 1px solid color-mix(in srgb, var(--ps-selection-background) 26%, transparent);
-  border-radius: 14px 14px 4px 14px;
-  padding: 9px 15px;
-}
-
-.ps-rich-msg.is-pending .ps-rich-msg-body,
-.ps-rich-msg.is-queued .ps-rich-msg-body {
-  opacity: 0.75;
-}
-
-/* Assistant messages: full-measure prose, no chrome. */
-.ps-rich-msg.is-assistant {
-  align-self: stretch;
-}
-
-.ps-rich-msg-body {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-/* Markdown block rhythm inside a rich message. */
-.ps-rich-msg-body .ps-markdown-preview {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5em;
-  padding: 0;
-  font-size: inherit;
-  line-height: inherit;
-}
-
-.ps-rich-msg-body .ps-md-heading.is-h1 { font-size: 1.35em; margin-top: 0.4em; }
-.ps-rich-msg-body .ps-md-heading.is-h2 { font-size: 1.2em; margin-top: 0.35em; }
-.ps-rich-msg-body .ps-md-heading.is-h3 { font-size: 1.08em; margin-top: 0.3em; }
-
-.ps-rich-msg-body .ps-md-list {
-  margin: 0;
-  padding-left: 1.4em;
-  display: flex;
-  flex-direction: column;
-  gap: 0.25em;
-}
-
-/* Left rule + muted text, no background band — a full-width tinted block
-   reads as a callout rather than a quote once the pane is full width. */
-.ps-rich-msg-body .ps-md-quote {
-  margin: 0;
-  padding: 0.1em 0 0.1em 0.9em;
-  border-left: 3px solid color-mix(in srgb, var(--ps-border) 60%, transparent);
-  background: none;
-  color: var(--ps-muted);
-}
-
-/* Code keeps the terminal face — slightly smaller than prose. */
-.ps-rich-msg-body .ps-md-code-pre,
-.ps-rich-msg-body .ps-md-inline-code,
-.ps-rich-msg-body .ps-md-table {
-  font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas,
-    Liberation Mono, monospace;
-  font-size: 1rem;
-}
-
-.ps-rich-msg-body .ps-md-code-block {
-  border-radius: var(--ps-radius-md);
-  overflow: hidden;
-}
-
-/* Terminal-era blocks (cards, dividers, thinking, splash) render through the
-   structured line renderer — pin them back to the monospace metrics so they
-   look identical to the transcript view. */
-.ps-rich-lineblock {
-  margin-top: 14px;
-  font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas,
-    Liberation Mono, monospace;
-  font-size: var(--ps-font-size-base);
-  line-height: var(--ps-line-height-base);
-}
-
-.ps-rich-lineblock.is-divider {
-  opacity: 0.9;
-  text-align: center;
-}
-
-/* ── Rich session list (desktop-style sidebar) ─────────────────────────────
-   Status becomes a dot, depth becomes indentation with a guide rail, and
-   the id/age/model metadata is demoted to a muted sub-line. Titles use the
-   proportional face and ellipsize instead of forcing the list to scroll
-   horizontally as one max-content block. */
-
-.ps-session-pane.is-rich .ps-session-list {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter,
-    "Helvetica Neue", Arial, sans-serif;
-}
-
-/* Undo the compact max-content sizing so titles can ellipsize. */
-.ps-session-pane.is-rich:not(.ps-mobile-session-pane) .ps-session-row-content,
-.ps-session-pane.is-rich:not(.ps-mobile-session-pane) .ps-rich-session-main,
-.ps-session-pane.is-rich:not(.ps-mobile-session-pane) .ps-rich-session-title {
-  width: auto;
-  min-width: 0;
-  max-width: 100%;
-}
-
-.ps-session-pane.is-rich .ps-session-list-button {
-  border-radius: var(--ps-radius-md);
-  padding: 7px 10px;
-  min-height: 0;
-}
-
-.ps-session-pane.is-rich .ps-session-list-button.is-selected {
-  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--ps-panel-accent, var(--ps-border)) 90%, transparent);
-}
-
-/* Depth guide rail — replaces the terminal's "└" prefix. */
-.ps-session-row-content.is-rich {
-  position: relative;
-  display: block;
-}
-
-.ps-session-row-content.is-rich::before {
-  content: "";
-  position: absolute;
-  inset-inline-start: -7px;
-  top: 2px;
-  bottom: 2px;
-  width: 1px;
-  background: color-mix(in srgb, var(--ps-border) 45%, transparent);
-  opacity: 0;
-}
-
-.ps-session-list-button[style*="padding-inline-start"] .ps-session-row-content.is-rich::before {
-  opacity: 1;
-}
-
-.ps-rich-session-row {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.ps-rich-session-main {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  min-width: 0;
-}
-
-.ps-rich-session-dot {
-  flex: 0 0 auto;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--ps-muted);
-}
-
-.ps-rich-session-kind,
-.ps-rich-session-pin,
-.ps-rich-session-cron {
-  flex: 0 0 auto;
-  font-size: 0.89rem;
-  line-height: 1;
-}
-
-.ps-rich-session-check {
-  flex: 0 0 auto;
-  width: 13px;
-  height: 13px;
-  border-radius: 3px;
-  border: 1px solid color-mix(in srgb, var(--ps-border) 70%, transparent);
-  font-size: 0.82rem;
-  line-height: 11px;
-  text-align: center;
-}
-
-.ps-rich-session-check.is-checked {
-  background: color-mix(in srgb, var(--ps-selection-background) 30%, transparent);
-  border-color: var(--ps-selection-background);
-}
-
-/* Owner initials as a small avatar chip. */
-.ps-rich-session-owner {
-  flex: 0 0 auto;
-  padding: 1px 5px;
-  border-radius: 999px;
-  font-size: 0.79rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  background: color-mix(in srgb, var(--ps-border) 26%, transparent);
-  color: var(--ps-muted);
-}
-
-.ps-rich-session-owner.is-mine {
-  background: color-mix(in srgb, var(--ps-selection-background) 22%, transparent);
-  color: color-mix(in srgb, var(--ps-selection-background) 70%, var(--ps-foreground));
-}
-
-.ps-rich-session-title {
-  flex: 1 1 auto;
-  min-width: 0;
-  font-size: 1.07rem;
-  /* The title is the row's identity; the id, model and ctx line beneath it are
-     metadata. Weight is what separates them — without it the row reads as one
-     undifferentiated block of small text. */
-  font-weight: 650;
-  line-height: 1.35;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.ps-rich-session-title.is-untitled {
-  font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas,
-    Liberation Mono, monospace;
-  font-size: 0.93rem;
-  color: var(--ps-muted);
-}
-
-/* Child count as a pill, context % as a tabular right column. */
-.ps-rich-session-count {
-  flex: 0 0 auto;
-  padding: 0 5px;
-  border-radius: 999px;
-  font-size: 0.79rem;
-  font-weight: 700;
-  background: color-mix(in srgb, var(--ps-border) 22%, transparent);
-}
-
-.ps-rich-session-ctx {
-  flex: 0 0 auto;
-  margin-inline-start: auto;
-  padding-inline-start: 6px;
-  font-size: 0.86rem;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-
-.ps-rich-session-detail {
-  font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas,
-    Liberation Mono, monospace;
-  font-size: 0.86rem;
-  line-height: 1.3;
-  padding-inline-start: 14px;
-  opacity: 0.9;
-}
-
-/* ══ Rich UI chrome ════════════════════════════════════════════════════════
-   Driven by `body.ps-rich-ui` (set from controller state in web-app.js) so
-   surfaces OUTSIDE the controller tree — the portal header in App.jsx —
-   restyle together with the panes. Log/technical content keeps the
-   monospace face on purpose: only the chrome around it goes proportional. */
-
-body.ps-rich-ui {
-  --ps-ui-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter,
-    "Helvetica Neue", Arial, sans-serif;
-}
-
-/* ── Header ─────────────────────────────────────────────────────────────── */
-
-body.ps-rich-ui .portal-header {
-  font-family: var(--ps-ui-font);
-  padding: 12px 18px;
-  border-bottom: 1px solid var(--ps-border-strong);
-  background: var(--ps-chrome-strong);
-}
-
-body.ps-rich-ui .portal-header-kicker {
-  font-size: 0.83rem;
-  letter-spacing: 0.13em;
-  opacity: 0.72;
-}
-
-body.ps-rich-ui .portal-header-name,
-body.ps-rich-ui .portal-header-identity {
-  font-size: 1.09rem;
-  font-weight: 650;
-  letter-spacing: 0.01em;
-}
-
-body.ps-rich-ui .portal-logo-frame {
-  width: 44px;
-  height: 44px;
-  border-radius: 12px;
-  overflow: hidden;
-}
-
-body.ps-rich-ui .portal-header-version,
-body.ps-rich-ui .portal-header-status,
-body.ps-rich-ui .portal-header-email {
-  font-size: 0.85rem;
-}
-
-body.ps-rich-ui .portal-header-version {
-  background: color-mix(in srgb, var(--ps-border) 16%, transparent);
-  border-color: transparent;
-}
-
-/* ── Buttons ────────────────────────────────────────────────────────────── */
-
-body.ps-rich-ui .ps-toolbar {
-  font-family: var(--ps-ui-font);
-  gap: 5px;
-}
-
-body.ps-rich-ui .ps-toolbar-button,
-body.ps-rich-ui .ps-mini-button,
-body.ps-rich-ui .ps-modal-button,
-body.ps-rich-ui .ps-tab {
-  font-family: var(--ps-ui-font);
-  border-radius: 9px;
-  border-color: color-mix(in srgb, var(--ps-border) 55%, transparent);
-  background: color-mix(in srgb, var(--ps-border) 9%, transparent);
-  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
-}
-
-body.ps-rich-ui .ps-toolbar-button:hover,
-body.ps-rich-ui .ps-mini-button:hover,
-body.ps-rich-ui .ps-tab:hover {
-  transform: none;
-  background: color-mix(in srgb, var(--ps-border) 20%, transparent);
-  border-color: color-mix(in srgb, var(--ps-border) 46%, transparent);
-}
-
-/* Active/selected controls read as a filled accent pill. */
-body.ps-rich-ui .ps-toolbar-button.is-active,
-body.ps-rich-ui .ps-toolbar-button[aria-pressed="true"],
-body.ps-rich-ui .ps-tab.is-active {
-  background: color-mix(in srgb, var(--ps-selection-background) 24%, transparent);
-  border-color: color-mix(in srgb, var(--ps-selection-background) 52%, transparent);
-  color: var(--ps-foreground);
-}
-
-body.ps-rich-ui .ps-send-button {
-  border-radius: 10px;
-}
-
-/* ── Panels (chat, sessions, inspector, activity) ───────────────────────── */
-
-body.ps-rich-ui .ps-panel {
-  border-width: 1px;
-  /* Opaque, not a mix with transparent: a pane must read as a card sitting ON
-     the canvas, which is impossible if it inherits the canvas through itself. */
-  background: var(--ps-surface);
-  border-color: var(--ps-border-strong);
-  border-radius: 12px;
-  box-shadow: 0 1px 2px color-mix(in srgb, var(--ps-foreground) 8%, transparent);
-}
-
-body.ps-rich-ui .ps-panel.is-focused {
-  border-color: color-mix(in srgb, var(--ps-panel-accent, var(--ps-border)) 62%, transparent);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ps-panel-accent, var(--ps-border)) 22%, transparent);
-}
-
-/* Flat header bar — the terminal gradient reads as a title chrome strip. */
-body.ps-rich-ui .ps-panel-header {
-  font-family: var(--ps-ui-font);
-  min-height: 34px;
-  padding: 6px 12px;
-  background: var(--ps-chrome);
-  border-bottom: 1px solid var(--ps-border-strong);
-}
-
-/* The composer is a footer, not a continuation of the transcript. */
-body.ps-rich-ui .ps-chat-composer {
-  background: var(--ps-chrome);
-  border-top: 1px solid var(--ps-border-strong);
-}
-
-/* Session list rows read against the pane, not against the page. */
-body.ps-rich-ui .ps-session-pane .ps-panel-body {
-  background: var(--ps-surface);
-}
-
-body.ps-rich-ui .ps-panel-title {
-  font-size: 1.02rem;
-  font-weight: 650;
-  letter-spacing: 0.01em;
-}
-
-body.ps-rich-ui .ps-panel-title-right {
-  font-size: 0.76rem;
-  opacity: 0.85;
-}
-
-/* ── Inspector tab row → segmented control ──────────────────────────────── */
-
-body.ps-rich-ui .ps-tab-row-icons {
-  gap: 3px;
-  padding: 4px;
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--ps-border) 10%, transparent);
-}
-
-body.ps-rich-ui .ps-tab-row-icons .ps-toolbar-button {
-  border-color: transparent;
-  background: transparent;
-  border-radius: 7px;
-}
-
-body.ps-rich-ui .ps-tab-row-icons .ps-toolbar-button.is-active {
-  background: color-mix(in srgb, var(--ps-surface) 92%, var(--ps-border));
-  border-color: color-mix(in srgb, var(--ps-border) 30%, transparent);
-}
 
 /* ── Activity / log surfaces ────────────────────────────────────────────── */
-/* Log bodies stay monospace — they are machine output and column alignment
-   carries meaning. What changes is density, muting, and the timestamp
-   column reading as a gutter rather than inline noise. */
 
-body.ps-rich-ui .ps-activity-pane .ps-scroll-panel,
-body.ps-rich-ui .ps-inspector-pane .ps-scroll-panel {
-  padding: 8px 12px;
-  font-size: 0.93rem;
-  line-height: 1.5;
-}
-
-body.ps-rich-ui .ps-activity-pane .ps-line,
-body.ps-rich-ui .ps-inspector-pane .ps-line {
-  padding-block: 1px;
-  border-radius: 4px;
-}
-
-body.ps-rich-ui .ps-activity-pane .ps-line:hover {
-  background: color-mix(in srgb, var(--ps-border) 12%, transparent);
-}
-
-/* ── Rich UI refinements ───────────────────────────────────────────────── */
-
-/* Icons were sized for touch targets; in the desktop chrome they read as
-   oversized. Glyphs stay MONOSPACE so the geometric/box-drawing icons keep
-   their intended metrics — the proportional face rendered multi-cell
-   glyphs (e.g. the stats "▁▄▇" bars) as one wide blob. */
-body.ps-rich-ui .ps-icon-button {
-  min-width: 34px;
-  padding: 6px 9px;
-}
-
-body.ps-rich-ui .ps-icon-button-glyph {
-  font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas,
-    Liberation Mono, monospace;
-  font-size: 1.18rem;
-  letter-spacing: 0;
-}
-
-/* Chat message meta (delivery glyph + timestamp): on-demand, not ambient. */
-.ps-rich-msg-head {
-  min-height: 14px;
-}
-
-/* Pushed to the far right of the message row so it never sits over the
-   start of the text, and it reveals into reserved space rather than
-   overlapping the paragraph below. */
-.ps-rich-msg-meta {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 6px;
-  margin-left: auto;
-  padding-left: 12px;
-  opacity: 0;
-  transition: opacity 120ms ease;
-}
-
-.ps-rich-msg:hover .ps-rich-msg-meta,
-.ps-rich-msg:focus-within .ps-rich-msg-meta {
-  opacity: 1;
-}
-
-/* A run of turns from one speaker reads as continuous prose. */
-.ps-rich-msg.is-continued {
-  margin-top: 4px;
-}
-
-/* A merged turn keeps a slim header STRIP rather than collapsing to zero
-   height: at height 0 the revealed timestamp painted straight over the
-   paragraph beneath it. 13px is enough for the meta and still reads as
-   continuous prose. */
-.ps-rich-msg.is-continued .ps-rich-msg-head {
-  min-height: 13px;
-  margin-bottom: 0;
-}
 
 /* Rendered mermaid diagrams sit on the code-block surface but scroll on
    their own axis — wide flowcharts must not widen the chat pane. */
@@ -4075,94 +3612,10 @@ body.ps-rich-ui .ps-icon-button-glyph {
 
 /* ── Rich UI: quieter chrome ───────────────────────────────────────────── */
 
-/* Per-pane accent borders (cyan chat, magenta sequence, …) are a terminal
-   convention. In the rich view every pane gets the SAME neutral border and
-   color is reserved for state — focus, and the panel title itself. */
-body.ps-rich-ui .ps-panel {
-  border-color: color-mix(in srgb, var(--ps-border) 78%, transparent);
-}
-
-body.ps-rich-ui .ps-panel-header {
-  border-bottom-color: color-mix(in srgb, var(--ps-border) 55%, transparent);
-}
-
-/* Focus is the one border that still carries the pane's accent. */
-body.ps-rich-ui .ps-panel.is-focused {
-  border-color: color-mix(in srgb, var(--ps-panel-accent, var(--ps-border)) 70%, transparent);
-}
 
 /* The composer's idle "you" prompt label is a terminal affordance; the real
    mode signals (answer / queued / pending / cancelling) still show. */
-/* The label occupies grid column 1 of `auto minmax(0,1fr) auto`; hiding it
-   outright collapsed the input into the auto column, so drop the column
-   along with the label. */
-body.ps-rich-ui .ps-prompt-label.is-default {
-  display: none;
-}
 
-body.ps-rich-ui .ps-prompt-shell:has(.ps-prompt-label.is-default) {
-  grid-template-columns: minmax(0, 1fr) auto;
-}
-
-body.ps-rich-ui .ps-prompt-shell {
-  border-radius: 12px;
-}
-
-/* ── Rich UI: slim pane resizers ───────────────────────────────────────────
-   The 16px gutter was sized for a terminal grid. The grid tracks read
-   `var(--ps-resizer-track, 16px)`, so narrowing the variable narrows the
-   gutter and the hit area together. The drag affordance stays discoverable:
-   the rule brightens and the grip appears on hover. */
-
-
-body.ps-rich-ui .ps-column-resizer {
-  width: var(--ps-resizer-track);
-}
-
-body.ps-rich-ui .ps-row-resizer {
-  height: var(--ps-resizer-track);
-}
-
-body.ps-rich-ui .ps-column-resizer::before,
-body.ps-rich-ui .ps-row-resizer::before {
-  transition: background 120ms ease;
-}
-
-body.ps-rich-ui .ps-column-resizer::before {
-  top: 0;
-  bottom: 0;
-}
-
-body.ps-rich-ui .ps-row-resizer::before {
-  left: 0;
-  right: 0;
-}
-
-body.ps-rich-ui .ps-column-resizer:hover::before,
-body.ps-rich-ui .ps-column-resizer.is-dragging::before,
-body.ps-rich-ui .ps-row-resizer:hover::before,
-body.ps-rich-ui .ps-row-resizer.is-dragging::before {
-  background: color-mix(in srgb, var(--ps-panel-accent, var(--ps-border)) 70%, transparent);
-}
-
-/* The dot grip is hover-only in the rich view — the thin rule is enough of a
-   seam at rest, and the grip would not fit a 7px gutter otherwise. */
-body.ps-rich-ui .ps-column-resizer-handle,
-body.ps-rich-ui .ps-row-resizer-handle {
-  opacity: 0;
-  transform: scale(0.82);
-  transition: opacity 120ms ease, transform 120ms ease;
-}
-
-body.ps-rich-ui .ps-column-resizer:hover .ps-column-resizer-handle,
-body.ps-rich-ui .ps-column-resizer:focus-visible .ps-column-resizer-handle,
-body.ps-rich-ui .ps-column-resizer.is-dragging .ps-column-resizer-handle,
-body.ps-rich-ui .ps-row-resizer:hover .ps-row-resizer-handle,
-body.ps-rich-ui .ps-row-resizer:focus-visible .ps-row-resizer-handle,
-body.ps-rich-ui .ps-row-resizer.is-dragging .ps-row-resizer-handle {
-  opacity: 1;
-  transform: scale(1);
-}
 
 /* A mermaid block that fails to parse keeps its source and states why. */
 .ps-mermaid-error {
@@ -4198,30 +3651,7 @@ body.ps-rich-ui .ps-row-resizer.is-dragging .ps-row-resizer-handle {
    content for no reason. The transcript now flows from the top chrome down
    to the composer; the pane resizers still supply the seam against the
    session list and inspector. Mobile keeps its panel (it has a header). */
-@media (min-width: 921px) {
-  body.ps-rich-ui .ps-chat-panel,
-  body.ps-rich-ui .ps-chat-panel.is-focused {
-    border: 0;
-    border-radius: 0;
-    background: transparent;
-    box-shadow: none;
-  }
 
-  /* The composer keeps a hairline so the input still reads as a footer
-     against a free-flowing transcript, but loses the panel accent tint. */
-  body.ps-rich-ui .ps-chat-panel > .ps-chat-composer {
-    padding: 10px 4px 6px;
-    border-top: 1px solid color-mix(in srgb, var(--ps-border) 42%, transparent);
-    background: transparent;
-  }
-}
-
-/* In the terminal view the transcript is a flat run of lines, so a rendered
-   diagram butts straight against the prose beneath it. (The rich view already
-   spaces blocks via the markdown-preview flex gap.) */
-body:not(.ps-rich-ui) .ps-mermaid {
-  margin-block: 6px 14px;
-}
 
 /* ── Rich UI: one top bar ──────────────────────────────────────────────────
    The workspace toolbar portals into the header slot on desktop, so the
@@ -4689,21 +4119,16 @@ body:not(.ps-rich-ui) .ps-mermaid {
   color: var(--w95-light) !important;
   box-shadow: 0 0 0 1px var(--w95-light);
 }
-
 :root[data-ps-theme="win95"] .ps-list-button.is-selected .ps-session-status-dot,
-:root[data-ps-theme="win95"] .ps-list-button.is-selected .ps-rich-session-dot,
-:root[data-ps-theme="win95"] .ps-session-list-button.is-selected .ps-session-status-dot,
-:root[data-ps-theme="win95"] .ps-session-list-button.is-selected .ps-rich-session-dot {
+:root[data-ps-theme="win95"] .ps-session-list-button.is-selected .ps-session-status-dot {
   background-color: var(--w95-light) !important;
 }
-
 :root[data-ps-theme="win95"] .ps-list-button.is-selected .ps-session-status-dot.is-node,
-:root[data-ps-theme="win95"] .ps-list-button.is-selected .ps-rich-session-dot.is-node,
-:root[data-ps-theme="win95"] .ps-session-list-button.is-selected .ps-session-status-dot.is-node,
-:root[data-ps-theme="win95"] .ps-session-list-button.is-selected .ps-rich-session-dot.is-node {
+:root[data-ps-theme="win95"] .ps-session-list-button.is-selected .ps-session-status-dot.is-node {
   background-color: transparent !important;
   border-color: var(--w95-light) !important;
 }
+
 
 /* Scrollbars: square, bevelled, no rounding. */
 :root[data-ps-theme="win95"] ::-webkit-scrollbar-thumb {
@@ -4785,14 +4210,12 @@ body:not(.ps-rich-ui) .ps-mermaid {
   --ps-radius-md: 0px;
 }
 
-/* Text mode is monospace, full stop — including the rich transcript, which
-   would otherwise render prose in a proportional face DOS never had. */
-:root[data-ps-theme="ms-dos"] .ps-chat-panel.is-rich .ps-scroll-panel,
-:root[data-ps-theme="ms-dos"] .ps-rich-msg-body,
+/* Text mode is monospace, full stop. */
 :root[data-ps-theme="ms-dos"] .portal-header,
 :root[data-ps-theme="ms-dos"] .ps-panel-title {
   font-family: var(--ps-ui-font);
 }
+
 
 /* Panes are CP437 frames: a single hairline in BODY colour, so it reads as
    line-drawing characters rather than as a UI border. */
@@ -4983,19 +4406,13 @@ body:not(.ps-rich-ui) .ps-mermaid {
   /* A dark hairline detaches the disc from the light bar it now sits on. */
   box-shadow: 0 0 0 1px var(--ps-background, #000);
 }
-
 :root[data-ps-theme="ms-dos"] .ps-list-button.is-selected .ps-session-status-dot,
-:root[data-ps-theme="ms-dos"] .ps-list-button.is-selected .ps-rich-session-dot,
-:root[data-ps-theme="ms-dos"] .ps-session-list-button.is-selected .ps-session-status-dot,
-:root[data-ps-theme="ms-dos"] .ps-session-list-button.is-selected .ps-rich-session-dot {
+:root[data-ps-theme="ms-dos"] .ps-session-list-button.is-selected .ps-session-status-dot {
   /* Reverse video: on the light bar the mark is the dark one. */
   background-color: var(--ps-background, #000) !important;
 }
-
 :root[data-ps-theme="ms-dos"] .ps-list-button.is-selected .ps-session-status-dot.is-node,
-:root[data-ps-theme="ms-dos"] .ps-list-button.is-selected .ps-rich-session-dot.is-node,
-:root[data-ps-theme="ms-dos"] .ps-session-list-button.is-selected .ps-session-status-dot.is-node,
-:root[data-ps-theme="ms-dos"] .ps-session-list-button.is-selected .ps-rich-session-dot.is-node {
+:root[data-ps-theme="ms-dos"] .ps-session-list-button.is-selected .ps-session-status-dot.is-node {
   /* Nested rows keep the ring shape — only the ring colour flips. */
   background-color: transparent !important;
   border-color: var(--ps-background, #000) !important;
@@ -5037,10 +4454,10 @@ body:not(.ps-rich-ui) .ps-mermaid {
 }
 
 /* ── Inspector segmented control, per theme ────────────────────────────────
-   The base rules are `body.ps-rich-ui .ps-tab-row-icons .ps-toolbar-button`
-   (0,3,1), which outranks `:root[data-ps-theme=…] .ps-toolbar-button` (0,3,0)
-   — so the tab row kept its rounded modern look while every other button was
-   themed. Including `body` in the theme selector takes it to (0,4,1). */
+   `.ps-tab-row-icons .ps-toolbar-button` rules outrank a bare
+   `:root[data-ps-theme=…] .ps-toolbar-button` (0,3,0), which left the tab row
+   with its rounded modern look while every other button was themed. Including
+   `body` in the theme selector takes it to (0,4,1) and wins. */
 :root[data-ps-theme="win95"] body .ps-tab-row-icons {
   background: var(--w95-face);
   border: 2px solid;
@@ -5105,9 +4522,6 @@ body:not(.ps-rich-ui) .ps-mermaid {
   --ps-panel-header-h: 36px;
 }
 
-body.ps-rich-ui {
-  --ps-panel-header-h: 38px;
-}
 
 .ps-panel-header {
   height: var(--ps-panel-header-h);
@@ -5118,9 +4532,6 @@ body.ps-rich-ui {
   box-sizing: border-box;
 }
 
-body.ps-rich-ui .ps-panel-header {
-  padding-block: 0;
-}
 
 /* Controls sit inside the header rather than defining it. Height is derived
    from the header so a theme can change one value and keep both in step. */
@@ -5817,12 +5228,10 @@ body.ps-rich-ui .ps-panel-header {
 /* ═══════════════════════════════════════════════════════════════════
    Workspace chrome — the flat admin-console language as THEMES.
    Same pattern as win95: `applyDocumentTheme` stamps the theme id on
-   the root so a theme can carry chrome, not just colours. Workspace
-   Dark and its Rich Text variant share every rule. The TUI never
-   loads this stylesheet.
+   the root so a theme can carry chrome, not just colours. The TUI
+   never loads this stylesheet.
    ═══════════════════════════════════════════════════════════════════ */
-:root[data-ps-theme="workspace-dark"],
-:root[data-ps-theme="workspace-dark-rich"] {
+:root[data-ps-theme="workspace-dark"] {
   --ps-ws-accent: #2ea043;
   --ps-ws-card: #1c2129;
 }
@@ -5830,35 +5239,29 @@ body.ps-rich-ui .ps-panel-header {
    reading as one continuous surface, so it was genuinely hard to tell where a
    pane ended — worse now that the panes sit further apart. The tone-separated
    background stays the primary language; this only draws the edge. */
-:root[data-ps-theme="workspace-dark"] .ps-panel,
-:root[data-ps-theme="workspace-dark-rich"] .ps-panel {
+:root[data-ps-theme="workspace-dark"] .ps-panel {
   border: 1px solid color-mix(in srgb, var(--ps-border) 55%, transparent);
   border-radius: 10px;
   background: var(--ps-surface);
   box-shadow: none;
 }
-:root[data-ps-theme="workspace-dark"] .ps-panel.ps-chat-panel,
-:root[data-ps-theme="workspace-dark-rich"] .ps-panel.ps-chat-panel {
+:root[data-ps-theme="workspace-dark"] .ps-panel.ps-chat-panel {
   background: transparent;
 }
 /* No focus accent in this theme. With every pane now outlined, the green
    inset rail was a second, competing edge treatment that read as decoration
    rather than state. Focus still shows in the pane's own content. */
-:root[data-ps-theme="workspace-dark"] .ps-panel.is-focused,
-:root[data-ps-theme="workspace-dark-rich"] .ps-panel.is-focused {
+:root[data-ps-theme="workspace-dark"] .ps-panel.is-focused {
   box-shadow: none;
 }
-:root[data-ps-theme="workspace-dark"] .ps-panel-header,
-:root[data-ps-theme="workspace-dark-rich"] .ps-panel-header {
+:root[data-ps-theme="workspace-dark"] .ps-panel-header {
   background: transparent;
   border-bottom: none;
   min-height: 26px;
   padding: 8px 14px 0;
 }
 :root[data-ps-theme="workspace-dark"] .ps-panel-title,
-:root[data-ps-theme="workspace-dark"] .ps-panel-title span,
-:root[data-ps-theme="workspace-dark-rich"] .ps-panel-title,
-:root[data-ps-theme="workspace-dark-rich"] .ps-panel-title span {
+:root[data-ps-theme="workspace-dark"] .ps-panel-title span {
   color: var(--ps-muted) !important;
   font-size: 10px;
   font-weight: 600;
@@ -5866,27 +5269,22 @@ body.ps-rich-ui .ps-panel-header {
   text-transform: uppercase;
 }
 :root[data-ps-theme="workspace-dark"] .ps-panel-title-right,
-:root[data-ps-theme="workspace-dark"] .ps-panel-title-right span,
-:root[data-ps-theme="workspace-dark-rich"] .ps-panel-title-right,
-:root[data-ps-theme="workspace-dark-rich"] .ps-panel-title-right span {
+:root[data-ps-theme="workspace-dark"] .ps-panel-title-right span {
   color: var(--ps-muted) !important;
   font-size: 10px;
   letter-spacing: 0.06em;
 }
-:root[data-ps-theme="workspace-dark"] .ps-chat-card,
-:root[data-ps-theme="workspace-dark-rich"] .ps-chat-card {
+:root[data-ps-theme="workspace-dark"] .ps-chat-card {
   border: none;
   border-left: 2px solid color-mix(in srgb, var(--ps-chat-card-accent, var(--ps-border)) 85%, transparent);
   border-radius: 8px;
   background: var(--ps-ws-card);
 }
-:root[data-ps-theme="workspace-dark"] .ps-mini-button,
-:root[data-ps-theme="workspace-dark-rich"] .ps-mini-button {
+:root[data-ps-theme="workspace-dark"] .ps-mini-button {
   background: transparent;
   border-color: var(--ps-border);
 }
-:root[data-ps-theme="workspace-dark"] .ps-mini-button:hover,
-:root[data-ps-theme="workspace-dark-rich"] .ps-mini-button:hover {
+:root[data-ps-theme="workspace-dark"] .ps-mini-button:hover {
   background: color-mix(in srgb, var(--ps-foreground) 8%, transparent);
 }
 
@@ -5953,7 +5351,6 @@ body.ps-rich-ui .ps-panel-header {
 
 /* Pin markers: themed glyph weight, no emoji red. */
 .ps-pin-icon { font-size: 15px; }
-.ps-rich-session-pin { color: var(--ps-muted); }
 
 .ps-admin-add__progress { color: var(--ps-muted); font-size: 12px; margin: 6px 0 0; font-family: var(--ps-mono, ui-monospace, monospace); }
 
@@ -5991,7 +5388,6 @@ body.ps-rich-ui .ps-panel-header {
   font-variant-numeric: tabular-nums;
 }
 .ps-manage-regenerate { display: inline-flex; align-items: center; gap: 6px; }
-.ps-rich-session-pin .ps-share-glyph { width: 12px; height: 12px; vertical-align: -2px; }
 
 /* ── Nested sessions: the well ──────────────────────────────────────────────
    Containment is a SURFACE, not a box-drawing character. A run of nested rows
@@ -6022,20 +5418,14 @@ body.ps-rich-ui .ps-panel-header {
   flex: none;
   background: var(--ps-muted);
 }
-
-/* Nested rows: the mark becomes a NODE on the branch — a ring centred on the
-   row's deepest rail (SessionListRow pads the content to put it there), so a
-   run of siblings reads as one thread with a node each, and the filled disc
-   keeps meaning "top level". Colour still carries status; only the fill
-   changes, so nothing is lost by the swap. */
-.ps-session-status-dot.is-node,
-.ps-rich-session-dot.is-node {
+.ps-session-status-dot.is-node {
   width: 7px;
   height: 7px;
   box-sizing: border-box;
   background: transparent;
   border: 1.5px solid var(--ps-muted);
 }
+
 
 /* Drag sessions into a group row, or onto the list background to take them out.
    (The .is-drop-target / .is-drop-zone appearance lives further down, in the
@@ -6062,6 +5452,9 @@ body.ps-rich-ui .ps-panel-header {
 .ps-modal.ps-admin-add {
   width: min(560px, 100%);
   height: min(520px, 86vh);
+  /* Fixed height, same hazard as .ps-share-modal: clamp to the overlay so the
+     step buttons cannot end up below the fold. */
+  max-height: 100%;
 }
 .ps-modal.ps-admin-add .ps-admin-add__body {
   flex: 1 1 auto;
@@ -6375,12 +5768,10 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
      status dot gets, so the two marks read as a set. */
   box-shadow: 0 0 0 1.5px var(--doom-bone-hi);
 }
-:root[data-ps-theme="doom"] .ps-session-list-button.is-selected .ps-session-status-dot,
-:root[data-ps-theme="doom"] .ps-session-list-button.is-selected .ps-rich-session-dot {
+:root[data-ps-theme="doom"] .ps-session-list-button.is-selected .ps-session-status-dot {
   background-color: var(--doom-bone-hi) !important;
 }
-:root[data-ps-theme="doom"] .ps-session-list-button.is-selected .ps-session-status-dot.is-node,
-:root[data-ps-theme="doom"] .ps-session-list-button.is-selected .ps-rich-session-dot.is-node {
+:root[data-ps-theme="doom"] .ps-session-list-button.is-selected .ps-session-status-dot.is-node {
   background-color: transparent !important;
   border-color: var(--doom-bone-hi) !important;
 }
@@ -6520,12 +5911,10 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
   color: #ffffff !important;
   box-shadow: 0 0 0 1.5px #ffffff;
 }
-:root[data-ps-theme="winamp"] .ps-session-list-button.is-selected .ps-session-status-dot,
-:root[data-ps-theme="winamp"] .ps-session-list-button.is-selected .ps-rich-session-dot {
+:root[data-ps-theme="winamp"] .ps-session-list-button.is-selected .ps-session-status-dot {
   background-color: #ffffff !important;
 }
-:root[data-ps-theme="winamp"] .ps-session-list-button.is-selected .ps-session-status-dot.is-node,
-:root[data-ps-theme="winamp"] .ps-session-list-button.is-selected .ps-rich-session-dot.is-node {
+:root[data-ps-theme="winamp"] .ps-session-list-button.is-selected .ps-session-status-dot.is-node {
   background-color: transparent !important;
   border-color: #ffffff !important;
 }
@@ -6550,4 +5939,355 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
 }
 :root[data-ps-theme="winamp"] ::-webkit-scrollbar-track {
   background: #1c1c1c;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   RUST — graphite, iron oxide, and rustc's diagnostic voice.
+   Scoped to [data-ps-theme="rust"]. The theme FILE carries the palette; this
+   carries the two things colour alone cannot say: the FONT (Fira, which is
+   what every line of Rust documentation is set in) and the OXIDE RAIL, a
+   2px accent edge standing in for the gutter rustc draws down the left of
+   every diagnostic.
+   ═══════════════════════════════════════════════════════════════════════════ */
+:root[data-ps-theme="rust"] {
+  --rust-iron: #1c1917;      /* the ground */
+  --rust-face: #2a2522;      /* raised chrome */
+  --rust-edge: #4a4038;      /* machined edge */
+  --rust-oxide: #ce422b;     /* the brand red-brown */
+  --rust-ferris: #f74c00;    /* the accent, and the crab */
+  --rust-cream: #e7e0d8;
+  --rust-cream-hi: #ffeadf;
+  /* Fira is the Rust docs face. It is unlikely to be installed and that is
+     fine — the fallbacks are humanist sans in the same register, which is
+     still a clear break from the system stack every other theme uses. */
+  --ps-ui-font: "Fira Sans", "Source Sans 3", "Source Sans Pro", -apple-system,
+    BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --ps-mono: "Fira Code", "Fira Mono", ui-monospace, SFMono-Regular, Menlo,
+    Consolas, monospace;
+}
+
+/* Chrome goes proportional; the transcript and every technical surface stay
+   monospace, which is exactly how doc.rust-lang.org sets a page. */
+:root[data-ps-theme="rust"] .portal-header,
+:root[data-ps-theme="rust"] .ps-panel-title {
+  font-family: var(--ps-ui-font);
+}
+
+/* Brushed iron with an oxide rail along the bottom. */
+:root[data-ps-theme="rust"] .portal-header {
+  background: linear-gradient(180deg, #2f2926 0%, #221e1b 100%);
+  border-bottom: 2px solid var(--rust-oxide);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  color: var(--rust-cream);
+}
+:root[data-ps-theme="rust"] .portal-header-kicker,
+:root[data-ps-theme="rust"] .portal-header-name {
+  color: var(--rust-cream-hi);
+}
+:root[data-ps-theme="rust"] .portal-header-email,
+:root[data-ps-theme="rust"] .portal-header-identity.is-muted {
+  color: #a39a8f;
+}
+
+/* Ferris sits in a bay ringed in oxide — the closest this gets to putting the
+   gear logo on screen without drawing a gear at 32px, where it would mud. */
+:root[data-ps-theme="rust"] .portal-logo-frame {
+  background: #241f1c;
+  border: 2px solid var(--rust-oxide);
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+/* Panes are milled plates: soft radius, cold edge, lit top. Rust is not a
+   1993 theme and should not pretend to bevel like one. */
+:root[data-ps-theme="rust"] .ps-panel {
+  background: var(--rust-iron);
+  border: 1px solid var(--rust-edge);
+  border-radius: 6px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+/* Focus is the diagnostic gutter: the pane you are in grows an oxide rail. */
+:root[data-ps-theme="rust"] .ps-panel.is-focused {
+  border-color: var(--rust-edge);
+  border-left: 2px solid var(--rust-ferris);
+}
+:root[data-ps-theme="rust"] .ps-panel-header {
+  background: linear-gradient(180deg, var(--rust-face) 0%, #221e1b 100%);
+  border-bottom: 1px solid var(--rust-edge);
+}
+:root[data-ps-theme="rust"] .ps-panel-title,
+:root[data-ps-theme="rust"] .ps-panel-title * {
+  /* !important because panel titles render as TUI colour runs with an INLINE
+     style attribute, which a plain declaration loses to — the same reason
+     doom.js and winamp.js need it. */
+  color: var(--rust-cream-hi) !important;
+}
+
+:root[data-ps-theme="rust"] .ps-mini-button,
+:root[data-ps-theme="rust"] .ps-toolbar-button,
+:root[data-ps-theme="rust"] .ps-icon-button,
+:root[data-ps-theme="rust"] .ps-modal-button,
+:root[data-ps-theme="rust"] .ps-modal-close,
+:root[data-ps-theme="rust"] .ps-send-button,
+:root[data-ps-theme="rust"] .ps-artifact-overlay-btn,
+:root[data-ps-theme="rust"] .portal-primary-button,
+:root[data-ps-theme="rust"] .portal-secondary-button {
+  background: var(--rust-face);
+  border: 1px solid var(--rust-edge);
+  border-radius: 5px;
+  color: var(--rust-cream);
+}
+:root[data-ps-theme="rust"] .ps-mini-button:hover,
+:root[data-ps-theme="rust"] .ps-toolbar-button:hover,
+:root[data-ps-theme="rust"] .ps-icon-button:hover,
+:root[data-ps-theme="rust"] .ps-modal-button:hover,
+:root[data-ps-theme="rust"] .ps-send-button:hover,
+:root[data-ps-theme="rust"] .portal-primary-button:hover,
+:root[data-ps-theme="rust"] .portal-secondary-button:hover {
+  border-color: var(--rust-ferris);
+  color: var(--rust-cream-hi);
+}
+
+/* Selection is a band of oxide with a Ferris caret on the leading edge —
+   rustc points at the line it means, so this one does too. */
+:root[data-ps-theme="rust"] .ps-list-button.is-selected,
+:root[data-ps-theme="rust"] .ps-session-list-button.is-selected {
+  background-color: #7c2d12;
+  box-shadow: inset 3px 0 0 var(--rust-ferris);
+}
+:root[data-ps-theme="rust"] .ps-list-button.is-selected,
+:root[data-ps-theme="rust"] .ps-list-button.is-selected *,
+:root[data-ps-theme="rust"] .ps-session-list-button.is-selected,
+:root[data-ps-theme="rust"] .ps-session-list-button.is-selected * {
+  color: var(--rust-cream-hi) !important;
+}
+
+/* ── Selected-row marks ───────────────────────────────────────────
+   Restated for the same reason DOOM and WinAMP restate them: the owner disc
+   and the status dot ARE their own background, so a theme that changes the
+   selection bar must re-pick them against the BAR or they vanish. Cream reads
+   at 8.1:1 on the oxide band. */
+:root[data-ps-theme="rust"] .ps-session-list-button.is-selected .ps-owner-avatar {
+  background-color: var(--ps-owner-fg) !important;
+  color: var(--rust-cream-hi) !important;
+  box-shadow: 0 0 0 1.5px var(--rust-cream-hi);
+}
+:root[data-ps-theme="rust"] .ps-session-list-button.is-selected .ps-session-status-dot {
+  background-color: var(--rust-cream-hi) !important;
+}
+:root[data-ps-theme="rust"] .ps-session-list-button.is-selected .ps-session-status-dot.is-node {
+  background-color: transparent !important;
+  border-color: var(--rust-cream-hi) !important;
+}
+
+:root[data-ps-theme="rust"] .ps-input,
+:root[data-ps-theme="rust"] .ps-textarea,
+:root[data-ps-theme="rust"] .ps-prompt-input {
+  background: #16130f;
+  border: 1px solid var(--rust-edge);
+  border-radius: 5px;
+  color: var(--rust-cream);
+}
+:root[data-ps-theme="rust"] .ps-input:focus,
+:root[data-ps-theme="rust"] .ps-textarea:focus,
+:root[data-ps-theme="rust"] .ps-prompt-input:focus {
+  border-color: var(--rust-ferris);
+  outline: none;
+}
+
+:root[data-ps-theme="rust"] ::-webkit-scrollbar-thumb {
+  background: #5a3222;
+  border-radius: 4px;
+}
+:root[data-ps-theme="rust"] ::-webkit-scrollbar-track {
+  background: #221e1b;
+}
+
+
+/* ── Modal list group headings ──────────────────────────────────────────────
+   Used by the theme picker, which orders its items by group (VS Code / Retro /
+   Others) and emits one of these wherever the group changes. It is a LABEL,
+   not a row: it sits between buttons, is never selectable, and is hidden from
+   assistive tech because the list order already conveys the grouping. */
+.ps-modal-list-group {
+  padding: 12px 10px 4px;
+  font-size: var(--ps-font-size-dense);
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ps-muted);
+  border-bottom: 1px solid color-mix(in srgb, var(--ps-border) 55%, transparent);
+  margin-bottom: 2px;
+}
+/* No leading gap on the first heading — it would push the whole list off the
+   top of the scroll box. */
+.ps-modal-list-group:first-child {
+  padding-top: 2px;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SPONGEBOB — Bikini Bottom, not a yellow screen.
+   Scoped to [data-ps-theme="spongebob"]. The theme file keeps the ground deep
+   and the yellow rationed; this block spends the yellow in the one place it
+   belongs — the header, rendered as actual SPONGE. The pores are a stack of
+   radial-gradients, which is the only part of this that colours alone cannot
+   express, and it is what stops the theme reading as "blue theme, yellow
+   accent" and makes it read as the character.
+   ═══════════════════════════════════════════════════════════════════════════ */
+:root[data-ps-theme="spongebob"] {
+  --sb-sponge: #ffe01b;
+  /* Deepened from #e8c40f, which was only ~1.1:1 against the sponge and read
+     as a printing artefact rather than as holes. */
+  --sb-pore: #e0b000;
+  --sb-water: #07293c;
+  --sb-water-2: #0e3852;
+  --sb-kelp: #1d6a8c;
+  --sb-tie: #d2232a;
+  /* Rounded and hand-drawn, in that order of preference. Chalkboard ships on
+     macOS, so on this user's machine the first entry actually lands. */
+  --ps-ui-font: "Chalkboard SE", "Comic Sans MS", "Marker Felt", "Bradley Hand",
+    -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+:root[data-ps-theme="spongebob"] .portal-header,
+:root[data-ps-theme="spongebob"] .ps-panel-title {
+  font-family: var(--ps-ui-font);
+}
+
+/* The header is a slab of sponge: irregular pores over the yellow. The offsets
+   are deliberately non-uniform — evenly spaced holes read as polka dots. */
+:root[data-ps-theme="spongebob"] .portal-header {
+  background:
+    radial-gradient(circle at 8% 62%, var(--sb-pore) 5px, transparent 5.5px),
+    radial-gradient(circle at 17% 28%, var(--sb-pore) 3.5px, transparent 4px),
+    radial-gradient(circle at 29% 74%, var(--sb-pore) 4.5px, transparent 5px),
+    radial-gradient(circle at 41% 34%, var(--sb-pore) 3px, transparent 3.5px),
+    radial-gradient(circle at 53% 70%, var(--sb-pore) 5px, transparent 5.5px),
+    radial-gradient(circle at 64% 26%, var(--sb-pore) 4px, transparent 4.5px),
+    radial-gradient(circle at 77% 66%, var(--sb-pore) 3.5px, transparent 4px),
+    radial-gradient(circle at 88% 32%, var(--sb-pore) 4.5px, transparent 5px),
+    radial-gradient(circle at 96% 72%, var(--sb-pore) 3px, transparent 3.5px),
+    var(--sb-sponge);
+  border-bottom: 3px solid var(--sb-tie);
+  color: #23303a;
+}
+/* Everything in the header is INK on yellow — the theme's own foreground is a
+   sea white and would be invisible up there. */
+:root[data-ps-theme="spongebob"] .portal-header-kicker,
+:root[data-ps-theme="spongebob"] .portal-header-name {
+  color: #1a2630;
+}
+:root[data-ps-theme="spongebob"] .portal-header-email,
+:root[data-ps-theme="spongebob"] .portal-header-status,
+:root[data-ps-theme="spongebob"] .portal-header-identity.is-muted {
+  color: #4a3d10;
+}
+
+:root[data-ps-theme="spongebob"] .portal-logo-frame {
+  background: #1a7fa8;
+  border: 2px solid #23303a;
+  border-radius: 10px;
+  box-shadow: none;
+}
+
+/* Panes are soft-cornered — nothing in this show has a hard edge except the
+   sponge himself. */
+:root[data-ps-theme="spongebob"] .ps-panel {
+  background: var(--sb-water);
+  border: 1px solid var(--sb-kelp);
+  border-radius: 12px;
+}
+:root[data-ps-theme="spongebob"] .ps-panel.is-focused {
+  border-color: var(--sb-sponge);
+}
+:root[data-ps-theme="spongebob"] .ps-panel-header {
+  background: linear-gradient(180deg, #14496b 0%, var(--sb-water-2) 100%);
+  border-bottom: 1px solid var(--sb-kelp);
+  border-radius: 12px 12px 0 0;
+}
+:root[data-ps-theme="spongebob"] .ps-panel-title,
+:root[data-ps-theme="spongebob"] .ps-panel-title * {
+  /* !important for the inline TUI colour runs, as in every other chrome
+     theme here. */
+  color: var(--sb-sponge) !important;
+}
+
+:root[data-ps-theme="spongebob"] .ps-mini-button,
+:root[data-ps-theme="spongebob"] .ps-toolbar-button,
+:root[data-ps-theme="spongebob"] .ps-icon-button,
+:root[data-ps-theme="spongebob"] .ps-modal-button,
+:root[data-ps-theme="spongebob"] .ps-modal-close,
+:root[data-ps-theme="spongebob"] .ps-send-button,
+:root[data-ps-theme="spongebob"] .ps-artifact-overlay-btn,
+:root[data-ps-theme="spongebob"] .portal-primary-button,
+:root[data-ps-theme="spongebob"] .portal-secondary-button {
+  background: var(--sb-water-2);
+  border: 2px solid var(--sb-sponge);
+  border-radius: 999px;
+  color: var(--sb-sponge);
+}
+:root[data-ps-theme="spongebob"] .ps-mini-button:hover,
+:root[data-ps-theme="spongebob"] .ps-toolbar-button:hover,
+:root[data-ps-theme="spongebob"] .ps-icon-button:hover,
+:root[data-ps-theme="spongebob"] .ps-modal-button:hover,
+:root[data-ps-theme="spongebob"] .ps-send-button:hover,
+:root[data-ps-theme="spongebob"] .portal-primary-button:hover,
+:root[data-ps-theme="spongebob"] .portal-secondary-button:hover {
+  background: var(--sb-sponge);
+  color: var(--sb-water);
+}
+
+/* Selection is the sponge: a filled yellow block, type knocked to the water. */
+:root[data-ps-theme="spongebob"] .ps-list-button.is-selected,
+:root[data-ps-theme="spongebob"] .ps-session-list-button.is-selected {
+  background-color: var(--sb-sponge);
+  border-radius: 8px;
+  box-shadow: none;
+}
+:root[data-ps-theme="spongebob"] .ps-list-button.is-selected,
+:root[data-ps-theme="spongebob"] .ps-list-button.is-selected *,
+:root[data-ps-theme="spongebob"] .ps-session-list-button.is-selected,
+:root[data-ps-theme="spongebob"] .ps-session-list-button.is-selected * {
+  color: var(--sb-water) !important;
+}
+
+/* ── Selected-row marks ───────────────────────────────────────────
+   Inverted, like LCARS was: the bar is BRIGHT here, so the owner disc and the
+   status dot go dark instead of white. The water reads 12.4:1 on the yellow. */
+:root[data-ps-theme="spongebob"] .ps-session-list-button.is-selected .ps-owner-avatar {
+  background-color: var(--ps-owner-fg) !important;
+  color: var(--sb-water) !important;
+  box-shadow: 0 0 0 1.5px var(--sb-water);
+}
+:root[data-ps-theme="spongebob"] .ps-session-list-button.is-selected .ps-session-status-dot {
+  background-color: var(--sb-water) !important;
+}
+:root[data-ps-theme="spongebob"] .ps-session-list-button.is-selected .ps-session-status-dot.is-node {
+  background-color: transparent !important;
+  border-color: var(--sb-water) !important;
+}
+
+:root[data-ps-theme="spongebob"] .ps-input,
+:root[data-ps-theme="spongebob"] .ps-textarea,
+:root[data-ps-theme="spongebob"] .ps-prompt-input {
+  background: #05202f;
+  border: 2px solid var(--sb-kelp);
+  border-radius: 10px;
+  color: var(--sb-sponge);
+}
+:root[data-ps-theme="spongebob"] .ps-input:focus,
+:root[data-ps-theme="spongebob"] .ps-textarea:focus,
+:root[data-ps-theme="spongebob"] .ps-prompt-input:focus {
+  border-color: var(--sb-sponge);
+  outline: none;
+}
+
+:root[data-ps-theme="spongebob"] ::-webkit-scrollbar-thumb {
+  background: var(--sb-sponge);
+  border-radius: 999px;
+}
+:root[data-ps-theme="spongebob"] ::-webkit-scrollbar-track {
+  background: var(--sb-water-2);
 }

@@ -1,4 +1,4 @@
-import { createTheme } from "./helpers.js";
+import { createTheme, THEME_GROUP_OTHER } from "./helpers.js";
 
 /**
  * Workspace Dark — the admin-console language as a theme: tone-separated
@@ -12,6 +12,7 @@ const workspaceDarkTheme = createTheme({
     id: "workspace-dark",
     label: "Workspace Dark",
     description: "Flat workspace chrome: tone surfaces and hairlines instead of panel borders.",
+    group: THEME_GROUP_OTHER,
     page: {
         background: "#0d1117",
         foreground: "#e6edf3",

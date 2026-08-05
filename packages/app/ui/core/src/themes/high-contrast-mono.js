@@ -1,9 +1,10 @@
-import { createTheme } from "./helpers.js";
+import { createTheme, THEME_GROUP_OTHER } from "./helpers.js";
 
 const highContrastMonoTheme = createTheme({
     id: "high-contrast-mono",
     label: "High Contrast Mono",
     description: "Accessibility-first monochrome theme with cobalt selection and severity colors only where they matter.",
+    group: THEME_GROUP_OTHER,
     page: {
         background: "#000000",
         foreground: "#f8f8f2",

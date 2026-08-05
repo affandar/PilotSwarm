@@ -1,9 +1,10 @@
-import { createTheme } from "./helpers.js";
+import { createTheme, THEME_GROUP_VSCODE } from "./helpers.js";
 
 const noctisObscuroTheme = createTheme({
     id: "noctis-obscuro",
     label: "Noctis Obscuro",
     description: "Deep obsidian palette with cool blue accents and restrained contrast for long sessions.",
+    group: THEME_GROUP_VSCODE,
     page: {
         background: "#0b1117",
         foreground: "#c7d1da",

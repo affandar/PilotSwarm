@@ -2,6 +2,8 @@
 schemaVersion: 2
 version: 0.1.0
 name: equity-fundamentals
+startedBy:
+  - finance-research-lead
 title: Equity Fundamentals
 description: Analyzes business quality, SEC filings, financial statements, cash flow, balance sheets, and operating trends.
 tools:

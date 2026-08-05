@@ -378,6 +378,12 @@ function normalizeCreatableAgent(agent) {
         splashMobile: typeof agent?.splashMobile === "string" && agent.splashMobile.trim() ? agent.splashMobile : null,
         initialPrompt: typeof agent?.initialPrompt === "string" && agent.initialPrompt.trim() ? agent.initialPrompt : null,
         tools: Array.isArray(agent?.tools) ? agent.tools.filter(Boolean) : [],
+        // Composition, for the picker's per-package nesting. Baked agents
+        // rarely declare these, but a layered app's agents can — Waldemort's
+        // specialists are created by its router, and saying so puts them under
+        // it in the Built-in section instead of in a flat list of sixteen.
+        startedBy: Array.isArray(agent?.startedBy) ? agent.startedBy.filter(Boolean) : [],
+        supportsDirectStart: typeof agent?.supportsDirectStart === "boolean" ? agent.supportsDirectStart : undefined,
     };
 }
 
@@ -695,8 +701,13 @@ export class NodeSdkTransport {
                         splash: typeof agent.splash === "string" && agent.splash.trim() ? agent.splash : undefined,
                         splashMobile: typeof agent.splashMobile === "string" && agent.splashMobile.trim() ? agent.splashMobile : undefined,
                         initialPrompt: typeof agent.initialPrompt === "string" && agent.initialPrompt.trim() ? agent.initialPrompt : undefined,
+                        startedBy: Array.isArray(agent.startedBy) && agent.startedBy.length ? agent.startedBy : undefined,
+                        supportsDirectStart: typeof agent.supportsDirectStart === "boolean" ? agent.supportsDirectStart : undefined,
                         source: "package",
                         packageName: pkg.name,
+                        // Friendly section header. plugin.json "title" when the
+                        // author set one; the DNS-label name otherwise.
+                        packageTitle: pkg.active.manifest?.title || undefined,
                         packageSemver: pkg.active.semver,
                         scope: pkg.scope,
                         mine,

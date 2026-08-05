@@ -1,9 +1,10 @@
-import { createTheme } from "./helpers.js";
+import { createTheme, THEME_GROUP_VSCODE } from "./helpers.js";
 
 const gruvboxDarkTheme = createTheme({
     id: "gruvbox-dark",
     label: "Gruvbox Dark",
     description: "Retro warm palette with earthy browns, oranges, and high readability.",
+    group: THEME_GROUP_VSCODE,
     page: {
         background: "#282828",
         foreground: "#ebdbb2",

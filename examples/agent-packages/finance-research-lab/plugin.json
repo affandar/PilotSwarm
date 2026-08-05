@@ -1,6 +1,7 @@
 {
   "name": "finance-research-lab",
   "version": "0.1.0-dev.1",
+  "title": "Finance Research Lab",
   "description": "A source-backed stock and finance research desk with specialist agents and live market, SEC, ratio, and DCF tools.",
   "agents": [
     "agents/finance-research-lead.agent.md",

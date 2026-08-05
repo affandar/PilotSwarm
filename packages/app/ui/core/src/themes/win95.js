@@ -1,4 +1,4 @@
-import { createTheme } from "./helpers.js";
+import { createTheme, THEME_GROUP_RETRO } from "./helpers.js";
 
 // Windows 95, as it actually was — not a pastel homage.
 //
@@ -14,6 +14,7 @@ const win95Theme = createTheme({
     id: "win95",
     label: "Windows 95",
     description: "Authentic 3D-bevelled grey, navy title bars, teal desktop, and the 16-colour VGA terminal set.",
+    group: THEME_GROUP_RETRO,
     page: {
         // Desktop teal behind the panes — the single most recognizable colour
         // of the era, and it makes the grey panes read as raised windows.

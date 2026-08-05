@@ -1,12 +1,22 @@
-// selectChatBlocks — the message-level view behind the portal's rich
-// (desktop-style) chat renderer. Plain user/assistant prose comes through as
-// { kind: "message" } blocks carrying raw markdown + header facts; everything
-// with terminal-era special handling (system cards, dividers, splash) stays
-// pre-rendered as { kind: "lines" } through the same builders selectChatLines
-// uses. The TUI never calls this selector.
+// What survives the removal of the rich (desktop-style) chat renderer.
+//
+// `selectChatBlocks` and its `workspace-dark-rich` theme were deleted in the
+// 2026-08-05 theme pass, and nothing in the app references either any more —
+// so the tests that exercised the selector went with it, along with the whole
+// of chat-block-width-cache.test.mjs, which tested nothing else.
+//
+// Two contracts outlived the feature and are kept here:
+//   - "rich" must stay REJECTED as a chatViewMode, and a stored profile that
+//     still says "rich" must degrade to the transcript rather than wedging.
+//   - No theme may quietly claim `richChat`. The field was dropped from
+//     createTheme entirely, so this guards against it coming back on a theme
+//     without the renderer coming back with it.
+// Plus the entity-decoding and epoch-divider cases, which are about
+// selectChatLines and were only ever neighbours of the removed code.
+
 import test from "node:test";
 import assert from "node:assert/strict";
-import { appReducer, buildHistoryModel, createInitialState, decodeHtmlEntitiesForDisplay, getTheme, selectChatBlocks, selectChatLines } from "../src/index.js";
+import { appReducer, buildHistoryModel, createInitialState, decodeHtmlEntitiesForDisplay, getTheme, listThemes, selectChatLines } from "../src/index.js";
 
 function evt(seq, eventType, data) {
     return { sessionId: "s1", seq, eventType, data, createdAt: 1_700_000_000_000 + seq * 1000 };
@@ -22,51 +32,17 @@ function renderState(history) {
     };
 }
 
-test("plain user/assistant prose becomes message blocks with raw markdown", () => {
-    const model = buildHistoryModel([
-        evt(1, "user.message", { content: "run the **tests** please" }),
-        evt(2, "assistant.message", { content: "## Results\n\nAll `103` passed." }),
-    ], {});
-    const blocks = selectChatBlocks(renderState(model), 80, { tableMode: "sentinel" });
-
-    assert.equal(blocks.length, 2);
-    assert.equal(blocks[0].kind, "message");
-    assert.equal(blocks[0].role, "user");
-    assert.match(blocks[0].text, /run the \*\*tests\*\* please/);
-    assert.equal(blocks[0].header.roleLabel, "You");
-    assert.ok(blocks[0].header.time, "user message header carries a timestamp");
-
-    assert.equal(blocks[1].kind, "message");
-    assert.equal(blocks[1].role, "assistant");
-    assert.match(blocks[1].text, /## Results/, "markdown reaches the renderer unrendered");
-    assert.equal(blocks[1].header.roleLabel, "Agent");
-});
-
-test("epoch dividers and system-notice messages stay on the line path", () => {
-    const model = buildHistoryModel([
-        evt(1, "user.message", { content: "before" }),
-        evt(2, "session.epoch_committed", { fromEpoch: 0, toEpoch: 1, turnsArchived: 2 }),
-        // Prose with an embedded [SYSTEM: …] segment — buildChatMessageLines
-        // owns the split, so the whole message stays on the line path.
-        evt(3, "user.message", { content: "resuming now\n[SYSTEM: sub-agent finished]" }),
-    ], {});
-    const blocks = selectChatBlocks(renderState(model), 80, { tableMode: "sentinel" });
-
-    const kinds = blocks.map((block) => block.kind);
-    // buildHistoryModel strips [SYSTEM: …] segments before chat, so the third
-    // message reaches the selector as plain prose and rich-renders; the
-    // classifier's system-segment guard covers selector-injected messages
-    // (pending questions, error cards) that never pass through history.
-    assert.deepEqual(kinds, ["message", "lines", "message"]);
-    assert.equal(blocks[1].variant, "divider");
-    const dividerText = blocks[1].lines.flat().map((run) => run.text || "").join("");
-    assert.match(dividerText, /context regenerated/);
-    assert.equal(blocks[2].text, "resuming now");
-});
-
-// "rich" is a THEME property now (theme.richChat on workspace-dark-rich),
-// not a chatViewMode. The mode path must REJECT it everywhere, and stored
-// profiles that still say "rich" quietly land on the transcript.
+// "rich" was retired as a chatViewMode. The mode path must REJECT it
+// everywhere, and stored profiles that still say "rich" quietly land on the
+// transcript — that half of the contract is what this test is for, and it
+// still holds.
+//
+// It also used to assert `theme.richChat` on workspace-dark-rich. That theme
+// was deleted in the 2026-08-05 theme pass, no remaining theme sets the flag,
+// and NOTHING reads it — `richChat` survives only in createTheme's signature.
+// Re-pointing the assertion at another theme would have re-asserted a feature
+// that no longer exists, so it is dropped rather than moved. If the rich
+// transcript comes back, the flag and its test come back together.
 test("rich is a theme property, not a chatViewMode", () => {
     const initial = createInitialState({});
     assert.equal(initial.ui.chatViewMode, "transcript");
@@ -81,27 +57,12 @@ test("rich is a theme property, not a chatViewMode", () => {
     assert.equal(createInitialState({ chatViewMode: "rich" }).ui.chatViewMode, "transcript");
     assert.equal(createInitialState({ chatViewMode: "summary" }).ui.chatViewMode, "summary");
 
-    // The rich transcript rides the dedicated theme's flag.
-    assert.equal(getTheme("workspace-dark-rich")?.richChat, true, "rich theme carries the flag");
-    assert.equal(getTheme("workspace-dark")?.richChat, false, "plain workspace stays terminal-style");
-});
-
-test("empty chat yields no blocks and line/block parity holds for prose", () => {
-    assert.deepEqual(selectChatBlocks(renderState(buildHistoryModel([], {})), 80), []);
-
-    // Sanity: a transcript that renders in selectChatLines also renders in
-    // blocks — nothing silently dropped by classification.
-    const model = buildHistoryModel([
-        evt(1, "user.message", { content: "hello" }),
-        evt(2, "assistant.message", { content: "hi there" }),
-    ], {});
-    const lineText = selectChatLines(renderState(model), 80)
-        .flatMap((row) => (Array.isArray(row) ? row.map((seg) => seg.text || "") : [row.text || ""]))
-        .join("\n");
-    assert.match(lineText, /hello/);
-    assert.match(lineText, /hi there/);
-    const blocks = selectChatBlocks(renderState(model), 80);
-    assert.equal(blocks.filter((b) => b.kind === "message").length, 2);
+    // No theme opts into the rich transcript any more. `richChat` was dropped
+    // from createTheme outright, so the value is undefined rather than false —
+    // what matters is that nothing claims it, not which falsy value it holds.
+    for (const entry of listThemes()) {
+        assert.ok(!getTheme(entry.id).richChat, `${entry.id} must not claim the retired rich transcript`);
+    }
 });
 
 // A title that arrived already HTML-escaped (an LLM summarizing escaped
@@ -122,7 +83,7 @@ test("session titles decode HTML entities for display", () => {
 // the tool returns an optimistic ack on enqueue, so the agent reported
 // success while the epoch never flipped. Observed live on chk — two attempts
 // died on ARTIFACT_TOO_LARGE with nothing in the transcript.
-test("a failed regeneration surfaces inline in both views", () => {
+test("a failed regeneration surfaces inline in the transcript", () => {
     const model = buildHistoryModel([
         evt(1, "user.message", { content: "regenerate please" }),
         evt(2, "session.regenerate_failed", {
@@ -136,18 +97,13 @@ test("a failed regeneration surfaces inline in both views", () => {
     assert.ok(item, "a regen-failed chat item is produced");
     assert.equal(item.stage, "requested");
 
-    // Terminal view.
+    // There is only one view now — the rich renderer that was the other half
+    // of "both views" is gone.
     const lineText = selectChatLines(renderState(model), 100)
         .flatMap((row) => (Array.isArray(row) ? row.map((seg) => seg.text || "") : [row.text || ""]))
         .join("");
     assert.match(lineText, /regeneration failed at requested/);
     assert.match(lineText, /Artifact too large/);
-
-    // Rich view — routed down the line path, not rendered as a chat message.
-    const blocks = selectChatBlocks(renderState(model), 100, { tableMode: "sentinel" });
-    const failedBlock = blocks.find((b) => b.kind === "lines"
-        && b.lines.flat().map((r) => r.text || "").join("").includes("regeneration failed"));
-    assert.ok(failedBlock, "rich view renders the failure as a divider block");
 });
 
 test("regenerate_failed survives backward chat-history paging", async () => {

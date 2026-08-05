@@ -1,9 +1,10 @@
-import { createTheme } from "./helpers.js";
+import { createTheme, THEME_GROUP_VSCODE } from "./helpers.js";
 
 const catppuccinMochaTheme = createTheme({
     id: "catppuccin-mocha",
     label: "Catppuccin Mocha",
     description: "Creamy dark palette with soft pastels and high legibility.",
+    group: THEME_GROUP_VSCODE,
     page: {
         background: "#1e1e2e",
         foreground: "#cdd6f4",

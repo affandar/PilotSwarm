@@ -46,18 +46,68 @@ function parseFrontmatter(content: string): { meta: Record<string, string>; body
     }
 
     const yamlBlock = content.slice(4, endIdx); // skip opening "---\n"
+
+    // Block scalars (`|` literal, `>` folded). Without this a
+    // `description: |` frontmatter stores the literal "|" and silently drops
+    // the indented lines underneath it — which is exactly what shipped: the
+    // agent-manager package's skill listed its description as "|" in every
+    // package listing and picker. Same class of bug as the one fixed in
+    // agent-loader's parser; this second parser never got the fix.
+    let blockKey: string | null = null;
+    let blockStyle: "|" | ">" | null = null;
+    let blockLines: string[] = [];
+
+    const flushBlock = () => {
+        if (!blockKey) return;
+        // Dedent by the block's own indentation, so the stored value does not
+        // carry the frontmatter's layout into every consumer.
+        const indents = blockLines
+            .filter((line) => line.trim())
+            .map((line) => line.length - line.trimStart().length);
+        const strip = indents.length ? Math.min(...indents) : 0;
+        const dedented = blockLines.map((line) => line.slice(strip));
+        meta[blockKey] = blockStyle === ">"
+            ? dedented.map((line) => line.trim()).filter(Boolean).join(" ")
+            : dedented.join("\n").replace(/\n+$/, "");
+        blockKey = null;
+        blockStyle = null;
+        blockLines = [];
+    };
+
     for (const line of yamlBlock.split("\n")) {
+        if (blockKey) {
+            // A new top-level key ends the block; anything else belongs to it.
+            // Blank lines are kept — they are paragraph breaks in a literal
+            // block, and dropping them would reflow the text.
+            if (/^[A-Za-z_]/.test(line) && line.includes(":")) {
+                flushBlock();
+            } else {
+                blockLines.push(line);
+                continue;
+            }
+        }
+
         const colonIdx = line.indexOf(":");
         if (colonIdx === -1) continue;
         const key = line.slice(0, colonIdx).trim();
         let value = line.slice(colonIdx + 1).trim();
+        if (!key) continue;
+
+        if (value === "|" || value === ">") {
+            blockKey = key;
+            blockStyle = value;
+            blockLines = [];
+            continue;
+        }
+
         // Strip surrounding quotes
         if ((value.startsWith('"') && value.endsWith('"')) ||
             (value.startsWith("'") && value.endsWith("'"))) {
             value = value.slice(1, -1);
         }
-        if (key) meta[key] = value;
+        meta[key] = value;
     }
+    flushBlock();
 
     const body = content.slice(endIdx + 4).trimStart(); // skip closing "---\n"
     return { meta, body };

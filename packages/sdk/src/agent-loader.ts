@@ -131,8 +131,40 @@ export interface AgentConfig {
      * agents use SemVer; app authors may use any meaningful non-empty string.
      */
     version?: string;
+    /**
+     * Names of the agents that spawn this one. Purely descriptive — it does
+     * not gate anything at runtime; the picker uses it to nest an agent under
+     * whichever entry point creates it, so a package's composition is visible
+     * before you start a session with it.
+     *
+     * An agent with no `startedBy` is an ENTRY POINT of its package. A package
+     * may have one, several, or none, which is why there is no `main` field to
+     * keep honest — the shape falls out of the graph.
+     */
+    startedBy?: string[];
+    /**
+     * Whether a person may start this agent as a top-level session directly.
+     * Defaults to `true` when `startedBy` is absent and `false` when it is
+     * present: something written to be called by another agent usually reads
+     * as broken when started cold. Set it explicitly to publish a sub-agent
+     * that is also useful on its own.
+     */
+    supportsDirectStart?: boolean;
     /** Absolute path the agent was loaded from, when known. Used for diagnostics. */
     sourcePath?: string;
+}
+
+/**
+ * `supportsDirectStart` with its default applied. The default is the inverse
+ * of "is a sub-agent", so a package that declares neither field behaves
+ * exactly as it did before the fields existed.
+ */
+export function agentSupportsDirectStart(agent: {
+    startedBy?: string[] | null;
+    supportsDirectStart?: boolean | null;
+} | null | undefined): boolean {
+    if (typeof agent?.supportsDirectStart === "boolean") return agent.supportsDirectStart;
+    return !(Array.isArray(agent?.startedBy) && agent.startedBy.length > 0);
 }
 
 // ─── Frontmatter Parser ─────────────────────────────────────────
@@ -152,10 +184,10 @@ const BLOCK_SCALAR_KEYS = new Set(["splash", "splashMobile", "initialPrompt", "d
  * Handles simple `key: value` pairs and YAML list syntax for `tools` and `skills`.
  */
 function parseAgentFrontmatter(content: string): {
-    meta: { name?: string; description?: string; tools?: string[]; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; splashMobile?: string; initialPrompt?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string };
+    meta: { name?: string; description?: string; tools?: string[]; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; splashMobile?: string; initialPrompt?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string; startedBy?: string[]; supportsDirectStart?: boolean };
     body: string;
 } {
-    const meta: { name?: string; description?: string; tools?: string[]; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; splashMobile?: string; initialPrompt?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string } = {};
+    const meta: { name?: string; description?: string; tools?: string[]; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; splashMobile?: string; initialPrompt?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string; startedBy?: string[]; supportsDirectStart?: boolean } = {};
 
     if (!content.startsWith("---")) {
         return { meta, body: content };
@@ -214,7 +246,7 @@ function parseAgentFrontmatter(content: string): {
         if (trimmed.startsWith("#")) continue;
 
         // YAML list item (e.g. "  - view")
-        if (trimmed.startsWith("- ") && (currentKey === "tools" || currentKey === "skills" || currentKey === "mcpServers")) {
+        if (trimmed.startsWith("- ") && (currentKey === "tools" || currentKey === "skills" || currentKey === "mcpServers" || currentKey === "startedBy")) {
             let item = trimmed.slice(2).trim();
             if ((item.startsWith('"') && item.endsWith('"') && item.length >= 2) ||
                 (item.startsWith("'") && item.endsWith("'") && item.length >= 2)) {
@@ -223,6 +255,9 @@ function parseAgentFrontmatter(content: string): {
             if (currentKey === "tools") {
                 if (!meta.tools) meta.tools = [];
                 meta.tools.push(item);
+            } else if (currentKey === "startedBy") {
+                if (!meta.startedBy) meta.startedBy = [];
+                meta.startedBy.push(item);
             } else if (currentKey === "skills") {
                 if (!meta.skills) meta.skills = [];
                 meta.skills.push(item);
@@ -283,6 +318,17 @@ function parseAgentFrontmatter(content: string): {
             meta.mcpServers = value.replace(/[\[\]]/g, "").split(",").map(s => s.trim()).filter(Boolean);
         } else if (key === "mcpServers" && !value) {
             meta.mcpServers = [];
+        } else if (key === "startedBy" && value) {
+            // Inline array: startedBy: [editor-in-chief, triager]
+            meta.startedBy = value.replace(/[\[\]]/g, "").split(",").map(s => s.trim()).filter(Boolean);
+        } else if (key === "startedBy" && !value) {
+            meta.startedBy = [];
+        } else if (key === "supportsDirectStart" && (value === "true" || value === "false")) {
+            // Explicit only. A bare `supportsDirectStart:` with no value must
+            // stay UNDECLARED so the default still applies — reading it as
+            // false (which `value === "true"` would) silently drops an entry
+            // point out of the startable set over a missing word.
+            meta.supportsDirectStart = value === "true";
         } else if (key === "inheritDefaultMcpServers") {
             meta.inheritDefaultMcpServers = value === "true";
         } else if (key === "splash") {
@@ -371,6 +417,8 @@ export function loadAgentFiles(agentsDir: string): AgentConfig[] {
                 harvester: crawler,
                 schemaVersion: meta.schemaVersion,
                 version: meta.version,
+                startedBy: meta.startedBy && meta.startedBy.length > 0 ? meta.startedBy : undefined,
+                supportsDirectStart: meta.supportsDirectStart,
                 sourcePath: filePath,
             });
             if (meta.schemaVersion === undefined) {

@@ -1,9 +1,10 @@
-import { createTheme } from "./helpers.js";
+import { createTheme, THEME_GROUP_VSCODE } from "./helpers.js";
 
 const noctisTheme = createTheme({
     id: "noctis",
     label: "Noctis",
     description: "Dark cyan-tinted palette with warm and cold medium contrast accents.",
+    group: THEME_GROUP_VSCODE,
     page: {
         background: "#052529",
         foreground: "#b2cacd",

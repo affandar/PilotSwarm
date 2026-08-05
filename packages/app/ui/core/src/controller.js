@@ -713,6 +713,249 @@ function formatAgentDisplayTitle(agentName, title) {
         : "Agent";
 }
 
+// ─── Agent picker: sections and composition ─────────────────────────────
+//
+// The picker used to be one flat list with `── Shared ──` / `── My agents ──`
+// rules through it. That reads fine at six agents and not at all at forty:
+// a deployment's own roster and four installed packages arrive as one
+// undifferentiated column, and nothing says which agents belong together.
+//
+// So: two sections. BUILT-IN is every agent baked into the deployment (base
+// PilotSwarm plus whatever the layered app ships), INSTALLED is one collapsed
+// subsection per agent package. Inside a section, an agent that declares
+// `startedBy` nests under the agent that starts it — a package's shape is
+// visible before you start a session with it.
+
+export const AGENT_PICKER_BUILTIN_KEY = "builtin";
+// Installed packages split by ownership rather than sitting under one heading.
+// "shared with the deployment" and "mine, private" are different trust stories
+// — a shared package's agents run with the fleet's identity — and a user with
+// only one kind should never be asked to read past a heading for the other.
+export const AGENT_PICKER_SHARED_KEY = "installed:shared";
+export const AGENT_PICKER_MINE_KEY = "installed:mine";
+
+export function agentPickerPackageKey(agent) {
+    const scope = String(agent?.packageScope || agent?.scope || "shared");
+    const owner = String(agent?.ownerLabel || "");
+    return `pkg:${scope}:${owner}:${String(agent?.packageName || "")}`;
+}
+
+// Same normalization the agent RESOLVER uses (see normalizeAgentName in
+// agent-package-format): the runtime matches names case- and
+// punctuation-insensitively, so "Editor_In_Chief" and "editor-in-chief" are
+// one agent. Matching on the raw string here would nest by a stricter rule
+// than the thing it is describing.
+function normalizeAgentKey(value) {
+    return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+/**
+ * Order a set of agents as a forest: entry points first, each immediately
+ * followed by the agents it creates.
+ *
+ * An entry point is an agent no OTHER agent in the same set creates. That is
+ * the whole definition — there is no `main` field to declare and keep honest,
+ * and a package with one, several or zero entry points all render correctly
+ * from the same rule.
+ *
+ * `startedBy` names that do not resolve inside the set are ignored rather than
+ * treated as errors: a package may legitimately be called by a deployment
+ * agent, and an agent must never vanish from the picker because of a typo.
+ */
+function orderAgentsByComposition(agents) {
+    const byName = new Map();
+    for (const agent of agents) {
+        if (agent?.agentName) byName.set(normalizeAgentKey(agent.agentName), agent);
+    }
+
+    const childrenOf = new Map();
+    const parentOf = new Map();
+    for (const agent of agents) {
+        const self = normalizeAgentKey(agent.agentName);
+        const parents = (agent.startedBy || [])
+            .map((name) => normalizeAgentKey(name))
+            .filter((name) => name && byName.has(name) && name !== self);
+        if (parents.length === 0) continue;
+        // First resolvable creator wins the nesting slot. An agent started by
+        // two entry points is real; showing it twice would double-count the
+        // section and make Enter ambiguous.
+        const parent = parents[0];
+        parentOf.set(agent, parent);
+        if (!childrenOf.has(parent)) childrenOf.set(parent, []);
+        childrenOf.get(parent).push(agent);
+    }
+
+    // Whether a name in `startedBy` resolved to an agent in THIS set is the
+    // signal, not whether the field was present. A package that names a
+    // creator in another package — or misspells one — has an agent that
+    // nothing here starts, and it must stay an entry point rather than
+    // becoming permanently unstartable in a section that still claims it as
+    // one. (This is where the default for `supportsDirectStart` is applied;
+    // an explicit value always wins.)
+    const isNested = (agent) => parentOf.has(agent);
+    const startable = (agent) => (
+        typeof agent.supportsDirectStart === "boolean"
+            ? agent.supportsDirectStart
+            : !isNested(agent)
+    );
+
+    const ordered = [];
+    const emitted = new Set();
+    const emit = (agent, depth, parentName) => {
+        // Also the cycle guard: a → b → a stops here rather than recursing.
+        if (emitted.has(agent)) return;
+        emitted.add(agent);
+        ordered.push({
+            ...agent,
+            depth,
+            parentAgentName: parentName || null,
+            supportsDirectStart: startable(agent),
+        });
+        for (const child of childrenOf.get(normalizeAgentKey(agent.agentName)) || []) {
+            emit(child, depth + 1, agent.agentName);
+        }
+    };
+
+    for (const agent of agents) {
+        if (isNested(agent)) continue;
+        emit(agent, 0, null);
+    }
+    // Whatever is left is inside a cycle. Promote the CYCLE MEMBERS — the ones
+    // whose parent chain returns to themselves — and let the recursion carry
+    // their descendants down at the right depth. Promoting in array order
+    // instead would surface an ordinary sub-agent as an entry point purely
+    // because it happened to be listed before the cycle it hangs off.
+    const inCycle = (agent) => {
+        const seen = new Set();
+        let current = agent;
+        while (current && !seen.has(current)) {
+            seen.add(current);
+            current = byName.get(parentOf.get(current));
+            if (current === agent) return true;
+        }
+        return false;
+    };
+    for (const agent of agents) {
+        if (!emitted.has(agent) && inCycle(agent)) emit(agent, 0, null);
+    }
+    // Belt and braces: nothing may be dropped, whatever shape the graph is in.
+    for (const agent of agents) emit(agent, 0, null);
+    return ordered;
+}
+
+/**
+ * Flatten the catalog into the VISIBLE row list the picker navigates.
+ *
+ * Section headings are items, not decoration: arrow keys walk onto them and
+ * Enter toggles them, so the whole dialog is reachable without a mouse. Rows
+ * inside a collapsed section are simply absent, which is what keeps
+ * `selectedIndex` a plain index into this array.
+ */
+/** Where the cursor starts. See the call site for why it is not just 0. */
+export function agentPickerInitialIndex(items = []) {
+    const firstAgent = items.findIndex((item) => item.kind !== "section");
+    if (firstAgent >= 0) return firstAgent;
+    const firstClosed = items.findIndex((item) => item.kind === "section" && item.collapsed);
+    return firstClosed >= 0 ? firstClosed : 0;
+}
+
+export function buildAgentPickerItems(catalog = [], collapsedKeys = [], genericItem = null) {
+    const collapsed = new Set(collapsedKeys);
+    const items = [];
+
+    const builtins = catalog.filter((agent) => agent.builtin);
+    const packaged = catalog.filter((agent) => !agent.builtin);
+
+    // Generic sits ABOVE everything, outside both sections and outside every
+    // collapse. It is not an agent — it is the absence of one — and it is the
+    // most common pick, so it must never be a click away behind a twisty.
+    if (genericItem) items.push({ ...genericItem, depth: 0 });
+
+    if (builtins.length > 0) {
+        const builtinAgents = orderAgentsByComposition(builtins);
+        items.push({
+            id: `section:${AGENT_PICKER_BUILTIN_KEY}`,
+            kind: "section",
+            sectionKind: "builtin",
+            sectionKey: AGENT_PICKER_BUILTIN_KEY,
+            title: "Built-in",
+            meta: `${builtinAgents.length} agent${builtinAgents.length === 1 ? "" : "s"}`,
+            collapsed: collapsed.has(AGENT_PICKER_BUILTIN_KEY),
+            depth: 0,
+        });
+        if (!collapsed.has(AGENT_PICKER_BUILTIN_KEY)) {
+            // One level in from the header, so the section reads as a
+            // container rather than as a label floating above a flat list.
+            items.push(...builtinAgents.map((agent) => ({ ...agent, depth: agent.depth + 1 })));
+        }
+    }
+
+    // An empty category is omitted entirely rather than shown reading "0
+    // packages" — a heading whose only content is its own emptiness is noise.
+    for (const [sectionKey, title, belongs] of [
+        [AGENT_PICKER_SHARED_KEY, "Installed · Shared", (agent) => agent.group !== "mine"],
+        [AGENT_PICKER_MINE_KEY, "Installed · Yours", (agent) => agent.group === "mine"],
+    ]) {
+        const members = packaged.filter(belongs);
+        if (members.length === 0) continue;
+
+        const groups = new Map();
+        for (const agent of members) {
+            const key = agentPickerPackageKey(agent);
+            if (!groups.has(key)) groups.set(key, []);
+            groups.get(key).push(agent);
+        }
+        items.push({
+            id: `section:${sectionKey}`,
+            kind: "section",
+            sectionKind: "installed",
+            sectionKey,
+            title,
+            meta: `${groups.size} package${groups.size === 1 ? "" : "s"}`,
+            collapsed: collapsed.has(sectionKey),
+            depth: 0,
+        });
+        if (collapsed.has(sectionKey)) continue;
+
+        const keys = [...groups.keys()].sort((a, b) => {
+            const at = groups.get(a)[0];
+            const bt = groups.get(b)[0];
+            return String(at.packageTitle || at.packageName || "")
+                .localeCompare(String(bt.packageTitle || bt.packageName || ""));
+        });
+        for (const key of keys) {
+            const packageAgents = orderAgentsByComposition(groups.get(key));
+            const first = packageAgents[0] || {};
+            const entries = packageAgents.filter((agent) => agent.depth === 0).length;
+            items.push({
+                id: `section:${key}`,
+                kind: "section",
+                sectionKind: "package",
+                sectionKey: key,
+                title: first.packageTitle || first.packageName || "Package",
+                packageName: first.packageName || null,
+                packageSemver: first.packageSemver || null,
+                packageScope: first.packageScope || null,
+                ownerLabel: first.ownerLabel || null,
+                mine: first.group === "mine",
+                // No scope badge: the section it sits in already says which
+                // shelf this is, and repeating "[shared]" on every row under
+                // "Installed · Shared" is the kind of noise that makes a list
+                // harder to scan, not easier.
+                meta: `${entries} ${entries === 1 ? "entry" : "entries"} · ${packageAgents.length} agent${packageAgents.length === 1 ? "" : "s"}`,
+                collapsed: collapsed.has(key),
+                depth: 1,
+            });
+            if (collapsed.has(key)) continue;
+            // Package rows sit one level in from their section header, so
+            // their sub-agents start at depth 2.
+            items.push(...packageAgents.map((agent) => ({ ...agent, depth: agent.depth + 2 })));
+        }
+    }
+
+    return items;
+}
+
 function buildPromptAttachmentToken(filename) {
     return `📎 ${String(filename || "").trim()}`;
 }
@@ -4417,9 +4660,14 @@ export class PilotSwarmUiController {
         const activeSession = state.sessions?.activeSessionId
             ? state.sessions.byId[state.sessions.activeSessionId]
             : null;
-        const groupId = activeSession?.isGroup
-            ? activeSession.groupId || sessionGroupIdFromRowId(activeSession.sessionId)
-            : activeSession?.groupId;
+        // ONLY when the selected row is the folder itself. Selecting a folder
+        // and pressing New is the user pointing at it; inheriting the group
+        // from a selected MEMBER is not — it filed new sessions inside
+        // whichever folder happened to hold the last session read, so a new
+        // session appeared buried mid-list instead of at the end where the
+        // sort puts an unplaced row.
+        if (!activeSession?.isGroup) return options;
+        const groupId = activeSession.groupId || sessionGroupIdFromRowId(activeSession.sessionId);
         return groupId ? { ...options, groupId } : options;
     }
 
@@ -4503,9 +4751,9 @@ export class PilotSwarmUiController {
             return;
         }
 
-        // Display order IS item order (Shared → My agents → Generic) so
-        // keyboard navigation walks the list visually; the selector only
-        // inserts non-clickable group headings between the segments.
+        // The CATALOG (every agent, section-agnostic). The visible row list is
+        // derived from it by buildAgentPickerItems, which is re-run whenever a
+        // section is expanded or collapsed.
         const agentItems = [];
         for (const agent of agents) {
             const agentName = String(agent?.name || "").trim();
@@ -4533,17 +4781,24 @@ export class PilotSwarmUiController {
                     ? "mine"
                     : "shared",
                 packageName: agent?.packageName || null,
+                packageTitle: agent?.packageTitle || null,
                 packageSemver: agent?.packageSemver || null,
                 packageScope: agent?.scope || null,
+                ownerLabel: agent?.ownerLabel || null,
+                startedBy: Array.isArray(agent?.startedBy) ? agent.startedBy.filter(Boolean) : [],
+                // RAW: undefined means "not declared". The default is applied
+                // in orderAgentsByComposition, which is the only place that
+                // knows whether a creator actually resolved.
+                supportsDirectStart: typeof agent?.supportsDirectStart === "boolean" ? agent.supportsDirectStart : undefined,
                 builtin: agent?.source !== "package",
             });
         }
-        const items = [
+        const catalog = [
             ...agentItems.filter((item) => item.group === "shared"),
             ...agentItems.filter((item) => item.group === "mine"),
         ];
-        if (allowGeneric) {
-            items.push({
+        const genericItem = allowGeneric
+            ? {
                 id: "__generic__",
                 kind: "generic",
                 group: "generic",
@@ -4553,16 +4808,39 @@ export class PilotSwarmUiController {
                 splash: null,
                 splashMobile: null,
                 initialPrompt: null,
-            });
-        }
+                supportsDirectStart: true,
+            }
+            : null;
+
+        // EVERYTHING starts closed. The dialog opens as a short menu of
+        // categories — Generic, then whichever of Built-in / Shared / Yours
+        // this deployment actually has — and you open the one you want. A
+        // section expanded by default is a section every other user has to
+        // scroll past.
+        const collapsed = [
+            AGENT_PICKER_BUILTIN_KEY,
+            AGENT_PICKER_SHARED_KEY,
+            AGENT_PICKER_MINE_KEY,
+            ...new Set(catalog.filter((item) => !item.builtin).map((item) => agentPickerPackageKey(item))),
+        ];
+        const items = buildAgentPickerItems(catalog, collapsed, genericItem);
 
         this.dispatch({
             type: "ui/modal",
             modal: {
                 type: "sessionAgentPicker",
                 title: "Select agent for new session",
+                catalog,
+                genericItem,
+                collapsed,
                 items,
-                selectedIndex: 0,
+                // Land somewhere Enter does something useful. First choice is a
+                // real agent row; with none visible (no generic, no baked
+                // agents, every package closed) fall back to the first CLOSED
+                // package, whose Enter opens it. Landing on an open section
+                // header — which findIndex's -1 used to do via Math.max — made
+                // the very first keystroke collapse the whole list.
+                selectedIndex: agentPickerInitialIndex(items),
                 previousFocus,
                 sessionOptions: options,
             },
@@ -4838,10 +5116,16 @@ export class PilotSwarmUiController {
     }
 
     openThemePicker() {
+        // listThemes() is already ordered by group then label, so the picker
+        // renders a heading wherever `group` changes rather than re-sorting.
+        // The list itself stays FLAT: headings are drawn between rows, never
+        // as rows, so selectedIndex keeps addressing themes and arrow-key
+        // navigation never lands on a heading.
         const themes = listThemes().map((theme) => ({
             id: theme.id,
             label: theme.label,
             description: theme.description,
+            group: theme.group,
             page: theme.page,
             terminal: theme.terminal,
             tui: theme.tui,
@@ -5839,6 +6123,72 @@ export class PilotSwarmUiController {
         this.dispatch({ type: "ui/status", text: "Connected" });
     }
 
+    /**
+     * Open or close one agent-picker section.
+     *
+     * The visible row list is rebuilt from the catalog, and selection is
+     * carried by ITEM ID rather than index: collapsing a section above the
+     * cursor shifts every index below it, and re-using the old number would
+     * silently move the highlight onto a different agent.
+     */
+    toggleAgentPickerSection(sectionKey, force = null) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "sessionAgentPicker" || !sectionKey) return;
+        const collapsed = new Set(modal.collapsed || []);
+        const shouldCollapse = force === null ? !collapsed.has(sectionKey) : force;
+        if (shouldCollapse === collapsed.has(sectionKey)) return;
+        if (shouldCollapse) collapsed.add(sectionKey);
+        else collapsed.delete(sectionKey);
+
+        const nextCollapsed = [...collapsed];
+        const items = buildAgentPickerItems(modal.catalog || [], nextCollapsed, modal.genericItem || null);
+        const selectedId = modal.items?.[modal.selectedIndex || 0]?.id;
+        let nextIndex = items.findIndex((item) => item.id === selectedId);
+        if (nextIndex < 0) {
+            // The selected row was inside the section that just closed — land
+            // on that section's own header, which is where it went.
+            nextIndex = Math.max(0, items.findIndex((item) => item.sectionKey === sectionKey));
+        }
+        this.dispatch({
+            type: "ui/modal",
+            modal: { ...modal, collapsed: nextCollapsed, items, selectedIndex: nextIndex },
+        });
+    }
+
+    /**
+     * Left/right on the agent picker. Right opens a closed section (or steps
+     * into it); left closes an open one, or jumps to the parent header when
+     * the cursor is already on a leaf — the same shape as the session tree.
+     */
+    moveAgentPickerSection(delta) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "sessionAgentPicker") return false;
+        const items = Array.isArray(modal.items) ? modal.items : [];
+        const index = Math.max(0, Math.min(Number(modal.selectedIndex) || 0, items.length - 1));
+        const item = items[index];
+        if (!item) return false;
+
+        if (delta > 0) {
+            if (item.kind === "section" && item.collapsed) {
+                this.toggleAgentPickerSection(item.sectionKey, false);
+                return true;
+            }
+            return false;
+        }
+
+        if (item.kind === "section" && !item.collapsed) {
+            this.toggleAgentPickerSection(item.sectionKey, true);
+            return true;
+        }
+        for (let i = index - 1; i >= 0; i -= 1) {
+            if (items[i].kind === "section" && items[i].depth < item.depth) {
+                this.dispatch({ type: "ui/modalSelection", index: i });
+                return true;
+            }
+        }
+        return false;
+    }
+
     moveModalSelection(delta) {
         const modal = this.getState().ui.modal;
         if (!modal) return;
@@ -5883,6 +6233,10 @@ export class PilotSwarmUiController {
 
     moveModalPane(delta) {
         const modal = this.getState().ui.modal;
+        if (modal?.type === "sessionAgentPicker") {
+            this.moveAgentPickerSection(delta);
+            return;
+        }
         if (!modal || (modal.type !== "logFilter" && modal.type !== "filesFilter" && modal.type !== "historyFormat") || !Array.isArray(modal.items) || modal.items.length === 0) return;
         const current = Math.max(0, Number(modal.selectedIndex) || 0);
         const next = (current + delta + modal.items.length) % modal.items.length;
@@ -6052,6 +6406,21 @@ export class PilotSwarmUiController {
         }
         if (modal.type === "sessionAgentPicker") {
             const item = modal.items?.[modal.selectedIndex || 0];
+            // Enter on a heading opens or closes it; the dialog stays up.
+            if (item?.kind === "section") {
+                this.toggleAgentPickerSection(item.sectionKey);
+                return;
+            }
+            // A called-only agent is rendered so the package's composition is
+            // visible, but starting one cold is not a thing you can do. Refuse
+            // here rather than letting the create fail after the dialog closes.
+            if (item && item.kind !== "generic" && item.supportsDirectStart === false) {
+                this.dispatch({
+                    type: "ui/status",
+                    text: `${item.title || item.agentName} is created by another agent and cannot be started on its own`,
+                });
+                return;
+            }
             const previousFocus = modal.previousFocus;
             const sessionOptions = modal.sessionOptions || {};
             this.dispatch({ type: "ui/modal", modal: null });

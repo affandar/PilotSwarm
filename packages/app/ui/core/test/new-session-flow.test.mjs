@@ -80,7 +80,8 @@ test("New falls back to the agent picker when generic sessions are disabled and 
     assert.equal(calls.createSession.length, 0);
     const modal = store.getState().ui.modal;
     assert.equal(modal?.type, "sessionAgentPicker");
-    assert.deepEqual(modal.items.map((item) => item.agentName), ["alpha"]);
+    // The picker opens fully collapsed; the catalog is what this test is about.
+    assert.deepEqual(modal.catalog.map((item) => item.agentName), ["alpha"]);
 });
 
 test("New fast-start inherits the active group", async () => {
@@ -116,11 +117,17 @@ test("New+Model opens the agent picker after model selection instead of fast-cre
     const modal = store.getState().ui.modal;
     assert.equal(modal?.type, "sessionAgentPicker");
     assert.equal(modal.sessionOptions.model, "openai:gpt-test");
-    // Display order: Shared agents first, Generic LAST under its separator
-    // (agent-packages picker contract).
-    assert.deepEqual(modal.items.map((item) => item.kind === "generic" ? "generic" : item.agentName), ["alpha", "generic"]);
+    // Generic leads the whole list, outside every section: it is the most
+    // common pick, and it used to sit below every specialist the deployment
+    // shipped. Everything else opens closed.
+    assert.deepEqual(
+        modal.items.map((item) => (item.kind === "section" ? `#${item.sectionKey}` : "generic")),
+        ["generic", "#builtin"],
+    );
 
-    // Default selection is the first agent; confirming creates FOR the agent.
+    controller.toggleAgentPickerSection("builtin");
+    const opened = store.getState().ui.modal;
+    store.dispatch({ type: "ui/modal", modal: { ...opened, selectedIndex: opened.items.findIndex((item) => item.agentName === "alpha") } });
     await controller.confirmModal();
     assert.equal(calls.createSessionForAgent.length, 1);
     assert.equal(calls.createSessionForAgent[0].agentName, "alpha");
@@ -159,8 +166,9 @@ test("New+Model with reasoning effort opens the agent picker with model and effo
     assert.equal(modal.sessionOptions.model, "openai:gpt-reasoning");
     assert.equal(modal.sessionOptions.reasoningEffort, "high");
 
-    // Item 0 is the agent (Shared first, Generic last).
-    store.dispatch({ type: "ui/modal", modal: { ...modal, selectedIndex: 0 } });
+    controller.toggleAgentPickerSection("builtin");
+    const opened = store.getState().ui.modal;
+    store.dispatch({ type: "ui/modal", modal: { ...opened, selectedIndex: opened.items.findIndex((item) => item.agentName === "alpha") } });
     await controller.confirmModal();
     assert.equal(calls.createSessionForAgent.length, 1);
     assert.equal(calls.createSessionForAgent[0].agentName, "alpha");

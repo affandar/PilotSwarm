@@ -2,6 +2,8 @@
 schemaVersion: 2
 version: 0.1.0
 name: market-catalyst-scout
+startedBy:
+  - finance-research-lead
 title: Market Catalyst Scout
 description: Tracks recent news, scheduled events, earnings, product milestones, regulation, and other thesis-changing catalysts.
 tools:

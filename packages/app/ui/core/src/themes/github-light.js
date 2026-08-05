@@ -1,9 +1,10 @@
-import { createTheme } from "./helpers.js";
+import { createTheme, THEME_GROUP_VSCODE } from "./helpers.js";
 
 const githubLightTheme = createTheme({
     id: "github-light",
     label: "GitHub Light",
     description: "GitHub light palette with crisp neutrals, blue actions, and high-contrast status colors.",
+    group: THEME_GROUP_VSCODE,
     page: {
         // Canvas, deliberately NOT the same as tui.surface (#ffffff). When the
         // page and the panes are both pure white there is nothing for a pane to

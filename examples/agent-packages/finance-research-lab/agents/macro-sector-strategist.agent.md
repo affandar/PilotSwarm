@@ -2,6 +2,8 @@
 schemaVersion: 2
 version: 0.1.0
 name: macro-sector-strategist
+startedBy:
+  - finance-research-lead
 title: Macro and Sector Strategist
 description: Connects rates, inflation, FX, commodities, policy, and sector structure to company earnings and valuation.
 tools:

@@ -1,5 +1,125 @@
 # Changelog
 
+## 0.5.34 — 2026-08-05
+
+The agent picker learns what a package is *made of*, and the session list
+learns to say when it is waiting on someone else. Plus a long tail of fixes
+from live use, several of which were bugs in mechanisms that already existed to
+prevent exactly the problem they caused.
+
+### Added
+
+- **The agent picker is grouped by where an agent comes from.** Three sections
+  — Built-in (the deployment's own static agents), Installed · Shared, and
+  Installed · Yours — with Generic Session hoisted above all of them, since it
+  is not an agent but the absence of one. Everything opens collapsed, so a
+  deployment with four packages costs four rows rather than sixteen, and a
+  category with nothing in it is omitted rather than shown reading "0".
+  `←`/`→` open and close a section on both hosts; the dialog previously named
+  those keys in its own hint while nothing listened for them.
+
+- **A package can describe its own composition.** Two additive frontmatter
+  fields: `startedBy` names the agents that start this one, which nests it
+  under its creator in the picker; `supportsDirectStart` says whether a person
+  may start it cold. The defaults are the compatibility contract — no
+  `startedBy` means entry point and startable, so every package written before
+  these existed renders exactly as it did. `plugin.json` gains `title` for a
+  friendly section header, falling back to the DNS-label name. Nothing to
+  migrate; opting in costs a version bump, since `name@version` is immutable.
+
+- **A session waiting on its children says so.** A parent that delegates goes
+  idle the moment its own turn ends while the children it spawned keep working,
+  which the list rendered as dormant. It now reads `waiting on N`. The signal
+  cannot be "has children" — sub-agents deliberately stay alive and idle after
+  finishing — so only running and input_required descendants count, transitively,
+  so a whole delegation chain lights up rather than just its lowest link.
+
+- **Folders can be reordered**, within the structural bands (system → pinned →
+  folders → loose sessions) that placement never crosses.
+
+- **A Mobile toggle**, in the theme picker's footer. Steps type and hit targets
+  together — 44px targets — because bigger buttons around unchanged 11px labels
+  reads as broken rather than as a mobile mode. Persisted to the profile.
+
+- **The session list scrolls past its last row**, so the end of a long list is
+  not jammed against the detail box below it.
+
+- **The session-detail box shows `Updated: <time> (<status>)`**, using the same
+  timestamp fallback the list sorts by, so the two cannot disagree about when a
+  session last moved.
+
+- **Themes**: Commodore 64, Rust and SpongeBob join the set; the picker groups
+  themes into sections; `dark-high-contrast` and `workspace-dark-rich` are
+  retired along with the rich chat renderer they existed for.
+
+### Fixed
+
+- **A SKILL.md `description` written as a block scalar stored the literal
+  `"|"`.** Closes the known issue from 0.5.33. `skills.ts` has its *own*
+  frontmatter parser, separate from `agent-loader`'s, and it had no
+  block-scalar handling at all — so the indented lines under `description: |`
+  were dropped on the floor and the pipe was stored as the value. The
+  agent-manager package's skill listed its description as `"|"` in every
+  listing, picker and manifest on the live deployment. The real defect is that
+  two independent parsers read the same file format and drifted: `agent-loader`
+  got this fix in 0.5.32 and `skills.ts` never did.
+
+- **The session-detail box flipped between `idle` and `waiting` on a parked
+  turn.** It printed `session.status` raw, opting out of both mechanisms that
+  exist to stop this: the 5s debounce (two writers disagree mid-turn — the 4s
+  catalog poll carries CMS row state, the post-event sync carries live
+  orchestration status) and the cron-aware fold that makes idle and waiting one
+  state for a scheduled session. A session firing every 60s flapped on every
+  poll. It now shares the list row's derivation.
+
+- **The selected session never came back into view after a reload.** The active
+  session id is restored from the profile *before* the listing arrives, so the
+  reveal ran once against an empty list and its dependency array deliberately
+  excluded the listing — nothing re-ran when the rows landed. Fixed as a
+  one-shot reveal per arming, which keeps the exclusion that stops the list
+  yanking back while you are deliberately scrolled away.
+
+- **…and fixing that introduced a worse bug, now also fixed.** Waking the
+  effect on every list refresh made it move DOM focus ~4×/sec while a session
+  streams. The Manage and Copy-link dialogs are local component state rather
+  than `ui.modal`, so focus was pulled out of their text inputs mid-keystroke —
+  and because the shortcut handler decides "am I editable?" from the event
+  target, the rest of what was typed ran as global commands (`d` complete, `D`
+  delete). Focus is now taken once per arming, never from a typing target.
+
+- **A folder could never be dragged into a new position.** A folder row carries
+  a `groupId` of its own — its id — and the drop-intent resolver fed that
+  through the filing branches, so over another folder the gesture read as "file
+  this folder into that one" and anywhere else as "take it out of the folder it
+  is in". Both fire before reordering is considered.
+
+- **Drag auto-scroll pushed an element that does not scroll.** The scroller was
+  resolved from an attribute only present while the pane holds focus, and the
+  pane and the list inside it both declare overflow — so it could land on the
+  one whose `scrollHeight` equals its `clientHeight`, where `scrollTop +=` is
+  silently a no-op.
+
+- **New sessions were filed into whichever folder you happened to be reading.**
+  Group inheritance now applies only when the selected row *is* the folder.
+
+- **The Manage-session dialog was cut off on phones**, with its content
+  unreachable. It is a separate overlay from `.ps-modal` and never inherited
+  that fix; and because it sets `height` rather than `max-height`, a viewport
+  clamp alone would not have moved it. The Add-package dialog had the identical
+  latent bug.
+
+- **A malformed session parent chain took the UI down** with a `RangeError`:
+  the descendant-count recursion had no cycle guard.
+
+### Known Issues
+
+- **Deleting a system session returns 500 rather than a clean 4xx.** Carried
+  from 0.5.33. `deleteSession` refuses by design, but the throw surfaces as an
+  opaque internal error, and the `protectSystem` session-policy field is
+  declared in types and read nowhere.
+- **`listSessionsPage` can silently skip a session row** when two sessions
+  share the cursor's millisecond at a page boundary. Carried from 0.5.32.
+
 ## 0.5.33 — 2026-08-03
 
 A portal fix release. Four bugs, all reported from real use on a live

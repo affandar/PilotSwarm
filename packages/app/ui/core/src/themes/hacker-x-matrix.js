@@ -1,9 +1,10 @@
-import { createTheme } from "./helpers.js";
+import { createTheme, THEME_GROUP_VSCODE } from "./helpers.js";
 
 const hackerXMatrixTheme = createTheme({
     id: "hacker-x-matrix",
     label: "Hacker X - Matrix",
     description: "Black-and-phosphor terminal palette with vivid green glow and CRT-style contrast.",
+    group: THEME_GROUP_VSCODE,
     page: {
         background: "#030603",
         foreground: "#c8ffc8",

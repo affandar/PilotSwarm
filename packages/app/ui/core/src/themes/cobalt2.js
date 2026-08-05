@@ -1,9 +1,10 @@
-import { createTheme } from "./helpers.js";
+import { createTheme, THEME_GROUP_VSCODE } from "./helpers.js";
 
 const cobalt2Theme = createTheme({
     id: "cobalt2",
     label: "Cobalt2",
     description: "Electric blue shell with bright yellow accents and saturated syntax colors.",
+    group: THEME_GROUP_VSCODE,
     page: {
         background: "#193549",
         foreground: "#ffffff",

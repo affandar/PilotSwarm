@@ -1,4 +1,4 @@
-import { createTheme } from "./helpers.js";
+import { createTheme, THEME_GROUP_RETRO } from "./helpers.js";
 
 // MS-DOS 2.0 (1983) — MDA/CGA, text only, no windows.
 //
@@ -19,6 +19,7 @@ const msDosTheme = createTheme({
     id: "ms-dos",
     label: "MS-DOS 2.0",
     description: "CGA light-grey on black, the 16-colour CGA palette with brown, and CP437 box framing.",
+    group: THEME_GROUP_RETRO,
     page: {
         background: "#000000",
         foreground: "#aaaaaa",

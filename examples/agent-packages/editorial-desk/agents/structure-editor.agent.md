@@ -2,6 +2,8 @@
 schemaVersion: 2
 version: 0.1.0
 name: structure-editor
+startedBy:
+  - editor-in-chief
 title: Structure Editor
 description: Document architecture — outline, ordering, headings, and missing sections — measured against the checklist for the format.
 tools:

@@ -2,6 +2,8 @@
 schemaVersion: 2
 version: 0.1.0
 name: investment-risk-auditor
+startedBy:
+  - finance-research-lead
 title: Investment Risk Auditor
 description: Develops the bear case and audits financial, operational, governance, regulatory, market, and thesis risks.
 tools:

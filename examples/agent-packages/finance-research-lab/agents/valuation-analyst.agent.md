@@ -2,6 +2,8 @@
 schemaVersion: 2
 version: 0.1.0
 name: valuation-analyst
+startedBy:
+  - finance-research-lead
 title: Valuation Analyst
 description: Builds transparent DCF and relative valuation scenarios with explicit assumptions, units, and sensitivity analysis.
 tools:
