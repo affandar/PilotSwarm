@@ -49,3 +49,18 @@ examples/horizon-harvester/graph.md
 /test-results/
 /playwright-report/
 /blob-report/
+
+# Agent scratch output and generated artifacts.
+#
+# These are transient working files, and in practice they carry whatever live
+# operational data the session was working on — the first one checked in here
+# was 397 real IcM incidents (302 flagged restricted) with customer identifiers
+# and named assignees, duplicated four times across a dashboard, its data.json
+# and its inlined script. None of that belongs in git history, where it cannot
+# be taken back once pushed.
+#
+# Force-add deliberately (`git add -f`) if a specific artifact is genuinely
+# meant to ship as a committed example.
+.scratch/
+packages/app/.scratch/
+examples/artifacts/
