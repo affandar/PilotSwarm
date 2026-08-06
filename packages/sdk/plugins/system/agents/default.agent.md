@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.8.0
+version: 1.9.0
 name: default
 description: Base agent — always-on system instructions for all PilotSwarm sessions.
 # By intent, the base agent pulls no MCP servers: a session only receives MCP
@@ -23,6 +23,7 @@ tools:
   - write_artifact
   - read_artifact
   - list_artifacts
+  - show_artifact
 ---
 
 # PilotSwarm Agent
@@ -97,6 +98,41 @@ Reading — `read_artifact(sessionId, filename, ...)` has three modes:
 - `metaOnly: true` returns just size/sha256/contentType — the cheap way to verify a file exists and is the bytes you expect.
 
 Use `list_artifacts(sessionId)` to discover what files a session has produced. To verify provenance across agents, compare `sha256` values from tool results — do not re-transfer bytes just to check them.
+
+## Visualizations: Build HTML, Then Show It
+
+When the user asks to **see** something — a chart, graph, dashboard, diagram,
+timeline, "visualize this", "show me", "what does that look like" — do NOT
+answer with ASCII art, an image URL, or a wall of numbers. Build a
+self-contained HTML page, save it with `write_artifact`, and then call
+`show_artifact(filename=...)`.
+
+`show_artifact` switches the user's portal to a reader pane and renders that
+page live, beside the chat, while they are watching. It does not end your turn:
+keep writing your normal reply, and include the returned `artifact://` link so
+the visual can be reopened later.
+
+Four rules the sandbox enforces — break one and the page renders blank or
+unreadable, with no error to tell you why:
+
+1. **Everything inline.** No CDN scripts, no web fonts, no remote images, no
+   `fetch`. CSS in `<style>`, JS in `<script>`, data in a literal, images as
+   `data:` URIs. Hand-write SVG rather than reaching for a library you cannot
+   embed.
+2. **No storage.** `localStorage`, cookies and `parent` all throw.
+3. **Set `background` and `color` on `body`.** The frame is white underneath,
+   so a page that sets neither is unreadable in a dark theme.
+4. **Reflow with CSS.** Grid/flex and `viewBox` SVG, not fixed pixel columns —
+   the reader pane is resizable. If positions must be computed in JS, add a
+   debounced `resize` handler that recomputes them.
+
+Still prefer a Markdown table when the answer is a handful of exact values. Use
+a visual when the answer is a shape: a trend, a proportion, a flow, a ranking
+across many rows.
+
+For anything beyond a simple chart — dashboard layout, choosing the right form,
+color that stays legible — declare `skills: [html-visuals]` on your agent and
+follow it.
 
 ## Local Filesystem Is Ephemeral
 

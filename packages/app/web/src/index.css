@@ -2033,30 +2033,206 @@ body.is-resizing-pane-y * {
 }
 
 /* Artifact references in the transcript are openable, not just downloadable. */
-.ps-artifact-link {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 4px;
-  padding: 0 2px;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  color: inherit;
+/* ── Artifact card (chat transcript) ─────────────────────────────────────
+   An artifact in the transcript is an object, not a phrase — so it gets a
+   card that names it, says what kind it is, and opens a reader, rather than
+   an underlined filename trailing a keystroke hint from the other host. */
+.ps-artifact-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  max-width: 34rem;
+  margin: 8px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--ps-border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--ps-surface) 70%, transparent);
+  color: var(--ps-foreground);
   font: inherit;
+  text-align: left;
   cursor: pointer;
-  text-decoration: underline;
-  text-underline-offset: 2px;
+  transition: background 120ms ease, border-color 120ms ease;
 }
 
-.ps-artifact-link:hover,
-.ps-artifact-link:focus-visible {
-  background: color-mix(in srgb, var(--ps-highlight-background) 18%, transparent);
+.ps-artifact-card:hover,
+.ps-artifact-card:focus-visible {
+  background: color-mix(in srgb, var(--ps-highlight-background) 16%, var(--ps-surface));
+  border-color: color-mix(in srgb, var(--ps-accent) 55%, var(--ps-border));
 }
 
-/* Diff artifacts get a marker so a patch is identifiable without opening it. */
-.ps-artifact-link.is-diff .ps-artifact-link-glyph {
-  font-weight: 700;
-  opacity: 0.75;
+.ps-artifact-card-thumb {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--ps-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--ps-page-background) 55%, transparent);
+  color: var(--ps-muted);
+}
+
+.ps-artifact-card-glyph {
+  width: 20px;
+  height: 20px;
+}
+
+/* HTML is the one kind that opens as a live rendered page rather than as
+   text, so its card says so before the click — a tinted thumbnail, not a
+   different shape, because it still belongs to the same family. */
+.ps-artifact-card.is-page .ps-artifact-card-thumb {
+  color: var(--ps-accent);
+  border-color: color-mix(in srgb, var(--ps-accent) 45%, var(--ps-border));
+  background: color-mix(in srgb, var(--ps-accent) 12%, transparent);
+}
+
+.ps-artifact-card-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.ps-artifact-card-title {
+  font-size: 13.5px;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ps-artifact-card-meta {
+  color: var(--ps-muted);
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+
+.ps-artifact-card-open {
+  flex: none;
+  padding: 3px 10px;
+  border: 1px solid var(--ps-border);
+  border-radius: 7px;
+  color: var(--ps-muted);
+  font-size: 11.5px;
+}
+
+.ps-artifact-card:hover .ps-artifact-card-open,
+.ps-artifact-card:focus-visible .ps-artifact-card-open {
+  color: var(--ps-foreground);
+}
+
+/* ── Artifact reader (right-column takeover) ─────────────────────────────
+   Replaces the inspector AND activity panes while open. */
+.ps-workspace-column.is-artifact {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+.ps-artifact-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 2px solid var(--ps-panel-accent, var(--ps-border));
+  border-radius: var(--ps-radius-sm);
+  background: color-mix(in srgb, var(--ps-surface) 96%, transparent);
+}
+
+.ps-artifact-pane:focus {
+  outline: none;
+}
+
+.ps-artifact-pane-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 6px 12px;
+  border-bottom: 1px solid var(--ps-border);
+}
+
+.ps-artifact-pane-heading {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.ps-artifact-pane-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.ps-artifact-pane-type {
+  flex: none;
+  color: var(--ps-muted);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+}
+
+.ps-artifact-pane-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.ps-artifact-pane-btn {
+  display: grid;
+  place-items: center;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 5px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ps-muted);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.ps-artifact-pane-btn:hover:not(:disabled),
+.ps-artifact-pane-btn:focus-visible {
+  background: color-mix(in srgb, var(--ps-highlight-background) 22%, transparent);
+  color: var(--ps-foreground);
+}
+
+.ps-artifact-pane-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.ps-artifact-pane-btn.is-close:hover {
+  color: var(--ps-foreground);
+}
+
+.ps-artifact-pane-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The reader owns its whole box: the nested preview panel must not draw a
+   second border inside the one the pane already has. */
+.ps-artifact-pane-body > .ps-panel,
+.ps-artifact-pane-body .ps-html-preview {
+  flex: 1;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
 }
 
 .ps-scroll-panel.is-preview {
@@ -2723,6 +2899,17 @@ body.is-resizing-pane-y * {
   min-height: 0;
   overflow-y: auto;
   scrollbar-gutter: stable;
+}
+
+/* Flex children default to `flex-shrink: 1`, so in a height-constrained column
+   — a phone, and worse with the Mobile type scale on — a detail line that WRAPS
+   gets squeezed below its content height and paints over the line beneath it.
+   Measured: the theme description rendered 15px tall around 44px of text, which
+   is what put "group: Others" on top of it.
+   These lines must never shrink; the pane already scrolls (overflow-y: auto),
+   so keeping intrinsic height is what makes that scroll actually reachable. */
+.ps-modal-details > * {
+  flex: none;
 }
 
 .ps-modal-list-heading-line,
@@ -3785,6 +3972,116 @@ body.is-resizing-pane-y * {
   margin: 0;
   border: 0;
   background: transparent;
+}
+
+/* ── HTML artifact preview ───────────────────────────────────────────────
+   The frame is the whole point: it must fill the pane exactly, with no
+   padding of ours bleeding into the artifact's own layout. The artifact
+   brings its own background, so the frame is opaque white by default rather
+   than inheriting the portal's — a document that assumes a light page must
+   not be read against a dark one. */
+/* .ps-panel does not grow on its own — it sizes to its content, which works
+   for every other preview because their content is text that is already taller
+   than the pane. An iframe has an intrinsic height of 150px and no opinion
+   beyond that, so without this the "full fidelity" preview renders as a 150px
+   letterbox with dead space underneath. */
+.ps-html-preview {
+  flex: 1;
+  min-height: 0;
+}
+
+.ps-html-preview > .ps-panel-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Width-measured wrapper for the rendered frame (see
+   useHtmlPreviewReloadOnResize). Purely structural — it must add no box of its
+   own or the frame stops filling the pane. */
+.ps-html-preview-host {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The replacement frame loads stacked on the live one and stays invisible
+   until its load event promotes it. `visibility: hidden` rather than
+   `display: none`, because a display:none iframe is not laid out and would
+   load at zero width — which is the very thing being fixed. */
+.ps-html-preview-frame.is-staging {
+  position: absolute;
+  inset: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.ps-html-preview-frame {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  border: 0;
+  display: block;
+  background: #fff;
+  border-radius: inherit;
+}
+
+.ps-html-preview-status {
+  padding: 18px 20px;
+  color: var(--ps-muted);
+  font-size: 13px;
+}
+
+.ps-html-preview-status p {
+  margin: 0 0 6px;
+}
+
+.ps-html-preview-meta {
+  opacity: 0.75;
+  font-size: 12px;
+}
+
+/* Rendered/Source segmented control in the preview header. */
+.ps-html-preview-modes {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  margin-right: 4px;
+  border: 1px solid var(--ps-border);
+  border-radius: 7px;
+}
+
+.ps-html-preview-mode {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--ps-muted);
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  padding: 2px 9px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.ps-html-preview-mode:hover {
+  color: var(--ps-foreground);
+}
+
+.ps-html-preview-mode.is-active {
+  background: var(--ps-highlight-background);
+  color: var(--ps-foreground);
+}
+
+/* Fullscreen (desktop toggle and the mobile overlay) must hand the frame the
+   entire box — otherwise "fullscreen" would just be a taller letterbox. */
+.ps-artifact-overlay-body .ps-html-preview,
+.ps-artifact-overlay-body .ps-html-preview > .ps-panel-body {
+  height: 100%;
+  padding: 0;
 }
 
 
@@ -6290,4 +6587,35 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
 }
 :root[data-ps-theme="spongebob"] ::-webkit-scrollbar-track {
   background: var(--sb-water-2);
+}
+
+
+/* ── Artifact previews: let the browser zoom ────────────────────────────────
+   An artifact is CONTENT, not chrome. A chart, a wide table or a fixed-width
+   HTML document is routinely unreadable at phone width, and the only remedy
+   the viewer has is the browser's own pinch-zoom.
+
+   Every scroller in here inherits `touch-action: pan-x pan-y` from
+   `.ps-scroll-panel`, which permits panning and silently FORBIDS pinch — that
+   combination is right for the session list and the transcript (where a stray
+   pinch is a misfire) and wrong for a preview pane. `manipulation` is
+   pan-x + pan-y + pinch-zoom without the 300ms double-tap delay, which is
+   exactly what a viewer wants. */
+.ps-artifact-overlay-body,
+.ps-artifact-overlay-body .ps-scroll-panel,
+.ps-artifact-overlay-body .ps-panel-body,
+.ps-artifact-pane-body,
+.ps-artifact-pane-body .ps-scroll-panel,
+.ps-html-preview-host,
+.ps-html-preview-frame,
+.ps-panel > .ps-panel-body:has(> .ps-binary-preview-card) {
+  touch-action: manipulation;
+}
+
+/* While fitting, the frame's layout box is HTML_PREVIEW_FIT_LAYOUT_WIDTH_PX
+   wide and only the PAINT is scaled down — a transform never resizes the box.
+   Clipping here keeps that overflow from producing a scrollbar for content
+   that is, visually, entirely on screen. */
+.ps-html-preview-host.is-fitting {
+  overflow: hidden;
 }

@@ -168,7 +168,7 @@ function getNamedAgentTitlePrefix(session: { agentId?: string | null; title?: st
     if (separatorIndex > 0) {
         return currentTitle.slice(0, separatorIndex).trim() || null;
     }
-    return currentTitle || null;
+    return null;
 }
 
 function buildStoredSessionTitle(

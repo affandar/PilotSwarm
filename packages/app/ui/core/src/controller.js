@@ -24,6 +24,8 @@ import {
     MIN_ACTIVITY_PANE_HEIGHT,
     MIN_INSPECTOR_PANE_HEIGHT,
     DEFAULT_ACTIVITY_PANE_RATIO,
+    DEFAULT_LEFT_PANE_RATIO,
+    COLLAPSE_RIGHT_THRESHOLD,
     normalizeFocusRegion,
 } from "./layout.js";
 import { parseTerminalMarkupRuns } from "./formatting.js";
@@ -680,7 +682,7 @@ function getRenameSessionPrefix(session) {
     if (separatorIndex > 0) {
         return currentTitle.slice(0, separatorIndex).trim() || null;
     }
-    return currentTitle || null;
+    return null;
 }
 
 function getRenameSessionMaxLength(session) {
@@ -1242,6 +1244,12 @@ function isBinaryPreview(filename, contentType = "") {
         || normalizedType.startsWith("application/zip")
         || normalizedType === "application/wasm";
 }
+
+// How recent a `session.artifact_presented` event must be for the portal to
+// act on it. Long enough to survive a slow turn and a brief reconnect; short
+// enough that a catch-up burst after a long disconnect does not reorganize the
+// workspace around something the agent said ages ago.
+const PRESENTED_ARTIFACT_FRESHNESS_MS = 120_000;
 
 function truncateFilePreview(content, limit = FILE_PREVIEW_CHAR_LIMIT) {
     const text = String(content ?? "");
@@ -4195,6 +4203,32 @@ export class PilotSwarmUiController {
         }
     }
 
+    /**
+     * Act on a `session.artifact_presented` event from the live stream.
+     *
+     * Separate from mergeSessionEvent so the guards are testable on their own
+     * and so the merge path stays a straight line. Returns whether it revealed.
+     */
+    maybeRevealPresentedArtifact(sessionId, event) {
+        const filename = String(event?.data?.filename || "").trim();
+        if (!filename) return false;
+        if (sessionId !== this.getState().sessions.activeSessionId) return false;
+
+        const createdAt = event?.createdAt ? Date.parse(event.createdAt) : Number.NaN;
+        if (Number.isFinite(createdAt) && Date.now() - createdAt > PRESENTED_ARTIFACT_FRESHNESS_MS) {
+            return false;
+        }
+
+        // Same destination a user click reaches: the artifact reader, with the
+        // chat still beside it. `fullscreen` from the tool means "give it the
+        // whole window" and stays the phone/fullscreen path.
+        const fullscreen = event?.data?.fullscreen === true;
+        this.revealArtifact(sessionId, filename, fullscreen
+            ? { fullscreen: true }
+            : { pane: true }).catch(() => {});
+        return true;
+    }
+
     mergeSessionEvent(sessionId, event) {
         if (!sessionId || !event) return false;
         const state = this.getState();
@@ -4226,6 +4260,24 @@ export class PilotSwarmUiController {
                     },
                 },
             });
+        }
+        // show_artifact: the agent is presenting something to look at, so the
+        // inspector switches to Files and opens that preview live.
+        //
+        // Three guards, because "the UI moves on its own" is only acceptable
+        // when it is unmistakably a response to what is happening right now:
+        //
+        //  - active session only. A background session finishing a dashboard
+        //    must never yank the pane away from the session being read.
+        //  - fresh events only. This path also runs for the catch-up burst
+        //    after a reconnect; replaying an hour-old presentation as if it
+        //    just happened would be a jump scare, not a feature.
+        //  - live path only. Bulk history loads (ensureSessionHistory) do not
+        //    come through here, so merely OPENING a session never auto-opens
+        //    whatever it last presented. Reopening is what the artifact link
+        //    in the transcript and the deep link are for.
+        if (event.eventType === "session.artifact_presented") {
+            this.maybeRevealPresentedArtifact(sessionId, event);
         }
         this.reconcileOutboxAgainstEvent(sessionId, event);
         const derivedModel = extractSessionModelFromEvent(event);
@@ -5262,7 +5314,11 @@ export class PilotSwarmUiController {
      * READ. Switches the inspector to Files, selects the artifact, and warms
      * the preview so the pane is populated by the time it renders.
      */
-    async revealArtifact(sessionId, filename, { force = true, fullscreen = false } = {}) {
+    async revealArtifact(sessionId, filename, {
+        force = true,
+        fullscreen = false,
+        pane = false,
+    } = {}) {
         const resolvedSessionId = sessionId || this.getState().sessions.activeSessionId;
         const name = String(filename || "").trim();
         if (!resolvedSessionId || !name) return false;
@@ -5278,17 +5334,93 @@ export class PilotSwarmUiController {
         if (this.getState().sessions.activeSessionId !== resolvedSessionId) {
             await this.loadSession(resolvedSessionId).catch(() => null);
         }
-        this.dispatch({ type: "ui/inspectorTab", inspectorTab: "files" });
-        // Focus the inspector, not just the tab. On desktop this makes j/k
-        // drive the artifact list immediately; on mobile the visible pane is
-        // derived from focusRegion, so without this the preview would open on
-        // a pane the user cannot see.
-        this.setFocus("inspector");
+        // The reader REPLACES the inspector, so it has no business changing
+        // which inspector tab is selected. Switching to Files here meant that
+        // opening an artifact from a session you were watching on the Sequence
+        // tab silently reassigned that tab, and ✕ dropped you on a file list
+        // you never opened. Leaving it alone makes ✕ restore the tab for free,
+        // with no state to capture. The non-pane paths still need Files,
+        // because there the inspector IS the preview.
+        if (!pane) this.dispatch({ type: "ui/inspectorTab", inspectorTab: "files" });
+        // The takeover pane is its own focus surface and, unlike the inspector,
+        // it is what the user is looking at — so it must NOT steal focus to the
+        // artifact list underneath. Chat keeps focus, which is the point: you
+        // followed a link from the transcript and should still be able to type.
+        if (pane) {
+            // Whether the column was already collapsed is read HERE rather than
+            // taken from the caller, so every entry point — a chat card, a deep
+            // link, an agent's show_artifact — gets the same answer.
+            //
+            // And if it WAS collapsed, the column has to be opened: rendering
+            // the reader into a zero-width track produced a pane that existed
+            // in the DOM, reported itself open, and could not be seen. Closing
+            // collapses it again, so the detour is invisible.
+            const wasHidden = Boolean(this.getCurrentLayout()?.rightHidden);
+            if (wasHidden) this.expandRightColumn();
+            this.dispatch({ type: "files/pane", open: true, restoresToHidden: wasHidden });
+        } else {
+            // Focus the inspector, not just the tab. On desktop this makes j/k
+            // drive the artifact list immediately; on mobile the visible pane is
+            // derived from focusRegion, so without this the preview would open on
+            // a pane the user cannot see.
+            this.setFocus("inspector");
+        }
         await this.ensureFilesForSession(resolvedSessionId, { force }).catch(() => null);
         this.dispatch({ type: "files/select", sessionId: resolvedSessionId, filename: name });
         await this.ensureFilePreview(resolvedSessionId, name, { force }).catch(() => null);
         if (fullscreen) this.dispatch({ type: "files/fullscreen", fullscreen: true });
         return true;
+    }
+
+    /**
+     * Close the artifact takeover pane, restoring the right column.
+     *
+     * Restores the inspector/activity split it replaced — unless the column was
+     * already collapsed when the pane opened, in which case it collapses again.
+     * Opening a reader must not become a way to un-hide panes the user had
+     * deliberately resized away.
+     */
+    async closeArtifactPane() {
+        const restoresToHidden = this.getState().files.paneRestoresToHidden;
+        this.dispatch({ type: "files/pane", open: false });
+        this.dispatch({ type: "files/fullscreen", fullscreen: false });
+        // Selection is deliberately left alone: the artifact stays selected in
+        // the Files list, so reopening the column shows what you were reading
+        // rather than an empty preview.
+        this.dispatch({ type: "files/previewOrigin", origin: null });
+        if (restoresToHidden) this.collapseRightColumn();
+        this.dispatch({ type: "ui/focus", focusRegion: FOCUS_REGIONS.CHAT });
+        return { collapsedRightColumn: Boolean(restoresToHidden) };
+    }
+
+    /**
+     * Drive the left/right split far enough right that the layout's own
+     * collapse rule hides the right column.
+     *
+     * Expressed as a paneAdjust rather than a new "hidden" flag so there stays
+     * exactly one source of truth for column width — the same number the
+     * resizer writes. A second flag would let the two disagree.
+     */
+    /** Return the left/right split to its default, un-collapsing the column. */
+    expandRightColumn() {
+        this.dispatch({ type: "ui/paneAdjust", paneAdjust: 0 });
+        const nextLayout = this.getCurrentLayout({ paneAdjust: 0 });
+        const currentFocus = this.getState().ui.focusRegion;
+        const safeFocus = normalizeFocusRegion(currentFocus, nextLayout);
+        if (safeFocus !== currentFocus) this.setFocus(safeFocus);
+    }
+
+    collapseRightColumn() {
+        const layoutState = this.getState().ui.layout || {};
+        const totalWidth = layoutState.viewportWidth ?? 120;
+        const baseLeftWidth = Math.floor(totalWidth * DEFAULT_LEFT_PANE_RATIO);
+        // One past the threshold: `<=` collapses, so land strictly inside it.
+        const paneAdjust = totalWidth - COLLAPSE_RIGHT_THRESHOLD - baseLeftWidth;
+        this.dispatch({ type: "ui/paneAdjust", paneAdjust });
+        const nextLayout = this.getCurrentLayout({ paneAdjust });
+        const currentFocus = this.getState().ui.focusRegion;
+        const safeFocus = normalizeFocusRegion(currentFocus, nextLayout);
+        if (safeFocus !== currentFocus) this.setFocus(safeFocus);
     }
 
     /**

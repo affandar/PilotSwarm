@@ -2568,6 +2568,43 @@ export function appReducer(state, action) {
                 },
             };
 
+        // The artifact takeover pane. `restoresToHidden` is captured ONCE, on
+        // the opening transition — reopening while already open must not
+        // overwrite it with "the column is visible", which is trivially true
+        // whenever the pane itself is showing and would strand a user who had
+        // collapsed the column with an inspector they never asked for.
+        case "files/pane":
+            return {
+                ...state,
+                files: {
+                    ...state.files,
+                    paneOpen: Boolean(action.open),
+                    paneRestoresToHidden: action.open
+                        ? (state.files.paneOpen
+                            ? state.files.paneRestoresToHidden
+                            : Boolean(action.restoresToHidden))
+                        : false,
+                },
+            };
+
+        case "files/htmlViewMode":
+            return {
+                ...state,
+                files: {
+                    ...state.files,
+                    htmlViewMode: action.mode === "source" ? "source" : "rendered",
+                },
+            };
+
+        case "files/htmlFitWidth":
+            return {
+                ...state,
+                files: {
+                    ...state.files,
+                    htmlFitWidth: Boolean(action.enabled),
+                },
+            };
+
         case "files/clearMarks":
             return { ...state, files: { ...state.files, markedIds: [] } };
 

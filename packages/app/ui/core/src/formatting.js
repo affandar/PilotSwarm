@@ -9,6 +9,18 @@ const DEFAULT_STYLE = {
 const ARTIFACT_URI_RE = /artifact:\/\/([a-f0-9-]+)\/([^\s"'{}]+)/g;
 const SESSION_URI_RE = /session:\/\/([A-Za-z0-9-]+)/g;
 
+/**
+ * The TUI's affordance for an artifact link, appended when a bare
+ * `artifact://` URI is decorated for display.
+ *
+ * Exported because the PORTAL has to remove it again: there, an artifact link
+ * renders as a card you click, so an instruction to press a key that does not
+ * exist in a browser is noise. Hosts disagree about the affordance but share
+ * the decorator, so the string is named in one place rather than matched by
+ * two copies of a literal that can drift apart.
+ */
+export const ARTIFACT_DOWNLOAD_HINT = " (press a to download)";
+
 const COLOR_NAME_MAP = {
     black: "black",
     red: "red",
@@ -495,7 +507,7 @@ export function decorateArtifactLinksForChat(text) {
         if (whole.slice(Math.max(0, offset - 2), offset) === "](") return _match;
         const filename = normalizeArtifactFilename(rawFilename);
         if (!sessionId || !filename) return _match;
-        return `[artifact: ${filename}](artifact://${sessionId}/${filename}) (press a to download)`;
+        return `[artifact: ${filename}](artifact://${sessionId}/${filename})${ARTIFACT_DOWNLOAD_HINT}`;
     });
     SESSION_URI_RE.lastIndex = 0;
     return withArtifacts.replace(SESSION_URI_RE, (_match, sessionId) => {

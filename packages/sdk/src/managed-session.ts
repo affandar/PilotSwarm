@@ -29,6 +29,51 @@ const DEFAULT_WAIT_TOOL_DESCRIPTION =
     "Long waits may resume on a different worker unless you set " +
     "`preserveWorkerAffinity: true` for node-local work.";
 
+/**
+ * show_artifact — the declaration AND the per-turn handler both build from this
+ * one spec.
+ *
+ * Every other system tool here carries a "keep in sync with systemToolDefs()"
+ * comment because the schema is written twice: once as a declaration stub (what
+ * the LLM is shown at session-create time) and once as the real handler in
+ * runTurn(). A tool that exists in only one of those two places is broken in a
+ * particularly quiet way — a handler with no declaration is invisible to the
+ * model, and a declaration with no handler returns "stub". Sharing the object
+ * removes the drift instead of commenting about it.
+ */
+const SHOW_ARTIFACT_TOOL_SPEC = {
+    description:
+        "Display one of this session's artifacts in the user's portal: the right-hand panel switches to Files "
+        + "and opens that file in its preview, live, while they are watching. "
+        + "HTML renders as a real rendered page (charts, tables, layout, its own scripts), not as source. "
+        + "Markdown, diffs, CSV, images and source files each get their matching viewer. "
+        + "Use it the moment you finish building or updating something visual, and when the user asks to see, show, open, or look at a file. "
+        + "The artifact must already exist on this session — write it first, then show it. "
+        + "This does NOT end your turn and does not replace explaining your work: keep writing your normal reply. "
+        + "Returns a shareable deep link that reopens this exact preview, so include that link in your reply for anyone reading later.",
+    parameters: {
+        type: "object",
+        properties: {
+            filename: {
+                type: "string",
+                description: "Artifact filename on this session, exactly as it was written (e.g. 'outage-graph.html').",
+            },
+            fullscreen: {
+                type: "boolean",
+                description:
+                    "Open the preview full screen instead of beside the chat. Default false. "
+                    + "Use true for dashboards and wide documents that need the room; leave false when the user should keep reading the conversation alongside it.",
+            },
+            note: {
+                type: "string",
+                description: "Optional one-line caption describing what the user is being shown.",
+            },
+        },
+        required: ["filename"],
+    },
+    handler: async () => "stub",
+} as const;
+
 const SESSION_SUMMARY_STATE_SCHEMA = {
     type: "object",
     additionalProperties: true,
@@ -636,7 +681,9 @@ export class ManagedSession {
             handler: async () => "stub",
         });
 
-        return [waitTool, waitOnWorkerTool, cronTool, cronAtTool, askUserTool, reportCycleTool, listModelsTool, setSessionModelTool, regenerateContextTool, regenerateAgentTool, updateSessionSummaryTool, sendSessionMessageTool, replySessionMessageTool];
+        const showArtifactTool = defineTool("show_artifact", SHOW_ARTIFACT_TOOL_SPEC);
+
+        return [waitTool, waitOnWorkerTool, cronTool, cronAtTool, askUserTool, reportCycleTool, listModelsTool, setSessionModelTool, regenerateContextTool, regenerateAgentTool, updateSessionSummaryTool, sendSessionMessageTool, replySessionMessageTool, showArtifactTool];
     }
 
     /**
@@ -1256,6 +1303,55 @@ export class ManagedSession {
             },
         });
 
+        // show_artifact — schema comes from the shared spec so the declaration
+        // the LLM sees and the handler that runs cannot drift apart.
+        //
+        // This is a pure presentation signal: it records a durable event and
+        // returns. It does NOT end the turn (the agent should keep talking) and
+        // it deliberately does not verify the artifact exists — the worker's
+        // artifact store is not reachable from here, and a portal that receives
+        // a name it cannot find simply leaves the preview where it was. Naming
+        // a file that was never written costs the agent one wasted event, not a
+        // broken session.
+        const showArtifactTool = defineTool("show_artifact", {
+            ...SHOW_ARTIFACT_TOOL_SPEC,
+            handler: async (args: { filename?: string; fullscreen?: boolean; note?: string }) => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("show_artifact");
+                const filename = String(args?.filename || "").trim();
+                if (!filename) return "Error: show_artifact requires a filename.";
+                if (!opts?.onEvent) {
+                    return "Error: show_artifact is unavailable in this session (no event channel).";
+                }
+                const fullscreen = args?.fullscreen === true;
+                try {
+                    opts.onEvent({
+                        eventType: "session.artifact_presented",
+                        data: {
+                            filename,
+                            fullscreen,
+                            ...(args?.note ? { note: String(args.note) } : {}),
+                        },
+                    });
+                } catch {
+                    return `Error: could not present ${filename}.`;
+                }
+                // artifact:// is the portal's own link scheme — the transcript
+                // renderer turns it into a button that reopens this preview, so
+                // the reply stays useful long after the live push is gone.
+                return JSON.stringify({
+                    shown: true,
+                    filename,
+                    fullscreen,
+                    // this.sessionId, not the durableSessionId const declared
+                    // further down runTurn — a closure over a not-yet-evaluated
+                    // const is a temporal-dead-zone trap waiting for someone to
+                    // move this block.
+                    link: `artifact://${this.sessionId}/${filename}`,
+                    note: "The user's portal is now previewing this file. Include the link in your reply so it can be reopened later.",
+                });
+            },
+        });
+
         // list_available_models — returns data inline (no abort/continuation needed)
         const listModelsTool = defineTool("list_available_models", {
             description:
@@ -1779,7 +1875,7 @@ export class ManagedSession {
             },
         });
 
-        const SYSTEM_TOOL_NAMES = new Set(["wait", "wait_on_worker", "cron", "cron_at", "ask_user", "report_cycle", "list_available_models", "set_session_model", "update_session_summary", "send_session_message", "reply_session_message", "spawn_agent", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "delete_agent"]);
+        const SYSTEM_TOOL_NAMES = new Set(["wait", "wait_on_worker", "cron", "cron_at", "ask_user", "report_cycle", "list_available_models", "set_session_model", "update_session_summary", "send_session_message", "reply_session_message", "show_artifact", "spawn_agent", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "delete_agent"]);
 
         // Merge user tools with system tools
         const userTools = this.config.tools ?? [];
@@ -1837,6 +1933,7 @@ export class ManagedSession {
             updateSessionSummaryTool,
             sendSessionMessageTool,
             replySessionMessageTool,
+            showArtifactTool,
         ].filter((tool: any) => !isReadOnlyTuner || !mutatingSystemToolNames.has(tool.name));
         const subAgentToolsForTurn = isServiceSession
             ? []

@@ -7,6 +7,7 @@ import { appendAnimatedDotsToRuns, useAnimatedDots, useSpinnerFrame } from "./ch
 import {
     UI_COMMANDS,
     INSPECTOR_TABS,
+    ARTIFACT_DOWNLOAD_HINT,
     appReducer,
     canStopSessionTurn,
     computeLegacyLayout,
@@ -144,6 +145,7 @@ function supportsLocalFileOpen(controller) {
 }
 
 const SESSION_LINK_COPIED_STATUS = "Session link copied to clipboard";
+const ARTIFACT_LINK_COPIED_STATUS = "Artifact link copied to clipboard";
 // Mirrors SESSION_NAV_SETTLE_MS in the controller: the access probe rides the
 // same "wait for the selection to stop moving" rule as the session fetch.
 const SESSION_ACCESS_SETTLE_MS = 140;
@@ -152,6 +154,21 @@ const SESSION_LINK_PRIVATE_WARNING = "Only people with access can open this link
 function buildSessionLinkUrl(sessionId) {
     if (!sessionId || typeof window === "undefined" || !window.location) return null;
     return `${window.location.origin}${window.location.pathname}?session=${encodeURIComponent(sessionId)}`;
+}
+
+/**
+ * Deep link straight to one artifact's preview: `?session=…&artifact=…&view=full`.
+ *
+ * This is also what "open in a new tab" navigates to. It deliberately does NOT
+ * open the artifact's blob URL directly — a blob: document opened at top level
+ * runs at the PORTAL's origin, which would hand untrusted artifact markup the
+ * signed-in user's bearer token. Routing through the app keeps every byte of
+ * artifact HTML inside the sandboxed iframe.
+ */
+function buildArtifactLinkUrl(sessionId, filename, { fullscreen = true } = {}) {
+    const base = buildSessionLinkUrl(sessionId);
+    if (!base || !filename) return base;
+    return `${base}&artifact=${encodeURIComponent(filename)}${fullscreen ? "&view=full" : ""}`;
 }
 
 function copySessionLinkText(url) {
@@ -201,6 +218,9 @@ function normalizeProfileSettings(settings) {
     }
     if (typeof candidate.touchScale === "boolean") {
         normalized.touchScale = candidate.touchScale;
+    }
+    if (typeof candidate.touchScaleMobile === "boolean") {
+        normalized.touchScaleMobile = candidate.touchScaleMobile;
     }
     if (hasOwn(candidate, "sessionOwnerFilter") && candidate.sessionOwnerFilter && typeof candidate.sessionOwnerFilter === "object") {
         const storedFilter = candidate.sessionOwnerFilter;
@@ -260,6 +280,25 @@ function otherChatViewModeKey() {
     return isNarrowViewport() ? "chatViewMode" : "chatViewModeMobile";
 }
 
+/**
+ * The "Mobile" (touch-scale) preference is per DEVICE CLASS, like chatViewMode:
+ * it describes how big the type and hit targets should be on the screen you are
+ * actually looking at, so turning it on from a phone must not scale up the
+ * desktop. It is otherwise orthogonal to the theme — it lives in the theme
+ * picker's footer only because that is the "how this looks" surface.
+ *
+ * Note the desktop slot keeps the legacy name `touchScale`, so profiles written
+ * before the split keep working on desktop with no migration.
+ */
+function touchScaleKey() {
+    return isNarrowViewport() ? "touchScaleMobile" : "touchScale";
+}
+
+/** The touch-scale key belonging to the OTHER device class. */
+function otherTouchScaleKey() {
+    return isNarrowViewport() ? "touchScale" : "touchScaleMobile";
+}
+
 function normalizeStoredCollapsedSessionIdsToArray(value) {
     if (value instanceof Set) {
         const out = [];
@@ -287,10 +326,10 @@ function hasOwn(value, key) {
     return Boolean(value && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, key));
 }
 
-function profileSettingsFromViewState(state, preservedOtherChatViewMode = null) {
+function profileSettingsFromViewState(state, preservedOtherChatViewMode = null, preservedOtherTouchScale = null) {
     return normalizeProfileSettings({
         themeId: state.themeId,
-        touchScale: state.touchScale,
+        [touchScaleKey()]: state.touchScale,
         sessionOwnerFilter: state.ownerFilter,
         layoutAdjustments: {
             paneAdjust: state.paneAdjust,
@@ -309,13 +348,16 @@ function profileSettingsFromViewState(state, preservedOtherChatViewMode = null) 
         ...(isChatViewMode(preservedOtherChatViewMode)
             ? { [otherChatViewModeKey()]: preservedOtherChatViewMode }
             : {}),
+        ...(typeof preservedOtherTouchScale === "boolean"
+            ? { [otherTouchScaleKey()]: preservedOtherTouchScale }
+            : {}),
     });
 }
 
-function buildDefaultProfileSettingsFromState(state, preservedOtherChatViewMode = null) {
+function buildDefaultProfileSettingsFromState(state, preservedOtherChatViewMode = null, preservedOtherTouchScale = null) {
     return normalizeProfileSettings({
         themeId: state?.ui?.themeId,
-        touchScale: state?.ui?.touchScale,
+        [touchScaleKey()]: state?.ui?.touchScale,
         // Derive the owner-filter default from the RESOLVED principal, never a
         // snapshot of state.sessions.ownerFilter — at mount that snapshot is
         // still {all:true} (principal not yet applied), and using it as the
@@ -331,6 +373,9 @@ function buildDefaultProfileSettingsFromState(state, preservedOtherChatViewMode 
         [chatViewModeKey()]: state?.ui?.chatViewMode,
         ...(isChatViewMode(preservedOtherChatViewMode)
             ? { [otherChatViewModeKey()]: preservedOtherChatViewMode }
+            : {}),
+        ...(typeof preservedOtherTouchScale === "boolean"
+            ? { [otherTouchScaleKey()]: preservedOtherTouchScale }
             : {}),
     });
 }
@@ -377,6 +422,19 @@ function materializeProfileSettings(remoteSettings, defaults) {
         ...(hasOwn(normalizedRemote, chatViewModeKey())
             ? { chatViewMode: normalizedRemote[chatViewModeKey()] }
             : {}),
+        // touchScale was missing from this merge entirely, which is why the
+        // "Mobile" checkbox never survived a reload: the save path wrote it,
+        // but nothing ever read it back, and the reducer's hasTouchScale guard
+        // then preserved the default. Same no-defaults rule as chatViewMode —
+        // synthesizing one here would let a poll clobber a fresh local toggle.
+        ...(hasOwn(normalizedRemote, touchScaleKey())
+            ? { touchScale: normalizedRemote[touchScaleKey()] }
+            // Profiles written before the per-device split carry a single
+            // `touchScale`, which IS the desktop key — so only a phone needs to
+            // inherit it, and only until it saves a slot of its own.
+            : (isNarrowViewport() && hasOwn(normalizedRemote, "touchScale")
+                ? { touchScale: normalizedRemote.touchScale }
+                : {})),
     });
 }
 
@@ -885,7 +943,9 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
 
 function Runs({ runs, theme }) {
     return React.createElement(React.Fragment, null,
-        (runs || []).map((run, index) => {
+        (runs || []).map((run, index, all) => {
+            // The download hint trails the artifact link as its own run.
+            const followsArtifactLink = index > 0 && Boolean(parseArtifactHref(all[index - 1]?.href));
             const style = {
                 color: resolveColor(theme, run.color),
                 backgroundColor: resolveColor(theme, run.backgroundColor),
@@ -906,18 +966,22 @@ function Runs({ runs, theme }) {
             const isExternalHref = /^https?:\/\//i.test(href);
             // artifact:// links used to render as an inert span — the only
             // affordance was "press a to download", which is the wrong verb
-            // for a patch you want to READ. They now open the Files tab with
-            // the artifact selected and previewed.
+            // for a patch you want to READ. They now render as a card that
+            // opens the artifact reader.
             const artifactRef = parseArtifactHref(href);
 
             if (artifactRef) {
                 return React.createElement(ArtifactLink, {
                     key: `${index}:${run.text || ""}`,
-                    label: run.text || "",
                     artifactRef,
                     style,
                 });
             }
+
+            const text = followsArtifactLink
+                ? stripArtifactDownloadHint(run.text || "")
+                : (run.text || "");
+            if (followsArtifactLink && !text) return null;
 
             return isExternalHref
                 ? React.createElement("a", {
@@ -927,11 +991,11 @@ function Runs({ runs, theme }) {
                     target: "_blank",
                     rel: "noreferrer",
                     style,
-                }, run.text || "")
+                }, text)
                 : React.createElement("span", {
                     key: `${index}:${run.text || ""}`,
                     style,
-                }, run.text || "");
+                }, text);
         }),
     );
 }
@@ -1098,6 +1162,26 @@ const DIFF_LANGUAGES = new Set(["diff", "patch", "udiff"]);
 const DIFF_ARTIFACT_RE = /\.(patch|diff)$/i;
 const IMAGE_CONTENT_TYPE_RE = /^image\/(png|jpe?g|gif|webp|avif|bmp|svg\+xml|x-icon|vnd\.microsoft\.icon)$/i;
 const IMAGE_FILENAME_RE = /\.(png|jpe?g|gif|webp|avif|bmp|svg|ico)$/i;
+// Artifacts are stored with whatever content type the uploader declared, and
+// agents routinely write .svg as text/plain. A blob: URL carries its type
+// straight to <img>, which renders nothing for a non-image type — so the
+// extension is the fallback source of truth when the stored type is not one.
+const IMAGE_MIME_BY_EXTENSION = {
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    gif: "image/gif",
+    webp: "image/webp",
+    avif: "image/avif",
+    bmp: "image/bmp",
+    svg: "image/svg+xml",
+    ico: "image/x-icon",
+};
+
+function imageMimeFromFilename(filename) {
+    const match = /\.([a-z0-9]+)$/i.exec(String(filename || ""));
+    return match ? (IMAGE_MIME_BY_EXTENSION[match[1].toLowerCase()] || null) : null;
+}
 
 /** Map an artifact filename to a highlighter language, or null for plain text. */
 const CODE_ARTIFACT_LANGUAGES = {
@@ -1123,6 +1207,18 @@ function stripYamlFrontmatter(content) {
     const close = /\r?\n---[ \t]*(\r?\n|$)/.exec(text.slice(3));
     if (!close) return text;
     return text.slice(3 + close.index + close[0].length);
+}
+
+const HTML_ARTIFACT_RE = /\.(html?|xhtml)$/i;
+
+/**
+ * HTML-shaped artifacts, recognized by extension OR content type — the same
+ * belt-and-braces rule the diff and tabular predicates use, because an agent
+ * may write `text/html` bytes under a name we would not guess.
+ */
+function isHtmlArtifact(filename, contentType) {
+    if (HTML_ARTIFACT_RE.test(String(filename || ""))) return true;
+    return /^(text\/html|application\/xhtml\+xml)$/i.test(String(contentType || "").trim().split(";")[0]);
 }
 
 const TABULAR_ARTIFACT_RE = /\.(csv|tsv)$/i;
@@ -1324,6 +1420,24 @@ function isDiffArtifact(filename, contentType) {
     return /^text\/x-(patch|diff)$/i.test(String(contentType || "").trim());
 }
 
+/**
+ * Drop the TUI's "(press a to download)" tail that the shared link decorator
+ * appends after an artifact link.
+ *
+ * It arrives as ordinary text immediately following the link, so it survives
+ * into the portal where the key does not exist and download is the wrong verb
+ * anyway — the card next to it opens a reader. Matched against the exported
+ * constant rather than a second copy of the literal.
+ */
+function stripArtifactDownloadHint(text) {
+    const value = String(text ?? "");
+    if (value.startsWith(ARTIFACT_DOWNLOAD_HINT)) return value.slice(ARTIFACT_DOWNLOAD_HINT.length);
+    // Leading whitespace already consumed by a preceding run/token.
+    const trimmedHint = ARTIFACT_DOWNLOAD_HINT.trimStart();
+    if (value.startsWith(trimmedHint)) return value.slice(trimmedHint.length);
+    return value;
+}
+
 /** Parse an `artifact://<sessionId>/<filename>` href. */
 function parseArtifactHref(href) {
     const match = /^artifact:\/\/([^/]+)\/(.+)$/i.exec(String(href || "").trim());
@@ -1344,33 +1458,127 @@ function parseArtifactHref(href) {
  */
 const ControllerContext = React.createContext(null);
 
-function ArtifactLink({ label, artifactRef, style }) {
+/**
+ * Classify an artifact for display: what kind of thing it is, said in words a
+ * reader recognizes rather than a file extension.
+ *
+ * HTML is called out as its own kind because it behaves differently from every
+ * other artifact — it opens as a live rendered page rather than as text — and
+ * the card should promise that before the click, not after.
+ */
+function describeArtifact(filename) {
+    const name = String(filename || "");
+    const ext = (/\.([A-Za-z0-9]+)$/.exec(name)?.[1] || "").toLowerCase();
+    if (isHtmlArtifact(name)) return { kind: "page", type: "HTML", noun: "Page" };
+    if (isDiffArtifact(name)) return { kind: "diff", type: ext.toUpperCase() || "DIFF", noun: "Diff" };
+    if (IMAGE_FILENAME_RE.test(name)) return { kind: "image", type: ext.toUpperCase(), noun: "Image" };
+    if (isTabularArtifact(name)) return { kind: "table", type: ext.toUpperCase(), noun: "Table" };
+    if (/\.md$/i.test(name)) return { kind: "doc", type: "MD", noun: "Document" };
+    if (codeLanguageForArtifact(name)) return { kind: "code", type: ext.toUpperCase(), noun: "Code" };
+    return { kind: "file", type: ext.toUpperCase() || "FILE", noun: "File" };
+}
+
+/**
+ * A filename read as a title: drop the extension, drop a trailing date stamp,
+ * and turn separators into spaces. `icm-pg-outage-chain-20260805.html` reads as
+ * "Icm pg outage chain" — the same move a document viewer makes, because the
+ * card is a thing you recognize at a glance, not a path you retype.
+ */
+function artifactCardTitle(filename) {
+    const base = String(filename || "").replace(/\.[A-Za-z0-9]+$/, "");
+    const undated = base.replace(/[-_ ]?\d{6,8}$/, "");
+    const words = (undated || base).replace(/[-_]+/g, " ").trim();
+    if (!words) return String(filename || "Artifact");
+    return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/** Per-kind mark for the card's thumbnail. Inline SVG so it inherits color. */
+function ArtifactCardGlyph({ kind }) {
+    const stroke = { fill: "none", stroke: "currentColor", strokeWidth: 1.5, strokeLinecap: "round", strokeLinejoin: "round" };
+    const inner = kind === "page"
+        // A browser window: what you get is a rendered page, not a file.
+        ? [
+            React.createElement("rect", { key: "w", x: 2.5, y: 3.5, width: 15, height: 13, rx: 2, ...stroke }),
+            React.createElement("path", { key: "b", d: "M2.5 7.5h15", ...stroke }),
+            React.createElement("circle", { key: "d", cx: 5.2, cy: 5.5, r: 0.7, fill: "currentColor", stroke: "none" }),
+        ]
+        : kind === "image"
+            ? [
+                React.createElement("rect", { key: "f", x: 2.5, y: 3.5, width: 15, height: 13, rx: 2, ...stroke }),
+                React.createElement("path", { key: "m", d: "M2.5 13l4-4 4 3.5 3-2.5 3.5 3", ...stroke }),
+            ]
+            : kind === "table"
+                ? [
+                    React.createElement("rect", { key: "f", x: 2.5, y: 3.5, width: 15, height: 13, rx: 2, ...stroke }),
+                    React.createElement("path", { key: "g", d: "M2.5 8h15M8 8v8.5M2.5 12.5h15", ...stroke }),
+                ]
+                : [
+                    // Document: a page with a folded corner and text lines.
+                    React.createElement("path", { key: "p", d: "M5 2.5h6.5L16 7v10.5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-14a1 1 0 0 1 1-1z", ...stroke }),
+                    React.createElement("path", { key: "c", d: "M11.5 2.5V7H16", ...stroke }),
+                    kind === "diff"
+                        ? React.createElement("path", { key: "t", d: "M7 11h6M10 8.5v5", ...stroke })
+                        : React.createElement("path", { key: "t", d: "M7 10.5h6M7 13.5h4", ...stroke }),
+                ];
+    return React.createElement("svg", {
+        className: "ps-artifact-card-glyph",
+        viewBox: "0 0 20 20",
+        "aria-hidden": "true",
+    }, inner);
+}
+
+/**
+ * An artifact in the transcript, as a card rather than a link.
+ *
+ * The old inline link was a coloured filename followed by "(press a to
+ * download)" — a keystroke that does not exist in a browser, describing the
+ * wrong verb for something you want to read. A card names the thing, says what
+ * kind it is, and opens the reader on click.
+ */
+function ArtifactLink({ artifactRef }) {
     const controller = React.useContext(ControllerContext);
-    const diff = isDiffArtifact(artifactRef.filename);
+    const descriptor = describeArtifact(artifactRef.filename);
     const onOpen = React.useCallback((event) => {
         event.preventDefault();
         event.stopPropagation();
-        if (!controller?.revealArtifact) return;
-        // On a phone the preview takes the whole pane — a list/detail split has
-        // no room to be useful at 390px.
-        const fullscreen = typeof window !== "undefined"
-            && typeof window.matchMedia === "function"
-            && window.matchMedia("(max-width: 920px)").matches;
-        Promise.resolve(controller.revealArtifact(artifactRef.sessionId, artifactRef.filename, { fullscreen }))
-            .catch(() => {});
+        openArtifactFromChat(controller, artifactRef.sessionId, artifactRef.filename);
     }, [controller, artifactRef.sessionId, artifactRef.filename]);
 
+    // Deliberately NOT given the surrounding run's inline style. That style
+    // carries the link colour and underline the transcript uses for inline
+    // links, and inheriting it painted the card's title as underlined accent
+    // text — a card is a surface, not a phrase.
     return React.createElement("button", {
         type: "button",
-        className: `ps-artifact-link${diff ? " is-diff" : ""}`,
+        className: `ps-artifact-card is-${descriptor.kind}`,
         onClick: onOpen,
-        title: diff
-            ? `Open ${artifactRef.filename} as a diff`
-            : `Open ${artifactRef.filename} in Files`,
-        style,
+        title: `Open ${artifactRef.filename}`,
     },
-    diff ? React.createElement("span", { className: "ps-artifact-link-glyph", "aria-hidden": "true" }, "±") : null,
-    React.createElement("span", { className: "ps-artifact-link-label" }, label || artifactRef.filename));
+    React.createElement("span", { className: "ps-artifact-card-thumb", "aria-hidden": "true" },
+        React.createElement(ArtifactCardGlyph, { kind: descriptor.kind })),
+    React.createElement("span", { className: "ps-artifact-card-text" },
+        React.createElement("span", { className: "ps-artifact-card-title" }, artifactCardTitle(artifactRef.filename)),
+        React.createElement("span", { className: "ps-artifact-card-meta" }, `${descriptor.noun} · ${descriptor.type}`)),
+    React.createElement("span", { className: "ps-artifact-card-open" }, "Open"));
+}
+
+/**
+ * Open an artifact from the transcript.
+ *
+ * Desktop gets the takeover pane — the chat stays visible beside it, which is
+ * the whole point of following a link from a conversation. A phone has no room
+ * for two things at once and keeps the full-viewport overlay.
+ */
+function openArtifactFromChat(controller, sessionId, filename) {
+    if (!controller?.revealArtifact) return;
+    const isPhone = typeof window !== "undefined"
+        && typeof window.matchMedia === "function"
+        && window.matchMedia("(max-width: 920px)").matches;
+    // Whether ✕ hands the column back or collapses it again is decided inside
+    // revealArtifact, from the layout it can already see.
+    Promise.resolve(isPhone
+        ? controller.revealArtifact(sessionId, filename, { fullscreen: true })
+        : controller.revealArtifact(sessionId, filename, { pane: true })).catch(() => {});
 }
 
 function isDiffLanguage(language) {
@@ -1677,8 +1885,16 @@ function MermaidDiagram({ code, theme, fallback }) {
 }
 
 function renderInlineMarkdown(source, theme, keyPrefix = "md") {
-    return tokenizeInlineMarkdown(source).map((token, index) => {
+    const tokens = tokenizeInlineMarkdown(source);
+    return tokens.map((token, index) => {
         const key = `${keyPrefix}:${index}`;
+        // The shared decorator appends the TUI's download hint as plain text
+        // right after the artifact link; the portal drops it.
+        if (index > 0 && tokens[index - 1]?.type === "link" && parseArtifactHref(tokens[index - 1]?.href)) {
+            const stripped = stripArtifactDownloadHint(token.text || "");
+            if (!stripped) return null;
+            if (stripped !== token.text) token = { ...token, text: stripped };
+        }
         if (token.type === "code") {
             return React.createElement("code", { key, className: "ps-md-inline-code" }, token.text);
         }
@@ -1691,12 +1907,7 @@ function renderInlineMarkdown(source, theme, keyPrefix = "md") {
         if (token.type === "link") {
             const artifactRef = parseArtifactHref(token.href);
             if (artifactRef) {
-                return React.createElement(ArtifactLink, {
-                    key,
-                    label: token.text,
-                    artifactRef,
-                    style: { color: resolveColor(theme, "cyan") },
-                });
+                return React.createElement(ArtifactLink, { key, artifactRef });
             }
             // Only http(s) becomes a navigable anchor. Anything else — an
             // unknown scheme, or a malformed href from a bad transform — would
@@ -2197,12 +2408,390 @@ function BinaryArtifactPreviewPanel({ title, color, focused, theme, filename, co
                     className: "ps-binary-preview-image",
                     src: imageUrl,
                     alt: filename || "artifact image",
-                    onClick: () => { try { window.open(imageUrl, "_blank", "noopener"); } catch { /* popup blocked */ } },
+                    // Click-through goes to the artifact deep link, NOT to the
+                    // blob URL. A blob: document opened at top level runs at
+                    // the portal's own origin, and IMAGE_FILENAME_RE admits
+                    // .svg — an SVG is a scriptable document, so opening one
+                    // that way would execute artifact-authored script with
+                    // access to the signed-in user's token. Rendering it in
+                    // <img> (below) is safe; navigating to it is not.
+                    onClick: () => {
+                        const target = buildArtifactLinkUrl(sessionId, filename);
+                        if (!target) return;
+                        try { window.open(target, "_blank", "noopener"); } catch { /* popup blocked */ }
+                    },
                 })
                 : React.createElement("p", { className: "ps-binary-preview-copy" },
                     isRasterImage
                         ? (imageUrl === "error" ? "Could not load the image preview. Use Download to save the file." : "Loading image preview…")
                         : "Preview is intentionally disabled for non-text artifacts in the browser workspace. Use Download to save the file and open it in the default app.")));
+}
+
+/**
+ * Full-fidelity HTML artifact preview.
+ *
+ * Two things make this different from every other preview branch:
+ *
+ * 1. It renders from the DOWNLOAD stream, not `previewContent`. The text
+ *    preview pipeline truncates at FILE_PREVIEW_CHAR_LIMIT (200k chars), so a
+ *    real agent-built dashboard is routinely cut off mid-document. "Full
+ *    fidelity" has to mean all of the bytes.
+ *
+ * 2. The document runs its own scripts, inside a sandbox with NO
+ *    `allow-same-origin`. That combination is the whole security model here:
+ *    blob: URLs inherit the origin of whoever created them, so withholding
+ *    allow-same-origin is what forces the frame into an opaque origin. The
+ *    artifact's tooltips, SVG interactions and layout scripts all work; its
+ *    script cannot read the portal's localStorage, cookies, bearer token, or
+ *    reach across into the parent DOM. Popups are allowed so external links
+ *    still work; forms and top-level navigation are not.
+ */
+/**
+ * Re-run a rendered artifact's layout when the frame's width changes.
+ *
+ * Agent-authored HTML routinely computes geometry ONCE at load — this
+ * dashboard measures the container and writes absolute SVG coordinates, with
+ * no resize listener anywhere in it. Widening the pane reflowed its CSS grid
+ * (media queries need no script) but left the graph drawn for the old width,
+ * with three columns stacked on top of each other.
+ *
+ * Nothing can be fixed from out here: the frame is deliberately opaque-origin,
+ * so we cannot call into it, read its scroll position, or re-run its init. The
+ * one lever that works from outside is making the document load again at the
+ * new size — a remount, which re-executes the same blob with no refetch.
+ *
+ * So: debounce until the drag settles, ignore trivial jitter, and never fire
+ * on the initial measurement. That costs one reload per resize gesture, and it
+ * does lose scroll position — unavoidable across an opaque origin, and the
+ * alternative is a picture that is simply wrong at the size the user chose.
+ */
+const HTML_PREVIEW_RESIZE_SETTLE_MS = 260;
+// Comfortably wider than a scrollbar. A reload changes the document's height,
+// which can add or remove the frame's vertical scrollbar, which changes the
+// host's width by ~15px — enough to clear a smaller threshold and schedule
+// another reload, which toggles the scrollbar back. That loop is what made the
+// panel appear to redraw continuously; measuring against the last COMMITTED
+// width (below) closes it, and the wider band keeps it shut.
+const HTML_PREVIEW_RESIZE_MIN_DELTA_PX = 28;
+
+/**
+ * Reload the rendered frame when the pane's width settles, double-buffered.
+ *
+ * Two rules keep this from being visible:
+ *
+ *  - Compare against the width the CURRENT document was rendered at, not the
+ *    last width observed. Otherwise every intermediate measurement becomes a
+ *    new baseline and the scrollbar feedback loop above never terminates.
+ *  - Load the replacement behind the one on screen and swap on its `load`
+ *    event. A remounted iframe is blank while it loads, and a blank frame
+ *    paints its background — white, so a light-assuming document is readable —
+ *    which is exactly the flash. Nothing is ever swapped in unpainted.
+ *
+ * Returns the two nonces the caller renders: `live` is on screen, `pending` is
+ * loading behind it. Both use the same element key across promotion so React
+ * reuses the element instead of remounting it (which would reload it again).
+ */
+function useHtmlPreviewReload(elementRef, enabled, resetKey) {
+    const [live, setLive] = React.useState(null);
+    const [pending, setPending] = React.useState(0);
+    const committedWidthRef = React.useRef(null);
+    const nonceRef = React.useRef(0);
+
+    // A different artifact is a different document: drop what is on screen and
+    // stage the new one, so the old page is never shown under a new title.
+    React.useEffect(() => {
+        committedWidthRef.current = null;
+        nonceRef.current += 1;
+        setLive(null);
+        setPending(nonceRef.current);
+    }, [resetKey]);
+
+    React.useEffect(() => {
+        const node = elementRef.current;
+        if (!enabled || !node || typeof ResizeObserver === "undefined") return undefined;
+        let timer = null;
+        const observer = new ResizeObserver((entries) => {
+            const width = Math.round(entries[0]?.contentRect?.width || 0);
+            if (!width) return;
+            if (committedWidthRef.current === null) {
+                committedWidthRef.current = width;
+                return;
+            }
+            if (Math.abs(width - committedWidthRef.current) < HTML_PREVIEW_RESIZE_MIN_DELTA_PX) return;
+            if (timer) clearTimeout(timer);
+            timer = setTimeout(() => {
+                timer = null;
+                // Commit the width as of the moment we decide to reload, so the
+                // next comparison is against what the new document will render
+                // at rather than against a mid-drag sample.
+                committedWidthRef.current = Math.round(node.getBoundingClientRect().width) || width;
+                nonceRef.current += 1;
+                setPending(nonceRef.current);
+            }, HTML_PREVIEW_RESIZE_SETTLE_MS);
+        });
+        observer.observe(node);
+        return () => {
+            if (timer) clearTimeout(timer);
+            observer.disconnect();
+        };
+    }, [elementRef, enabled]);
+
+    const promote = React.useCallback((nonce) => {
+        setPending((current) => (current === nonce ? null : current));
+        setLive((current) => (current === nonce ? current : nonce));
+    }, []);
+
+    return { live, pending, promote };
+}
+
+/**
+ * Width the frame LAYS OUT at while fitting, before being scaled down.
+ *
+ * It has to be a constant: the frame is sandboxed without `allow-same-origin`,
+ * so the document's real content width is unreadable from here — there is no
+ * contentDocument to measure. 1024 is the width a fixed-layout page is most
+ * likely to have been written for, and a responsive one reflows to it happily.
+ */
+const HTML_PREVIEW_FIT_LAYOUT_WIDTH_PX = 1024;
+
+/** Fit-to-width switch. Rendered by whichever surface owns the artifact bar. */
+function HtmlFitWidthToggle({ fitWidth, setFitWidth }) {
+    return React.createElement(IconButton, {
+        icon: fitWidth ? "1:1" : "⤢",
+        label: fitWidth ? "Actual size" : "Fit page to width",
+        active: fitWidth,
+        onClick: () => setFitWidth(!fitWidth),
+    });
+}
+
+/** Rendered-page vs. HTML-source switch. Shared by the Files tab and the reader. */
+function HtmlViewModeToggle({ mode, setMode }) {
+    return React.createElement("span", {
+        className: "ps-html-preview-modes",
+        role: "group",
+        "aria-label": "Preview mode",
+    }, ["rendered", "source"].map((value) => React.createElement("button", {
+        key: value,
+        type: "button",
+        className: `ps-html-preview-mode${mode === value ? " is-active" : ""}`,
+        "aria-pressed": mode === value,
+        onClick: () => setMode(value),
+    }, value === "rendered" ? "Rendered" : "Source")));
+}
+
+function useElementBox(ref) {
+    const [box, setBox] = React.useState({ width: 0, height: 0 });
+    React.useLayoutEffect(() => {
+        const node = ref.current;
+        if (!node || typeof ResizeObserver === "undefined") return undefined;
+        const update = () => {
+            const rect = node.getBoundingClientRect();
+            setBox((current) => {
+                const width = Math.round(rect.width) || 0;
+                const height = Math.round(rect.height) || 0;
+                return current.width === width && current.height === height
+                    ? current
+                    : { width, height };
+            });
+        };
+        update();
+        const observer = new ResizeObserver(update);
+        observer.observe(node);
+        return () => observer.disconnect();
+    }, [ref]);
+    return box;
+}
+
+function fetchArtifactHtmlObjectUrl(controller, sessionId, filename) {
+    const downloadResponse = controller?.transport?.api?.downloadArtifactResponse;
+    if (typeof downloadResponse !== "function") {
+        return Promise.reject(new Error("artifact download unavailable"));
+    }
+    return downloadResponse.call(controller.transport.api, sessionId, filename)
+        .then(async (response) => {
+            if (!response?.ok) throw new Error(`download failed (${response?.status})`);
+            // Re-type the blob explicitly rather than trusting the response's
+            // content-type. An artifact stored as application/octet-stream
+            // would otherwise make the iframe offer a download instead of
+            // rendering, and a missing charset would mojibake UTF-8 content.
+            const bytes = await response.arrayBuffer();
+            return URL.createObjectURL(new Blob([bytes], { type: "text/html;charset=utf-8" }));
+        });
+}
+
+function HtmlArtifactPreviewPanel({
+    controller, sessionId, filename, contentType, sizeBytes, theme,
+    color = "cyan", focused = false, title = null, chromeless = false,
+}) {
+    // Mode lives in controller state so the reader pane's header can own the
+    // toggle. Inside the Files tab this panel still draws its own.
+    const mode = useControllerSelector(controller, (state) => state.files.htmlViewMode || "rendered");
+    const setMode = React.useCallback((next) => {
+        controller.dispatch({ type: "files/htmlViewMode", mode: next });
+    }, [controller]);
+    const [frameUrl, setFrameUrl] = React.useState(null);
+    const [error, setError] = React.useState(null);
+    // Measured on the wrapper, not the iframe: an iframe being remounted is
+    // briefly absent, and observing an element that disappears would drop the
+    // baseline and re-fire on the way back.
+    const frameHostRef = React.useRef(null);
+    const fitWidth = useControllerSelector(controller, (state) => Boolean(state.files.htmlFitWidth));
+    const setFitWidth = React.useCallback((next) => {
+        controller.dispatch({ type: "files/htmlFitWidth", enabled: next });
+    }, [controller]);
+    const hostBox = useElementBox(frameHostRef);
+    // Only ever scale DOWN. When the pane is already wider than the layout
+    // width there is nothing to fit, and blowing the page up to fill it would
+    // just make a responsive document coarse.
+    const fitScale = fitWidth && hostBox.width > 0 && hostBox.width < HTML_PREVIEW_FIT_LAYOUT_WIDTH_PX
+        ? hostBox.width / HTML_PREVIEW_FIT_LAYOUT_WIDTH_PX
+        : 1;
+    const fitActive = fitScale < 1;
+    // While fitting, the frame's own width is pinned to the layout constant, so
+    // a pane resize changes only the SCALE — the document does not need to be
+    // reloaded, and reloading would cost the reader their scroll position on
+    // something as ordinary as rotating the phone.
+    const frames = useHtmlPreviewReload(frameHostRef, mode === "rendered" && !fitActive, `${sessionId}/${filename}`);
+
+    // The object URL is owned by this component — created on mount, revoked on
+    // unmount or artifact change. It deliberately does not share the thumbnail
+    // LRU: that cache revokes at its cap, which would blank a frame the user
+    // is still reading.
+    React.useEffect(() => {
+        setFrameUrl(null);
+        setError(null);
+        if (mode !== "rendered" || !controller || !sessionId || !filename) return undefined;
+        let cancelled = false;
+        let created = null;
+        fetchArtifactHtmlObjectUrl(controller, sessionId, filename)
+            .then((url) => {
+                created = url;
+                if (cancelled) {
+                    URL.revokeObjectURL(url);
+                    return;
+                }
+                setFrameUrl(url);
+            })
+            .catch((err) => { if (!cancelled) setError(err?.message || String(err)); });
+        return () => {
+            cancelled = true;
+            if (created) URL.revokeObjectURL(created);
+        };
+    }, [controller, sessionId, filename, mode]);
+
+    const deepLink = buildArtifactLinkUrl(sessionId, filename);
+    const actions = chromeless ? null : React.createElement(React.Fragment, null,
+        React.createElement(HtmlViewModeToggle, { mode, setMode }),
+        mode === "rendered"
+            ? React.createElement(HtmlFitWidthToggle, { fitWidth, setFitWidth })
+            : null,
+        deepLink
+            ? React.createElement(IconButton, {
+                icon: "↗",
+                label: "Open in a new tab",
+                onClick: () => { try { window.open(deepLink, "_blank", "noopener"); } catch { /* popup blocked */ } },
+            })
+            : null);
+
+    const body = mode === "source"
+        ? React.createElement(HtmlArtifactSourcePanel, { controller, sessionId, filename, theme })
+        : error
+            ? React.createElement("div", { className: "ps-html-preview-status" },
+                React.createElement("p", null, `Could not load ${filename}: ${error}`),
+                React.createElement("p", null, "Use Download to save the file and open it locally."))
+            : frameUrl
+                // Live and pending are rendered together while a reload is in
+                // flight; the pending one is offscreen-transparent until its
+                // load fires. Keys are `frame:<nonce>` in BOTH roles so
+                // promotion is a class change, not a remount — remounting
+                // would reload the document we just finished loading.
+                ? [frames.live, frames.pending]
+                    .filter((nonce, index, all) => nonce !== null && all.indexOf(nonce) === index)
+                    .map((nonce) => React.createElement("iframe", {
+                        key: `frame:${nonce}`,
+                        className: `ps-html-preview-frame${nonce === frames.live ? "" : " is-staging"}`,
+                        // A transform does not change the layout box, so the
+                        // frame is laid out at the full layout width and a
+                        // proportionally TALLER height, then scaled back into
+                        // the host. Height in layout px, not %, because a
+                        // percentage would resolve against a flex parent whose
+                        // definite height is not guaranteed.
+                        style: fitActive
+                            ? {
+                                flex: "none",
+                                width: `${HTML_PREVIEW_FIT_LAYOUT_WIDTH_PX}px`,
+                                height: `${Math.max(1, Math.round(hostBox.height / fitScale))}px`,
+                                transform: `scale(${fitScale})`,
+                                transformOrigin: "top left",
+                            }
+                            : undefined,
+                        src: frameUrl,
+                        title: filename || "HTML artifact",
+                        // No allow-same-origin — see the block comment above.
+                        sandbox: "allow-scripts allow-popups allow-popups-to-escape-sandbox",
+                        referrerPolicy: "no-referrer",
+                        onLoad: () => frames.promote(nonce),
+                    }))
+                : React.createElement("div", { className: "ps-html-preview-status" },
+                    React.createElement("p", null, `Rendering ${filename}…`),
+                    sizeBytes != null
+                        ? React.createElement("p", { className: "ps-html-preview-meta" },
+                            [contentType, formatArtifactPreviewBytes(sizeBytes)].filter(Boolean).join("  •  "))
+                        : null);
+
+    // The measured host wraps the rendered branch only — in Source mode there
+    // is no document whose layout could go stale, so nothing observes width.
+    const hosted = mode === "rendered"
+        ? React.createElement("div", {
+            ref: frameHostRef,
+            // The frame's layout box stays HTML_PREVIEW_FIT_LAYOUT_WIDTH_PX wide
+            // while fitting; without clipping, that overflow would hand the host
+            // a horizontal scrollbar for content that is already fully visible.
+            className: `ps-html-preview-host${fitActive ? " is-fitting" : ""}`,
+        }, body)
+        : body;
+
+    return React.createElement(Panel, { title, color, focused, theme, actions, className: "ps-html-preview" }, hosted);
+}
+
+/**
+ * Source view for an HTML artifact — highlighted, and fetched in full rather
+ * than reusing the 200k-truncated preview text, so toggling Rendered→Source
+ * does not silently lose two thirds of a large document.
+ */
+function HtmlArtifactSourcePanel({ controller, sessionId, filename, theme }) {
+    const [text, setText] = React.useState(null);
+    const [error, setError] = React.useState(null);
+    React.useEffect(() => {
+        setText(null);
+        setError(null);
+        const downloadResponse = controller?.transport?.api?.downloadArtifactResponse;
+        if (typeof downloadResponse !== "function" || !sessionId || !filename) {
+            setError("artifact download unavailable");
+            return undefined;
+        }
+        let cancelled = false;
+        downloadResponse.call(controller.transport.api, sessionId, filename)
+            .then(async (response) => {
+                if (!response?.ok) throw new Error(`download failed (${response?.status})`);
+                return response.text();
+            })
+            .then((value) => { if (!cancelled) setText(value); })
+            .catch((err) => { if (!cancelled) setError(err?.message || String(err)); });
+        return () => { cancelled = true; };
+    }, [controller, sessionId, filename]);
+
+    if (error) {
+        return React.createElement("div", { className: "ps-html-preview-status" },
+            React.createElement("p", null, `Could not load source: ${error}`));
+    }
+    if (text == null) {
+        return React.createElement("div", { className: "ps-html-preview-status" },
+            React.createElement("p", null, "Loading source…"));
+    }
+    return React.createElement("div", { className: "ps-scroll-panel is-preview ps-diff-preview" },
+        React.createElement("pre", { className: "ps-md-code-pre" },
+            React.createElement("code", null, renderHighlightedCode(text, "html", theme))));
 }
 
 function isBoxTopLine(text) {
@@ -2545,7 +3134,18 @@ function fetchArtifactObjectUrl(controller, sessionId, filename) {
         .then(async (response) => {
             if (!response?.ok) throw new Error(`download failed (${response?.status})`);
             const blob = await response.blob();
-            return URL.createObjectURL(blob);
+            // Re-type from the extension when the stored content type is not an
+            // image one. This is what made an agent-written bar_chart.svg
+            // (uploaded as text/plain) render as a broken-image glyph: the blob
+            // inherited text/plain and <img> will not paint that. Re-typing does
+            // NOT widen the SVG-script exposure the block below guards against —
+            // <img> never runs script in an SVG regardless of how it is typed,
+            // and the click-through still goes to the artifact deep link.
+            const imageMime = imageMimeFromFilename(filename);
+            const typedBlob = imageMime && !IMAGE_CONTENT_TYPE_RE.test(blob.type)
+                ? new Blob([blob], { type: imageMime })
+                : blob;
+            return URL.createObjectURL(typedBlob);
         })
         .catch((error) => {
             // Failed fetches must not be cached — a retry on next render is fine.
@@ -5039,6 +5639,132 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
 }
 
 /**
+ * The desktop artifact reader: a full-height pane that takes over the right
+ * column, replacing the inspector AND activity panes for as long as it is open.
+ *
+ * Why a takeover rather than one more box: an artifact worth opening from the
+ * transcript is the thing you want to READ, and the previous arrangement gave
+ * it the bottom third of a column it shared with a file list. The chat stays
+ * beside it — that is the half of the split that matters — while everything
+ * that was only ever context for the chat steps aside.
+ *
+ * ✕ hands the column back to the inspector/activity split, or re-collapses it
+ * if it was already collapsed when the pane opened (see closeArtifactPane).
+ */
+function ArtifactTakeoverPane({ controller, onClose }) {
+    const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
+    const theme = getTheme(themeId);
+    const view = useControllerSelector(controller, (state) => {
+        const id = state.files.selectedArtifactId || "";
+        const slash = id.indexOf("/");
+        return {
+            sessionId: slash > 0 ? id.slice(0, slash) : null,
+            filename: slash > 0 ? id.slice(slash + 1) : "",
+            canPrev: controller.canStepArtifactPreview(-1),
+            canNext: controller.canStepArtifactPreview(1),
+        };
+    }, shallowEqualObject);
+
+    const descriptor = describeArtifact(view.filename);
+    const htmlViewMode = useControllerSelector(controller, (state) => state.files.htmlViewMode || "rendered");
+    const htmlFitWidth = useControllerSelector(controller, (state) => Boolean(state.files.htmlFitWidth));
+    const setHtmlFitWidth = React.useCallback((next) => {
+        controller.dispatch({ type: "files/htmlFitWidth", enabled: next });
+    }, [controller]);
+    const setHtmlViewMode = React.useCallback((next) => {
+        controller.dispatch({ type: "files/htmlViewMode", mode: next });
+    }, [controller]);
+    const step = React.useCallback((delta) => {
+        controller.stepArtifactPreview(delta).catch(() => {});
+    }, [controller]);
+
+    // ‹ › as keys, not just buttons — the same navigation the phone overlay
+    // has. Bound on the pane itself rather than the window so it cannot
+    // hijack the arrow keys while the user is typing in the composer.
+    const onKeyDown = React.useCallback((event) => {
+        if (event.metaKey || event.ctrlKey || event.altKey) return;
+        if (event.key === "ArrowLeft" || event.key === "[") { event.preventDefault(); step(-1); return; }
+        if (event.key === "ArrowRight" || event.key === "]") { event.preventDefault(); step(1); return; }
+        if (event.key === "Escape") { event.preventDefault(); onClose(); }
+    }, [onClose, step]);
+
+    const deepLink = buildArtifactLinkUrl(view.sessionId, view.filename);
+
+    return React.createElement("section", {
+        className: "ps-artifact-pane",
+        onKeyDown,
+        tabIndex: -1,
+        role: "region",
+        "aria-label": `Artifact: ${view.filename || "none"}`,
+    },
+    React.createElement("header", { className: "ps-artifact-pane-bar" },
+        // Rendered/Source lives HERE for HTML rather than in a second header
+        // row below — one bar owns the artifact, the way the reference does.
+        descriptor.kind === "page"
+            ? React.createElement(HtmlViewModeToggle, { mode: htmlViewMode, setMode: setHtmlViewMode })
+            : null,
+        // The panel is chromeless in here, so this bar owns the fit control —
+        // and this is the surface that needs it most: a fixed-width page in a
+        // phone-width frame is exactly the case fitting exists for.
+        descriptor.kind === "page" && htmlViewMode === "rendered"
+            ? React.createElement(HtmlFitWidthToggle, { fitWidth: htmlFitWidth, setFitWidth: setHtmlFitWidth })
+            : null,
+        React.createElement("span", { className: "ps-artifact-pane-heading" },
+            React.createElement("span", {
+                className: "ps-artifact-pane-name",
+                title: view.filename,
+            }, artifactCardTitle(view.filename) || "Artifact"),
+            React.createElement("span", { className: "ps-artifact-pane-type" }, descriptor.type)),
+        React.createElement("span", { className: "ps-artifact-pane-actions" },
+            React.createElement("button", {
+                type: "button",
+                className: "ps-artifact-pane-btn",
+                disabled: !view.canPrev,
+                onClick: () => step(-1),
+                title: "Previous artifact (←)",
+                "aria-label": "Previous artifact",
+            }, "‹"),
+            React.createElement("button", {
+                type: "button",
+                className: "ps-artifact-pane-btn",
+                disabled: !view.canNext,
+                onClick: () => step(1),
+                title: "Next artifact (→)",
+                "aria-label": "Next artifact",
+            }, "›"),
+            React.createElement("button", {
+                type: "button",
+                className: "ps-artifact-pane-btn",
+                onClick: () => {
+                    if (!deepLink) return;
+                    copySessionLinkText(deepLink);
+                    controller.dispatch({ type: "ui/status", text: ARTIFACT_LINK_COPIED_STATUS });
+                },
+                disabled: !deepLink,
+                title: "Copy a link that reopens this artifact",
+                "aria-label": "Copy link",
+            }, "🔗"),
+            React.createElement("button", {
+                type: "button",
+                className: "ps-artifact-pane-btn",
+                onClick: () => controller.handleCommand(UI_COMMANDS.DOWNLOAD_SELECTED_FILE).catch(() => {}),
+                title: "Download",
+                "aria-label": "Download",
+            }, React.createElement(DownloadGlyph)),
+            React.createElement("button", {
+                type: "button",
+                className: "ps-artifact-pane-btn is-close",
+                onClick: onClose,
+                title: "Close (Esc)",
+                "aria-label": "Close artifact",
+            }, "✕"))),
+    React.createElement("div", { className: "ps-artifact-pane-body" },
+        React.createElement(FilesPane, {
+            controller, focused: false, previewOnly: true, chromeless: true, theme,
+        })));
+}
+
+/**
  * Mobile artifact viewer — a genuine full-viewport overlay, not a pane.
  *
  * Rendered OUTSIDE the workspace and fixed to the viewport, so the portal
@@ -5146,7 +5872,7 @@ function InspectorTabs({ activeTab, controller }) {
 // can host it in the activity slot where it gets the existing row resizer.
 // Detached this way the preview is resizable; nested inside the inspector it
 // could only ever have half of a pane.
-function FilesPane({ controller, focused, mobile = false, previewOnly = false, nativeScroll = false }) {
+function FilesPane({ controller, focused, mobile = false, previewOnly = false, nativeScroll = false, chromeless = false }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
     const fileInputRef = React.useRef(null);
@@ -5279,6 +6005,20 @@ function FilesPane({ controller, focused, mobile = false, previewOnly = false, n
             onClick: () => controller.handleCommand(UI_COMMANDS.DOWNLOAD_SELECTED_FILE).catch(() => {}),
             disabled: !hasSelection,
         }),
+        // Deep link to THIS artifact, opened full screen. Same URL shape the
+        // agent's show_artifact tool hands back, so a link pasted in chat and a
+        // link copied here land in exactly the same place.
+        React.createElement(IconButton, {
+            icon: "🔗",
+            label: "Copy link to this artifact",
+            onClick: () => {
+                const url = buildArtifactLinkUrl(filesView.selectedSessionId, filesView.selectedFilename);
+                if (!url) return;
+                copySessionLinkText(url);
+                controller.dispatch({ type: "ui/status", text: ARTIFACT_LINK_COPIED_STATUS });
+            },
+            disabled: !hasSelection || !filesView.selectedFilename,
+        }),
         // Trash, not "✕" — the bulk-delete two buttons away was already a trash
         // can, and "✕" means "clear marks" in this same row.
         viewState.canDeleteArtifacts ? React.createElement(IconButton, {
@@ -5390,7 +6130,27 @@ function FilesPane({ controller, focused, mobile = false, previewOnly = false, n
         && isTabularArtifact(filesView.selectedFilename, filesView.previewContentType)
         && Boolean(filesView.previewContent);
 
-    const previewPane = previewIsTabular
+    // HTML renders as HTML. Note this branch does NOT require previewContent:
+    // the frame streams the artifact's own bytes, so it works even when the
+    // text preview was truncated or never loaded.
+    const previewIsHtml = previewReady
+        && !filesView.previewIsBinary
+        && isHtmlArtifact(filesView.selectedFilename, filesView.previewContentType);
+
+    const previewPane = previewIsHtml
+        ? React.createElement(HtmlArtifactPreviewPanel, {
+            controller,
+            sessionId: filesView.selectedSessionId,
+            filename: filesView.selectedFilename,
+            contentType: filesView.previewContentType,
+            sizeBytes: filesView.previewSizeBytes,
+            theme,
+            color: "cyan",
+            focused: false,
+            title: null,
+            chromeless,
+        })
+        : previewIsTabular
         ? React.createElement(RenderedPreviewPanel, {
             controller, title: null, color: "cyan", focused: false, theme,
             paneKey: previewPaneKey, scrollOffset: viewState.previewScroll,
@@ -8548,6 +9308,7 @@ export function PilotSwarmWebApp({ controller }) {
         inspectorTab: rootState.ui.inspectorTab,
         filesFullscreen: Boolean(rootState.files.fullscreen),
         selectedArtifactId: rootState.files.selectedArtifactId || null,
+        artifactPaneOpen: Boolean(rootState.files.paneOpen),
         adminVisible: Boolean(rootState.admin?.visible),
     }), shallowEqualObject);
     const profileSettingsHydratedRef = React.useRef(false);
@@ -8556,6 +9317,7 @@ export function PilotSwarmWebApp({ controller }) {
     // endpoint replaces the whole settings object, so this is what keeps a
     // desktop save from erasing the phone's preference.
     const otherChatViewModeRef = React.useRef(null);
+    const otherTouchScaleRef = React.useRef(null);
     const profileSettingsSaveTimerRef = React.useRef(null);
     const profileSettingsPollTimerRef = React.useRef(null);
     const profileSettingsPollInFlightRef = React.useRef(false);
@@ -8613,8 +9375,11 @@ export function PilotSwarmWebApp({ controller }) {
                 if (isChatViewMode(remoteNormalized[otherChatViewModeKey()])) {
                     otherChatViewModeRef.current = remoteNormalized[otherChatViewModeKey()];
                 }
+                if (typeof remoteNormalized[otherTouchScaleKey()] === "boolean") {
+                    otherTouchScaleRef.current = remoteNormalized[otherTouchScaleKey()];
+                }
                 defaultProfileSettingsRef.current = buildDefaultProfileSettingsFromState(
-                    controller.getState(), otherChatViewModeRef.current,
+                    controller.getState(), otherChatViewModeRef.current, otherTouchScaleRef.current,
                 );
                 const settings = materializeProfileSettings(
                     profile?.profileSettings,
@@ -8622,7 +9387,7 @@ export function PilotSwarmWebApp({ controller }) {
                 );
                 const settingsJson = JSON.stringify(settings);
                 const currentSettingsBeforeApply = profileSettingsFromViewState(
-                    controller.getState(), otherChatViewModeRef.current,
+                    controller.getState(), otherChatViewModeRef.current, otherTouchScaleRef.current,
                 );
                 const currentSettingsBeforeApplyJson = JSON.stringify(currentSettingsBeforeApply);
                 const hasUnpersistedLocalChange = profileSettingsHydratedRef.current
@@ -8649,7 +9414,7 @@ export function PilotSwarmWebApp({ controller }) {
                 // remote state by definition and there is nothing to lose).
                 if (!profileSettingsHydratedRef.current || !hasPendingLocalWrite) {
                     const currentSettings = profileSettingsFromViewState(
-                        controller.getState(), otherChatViewModeRef.current,
+                        controller.getState(), otherChatViewModeRef.current, otherTouchScaleRef.current,
                     );
                     lastProfileSettingsJsonRef.current = JSON.stringify(currentSettings);
                 }
@@ -8683,7 +9448,7 @@ export function PilotSwarmWebApp({ controller }) {
 
     React.useEffect(() => {
         if (!profileSettingsHydratedRef.current) return undefined;
-        const settings = profileSettingsFromViewState(state, otherChatViewModeRef.current);
+        const settings = profileSettingsFromViewState(state, otherChatViewModeRef.current, otherTouchScaleRef.current);
         const settingsJson = JSON.stringify(settings);
         if (lastProfileSettingsJsonRef.current === settingsJson) return undefined;
         lastProfileSettingsJsonRef.current = settingsJson;
@@ -8747,6 +9512,20 @@ export function PilotSwarmWebApp({ controller }) {
     const artifactPreviewDetached = state.inspectorTab === "files"
         && Boolean(state.selectedArtifactId)
         && !filesFullscreenActive;
+
+    // The takeover pane only makes sense on desktop; the phone has its own
+    // full-viewport overlay and no column to take over.
+    const artifactPaneActive = !mobile
+        && state.artifactPaneOpen
+        && Boolean(state.selectedArtifactId)
+        && !filesFullscreenActive;
+
+    // Closing hands the column back — or collapses it again, if the user had
+    // already resized it away before opening the pane. Both cases live in the
+    // controller so the decision is testable without a DOM.
+    const closeArtifactPane = React.useCallback(() => {
+        controller.closeArtifactPane().catch(() => {});
+    }, [controller]);
 
     React.useEffect(() => {
         if (!filesFullscreenActive || !chatFocusMode) return;
@@ -8814,7 +9593,13 @@ export function PilotSwarmWebApp({ controller }) {
     },
         React.createElement(ChatPane, { controller }))),
     React.createElement(ColumnResizeHandle, { controller, paneAdjust: state.paneAdjust }),
-    React.createElement("div", {
+    // The artifact reader takes the WHOLE right column — inspector, resizer and
+    // activity all step aside. The column keeps its width and resizer, so the
+    // chat/reader split is dragged exactly like the chat/inspector one was.
+    artifactPaneActive
+        ? React.createElement("div", { className: "ps-workspace-column is-artifact" },
+            React.createElement(ArtifactTakeoverPane, { controller, onClose: closeArtifactPane }))
+        : React.createElement("div", {
         className: "ps-workspace-column",
         style: { gridTemplateRows: `${layout.inspectorPaneHeight}fr var(--ps-resizer-track, 16px) ${layout.activityPaneHeight}fr` },
     },

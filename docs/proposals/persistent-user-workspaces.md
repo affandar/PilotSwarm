@@ -1,8 +1,8 @@
 # Proposal: Optional Persistent User and Shared Workspaces
 
 **Status:** Draft  
-**Date:** 2026-08-02  
-**Scope:** PilotSwarm workers, SDK prompt composition, CMS user identity, workspace browsing, shared Files UI, artifact file access, Kubernetes deployment guidance
+**Date:** 2026-08-02 (revised 2026-08-06 — per-user Unix identity isolation; per-tree session working directories)  
+**Scope:** PilotSwarm workers, SDK prompt composition, CMS user identity, session process isolation, workspace browsing, shared Files UI, artifact file access, Kubernetes deployment guidance
 
 ## Summary
 
@@ -25,12 +25,14 @@ When both variables are unset, PilotSwarm behaves exactly as it does today: the 
 When it is set, a user-owned session runs with this working directory:
 
 ```text
-${PILOTSWARM_WORKSPACE_ROOT}/${workspaceId}
+${PILOTSWARM_WORKSPACE_ROOT}/${workspaceId}/sessions/${rootSessionId}
 ```
 
-All sessions and sub-agents owned by that user resolve to the same user directory, regardless of which worker pod runs a turn. The user workspace is the default file-sharing channel between same-owner sessions, parents, and sub-agents. When the shared workspace is configured, every eligible session can read and write it and every authenticated user can browse it; it is the default channel for intentional cluster-wide or cross-user file sharing. Other local paths remain ephemeral. Artifacts continue to use Blob/object storage for explicit external publication: stable checksummed links, formal downloadable deliverables, or files the user specifically asks to store as artifacts.
+`workspaceId` is the owner's opaque workspace identity; `rootSessionId` identifies the top-level session of the spawn tree this session belongs to. Every session and sub-agent in one spawn tree shares one persistent working directory, regardless of which worker pod runs a turn, while independent concurrent sessions of the same owner receive disjoint working directories and cannot collide on default filenames. The workspace root above `sessions/` is the owner's durable cross-session corpus and the default file-sharing channel between same-owner trees, parents, and later sessions. When the shared workspace is configured, every eligible session can read and write it and every authenticated user can browse it; it is the default channel for intentional cluster-wide or cross-user file sharing. Other local paths remain ephemeral. Artifacts continue to use Blob/object storage for explicit external publication: stable checksummed links, formal downloadable deliverables, or files the user specifically asks to store as artifacts.
 
 No workspace-provider interface is proposed for the first version. Azure Files NFS, AWS EFS, GCP Filestore, JuiceFS, or another RWX POSIX implementation is deployment infrastructure below the worker's filesystem contract.
+
+Deployments may additionally enable per-user Unix identity isolation with `PILOTSWARM_WORKSPACE_ISOLATION=uid`. Each session's Copilot process tree then runs under an immutable per-user uid/gid, and directory ownership — enforced server-side by the NFS service — confines it to its own user's workspace and the shared workspace. The default mode (`none`) preserves the single-identity visibility boundary described in Isolation Modes and Security Boundary.
 
 ## Decisions
 
@@ -38,15 +40,22 @@ No workspace-provider interface is proposed for the first version. Azure Files N
 - `PILOTSWARM_SHARED_WORKSPACE_ROOT` independently enables one deployment-wide shared workspace; the recommended path is `/workspace/shared`, not the top-level `/shared`.
 - The mounted filesystem contains user workspaces, not Copilot session state, orchestration state, caches, or pod temporary files.
 - The worker supplies a per-session working directory; it never calls process-wide `chdir()`.
+- The working directory is per spawn tree — `sessions/<rootSessionId>/` beneath the owner's workspace root — so independent concurrent sessions cannot collide; the workspace root itself is the durable cross-session corpus.
+- `PILOTSWARM_WORKSPACE_ISOLATION` selects `none` (default; single-identity visibility boundary) or `uid` (per-user Unix identities enforced by filesystem permissions).
+- CMS allocates an immutable numeric `unix_uid`/`unix_gid` per user alongside `workspace_id`; uid values are never recycled.
+- In `uid` mode, session processes are launched through a privilege-dropping launcher (`setpriv` or equivalent), never raw Node `spawn({uid, gid})`, which does not reset supplementary groups.
+- System agents receive shared-workspace access only when their agent definition opts in; `uid` mode enforces the opt-in through group membership rather than prompt text.
+- Session shares default to read-only. A message-capable grant is a distinct action with an explicit workspace-exposure warning, and grantee-initiated turns are attributed in session events.
+- Per-tree session directories are garbage-collected when their root session is deleted or expires from retention.
 - The filesystem prompt is selected per session and injected once by worker-side system-message composition.
 - The existing orchestration-owned sub-agent preamble is changed to stop asserting that agents can never share a filesystem.
 - That sub-agent prompt change creates orchestration version `1.0.69`, because the string is deterministic orchestration behavior.
-- Same-owner session and parent/sub-agent file handoffs use the workspace by default when it is assigned.
+- Within a spawn tree, file handoffs use the shared tree working directory; across trees and later sessions, same-owner handoffs use the workspace root. Both are preferred over artifacts when assigned.
 - File handoffs intended for every user or for a different owner use the shared workspace by default when it is configured.
 - Artifact bytes remain in the configured artifact/blob store.
 - The Files viewer has three roots: the existing flat `Artifacts` list, a hierarchical `Workspace` tree for the current user, and a hierarchical deployment-wide `Shared Workspace` tree.
 - Workspace files reuse the current preview experience and can be downloaded directly.
-- This is initially a visibility and ergonomics boundary, not a hardened hostile-tenant sandbox.
+- In `none` mode this is a visibility and ergonomics boundary; `uid` mode adds an operating-system DAC boundary between users. Neither mode is a hostile-tenant sandbox.
 
 ## Goals
 
@@ -58,6 +67,8 @@ No workspace-provider interface is proposed for the first version. Azure Files N
 - Prevent a session's artifact file operations from using another user's workspace through an overly broad global allow-list.
 - Let users browse, preview, and download their workspace through the existing Files experience.
 - Give agents and users an explicitly non-private, deployment-wide collaboration directory.
+- Keep independent concurrent sessions of one user from colliding on default output paths.
+- In `uid` mode, make cross-user workspace access fail at the operating-system level instead of merely remaining undiscovered.
 
 ## Non-Goals
 
@@ -65,7 +76,7 @@ No workspace-provider interface is proposed for the first version. Azure Files N
 - Replacing Duroxide state, snapshots, transcript persistence, facts, or the artifact store.
 - Automatically publishing every workspace file as an artifact.
 - Treating NFS as a source-control system or merging concurrent edits.
-- Providing a hard security boundary while arbitrary shell tools run in a pod that can see the cluster-wide mount.
+- Hostile-tenant sandboxing. `uid` isolation is a filesystem DAC boundary; it does not isolate the pod's shared network namespace, syscall surface, or kernel attack surface.
 - Supporting a different workspace backend or root for each session in the first version.
 - Adding lifecycle hooks such as `onWorkerStart` or `onSessionStart` to a storage-provider plugin.
 - Editing, uploading, moving, renaming, or deleting workspace files through the Files viewer in the first version.
@@ -140,11 +151,21 @@ The two capabilities are independent:
 | unset | set | Existing session cwd remains ephemeral; shared path is available for deployment-wide collaboration |
 | set | set | Persistent user cwd plus deployment-wide shared path |
 
-The shared path is included for every session whose tool policy permits filesystem access, including user sessions, sub-agents, and worker-managed system agents. Service sessions that do not receive shell/file tools need no prompt advertisement, even though their pod can technically see the mount.
+The shared path is advertised to every user session and sub-agent whose tool policy permits filesystem access. Worker-managed system agents receive it only when their agent definition opts in: system agents often run with elevated authority, and unconditionally feeding them a directory any user can write into would create a user-to-system prompt-injection channel. Service sessions that do not receive shell/file tools need no prompt advertisement, even though their pod can technically see the mount.
+
+### Isolation mode
+
+```text
+PILOTSWARM_WORKSPACE_ISOLATION=none|uid
+```
+
+`none` is the default: every session runs under the worker's single Unix identity, and separation between users is the visibility boundary described in Isolation Modes and Security Boundary. It remains appropriate for trusted single-team deployments and required where the worker cannot be granted identity-switching capabilities.
+
+`uid` runs each session's Copilot process tree under its owner's allocated uid/gid and relies on directory ownership for enforcement. At startup in `uid` mode the worker must verify that its effective capabilities include `CAP_SETUID`, `CAP_SETGID`, and `CAP_CHOWN`, that the launcher binary is present, and that the mounted filesystem honors ownership and modes. A `uid` configuration that cannot be enforced makes the worker unready. There is no silent fallback to `none`, for the same reason there is no silent fallback from a configured mount to local disk: PilotSwarm must not claim an isolation property it is not delivering.
 
 ## Workspace Identity and Layout
 
-The existing CMS `users` row is the stable workspace principal. Add an immutable opaque `workspace_id UUID NOT NULL UNIQUE` to that row through the next CMS migration. New rows receive a random UUID; existing rows are backfilled once.
+The existing CMS `users` row is the stable workspace principal. Add an immutable opaque `workspace_id UUID NOT NULL UNIQUE` to that row through the next CMS migration. New rows receive a random UUID; existing rows are backfilled once. The same migration allocates an immutable numeric `unix_uid`/`unix_gid` pair per user from a fixed private range (for example `200000 +` an allocation sequence). Uid values are never reused, including after user deletion: a recycled uid would silently inherit every file its previous owner left on the mount.
 
 The CMS remains the only component that maps authentication identity to `workspace_id`. Callers should not build paths from email addresses, display names, provider subjects, or numeric `user_id` values.
 
@@ -156,10 +177,19 @@ Example layout:
     projects/
     datasets/
     notes/
+    sessions/
+      018f6f0c-2f6e-7c81-9d3a-5b6a2f1c9e42/
+      018f7a91-88a2-7de0-b1c4-0e9d3c4a7f15/
     .pilotswarm/
 ```
 
 The `.pilotswarm/` name is reserved for future workspace metadata. PilotSwarm does not place Copilot session state there.
+
+The workspace root's top level (`projects/`, `datasets/`, whatever the user and their agents grow) is the durable corpus shared by all of the owner's sessions. `sessions/<rootSessionId>/` holds one working directory per spawn tree: it is the assigned cwd for the root session and every sub-agent beneath it. Tree directories are persistent — they survive waits, restarts, and worker moves — but they are scoped: an unrelated concurrent session of the same owner works in a different tree directory, so two tasks writing `./report.md` can no longer collide. The workspace root is the only place their files meet.
+
+The worker resolves `rootSessionId` through CMS: the root of the session's parent chain, recorded at spawn time (and resolved by walking parent links for rows that predate the column). Resolution is deterministic on any worker; neither the path nor the root ID travels through orchestration state or prompts.
+
+Tree directories follow their root session's lifecycle. When a root session is deleted or expires from the deployment's session-retention window, the retention sweeper removes its `sessions/<rootSessionId>/` directory. Content meant to outlive a session tree belongs in the workspace root corpus, and the prompt policy says exactly that. Without this collection step `sessions/` would grow without bound.
 
 The shared root has no CMS identity or owner mapping. It is the configured directory itself:
 
@@ -172,7 +202,7 @@ The shared root has no CMS identity or owner mapping. It is the configured direc
 
 Directory conventions under the shared root are social/agent coordination conventions rather than authorization boundaries. Agents should prefer descriptive project or task subdirectories and avoid generic top-level filenames.
 
-The owner-resolution CMS surface used by a worker must return the workspace ID with the session owner. Child sessions already inherit the parent's owner; therefore they naturally resolve to the same user workspace. Historical unowned sessions and system sessions receive no user workspace, so their cwd remains ephemeral; they may still receive the shared workspace when it is configured and their tool policy permits filesystem access.
+The owner-resolution CMS surface used by a worker must return the workspace ID — plus the unix uid/gid in `uid` mode — with the session owner. Child sessions already inherit the parent's owner and record the same root session; therefore they naturally resolve to the same workspace and the same tree working directory. Historical unowned sessions and system sessions receive no user workspace, so their cwd remains ephemeral; they may still receive the shared workspace when it is configured, their tool policy permits filesystem access, and — for system agents — their definition opts in.
 
 ## Worker Lifecycle
 
@@ -189,12 +219,14 @@ The owner-resolution CMS surface used by a worker must return the workspace ID w
 Before constructing the session system message or starting its Copilot client:
 
 1. Resolve the session owner through CMS.
-2. If workspace mode is enabled and the session has a user owner, obtain its opaque workspace ID.
-3. Safely join the configured root and workspace ID and verify the result remains beneath the root.
-4. Create the user directory if necessary.
-5. Set that path as the session SDK/client `workingDirectory`.
-6. Attach the validated shared-workspace path to the runtime filesystem binding when configured.
-7. Select the filesystem prompt policy for the actual combination assigned to that session.
+2. If workspace mode is enabled and the session has a user owner, obtain its opaque workspace ID (and its unix uid/gid in `uid` mode).
+3. Resolve the session's root session ID through CMS.
+4. Safely join the configured root, workspace ID, `sessions/`, and root session ID, and verify the result remains beneath the root.
+5. Create the workspace root and tree directory if necessary. In `uid` mode, create them with the ownership and modes defined in Isolation Modes and Security Boundary, and provision the pod-local passwd/group entries and per-session `HOME` before first launch.
+6. Set the tree directory as the session SDK/client `workingDirectory`.
+7. Attach the validated shared-workspace path to the runtime filesystem binding when configured.
+8. Select the filesystem prompt policy for the actual combination assigned to that session.
+9. In `uid` mode, launch the session's Copilot process tree through the privilege-dropping launcher under the owner's uid/gid.
 
 If the user feature is disabled or the session has no eligible owner, retain the current working directory. A configured shared workspace is still advertised and usable at its absolute configured path. If neither workspace applies, select the fully ephemeral policy.
 
@@ -248,14 +280,19 @@ The policy renderer should accept a resolved session binding, not read `process.
 
 ```ts
 type SessionFilesystemBinding = {
-    userWorkspace?: { workingDirectory: string };
+    userWorkspace?: {
+        // <root>/<workspaceId>/sessions/<rootSessionId> — this tree's cwd
+        workingDirectory: string;
+        // <root>/<workspaceId> — the owner's durable cross-session corpus
+        workspaceRoot: string;
+    };
     sharedWorkspace?: { path: string };
 };
 
 renderFilesystemPolicy(binding): string
 ```
 
-This keeps environment parsing at worker startup, ownership/path resolution in session management, and wording in one pure, directly testable renderer. The user workspace path is the session's assigned cwd. The shared path may also be named because agents need its configured absolute path to use it; unlike the user root, it contains no private directory mapping or another user's workspace ID.
+This keeps environment parsing at worker startup, ownership/path resolution in session management, and wording in one pure, directly testable renderer. The tree working directory is the session's assigned cwd, and the owner's workspace root is named as well because agents need it for cross-tree corpus work and same-owner handoffs. The shared path may also be named because agents need its configured absolute path to use it; none of these expose another user's workspace ID.
 
 At the SessionManager chokepoint, the flow is conceptually:
 
@@ -283,7 +320,7 @@ const sdkConfig = {
 
 Binding resolution must happen before both `workingDirectory` assignment and prompt composition, and the same immutable binding object should feed both. This prevents the dangerous split-brain case where the prompt says a workspace is persistent but the SDK session starts in a local cwd, or the SDK uses the shared cwd while the prompt tells the agent its files are ephemeral.
 
-The binding is cached only as part of the worker's in-memory session configuration and is re-resolved when a cold session is acquired on another worker. It is not written into orchestration history. Because `workspace_id` is immutable and every worker has the same configured mount paths, independent resolution produces the same user cwd and shared path.
+The binding is cached only as part of the worker's in-memory session configuration and is re-resolved when a cold session is acquired on another worker. It is not written into orchestration history. Because `workspace_id` and a session's root are immutable and every worker has the same configured mount paths, independent resolution produces the same tree cwd, workspace root, and shared path.
 
 ### Ephemeral policy
 
@@ -298,9 +335,10 @@ For a session with neither workspace available, the injected policy preserves to
 
 For a session with an assigned workspace, the injected policy states:
 
-- the current working directory is the user's durable workspace
-- all sessions and sub-agents owned by this same user may see files written there, even when they run on different worker nodes
-- the workspace is the default way to share files with same-owner parents, children, sibling agents, and later sessions; agents should communicate relative paths rather than copy bytes through messages or create redundant artifacts
+- the current working directory is the persistent working area for this session tree; the parent, sub-agents, and siblings of the same tree share it, even when they run on different worker nodes
+- the owner's workspace root above it is durable and shared by every session this user owns, across trees and over time; long-lived projects, datasets, and deliverables belong there, while tree-local scratch stays in the cwd
+- an unrelated concurrent session of the same owner works in a different tree directory; the workspace root is where their files meet
+- within a tree, files are handed off in the working directory by cwd-relative path; across trees or to later sessions, same-owner handoffs go under the workspace root; agents should communicate paths rather than copy bytes through messages or create redundant artifacts
 - `/tmp`, `$HOME`, Copilot session directories, and paths outside the assigned workspace remain ephemeral unless separately documented
 - agents should put active work under the cwd, use clear project/session subdirectories, inspect existing files before overwriting, and use atomic rename where appropriate
 - concurrent agents can race or overwrite each other; the filesystem does not merge edits, so Git worktrees, task-specific directories, or file locks should be used when coordination matters
@@ -320,34 +358,40 @@ When the shared workspace is also configured, the persistent policy additionally
 
 If only the shared workspace is configured, the policy says that the session cwd remains ephemeral while the named shared path is durable and deployment-wide. Agents should place durable internal results under the shared path rather than mistaking the cwd for persistent storage.
 
-The prompt may name the assigned user cwd and shared path, but it should not expose the private user-root path or another user's workspace ID.
+The prompt may name the assigned tree cwd, the owner's workspace root, and the shared path, but never another user's workspace ID.
 
 The concurrency guidance belongs in this policy because it changes how an agent should work. Keep it short and implementation-neutral; do not teach NFS protocol details or name Azure Files, EFS, Filestore, or JuiceFS in the agent prompt. Recommended rendered wording:
 
 ```text
 <FILESYSTEM_POLICY user="persistent" shared="enabled">
-Your current working directory is your persistent user workspace. Other
-sessions and sub-agents owned by the same user can read and modify files here,
-including from other worker nodes.
+Your current working directory is the persistent working area for this session
+tree: your parent, sub-agents, and siblings share it, including from other
+worker nodes, and it survives restarts and waits. Unrelated sessions owned by
+the same user run in their own tree directories and do not see your relative
+paths.
+
+Your user workspace root is /workspace/users/<workspace-id>. It is durable and
+shared by every session you own, across trees and over time. Keep long-lived
+projects, datasets, and deliverables there; keep tree-local scratch in your
+working directory. For a same-owner handoff outside this tree, place the file
+under the workspace root and communicate its path.
 
 The shared workspace is /workspace/shared. Every session may read and write it,
-and every user may browse it. Use your user workspace for same-owner work. Use
-the shared workspace only for files intentionally shared with the deployment.
-Never put secrets or owner-private data there, and inspect shared files before
-executing or trusting them.
+and every user may browse it. Use it only for files intentionally shared with
+the whole deployment. Never put secrets or owner-private data there, and
+inspect shared files before executing or trusting them.
 
-Treat both workspaces as concurrent, not transactional: re-read a file before
-changing it, and do not expect concurrent edits to merge. A file closed by
-another process should be visible, but an already-open application may need to
-reopen or reload it. Prefer task-specific directories or Git worktrees; write
-completed outputs to a temporary file and atomically rename them into place.
+Treat all of these locations as concurrent, not transactional: re-read a file
+before changing it, and do not expect concurrent edits to merge. A file closed
+by another process should be visible, but an already-open application may need
+to reopen or reload it. Prefer task-specific subdirectories or Git worktrees;
+write completed outputs to a temporary file and atomically rename them into
+place.
 
-For same-owner handoffs, leave the file in your user workspace and communicate
-its relative path. For intentional cross-user or deployment-wide handoffs, use
-the shared workspace and communicate the path relative to /workspace/shared.
-Create an artifact only when explicitly requested or when external/formal
-publication needs a stable artifact:// link or checksum. /tmp, $HOME, and paths
-outside the configured workspaces remain ephemeral.
+For within-tree handoffs, use your working directory and report cwd-relative
+paths. Create an artifact only when explicitly requested or when external or
+formal publication needs a stable artifact:// link or checksum. /tmp, $HOME,
+and paths outside these locations remain ephemeral.
 </FILESYSTEM_POLICY>
 ```
 
@@ -364,13 +408,15 @@ The new orchestration-owned instruction should be environment-neutral. Proposed 
 ```text
 - FILES: Follow the authoritative <FILESYSTEM_POLICY> in the PilotSwarm
   Framework Instructions. It tells you whether your assigned working directory
-  is persistent and shared with same-owner sessions or is ephemeral. Do not
+  is persistent and shared with your session tree or is ephemeral. Do not
   infer filesystem sharing merely from being a sub-agent. When a persistent
-  workspace is assigned, use it for file handoff to your same-owner parent and
-  report the relative path. When the framework policy advertises a shared
-  workspace, use it only for results intended for every user or a different
-  owner. Create an artifact only when explicitly requested or when the framework
-  policy requires external/formal publication or no suitable workspace exists.
+  working directory is assigned, your parent shares it: hand files off there
+  and report the cwd-relative path. Use the workspace root the policy names
+  for results that must outlive this session tree. When the framework policy
+  advertises a shared workspace, use it only for results intended for every
+  user or a different owner. Create an artifact only when explicitly requested
+  or when the framework policy requires external/formal publication or no
+  suitable workspace exists.
 ```
 
 This instruction deliberately does not say that a sub-agent always shares or never shares files. The same sub-agent orchestration output is valid in all of these cases:
@@ -378,18 +424,18 @@ This instruction deliberately does not say that a sub-agent always shares or nev
 | User root | Shared root | Framework policy seen by child | Resulting behavior |
 |---|---|---|---|
 | unset | unset | fully ephemeral | Child uses local files as scratch and artifacts when a durable handoff is required |
-| set and child is user-owned | unset | persistent user | Child works in the same owner's durable cwd and returns relative paths to the parent |
+| set and child is user-owned | unset | persistent user | Child shares its tree's durable working directory and returns cwd-relative paths to the parent |
 | unset or child is ownerless | set | ephemeral cwd plus shared | Child uses the named shared path only for intentionally deployment-visible work |
-| set and child is user-owned | set | persistent user plus shared | Child uses the user cwd for same-owner work and shared path for intentional cross-user work |
+| set and child is user-owned | set | persistent user plus shared | Child uses the tree cwd and workspace root for same-owner work and the shared path for intentional cross-user work |
 
-The parent and child need not pass workspace paths in prompts or messages. Owner inheritance causes the worker to resolve the same binding independently when it starts the child. This also means a child can resume on another worker without depending on the parent worker's local state.
+The parent and child need not pass workspace paths in prompts or messages. Owner and root-session inheritance cause the worker to resolve the same binding — including the tree working directory — independently when it starts the child. This also means a child can resume on another worker without depending on the parent worker's local state.
 
 The sub-agent preamble still owns the following sub-agent-specific matters:
 
 - parent session ID, task, and nesting level
 - autonomous completion and reporting behavior
 - fact-based structured handoff within the spawn tree
-- the instruction to report a user-workspace-relative path, shared-workspace-relative path, or artifact link according to the framework policy
+- the instruction to report a cwd-relative path, workspace-root path, shared-workspace-relative path, or artifact link according to the framework policy
 - model override, lifecycle, timing, and further-spawn constraints
 
 It no longer owns any statement about filesystem durability, mount visibility, cwd selection, or same-owner sharing. Those facts are exclusively in the framework policy.
@@ -417,7 +463,7 @@ New sub-agent configurations generated by `1.0.69` no longer need normalization.
 
 The artifact API and backing Blob/object store do not change.
 
-When a persistent user workspace is assigned, artifacts are no longer the default byte channel between same-owner sessions. A producer leaves the file in its user workspace and reports a workspace-relative path; the consumer reads that path directly. This applies to parent/child, sibling, and later-session handoffs owned by the same user.
+When a persistent user workspace is assigned, artifacts are no longer the default byte channel between same-owner sessions. Within a spawn tree, a producer leaves the file in the tree working directory and reports a cwd-relative path. Across trees or to a later session of the same owner, the producer places the file under the workspace root and reports that path. The consumer reads the path directly in both cases.
 
 When the deployment-wide shared workspace is assigned, intentional cross-user or all-user handoffs use that directory instead of an artifact. A producer writes beneath a descriptive shared subdirectory and reports the path relative to the shared root.
 
@@ -436,7 +482,7 @@ The Workspace and Shared Workspace viewers also let users manually download muta
 The allowed file roots for a tool call are derived from session context:
 
 - current behavior when no workspace is assigned
-- current behavior plus that session owner's resolved workspace path when one is assigned
+- current behavior plus that session owner's resolved workspace root — which contains every tree directory the owner's sessions use — when one is assigned
 - the exact configured shared root when it is enabled, because every eligible session is intentionally allowed to use it
 
 Never add `/workspace/users` globally to `PILOTSWARM_ARTIFACT_FILE_ROOTS`; that would allow one user's session to upload from or download into another user's workspace if it guessed a path.
@@ -456,8 +502,11 @@ Files
 │   ├── projects/
 │   │   └── analysis/
 │   │       └── report.md
-│   └── datasets/
-│       └── input.csv
+│   ├── datasets/
+│   │   └── input.csv
+│   └── sessions/
+│       └── 018f6f0c-2f6e-7c81-9d3a-5b6a2f1c9e42/
+│           └── scratch.md
 └── Shared Workspace
     └── projects/
         └── launch/
@@ -491,6 +540,7 @@ This viewer-scoped rule prevents a shared-session read grant from accidentally b
 - files written there by any eligible session become visible to all users after normal filesystem/list refresh semantics
 - it is independent of the selected session, session owner, and artifact scope
 - the UI labels it clearly as shared/non-private and may include a warning tooltip such as `Visible to all users in this PilotSwarm deployment`
+- in `uid` mode, listings may attribute each entry to its owning user by mapping the file's uid through CMS; in `none` mode no trustworthy attribution exists and none is shown
 - it does not imply artifact immutability, provenance, retention, or ownership
 
 ### Disabled and unavailable states
@@ -602,22 +652,56 @@ For the initial NFS deployment:
 
 These semantics are sufficient for project files, reports, source trees, and coordinated agent work. Shared-workspace contention can be higher because unrelated users and agents may write concurrently, so task/project subdirectories and atomic publication are especially important there. These semantics are not a reason to place high-churn Copilot internals, databases, package caches, sockets, or lock-heavy session machinery on either mount.
 
-## Visibility and Security Boundary
+## Isolation Modes and Security Boundary
 
-Opaque directory names and owner-derived cwd provide a useful default visibility boundary: agents start inside their own user's workspace and prompts advertise only that location.
+`PILOTSWARM_WORKSPACE_ISOLATION` selects how much of the separation between users is enforced by the operating system rather than assumed from agent behavior.
 
-The shared workspace is the opposite boundary by design. Every admitted user can browse it and every filesystem-capable session can read, modify, rename, or delete its contents. It has no owner privacy, per-file product authorization, or trustworthy provenance. Agents and users must not place secrets or private data there and must treat existing scripts, instructions, and data as potentially modified by another user or agent.
+In both modes the shared workspace is the opposite of a boundary, by design. Every admitted user can browse it and every eligible filesystem-capable session can read, modify, rename, or delete its contents. It has no owner privacy or per-file product authorization. Agents and users must not place secrets or private data there and must treat existing scripts, instructions, and data as potentially modified by another user or agent. It is also, by construction, a channel through which one user's content reaches other users' agents; that is why system agents receive it only by explicit opt-in.
 
-This is not hard multi-tenant isolation. If every directory is mounted into one pod and arbitrary shell commands can traverse it under the same Unix identity, a determined or prompt-injected process may escape its cwd and discover other directories despite Unix mode bits.
+### `none` mode: a visibility boundary
 
-The first version therefore promises accidental-separation and product-level visibility, not protection from hostile tenants. Deployments needing stronger isolation should use one of:
+Opaque directory names and owner-derived working directories provide a useful default visibility boundary: agents start inside their own tree directory and prompts advertise only their own locations.
 
-- per-user volumes or subdirectory mounts exposed only to that workload
-- distinct Unix identities with enforced permissions and compatible NFS identity mapping
-- a sandbox/container boundary that restricts mount visibility
-- a filesystem or CSI layer with enforceable per-tenant exports/credentials
+It is only a visibility boundary. Every session runs under the worker's single Unix identity, so mode bits distinguish nothing: one `ls /workspace/users` enumerates every workspace ID, and nothing but instructions stops a prompt-injected agent from reading or writing any of them. `none` mode is therefore for deployments whose users already trust one another with the mount.
 
-Conversation sharing does not transfer user-workspace ownership. A shared session remains bound to its original owner's user workspace. Intentional cross-owner file collaboration uses `Shared Workspace` when configured; otherwise an explicit artifact remains the fallback. Neither session sharing nor admin status grants browse access to another user's `Workspace` branch.
+### `uid` mode: an enforced DAC boundary
+
+`uid` mode turns the separation into standard multi-user Unix discretionary access control, enforced by the NFS service rather than by pod-local convention.
+
+**Identity.** CMS allocates each user an immutable numeric uid/gid (see Workspace Identity and Layout). Azure Files NFS 4.1 speaks AUTH_SYS with numeric IDs and no identity mapping, so a centrally allocated number is valid from every pod — and permission checks happen on the service side: a session running under one user's uid receives `EACCES` on another user's directory regardless of anything it does in-pod, short of escalating to root.
+
+**Launch.** The worker runs as root with capabilities dropped to the short list needed for identity switching (`CAP_SETUID`, `CAP_SETGID`, `CAP_CHOWN`). Each session's Copilot CLI process tree is launched through a privilege-dropping launcher — `setpriv --reuid <uid> --regid <gid> --init-groups`, or an equivalent small shim — which also sets `umask 002` so group collaboration works. Before the first launch for a user, the worker lazily appends pod-local `/etc/passwd` and `/etc/group` entries (`local-<user>`) and provisions a pod-local per-session `HOME` owned by that uid, so shells, git, and npm behave normally.
+
+Raw Node `spawn({uid, gid})` must never be used here: libuv calls `setgid` and `setuid` but never `setgroups`, so the child silently inherits the worker's supplementary groups — including the service group that grants cross-user directory access. The launcher exists precisely to reset supplementary groups, and a regression test must assert the launched process's group list.
+
+**Directory ownership and modes.**
+
+| Path | Owner | Group | Mode | Effect |
+|---|---|---|---|---|
+| `/workspace/users` | root | service group | `0711` | Traversable but not listable: enumeration by `ls` fails |
+| `/workspace/users/<id>` | user uid | service group | `2770` | Owner has full access; worker and portal reach it via the service group; every other user gets `EACCES`. The setgid bit propagates the service group to new subdirectories so portal browsing keeps working |
+| `/workspace/shared` | root | shared-access group | `3770` | Read-write for group members; setgid propagates the group to subdirectories; the sticky bit blocks cross-user deletion at the top level |
+
+Session processes carry exactly their user's gid plus, when eligible, the shared-access group — never the service group. The portal process runs unprivileged with the service group (user-workspace reads) and the shared-access group (shared reads) over its read-only mount. The NFS share keeps `NoRootSquash` (the Azure Files default) so the root worker can create and chown directories and the retention sweeper can collect expired trees.
+
+**What `uid` mode fixes.** Enumeration and cross-user reads and writes fail at the operating system. A prompt-injected agent's blast radius collapses to its own user's data plus the shared workspace — the irreducible floor for a collaborative surface. Shared-workspace files gain trustworthy attribution: the owning uid maps back to a CMS user, and the Files viewer may display it. Sticky bits stop casual cross-user deletion at the shared root's top level (nested collaboration directories remain soft, which is one more reason snapshots belong before broad adoption). System-agent exposure becomes enforceable rather than advisory: a system agent's process simply is not in the shared-access group unless its agent definition opts in.
+
+### What neither mode provides
+
+Sessions still share the pod's network namespace and kernel. Any session can reach localhost services and the cloud instance-metadata endpoint — deployments should block egress to `169.254.169.254` from worker pods with a NetworkPolicy independent of this feature. `/proc/<pid>/cmdline` is world-readable, so secrets must never be passed in argv. Kernel privilege escalation is countered only by normal node hardening. Hostile-tenant isolation still means per-session sandboxing, per-tenant mounts, or per-tenant export credentials; `uid` mode is the middle rung of that ladder. Landlock-based path allow-lists are a compatible future layer, and worth evaluating for deployments that cannot grant identity-switching capabilities.
+
+### Session sharing and the confused deputy
+
+Conversation sharing does not transfer user-workspace ownership. A shared session remains bound to its original owner's workspace, and viewing a shared session never exposes the owner's `Workspace` branch in the Files UI. Neither session sharing nor admin status grants browse access to another user's `Workspace` branch.
+
+The agent itself is the remaining deputy: a session runs with its owner's filesystem authority, so anyone permitted to send messages to it can direct an agent that reads and writes the owner's entire corpus — including files from sessions that were never shared. Isolation mode cannot fix this; share policy must:
+
+- session shares default to read-only (transcript and artifacts), which exposes nothing new
+- a message-capable grant is a separate, explicit action whose confirmation states the consequence: the grantee can direct an agent with read/write access to the owner's whole workspace
+- grantee-initiated turns are attributed to the grantee in session events, so workspace access through a shared session is auditable
+- a later hardening option runs foreign-initiated turns with a narrowed binding (tree directory and shared workspace only), which the per-tree layout makes tractable; it is not required for the first version
+
+Intentional cross-owner file collaboration uses `Shared Workspace` when configured; otherwise an explicit artifact remains the fallback.
 
 ## Kubernetes Deployment
 
@@ -644,6 +728,20 @@ The PVC and StorageClass are deployment-specific. On AKS the initial managed cho
 
 The portal/API deployment sets the corresponding environment variable for each Files root it exposes. Its mount/readiness checks require only readable/traversable access; worker readiness requires writable access. This lets UI capability status reflect the filesystems visible to the process that will actually serve each root.
 
+`uid` mode adds a worker security context and image/share requirements:
+
+```yaml
+securityContext:
+  runAsUser: 0
+  capabilities:
+    drop: ["ALL"]
+    add: ["SETUID", "SETGID", "CHOWN"]
+```
+
+The worker image must include the launcher (`setpriv` from util-linux, or the equivalent shim), and the NFS share keeps its default `NoRootSquash` setting so the root worker can manage directory ownership. The portal stays unprivileged; it needs supplementary membership in the service group and shared-access group described in Isolation Modes and Security Boundary, plus its read-only mount.
+
+Independent of isolation mode, worker pods should carry a NetworkPolicy blocking egress to `169.254.169.254`: agent shells share the pod's network namespace, and the instance-metadata service would otherwise hand node-identity tokens to any session.
+
 Operational guidance must cover mount options, UID/GID behavior, private networking, throughput sizing, quota/alerting, snapshots/backups, and failure testing. Those are infrastructure requirements, not provider hooks in PilotSwarm.
 
 ## OSS Documentation Contract
@@ -658,19 +756,24 @@ The OSS README/deployment documentation should say:
 6. Do not point either variable at a node-local `emptyDir`, host path, or a mount that is not shared by all eligible workers.
 7. Keep artifact/blob configuration enabled; workspaces do not replace explicit artifact publication.
 8. Understand that the user-root single-mount design is not a hard tenant-isolation boundary and that the shared root is intentionally visible to every user.
+9. Choose an isolation mode: leave `PILOTSWARM_WORKSPACE_ISOLATION` unset (`none`) for trusted single-team deployments, or set `uid` and grant the worker the documented capabilities for OS-enforced per-user separation.
+10. In `uid` mode, keep the share's root squash disabled, include `setpriv` (or the shim) in the worker image, and never recycle allocated uids.
 
 ## Implementation Map
 
 The exact names may change during implementation, but responsibility should remain in these areas:
 
 - `packages/sdk/src/worker.ts`: parse and independently validate the user and shared roots, reject overlap, and pass both capabilities into session management
-- `packages/sdk/src/session-manager.ts`: resolve the owner workspace, assign per-session `workingDirectory`, attach the shared path, and select the canonical combined filesystem policy
+- `packages/sdk/src/session-manager.ts`: resolve the owner workspace and root session, assign the per-tree `workingDirectory`, attach the shared path, select the canonical combined filesystem policy, and route `uid`-mode launches through the privilege-dropping launcher
 - `packages/sdk/plugins/system/agents/default.agent.md`: remove unconditional storage claims in favor of the composed policy section
 - `packages/sdk/src/orchestration/agents.ts`: change the latest sub-agent preamble to defer to the canonical policy
 - `packages/sdk/src/session-proxy.ts`: normalize any compatibility/legacy sub-agent preamble path so it does not reintroduce the old assertion
 - `packages/sdk/src/artifact-tools.ts`: add the current session user workspace and exact shared root to file roots without exposing the parent user-root tree
 - a focused SDK workspace-files service: confined relative-path listing, preview metadata/content, and streaming reads beneath either the resolved user root or exact shared root
-- `packages/sdk/src/cms-migrations.ts` and `packages/sdk/src/cms.ts`: add and return immutable user workspace IDs through CMS procedures
+- `packages/sdk/src/cms-migrations.ts` and `packages/sdk/src/cms.ts`: add and return immutable user workspace IDs, per-user unix uid/gid allocation, and root-session resolution through CMS procedures
+- a worker isolation module: parse and validate `PILOTSWARM_WORKSPACE_ISOLATION`, verify capabilities at startup, provision pod-local passwd/group entries and per-session `HOME`, and wrap session process launch with the privilege-dropping launcher
+- the session-retention sweeper: remove `sessions/<rootSessionId>/` tree directories when their root session is deleted or expires from retention
+- share-grant surfaces (portal UI and management API): read-only default, explicit message-capable grant confirmation, and grantee attribution on session events
 - `packages/sdk/src/orchestration-version.ts` and `packages/sdk/src/orchestration-registry.ts`: register `1.0.69` after freezing `1.0.68`
 - `packages/sdk/api/src/protocol.js` and generated transports: add user/shared workspace status/list/preview operations and a `workspace:read` access classification
 - `packages/app/web/runtime.js`: derive the user-workspace principal from request auth, map the fixed `shared` scope to the configured shared root, and never accept a client-selected identity or root
@@ -693,10 +796,10 @@ The primary integration test should live near the existing local SessionManager/
 3. Create an Alice-owned CMS session and retrieve Alice's generated `workspace_id` through the same owner-resolution API the worker uses.
 4. Pre-create `${userRoot}/${aliceWorkspaceId}` with a marker such as `seed.txt`. This proves that session startup consumes an existing mounted workspace rather than replacing or relocating it.
 5. Start Alice session A through the normal SessionManager acquisition path.
-6. Assert at the fake/test Copilot client boundary that `createSession()` received `workingDirectory === ${userRoot}/${aliceWorkspaceId}`, that `seed.txt` is readable relative to that cwd, and that the runtime binding advertises `${sharedRoot}`. The test must observe the SDK session configuration; testing only a path-resolver helper is insufficient.
-7. Write `from-a.txt` relative to session A's captured working directory.
-8. Start Alice session B independently and assert it receives the same cwd and can read `from-a.txt`.
-9. Evict/resume one Alice session and assert `resumeSession()` is also given the same cwd and can still read both files.
+6. Assert at the fake/test Copilot client boundary that `createSession()` received `workingDirectory === ${userRoot}/${aliceWorkspaceId}/sessions/${sessionAId}`, that the binding advertises the workspace root `${userRoot}/${aliceWorkspaceId}` and `${sharedRoot}`, and that `seed.txt` is readable at the advertised workspace root. The test must observe the SDK session configuration; testing only a path-resolver helper is insufficient.
+7. Write `tree-a.txt` relative to session A's captured working directory, and `projects/from-a.txt` under the workspace root.
+8. Start Alice session B independently and assert it receives a different tree working directory beneath the same workspace root, cannot reach `tree-a.txt` by cwd-relative path, and can read `projects/from-a.txt` through the workspace root.
+9. Spawn a sub-agent of session A and assert it receives session A's exact tree working directory and reads `tree-a.txt` by cwd-relative path. Then evict/resume session A and assert `resumeSession()` is given the same tree cwd with both files intact.
 10. Start a Bob-owned session and assert it receives a different user directory and cannot see Alice's user files through relative paths.
 11. Have Alice session A write `${sharedRoot}/projects/shared-from-alice.txt`; assert Bob and Alice session B can both read it, and have Bob write a second file that Alice can read.
 12. Point the workspace-files service at the same injected roots. Under `scope: "user"`, list/preview/download Alice's exact files. Under `scope: "shared"`, list/preview/download the cross-user files and assert Alice and Bob receive the same tree.
@@ -716,13 +819,14 @@ This local fixture validates binding, prompt selection, create/resume propagatio
 
 ### Workspace binding
 
-- Two sessions with the same owner receive the same cwd on different workers.
-- A child/sub-agent receives the same cwd as its user-owned parent.
+- Two independent sessions with the same owner receive disjoint tree working directories beneath the same workspace root, on any worker.
+- A child/sub-agent receives the same tree working directory as its user-owned parent, resolved independently on whichever worker runs it.
+- The workspace root is advertised to both sessions, and a file placed there by one tree is readable from the other.
 - Different owners receive different opaque directories.
 - System and historical unowned sessions receive no persistent user workspace.
 - A worker never changes process cwd while serving sessions.
 - The local-workspace fixture is propagated as the actual SDK `workingDirectory` on both session creation and resume.
-- A pre-existing marker and a file written by another same-owner session are readable relative to that working directory.
+- A pre-existing marker and a file written by another same-owner session are readable through the advertised workspace root.
 - Alice, Bob, and eligible ownerless/system sessions receive the same configured shared path regardless of user-workspace binding.
 - Files written to the shared path by one owner are readable by another owner.
 
@@ -731,15 +835,27 @@ This local fixture validates binding, prompt selection, create/resume propagatio
 - A file created and closed by a session on worker A can be opened by a same-owner session on worker B.
 - A file remains available after worker restart/rescheduling.
 - Concurrent writers are tested for documented NFS behavior; PilotSwarm does not claim merge semantics.
+- The retention sweeper removes an expired or deleted root session's tree directory while leaving the workspace root corpus and other trees untouched.
+
+### Isolation (`uid` mode)
+
+The hermetic fixture cannot change uids, so it always exercises `none` mode. `uid`-mode enforcement is covered by a privileged CI job or the deployment smoke test, which must assert:
+
+- two sessions launched as different uids cannot read or write each other's workspaces (`EACCES`), while each accesses its own normally
+- `ls` on the users root fails while traversal into the caller's own workspace succeeds
+- a launched session process's supplementary groups are exactly its user gid plus, when eligible, the shared-access group — the Node `setgroups` regression test
+- a system agent without the shared opt-in cannot read the shared root; one with the opt-in can
+- the portal service account reads user workspaces through the service group and the shared root through the shared-access group, over a read-only mount
+- `uid` mode with missing capabilities, a missing launcher, or a filesystem that ignores ownership fails worker readiness rather than silently degrading to `none`
 
 ### Prompt correctness
 
 - Sessions with neither capability receive only the fully ephemeral policy.
 - A shared-only ownerless or user session is told that its cwd is ephemeral and the named shared path is durable/deployment-wide.
-- Eligible user sessions receive the persistent user policy and actual assigned cwd.
+- Eligible user sessions receive the persistent user policy with the actual assigned tree cwd and workspace root.
 - The persistent policy says that same-owner sessions may edit concurrently, closed files should become visible, already-open applications may need to reload, and edits are not automatically merged.
 - The persistent policy recommends task-specific directories/worktrees and temporary-file-plus-atomic-rename publication.
-- The persistent policy makes workspace-relative paths the default same-owner parent/child/sibling/session handoff and does not require an artifact for that case.
+- The persistent policy makes cwd-relative paths the default within-tree handoff and workspace-root paths the default cross-tree same-owner handoff, and does not require an artifact for either case.
 - The shared policy makes the shared path the default intentional cross-user/all-user handoff, warns that it is non-private/untrusted, and forbids secrets.
 - The policy reserves artifacts for explicit requests, stable external/formal publication, or cases where no configured workspace reaches the recipient.
 - Agent-facing policy text remains backend-neutral and does not mention NFS or a cloud filesystem product.
@@ -784,15 +900,17 @@ This local fixture validates binding, prompt selection, create/resume propagatio
 
 ## Rollout
 
-1. Add the CMS workspace identity and owner-resolution surface.
-2. Implement independent user/shared root validation, overlap rejection, per-session binding, and artifact path isolation behind the two unset-by-default environment variables.
-3. Freeze orchestration `1.0.68`, create `1.0.69`, and update the sub-agent preamble plus legacy normalization.
-4. Add four-state conditional prompt composition and disabled-mode regression tests.
-5. Add the confined `user`/`shared` workspace status/list/preview/download service and protocol surface using the local-directory fixtures.
-6. Refactor the Files UI to render `Artifacts`, `Workspace`, and `Shared Workspace`, retaining all existing artifact behavior and gating each workspace branch independently.
-7. Mount and validate both configured roots read-write in a non-production worker pool and read-only in the corresponding portal/API deployment.
-8. Test cross-node close/open visibility, same-owner isolation, cross-owner shared visibility, concurrent edits, mount loss, both preview/download paths, and explicit artifact publication.
-9. Enable the desired environment variables on workers and the portal/API deployment.
-10. Add per-user and shared-root quotas, capacity alerts, backup/snapshot policy, and separate cleanup/retention policies before broad adoption.
+1. Add the CMS workspace identity — workspace ID plus unix uid/gid allocation — with root-session resolution and the owner-resolution surface.
+2. Implement independent user/shared root validation, overlap rejection, per-tree session binding, tree-directory garbage collection in the retention sweeper, and artifact path isolation behind the unset-by-default environment variables.
+3. Implement `uid` isolation mode: the launcher, passwd/`HOME` provisioning, directory ownership and modes, startup capability checks, and the privileged isolation test job.
+4. Freeze orchestration `1.0.68`, create `1.0.69`, and update the sub-agent preamble plus legacy normalization.
+5. Add four-state conditional prompt composition and disabled-mode regression tests.
+6. Add the confined `user`/`shared` workspace status/list/preview/download service and protocol surface using the local-directory fixtures.
+7. Refactor the Files UI to render `Artifacts`, `Workspace`, and `Shared Workspace`, retaining all existing artifact behavior and gating each workspace branch independently.
+8. Ship the share-grant policy: read-only defaults, the message-capable grant warning, and grantee-attributed turns.
+9. Mount and validate both configured roots read-write in a non-production worker pool and read-only in the corresponding portal/API deployment.
+10. Test cross-node close/open visibility, same-owner tree isolation, `uid`-mode `EACCES` enforcement, cross-owner shared visibility, concurrent edits, mount loss, both preview/download paths, and explicit artifact publication.
+11. Enable the desired environment variables — including the chosen isolation mode — on workers and the portal/API deployment.
+12. Add per-user and shared-root quotas, capacity alerts, backup/snapshot policy, and separate cleanup/retention policies before broad adoption.
 
 No session migration or workspace dehydration/rehydration step is required. Existing user sessions begin using their owner's workspace after the worker rollout; their prior pod-local scratch files were never durable and are not migrated.

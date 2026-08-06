@@ -222,6 +222,11 @@ describe("portal browser contracts", () => {
                 `portal should not write preferences to browser localStorage (only device-local pane geometry; saw: ${writes.join(", ")})`);
         }
         assertIncludes(webApp, "profileSettings/apply", "portal should hydrate user UI preferences from database profile settings");
+        // The "Mobile" (touch-scale) preference is per DEVICE CLASS, like
+        // chatViewMode: a phone turning it on must not scale up the desktop.
+        assertIncludes(webApp, '"touchScaleMobile" : "touchScale"', "touch scale should read/write a per-device-class profile slot");
+        assertIncludes(webApp, "{ touchScale: normalizedRemote[touchScaleKey()] }", "touch scale must be APPLIED from the profile, not only saved to it");
+        assertIncludes(webApp, "[otherTouchScaleKey()]: preservedOtherTouchScale", "saving must preserve the other device class's touch-scale slot verbatim");
         assertIncludes(webApp, "getCurrentUserProfile()", "portal should read the current user's database-backed profile settings");
         assertIncludes(webApp, "setCurrentUserProfileSettings", "portal should persist user UI preferences to database profile settings");
         assertIncludes(webApp, "onSelect: (event) => controller.setPromptCursor", "portal prompt selection should not restore stale textarea text after send");

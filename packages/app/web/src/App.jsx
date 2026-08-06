@@ -31,30 +31,62 @@ const GENERIC_SIGN_IN_MESSAGE = "Use your organization's identity provider to op
 // so the URL param survives those on its own.
 const DEEP_LINK_SESSION_STORAGE_KEY = "pilotswarm.portal.deepLinkSession";
 
-function readDeepLinkSessionIdFromUrl() {
+/**
+ * A deep-link target: `?session=<id>[&artifact=<filename>][&view=full]`.
+ *
+ * The artifact form is what the agent's show_artifact tool hands back and what
+ * the Files "copy link" button produces, so a link pasted into chat, mailed to
+ * a colleague, or opened in a new tab all land on the same preview.
+ */
+function readDeepLinkTargetFromUrl() {
     if (typeof window === "undefined" || !window.location) return null;
-    const sessionId = new URLSearchParams(window.location.search).get("session");
-    const trimmed = sessionId ? sessionId.trim() : "";
-    return trimmed || null;
+    const params = new URLSearchParams(window.location.search);
+    const sessionId = (params.get("session") || "").trim();
+    if (!sessionId) return null;
+    const artifact = (params.get("artifact") || "").trim();
+    return {
+        sessionId,
+        artifact: artifact || null,
+        fullscreen: (params.get("view") || "").trim().toLowerCase() === "full",
+    };
 }
 
-function stashDeepLinkSessionId() {
-    const sessionId = readDeepLinkSessionIdFromUrl();
-    if (!sessionId) return;
+function stashDeepLinkTarget() {
+    const target = readDeepLinkTargetFromUrl();
+    if (!target) return;
     try {
-        window.sessionStorage.setItem(DEEP_LINK_SESSION_STORAGE_KEY, sessionId);
+        window.sessionStorage.setItem(DEEP_LINK_SESSION_STORAGE_KEY, JSON.stringify(target));
     } catch {
-        // Session storage unavailable; the URL param still covers non-redirect sign-ins.
+        // Session storage unavailable; the URL params still cover non-redirect sign-ins.
+    }
+}
+
+function parseStashedDeepLinkTarget(raw) {
+    if (!raw) return null;
+    // Older builds stashed a bare session id string. A stash written before an
+    // upgrade can still be sitting in this tab when the new bundle loads.
+    if (!raw.startsWith("{")) return { sessionId: raw, artifact: null, fullscreen: false };
+    try {
+        const parsed = JSON.parse(raw);
+        const sessionId = String(parsed?.sessionId || "").trim();
+        if (!sessionId) return null;
+        return {
+            sessionId,
+            artifact: parsed?.artifact ? String(parsed.artifact) : null,
+            fullscreen: Boolean(parsed?.fullscreen),
+        };
+    } catch {
+        return null;
     }
 }
 
 // Consumed at most once per page load (StrictMode double-invokes render-phase
-// callers, and clearing the stash twice would lose a redirect-restored id).
-let consumedDeepLinkSessionId = null;
+// callers, and clearing the stash twice would lose a redirect-restored target).
+let consumedDeepLinkTarget = null;
 let deepLinkConsumed = false;
 
-function consumeDeepLinkSessionId() {
-    if (deepLinkConsumed) return consumedDeepLinkSessionId;
+function consumeDeepLinkTarget() {
+    if (deepLinkConsumed) return consumedDeepLinkTarget;
     deepLinkConsumed = true;
     let stashed = null;
     try {
@@ -63,8 +95,8 @@ function consumeDeepLinkSessionId() {
     } catch {
         // ignore
     }
-    consumedDeepLinkSessionId = readDeepLinkSessionIdFromUrl() || stashed || null;
-    return consumedDeepLinkSessionId;
+    consumedDeepLinkTarget = readDeepLinkTargetFromUrl() || parseStashedDeepLinkTarget(stashed);
+    return consumedDeepLinkTarget;
 }
 
 const DEFAULT_PORTAL_CONFIG = {
@@ -550,11 +582,29 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
     // arrives (a repeat of the same text stays dismissed).
     const [dismissedStatus, setDismissedStatus] = React.useState("");
     const mobileStatusText = statusText && statusText !== dismissedStatus ? statusText : "";
-    const initialSessionId = React.useMemo(() => consumeDeepLinkSessionId(), []);
+    const deepLinkTarget = React.useMemo(() => consumeDeepLinkTarget(), []);
+    const initialSessionId = deepLinkTarget?.sessionId || null;
 
     React.useEffect(() => {
         let active = true;
         controller.start({ initialSessionId })
+            .then(() => {
+                // An artifact deep link opens the chat AND the artifact, side by
+                // side — the transcript is the context that makes the artifact
+                // mean something, so landing on the file alone loses half of
+                // what was shared. Runs AFTER start() so the session is loaded
+                // and its artifact list is reachable.
+                //
+                // A phone has no room for both and gets the full-viewport
+                // overlay instead.
+                if (!active || !initialSessionId || !deepLinkTarget?.artifact) return null;
+                const isPhone = typeof window !== "undefined"
+                    && typeof window.matchMedia === "function"
+                    && window.matchMedia("(max-width: 920px)").matches;
+                return controller.revealArtifact(initialSessionId, deepLinkTarget.artifact, isPhone
+                    ? { fullscreen: true }
+                    : { pane: true }).catch(() => null);
+            })
             .catch((error) => {
                 if (!active) return;
                 controller.dispatch({
@@ -568,7 +618,7 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
             controller.stop().catch(() => {});
             transport.stop().catch(() => {});
         };
-    }, [controller, initialSessionId, transport]);
+    }, [controller, deepLinkTarget, initialSessionId, transport]);
 
     return React.createElement("div", { className: "portal-app-shell", style: shellStyle },
         auth.provider === "dev"
@@ -603,7 +653,7 @@ export default function App() {
     // URL param directly, and stashing then would leave a stale id behind.
     const showSignInGate = !publicConfig.loading && !auth.loading && !auth.signedIn;
     React.useEffect(() => {
-        if (showSignInGate) stashDeepLinkSessionId();
+        if (showSignInGate) stashDeepLinkTarget();
     }, [showSignInGate]);
     const shellStyle = appHeight
         ? { "--ps-app-height": `${appHeight}px` }

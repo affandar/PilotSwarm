@@ -46,7 +46,26 @@ export function createEntraBrowserAuthProvider() {
                     redirectUri: clientConfig.redirectUri,
                 },
                 cache: {
-                    cacheLocation: "sessionStorage",
+                    // localStorage, not sessionStorage. sessionStorage is
+                    // scoped to ONE TAB SESSION, and it takes the refresh
+                    // token with it — so every tab discard (which iOS Safari
+                    // does routinely the moment you switch apps), every new
+                    // tab, and every browser restart landed on "no account"
+                    // and made the user sign in again. There is no server-side
+                    // session to fall back on: the API validates a bearer JWT
+                    // per request and holds no state, so the MSAL cache IS the
+                    // session.
+                    //
+                    // With the refresh token persisted, acquireTokenSilent
+                    // renews across restarts for as long as Entra allows —
+                    // which for a SPA on auth-code+PKCE is a hard 24h refresh
+                    // token lifetime, after which an interactive sign-in is
+                    // required no matter what the app does.
+                    //
+                    // Tradeoff, deliberately taken: localStorage is readable by
+                    // any script on the origin, so this trades some XSS blast
+                    // radius for a session that survives a phone locking.
+                    cacheLocation: "localStorage",
                     storeAuthStateInCookie: true,
                 },
             });

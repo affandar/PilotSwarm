@@ -268,6 +268,29 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // Selection to restore when leaving a chat-opened preview, so
             // following a chat link never disturbs the list.
             restoreArtifactId: null,
+            // The portal's artifact takeover pane: a full-height reader that
+            // replaces the inspector AND activity panes in the right column.
+            // Opened by chat artifact cards and artifact deep links; the Files
+            // list keeps its own stacked list-above-preview view, because
+            // taking over the column would hide the list being browsed.
+            //
+            // The TUI ignores this entirely — it has no such pane.
+            paneOpen: false,
+            // What the right column looked like BEFORE the pane opened, so ✕
+            // can put it back. When the user had already resized the column
+            // out of existence, closing must return to that — not conjure an
+            // inspector they had deliberately dismissed.
+            paneRestoresToHidden: false,
+            // Rendered page vs. HTML source. Lifted out of the preview
+            // component so the reader pane's single header can own the toggle
+            // — the alternative was a second header row stacked under the
+            // first, which is exactly the box-in-a-box the pane exists to undo.
+            htmlViewMode: "rendered",
+            // Fit-to-width for the rendered HTML frame. Lifted here for the
+            // same reason htmlViewMode is: on mobile the panel is chromeless
+            // and the artifact bar owns the controls, so the two surfaces have
+            // to read one value.
+            htmlFitWidth: false,
             filter: {
                 scope: "selectedSession",
                 query: "",

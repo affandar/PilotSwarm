@@ -521,6 +521,27 @@ describe("inline control tool execution", () => {
         });
     });
 
+    it("replaces a named-agent title that has no established prefix", async () => {
+        const catalog = {
+            getSession: vi.fn(async () => ({
+                sessionId: "session-title",
+                title: "Scheduler daily-minerva-1900-pacific delivery run",
+                agentId: "pg-flex-release-status",
+                isSystem: false,
+            })),
+        };
+
+        const result = await prepareStickySessionTitleUpdate(catalog, "session-title", "Daily Minerva scheduler - 7 PM Pacific");
+
+        expect(result).toEqual({
+            ok: true,
+            updates: {
+                title: "Daily Minerva scheduler - 7 PM Pacific",
+                titleLocked: true,
+            },
+        });
+    });
+
     it("rejects update_session_summary title changes for system sessions", async () => {
         const catalog = {
             getSession: vi.fn(async () => ({

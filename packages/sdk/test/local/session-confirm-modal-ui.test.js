@@ -391,6 +391,32 @@ describe("session confirm modal behavior", () => {
         assertEqual(calls[0].patch.title, "Renamed Group", "group rename should pass the requested title");
     });
 
+    it("replaces a named-agent title that has no established prefix", async () => {
+        const { controller, store, calls } = createController();
+        const sessionId = "session-12345678";
+        store.dispatch({
+            type: "sessions/loaded",
+            sessions: [{
+                sessionId,
+                title: "Scheduler daily-minerva-1900-pacific delivery run",
+                status: "waiting",
+                agentId: "pg-flex-release-status",
+                createdAt: 1,
+                updatedAt: 2,
+            }],
+        });
+        store.dispatch({ type: "sessions/selected", sessionId });
+
+        await controller.handleCommand(UI_COMMANDS.OPEN_RENAME_SESSION);
+        controller.setRenameSessionValue("Daily Minerva scheduler - 7 PM Pacific");
+        await controller.confirmRenameSessionModal();
+
+        assertEqual(calls.length, 1, "session rename should make one transport call");
+        assertEqual(calls[0].type, "rename", "session rename should call renameSession");
+        assertEqual(calls[0].sessionId, sessionId, "session rename should pass the session id");
+        assertEqual(calls[0].title, "Daily Minerva scheduler - 7 PM Pacific", "session rename should replace an unprefixed title");
+    });
+
     it("treats group rows as containers for session actions", async () => {
         const { controller, store, calls } = createController();
         store.dispatch({

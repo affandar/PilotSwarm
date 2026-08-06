@@ -703,6 +703,14 @@ function formatActivity(event) {
         case "assistant.streaming_progress":
             return null;
 
+        case "session.artifact_presented": {
+            const data = (event?.data ?? {}) || {};
+            const filename = String(data.filename || "artifact");
+            const note = typeof data.note === "string" && data.note.trim() ? ` — ${data.note.trim()}` : "";
+            runs = buildLabeledActivityRuns(time, "[show]", "cyan", `${filename}${note}`, "white");
+            break;
+        }
+
         case "tool.execution_start":
             runs = formatToolActivityRuns(time, event, "start");
             break;
