@@ -148,7 +148,11 @@ document.
 
 - Whole-document replace. Idempotent; a retried turn redraws the same thing.
 - Writes `canvas.html` via the artifact store, pins it on first write, then
-  emits `session.canvas_updated` with the next rev.
+  emits `session.canvas_updated` with the next rev. **Ordering is
+  load-bearing:** the event is emitted only after the store write is
+  confirmed. Emitting first would let a failed write leave every viewer
+  refetching stale bytes labeled with a new rev; the converse failure (write
+  lands, emit lost) is benign — the next draw heals it.
 - Returns `{ drawn: true, rev, sizeBytes, link: "artifact://<sid>/canvas.html" }`
   so the transcript carries a durable way back to what was drawn.
 - Does **not** end the turn; the agent keeps talking.
@@ -304,11 +308,13 @@ Phase 3 — only if pulled by real use:
 
 ## Risks
 
-- **2 MB artifact cap is the canvas ceiling.** Fine for documents and SVG
-  dashboards; tight for base64-image-heavy pages. `html-visuals` already
-  steers agents away from embedded rasters; `draw_canvas` returns
-  `sizeBytes` so the agent sees its own budget. Raising the cap is a
-  separate, deliberate decision.
+- **The binding size limit is the model's output budget, not the 2 MB
+  artifact cap.** The HTML arrives inline in the tool call, LLM-generated:
+  300 KB of markup is roughly 75–100K output tokens in one call. Practical
+  canvases are tens of KB, which makes whole-replace self-limiting; the 2 MB
+  store cap is a distant backstop. `html-visuals` already steers agents away
+  from embedded rasters, and `draw_canvas` returns `sizeBytes` so the agent
+  sees its own budget.
 - **Prompt bloat via read-back.** `read_canvas` pages at 64 KB per call by
   default. The tool description says to read selectively, not to round-trip
   the whole document every turn.
