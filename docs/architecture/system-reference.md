@@ -497,7 +497,7 @@ Plugins are directories loaded by `PilotSwarmWorker` on startup. Each directory 
 ```
 
 Built-in tiers ship inside the SDK package: `packages/sdk/plugins/system/`
-(framework base, `durable-timers` / `sub-agents` skills) and
+(framework base, `html-visuals` skill) and
 `packages/sdk/plugins/mgmt/agents/` (`pilotswarm`, `sweeper`, `resourcemgr`,
 `facts-manager`, `agent-tuner`).
 

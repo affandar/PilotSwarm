@@ -854,15 +854,18 @@ Skills are knowledge modules loaded from `skills/<name>/SKILL.md`. Each skill pr
 
 ```yaml
 ---
-name: durable-timers
-description: Expert knowledge on durable timer patterns.
+name: html-visuals
+description: How to build a visual as a self-contained HTML artifact.
 ---
 
-# Durable Timer Patterns
-You are running in a durable execution environment...
+# HTML Visuals
+When the user wants to see something, build a single self-contained page...
 ```
 
-Skills are injected into the system message to give LLMs domain expertise. A skill directory can also include a `tools.json` file listing tools the skill requires:
+A skill is spliced into an agent's system message **only when that agent declares
+it** in `skills:` frontmatter. There is no discovery path — a loaded skill that no
+agent declares never reaches a model. A skill directory can also include a
+`tools.json` file listing tools the skill requires:
 
 ```json
 { "tools": ["wait", "check_agents"] }

@@ -1,5 +1,12 @@
 # Changelog — agent-manager
 
+## 1.0.8
+
+### Added
+
+- A `title` — "Agent Manager" — so the package presents a readable name in the
+  picker and package listings instead of its bare slug.
+
 ## 1.0.7
 
 ### Fixed

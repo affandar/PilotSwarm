@@ -5744,7 +5744,9 @@ export class PilotSwarmUiController {
             type: "ui/modal",
             modal: {
                 type: "renameSession",
-                title: `Rename (${shortSessionIdValue(sessionId)})`,
+                // A group row's id is synthetic, so showing its short form
+                // reads as a stray hex string rather than an identifier.
+                title: session.isGroup ? "Rename folder" : `Rename (${shortSessionIdValue(sessionId)})`,
                 sessionId,
                 previousFocus: state.ui.focusRegion,
                 value,
@@ -5752,13 +5754,19 @@ export class PilotSwarmUiController {
                 agentTitlePrefix,
                 currentTitle: String(session.title || "").trim(),
                 maxLength,
+                // Folders share this modal but not its caveats: a group has no
+                // agent and no LLM-generated title, so the selector suppresses
+                // the auto-title warning for them.
+                isGroup: Boolean(session.isGroup),
             },
         });
         this.dispatch({
             type: "ui/status",
-            text: agentTitlePrefix
-                ? `Rename title for ${agentTitlePrefix}; the agent-name prefix stays fixed`
-                : "Type a new session title and press Enter to save",
+            text: session.isGroup
+                ? "Type a new folder name and press Enter to save"
+                : agentTitlePrefix
+                    ? `Rename title for ${agentTitlePrefix}; the agent-name prefix stays fixed`
+                    : "Type a new session title and press Enter to save",
         });
     }
 

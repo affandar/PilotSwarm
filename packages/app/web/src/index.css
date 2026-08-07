@@ -22,9 +22,14 @@
      of the UI is sized in rem against a 14px root so panes, lists, headers and
      the activity stream stay in proportion with it instead of drifting down to
      9-11px hardcoded values. */
-  --ps-font-size-chat: 13.5px;
-  --ps-font-size-base: 12.5px;
-  --ps-font-size-dense: 11.5px;
+  /* Each step is +1px on what shipped through 0.5.34. The whole UI is sized in
+     rem against these three, so raising them together moves panes, lists,
+     headers and the activity stream as one and keeps the scale's proportions
+     intact — which is why this is three token edits and not a sweep. Lives in
+     :root, so every theme inherits it. */
+  --ps-font-size-chat: 14.5px;
+  --ps-font-size-base: 13.5px;
+  --ps-font-size-dense: 12.5px;
   --ps-line-height-base: 1.28;
   --ps-line-height-dense: 1.18;
   /* The one monospace stack, named. Several rules asked for it by variable
@@ -99,6 +104,36 @@ a:focus-visible { outline: 2px solid var(--ps-accent); outline-offset: 2px; }
 body {
   overflow: hidden;
   -webkit-text-size-adjust: 100%;
+}
+
+/* The document itself must never scroll — this is an app shell, not a page.
+ *
+ * `body { overflow: hidden }` above is NOT enough on its own. Overflow
+ * propagates to the viewport from the ROOT element, and html here was
+ * `visible`, so the viewport stayed scrollable: body clipped its own content
+ * while the document scrolled underneath it. Zoom the browser far enough that
+ * the panes hit their minimum widths and the whole workspace slid sideways —
+ * scrolling "all the panels" at once, which is exactly what it looked like. */
+html {
+  overflow: hidden;
+}
+
+/* And it must never NAVIGATE either.
+ *
+ * A two-finger horizontal swipe that reaches the end of whatever it was
+ * scrolling — or that had nothing to scroll in the first place — is handed to
+ * the browser, which turns it into back/forward. Inside a single-page
+ * workspace that discards the session you were reading. It bit hardest over a
+ * rendered artifact: pages are usually laid out to fit their width, so there
+ * is no horizontal scroll to absorb the gesture and EVERY sideways swipe
+ * became navigation.
+ *
+ * `overflow: hidden` above does not prevent this — a non-scrollable root is
+ * exactly the case the browser claims the gesture for. Only overscroll-behavior
+ * on the root refuses it. Both axes, so pull-to-refresh goes too. */
+html,
+body {
+  overscroll-behavior: none;
 }
 
 button,
@@ -568,9 +603,9 @@ button {
    comfortable hit target; the type ramp moves with it so the controls do not
    end up as big empty boxes around small labels. */
 :root[data-ps-touch="1"] {
-  --ps-font-size-chat: 15.5px;
-  --ps-font-size-base: 14.5px;
-  --ps-font-size-dense: 13.5px;
+  --ps-font-size-chat: 16.5px;
+  --ps-font-size-base: 15.5px;
+  --ps-font-size-dense: 14.5px;
   --ps-line-height-base: 1.36;
   --ps-line-height-dense: 1.26;
   --ps-control-padding: 9px 14px;
@@ -2974,10 +3009,12 @@ body.is-resizing-pane-y * {
 
 @media (max-width: 920px) {
   :root {
-    /* Phones step the scale down one notch, keeping the same proportions. */
-    --ps-font-size-chat: 13px;
-    --ps-font-size-base: 12.5px;
-    --ps-font-size-dense: 11.5px;
+    /* Phones step the scale down one notch, keeping the same proportions.
+       Moves with the base ramp above — otherwise raising the desktop scale
+       silently widens the gap and a phone reads two notches smaller. */
+    --ps-font-size-chat: 14px;
+    --ps-font-size-base: 13.5px;
+    --ps-font-size-dense: 12.5px;
   }
 
   .portal-main {
@@ -4006,16 +4043,28 @@ body.is-resizing-pane-y * {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  /* Stop a scroll that started in the artifact from continuing into the pane
+     behind it once the artifact runs out. The root refuses the browser's
+     navigation gesture; this keeps the gesture from reaching the root at all. */
+  overscroll-behavior: contain;
 }
 
 /* The replacement frame loads stacked on the live one and stays invisible
-   until its load event promotes it. `visibility: hidden` rather than
-   `display: none`, because a display:none iframe is not laid out and would
-   load at zero width — which is the very thing being fixed. */
+   until its load event promotes it.
+
+   `opacity: 0`, NOT `visibility: hidden` and certainly not `display: none`.
+   All three hide the frame, but only opacity keeps it in the PAINT tree:
+     - `display: none` is not laid out, so the frame would load at zero width,
+       which is the very thing this mechanism exists to fix;
+     - `visibility: hidden` is laid out but the browser may skip painting it,
+       so the frame arrived at promotion still unpainted and you saw the white
+       background below for a frame or two — the flash on every zoom.
+   With opacity the replacement is fully painted behind the live one, and the
+   swap is a composite of something already drawn. */
 .ps-html-preview-frame.is-staging {
   position: absolute;
   inset: 0;
-  visibility: hidden;
+  opacity: 0;
   pointer-events: none;
 }
 
@@ -4052,6 +4101,53 @@ body.is-resizing-pane-y * {
   margin-right: 4px;
   border: 1px solid var(--ps-border);
   border-radius: 7px;
+}
+
+/* Zoom for the artifact only. Same segmented shell as the mode switch, so the
+   header reads as one row of controls rather than a row of loose buttons. */
+.ps-html-zoom {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  padding: 2px;
+  margin-right: 4px;
+  border: 1px solid var(--ps-border);
+  border-radius: 7px;
+}
+
+.ps-html-zoom-btn,
+.ps-html-zoom-level {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--ps-muted);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+/* Tabular figures so stepping through 90% → 100% → 110% does not jog the
+   controls either side of the readout. */
+.ps-html-zoom-level {
+  min-width: 3.4em;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.ps-html-zoom-btn:hover:not(:disabled),
+.ps-html-zoom-level:hover,
+.ps-html-zoom-btn:focus-visible,
+.ps-html-zoom-level:focus-visible {
+  background: var(--ps-highlight-background);
+  color: var(--ps-foreground);
+}
+
+.ps-html-zoom-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 
 .ps-html-preview-mode {
@@ -6618,4 +6714,182 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
    that is, visually, entirely on screen. */
 .ps-html-preview-host.is-fitting {
   overflow: hidden;
+}
+
+/* ── Duroxide: the banner's felt ────────────────────────────────────────────
+   Scoped to [data-ps-theme="duroxide"], the same hook Win95 uses for bevels,
+   so nothing here can reach another theme.
+
+   The brand's banner is not a flat colour - it is a sheet of near-black felt
+   photographed under a raking light. Measured off the artwork, the ground
+   varies from #171517 to #3b393a around a #282627 centre, which is far too
+   much variation to be a palette entry. It is reproduced here as two
+   generated noise layers rather than a bitmap: an image asset would have to
+   be fetched, cached and colour-managed, and would band on a wide display.
+
+   - GRAIN is the paper tooth: high-frequency, tiled at 220px, barely visible
+     on its own and doing all the work of stopping the ground reading as
+     printed ink.
+   - MOTTLE is the raking light: very low frequency over 900px, so large areas
+     drift slightly lighter and darker the way a real sheet does.
+
+   Both are luminance-only (feColorMatrix saturate 0) and composited with
+   soft-light, so they modulate whatever the panel colour already is instead
+   of tinting it. The screen never repeats visibly because the two tile sizes
+   are coprime in practice. */
+:root[data-ps-theme="duroxide"] body {
+  background-image:
+    url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22220%22%20height%3D%22220%22%3E%3Cfilter%20id%3D%22n%22%3E%3CfeTurbulence%20type%3D%22fractalNoise%22%20baseFrequency%3D%220.85%22%20numOctaves%3D%224%22%20seed%3D%227%22%20stitchTiles%3D%22stitch%22%2F%3E%3CfeColorMatrix%20type%3D%22saturate%22%20values%3D%220%22%2F%3E%3C%2Ffilter%3E%3Crect%20width%3D%22220%22%20height%3D%22220%22%20filter%3D%22url%28%23n%29%22%20opacity%3D%220.62%22%2F%3E%3C%2Fsvg%3E"),
+    url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22140%22%20height%3D%22140%22%3E%3Cfilter%20id%3D%22n%22%3E%3CfeTurbulence%20type%3D%22fractalNoise%22%20baseFrequency%3D%220.32%22%20numOctaves%3D%223%22%20seed%3D%2211%22%20stitchTiles%3D%22stitch%22%2F%3E%3CfeColorMatrix%20type%3D%22saturate%22%20values%3D%220%22%2F%3E%3C%2Ffilter%3E%3Crect%20width%3D%22140%22%20height%3D%22140%22%20filter%3D%22url%28%23n%29%22%20opacity%3D%220.3%22%2F%3E%3C%2Fsvg%3E"),
+    url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22900%22%20height%3D%22900%22%3E%3Cfilter%20id%3D%22n%22%3E%3CfeTurbulence%20type%3D%22fractalNoise%22%20baseFrequency%3D%220.006%22%20numOctaves%3D%223%22%20seed%3D%223%22%20stitchTiles%3D%22stitch%22%2F%3E%3CfeColorMatrix%20type%3D%22saturate%22%20values%3D%220%22%2F%3E%3C%2Ffilter%3E%3Crect%20width%3D%22900%22%20height%3D%22900%22%20filter%3D%22url%28%23n%29%22%20opacity%3D%220.62%22%2F%3E%3C%2Fsvg%3E");
+  background-blend-mode: soft-light, soft-light, soft-light;
+  background-repeat: repeat, repeat, repeat;
+}
+
+/* Panels get the tooth too, or they read as clean cards floating on a
+   textured desk — the mark is pressed INTO the same sheet everything sits on. */
+:root[data-ps-theme="duroxide"] .ps-panel {
+  background-image:
+    url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22220%22%20height%3D%22220%22%3E%3Cfilter%20id%3D%22n%22%3E%3CfeTurbulence%20type%3D%22fractalNoise%22%20baseFrequency%3D%220.85%22%20numOctaves%3D%224%22%20seed%3D%227%22%20stitchTiles%3D%22stitch%22%2F%3E%3CfeColorMatrix%20type%3D%22saturate%22%20values%3D%220%22%2F%3E%3C%2Ffilter%3E%3Crect%20width%3D%22220%22%20height%3D%22220%22%20filter%3D%22url%28%23n%29%22%20opacity%3D%220.62%22%2F%3E%3C%2Fsvg%3E"),
+    url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22140%22%20height%3D%22140%22%3E%3Cfilter%20id%3D%22n%22%3E%3CfeTurbulence%20type%3D%22fractalNoise%22%20baseFrequency%3D%220.32%22%20numOctaves%3D%223%22%20seed%3D%2211%22%20stitchTiles%3D%22stitch%22%2F%3E%3CfeColorMatrix%20type%3D%22saturate%22%20values%3D%220%22%2F%3E%3C%2Ffilter%3E%3Crect%20width%3D%22140%22%20height%3D%22140%22%20filter%3D%22url%28%23n%29%22%20opacity%3D%220.3%22%2F%3E%3C%2Fsvg%3E");
+  background-blend-mode: soft-light, soft-light;
+}
+
+/* The mark, big, pressed into the chat panel.
+ *
+ * Two constraints fight here: it has to be unmistakably THERE, and a wall of
+ * monospace has to stay readable on top of it. What resolves that is not
+ * simply "make it faint" — it is soft-light. A normal-blended wash at this
+ * size flattens the panel into a lighter rectangle behind the text, whereas
+ * soft-light modulates the sheet the way an impression in felt would, so the
+ * mark reads as texture rather than as an image competing with the words.
+ *
+ * Sized against the smaller axis and pinned above centre: the composer owns
+ * the bottom of this panel, and a mark centred on the box would sit half
+ * behind it. `no-repeat` and a max keep it from tiling or growing absurd on a
+ * wide monitor. */
+:root[data-ps-theme="duroxide"] .ps-panel.ps-chat-panel {
+  background-image:
+    url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Cpath%20d%3D%22M4.14%2033.09L4.14%2018.89L5.7%2015.77L30.05%201.4L33.95%201.4L43.32%206.56L57.99%2015.3L59.08%2016.7L59.71%2018.58L59.71%2045.27L59.08%2047.14L56.9%2049.64L41.44%2058.38L38.32%2060.57L33.64%2062.91L30.52%2062.91L27.71%2061.66L14.6%2053.7L6.79%2049.48L5.54%2048.23L4.45%2046.2L4.14%2044.49L4.14%2033.09ZM55.8%2026.07L55.8%2019.36L55.02%2018.42L33.8%206.09L31.45%205.78L30.05%206.24L8.51%2018.89L8.51%2045.11L10.22%2046.67L18.03%2050.89L30.05%2058.22L31.77%2058.85L33.17%2058.69L53.93%2046.67L55.65%2044.96L55.8%2026.07ZM17.09%2034.81L16.78%2033.56L13.19%2032.62L13.19%2027.0L17.09%2026.54L18.97%2023.26L16.94%2019.67L21.0%2015.61L24.43%2017.95L27.86%2016.86L29.11%2012.8L34.58%2012.8L35.51%2016.86L38.63%2017.95L39.57%2017.8L42.69%2015.61L46.6%2019.67L46.28%2020.92L44.88%2022.95L44.88%2023.73L46.28%2026.38L50.65%2027.16L50.65%2032.47L47.69%2033.4L47.06%2034.03L42.54%2032.0L42.54%2029.97L41.91%2027.63L40.82%2025.6L38.63%2023.26L34.73%2021.39L32.55%2021.07L29.11%2021.39L26.3%2022.48L23.96%2024.35L22.4%2026.54L21.31%2029.97L21.31%2033.25L22.87%2037.46L24.12%2039.18L27.4%2041.83L24.59%2042.77L19.9%2042.93L16.0%2041.68L15.22%2040.12L17.72%2037.31L17.09%2034.81ZM36.76%2035.59L35.51%2032.62L35.82%2032.0L50.19%2039.34L49.25%2041.99L43.32%2051.2L42.54%2051.04L41.6%2046.2L35.51%2049.64L31.3%2050.58L28.49%2050.58L21.93%2049.01L18.97%2047.3L16.47%2045.11L16.78%2044.8L19.12%2045.58L22.09%2045.74L25.21%2045.42L28.18%2044.33L29.74%2044.49L33.48%2042.46L37.39%2039.18L37.85%2037.93L36.76%2035.59Z%22%20fill%3D%22%23a35838%22%20fill-opacity%3D%220.11%22%2F%3E%3C%2Fsvg%3E"),
+    url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22220%22%20height%3D%22220%22%3E%3Cfilter%20id%3D%22n%22%3E%3CfeTurbulence%20type%3D%22fractalNoise%22%20baseFrequency%3D%220.85%22%20numOctaves%3D%224%22%20seed%3D%227%22%20stitchTiles%3D%22stitch%22%2F%3E%3CfeColorMatrix%20type%3D%22saturate%22%20values%3D%220%22%2F%3E%3C%2Ffilter%3E%3Crect%20width%3D%22220%22%20height%3D%22220%22%20filter%3D%22url%28%23n%29%22%20opacity%3D%220.62%22%2F%3E%3C%2Fsvg%3E"),
+    url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22140%22%20height%3D%22140%22%3E%3Cfilter%20id%3D%22n%22%3E%3CfeTurbulence%20type%3D%22fractalNoise%22%20baseFrequency%3D%220.32%22%20numOctaves%3D%223%22%20seed%3D%2211%22%20stitchTiles%3D%22stitch%22%2F%3E%3CfeColorMatrix%20type%3D%22saturate%22%20values%3D%220%22%2F%3E%3C%2Ffilter%3E%3Crect%20width%3D%22140%22%20height%3D%22140%22%20filter%3D%22url%28%23n%29%22%20opacity%3D%220.3%22%2F%3E%3C%2Fsvg%3E");
+  background-repeat: no-repeat, repeat, repeat;
+  background-position: center 42%, 0 0, 0 0;
+  background-size: min(62%, 32rem) auto, auto, auto;
+  /* SCREEN for the mark, soft-light for the grain. Soft-light barely moves a
+     near-black ground, so the mark simply was not there; screen lifts it
+     instead — the panel brightens slightly where the impression sits, which
+     is how a pressed mark catches light.
+
+     Drawn in the BRAND oxide — #a35838, the colour measured off the logo —
+     because the mark has to be the mark. A cooler steel separates from the
+     warm scheme more cleanly, but at the cost of the watermark no longer
+     being the brand's own colour, and brand fidelity wins here.
+     0.11 alpha keeps the lift to roughly twenty levels; the legibility the
+     cool tint was buying is bought instead by giving dense content — tables
+     above all — its own opaque ground, below. */
+  background-blend-mode: screen, soft-light, soft-light;
+}
+
+/* The mark is debossed, not printed: a dark inner edge above a faint lit edge
+   below is the whole of what makes a pressed impression read as pressed. */
+:root[data-ps-theme="duroxide"] .portal-logo-theme {
+  filter:
+    drop-shadow(0 1px 0 rgba(255, 214, 188, 0.13))
+    drop-shadow(0 -1px 0 rgba(0, 0, 0, 0.55));
+}
+
+/* Chrome goes SLAB.
+ *
+ * Slab serifs are the industrial-era voice — stamped nameplates, railway
+ * signage, machine plates — which is the closest type gets to saying
+ * "durable". Rockwell is the canonical one and, unlike Roboto Slab, is
+ * actually installed on real machines: it ships with Office on both desktop
+ * platforms. The fallbacks stay in the same register, ending at Georgia,
+ * whose bracketed serifs are the sturdiest thing guaranteed everywhere.
+ *
+ * Nothing here is fetched. Every face in this stylesheet is a system font,
+ * because the portal must render on an air-gapped deployment — a remote font
+ * request would hang or silently fall back.
+ *
+ * Note this diverges from the banner, which sets DUROXIDE in a heavy
+ * condensed grotesque. DIN Condensed matches the banner more closely but
+ * reads thin and technical at UI size, which is the opposite of durable. The
+ * brand is honoured by the mark and the pigment; the chrome is allowed its
+ * own voice. */
+:root[data-ps-theme="duroxide"] {
+  --ps-ui-font: Rockwell, "Rockwell Nova", "Roboto Slab", Bitter, "Zilla Slab",
+    "Bookman Old Style", Georgia, serif;
+}
+
+/* The transcript, session list and activity stay MONOSPACE and unchanged.
+   They carry column alignment across three platforms, and every mono with
+   real character (Monaco, PT Mono, Andale) failed to resolve when probed —
+   swapping in a face that silently falls back would buy nothing and risk
+   the one thing the layout depends on. */
+:root[data-ps-theme="duroxide"] .portal-header,
+:root[data-ps-theme="duroxide"] .ps-panel-title,
+:root[data-ps-theme="duroxide"] .ps-tab {
+  font-family: var(--ps-ui-font);
+}
+
+/* The banner sets the wordmark in heavy caps over a hairline oxide rule. The
+   header kicker is the same typographic gesture at UI scale — including the
+   rule, which is what makes it read as the wordmark rather than as a heading
+   that happens to be uppercase. */
+:root[data-ps-theme="duroxide"] .portal-header-kicker {
+  font-family: var(--ps-ui-font);
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  padding-bottom: 3px;
+  border-bottom: 1px solid color-mix(in srgb, var(--ps-accent) 55%, transparent);
+}
+
+/* Tables, against the texture.
+ *
+ * The shared table styling draws its edges at roughly a third to a half of
+ * --ps-border, which is fine on a flat panel and disappears on a textured
+ * one: the grain has more contrast than the rules do, so a table dissolved
+ * into the sheet and its header read as a stray dark band rather than a
+ * heading.
+ *
+ * Both table flavours are covered — .ps-chat-table in the transcript and
+ * .ps-md-table in the markdown/artifact preview. They are separate components
+ * with separate styling and only the first appears in chat, which is the one
+ * this was reported against.
+ *
+ * Three changes, in order of how much they matter:
+ *   - the wrapper gets its own near-opaque ground, so neither the grain nor
+ *     the watermark shows through dense tabular data;
+ *   - the rules are drawn at full border strength instead of a third of it;
+ *   - the header carries an oxide tint and an accent rule under it, so it is
+ *     a heading rather than just a darker row. */
+:root[data-ps-theme="duroxide"] .ps-chat-table-wrap,
+:root[data-ps-theme="duroxide"] .ps-md-table-wrap {
+  background: color-mix(in srgb, var(--ps-page-background) 92%, transparent);
+  border-color: color-mix(in srgb, var(--ps-accent) 34%, var(--ps-border));
+}
+
+:root[data-ps-theme="duroxide"] .ps-chat-table th,
+:root[data-ps-theme="duroxide"] .ps-chat-table td,
+:root[data-ps-theme="duroxide"] .ps-md-table th,
+:root[data-ps-theme="duroxide"] .ps-md-table td {
+  border-right-color: color-mix(in srgb, var(--ps-border) 85%, transparent);
+  border-bottom-color: color-mix(in srgb, var(--ps-border) 85%, transparent);
+}
+
+:root[data-ps-theme="duroxide"] .ps-chat-table th,
+:root[data-ps-theme="duroxide"] .ps-md-table th {
+  background: color-mix(in srgb, var(--ps-accent) 15%, var(--ps-page-background));
+  color: var(--ps-foreground);
+  border-bottom: 2px solid color-mix(in srgb, var(--ps-accent) 55%, transparent);
+}
+
+/* Code blocks and the artifact card sit on the same sheet and lose their edges
+   the same way. Same remedy, minus the header. */
+:root[data-ps-theme="duroxide"] .ps-md-code-pre,
+:root[data-ps-theme="duroxide"] .ps-artifact-card {
+  background: color-mix(in srgb, var(--ps-page-background) 88%, transparent);
+  border-color: color-mix(in srgb, var(--ps-accent) 26%, var(--ps-border));
 }

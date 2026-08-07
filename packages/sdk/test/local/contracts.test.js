@@ -36,6 +36,11 @@ const EXPECTED_FRAMEWORK_ARTIFACT_TOOL_NAMES = [
     "write_artifact",
     "read_artifact",
     "list_artifacts",
+    // Presentation half of the artifact set: write_artifact puts the bytes in
+    // the store, show_artifact tells the portal to switch the reader to them.
+    // Registered unconditionally in systemToolDefs(), so it is always-on like
+    // the other three.
+    "show_artifact",
 ];
 const EXPECTED_ALWAYS_ON_TOOL_NAMES = [
     "wait",

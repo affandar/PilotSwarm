@@ -2605,6 +2605,16 @@ export function appReducer(state, action) {
                 },
             };
 
+        // Clamped here rather than at the call site so every entry point —
+        // buttons, keyboard, a restored profile — lands in the same range.
+        case "files/htmlZoom": {
+            const requested = Number(action.zoom);
+            const zoom = Number.isFinite(requested)
+                ? Math.min(3, Math.max(0.5, Math.round(requested * 100) / 100))
+                : 1;
+            return { ...state, files: { ...state.files, htmlZoom: zoom } };
+        }
+
         case "files/clearMarks":
             return { ...state, files: { ...state.files, markedIds: [] } };
 

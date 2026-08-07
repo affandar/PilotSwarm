@@ -2491,7 +2491,7 @@ const HTML_PREVIEW_RESIZE_MIN_DELTA_PX = 28;
  * loading behind it. Both use the same element key across promotion so React
  * reuses the element instead of remounting it (which would reload it again).
  */
-function useHtmlPreviewReload(elementRef, enabled, resetKey) {
+function useHtmlPreviewReload(elementRef, enabled, resetKey, relayoutKey) {
     const [live, setLive] = React.useState(null);
     const [pending, setPending] = React.useState(0);
     const committedWidthRef = React.useRef(null);
@@ -2505,6 +2505,20 @@ function useHtmlPreviewReload(elementRef, enabled, resetKey) {
         setLive(null);
         setPending(nonceRef.current);
     }, [resetKey]);
+
+    // Zoom changes the frame's LAYOUT width (see the width/transform pair in
+    // the stylesheet), so a document that computed its geometry once is just
+    // as stale after zooming as after a drag. Stage a replacement — but keep
+    // the current one on screen, unlike resetKey above, because this is the
+    // same document at a new size rather than a different one.
+    const firstRelayout = React.useRef(true);
+    React.useEffect(() => {
+        if (firstRelayout.current) { firstRelayout.current = false; return; }
+        if (!enabled) return;
+        committedWidthRef.current = null;
+        nonceRef.current += 1;
+        setPending(nonceRef.current);
+    }, [relayoutKey, enabled]);
 
     React.useEffect(() => {
         const node = elementRef.current;
@@ -2536,9 +2550,18 @@ function useHtmlPreviewReload(elementRef, enabled, resetKey) {
         };
     }, [elementRef, enabled]);
 
+    // `load` means the document finished loading, NOT that it finished
+    // painting. Promoting on the load event alone swapped in a frame the
+    // compositor had not drawn yet, so the white background showed through for
+    // a beat. Two frames of slack is enough for the paint to land, and it is
+    // invisible next to the reload it follows.
     const promote = React.useCallback((nonce) => {
-        setPending((current) => (current === nonce ? null : current));
-        setLive((current) => (current === nonce ? current : nonce));
+        const swap = () => {
+            setPending((current) => (current === nonce ? null : current));
+            setLive((current) => (current === nonce ? current : nonce));
+        };
+        if (typeof requestAnimationFrame !== "function") { swap(); return; }
+        requestAnimationFrame(() => requestAnimationFrame(swap));
     }, []);
 
     return { live, pending, promote };
@@ -2562,6 +2585,50 @@ function HtmlFitWidthToggle({ fitWidth, setFitWidth }) {
         active: fitWidth,
         onClick: () => setFitWidth(!fitWidth),
     });
+}
+
+const HTML_ZOOM_STEPS = [0.5, 0.67, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3];
+
+/**
+ * Zoom for the rendered artifact ONLY.
+ *
+ * Browser zoom scales the entire workspace — the session list and the
+ * transcript along with it — when the thing you actually wanted to read
+ * larger is one dense chart. This moves the artifact and leaves the interface
+ * around it alone.
+ */
+function HtmlZoomControl({ zoom, setZoom }) {
+    const step = (direction) => {
+        const index = HTML_ZOOM_STEPS.findIndex((value) => Math.abs(value - zoom) < 0.005);
+        const from = index === -1 ? HTML_ZOOM_STEPS.indexOf(1) : index;
+        const next = HTML_ZOOM_STEPS[Math.min(HTML_ZOOM_STEPS.length - 1, Math.max(0, from + direction))];
+        setZoom(next);
+    };
+    return React.createElement("span", { className: "ps-html-zoom", role: "group", "aria-label": "Artifact zoom" },
+        React.createElement("button", {
+            type: "button",
+            className: "ps-html-zoom-btn",
+            onClick: () => step(-1),
+            disabled: zoom <= HTML_ZOOM_STEPS[0] + 0.001,
+            title: "Zoom out (artifact only)",
+            "aria-label": "Zoom out",
+        }, "−"),
+        // Doubles as reset — the fastest way back from an exploratory zoom.
+        React.createElement("button", {
+            type: "button",
+            className: "ps-html-zoom-level",
+            onClick: () => setZoom(1),
+            title: "Reset zoom to 100%",
+            "aria-label": `Zoom ${Math.round(zoom * 100)} percent, click to reset`,
+        }, `${Math.round(zoom * 100)}%`),
+        React.createElement("button", {
+            type: "button",
+            className: "ps-html-zoom-btn",
+            onClick: () => step(1),
+            disabled: zoom >= HTML_ZOOM_STEPS[HTML_ZOOM_STEPS.length - 1] - 0.001,
+            title: "Zoom in (artifact only)",
+            "aria-label": "Zoom in",
+        }, "+"));
 }
 
 /** Rendered-page vs. HTML-source switch. Shared by the Files tab and the reader. */
@@ -2647,11 +2714,19 @@ function HtmlArtifactPreviewPanel({
         ? hostBox.width / HTML_PREVIEW_FIT_LAYOUT_WIDTH_PX
         : 1;
     const fitActive = fitScale < 1;
+    // Zoom composes with fit rather than competing with it: fit chooses the
+    // base scale that shows the whole width, zoom moves from there. At
+    // zoom 1 with fit off, neither touches the frame at all.
+    const zoom = useControllerSelector(controller, (state) => Number(state.files.htmlZoom) || 1);
+    const setZoom = React.useCallback((next) => {
+        controller.dispatch({ type: "files/htmlZoom", zoom: next });
+    }, [controller]);
+    const renderScale = fitActive ? fitScale * zoom : zoom;
     // While fitting, the frame's own width is pinned to the layout constant, so
     // a pane resize changes only the SCALE — the document does not need to be
     // reloaded, and reloading would cost the reader their scroll position on
     // something as ordinary as rotating the phone.
-    const frames = useHtmlPreviewReload(frameHostRef, mode === "rendered" && !fitActive, `${sessionId}/${filename}`);
+    const frames = useHtmlPreviewReload(frameHostRef, mode === "rendered" && !fitActive, `${sessionId}/${filename}`, zoom);
 
     // The object URL is owned by this component — created on mount, revoked on
     // unmount or artifact change. It deliberately does not share the thumbnail
@@ -2684,6 +2759,9 @@ function HtmlArtifactPreviewPanel({
         React.createElement(HtmlViewModeToggle, { mode, setMode }),
         mode === "rendered"
             ? React.createElement(HtmlFitWidthToggle, { fitWidth, setFitWidth })
+            : null,
+        mode === "rendered"
+            ? React.createElement(HtmlZoomControl, { zoom, setZoom })
             : null,
         deepLink
             ? React.createElement(IconButton, {
@@ -2720,11 +2798,23 @@ function HtmlArtifactPreviewPanel({
                             ? {
                                 flex: "none",
                                 width: `${HTML_PREVIEW_FIT_LAYOUT_WIDTH_PX}px`,
-                                height: `${Math.max(1, Math.round(hostBox.height / fitScale))}px`,
-                                transform: `scale(${fitScale})`,
+                                height: `${Math.max(1, Math.round(hostBox.height / renderScale))}px`,
+                                transform: `scale(${renderScale})`,
                                 transformOrigin: "top left",
                             }
-                            : undefined,
+                            // Zoom without fit takes the other route: shrink the
+                            // frame's LAYOUT box by the zoom factor and scale it
+                            // back up, so the document reflows at the zoomed size
+                            // instead of being magnified as a flat picture.
+                            : zoom !== 1 && hostBox.width > 0
+                                ? {
+                                    flex: "none",
+                                    width: `${Math.max(1, Math.round(hostBox.width / zoom))}px`,
+                                    height: `${Math.max(1, Math.round(hostBox.height / zoom))}px`,
+                                    transform: `scale(${zoom})`,
+                                    transformOrigin: "top left",
+                                }
+                                : undefined,
                         src: frameUrl,
                         title: filename || "HTML artifact",
                         // No allow-same-origin — see the block comment above.
@@ -2747,7 +2837,7 @@ function HtmlArtifactPreviewPanel({
             // The frame's layout box stays HTML_PREVIEW_FIT_LAYOUT_WIDTH_PX wide
             // while fitting; without clipping, that overflow would hand the host
             // a horizontal scrollbar for content that is already fully visible.
-            className: `ps-html-preview-host${fitActive ? " is-fitting" : ""}`,
+            className: `ps-html-preview-host${fitActive || zoom !== 1 ? " is-fitting" : ""}`,
         }, body)
         : body;
 
@@ -4196,6 +4286,13 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     );
     const selectedCount = Array.isArray(viewState.selectedIds) ? viewState.selectedIds.length : 0;
     const isBulkSelection = selectedCount > 1;
+    // A folder has none of the session-manage surface — no model, no sharing,
+    // no visibility — which is why canModifyActiveSession excludes groups. But
+    // it does have a TITLE, and the rename modal already routes groups to
+    // updateSessionGroup. Renaming is the one manage action a folder supports.
+    // Session groups are private per-user organisation, so a folder you can
+    // see is a folder you own; there is no separate ownership check to make.
+    const canRenameActiveGroup = Boolean(activeSession?.isGroup && !isBulkSelection);
     const canPinActiveSession = Boolean(
         activeSession
         && !activeSession.isSystem
@@ -4716,8 +4813,17 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         React.createElement(IconButton, {
             className: "ps-mini-button",
             icon: React.createElement(ManageGlyph),
-            onClick: () => setManageOpen(true),
-            disabled: !canModifyActiveSession || isBulkSelection,
+            onClick: () => {
+                // Folders reuse this control rather than dead-ending on it:
+                // it is where people look for "change this thing's name", and
+                // it is where this one was reported from.
+                if (activeSession?.isGroup) {
+                    controller.handleCommand(UI_COMMANDS.OPEN_RENAME_SESSION).catch(() => {});
+                    return;
+                }
+                setManageOpen(true);
+            },
+            disabled: (!canModifyActiveSession && !canRenameActiveGroup) || isBulkSelection,
             // A disabled control has to say WHY. This label used to describe
             // the ENABLED behaviour in every disabled case except bulk
             // selection, so on a system session the tooltip promised "rename,
@@ -4728,7 +4834,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                 : activeSession?.isSystem
                     ? "System sessions are managed by administrators"
                     : activeSession?.isGroup
-                        ? "Folders cannot be managed here — use the folder controls"
+                        ? "Rename folder"
                         : !canModifyActiveSession
                             ? "Only this session's owner or an admin can manage it"
                             : "Manage session — rename, switch model, and sharing",
@@ -5674,6 +5780,10 @@ function ArtifactTakeoverPane({ controller, onClose }) {
     const setHtmlViewMode = React.useCallback((next) => {
         controller.dispatch({ type: "files/htmlViewMode", mode: next });
     }, [controller]);
+    const htmlZoom = useControllerSelector(controller, (state) => Number(state.files.htmlZoom) || 1);
+    const setHtmlZoom = React.useCallback((next) => {
+        controller.dispatch({ type: "files/htmlZoom", zoom: next });
+    }, [controller]);
     const step = React.useCallback((delta) => {
         controller.stepArtifactPreview(delta).catch(() => {});
     }, [controller]);
@@ -5708,6 +5818,11 @@ function ArtifactTakeoverPane({ controller, onClose }) {
         // phone-width frame is exactly the case fitting exists for.
         descriptor.kind === "page" && htmlViewMode === "rendered"
             ? React.createElement(HtmlFitWidthToggle, { fitWidth: htmlFitWidth, setFitWidth: setHtmlFitWidth })
+            : null,
+        // Zoom belongs here for the same reason: it scales the ARTIFACT, not
+        // the workspace, which is the whole distinction from browser zoom.
+        descriptor.kind === "page" && htmlViewMode === "rendered"
+            ? React.createElement(HtmlZoomControl, { zoom: htmlZoom, setZoom: setHtmlZoom })
             : null,
         React.createElement("span", { className: "ps-artifact-pane-heading" },
             React.createElement("span", {

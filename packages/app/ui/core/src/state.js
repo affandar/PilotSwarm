@@ -286,6 +286,11 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // — the alternative was a second header row stacked under the
             // first, which is exactly the box-in-a-box the pane exists to undo.
             htmlViewMode: "rendered",
+            // Zoom for the rendered HTML frame ONLY. Browser zoom scales the
+            // whole workspace — the session list and transcript included —
+            // when all you wanted was to read a dense chart. This scales the
+            // artifact and nothing else.
+            htmlZoom: 1,
             // Fit-to-width for the rendered HTML frame. Lifted here for the
             // same reason htmlViewMode is: on mobile the panel is chromeless
             // and the artifact bar owns the controls, so the two surfaces have

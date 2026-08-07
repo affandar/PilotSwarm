@@ -55,13 +55,18 @@ packages/sdk/plugins/system/
 ├── agents/
 │   └── default.agent.md        # Embedded framework base prompt
 └── skills/
-    ├── durable-timers/
-    │   └── SKILL.md             # wait tool usage knowledge
-    └── sub-agents/
-        └── SKILL.md             # spawn_agent patterns
+    └── html-visuals/
+        └── SKILL.md             # opt-in: declare it to receive it
 ```
 
 The system `default.agent.md` file is special — it becomes the embedded PilotSwarm framework base. It is not treated as an application-overridable `default.agent.md`, and it is never listed as a selectable agent.
+
+**"Always loaded" describes the tier, not its skills.** A plugin's skills are read
+into the worker's skill registry, but a skill only reaches a prompt when an agent
+names it in its `skills:` frontmatter — see [Skills](#5-skills). A skill
+nothing declares is inert: it costs nothing and does nothing. Guidance that every
+session must have belongs in the base prompt instead; skills are the mechanism for
+knowledge only *some* agents should pay for.
 
 ### Tier 2: Management (`packages/sdk/plugins/mgmt/`)
 
@@ -221,10 +226,26 @@ pilotswarm (root, system: true, id: "pilotswarm")
 
 Skills inject domain knowledge into the LLM context. They are directories, not standalone files.
 
-Skills are available from every configured plugin skill directory. Add a skill
-name to an agent's `skills` frontmatter when that agent should eagerly preload
-the full skill into its context. Omitted skills remain available for normal SDK
-skill discovery; `skills` is a preload declaration, not a directory filter.
+Skills load from every configured plugin skill directory into the worker's skill
+registry. From there, **a skill reaches a prompt only when an agent names it in
+its `skills:` frontmatter.** The worker walks the agents, and for each declared
+name splices `[PRELOADED SKILL: <name>]` plus the whole body into that agent's
+system message.
+
+There is no discovery path for an undeclared skill. Nothing indexes them, no tool
+lists them, and the model is never told they exist — so a skill in the registry
+that no agent declares is inert. (This is unrelated to the curated *facts* skills
+under the shared `skills/` fact namespace, which agents do discover at runtime via
+`read_facts`. Same word, different mechanism.)
+
+Two consequences worth designing around:
+
+- **Declaring a skill is not free.** The body is inlined verbatim on every turn for
+  the life of the session. Knowledge every session needs belongs in the base prompt;
+  skills are for knowledge only *some* agents should pay for.
+- **An undeclared skill is dead code, and dead documentation rots.** If nothing
+  declares it, delete it or wire it up — a stale copy is worse than none, because
+  the next person to declare it inherits facts that quietly stopped being true.
 
 ### Directory Structure
 
@@ -494,11 +515,12 @@ The complete loading pipeline:
 ┌─────────────────────────────────────────────────────┐
 │  Tier 1: System plugins (always)                    │
 │    → embedded framework base prompt                 │
-│    → skills/durable-timers, skills/sub-agents       │
+│    → skills/html-visuals  (registry only)           │
 ├─────────────────────────────────────────────────────┤
 │  Tier 2: Management plugins (unless disabled)       │
 │    → pilotswarm, sweeper, resourcemgr agents        │
-│    → sweeper skill                                  │
+│    → sweeper, resourcemgr, graph-debug, …           │
+│      (registry only)                                │
 ├─────────────────────────────────────────────────────┤
 │  Tier 3: Application plugins (pluginDirs)           │
 │    → custom agents, skills, MCP servers             │
@@ -518,7 +540,7 @@ The complete loading pipeline:
 | Component | Collision Behavior |
 |-----------|-------------------|
 | Agents | Name collision → **later tier wins** (agent is replaced) |
-| Skills | **Additive** — all skill directories are combined, no collision |
+| Skills | Directories are additive, but the registry is keyed by skill **name** → **later tier wins** (an app skill named `sweeper` replaces the mgmt one) |
 | MCP servers | Name collision → **later tier wins** (server config is replaced) |
 | Tools | Last `registerTools()` call wins for the same tool name |
 | `default.agent.md` | Embedded framework base plus optional app overlay |

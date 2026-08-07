@@ -34,6 +34,7 @@ function contrast(a, b) {
 const ICON_THEMES = [
     { id: "doom", label: "DOOM" },
     { id: "winamp", label: "WinAMP" },
+    { id: "duroxide", label: "Duroxide" },
 ];
 
 for (const { id, label } of ICON_THEMES) {
@@ -128,4 +129,58 @@ test("DOOM's keycard triad is the status palette, and the three stay distinct", 
             `${key} must read against the ground (${contrast(key, terminal.background).toFixed(2)}:1)`,
         );
     }
+});
+
+
+test("Duroxide spends the brand oxide on chrome and never on text", () => {
+    // #a35838 is the colour measured off the banner mark, and it is 2.87:1 on
+    // the ground — below the 4.5:1 this suite holds muted text to. The theme
+    // is only coherent because the exact brand colour is reserved for the
+    // logo and borders while a brightened sibling carries the interactive
+    // role. If someone "fixes" the accent back to the brand hex to make it
+    // match the banner, this catches it.
+    const theme = getTheme("duroxide");
+    const BRAND = "#a35838";
+
+    assert.ok(contrast(BRAND, theme.terminal.background) < 4.5,
+        "precondition: the brand oxide is genuinely too low-contrast for text");
+    assert.equal(theme.icon.paths[0].fill, BRAND, "the mark is drawn in the true brand colour");
+    assert.equal(theme.tui.border, "#46403d", "borders are chrome, not the brand hex");
+
+    // The accent — what --ps-accent is derived from — must be readable.
+    assert.notEqual(theme.terminal.cyan, BRAND, "the accent is not the raw brand colour");
+    assert.ok(contrast(theme.terminal.cyan, theme.terminal.background) >= 4.5,
+        `accent ${theme.terminal.cyan}: ${contrast(theme.terminal.cyan, theme.terminal.background).toFixed(2)}:1`);
+    assert.ok(contrast(theme.terminal.cyan, theme.page.background) >= 4.5, "accent on the page ground too");
+});
+
+test("Duroxide's mark is ONE path, so nonzero can punch its holes", () => {
+    // ThemeIconMark renders each entry as its own <path> and emits no
+    // fill-rule. Winding only cancels WITHIN a single element, so splitting
+    // the four subpaths across four entries fills the hexagon ring and the
+    // gear bore solid — the mark renders as a plain blob. It did, once.
+    const { icon } = getTheme("duroxide");
+    assert.equal(icon.paths.length, 1, "all subpaths must live in one d string");
+    const subpaths = icon.paths[0].d.match(/M/g) || [];
+    assert.equal(subpaths.length, 4, "hexagon outer + inner, gear/arrow outer + bore");
+});
+
+test("Duroxide is a different theme from Rust, not a re-skin", () => {
+    // Both are warm-dark and both are Rust-adjacent; the repo already warns
+    // that they must not collapse into each other. Ground and accent are the
+    // two decisions that keep them apart.
+    const dx = getTheme("duroxide");
+    const rust = getTheme("rust");
+    assert.notEqual(dx.page.background, rust.page.background);
+    assert.notEqual(dx.terminal.cyan, rust.terminal.cyan);
+    // Duroxide's accent is the more muted of the two: brand pigment, not
+    // Ferris orange. Saturation is the measurable form of that claim.
+    const sat = (hex) => {
+        const v = hex.replace("#", "");
+        const [r, g, b] = [0, 2, 4].map((i) => parseInt(v.slice(i, i + 2), 16));
+        const max = Math.max(r, g, b), min = Math.min(r, g, b);
+        return max === 0 ? 0 : (max - min) / max;
+    };
+    assert.ok(sat(dx.terminal.cyan) < sat(rust.terminal.cyan),
+        `duroxide accent should be the more muted pigment (${sat(dx.terminal.cyan).toFixed(2)} vs ${sat(rust.terminal.cyan).toFixed(2)})`);
 });

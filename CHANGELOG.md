@@ -1,5 +1,167 @@
 # Changelog
 
+## 0.5.35 — 2026-08-06
+
+Artifacts stop being files you download and become things you look at. An agent
+that builds something visual can now put it on your screen mid-turn, and the
+portal renders it as a real page rather than as source. Plus a theme wearing
+the Duroxide brand, and the discovery that seven of the eight built-in skills
+had never been wired to anything.
+
+### Added
+
+- **HTML artifacts render as pages.** A `.html` artifact opens in the reader as
+  the live document — charts, tables, layout, its own scripts — instead of as
+  syntax-highlighted source. It runs in an iframe with `allow-scripts` and
+  deliberately **no** `allow-same-origin`: blob URLs inherit the creating
+  origin, so withholding that flag is what forces an opaque origin, and it is
+  the only reason a page can execute its own tooltips without being able to
+  reach the signed-in user's token, storage, or the parent DOM. The frame
+  streams the artifact's own bytes rather than the preview text, which also
+  sidesteps the 200,000-character preview truncation — a 333 KB dashboard was
+  previously shown at 60% of itself, silently.
+
+- **`show_artifact`** — an agent can display one of its own artifacts in your
+  portal, live, while you watch. It rides the ordinary durable event stream
+  (`session.artifact_presented`), so one mechanism covers the live push, the
+  transcript record and replay. Three guards keep it from being obnoxious:
+  active session only, events fresher than two minutes (a reconnect burst must
+  not replay yesterday's dashboard), and the live path only — merely *opening*
+  a session never auto-opens whatever it last presented.
+
+- **Artifacts in the transcript are cards**, not underlined filenames trailing
+  "(press a to download)" — a keystroke that does not exist in a browser,
+  describing the wrong verb for something you want to read. Each card names the
+  thing, says what kind it is, and opens the reader. HTML gets its own mark and
+  an accent-tinted thumbnail, because it is the one kind that opens as a live
+  page rather than as text.
+
+- **The artifact reader takes over the right column**, replacing the inspector
+  and activity panes for as long as it is open, with `‹ ›` (and arrow keys) to
+  walk the conversation's artifacts and `✕` to hand the column back. If the
+  column was already collapsed when the reader opened, `✕` collapses it again —
+  opening a reader must not become a way to un-hide panes you dismissed.
+
+- **Artifact deep links open the chat *and* the artifact**, side by side:
+  `?session=…&artifact=…&view=full`. The transcript is the context that makes
+  an artifact mean anything, so landing on the file alone loses half of what
+  was shared.
+
+- **Zoom for the rendered artifact, and nothing else.** Browser zoom scales the
+  whole workspace — session list and transcript included — when the thing you
+  wanted larger is one dense chart. The reader's own `− 100% +` shrinks the
+  frame's layout box and scales it back, so the document *reflows* at the
+  zoomed size rather than being magnified as a flat picture. Composes with
+  fit-width: fit picks the base scale, zoom moves from there.
+
+- **Fit-width for the rendered artifact**, scaling a fixed-width page down into
+  a narrow pane. Only ever scales DOWN — when the pane is already wider than
+  the layout there is nothing to fit, and blowing a responsive document up
+  just makes it coarse. While fitting, the frame's width is pinned, so a pane
+  resize changes only the scale and costs the reader no scroll position.
+
+- **Folders can be renamed.** A folder has no model, no sharing and no
+  visibility, which is why the manage surface excludes groups — but it does
+  have a title, and renaming is the one manage action it supports. The Manage
+  control routes groups straight to the rename modal rather than dead-ending
+  on them.
+
+- **`html-visuals` skill** — the sandbox contract, a chart-form selection
+  table, dashboard structure and a self-check list, for agents that build
+  visuals. Opt-in: declaring a skill inlines it into every prompt for the life
+  of the session, so it is not on the base agent.
+
+- **Duroxide theme.** Iron oxide pressed into black felt, with the project's
+  own mark traced from the banner artwork rather than redrawn — one path, four
+  subpaths, wound so the default nonzero fill rule punches the hexagon ring and
+  the gear bore. Every colour is measured off the artwork. The catch, and the
+  theme's organising rule: the exact brand oxide is 2.87:1 on its own ground
+  and therefore cannot be text, so it is spent on chrome while a brightened
+  sibling carries the interactive role. The banner's felt is reproduced as two
+  generated noise layers rather than a bitmap — a fine grain for the paper
+  tooth under a coarse weave and a slow mottle for the raking light — and the
+  mark is pressed into the chat panel as a large watermark, screen-blended so
+  it lifts the sheet rather than washing over the text. Dense content gets its
+  own opaque ground so the grain cannot eat it: tables carry full-strength
+  rules and an oxide header with an accent rule beneath, and code blocks and
+  artifact cards get the same treatment.
+
+  The chrome is set in a slab — Rockwell, falling back through Bitter to
+  Georgia. Like every other face in the portal it is a system font: nothing is
+  fetched, because a deployment may be air-gapped and a remote font request
+  would hang or silently fall back.
+
+### Changed
+
+- **The type scale is one step larger.** `--ps-font-size-chat/base/dense` each
+  gain 1px, in `:root`, so every theme inherits it and the whole UI — sized in
+  rem against those three — moves together. The touch scale and the phone
+  step-down move with it; leaving them would have quietly collapsed the touch
+  boost and made a phone read two notches smaller instead of one.
+
+- **Base agent 1.9.0** prefers a rendered visual to a wall of numbers: asked to
+  *see* something, an agent builds a self-contained page and calls
+  `show_artifact`. Carries the four sandbox rules that decide whether the page
+  renders at all, because breaking one produces a blank frame and no error.
+
+### Fixed
+
+- **An artifact could execute script at the portal's origin.** The image
+  preview's click-through opened the blob URL at top level, and the image
+  predicate admits `.svg` — a scriptable document. Rendering an SVG in `<img>`
+  is safe; navigating to it is not. It now opens the artifact deep link.
+
+- **A rendered page laid out for the wrong width.** Agent-authored HTML
+  routinely computes geometry once at load, so widening the pane reflowed the
+  CSS grid but left the chart drawn for the old size. The frame now reloads
+  once the width settles. Getting there needed the reload to be double-buffered
+  — a blank frame paints its background, which was the white flash — and needed
+  the comparison to be against the width the current document was rendered at:
+  a reload changes the document's height, which toggles the scrollbar, which
+  changes the width, which scheduled another reload.
+
+- **The workspace no longer scrolls as one.** `body { overflow: hidden }` does
+  not reach the viewport: overflow propagates from the ROOT, and `html` was
+  `visible`, so the body clipped its own content while the document scrolled
+  underneath. Zoom the browser until the panes hit their minimum widths and
+  the whole workspace slid sideways.
+
+- **A sideways swipe no longer navigates back.** A horizontal scroll that
+  reaches the end of what it was scrolling is handed to the browser as
+  back/forward, which in a single-page workspace discards the session you were
+  reading. It bit hardest over a rendered artifact: pages usually fit their
+  width, so there was no horizontal scroll to absorb the gesture and *every*
+  swipe became navigation. `overscroll-behavior: none` on the root refuses it;
+  `contain` on the preview keeps it from reaching the root at all.
+
+- **The rendered artifact no longer flashes white when it reloads.** The
+  replacement frame was hidden with `visibility: hidden`, which is laid out but
+  may not be PAINTED — so it arrived at promotion undrawn and the frame's white
+  background showed for a beat. `opacity: 0` keeps it in the paint tree, and
+  promotion waits two animation frames, because `load` means finished loading,
+  not finished painting.
+
+- **The artifact reader no longer reassigns your inspector tab.** Opening an
+  artifact while watching Sequence switched the tab underneath to Files, so
+  `✕` handed back a file list you never opened.
+
+### Removed
+
+- **The `sub-agents` and `durable-timers` system skills**, which nothing has
+  ever declared — not in this repo, not in the live fleet, not in the layered
+  deployments. A skill only reaches a prompt when an agent names it in
+  `skills:` frontmatter; there is no discovery path. Both had drifted from the
+  code they described (a 20-agent cap that is 50, single-level nesting that is
+  two), and `sub-agents` was additionally wrapped in a fence that stopped its
+  own frontmatter parsing, so it listed with an empty description everywhere.
+  Their content already lives in the base prompt every session receives.
+
+  The documentation said otherwise — *"omitted skills remain available for
+  normal SDK skill discovery"* — which is false and is why seven of the eight
+  built-in skills could sit unused while looking load-bearing. Corrected, along
+  with the claim that skills merge additively: the registry is keyed by name,
+  so a later tier replaces an earlier skill of the same name.
+
 ## 0.5.34 — 2026-08-05
 
 The agent picker learns what a package is *made of*, and the session list

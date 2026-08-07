@@ -49,7 +49,6 @@ describe("system agent cron contracts", () => {
 
     it("hardens ambiguous long-running work guidance for parent and sub-agents", () => {
         const defaultAgent = readRepoFile("packages/sdk/plugins/system/agents/default.agent.md");
-        const subAgentSkill = readRepoFile("packages/sdk/plugins/system/skills/sub-agents/SKILL.md");
         const orchestration = readRepoFile("packages/sdk/src/orchestration.ts");
         const orchestrationAgents = readRepoFile("packages/sdk/src/orchestration/agents.ts");
         const orchestrationTurn = readRepoFile("packages/sdk/src/orchestration/turn.ts");
@@ -68,14 +67,17 @@ describe("system agent cron contracts", () => {
         assertIncludes(defaultAgent, "Every finite delegation", "default agent should require material-change wakes for finite work");
         assertIncludes(defaultAgent, "ordinary final reply leaves it alive and idle", "default agent should distinguish a task reply from terminal lifecycle completion");
         assertIncludes(defaultAgent, "Do not create a `wait` or `cron` schedule whose only purpose is calling `check_agents`", "default agent should forbid timer-only child polling");
-        assertIncludes(defaultAgent, "version: 1.8.0", "default agent should version the finite delegation wake contract");
+        assertIncludes(defaultAgent, "version: 1.9.0", "default agent should version the finite delegation wake contract");
         assert(!defaultAgent.includes("Continue your poll/summarize loop"), "default agent should not require a polling loop for child coordination");
         assert(!defaultAgent.includes("Preferred**: Poll with `wait` + `check_agents`"), "default agent should not prefer wait-based child polling");
 
-        assertIncludes(subAgentSkill, "Parent coordination is reactive", "sub-agent skill should teach reactive parent coordination");
-        assertIncludes(subAgentSkill, "Every finite delegation", "sub-agent skill should require material-change wakes for finite work");
-        assertIncludes(subAgentSkill, "Do not schedule `wait` or `cron` solely to poll `check_agents`", "sub-agent skill should forbid redundant polling timers");
-        assert(!subAgentSkill.includes("Periodically check_agents() to see updates"), "sub-agent skill should not teach periodic status polling");
+        // The `sub-agents` system skill used to carry a second copy of these
+        // three guarantees, and this block asserted them twice. It was deleted:
+        // no agent ever declared it, so it never reached a model, and its copy
+        // had drifted (it still claimed a 20-agent cap and single-level
+        // nesting). The base prompt is the single home now — and the
+        // defaultAgent assertions above already cover reactive coordination,
+        // finite-delegation wakes, and the no-polling-timer rule.
 
         assertIncludes(orchestration, "use the \\`wait\\`, \\`wait_on_worker\\`, \\`cron\\`, or \\`cron_at\\` tools", "sub-agent preamble should allow cron and cron_at for recurring work");
         assertIncludes(orchestration, "report that ambiguity back to the parent", "sub-agent preamble should route long-running ambiguity to the parent");

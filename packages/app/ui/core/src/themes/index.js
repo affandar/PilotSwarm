@@ -17,6 +17,7 @@ import msDosTheme from "./ms-dos.js";
 import doomTheme from "./doom.js";
 import winampTheme from "./winamp.js";
 import rustTheme from "./rust.js";
+import duroxideTheme from "./duroxide.js";
 import spongebobTheme from "./spongebob.js";
 
 // Themes are ordered by GROUP first, then alphabetically inside it — the
@@ -54,6 +55,7 @@ const THEMES = Object.freeze([
     doomTheme,
     winampTheme,
     rustTheme,
+    duroxideTheme,
     spongebobTheme,
 ].sort(byGroupThenLabel));
 

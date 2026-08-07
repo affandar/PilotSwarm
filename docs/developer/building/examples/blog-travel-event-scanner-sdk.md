@@ -46,7 +46,7 @@ travel-scanner/
 │   ├── agents/
 │   │   └── event-scanner.agent.md
 │   └── skills/
-│       └── durable-timers/     # inherited from system plugin
+│       └── event-sourcing/     # declare in skills: to preload it
 └── tools/
     ├── search-events.js
     ├── scan-social-feed.js
@@ -468,7 +468,7 @@ This is the key architectural insight. When the agent calls `wait(3600)`, here's
 
 The agent doesn't know any of this happened. It just called `wait(3600)` and woke up an hour later. But behind the scenes, the process may have restarted, the pod may have been rescheduled to a different node, and a different worker instance may be handling the resumed session.
 
-PilotSwarm ships with a built-in **durable-timers skill** that teaches agents this pattern. The skill is loaded automatically from the system plugin, so agents understand the `wait` → dehydrate → timer → hydrate lifecycle without any extra configuration.
+Agents understand the `wait` → dehydrate → timer → hydrate lifecycle without any extra configuration: the framework base prompt every session receives teaches the pattern directly, including when to reach for `cron`/`cron_at` instead of a one-shot `wait`.
 
 ## The Fastify REST API
 

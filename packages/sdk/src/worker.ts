@@ -934,14 +934,17 @@ export class PilotSwarmWorker {
      * Load plugin contents from SDK bundled plugins + app plugin directories.
      *
     * Tiered loading order:
-     *   1. system/  — SDK core (always loaded: base system prompt, durable-timers, sub-agents)
+     *   1. system/  — SDK core (always loaded: base system prompt, html-visuals skill)
      *   2. mgmt/    — SDK management agents (loaded unless disableManagementAgents is true)
     *   3. default-agents/ — optional SDK user agents, read into a separate registry
     *   4. app      — Consumer-provided plugin dirs (from pluginDirs option)
     *   5. direct   — Inline config (skillDirectories, customAgents, mcpServers options)
      *
      * Agents merge by name (later tiers override earlier).
-     * Skills merge additively (all dirs combined).
+     * Skills: every dir is read, but the registry is keyed by skill NAME, so a
+     *   later tier replaces an earlier skill of the same name. A registered
+     *   skill only reaches a prompt if some agent declares it in `skills:`
+     *   (see _applyDeclaredAgentSkills) — there is no discovery path.
      * MCP servers merge by name (later tiers override earlier).
      */
     // ─── Agent packages (docs/proposals/agent-packages.md) ────────

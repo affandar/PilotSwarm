@@ -5801,11 +5801,16 @@ export function selectRenameSessionModal(state, maxWidth = 76) {
                 text: " cancel",
                 color: "gray",
             }],
-            [{ text: "", color: "gray" }],
-            [{
-                text: "Manual titles stop future automatic LLM title changes for this session.",
-                color: "gray",
-            }],
+            // A folder has no agent writing titles for it, so the auto-title
+            // caveat is noise there — and worse, it implies a folder is a
+            // session.
+            ...(modal.isGroup ? [] : [
+                [{ text: "", color: "gray" }],
+                [{
+                    text: "Manual titles stop future automatic LLM title changes for this session.",
+                    color: "gray",
+                }],
+            ]),
         ],
         detailsLines,
         idealWidth: Math.min(
