@@ -82,7 +82,8 @@ can read what it last wrote.*
 - One persistent, revisioned visual surface per root session.
 - Whole-document replace semantics — idempotent, schema-checkable, replayable.
 - The agent can read its own canvas back, paged, across turns and epochs.
-- Live updates in every open portal view of the session, without flashes.
+- Live updates in every open portal view of the session — any user with
+  read access, not just the owner — without flashes.
 - Survives worker restarts, node migration, and context regeneration.
 - Zero database migration; no new hot-table columns.
 - The existing artifact reader ("preview" model) is untouched.
@@ -310,7 +311,29 @@ that never loads the base-prompt section still behaves, and the
 `html-visuals` pointer rides the description the way `show_artifact`'s
 already does.
 
-### Access: root sessions only
+### Access: everyone with the session sees it; only the agent draws
+
+**Viewing** follows session visibility, with no canvas-specific ACL: anyone
+with read or write access to the session — owner, share grantees, admins —
+gets the canvas, the auto-flip, and the badge, identically. This costs
+nothing new: the bytes travel the artifact download route (access class
+`session:read`), and the events ride the session subscription, whose gate is
+already the same content-read predicate as the REST catch-up path. Every
+open portal on the session converges on a draw, whoever it belongs to.
+
+Each viewer's attention state is independent by construction: the flip
+memory, manual-toggle memory, and `lastViewedRev` all live in per-user
+profile settings. One viewer watches live and never badges; another toggled
+away and gets the yellow dot; a third cold-loads tomorrow and lights the dot
+from their own counter. No shared state, no coordination. Canvas deep links
+inherit the existing access probing — no access, no open.
+
+**Drawing** is narrower than write access, deliberately: the canvas has
+exactly one author, the session's own agent. Humans with write access send
+messages; they never hold the pen (collaborative editing is an explicit
+non-goal).
+
+### Root sessions only
 
 Only root (top-level) sessions have a canvas. Sub-agents get neither tool:
 gated the same way manager-bundle tools already are — excluded from the
