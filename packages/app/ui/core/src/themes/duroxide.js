@@ -119,7 +119,12 @@ const duroxideTheme = createTheme({
         brightWhite: "#fdf7f2",
     },
     tui: {
-        border: "#46403d",
+        // 2.49:1 on the surface. The old #46403d was 1.48:1 — enough to
+        // suggest an edge on a flat panel, and nothing at all once the felt
+        // texture ran over it or it was drawn as a one-pixel seam. Every
+        // structural line in the theme reads from this: panel edges, the
+        // joined-workspace seams, and the table rules.
+        border: "#6a615b",
         // The human speaks in the warning register, as in the Rust theme: the
         // accent stays reserved for the machine and what it produces.
         userChat: "#e0b070",

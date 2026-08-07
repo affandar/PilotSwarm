@@ -145,7 +145,12 @@ test("Duroxide spends the brand oxide on chrome and never on text", () => {
     assert.ok(contrast(BRAND, theme.terminal.background) < 4.5,
         "precondition: the brand oxide is genuinely too low-contrast for text");
     assert.equal(theme.icon.paths[0].fill, BRAND, "the mark is drawn in the true brand colour");
-    assert.equal(theme.tui.border, "#46403d", "borders are chrome, not the brand hex");
+    // The point of this assertion is that the border is NOT the brand oxide,
+    // not that it is one specific grey — pinning the hex made a legitimate
+    // contrast fix look like a regression. Assert the property that matters.
+    assert.notEqual(theme.tui.border, BRAND, "borders are chrome, not the brand hex");
+    assert.ok(contrast(theme.tui.border, theme.terminal.background) >= 2,
+        `border ${theme.tui.border} must actually divide: ${contrast(theme.tui.border, theme.terminal.background).toFixed(2)}:1`);
 
     // The accent — what --ps-accent is derived from — must be readable.
     assert.notEqual(theme.terminal.cyan, BRAND, "the accent is not the raw brand colour");

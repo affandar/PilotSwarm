@@ -2200,6 +2200,23 @@ body.is-resizing-pane-y * {
   gap: 8px;
   padding: 6px 8px 6px 12px;
   border-bottom: 1px solid var(--ps-border);
+  /* WRAP, do not overflow.
+     The bar holds a fixed left cluster (mode, fit, zoom) and a fixed right
+     cluster (prev/next, link, download, close) with a shrinkable title
+     between them. Narrow the pane and the title collapses to zero first, as
+     intended — but past that there is nothing left to give, and the row kept
+     growing until the right cluster ran off the edge. Since close is the last
+     child, it was the first thing to disappear: the one control you always
+     need, and the only one with no keyboard equivalent.
+     Wrapping costs a second row only when it is genuinely needed and loses
+     nothing. */
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+
+/* Keeps the actions hard right on the row they land on, wrapped or not. */
+.ps-artifact-pane-actions {
+  margin-left: auto;
 }
 
 .ps-artifact-pane-heading {
@@ -4160,7 +4177,7 @@ body.is-resizing-pane-y * {
 .ps-html-zoom-btn:focus-visible,
 .ps-html-zoom-level:focus-visible {
   background: var(--ps-highlight-background);
-  color: var(--ps-foreground);
+  color: var(--ps-highlight-foreground);
 }
 
 .ps-html-zoom-btn:disabled {
@@ -4185,9 +4202,15 @@ body.is-resizing-pane-y * {
   color: var(--ps-foreground);
 }
 
+/* --ps-highlight-FOREGROUND, not the plain foreground. The two are a pair:
+   themes choose a readable text colour for their selection bar, and it is not
+   always the body colour. MS-DOS pairs a light-grey highlight with a dark
+   foreground, so "Rendered" was white-on-light-grey and vanished the moment
+   it became the active tab. Anything sitting on a SOLID highlight has to use
+   the counterpart. */
 .ps-html-preview-mode.is-active {
   background: var(--ps-highlight-background);
-  color: var(--ps-foreground);
+  color: var(--ps-highlight-foreground);
 }
 
 /* Fullscreen (desktop toggle and the mobile overlay) must hand the frame the
@@ -6981,12 +7004,22 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
 /* The resizer is now a seam, not a gutter. It keeps a real hit area by
    overflowing its 3px track symmetrically — layout stays a hairline while the
    grab strip stays wide enough to actually catch with a mouse. */
-/* Dimmed, not full strength: a divider only has to separate, and at full
-   --ps-border it competes with the content either side of it. */
+/* Full --ps-border, not a fixed fraction of it.
+ *
+ * This was dimmed to 65% on the theory that a divider only has to separate.
+ * That assumed every theme's border sits at a similar contrast against its
+ * surface, and they do not: Matrix's is a bright green on black while
+ * Duroxide's was 1.48:1, so the same 65% left one crisp and the other at
+ * 1.28:1 — invisible. A single alpha cannot serve both.
+ *
+ * The seam now takes the theme's border as-is, which puts the weight of the
+ * divider under the theme's own control, where it belongs. A theme whose
+ * border is too faint to divide is a theme whose border is too faint, and is
+ * fixed in the theme. */
 .ps-column-resizer,
 .ps-row-resizer {
   border-radius: 0;
-  background: color-mix(in srgb, var(--ps-border) 65%, transparent);
+  background: var(--ps-border);
   overflow: visible;
 }
 
