@@ -1031,15 +1031,26 @@ body.is-resizing-pane-y * {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border: 2px solid var(--ps-panel-accent, var(--ps-border));
+  /* ONE outline for every panel, in every theme.
+     Panels used to take their border from a per-pane `color` prop — Sessions
+     yellow, chat cyan, Sequence magenta — which made the workspace read as a
+     set of unrelated widgets rather than one surface, and meant the frame
+     changed colour depending on which pane you happened to be looking at.
+     The accent still exists and still drives the FOCUS ring below; it just no
+     longer paints the resting border. */
+  border: 2px solid var(--ps-border);
   border-radius: var(--ps-radius-sm);
   background: color-mix(in srgb, var(--ps-surface) 96%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ps-page-background) 35%, transparent);
 }
 
+/* Focus is the one thing that SHOULD tint the frame, and it now uses the
+   theme's single accent rather than the pane's own colour — so "which pane has
+   focus" reads as one consistent signal instead of five different hues. */
 .ps-panel.is-focused {
+  border-color: color-mix(in srgb, var(--ps-accent) 55%, var(--ps-border));
   box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--ps-panel-accent, var(--ps-border)) 40%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--ps-accent) 40%, transparent),
     inset 0 0 0 1px color-mix(in srgb, var(--ps-page-background) 35%, transparent);
 }
 
@@ -6904,4 +6915,89 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
 :root[data-ps-theme="duroxide"] .ps-artifact-card {
   background: color-mix(in srgb, var(--ps-page-background) 88%, transparent);
   border-color: color-mix(in srgb, var(--ps-accent) 26%, var(--ps-border));
+}
+
+/* ── Joined panels ───────────────────────────────────────────────────────────
+   The workspace was five floating cards: every pane carried its own 2px border
+   and rounded corners, separated by an 8px grid gap plus an 18px resizer
+   track. That is ~34px of dead air between neighbours, and it read as a set of
+   unrelated widgets rather than one instrument.
+
+   Joined instead: the gaps go to zero, panels lose their radius and drop to a
+   1px rule, and the resizer shrinks to a hairline seam. The whole slab is then
+   rounded once, by the container, so the outside stays soft while the inside
+   is a grid of shared edges — the admin console's sectioned look, applied to
+   the workspace. */
+:root {
+  --ps-resizer-track: 3px;
+}
+
+.ps-workspace-grid,
+.ps-workspace-column,
+.ps-workspace-main-grid {
+  gap: 0;
+}
+
+.ps-workspace-grid > .ps-workspace-column,
+.ps-workspace-grid > .ps-workspace-main-grid {
+  min-width: 0;
+}
+
+/* Square the interior. One radius, on the outer shell, below. */
+.ps-workspace-grid .ps-panel {
+  border-radius: 0;
+  border-width: 1px;
+}
+
+/* The shell owns the outline and the corners, so the workspace reads as a
+   single surface with divisions rather than a tray of cards. */
+.ps-workspace-grid {
+  border: 1px solid var(--ps-border);
+  border-radius: var(--ps-radius-sm);
+  overflow: hidden;
+}
+
+/* The resizer is now a seam, not a gutter. It keeps a real hit area by
+   overflowing its 3px track symmetrically — layout stays a hairline while the
+   grab strip stays wide enough to actually catch with a mouse. */
+.ps-column-resizer,
+.ps-row-resizer {
+  border-radius: 0;
+  background: var(--ps-border);
+  overflow: visible;
+}
+
+.ps-column-resizer::after,
+.ps-row-resizer::after {
+  content: "";
+  position: absolute;
+  z-index: 2;
+}
+
+.ps-column-resizer::after {
+  top: 0;
+  bottom: 0;
+  left: -5px;
+  right: -5px;
+}
+
+.ps-row-resizer::after {
+  left: 0;
+  right: 0;
+  top: -5px;
+  bottom: -5px;
+}
+
+.ps-column-resizer:hover,
+.ps-row-resizer:hover,
+.ps-column-resizer.is-dragging,
+.ps-row-resizer.is-dragging {
+  background: var(--ps-accent);
+}
+
+/* The dot handles were legible against an 18px gutter and are noise on a
+   hairline. */
+.ps-workspace-grid .ps-column-resizer-handle,
+.ps-workspace-grid .ps-row-resizer-handle {
+  display: none;
 }

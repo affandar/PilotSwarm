@@ -42,6 +42,7 @@ Deployments may additionally enable per-user Unix identity isolation with `PILOT
 - System agents receive shared-workspace access only when their agent definition opts in; `uid` mode enforces the opt-in through group membership rather than prompt text.
 - Session shares default to read-only. A message-capable grant is a distinct action with an explicit workspace-exposure warning, and grantee-initiated turns are attributed in session events.
 - Per-tree session directories are garbage-collected exclusively by the sweeper's deterministic cleanup tools: removal at retention expiry plus an orphan-reconciliation pass that collects trees for sessions deleted through any other surface.
+- The test plan is two-track: the entire existing suite keeps running with both workspace variables unset, and enabled-mode coverage is a separate focused suite — no existing test is converted to require the mounts.
 - The filesystem prompt is selected per session and injected once by worker-side system-message composition.
 - The existing orchestration-owned sub-agent preamble is changed to stop asserting that agents can never share a filesystem.
 - That sub-agent prompt change creates orchestration version `1.0.69`, because the string is deterministic orchestration behavior.
@@ -181,7 +182,7 @@ Example layout:
 
 The `.pilotswarm/` name is reserved for future workspace metadata. PilotSwarm does not place Copilot session state there.
 
-The workspace root's top level (`projects/`, `datasets/`, whatever the user and their agents grow) is the durable corpus shared by all of the owner's sessions. `sessions/<rootSessionId>/` holds one working directory per spawn tree: it is the assigned cwd for the root session and every sub-agent beneath it. Tree directories are persistent — they survive waits, restarts, and worker moves — and they are a collision-avoidance default, not a privacy boundary: an unrelated concurrent session of the same owner defaults into a different tree directory, so two tasks writing `./report.md` no longer collide, but within one owner the sibling trees under `sessions/` remain mutually readable and writable by path. Sub-agents are the constrained case: their cwd is inside the parent's subtree, and the instructions require them to keep their working files there. The workspace root stays the natural meeting point for cross-tree work.
+The workspace root's top level (`projects/`, `datasets/`, whatever the user and their agents grow) is the durable corpus shared by all of the owner's sessions. `sessions/<rootSessionId>/` holds one working directory per spawn tree: it is the assigned cwd for the root session and every sub-agent beneath it, at every nesting depth — a sub-sub-agent's parent chain resolves to the same root, so grandchildren and deeper descendants receive the identical tree working directory. There is never a per-intermediate-parent directory; within a tree, agents separate their scratch with subdirectories per the prompt policy. Tree directories are persistent — they survive waits, restarts, and worker moves — and they are a collision-avoidance default, not a privacy boundary: an unrelated concurrent session of the same owner defaults into a different tree directory, so two tasks writing `./report.md` no longer collide, but within one owner the sibling trees under `sessions/` remain mutually readable and writable by path. Sub-agents are the constrained case: their cwd is inside the parent's subtree, and the instructions require them to keep their working files there. The workspace root stays the natural meeting point for cross-tree work.
 
 The worker resolves `rootSessionId` through CMS: the root of the session's parent chain, recorded at spawn time (and resolved by walking parent links for rows that predate the column). Resolution is deterministic on any worker; neither the path nor the root ID travels through orchestration state or prompts.
 
@@ -862,6 +863,11 @@ The exact names may change during implementation, but responsibility should rema
 
 ## Tests and Acceptance Criteria
 
+The plan runs two tracks:
+
+1. **Disabled mode stays the default test configuration.** The entire existing suite — `test:local:*` (smoke, durability, multi-worker, sub-agents, management, and the rest) — continues to run with both workspace variables unset and must keep passing without modification. This is the standing proof that the feature's absence changes nothing.
+2. **Enabled mode gets a focused, additive suite.** `test:local:workspaces` (plus the capability-matrix and UI/API coverage below) exercises the feature against injected local roots: binding, tree resolution at every nesting depth, prompt policy, handoffs, GC, the workspace API, and viewer states. No existing test is converted to require the mounts; enabled-mode coverage is new tests only.
+
 ### Hermetic local-workspace fixture
 
 Standard CI does not need a real NFS service to prove the worker/session integration. The workspace test must inject temporary local user and shared directories; they stand in for the already-mounted distributed filesystem and exercise the same worker path contract.
@@ -876,7 +882,7 @@ The primary integration test should live near the existing local SessionManager/
 6. Assert at the fake/test Copilot client boundary that `createSession()` received `workingDirectory === ${userRoot}/${aliceWorkspaceId}/sessions/${sessionAId}`, that the binding advertises the workspace root `${userRoot}/${aliceWorkspaceId}` and `${sharedRoot}`, and that `seed.txt` is readable at the advertised workspace root. The test must observe the SDK session configuration; testing only a path-resolver helper is insufficient.
 7. Write `tree-a.txt` relative to session A's captured working directory, and `projects/from-a.txt` under the workspace root.
 8. Start Alice session B independently and assert it receives a different tree working directory beneath the same workspace root, cannot reach `tree-a.txt` by cwd-relative path, and can read `projects/from-a.txt` through the workspace root.
-9. Spawn a sub-agent of session A and assert it receives session A's exact tree working directory and reads `tree-a.txt` by cwd-relative path. Then evict/resume session A and assert `resumeSession()` is given the same tree cwd with both files intact.
+9. Spawn a sub-agent of session A, then a sub-agent of that sub-agent, and assert both receive session A's exact tree working directory — the grandchild resolves through the parent chain to the same root — and read `tree-a.txt` by cwd-relative path. Then evict/resume session A and assert `resumeSession()` is given the same tree cwd with both files intact.
 10. Start a Bob-owned session and assert it receives a different user directory and cannot see Alice's user files through relative paths.
 11. Have Alice session A write `${sharedRoot}/projects/shared-from-alice.txt`; assert Bob and Alice session B can both read it, and have Bob write a second file that Alice can read.
 12. Point the workspace-files service at the same injected roots. Under `scope: "user"`, list/preview/download Alice's exact files. Under `scope: "shared"`, list/preview/download the cross-user files and assert Alice and Bob receive the same tree.
@@ -910,6 +916,7 @@ What the laptop cannot validate: close-to-open visibility across real clients, l
 
 - Two independent sessions with the same owner receive disjoint tree working directories beneath the same workspace root, on any worker.
 - A child/sub-agent receives the same tree working directory as its user-owned parent, resolved independently on whichever worker runs it.
+- A sub-agent at any nesting depth — child, grandchild, deeper — receives the root session's tree working directory, never a per-intermediate-parent directory.
 - The workspace root is advertised to both sessions, and a file placed there by one tree is readable from the other.
 - Different owners receive different opaque directories.
 - System and historical unowned sessions receive no persistent user workspace.
