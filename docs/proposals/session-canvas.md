@@ -272,8 +272,9 @@ portal's standing guards), and the instructions say so plainly: *drawing
 interrupts, so draw when it earns the interruption.* The bar for drawing and
 the bar for taking the user's screen are the same bar. The one boundary: if
 the user has manually toggled away from the canvas this session, the portal
-badges instead of flipping — agent authority ends where an explicit user
-choice begins.
+shows the yellow unseen-changes badge instead of flipping — agent authority
+ends where an explicit user choice begins, and the badge carries the signal
+until the user next views the canvas.
 
 **Draft base-prompt section** (lands in `default.agent.md`; final wording at
 implementation):
@@ -358,8 +359,21 @@ transcript/summary switch:
   view);
 - if the user has not manually left Canvas mode for this session: flip to
   Canvas;
-- if they have: badge the Canvas toggle (unseen-rev dot) and stay put. The
-  manual-toggle memory is per session, in profile settings.
+- if they have: stay put and show the **unseen-changes badge** — a yellow
+  dot on the Canvas toggle.
+
+**The badge is an integer comparison.** The client tracks `lastViewedRev`
+per session, persisted in profile settings beside the manual-toggle memory
+(one concern: what this user has chosen and seen). Badge shown iff
+`latestRev > lastViewedRev` while the canvas is not the active view; the
+moment canvas mode becomes active for the session, `lastViewedRev =
+latestRev` and the dot clears. Draws arriving while the canvas is already on
+screen advance `lastViewedRev` immediately — watching live never badges —
+and an auto-flip counts as viewing, since it put the canvas on screen.
+Persistence is what makes the overnight case work: opt out, close the
+browser, the agent draws rev 7; on reopen the snapshot reports
+`latestRev = 7` against a stored `lastViewedRev = 5` and the dot lights with
+no extra query.
 
 **Deep link:** `?session=<id>&view=canvas` opens chat + canvas, the same
 pattern as `&artifact=…&view=full`, including the sessionStorage stash that
@@ -423,7 +437,9 @@ Phase 1 — core (no migration, no schema change):
    canvas state (`latestRev` / `displayedRev` / note) with the mount-time
    snapshot query; `canvas_updated` handling in `mergeSessionEvent` — flip
    gated by the artifact-presented guard set plus the manual-toggle memory,
-   content convergence ungated; canvas selectors (rev, note, emptiness).
+   content convergence ungated; `lastViewedRev` tracking (persisted with the
+   toggle memory, advanced on view and while viewing) driving the yellow
+   badge; canvas selectors (rev, note, emptiness, unseen).
 3. `ui-react` — Canvas toggle + pane (reusing `HtmlArtifactPreviewPanel`
    pointed at the reserved name); badge; blank state; mobile tab; reader ✕
    returns to Canvas mode when it displaced it.
