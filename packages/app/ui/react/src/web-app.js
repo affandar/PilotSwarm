@@ -7329,6 +7329,30 @@ function Toolbar({ controller, mobile, chatFocusMode = false, onToggleChatFocus 
     return toolbar;
 }
 
+/**
+ * Pin a drag to the element that started it.
+ *
+ * Without capture, a resizer listens for pointerup on `window` — and never
+ * hears it if the button is released over a CROSS-ORIGIN iframe. The artifact
+ * reader is exactly that, and it sits directly beside the column resizer, so
+ * releasing over a rendered artifact left the drag armed: the seam kept
+ * following the pointer with no button held and the cursor stayed stuck in
+ * col-resize.
+ *
+ * Pointer capture routes every subsequent event for this pointerId to the
+ * capturing element regardless of what is underneath, iframes included. The
+ * events still bubble to the window listeners the handles already use, so
+ * this is additive.
+ */
+function capturePointerForDrag(event) {
+    try {
+        event.currentTarget?.setPointerCapture?.(event.pointerId);
+    } catch {
+        // Capture is best-effort; the body class below is the second line of
+        // defence and the window listeners still work for same-origin drags.
+    }
+}
+
 function ColumnResizeHandle({ controller, paneAdjust = 0 }) {
     const dragStateRef = React.useRef(null);
     const [dragging, setDragging] = React.useState(false);
@@ -7386,6 +7410,7 @@ function ColumnResizeHandle({ controller, paneAdjust = 0 }) {
         onPointerDown: (event) => {
             if (event.button !== 0) return;
             event.preventDefault();
+            capturePointerForDrag(event);
             dragStateRef.current = {
                 startX: event.clientX,
                 appliedCells: 0,
@@ -7458,6 +7483,7 @@ function RowResizeHandle({ controller, sessionPaneAdjust = 0 }) {
         onPointerDown: (event) => {
             if (event.button !== 0) return;
             event.preventDefault();
+            capturePointerForDrag(event);
             dragStateRef.current = {
                 startY: event.clientY,
                 appliedCells: 0,
@@ -7534,6 +7560,7 @@ function SessionColumnResizeHandle({ controller, portalSessionColumnAdjust = 0 }
         onPointerDown: (event) => {
             if (event.button !== 0) return;
             event.preventDefault();
+            capturePointerForDrag(event);
             const gridNode = event.currentTarget.closest(".ps-workspace-main-grid");
             const bounds = portalSessionColumnBounds(gridNode?.getBoundingClientRect?.().width);
             dragStateRef.current = {
@@ -7652,6 +7679,7 @@ function ActivityRowResizeHandle({ controller, activityPaneAdjust = 0 }) {
         onPointerDown: (event) => {
             if (event.button !== 0) return;
             event.preventDefault();
+            capturePointerForDrag(event);
             dragStateRef.current = {
                 startY: event.clientY,
                 appliedCells: 0,

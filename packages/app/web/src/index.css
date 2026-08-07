@@ -1025,6 +1025,17 @@ body.is-resizing-pane-y * {
   user-select: none !important;
 }
 
+/* An iframe eats pointer events for its own document, and a CROSS-ORIGIN one
+   gives the parent nothing back — so a drag that ended over a rendered
+   artifact never delivered its pointerup and stayed armed. Pointer capture in
+   the handles is the real fix; this makes the frame inert for the duration of
+   a drag as well, which also stops the pointer being handed to a page that is
+   not participating in the gesture. */
+body.is-resizing-pane-x iframe,
+body.is-resizing-pane-y iframe {
+  pointer-events: none !important;
+}
+
 .ps-panel {
   position: relative;
   min-height: 0;
