@@ -136,6 +136,45 @@ session.canvas_updated   { rev: <int>, note?: <string>, sizeBytes: <int> }
   replay-after-reconnect all come free, with the same freshness semantics
   available to guards.
 
+### Synchronization: how a client knows its canvas is current
+
+The client never polls and never diffs metadata against CMS in the steady
+state. It keeps two integers per session — `latestRev`, the highest revision
+seen in events, and `displayedRev`, what the iframe currently shows — and
+"stale" is simply `displayedRev < latestRev`.
+
+Three cases, two of them already solved by existing machinery:
+
+- **Live.** `canvas_updated` arrives on the session WebSocket and merges like
+  any event, bumping `latestRev`; a mounted canvas pane refetches through the
+  ordinary artifact download route, swaps behind the current frame, and sets
+  `displayedRev = rev`. The event delivers the rev; nothing is queried.
+- **Reconnect.** WS delivery is an acceleration path; correctness comes from
+  the client's existing `afterSeq` event replay against CMS. A missed
+  `canvas_updated` arrives in that replay and takes the same merge path. The
+  only CMS query involved is the one the client already makes for every
+  session.
+- **Cold load.** History loading is windowed, so a canvas last drawn long ago
+  may predate the loaded event window — the client would not know a canvas
+  exists. Snapshot-then-deltas closes this, the same shape session detail
+  uses: on pane mount, one snapshot establishes `latestRev` — in v1 a single
+  filtered query (`event_types=["session.canvas_updated"]`, limit 1, an API
+  that already exists); in Phase 2, canvas meta on
+  `get_session_detail(include:["canvas"])`, the cleaner home. Events carry
+  every delta thereafter.
+
+**Guard scope, explicitly:** the freshness guard applies to the auto-FLIP
+only, never to content. An hour-old `canvas_updated` arriving in a replay
+still bumps `latestRev` and still updates a mounted pane. Staleness guards
+protect the user's focus from being yanked; they must never stop the data
+converging. This deliberately diverges from `session.artifact_presented`,
+which drops stale events outright — correct there, because a presentation is
+an action, not state.
+
+`rev` is the ordering identity. The artifact store's existing `sha256` meta
+remains available as a byte-level check, but write-then-emit ordering makes
+it unnecessary in practice.
+
 ### Tools
 
 Both tools follow the shared-spec pattern (`SHOW_ARTIFACT_TOOL_SPEC`
@@ -217,7 +256,8 @@ transcript/summary switch:
   `canvas_updated`, zoom, and the mode toggle back.
 - On `session.canvas_updated` for the *viewed* session, the pane refetches
   and swaps behind the current frame. Rev mismatch is the cheap dirtiness
-  check.
+  check (see Synchronization above for where the authoritative rev comes
+  from in each case).
 - **Blank state** (no canvas yet, or cleared): "Nothing drawn yet — the agent
   can draw here with `draw_canvas`."
 - The **artifact takeover reader is unchanged**. `show_artifact`, chat cards,
@@ -296,9 +336,10 @@ Phase 1 — core (no migration, no schema change):
    `session.canvas_updated` via `opts.onEvent`. Root-gating follows the
    manager-bundle pattern (both halves gated on one predicate).
 2. `ui-core` — `ui.rightPaneMode` state + reducer + profile persistence;
-   `canvas_updated` handling in `mergeSessionEvent` with the
-   artifact-presented guard set plus the manual-toggle memory; canvas
-   selectors (rev, note, emptiness).
+   canvas state (`latestRev` / `displayedRev` / note) with the mount-time
+   snapshot query; `canvas_updated` handling in `mergeSessionEvent` — flip
+   gated by the artifact-presented guard set plus the manual-toggle memory,
+   content convergence ungated; canvas selectors (rev, note, emptiness).
 3. `ui-react` — Canvas toggle + pane (reusing `HtmlArtifactPreviewPanel`
    pointed at the reserved name); badge; blank state; mobile tab; reader ✕
    returns to Canvas mode when it displaced it.
