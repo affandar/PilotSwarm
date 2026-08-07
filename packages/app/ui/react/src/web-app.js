@@ -7579,6 +7579,36 @@ function SessionColumnResizeHandle({ controller, portalSessionColumnAdjust = 0 }
         React.createElement("span", { className: "ps-column-resizer-dot" })));
 }
 
+/**
+ * How many pixels the inspector/activity seam actually moves per row of adjust.
+ *
+ * The split is stored in character ROWS, but the column renders them as `fr`
+ * — so one row of adjustment moves the seam by (column height / total rows)
+ * pixels, whatever that happens to be. Dividing the pointer delta by a fixed
+ * GRID_CELL_HEIGHT only tracks if the column is exactly rows × 19px tall, and
+ * it is not: the column excludes the header and toolbar above it, and the row
+ * height moves with the type scale. So the seam ran ahead of the pointer or
+ * trailed behind it, and the error grew with the drag.
+ *
+ * Both operands are fixed for the duration of a drag — the split moves, the
+ * total does not — so this is measured once at pointerdown rather than on
+ * every pointermove.
+ */
+function measureActivityRowPx(controller, handleEl) {
+    try {
+        const layout = controller.getCurrentLayout?.();
+        const rows = (layout?.inspectorPaneHeight || 0) + (layout?.activityPaneHeight || 0);
+        const column = handleEl?.closest?.(".ps-workspace-column");
+        if (!column || rows <= 0) return GRID_CELL_HEIGHT;
+        // The resizer's own track is not part of either pane's share.
+        const usable = column.clientHeight - (handleEl.getBoundingClientRect().height || 0);
+        const pxPerRow = usable / rows;
+        return Number.isFinite(pxPerRow) && pxPerRow > 0 ? pxPerRow : GRID_CELL_HEIGHT;
+    } catch {
+        return GRID_CELL_HEIGHT;
+    }
+}
+
 function ActivityRowResizeHandle({ controller, activityPaneAdjust = 0 }) {
     const dragStateRef = React.useRef(null);
     const [dragging, setDragging] = React.useState(false);
@@ -7595,7 +7625,7 @@ function ActivityRowResizeHandle({ controller, activityPaneAdjust = 0 }) {
         const onPointerMove = (event) => {
             const dragState = dragStateRef.current;
             if (!dragState) return;
-            const deltaCells = Math.round((event.clientY - dragState.startY) / GRID_CELL_HEIGHT);
+            const deltaCells = Math.round((event.clientY - dragState.startY) / dragState.pxPerRow);
             const deltaIncrement = deltaCells - dragState.appliedCells;
             if (!deltaIncrement) return;
             controller.adjustActivityPaneSplit(-deltaIncrement);
@@ -7625,6 +7655,8 @@ function ActivityRowResizeHandle({ controller, activityPaneAdjust = 0 }) {
             dragStateRef.current = {
                 startY: event.clientY,
                 appliedCells: 0,
+                // MEASURED, not assumed — see measureActivityRowPx.
+                pxPerRow: measureActivityRowPx(controller, event.currentTarget),
             };
             setDragging(true);
             document.body.classList.add("is-resizing-pane-y");
