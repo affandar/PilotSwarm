@@ -6827,18 +6827,30 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
    real character (Monaco, PT Mono, Andale) failed to resolve when probed —
    swapping in a face that silently falls back would buy nothing and risk
    the one thing the layout depends on. */
-:root[data-ps-theme="duroxide"] .portal-header,
+/* The HEADER is deliberately NOT in the slab, and stays on whatever face every
+   other theme uses.
+ *
+ * It was, and the signed-in name and email came back clipped top and bottom on
+ * a phone. The cause is not the header: `.portal-header-name` / `-email` set
+ * `overflow: hidden` to get a horizontal ellipsis on a long address, and
+ * overflow clips BOTH axes. Rockwell's slab ascenders and descenders are
+ * taller than the monospace default's, so the glyphs overshot a line box sized
+ * for the old metrics and the excess was shaved off.
+ *
+ * Widening the line box would fix the symptom, but the header carries a name
+ * and an email address — the two strings most likely to be long, non-Latin, or
+ * otherwise unlike the sample anyone tested. It is not the place to spend a
+ * typographic flourish, so the slab is kept to the surfaces whose content the
+ * theme actually controls. */
 :root[data-ps-theme="duroxide"] .ps-panel-title,
 :root[data-ps-theme="duroxide"] .ps-tab {
   font-family: var(--ps-ui-font);
 }
 
-/* The banner sets the wordmark in heavy caps over a hairline oxide rule. The
-   header kicker is the same typographic gesture at UI scale — including the
-   rule, which is what makes it read as the wordmark rather than as a heading
-   that happens to be uppercase. */
+/* The kicker keeps the banner's gesture — heavy letterspaced caps over a
+   hairline oxide rule — without the slab. The rule and the tracking are what
+   make it read as the wordmark; the face was never doing that work. */
 :root[data-ps-theme="duroxide"] .portal-header-kicker {
-  font-family: var(--ps-ui-font);
   font-weight: 700;
   letter-spacing: 0.18em;
   text-transform: uppercase;
