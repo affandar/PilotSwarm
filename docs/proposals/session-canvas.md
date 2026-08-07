@@ -163,6 +163,18 @@ Three cases, two of them already solved by existing machinery:
   `get_session_detail(include:["canvas"])`, the cleaner home. Events carry
   every delta thereafter.
 
+  The snapshot is not a scan of the loaded window — it is an indexed lookup
+  against the full durable log, and its result is definitive in both
+  directions. Event found: a canvas exists at exactly that rev; fetch the
+  bytes. Nothing found: no canvas has ever been drawn; blank state. Bytes
+  are only ever fetched on the authority of an event — the client never
+  blind-loads `canvas.html` on the assumption that an update was missed.
+  (Corollary of write-then-emit: if a worker dies between the store write
+  and the emit, orphan bytes can exist while the log says no canvas. The log
+  stays the single authority — the portal shows blank, and the next draw
+  heals it, since rev derives from the log. A crashed half-draw reading as
+  "not drawn" is the right conservative answer.)
+
 **Guard scope, explicitly:** the freshness guard applies to the auto-FLIP
 only, never to content. An hour-old `canvas_updated` arriving in a replay
 still bumps `latestRev` and still updates a mounted pane. Staleness guards
