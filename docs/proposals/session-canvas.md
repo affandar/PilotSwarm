@@ -251,6 +251,64 @@ diverges the same way: show says *include the link in your reply* (the
 presentation is transient, the link is how it is reopened); draw says *do
 not* (the canvas is standing, and its pane is the signal).
 
+### Agent guidance
+
+The canvas is only as good as the judgment around it, so the instruction
+layer is part of the design, not an afterthought. Three pieces.
+
+**Triggers — when to draw.** Exactly two:
+
+1. **Commanded.** The user asks for something visual: draw, visualize, chart
+   this, graph, keep a dashboard of, sketch the topology.
+2. **Judged.** The agent concludes that the outcome it is delivering would be
+   *greatly supplemented* by a quick graphic — a trend the numbers bury, a
+   dependency graph prose mangles, a status board for work it is watching.
+   The bar is deliberately high: "greatly supplements", not "could
+   illustrate". Most replies need no drawing.
+
+**Authority — drawing is the flip.** There is no separate switch-the-view
+tool. `draw_canvas` brings the canvas into the user's browser (under the
+portal's standing guards), and the instructions say so plainly: *drawing
+interrupts, so draw when it earns the interruption.* The bar for drawing and
+the bar for taking the user's screen are the same bar. The one boundary: if
+the user has manually toggled away from the canvas this session, the portal
+badges instead of flipping — agent authority ends where an explicit user
+choice begins.
+
+**Draft base-prompt section** (lands in `default.agent.md`; final wording at
+implementation):
+
+> ## The Canvas: Your Standing Visual Display
+>
+> Root sessions have one canvas — a persistent visual surface rendered live
+> in the user's portal. It starts blank with a standard placeholder until
+> you draw.
+>
+> Draw with `draw_canvas(html, note)` when the user asks for something
+> visual, or when an outcome you are delivering would be greatly clarified
+> by a quick graphic. Do not draw decoratively, and never redraw on a no-op
+> cycle — drawing switches the user's view to the canvas, so draw only when
+> that interruption is earned.
+>
+> The canvas is a full HTML document, replaced whole on every draw. Read it
+> back with `read_canvas` before iterating on an existing drawing, and
+> after context regeneration — the canvas survives even when your memory of
+> drawing it does not. Follow the `html-visuals` skill for anything beyond
+> a trivial page.
+>
+> Do not paste canvas links into your replies; the canvas updates live on
+> the user's screen. Keep narrating your work in chat as normal — one
+> sentence noting what the canvas now shows is plenty.
+>
+> `show_artifact` remains the tool for one-off file previews. Canvas is
+> your standing display; the viewer is for looking at a particular file.
+
+The tool descriptions carry compressed versions of the same rules (triggers,
+interruption bar, no links, whole-replace, read-before-iterate), so an agent
+that never loads the base-prompt section still behaves, and the
+`html-visuals` pointer rides the description the way `show_artifact`'s
+already does.
+
 ### Access: root sessions only
 
 Only root (top-level) sessions have a canvas. Sub-agents get neither tool:
@@ -281,8 +339,11 @@ transcript/summary switch:
   and swaps behind the current frame. Rev mismatch is the cheap dirtiness
   check (see Synchronization above for where the authoritative rev comes
   from in each case).
-- **Blank state** (no canvas yet, or cleared): "Nothing drawn yet — the agent
-  can draw here with `draw_canvas`."
+- **Blank state** (no canvas yet, or cleared) is a standard message, not an
+  empty pane — user-facing wording along the lines of: *"Nothing on the
+  canvas yet. Ask the agent to draw — a dashboard, a chart, a diagram — or
+  it will draw when it has something worth showing."* It teaches the
+  feature at the exact moment the user is looking at its absence.
 - The **artifact takeover reader is unchanged**. `show_artifact`, chat cards,
   and deep links keep opening the preview exactly as they do today. If the
   reader opens while in Canvas mode, it takes over as usual and `✕` returns
@@ -370,9 +431,9 @@ Phase 1 — core (no migration, no schema change):
    artifact href) plus the `[canvas]` activity line; the portal chat
    renderer skips `canvasUpdate`-flagged lines, the TUI renders them as
    artifact links.
-5. Base prompt — a short section: what the canvas is, draw vs show, pointer
-   to `html-visuals`. Version bump; the cron-contracts test pins the version
-   string and must move with it.
+5. Base prompt — the Agent guidance section above, essentially verbatim.
+   Version bump; the cron-contracts test pins the version string and must
+   move with it.
 6. Tests — tool spec sync (the `show-artifact-tool` test shape); guard tests
    (the `artifact-presented` test shape); root-only gating in both halves;
    reducer/persistence round-trip.
