@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.5.36 — 2026-08-07
+
+The portal workspace now reads and behaves as one coherent instrument: panes
+share a single outer frame with hairline dividers, resizers stay attached to
+the pointer even over rendered artifacts, and the remaining theme-specific
+contrast and clipping failures are fixed. This release also records the design
+for a future session-owned visual canvas.
+
+### Changed
+
+- **The portal workspace is one joined surface.** Sessions, chat, inspector,
+  and activity panes now sit inside one outlined shell with hairline resizer
+  seams instead of separate rounded cards and wide gutters. Focus uses one
+  theme accent consistently, while each theme remains responsible for a
+  readable border colour.
+
+- **Session Canvas proposal.** The design specifies a standing, session-owned
+  visual surface backed by artifact publication, including write-before-emit
+  ordering, size limits, browser presentation, and a quiet chat transcript.
+  This is a proposal only; no canvas runtime ships in this release.
+
+### Fixed
+
+- **Pane resizing no longer sticks over rendered artifacts.** Resize handles
+  capture the active pointer and temporarily make iframes inert, so releasing
+  over a cross-origin HTML artifact reliably ends the drag. The
+  inspector/activity split also measures its real rendered row height instead
+  of assuming a fixed pixel size, keeping the seam under the pointer.
+
+- **Artifact-reader controls remain reachable in narrow panes.** The toolbar
+  wraps when necessary, preserving the Close action instead of allowing the
+  right-hand controls to overflow out of view.
+
+- **Theme contrast and identity details are readable again.** The Win95 admin
+  console uses its panel surface and stronger hint text, MS-DOS selected text
+  uses the matching highlight foreground, Duroxide borders have enough
+  contrast to divide joined panes, and the signed-in name and email no longer
+  clip under the Duroxide display face.
+
 ## 0.5.35 — 2026-08-06
 
 Artifacts stop being files you download and become things you look at. An agent

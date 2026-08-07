@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.34** — The agent picker groups agents by where they come from (Built-in, Installed · Shared, Installed · Yours) and a package can now describe its own composition with `startedBy` / `supportsDirectStart`. Sessions say when they are waiting on their children, folders can be reordered, and there is a Mobile toggle. Plus ten fixes from live use — including a SKILL.md `description: |` that stored the literal `"|"`, and a detail pane that flipped between idle and waiting on a parked turn.
+> **Latest release: v0.5.36** — The portal workspace is now one joined surface with hairline pane dividers. Resizers release correctly over rendered artifacts, narrow artifact toolbars keep their Close action, and Win95, MS-DOS, and Duroxide contrast and clipping issues are fixed.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 
