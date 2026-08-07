@@ -24,7 +24,10 @@ const win95Theme = createTheme({
         overlayForeground: "#000000",
         // The classic disabled/secondary grey; darker than the face so it
         // stays legible on #c0c0c0 rather than vanishing into it.
-        hintColor: "#5a5a5a",
+        // Darker than the authentic #808080 system grey, which sat at 2.2:1
+        // on the #c0c0c0 chrome. Even #5a5a5a only reached 3.79:1; this
+        // clears 4.5:1 so muted text is readable wherever the chrome shows.
+        hintColor: "#4a4a4a",
         modalBackdrop: "rgba(0, 0, 0, 0.45)",
         modalBackground: "#c0c0c0",
         modalBorder: "#808080",

@@ -3283,7 +3283,14 @@ body.is-resizing-pane-y * {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  background: var(--ps-background);
+  /* SURFACE, not the page background. A console is a panel you work in, not
+     the desktop it sits on — and the two are only interchangeable in themes
+     where they happen to be the same colour. Win95 is the case that proves
+     it: its page background is the #008080 desktop and its surface is the
+     #c0c0c0 chrome, so painting the console with the page background stood
+     grey hint text on teal at 1.44:1. Unreadable, and wrong besides — Win95
+     dialogs are grey; teal is the wallpaper behind them. */
+  background: var(--ps-surface);
   border: 1px solid var(--ps-border);
   border-radius: 6px;
   margin: 8px;
