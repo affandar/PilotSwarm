@@ -1,0 +1,332 @@
+# Proposal: Session Canvas — a standing visual surface the agent owns
+
+> **Status:** Proposal
+> **Date:** 2026-08-07
+> **Goal:** Give every root session one persistent, agent-drawn visual surface — a canvas — that is first-class the way summaries are: one tool contract, one storage home, one live-update path, one surface per host.
+
+---
+
+## Summary
+
+Agents can already *show* a file: `show_artifact` opens the artifact reader on
+whatever the agent just wrote, and the reader renders HTML as a live sandboxed
+page. That is a **preview** model — transient, tied to a filename, gone when
+the user closes it or opens something else. It is the right model for "look at
+this file", and it stays exactly as it is.
+
+What is missing is a **standing display**: a surface that belongs to the
+session, that the agent can draw to and read back across turns, that the user
+can flip the right column to and leave there — a dashboard the agent keeps
+current, a diagram it refines as the work evolves, a status board for a
+long-running watcher. Sessions already have this shape for *text*: the live
+summary, updated by `update_session_summary`, stored on the session, rendered
+by every host. The canvas is the same contract for *pixels*.
+
+This proposal adds:
+
+- One canvas per **root** session, stored as a reserved artifact
+  (`canvas.html`) plus a monotonic revision.
+- Two LLM tools on root sessions only: `draw_canvas` (whole-document replace)
+  and `read_canvas` (paged read-back).
+- A durable `session.canvas_updated` event, riding the same spine
+  `session.artifact_presented` already rides — live push, transcript record,
+  and replay for free.
+- A portal **Canvas mode** for the right column — a persisted toggle like the
+  chat's transcript/summary switch — rendering the canvas through the
+  existing sandboxed HTML preview (double-buffered reload, zoom, fit-width).
+- A mobile Canvas tab, shown once the canvas is non-empty.
+- A one-line TUI notice per revision, with a portal deep link. The TUI does
+  not render the canvas.
+
+Decided up front (previously open questions):
+
+- **Auto-flip: yes.** The first `canvas_updated` on the active session flips
+  the right column to Canvas, under the same guards `show_artifact` uses.
+  After the user manually toggles away, the portal never flips again for that
+  session — the Canvas button badges instead.
+- **One canvas per session.** No named canvases in v1.
+- **Root sessions only.** Sub-agents have no canvas and no tools that touch
+  the parent's. A parent that wants child work displayed relays it with its
+  own `draw_canvas`.
+- **`show_artifact` remains the viewer.** Preview and canvas are different
+  verbs and both stay.
+
+---
+
+## Problem
+
+A session that produces visual state today has two bad options:
+
+1. **Re-show an artifact every time it changes.** `show_artifact` was built
+   for "here is the thing you asked for", and its guards deliberately stop it
+   from reorganizing the workspace on replay or for background sessions. Using
+   it as a display loop fights those guards: every update is a fresh
+   presentation, the user's pane selection is churned, and nothing marks one
+   artifact as *the* current display rather than one of many files.
+
+2. **Write files and hope the user watches the Files tab.** No live signal, no
+   sense of "current", no read-back contract for the agent to iterate against.
+
+Meanwhile the demand shape is common and growing: watcher agents maintaining
+status boards, research agents refining a chart as data lands, ops agents
+keeping a live topology sketch. Each of these wants exactly what the summary
+already gives text: *replace the standing state, everyone sees it, the agent
+can read what it last wrote.*
+
+---
+
+## Goals
+
+- One persistent, revisioned visual surface per root session.
+- Whole-document replace semantics — idempotent, schema-checkable, replayable.
+- The agent can read its own canvas back, paged, across turns and epochs.
+- Live updates in every open portal view of the session, without flashes.
+- Survives worker restarts, node migration, and context regeneration.
+- Zero database migration; no new hot-table columns.
+- The existing artifact reader ("preview" model) is untouched.
+
+## Non-Goals
+
+- Incremental drawing operations (append/patch protocols). Whole-replace is
+  the v1 contract, as it is for summaries.
+- Named or multiple canvases per session.
+- Sub-agent access to any canvas, including the parent's.
+- Canvas rendering in the TUI.
+- Collaborative human editing of the canvas. The agent draws; humans watch.
+- Revision history browsing. Only the current revision is addressable in v1.
+
+---
+
+## Design
+
+### Storage: a reserved artifact plus a revision, not a CMS column
+
+The obvious mirror of `summary_state` is a `canvas_html` column on the
+sessions table. It is the wrong mirror:
+
+- Summary state is ~2 KB of JSON; canvas HTML is routinely 100–500 KB. Hot
+  rows should not carry that (the 0029 migration incident is the standing
+  lesson on touching the sessions table casually).
+- Every session detail fetch would pay for bytes it almost never wants.
+- The artifact store already provides exactly the needed machinery: the 2 MB
+  write path, blob storage, retention and pinning, deep links, regen
+  survival (artifacts are documented to survive context regeneration), and —
+  decisively — the portal's hardened sandboxed HTML renderer with
+  double-buffered reload, artifact-scoped zoom, and fit-width.
+
+So the canvas is the reserved filename **`canvas.html`** on the root session,
+written through the ordinary artifact store, listed in Files (pinned, so
+retention sweeps never eat it — hiding state from the file list is how
+mysteries happen), and rendered by the machinery the reader already uses.
+
+What makes it more than "just a file" is the event contract:
+
+```
+session.canvas_updated   { rev: <int>, note?: <string>, sizeBytes: <int> }
+```
+
+- `rev` is monotonic per session, starting at 1. Clients compare revs to know
+  staleness without fetching bytes. The worker derives the next rev by
+  incrementing the last `canvas_updated` event's rev (the event log is the
+  source of truth; no counter column).
+- The event is durable and rides the same onEvent → CMS → WebSocket spine as
+  `session.artifact_presented`, so live push, transcript record, and
+  replay-after-reconnect all come free, with the same freshness semantics
+  available to guards.
+
+### Tools
+
+Both tools follow the shared-spec pattern (`SHOW_ARTIFACT_TOOL_SPEC`
+precedent): one spec object feeds both the `systemToolDefs()` declaration and
+the per-turn handler, so the declaration the model sees and the handler that
+runs cannot drift. (A handler with no declaration is invisible to the model;
+a declaration with no handler returns "stub" — both failure modes are
+documented history in this repo.)
+
+**`draw_canvas(html, note?)`** — replace the canvas with a complete HTML
+document.
+
+- Whole-document replace. Idempotent; a retried turn redraws the same thing.
+- Writes `canvas.html` via the artifact store, pins it on first write, then
+  emits `session.canvas_updated` with the next rev.
+- Returns `{ drawn: true, rev, sizeBytes, link: "artifact://<sid>/canvas.html" }`
+  so the transcript carries a durable way back to what was drawn.
+- Does **not** end the turn; the agent keeps talking.
+- The description points at the `html-visuals` skill: the canvas renders in
+  the same sandbox as artifact previews (self-contained, no network, own
+  colors, CSS reflow), so every rule there applies verbatim.
+- Root sessions only — see Access below.
+
+**`read_canvas(offset?, maxBytes?)`** — read the current canvas back, paged.
+
+- The "see" half of see-and-draw: iterating on a drawing requires reading
+  what is there, especially after context regeneration, where the transcript
+  that produced the canvas is gone but the canvas is not.
+- Paged with a default cap (64 KB per call), because inlining a 300 KB
+  document into context is prompt-bloat the token work exists to prevent.
+- Returns `{ rev, sizeBytes, offset, content, truncated }`.
+
+`draw_canvas("")` clears the canvas (rev still increments; the portal shows
+the blank state). No separate clear tool.
+
+**Relationship to `show_artifact`:** the descriptions teach the split —
+`show_artifact` is "open this file in the viewer, once"; `draw_canvas` is
+"update the session's standing display". An agent producing a one-off report
+shows it; an agent maintaining a dashboard draws it.
+
+### Access: root sessions only
+
+Only root (top-level) sessions have a canvas. Sub-agents get neither tool:
+gated the same way manager-bundle tools already are — excluded from the
+per-turn tool array *and* from declarations, so there is no
+exists-but-hidden tool for a child to hallucinate into.
+
+Rationale: a shared drawing surface across a spawn tree is a write-conflict
+design problem (interleaved replaces from concurrent children destroy each
+other), and the delegation model already has the answer — children report
+facts and artifacts; the parent owns presentation. A parent that wants child
+output displayed reads it and redraws its own canvas.
+
+### Portal: Canvas mode for the right column
+
+A `Canvas` toggle joins the right column, symmetric with the chat's
+transcript/summary switch:
+
+- `ui.rightPaneMode: "panes" | "canvas"`, persisted to profile settings the
+  same way `chatViewMode` is (per device class, replace-safe).
+- **Canvas mode** replaces the inspector/activity split with one pane
+  rendering `canvas.html` through the existing HTML preview panel —
+  inheriting the sandbox (`allow-scripts`, no `allow-same-origin`), the
+  double-buffered reload (no white flash on redraw), artifact-scoped zoom,
+  and fit-width. Its header carries the rev, the note from the latest
+  `canvas_updated`, zoom, and the mode toggle back.
+- On `session.canvas_updated` for the *viewed* session, the pane refetches
+  and swaps behind the current frame. Rev mismatch is the cheap dirtiness
+  check.
+- **Blank state** (no canvas yet, or cleared): "Nothing drawn yet — the agent
+  can draw here with `draw_canvas`."
+- The **artifact takeover reader is unchanged**. `show_artifact`, chat cards,
+  and deep links keep opening the preview exactly as they do today. If the
+  reader opens while in Canvas mode, it takes over as usual and `✕` returns
+  to Canvas mode, not to the inspector — restore-what-was-displaced, the rule
+  the reader already follows for the collapsed-column case.
+
+**Auto-flip.** On a `canvas_updated` merged from the live stream:
+
+- active session only, fresh (< 2 min) only, live-path only — the exact
+  guard set `session.artifact_presented` uses, for the same reasons
+  (reconnect bursts must not replay; background sessions must not steal the
+  view);
+- if the user has not manually left Canvas mode for this session: flip to
+  Canvas;
+- if they have: badge the Canvas toggle (unseen-rev dot) and stay put. The
+  manual-toggle memory is per session, in profile settings.
+
+**Deep link:** `?session=<id>&view=canvas` opens chat + canvas, the same
+pattern as `&artifact=…&view=full`, including the sessionStorage stash that
+survives the Entra login redirect.
+
+### Mobile
+
+A fourth tab — `Main | Inspector | Activity | Canvas` — appearing only when
+the session has a canvas (rev ≥ 1 with non-empty content), so empty sessions
+do not grow a dead tab. The pane is the same preview component the artifact
+overlay already uses full-viewport. Auto-flip on mobile switches the tab
+under the same guards.
+
+### TUI
+
+The TUI cannot render HTML and does not pretend to. Each `canvas_updated`
+formats as one activity line:
+
+```
+[canvas] rev 4 — MSFT vs CRWV refresh  (portal: <deep link>)
+```
+
+Same host-divergence precedent as the download hint: shared decorator, the
+host chooses its affordance. No TUI pane, no toggle.
+
+### Durability and lifecycle
+
+- **Worker restarts / node migration:** artifact store is durable; the event
+  log is durable; nothing worker-local.
+- **Context regeneration:** artifacts survive regen by contract. The regen
+  handoff should mention the canvas exists (rev + note) so the rebuilt
+  context knows to `read_canvas` before redrawing from scratch.
+- **Retention:** the canvas artifact is pinned at first write; sweeps skip
+  pinned artifacts.
+- **Session deletion:** canvas dies with the session's artifacts, as any
+  artifact does.
+- **Epochs:** rev continues across epochs (derived from the event log, which
+  spans them).
+
+---
+
+## Implementation shape
+
+Phase 1 — core (no migration, no schema change):
+
+1. `SDK` — `DRAW_CANVAS_TOOL_SPEC` / `READ_CANVAS_TOOL_SPEC` shared specs;
+   declarations in `systemToolDefs()` gated to root sessions; per-turn
+   handlers writing through the artifact store and emitting
+   `session.canvas_updated` via `opts.onEvent`. Root-gating follows the
+   manager-bundle pattern (both halves gated on one predicate).
+2. `ui-core` — `ui.rightPaneMode` state + reducer + profile persistence;
+   `canvas_updated` handling in `mergeSessionEvent` with the
+   artifact-presented guard set plus the manual-toggle memory; canvas
+   selectors (rev, note, emptiness).
+3. `ui-react` — Canvas toggle + pane (reusing `HtmlArtifactPreviewPanel`
+   pointed at the reserved name); badge; blank state; mobile tab; reader ✕
+   returns to Canvas mode when it displaced it.
+4. `history.js` — `[canvas]` activity formatter (serves TUI and portal
+   activity feed).
+5. Base prompt — a short section: what the canvas is, draw vs show, pointer
+   to `html-visuals`. Version bump; the cron-contracts test pins the version
+   string and must move with it.
+6. Tests — tool spec sync (the `show-artifact-tool` test shape); guard tests
+   (the `artifact-presented` test shape); root-only gating in both halves;
+   reducer/persistence round-trip.
+
+Phase 2 — polish:
+
+- `get_session_detail(include: ["canvas"])` for MCP/API callers (meta only:
+  rev, note, size — bytes stay on the download path).
+- TUI notice line with deep link.
+- Regen handoff mentions the canvas.
+
+Phase 3 — only if pulled by real use:
+
+- Revision history (keep last N as `canvas.rev-N.html`).
+- Named canvases.
+- Any incremental drawing protocol.
+
+---
+
+## Risks
+
+- **2 MB artifact cap is the canvas ceiling.** Fine for documents and SVG
+  dashboards; tight for base64-image-heavy pages. `html-visuals` already
+  steers agents away from embedded rasters; `draw_canvas` returns
+  `sizeBytes` so the agent sees its own budget. Raising the cap is a
+  separate, deliberate decision.
+- **Prompt bloat via read-back.** `read_canvas` pages at 64 KB per call by
+  default. The tool description says to read selectively, not to round-trip
+  the whole document every turn.
+- **Redraw churn.** An over-eager watcher could redraw every cycle and spam
+  `canvas_updated`. The event is cheap and the portal swap is flash-free, so
+  the cost is mostly event-log noise; the tool description says to draw when
+  something material changed, mirroring the summary tool's "do not rewrite
+  on no-op cycles" language.
+- **Model confusion between show and draw.** Mitigated in both tool
+  descriptions and the base prompt; the failure is benign (a preview instead
+  of a canvas update, or vice versa) and correctable in-conversation.
+
+## Open questions
+
+- Should `draw_canvas` enforce a soft size warning below the hard 2 MB cap
+  (e.g. warn in the tool result above 512 KB)?
+- Does the Canvas button live in the inspector tab strip or beside the
+  column like the resizer chrome? (Pure placement; decide in implementation
+  against the real header.)
+- Should the mobile tab appear for a *cleared* canvas (rev > 0, empty
+  content)? Leaning no — cleared reads as "nothing to show".
