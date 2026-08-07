@@ -35,8 +35,10 @@ This proposal adds:
   chat's transcript/summary switch — rendering the canvas through the
   existing sandboxed HTML preview (double-buffered reload, zoom, fit-width).
 - A mobile Canvas tab, shown once the canvas is non-empty.
-- A one-line TUI notice per revision, with a portal deep link. The TUI does
-  not render the canvas.
+- Chat stays quiet in the browser: canvas updates never render as links or
+  cards in the portal chat, desktop or mobile — the canvas pane updating IS
+  the signal. The TUI, which cannot render the canvas, shows each revision in
+  the transcript as an ordinary artifact link instead.
 
 Decided up front (previously open questions):
 
@@ -153,8 +155,14 @@ document.
   confirmed. Emitting first would let a failed write leave every viewer
   refetching stale bytes labeled with a new rev; the converse failure (write
   lands, emit lost) is benign — the next draw heals it.
-- Returns `{ drawn: true, rev, sizeBytes, link: "artifact://<sid>/canvas.html" }`
-  so the transcript carries a durable way back to what was drawn.
+- Returns `{ drawn: true, rev, sizeBytes }` — deliberately **no link**. The
+  description instructs the opposite of `show_artifact`: *do not paste a
+  canvas link into your reply; the canvas updates live on the user's
+  screen.* A link per redraw would drown the chat with cards for a surface
+  that is already visibly changing. Omitting the link from the result
+  removes the temptation as well as the instruction — belt and braces. (The
+  canvas remains one click away in Files, and the TUI gets its link from the
+  event, below.)
 - Does **not** end the turn; the agent keeps talking.
 - The description points at the `html-visuals` skill: the canvas renders in
   the same sandbox as artifact previews (self-contained, no network, own
@@ -176,7 +184,10 @@ the blank state). No separate clear tool.
 **Relationship to `show_artifact`:** the descriptions teach the split —
 `show_artifact` is "open this file in the viewer, once"; `draw_canvas` is
 "update the session's standing display". An agent producing a one-off report
-shows it; an agent maintaining a dashboard draws it.
+shows it; an agent maintaining a dashboard draws it. The link etiquette
+diverges the same way: show says *include the link in your reply* (the
+presentation is transient, the link is how it is reopened); draw says *do
+not* (the canvas is standing, and its pane is the signal).
 
 ### Access: root sessions only
 
@@ -238,17 +249,26 @@ do not grow a dead tab. The pane is the same preview component the artifact
 overlay already uses full-viewport. Auto-flip on mobile switches the tab
 under the same guards.
 
-### TUI
+### Chat quiet in the browser; artifact link in the TUI
 
-The TUI cannot render HTML and does not pretend to. Each `canvas_updated`
-formats as one activity line:
+Two paths could leak canvas noise into the chat, and both are closed:
 
-```
-[canvas] rev 4 — MSFT vs CRWV refresh  (portal: <deep link>)
-```
+1. **The agent's reply.** The tool description forbids pasting the link, and
+   the tool result carries none (above).
+2. **The event.** `session.canvas_updated` builds a transcript line flagged
+   `canvasUpdate`, carrying the `artifact://canvas.html` href. The portal
+   chat renderer — desktop and mobile share it — skips flagged lines
+   entirely: no card, no link, nothing. The canvas pane updating (or the
+   badge, if the user toggled away) is the whole signal. The portal
+   **activity feed** keeps a `[canvas] rev N — note` diagnostic line; chat
+   is what stays clean, not the event log.
 
-Same host-divergence precedent as the download hint: shared decorator, the
-host chooses its affordance. No TUI pane, no toggle.
+The TUI renders the same flagged line as an ordinary artifact link — the
+usual `[artifact: canvas.html](artifact://…)` affordance, press-`a` and all —
+because a host that cannot render the canvas needs the link, and its
+transcript is where artifacts have always appeared. Same shared-data,
+host-chooses-affordance precedent as the download hint. No TUI pane, no
+toggle.
 
 ### Durability and lifecycle
 
@@ -282,8 +302,10 @@ Phase 1 — core (no migration, no schema change):
 3. `ui-react` — Canvas toggle + pane (reusing `HtmlArtifactPreviewPanel`
    pointed at the reserved name); badge; blank state; mobile tab; reader ✕
    returns to Canvas mode when it displaced it.
-4. `history.js` — `[canvas]` activity formatter (serves TUI and portal
-   activity feed).
+4. `history.js` — `canvas_updated` builds the flagged chat line (with the
+   artifact href) plus the `[canvas]` activity line; the portal chat
+   renderer skips `canvasUpdate`-flagged lines, the TUI renders them as
+   artifact links.
 5. Base prompt — a short section: what the canvas is, draw vs show, pointer
    to `html-visuals`. Version bump; the cron-contracts test pins the version
    string and must move with it.
