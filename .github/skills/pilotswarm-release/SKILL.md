@@ -63,6 +63,13 @@ Treat this as a `pilotswarm`-repo maintainer workflow only. Do not update downst
 4. Validate npm-release wiring.
    - Check `.github/workflows/publish-npm.yml`.
    - Check `.github/workflows/publish-starter-docker.yml` if the starter appliance or Docker release path changed.
+   - Read the actual starter workflow trigger before discussing opt-in. The
+     current workflow has `release: types: [published]` with no opt-out, so
+     publishing a GitHub Release necessarily starts the starter-image job. Do
+     not offer a yes/no choice that the workflow cannot honor. If the user does
+     not want a starter image, stop before publishing the Release and change
+     the workflow contract first; ask for a choice only when the wiring really
+     supports one.
    - Confirm publish targets, access level, provenance flags, and required secrets still match the intended release.
    - Confirm each published package has correct `repository`, `homepage`, and `bugs` metadata for npm provenance verification.
    - Confirm built-in PilotSwarm plugins that must ship with the SDK are included by package `files` config.
@@ -73,7 +80,9 @@ Treat this as a `pilotswarm`-repo maintainer workflow only. Do not update downst
    - Summarize what changed.
    - List what was verified.
    - State the current latest git tag and the proposed next tag.
-   - Ask whether the user wants the GitHub Release to trigger the starter Docker image publish as well.
+   - State whether publishing the GitHub Release will trigger the starter
+     Docker workflow. With the current wiring it always does; surface that fact
+     before publication rather than presenting it as optional.
    - Call out blockers or skipped checks explicitly.
 
 6. Squash the release onto `main` and push only with explicit user approval.
@@ -96,15 +105,30 @@ Treat this as a `pilotswarm`-repo maintainer workflow only. Do not update downst
    - Create the annotated release tag from that exact main commit, then push the tag.
    - Verify local `main`, remote `origin/main`, and `git rev-parse <tag>^{}` are the same SHA.
    - Create a **GitHub Release** from the tag using `gh release create`. The npm publish workflow (`publish-npm.yml`) triggers on `release: [published]`, **not** on tag push alone. Without a GitHub Release, the publish will not run.
-   - If the user opted in, note that the same GitHub Release should also trigger `.github/workflows/publish-starter-docker.yml`.
-   - If the user does not want the Docker starter published as part of the release, call that out explicitly and use the manual starter Docker workflow later if needed.
+   - With the current wiring, the same GitHub Release unconditionally triggers
+     `.github/workflows/publish-starter-docker.yml`. If that is not desired,
+     the workflow must be changed before this step; there is no release-time
+     opt-out input.
    - Include a concise release notes summary in the GitHub Release body.
    - If a manual workflow dispatch is used instead, report the exact inputs used.
 
 8. Verify publication.
    - Check that the GitHub Actions publish workflow started and completed using `gh run list --workflow=publish-npm.yml`.
    - Report the published package names and versions.
-   - Verify the registry directly with `npm view <package> version`.
+   - Verify the exact coordinate, not only the mutable `latest` tag:
+     `npm view <package>@<version> version`. On the managed corporate network,
+     local npm metadata may be stale or hang even with an explicit public
+     registry. If that happens, run the same exact-coordinate checks in an
+     Azure-hosted container (for example `az acr run` with `node:24-alpine`)
+     and report the local-network discrepancy; do not misclassify cached
+     `latest` output as a failed publish.
+   - Wait for the `Attach package tarballs to the Release` job and verify the
+     GitHub Release contains `pilotswarm-sdk-<version>.tgz`,
+     `pilotswarm-horizon-store-<version>.tgz`, and
+     `pilotswarm-<version>.tgz`. When an accompanying AKS rollout must consume
+     released packages rather than workspace source, hand these assets to the
+     `pilotswarm-aks-deploy` skill's release-tarball path; do not build the
+     deployment candidate before the assets exist.
    - If the release included the starter Docker image, also verify the published image tags directly with:
      ```bash
      docker buildx imagetools inspect docker.io/<user>/pilotswarm-starter:<tag>
@@ -129,7 +153,8 @@ Treat this as a `pilotswarm`-repo maintainer workflow only. Do not update downst
 - release delta is exactly one squash commit on `main`
 - pushed `origin/main` is the squash commit
 - dereferenced release tag equals the pushed `origin/main` commit
-- Docker starter publish intent was confirmed with the user
+- actual starter workflow trigger behavior was reported before publication
+- all three package tarballs are attached to the GitHub Release
 - release Docker tags were verified directly when applicable
 - squash commit on main, main push, and tag push are complete
 - publish workflow ran successfully

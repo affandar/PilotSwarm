@@ -71,6 +71,12 @@ az acr show --name "$ACR_NAME" --query id -o tsv   # /subscriptions/<id>/resourc
   - **`az acr build` is the exact opposite: do NOT pass `NPM_REGISTRY`.** The build runs on an Azure build agent with unrestricted access to public npm, so the corp mirror buys nothing there — and its 7-day quarantine actively breaks the build. Sourcing `.env.remote` into the shell that launches `az acr build` is enough to poison it, because the mirror is set there for the *local* path. Observed 2026-08-02: `npm error 404 … GET https://packagefeedproxy.microsoft.io/npm/vite/-/vite-7.3.6.tgz — Cannot find the file … in feed 'npm-public'`, on a version that was fine on public npm. Rule of thumb: **mirror for local builds, public npm for ACR builds.**
   - A cached `npm ci` layer hides all of this — a build can succeed having never touched the network. Do not read a green build as proof the mirror path works; that only holds on a cold cache (`--no-cache`, a lockfile change, a pruned builder, or a fresh clone).
   - Reaching the mirror is not the same as finding your package on it. The feed imposes a deliberate **7-day quarantine** on newly published versions, so a same-week `pilotswarm-sdk` release will 404 there regardless of this wiring.
+  - When the deployment must consume the just-published PilotSwarm packages,
+    do not wait out the quarantine and do not quietly fall back to workspace
+    source. Use the three `.tgz` assets attached to the GitHub Release and the
+    release-tarball workflow below. ACR still supplies public-npm access for
+    third-party transitive dependencies; PilotSwarm package bytes come from
+    the downloaded release assets.
   - `deploy/Dockerfile.starter` still lacks the arg.
 - The deploy target is the AKS cluster, not the local namespace. Use `copilot-runtime`, not the local `pilotswarm` namespace.
 - The deploy script prefers `.env.remote`, then `.env`, and pushes env-backed provider keys into the Kubernetes secret.
@@ -175,6 +181,85 @@ az acr show --name "$ACR_NAME" --query id -o tsv   # /subscriptions/<id>/resourc
 7. If the deploy followed a destructive reset, verify the rebuilt system baseline.
    - Confirm the recreated `PilotSwarm Agent` is present and not failed.
    - Confirm the expected system children (`Sweeper Agent`, `Resource Manager Agent`, `Facts Manager`) were respawned.
+
+## GitHub Release Tarball Deploy
+
+Use this path when the user says the AKS images must pull PilotSwarm packages
+from GitHub Release tarballs, or when a same-week release is quarantined by the
+corporate npm mirror. It is a package-source change, not a database reset.
+
+1. Wait for release assets.
+   - Require the npm workflow and its `Attach package tarballs to the Release`
+     job to succeed.
+   - Verify the Release contains the expected app, SDK, and Horizon Store
+     tarballs, then download them into a temporary ignored directory with
+     `gh release download <tag> --pattern '*.tgz' --dir <temp-dir>`.
+   - Record SHA-256 for every asset and extract each `package/package.json` to
+     verify package name and version. Do not trust filenames alone.
+
+2. Build a minimal temporary image context.
+   - A private root `package.json` should depend on all three local assets with
+     `file:release/<asset>.tgz`; `npm install --omit=dev --force` then installs
+     the PilotSwarm package trees from those bytes while resolving only
+     third-party dependencies through public npm.
+   - Copy `scripts/postinstall.js` from the exact release tag and run it after
+     installation so the Copilot SDK ESM compatibility patch is preserved.
+   - Preserve existing manifest/runtime paths with symlinks:
+     `/app/packages/sdk -> ../node_modules/pilotswarm-sdk`,
+     `/app/packages/horizon-store -> ../node_modules/pilotswarm-horizon-store`,
+     and `/app/packages/app -> ../node_modules/pilotswarm`.
+   - The worker package does not ship `examples/worker.js`; copy that bootstrap
+     from the exact release tag into the worker image, but keep all SDK/app
+     implementation bytes sourced from the tarballs.
+   - Inject `deploy/config/model_providers.ghcp.json` from the exact release tag
+     as `/app/.model_providers.json`. Never copy the private gitignored catalog.
+   - Label both images with `org.opencontainers.image.version`,
+     `org.opencontainers.image.revision`, `io.pilotswarm.package-source`, and
+     the three asset hashes (`io.pilotswarm.sdk.sha256`,
+     `io.pilotswarm.horizon-store.sha256`, `io.pilotswarm.app.sha256`). These
+     labels are the cheap pre-rollout proof of package provenance.
+
+3. Build in ACR from inside the temporary context.
+   - Use `az acr build` without `NPM_REGISTRY`; ACR can reach public npm and the
+     corporate mirror would reintroduce quarantine failures.
+   - `az acr build --file` resolves relative to its current source context.
+     `pushd` into the temporary context and use `--file Dockerfile.worker .` or
+     `--file Dockerfile.portal .`; passing a bare filename while standing at
+     the repo root fails before submission.
+   - Build `copilot-runtime-worker:latest` and
+     `pilotswarm-portal:latest`. The latter also backs the MCP deployment.
+
+4. Prove provenance before rollout.
+   - Inspect `:latest` digests in ACR and use
+     `docker buildx imagetools inspect --format '{{json .Image.Config.Labels}}'`
+     to confirm the tag, commit, Release URL, and asset hashes.
+   - Do not roll an earlier source-context fallback image merely because its
+     ACR build succeeded; only the labeled tarball image is the candidate.
+
+5. Roll without rebuilding.
+   - Refresh workers with `./scripts/deploy-aks.sh --skip-build` (add
+     `--skip-tests` only with explicit user approval), then run
+     `./scripts/deploy-portal.sh --skip-build`.
+   - If the cluster has `pilotswarm-mcp`, wait for portal readiness and run
+     `./scripts/deploy-mcp.sh --skip-build` so it adopts the same digest.
+
+6. Verify package identity, not just readiness.
+   - Check every running `imageID` equals the expected ACR digest and that pods
+     have zero restarts.
+   - In a worker and portal pod, read the three
+     `/app/node_modules/<package>/package.json` versions and require the release
+     version. Verify `/app/.model_providers.json` hashes to the checked-in
+     deployment catalog.
+   - Extract `package/web/dist/index.html` from the downloaded app tarball and
+     require its `assets/index-*.js` value to match both the portal pod and the
+     public portal. This proves the browser is serving the attached asset, not
+     merely another image with the same semantic version.
+   - Verify health, DNS/ingress, TLS, serious-log scans, and workers across all
+     namespaces. MCP initialize requires
+     `Accept: application/json, text/event-stream`; omitting it produces a
+     correct `-32000 Not Acceptable` response, not a server failure.
+   - Remove the temporary build context and downloaded assets, then confirm the
+     tracked worktree is unchanged.
 
 ## Secret Hygiene Rules
 
