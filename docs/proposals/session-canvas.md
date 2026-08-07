@@ -157,11 +157,22 @@ Three cases, two of them already solved by existing machinery:
 - **Cold load.** History loading is windowed, so a canvas last drawn long ago
   may predate the loaded event window — the client would not know a canvas
   exists. Snapshot-then-deltas closes this, the same shape session detail
-  uses: on pane mount, one snapshot establishes `latestRev` — in v1 a single
-  filtered query (`event_types=["session.canvas_updated"]`, limit 1, an API
-  that already exists); in Phase 2, canvas meta on
-  `get_session_detail(include:["canvas"])`, the cleaner home. Events carry
-  every delta thereafter.
+  uses: one snapshot establishes `latestRev`, fired **once per session as
+  part of the selection burst** (beside the detail and history fetches the
+  controller already makes) — not on pane mount, because the mobile Canvas
+  tab and the Canvas button's badge need canvas meta before any pane exists.
+  In v1 it is a single filtered query
+  (`event_types=["session.canvas_updated"]`, limit 1, an API that already
+  exists); in Phase 2 it costs zero extra round trips, riding
+  `get_session_detail(include:["canvas"])`, which selection fetches anyway.
+  Events carry every delta thereafter.
+
+  The result is memoized per session and never re-queried while event
+  coverage is contiguous — live pushes and `afterSeq` replay keep it current
+  across reconnects. The one invalidation: if a gap is closed by a windowed
+  bulk reload rather than gap-free replay, continuity is broken and the
+  snapshot is re-taken on next need. Snapshot + unbroken stream = current;
+  break the stream, re-snapshot.
 
   The snapshot is not a scan of the loaded window — it is an indexed lookup
   against the full durable log, and its result is definitive in both
