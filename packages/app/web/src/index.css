@@ -6936,7 +6936,10 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
    is a grid of shared edges — the admin console's sectioned look, applied to
    the workspace. */
 :root {
-  --ps-resizer-track: 3px;
+  /* One pixel. Every interior adjacency in the workspace has a resizer between
+     it, so the resizer IS the divider — there is nothing for a wider track to
+     do except draw a bar. */
+  --ps-resizer-track: 1px;
 }
 
 .ps-workspace-grid,
@@ -6950,10 +6953,21 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
   min-width: 0;
 }
 
-/* Square the interior. One radius, on the outer shell, below. */
+/* No interior borders at all. Panels each carrying their own 1px rule meant a
+   seam was border + resizer + border — three lines of chrome where one will
+   do, and on a high-contrast theme like Matrix that reads as a bright bar
+   between every pane. The resizer hairline is the only divider now; the shell
+   below draws the single outline around the whole slab. */
 .ps-workspace-grid .ps-panel {
+  border: 0;
   border-radius: 0;
-  border-width: 1px;
+}
+
+/* Focus can no longer ride on border-color, so it becomes an inset ring —
+   same one-signal accent, no layout shift, and it sits inside the pane rather
+   than thickening the seam next to it. */
+.ps-workspace-grid .ps-panel.is-focused {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ps-accent) 70%, transparent);
 }
 
 /* The shell owns the outline and the corners, so the workspace reads as a
@@ -6967,10 +6981,12 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
 /* The resizer is now a seam, not a gutter. It keeps a real hit area by
    overflowing its 3px track symmetrically — layout stays a hairline while the
    grab strip stays wide enough to actually catch with a mouse. */
+/* Dimmed, not full strength: a divider only has to separate, and at full
+   --ps-border it competes with the content either side of it. */
 .ps-column-resizer,
 .ps-row-resizer {
   border-radius: 0;
-  background: var(--ps-border);
+  background: color-mix(in srgb, var(--ps-border) 65%, transparent);
   overflow: visible;
 }
 
