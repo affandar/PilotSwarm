@@ -27,7 +27,7 @@ test("buildSessionTree groups top-level members under synthetic group rows", () 
     ]);
 });
 
-test("session row selector renders group icon and summary-searchable rows", () => {
+test("session row selector renders group icon rows", () => {
     let state = createInitialState();
     state = appReducer(state, {
         type: "sessions/loaded",
@@ -64,7 +64,7 @@ test("session row selector renders group icon and summary-searchable rows", () =
     assert.match(rows[0].text, /1 member/);
 
     state = appReducer(state, { type: "sessions/expand", sessionId: "group:release" });
-    state = appReducer(state, { type: "sessions/filterQuery", query: "checkout" });
+    state = appReducer(state, { type: "sessions/filterQuery", query: "member a" });
     const filtered = selectSessionRows(state);
     assert.equal(filtered.some((row) => row.sessionId === "member-a"), true);
 });
@@ -100,7 +100,7 @@ test("active group renders a group details card instead of transcript", () => {
     assert.equal(chat[0].id, "group-details:group:release");
     assert.equal(chat[0].noChrome, true);
     assert.match(chat[0].text, /^# Release Validation/);
-    assert.match(chat[0].text, /\| Member A \| running \| Smoke running \|/);
+    assert.match(chat[0].text, /\| Member A \| running \|/);
 });
 
 test("group rows are not bulk-selectable", () => {
@@ -118,38 +118,6 @@ test("group rows are not bulk-selectable", () => {
 
     state = appReducer(state, { type: "sessions/selectToggle", sessionId: "group:release" });
     assert.deepEqual(state.sessions.selectedIds, ["member-a"]);
-});
-
-test("chat summary mode renders structured session summary", () => {
-    let state = createInitialState();
-    state = appReducer(state, {
-        type: "sessions/loaded",
-        sessions: [{
-            sessionId: "member-a",
-            title: "Member A",
-            status: "waiting",
-            summaryState: {
-                intent: "Validate checkout",
-                summary: "Checkout smoke is waiting on rollout.",
-                state: { phase: "canary" },
-                blockers: ["Rollout pending"],
-                openQuestions: [],
-                nextActions: ["Re-run smoke"],
-            },
-            summaryUpdatedAt: Date.parse("2026-05-16T01:01:00Z"),
-        }],
-    });
-    state = appReducer(state, { type: "sessions/selected", sessionId: "member-a" });
-    state = appReducer(state, { type: "ui/chatViewMode", mode: "summary" });
-
-    const chat = selectActiveChat(state);
-    assert.equal(chat.length, 1);
-    assert.equal(chat[0].id, "summary:member-a");
-    assert.equal(chat[0].noChrome, true);
-    assert.match(chat[0].text, /^# Member A/);
-    assert.match(chat[0].text, /\*\*Intent:\*\* Validate checkout/);
-    assert.match(chat[0].text, /\*\*phase:\*\* canary/);
-    assert.match(chat[0].text, /Rollout pending/);
 });
 
 test("new session creation inherits the active session group", async () => {

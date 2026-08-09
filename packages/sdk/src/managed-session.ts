@@ -1,4 +1,5 @@
 import { defineTool, type Tool, type CopilotSession } from "@github/copilot-sdk";
+import { normalizeCanvasResponseContract as normalizeCanvasContractShared } from "./canvas-app-manifest.js";
 // One list gates BOTH halves of every manager tool: the declaration in the
 // manager bundle and the per-turn handler below.
 import { holdsManagerBundle } from "./agent-manager-tools.js";
@@ -74,27 +75,149 @@ const SHOW_ARTIFACT_TOOL_SPEC = {
     handler: async () => "stub",
 } as const;
 
-const SESSION_SUMMARY_STATE_SCHEMA = {
-    type: "object",
-    additionalProperties: true,
-    required: ["schemaVersion", "updatedAt", "intent", "summary", "state", "openQuestions", "blockers", "nextActions", "links", "structureChangeLog"],
-    properties: {
-        schemaVersion: { type: "number", enum: [1], description: "Always 1." },
-        updatedAt: { type: "string", description: "Current ISO timestamp for this summary update." },
-        intent: { type: "string", description: "What this session is trying to accomplish." },
-        summary: { type: "string", description: "Concise durable summary of meaningful progress, current state, blockers, and outcome." },
-        state: { type: "object", description: "Compact machine-readable state for the session; use {} if there is no structured state yet." },
-        openQuestions: { type: "array", items: { type: "string" }, description: "Open questions that affect future work; [] if none." },
-        blockers: { type: "array", items: { type: "string" }, description: "Current blockers; [] if none." },
-        nextActions: { type: "array", items: { type: "string" }, description: "Concrete next actions; [] if none." },
-        links: { type: "array", items: { type: "string" }, description: "Important URLs, artifact links, fact keys, or session ids; [] if none." },
-        structureChangeLog: { type: "array", items: { type: "string" }, description: "Notable changes to the work structure, schedule, delegates, or scope; [] if none." },
-        domain: { type: "string", description: "Optional domain label such as finance, ops, research, or support." },
+/**
+ * The canvas tools — declaration AND per-turn handler both build from these
+ * specs, the same drift-proofing SHOW_ARTIFACT_TOOL_SPEC uses.
+ *
+ * Root sessions only. The gate is the control bridge itself: session-proxy
+ * puts drawCanvas/readCanvas on the bridge only when the session has no
+ * parent, and the per-turn tool list includes these tools only when the
+ * bridge carries them. The static declarations below exist so the schemas
+ * reach the CLI server at session create; a child's every turn re-registers
+ * its tool list without them (registerTools is authoritative per turn), and
+ * a child that hallucinates the call anyway hits the handler's bridge guard.
+ */
+/**
+ * The canvas response contract, normalized to its canonical shape or refused.
+ *
+ * The contract is the SECURITY boundary for interactive canvases: the browser
+ * accepts a postMessage from the canvas iframe only when it names a declared
+ * action and matches its field types exactly, and accepts NOTHING when no
+ * contract was drawn. Keeping the grammar tiny — flat actions, primitive
+ * fields, hard caps — is what keeps the browser-side validator simple enough
+ * to trust.
+ */
+// The contract grammar and the CANVAS-APP-MANIFEST extractor live together in
+// canvas-app-manifest.ts: a manifest's embedded contract passes through the
+// SAME normalizer this module applies to the tool argument. Re-exported so
+// existing importers (tests included) keep their path.
+export { normalizeCanvasResponseContract } from "./canvas-app-manifest.js";
+
+const DRAW_CANVAS_TOOL_SPEC = {
+    description:
+        "Replace this session's canvas — the persistent visual surface rendered live in the user's portal — "
+        + "with a complete HTML document. Root sessions only. "
+        + "Draw when the user asks for something visual (draw, visualize, chart this, keep a dashboard), or when an "
+        + "outcome you are delivering would be GREATLY clarified by a quick graphic. Most replies need no drawing. "
+        + "Drawing switches the user's view to the canvas, so draw only when that interruption is earned — and never "
+        + "redraw on a no-op cycle. "
+        + "The document is replaced whole each time; use read_canvas first when iterating on an existing drawing. "
+        + "It renders in the same sandbox as artifact previews: fully self-contained, no network, set your own "
+        + "background and text colors, lay out with CSS so it reflows (follow the html-visuals skill). "
+        + "Pass an empty string to clear the canvas. Sources: inline html, OR fromArtifact to render a stored "
+        + "canvas app without the bytes ever entering your context (exactly one of the two). "
+        + "Do NOT paste canvas links into your reply — the canvas updates live on the user's screen; one sentence "
+        + "noting what it now shows is plenty. For one-off file previews use show_artifact instead.",
+    parameters: {
+        type: "object",
+        properties: {
+            html: {
+                type: "string",
+                description: "The complete HTML document to display. Empty string clears the canvas.",
+            },
+            note: {
+                type: "string",
+                description: "Optional one-line caption for this revision (shown in the canvas header and activity feed).",
+            },
+            fromArtifact: {
+                type: "object",
+                description:
+                    "Render a stored HTML artifact onto the canvas SERVER-SIDE — the bytes never enter your "
+                    + "context (never read_artifact + re-paste; that is the anti-pattern this exists to kill). "
+                    + "Mutually exclusive with html. The tool result returns the app's interface card (embedded "
+                    + "CANVAS-APP-MANIFEST summary + the effective responseContract) so you can interpret "
+                    + "canvas-action messages and author update_canvas ticks without ever reading the file.",
+                properties: {
+                    sessionId: { type: "string", description: "Session that owns the source artifact. Defaults to this session." },
+                    filename: { type: "string", description: "Source artifact filename, e.g. 'apps/release-signoff.html'." },
+                    expectedSha256: { type: "string", description: "Optional precondition: fail with SHA_MISMATCH (no draw) if the source bytes hash differently." },
+                },
+                required: ["filename"],
+            },
+            responseContract: {
+                type: "object",
+                description:
+                    "Optional contract that makes this canvas interactive while a user is viewing it live. "
+                    + "When drawing fromArtifact, an embedded CANVAS-APP-MANIFEST contract is used automatically — "
+                    + "pass this only to OVERRIDE it. Shape: "
+                    + '{"actions":{"<name>":{"<field>":"string"|"number"|"boolean"}}} — append "?" to a type for an '
+                    + "optional field (e.g. \"string?\"); a \"json\" field carries one structured object — use it to "
+                    + "BATCH a whole form into a single submit action instead of posting per keystroke (see the "
+                    + "html-visuals skill's Forms section). Page controls post back with "
+                    + "parent.postMessage({type:'canvas-action', action:'<name>', data:{...}}, '*'); the browser "
+                    + "validates against this contract and rejects everything else. Conforming actions arrive as "
+                    + "'[canvas-action] {\"action\":...,\"data\":...}' user messages, which the portal hides from the "
+                    + "chat pane — act on them and redraw. Omit the contract entirely for a display-only canvas: "
+                    + "with no contract, the browser accepts nothing.",
+            },
+        },
+        required: [],
     },
+    handler: async () => "stub",
 } as const;
 
-const SESSION_SUMMARY_STATE_TEMPLATE =
-    "Use summary_state={schemaVersion:1,updatedAt:<ISO timestamp>,intent:<string>,summary:<string>,state:{},openQuestions:[],blockers:[],nextActions:[],links:[],structureChangeLog:[]}.";
+const UPDATE_CANVAS_TOOL_SPEC = {
+    description:
+        "Send a JSON data tick to the canvas page WITHOUT replacing the document. Root sessions only. "
+        + "Use when the canvas's CONTENT changes but its layout does not — dashboards, tickers, watchers: "
+        + "draw the shell once with draw_canvas (declare data.example in the contract and register a message "
+        + "listener calling one idempotent applyData(data)), then tick with update_canvas. The payload arrives "
+        + "in the page as {type:'canvas-data', data, dataRev} via postMessage, and the platform replays the "
+        + "latest payload into any freshly loaded page automatically. Ticks never steal the screen (no view "
+        + "flip) and write no chat line, but they DO mark the canvas unseen — the toggle badges until the user "
+        + "looks. The activity feed records each tick. Cap 32 KB serialized. "
+        + "Layout change = draw_canvas; content change = update_canvas.",
+    parameters: {
+        type: "object",
+        properties: {
+            data: {
+                type: "object",
+                description: "The whole-state payload for the page's applyData(). Keep it matching the data.example declared at draw time.",
+            },
+            note: {
+                type: "string",
+                description: "Optional one-line caption for the activity feed.",
+            },
+        },
+        required: ["data"],
+    },
+    handler: async () => "stub",
+} as const;
+
+const READ_CANVAS_TOOL_SPEC = {
+    description:
+        "Read this session's current canvas HTML back, paged. Root sessions only. "
+        + "Use it before iterating on an existing drawing, and after context regeneration — the canvas survives even "
+        + "when your memory of drawing it does not. "
+        + "Read selectively: page with offset/maxBytes rather than round-tripping a large document every turn.",
+    parameters: {
+        type: "object",
+        properties: {
+            offset: { type: "number", description: "Character offset to start reading from (default 0)." },
+            maxBytes: { type: "number", description: "Maximum characters to return (default 65536, cap 262144)." },
+            manifestOnly: {
+                type: "boolean",
+                description:
+                    "Return only the canvas's interface card — embedded CANVAS-APP-MANIFEST summary plus the "
+                    + "ARMED responseContract from the latest draw — without the document bytes. Use this to "
+                    + "re-learn an interactive canvas cheaply after context regeneration or when you inherited "
+                    + "a canvas you did not draw.",
+            },
+        },
+    },
+    handler: async () => "stub",
+} as const;
+
 const CHILD_SESSION_RESULT_SCHEMA = {
     type: "object",
     additionalProperties: true,
@@ -621,29 +744,6 @@ export class ManagedSession {
             handler: async () => "stub",
         });
 
-        const updateSessionSummaryTool = defineTool("update_session_summary", {
-            description:
-                "Update this session's short live summary and optionally set this session's sticky title for session lists, discovery, and the Summary tab. " +
-                "Call it automatically after first meaningful work and after each notable update: changed intent, tangible progress toward the user's goal, received cross-session replies, delivered outputs, blockers, open questions, next actions, key links, schedule/delegate changes, or terminal state. " +
-                "Pass title when the user asks you to rename this session or when a durable human-readable title should stick; title updates lock the title against future automatic title summarization. " +
-                "Keep it concise and scannable; use compact bullets or short Markdown tables for structured progress, comparisons, rankings, decisions, or result sets instead of prose blobs. " +
-                "Do not paste long transcripts, raw logs, or bulky JSON into summary fields. " +
-                "Do not call it for no-op heartbeats, timer wakes, or unchanged cron cycles. " +
-                "Do not pass a string for summary_state. summary_state is optional only when title is provided. " + SESSION_SUMMARY_STATE_TEMPLATE,
-            parameters: {
-                type: "object",
-                properties: {
-                    summary_state: {
-                        ...SESSION_SUMMARY_STATE_SCHEMA,
-                        description: "Structured live summary state. Must be an object, not a string. Missing arrays should be [].",
-                    },
-                    short_summary: { type: "string", description: "Optional concise summary for session lists. If omitted, summary_state.summary is used." },
-                    title: { type: "string", description: "Optional sticky session title. When set, it behaves like a manual rename and prevents future automatic title changes." },
-                },
-            },
-            handler: async () => "stub",
-        });
-
         const sendSessionMessageTool = defineTool("send_session_message", {
             description:
                 "Send an auditable asynchronous request to another PilotSwarm session. Use list_sessions first to find the target session id. " +
@@ -682,8 +782,11 @@ export class ManagedSession {
         });
 
         const showArtifactTool = defineTool("show_artifact", SHOW_ARTIFACT_TOOL_SPEC);
+        const drawCanvasTool = defineTool("draw_canvas", DRAW_CANVAS_TOOL_SPEC);
+        const updateCanvasTool = defineTool("update_canvas", UPDATE_CANVAS_TOOL_SPEC);
+        const readCanvasTool = defineTool("read_canvas", READ_CANVAS_TOOL_SPEC);
 
-        return [waitTool, waitOnWorkerTool, cronTool, cronAtTool, askUserTool, reportCycleTool, listModelsTool, setSessionModelTool, regenerateContextTool, regenerateAgentTool, updateSessionSummaryTool, sendSessionMessageTool, replySessionMessageTool, showArtifactTool];
+        return [waitTool, waitOnWorkerTool, cronTool, cronAtTool, askUserTool, reportCycleTool, listModelsTool, setSessionModelTool, regenerateContextTool, regenerateAgentTool, sendSessionMessageTool, replySessionMessageTool, showArtifactTool, drawCanvasTool, updateCanvasTool, readCanvasTool];
     }
 
     /**
@@ -829,7 +932,6 @@ export class ManagedSession {
                     group_id: { type: "string", description: "Optional group id filter. Groups are each viewer's private organization and in-session listings carry no viewer placement, so sessions typically show no group here; the literal string 'null' matches sessions without a visible group." },
                     include_children: { type: "boolean", description: "Include child sessions. Default false." },
                     updated_since: { type: "string", description: "Optional ISO timestamp; include sessions updated since this time." },
-                    summary_updated_since: { type: "string", description: "Optional ISO timestamp; include sessions whose summary changed since this time." },
                     limit: { type: "number", description: "Maximum rows to return. Default 50, max 100." },
                 },
             },
@@ -1352,6 +1454,136 @@ export class ManagedSession {
             },
         });
 
+        // Canvas tools — root sessions only, and the gate is the bridge: the
+        // methods exist on controlBridge only when session-proxy saw no
+        // parentSessionId. Handlers guard on that presence, and the per-turn
+        // tool list (systemToolsForTurn) includes these tools under the same
+        // predicate, so a child neither sees nor can run them.
+        const drawCanvasTool = defineTool("draw_canvas", {
+            ...DRAW_CANVAS_TOOL_SPEC,
+            handler: async (args: { html?: string; fromArtifact?: { sessionId?: string; filename?: string; expectedSha256?: string }; note?: string; responseContract?: unknown }) => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("draw_canvas");
+                if (typeof (controlBridge as any)?.drawCanvas !== "function") {
+                    return "Error: draw_canvas is only available on root sessions.";
+                }
+                if (args?.html !== undefined && typeof args.html !== "string") {
+                    return "Error: html must be a string (the complete document; empty string clears).";
+                }
+                const hasHtml = typeof args?.html === "string";
+                const fromArtifact = args?.fromArtifact && typeof args.fromArtifact === "object" ? args.fromArtifact : null;
+                if (hasHtml === Boolean(fromArtifact)) {
+                    return "Error: pass exactly one source — html (inline document; empty string clears) OR fromArtifact ({filename, sessionId?}).";
+                }
+                if (fromArtifact && !String(fromArtifact.filename || "").trim()) {
+                    return "Error: fromArtifact.filename is required.";
+                }
+                const html = hasHtml ? String(args?.html ?? "") : undefined;
+                // The store caps TEXT artifacts at 1 MiB (TEXT_ARTIFACT_MAX_BYTES);
+                // refuse short of it so the failure is a clear message, not a
+                // store error surfacing raw. fromArtifact sizes are checked in
+                // the bridge, where the bytes first exist.
+                if (html !== undefined) {
+                    const inlineBytes = Buffer.byteLength(html, "utf8");
+                    if (inlineBytes > 900_000) {
+                        return `Error: canvas document is ${inlineBytes} bytes; keep it under 900 KB. `
+                            + "Aggregate the data and avoid embedded raster images (see the html-visuals skill).";
+                    }
+                }
+                const note = args?.note ? String(args.note) : undefined;
+                // A cleared canvas accepts nothing, so a contract on an empty
+                // draw is dropped rather than armed against a blank page.
+                const contractResult = html === "" ? {} : normalizeCanvasContractShared(args?.responseContract);
+                if (contractResult.error) return `Error: invalid responseContract: ${contractResult.error}`;
+                const result = await (controlBridge as any).drawCanvas({
+                    ...(html !== undefined ? { html } : {}),
+                    ...(fromArtifact ? { fromArtifact: {
+                        ...(fromArtifact.sessionId ? { sessionId: String(fromArtifact.sessionId) } : {}),
+                        filename: String(fromArtifact.filename),
+                        ...(fromArtifact.expectedSha256 ? { expectedSha256: String(fromArtifact.expectedSha256) } : {}),
+                    } } : {}),
+                    note,
+                    responseContract: contractResult.contract,
+                });
+                if (result?.error) return `Error: could not draw the canvas: ${result.error}`;
+                // No emit here, deliberately. The bridge committed the bytes
+                // and then the durable canvas_updated event, awaited and in
+                // that order; the persisted event is ALSO the live path (the
+                // same delivery show_artifact rides). A second in-memory emit
+                // would only risk the event landing twice in transcripts.
+                // session-proxy's generic persister additionally lists
+                // canvas_updated as already-persisted, so no path can
+                // double-insert it.
+                return JSON.stringify({
+                    drawn: true,
+                    rev: result.rev,
+                    sizeBytes: result.sizeBytes,
+                    // The interface card: manifest summary + the EFFECTIVE
+                    // contract (post-precedence, post-normalization — what the
+                    // browser will actually enforce). This is how the agent
+                    // learns a stored app's I/O without reading the file.
+                    ...(result.source ? { source: result.source } : {}),
+                    ...(result.app ? { app: result.app } : {}),
+                    ...(result.responseContract ? { responseContract: result.responseContract } : {}),
+                    ...(result.manifestWarning ? { manifestWarning: result.manifestWarning } : {}),
+                    ...(result.sizeBytes > 524_288
+                        ? { warning: "Canvas over 512 KB — consider aggregating; large documents cost output tokens on every redraw." }
+                        : {}),
+                    // Named `reminder`, not `note`: the tool's `note` ARGUMENT
+                    // is the revision caption, and echoing a different string
+                    // under the same name read as the caption being replaced.
+                    reminder: "The canvas updated live on the user's screen. Do not paste canvas links into your reply.",
+                });
+            },
+        });
+
+        const updateCanvasTool = defineTool("update_canvas", {
+            ...UPDATE_CANVAS_TOOL_SPEC,
+            handler: async (args: { data?: unknown; note?: string }) => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("update_canvas");
+                if (Array.isArray(args?.data)) {
+                    return "Error: data must be a JSON object (the page's whole-state payload), not an array — wrap it: { items: [...] }.";
+                }
+                if (typeof (controlBridge as any)?.updateCanvas !== "function") {
+                    return "Error: update_canvas is only available on root sessions.";
+                }
+                if (!args?.data || typeof args.data !== "object") {
+                    return "Error: data must be a JSON object (the whole-state payload for the page's applyData).";
+                }
+                const serialized = JSON.stringify(args.data);
+                const sizeBytes = Buffer.byteLength(serialized, "utf8");
+                if (sizeBytes > 32_768) {
+                    return `Error: data tick is ${sizeBytes} bytes serialized; the cap is 32768. Aggregate before sending, or redraw if the shape truly grew.`;
+                }
+                const note = args?.note ? String(args.note) : undefined;
+                const result = await (controlBridge as any).updateCanvas({ data: args.data, note });
+                if (result?.error) return `Error: could not update the canvas: ${result.error}`;
+                return JSON.stringify({
+                    updated: true,
+                    dataRev: result.dataRev,
+                    sizeBytes,
+                    reminder: "The page received the tick live; it patches itself in place. No chat mention needed.",
+                });
+            },
+        });
+
+        const readCanvasTool = defineTool("read_canvas", {
+            ...READ_CANVAS_TOOL_SPEC,
+            handler: async (args: { offset?: number; maxBytes?: number; manifestOnly?: boolean }) => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("read_canvas");
+                if (typeof (controlBridge as any)?.readCanvas !== "function") {
+                    return "Error: read_canvas is only available on root sessions.";
+                }
+                const result = await (controlBridge as any).readCanvas({
+                    offset: args?.offset,
+                    maxBytes: args?.maxBytes,
+                    manifestOnly: Boolean(args?.manifestOnly),
+                });
+                if (result?.error) return `Error: could not read the canvas: ${result.error}`;
+                if (!result?.exists) return "No canvas has been drawn on this session yet.";
+                return JSON.stringify(result);
+            },
+        });
+
         // list_available_models — returns data inline (no abort/continuation needed)
         const listModelsTool = defineTool("list_available_models", {
             description:
@@ -1483,33 +1715,6 @@ export class ManagedSession {
                     return `${result}\n${acknowledgeTurnBoundary("set_session_model")}`;
                 }
                 return result;
-            },
-        });
-
-        const updateSessionSummaryTool = defineTool("update_session_summary", {
-            description:
-                "Update this session's short live summary and optionally set this session's sticky title for session lists, discovery, and the Summary tab. " +
-                "Call it automatically after first meaningful work and after each notable update: changed intent, tangible progress toward the user's goal, received cross-session replies, delivered outputs, blockers, open questions, next actions, key links, schedule/delegate changes, or terminal state. " +
-                "Pass title when the user asks you to rename this session or when a durable human-readable title should stick; title updates lock the title against future automatic title summarization. " +
-                "Keep it concise and scannable; use compact bullets or short Markdown tables for structured progress, comparisons, rankings, decisions, or result sets instead of prose blobs. " +
-                "Do not paste long transcripts, raw logs, or bulky JSON into summary fields. " +
-                "Do not call it for no-op heartbeats, timer wakes, or unchanged cron cycles. " +
-                "Do not pass a string for summary_state. summary_state is optional only when title is provided. " + SESSION_SUMMARY_STATE_TEMPLATE,
-            parameters: {
-                type: "object",
-                properties: {
-                    summary_state: {
-                        ...SESSION_SUMMARY_STATE_SCHEMA,
-                        description: "Structured live summary state. Must be an object, not a string. Missing arrays should be [].",
-                    },
-                    short_summary: { type: "string", description: "Optional concise summary for session lists. If omitted, summary_state.summary is used." },
-                    title: { type: "string", description: "Optional sticky session title. When set, it behaves like a manual rename and prevents future automatic title changes." },
-                },
-            },
-            handler: async (args: { summary_state?: any; short_summary?: string; title?: string }) => {
-                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("update_session_summary");
-                if (!controlBridge) return "Error: update_session_summary is unavailable in this session.";
-                return await controlBridge.updateSessionSummary(args);
             },
         });
 
@@ -1756,7 +1961,6 @@ export class ManagedSession {
                     group_id: { type: "string", description: "Optional group id filter. Groups are each viewer's private organization and in-session listings carry no viewer placement, so sessions typically show no group here; the literal string 'null' matches sessions without a visible group." },
                     include_children: { type: "boolean", description: "Include child sessions. Default false." },
                     updated_since: { type: "string", description: "Optional ISO timestamp; include sessions updated since this time." },
-                    summary_updated_since: { type: "string", description: "Optional ISO timestamp; include sessions whose summary changed since this time." },
                     limit: { type: "number", description: "Maximum rows to return. Default 50, max 100." },
                 },
             },
@@ -1772,7 +1976,6 @@ export class ManagedSession {
                 group_id?: string;
                 include_children?: boolean;
                 updated_since?: string;
-                summary_updated_since?: string;
                 limit?: number;
             }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("list_sessions");
@@ -1792,7 +1995,6 @@ export class ManagedSession {
                     groupId: args.group_id,
                     includeChildren: args.include_children,
                     updatedSince: args.updated_since,
-                    summaryUpdatedSince: args.summary_updated_since,
                     limit: args.limit,
                 });
                 return acknowledgeTurnBoundary("list_sessions");
@@ -1875,7 +2077,8 @@ export class ManagedSession {
             },
         });
 
-        const SYSTEM_TOOL_NAMES = new Set(["wait", "wait_on_worker", "cron", "cron_at", "ask_user", "report_cycle", "list_available_models", "set_session_model", "update_session_summary", "send_session_message", "reply_session_message", "show_artifact", "spawn_agent", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "delete_agent"]);
+        const SYSTEM_TOOL_NAMES = new Set([
+    "update_canvas","wait", "wait_on_worker", "cron", "cron_at", "ask_user", "report_cycle", "list_available_models", "set_session_model", "send_session_message", "reply_session_message", "show_artifact", "draw_canvas", "read_canvas", "spawn_agent", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "delete_agent"]);
 
         // Merge user tools with system tools
         const userTools = this.config.tools ?? [];
@@ -1918,7 +2121,8 @@ export class ManagedSession {
         // the schema. Gate both halves on the same list so there is no tool
         // that exists-but-is-hidden in an ordinary session.
         const isManagerSession = holdsManagerBundle(this.config.agentIdentity);
-        const mutatingSystemToolNames = new Set(["update_session_summary", "send_session_message", "reply_session_message"]);
+        const mutatingSystemToolNames = new Set(["send_session_message", "reply_session_message", "draw_canvas",
+    "update_canvas"]);
         const systemToolsForTurn: Tool<any>[] = isServiceSession ? [] : [
             waitTool,
             waitOnWorkerTool,
@@ -1930,10 +2134,21 @@ export class ManagedSession {
             setSessionModelTool,
             regenerateContextTool,
             regenerateAgentTool,
-            updateSessionSummaryTool,
             sendSessionMessageTool,
             replySessionMessageTool,
             showArtifactTool,
+            // ALWAYS registered, root or child — the root gate lives in the
+            // handlers (bridge capability + the bridge's own catalog check)
+            // and in the DECLARATION chokepoint (session-manager filters the
+            // canvas tools off child sessions via the catalog row). A tool
+            // that is declared but has no handler hangs the turn: the CLI
+            // drops a call with no registered handler on the floor, no error,
+            // no response. Registering a guarded handler everywhere means the
+            // worst residual case (stale declarations, direct mode without a
+            // bridge) is a clean refusal, never a hang.
+            drawCanvasTool,
+            updateCanvasTool,
+            readCanvasTool,
         ].filter((tool: any) => !isReadOnlyTuner || !mutatingSystemToolNames.has(tool.name));
         const subAgentToolsForTurn = isServiceSession
             ? []

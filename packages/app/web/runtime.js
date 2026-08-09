@@ -839,12 +839,31 @@ export class PortalRuntime {
                 return this.transport.pinAgentPackageVersion(safeParams.name, safeParams.semver, owner, isAdmin);
             case "deleteAgentPackage":
                 return this.transport.deleteAgentPackage(safeParams.name, owner, isAdmin);
-            case "sendMessage":
+            case "sendMessage": {
+                // Canvas actions are CREATOR-only — not shared writers, not
+                // admins. The canvas mutates: two viewers can be looking at
+                // different revisions of the same surface, so only the one
+                // person whose view the agent is provably conversing with may
+                // answer through it (everyone else has the chat box, which
+                // quotes its own words). The prefix is the wire marker the
+                // browser bridge stamps on validated actions; enforcement
+                // must live HERE because the prefix is trivially forgeable by
+                // any API caller. Enforced even during the ownership
+                // dark-launch: a brand-new capability has no pre-model
+                // behavior to preserve (same rule as session:share). Fails
+                // closed when no access snapshot is resolvable.
+                if (typeof safeParams.prompt === "string" && safeParams.prompt.startsWith("[canvas-action] ")) {
+                    const snapshot = gate.snapshot ?? await this._getAccessSnapshot(safeParams.sessionId, owner);
+                    if (!snapshot?.viewerIsOwner) {
+                        throw forbiddenError("Canvas actions are accepted only from the session's creator. Use the chat box instead.");
+                    }
+                }
                 return this.transport.sendMessage(safeParams.sessionId, safeParams.prompt, {
                     ...(safeParams.options && typeof safeParams.options === "object" ? safeParams.options : {}),
                     // Server-stamped; a client-supplied options.sender is overwritten.
                     sender: this._buildSender(authContext, gate.snapshot, { isAdmin, origin: safeParams.options?.origin }),
                 });
+            }
             case "sendAnswer":
                 return this.transport.sendAnswer(safeParams.sessionId, safeParams.answer, {
                     sender: this._buildSender(authContext, gate.snapshot, { isAdmin }),

@@ -21,7 +21,6 @@ export const UI_COMMANDS = {
     OPEN_MOVE_TO_GROUP: "openMoveToGroup",
     CREATE_SESSION_GROUP: "createSessionGroup",
     OPEN_ARTIFACT_UPLOAD: "openArtifactUpload",
-    TOGGLE_CHAT_VIEW: "toggleChatView",
     CLOSE_MODAL: "closeModal",
     MODAL_PREV: "modalPrev",
     MODAL_NEXT: "modalNext",

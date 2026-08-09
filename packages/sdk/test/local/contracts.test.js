@@ -41,6 +41,13 @@ const EXPECTED_FRAMEWORK_ARTIFACT_TOOL_NAMES = [
     // Registered unconditionally in systemToolDefs(), so it is always-on like
     // the other three.
     "show_artifact",
+    // The session canvas set (root sessions; this contract's probe session IS
+    // a root session). Declarations are filtered off children in
+    // session-manager — a child-session variant of this contract would not
+    // list them.
+    "draw_canvas",
+    "update_canvas",
+    "read_canvas",
 ];
 const EXPECTED_ALWAYS_ON_TOOL_NAMES = [
     "wait",
@@ -50,7 +57,6 @@ const EXPECTED_ALWAYS_ON_TOOL_NAMES = [
     "ask_user",
     "report_cycle",
     "list_available_models",
-    "update_session_summary",
     "send_session_message",
     "reply_session_message",
     "spawn_agent",

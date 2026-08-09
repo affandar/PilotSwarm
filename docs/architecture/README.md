@@ -18,6 +18,8 @@ Read in this order — each doc assumes the ones above it:
 
 Focused designs:
 
+- [Session canvas](./canvas.md) — the standing visual surface: draw/tick/read
+  tools, interactive contracts, reusable canvas apps, gating and caps
 - [Facts store](./facts.md) — the memory subsystem's design spec
 - [Session creation policy](./session-creation-policy.md) — who may create what
 - [TUI architecture](./tui.md) — the shared terminal/browser UI stack

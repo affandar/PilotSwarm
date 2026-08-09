@@ -1,5 +1,95 @@
 # Changelog
 
+## 0.5.37 — 2026-08-08
+
+The session canvas ships — a standing, session-owned visual surface that the
+agent draws, updates in place, makes interactive, and reuses as saved apps —
+and the session summary retires in its favor. A large mobile/portal fix batch
+rides along, closed out by a four-reviewer adversarial pass and a green
+all-providers test matrix.
+
+### Added
+
+- **Session Canvas.** Root sessions get `draw_canvas` / `update_canvas` /
+  `read_canvas`: one live HTML document per session, backed by the reserved
+  pinned `canvas.html` artifact with monotonic revisions on durable
+  `session.canvas_updated` events (bytes-then-event, serialized, single
+  persistence path). The portal renders it beside the chat through a
+  double-buffered sandboxed frame (no white flash, state preserved across
+  toggles); phones get a full-screen overlay with a three-state toggle
+  (empty / loaded / unseen). Documented in `docs/architecture/canvas.md`.
+
+- **Interactive canvases.** A draw may declare a `responseContract`
+  (actions × typed fields, with an optional `data` key documenting the tick
+  shape). Page controls post back via `parent.postMessage`; the browser
+  enforces provenance (live frame only), contract validation
+  (default-closed), a rate limit, and **creator-only posting, fail-closed
+  server-side** — shared writers and admins are refused. Conforming actions
+  arrive as `[canvas-action]` user messages, hidden from the chat pane.
+
+- **Live data ticks.** `update_canvas` sends ≤32 KB JSON payloads to the
+  page's `applyData()` without replacing the document — dashboards redraw
+  their shell once and tick content forever. The latest tick replays into
+  freshly loaded pages; ticks badge the canvas unseen without stealing the
+  screen.
+
+- **Canvas apps (reuse, phase 1).** `draw_canvas({fromArtifact})` renders a
+  stored HTML artifact server-side — the bytes never transit the model. Apps
+  self-describe with an embedded `CANVAS-APP-MANIFEST` comment whose contract
+  passes the same normalizer as the tool argument (explicit argument wins;
+  broken embedded contracts fail stored-app draws closed). The draw result is
+  an interface card — manifest summary plus the effective contract, never the
+  HTML — and `read_canvas`/`read_artifact` gain `manifestOnly`.
+  `write_artifact`'s `fromArtifact.sessionId` now defaults to the calling
+  session, making save-as a one-filename call.
+
+### Removed
+
+- **Session summaries.** `update_session_summary`, the summary chat view, the
+  summary columns in group tables, and every instruction that maintained them
+  are gone — the canvas is the standing at-a-glance surface. Data-layer
+  columns linger for compatibility and are not read by anything shipped here.
+  Downstream deployments with agents that called `update_session_summary` or
+  filtered `list_sessions` by `summary_updated_since` must drop those usages.
+
+### Fixed
+
+- **Mobile portal, from live iPhone use:** the sequence grid no longer builds
+  for a viewport that doesn't exist (a legacy publisher derived columns from
+  `innerWidth/7` — the visual viewport under pinch — and raced the font
+  probe; it is gone, and the inspector self-measures as a backstop);
+  inspector panes keep horizontal panning with scrollbar chrome hidden and
+  sideways offsets reset on pane switch; stats cards stop wrapping every row
+  when one value is long; the sequence stats box wraps inside its border at
+  any width; canvas audio unlocks on `touchend` (iOS grants no activation on
+  `touchstart`, and `preventDefault` there suppresses the synthetic click);
+  frames may autoplay (`allow="autoplay *"` — opaque origins never match the
+  default allowlist).
+
+- **Canvas pages keep their state.** Container resizes reflow instead of
+  reloading (the settle-reload now rescues only degenerate-box loads), so a
+  window drag no longer resets a running game; hidden kept-alive frames are
+  actually `inert` (React 19 renders `inert:""` as absent — a keyboard trap).
+
+- **Transcript truth.** Canvas revision lines no longer retro-vanish from the
+  TUI transcript (platform-minted events are exempt from the redelivery
+  window); double-clicked canvas actions stay two bubbles; canvas action
+  payloads that JSON cannot serialize are refused instead of thrown.
+
+- **Draw integrity.** Canvas revision reads fail loud instead of minting
+  rev 1 over a live canvas after a transient database error; the armed
+  contract returned by `read_canvas` is re-validated; manifest extraction
+  cannot be shadowed by prose that merely mentions the convention.
+
+- **Keyset session paging skips no rows** (open since v0.5.31): migration
+  0044 compares and orders `cms_list_sessions_page` in millisecond space, so
+  the JS `Date` cursor addresses same-millisecond boundary rows exactly.
+
+- **Group rename.** Clicking the group button with a group selected opens a
+  rename dialog instead of create-new; chat history auto-loads no longer
+  teleport the reader to the top of the loaded window.
+
+
 ## 0.5.36 — 2026-08-07
 
 The portal workspace now reads and behaves as one coherent instrument: panes

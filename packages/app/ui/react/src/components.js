@@ -353,7 +353,6 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
             branding: state.branding,
             connectionError: state.connection.error,
             connectionMode: state.connection.mode,
-            chatViewMode: state.ui.chatViewMode || "transcript",
             chatScroll: state.ui.scroll.chat,
             focused: state.ui.focusRegion === "chat",
         };
@@ -371,9 +370,7 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
                 error: chatView.connectionError,
                 mode: chatView.connectionMode,
             },
-            ui: {
-                chatViewMode: chatView.chatViewMode,
-            },
+            ui: {},
             sessions: {
                 activeSessionId: chatView.activeSessionId,
                 byId: buildSingleSessionMap(chatView.activeSessionId, chatView.activeSession),
@@ -398,7 +395,6 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
         chatView.activeOutbox,
         chatView.authPrincipal,
         chatView.branding,
-        chatView.chatViewMode,
         chatView.connectionError,
         chatView.connectionMode,
     ]);
@@ -966,7 +962,6 @@ const StatusBar = React.memo(function StatusBar({ controller }) {
         workersOnline: state.connection.workersOnline,
         focusRegion: state.ui.focusRegion,
         inspectorTab: state.ui.inspectorTab,
-        chatViewMode: state.ui.chatViewMode || "transcript",
         fullscreenPane: state.ui.fullscreenPane || null,
         logsAvailable: state.logs.available,
         logsTailing: state.logs.tailing,
@@ -988,7 +983,6 @@ const StatusBar = React.memo(function StatusBar({ controller }) {
         ui: {
             focusRegion: statusState.focusRegion,
             inspectorTab: statusState.inspectorTab,
-            chatViewMode: statusState.chatViewMode,
             fullscreenPane: statusState.fullscreenPane,
             statusText: statusState.statusText,
             modal: statusState.modal,

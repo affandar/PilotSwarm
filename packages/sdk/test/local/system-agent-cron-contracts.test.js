@@ -58,16 +58,11 @@ describe("system agent cron contracts", () => {
         assertIncludes(defaultAgent, "autonomous, goal-driven agent", "default agent should describe autonomous goal-driven behavior");
         assertIncludes(defaultAgent, "If in doubt about whether to stop or keep going, keep going.", "default agent should prefer staying alive when progress is still possible");
         assertIncludes(defaultAgent, "When a `cron` or `cron_at` wake-up resumes you, do the scheduled work immediately", "default agent should perform scheduled work on cron wake-up");
-        assertIncludes(defaultAgent, "tangible progress toward the user's goal", "default agent should update summaries for tangible progress");
-        assertIncludes(defaultAgent, "received cross-session replies", "default agent should update summaries after useful cross-session replies");
-        assertIncludes(defaultAgent, "Keep your `update_session_summary` state concise, scannable, and useful", "default agent should keep summaries concise and scannable");
-        assertIncludes(defaultAgent, "short Markdown tables", "default agent should prefer tables for structured summary details");
-        assertIncludes(defaultAgent, "Do not paste long transcripts, raw logs, or bulky JSON into summary fields", "default agent should avoid oversized summary payloads");
         assertIncludes(defaultAgent, "Qualifying child updates wake you automatically", "default agent should explain reactive child coordination");
         assertIncludes(defaultAgent, "Every finite delegation", "default agent should require material-change wakes for finite work");
         assertIncludes(defaultAgent, "ordinary final reply leaves it alive and idle", "default agent should distinguish a task reply from terminal lifecycle completion");
         assertIncludes(defaultAgent, "Do not create a `wait` or `cron` schedule whose only purpose is calling `check_agents`", "default agent should forbid timer-only child polling");
-        assertIncludes(defaultAgent, "version: 1.9.0", "default agent should version the finite delegation wake contract");
+        assertIncludes(defaultAgent, "version: 1.15.1", "default agent should version the finite delegation wake contract");
         assert(!defaultAgent.includes("Continue your poll/summarize loop"), "default agent should not require a polling loop for child coordination");
         assert(!defaultAgent.includes("Preferred**: Poll with `wait` + `check_agents`"), "default agent should not prefer wait-based child polling");
 

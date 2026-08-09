@@ -1,4 +1,6 @@
+import nodeCrypto from "node:crypto";
 import { isSessionLockAcquireTimeoutError, type SessionManager } from "./session-manager.js";
+import { extractCanvasAppManifest, canvasAppCard, normalizeCanvasResponseContract } from "./canvas-app-manifest.js";
 import type { SessionStateStore } from "./session-store.js";
 import { resolveEffectiveSpawnOwner, type SessionCatalog } from "./cms.js";
 // One predicate, every surface: the portal, the viewer spine and the control
@@ -46,6 +48,54 @@ import { supportsVersionedSnapshots, writeTurnSentinel } from "./snapshot-protoc
 
 const SYSTEM_AGENT_IDS = new Set(["pilotswarm", "sweeper", "resourcemgr", "facts-manager"]);
 
+/**
+ * The session canvas: one reserved artifact per ROOT session, drawn by the
+ * agent with draw_canvas and rendered live in the portal. The revision is
+ * derived from the durable session.canvas_updated event log, not a counter
+ * column — see docs/proposals/session-canvas.md.
+ */
+export const CANVAS_ARTIFACT_FILENAME = "canvas.html";
+
+/**
+ * The current canvas revision, from the durable event log — the single
+ * authority. Reads a small window rather than exactly one row and takes the
+ * max of the VALID revs it finds, so one garbage event (rev missing, NaN,
+ * negative — injectable via send_session_event, which validates nothing)
+ * cannot reset the sequence to 1 and break every client's monotonic compare.
+ */
+// Latest canvas draw's full data (rev + armed contract) — same bounded event
+// query as latestCanvasRev; used by read_canvas(manifestOnly) so an inheriting
+// agent learns what the browser is currently enforcing.
+async function latestCanvasEventData(catalog: any, sessionId: string): Promise<{ rev: number; responseContract?: Record<string, any> }> {
+    // No empty-coerce on failure: a transient read error that reads as "no
+    // canvas" would mint rev 1 over a live rev-12 canvas (clients' monotonic
+    // guards then discard the draw while the tool reports success). Callers
+    // route the throw to a structured { error }.
+    const rows = await catalog.getSessionEventsBefore(
+        sessionId, Number.MAX_SAFE_INTEGER, 5, ["session.canvas_updated"],
+    );
+    let latest: { rev: number; responseContract?: Record<string, any> } = { rev: 0 };
+    for (const row of rows || []) {
+        const rev = Number((row?.data as any)?.rev);
+        if (Number.isFinite(rev) && Number.isInteger(rev) && rev > latest.rev) {
+            latest = { rev, responseContract: (row?.data as any)?.responseContract };
+        }
+    }
+    return latest;
+}
+
+async function latestCanvasRev(catalog: any, sessionId: string): Promise<number> {
+    const rows = await catalog.getSessionEventsBefore(
+        sessionId, Number.MAX_SAFE_INTEGER, 5, ["session.canvas_updated"],
+    );
+    let latest = 0;
+    for (const row of rows || []) {
+        const rev = Number((row?.data as any)?.rev);
+        if (Number.isFinite(rev) && rev > latest && Number.isInteger(rev)) latest = rev;
+    }
+    return latest;
+}
+
 const SESSION_RECOVERY_NOTICE =
     "[SYSTEM: The runtime recovered this session after the live Copilot session was lost on a worker. " +
     "Some very recent in-memory state may have been lost. Re-read the visible conversation and continue carefully from the latest durable state.]";
@@ -64,98 +114,6 @@ const REHYDRATED_SESSION_NOTICE =
 function normalizeJsonObject(value: unknown): Record<string, unknown> | null {
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
     return value as Record<string, unknown>;
-}
-
-const SUMMARY_STATE_TEMPLATE =
-    '{"schemaVersion":1,"updatedAt":"2026-05-18T00:00:00.000Z","intent":"...","summary":"...","state":{},"openQuestions":[],"blockers":[],"nextActions":[],"links":[],"structureChangeLog":[]}';
-const MAX_SESSION_TITLE_LENGTH = 60;
-
-function normalizeSummaryArray(value: unknown): unknown[] {
-    if (Array.isArray(value)) return value;
-    if (value === undefined || value === null) return [];
-    return [value];
-}
-
-function normalizeSummaryState(value: unknown): { ok: true; summaryState: Record<string, unknown> } | { ok: false; message: string } {
-    const normalized = normalizeJsonObject(value);
-    if (!normalized) {
-        return { ok: false, message: `summary_state must be an object, not a string. Example: ${SUMMARY_STATE_TEMPLATE}` };
-    }
-
-    const schemaVersion = normalized.schemaVersion === "1" ? 1 : normalized.schemaVersion;
-    if (schemaVersion !== 1) {
-        return { ok: false, message: `summary_state.schemaVersion must be 1. Example: ${SUMMARY_STATE_TEMPLATE}` };
-    }
-    const intent = typeof normalized.intent === "string" ? normalized.intent.trim() : "";
-    if (!intent) {
-        return { ok: false, message: `summary_state.intent is required. Example: ${SUMMARY_STATE_TEMPLATE}` };
-    }
-    const summary = typeof normalized.summary === "string" ? normalized.summary.trim() : "";
-    if (!summary) {
-        return { ok: false, message: `summary_state.summary is required. Example: ${SUMMARY_STATE_TEMPLATE}` };
-    }
-    const updatedAt = typeof normalized.updatedAt === "string" && !Number.isNaN(Date.parse(normalized.updatedAt))
-        ? normalized.updatedAt
-        : new Date().toISOString();
-    const state = normalizeJsonObject(normalized.state) ?? {};
-
-    return {
-        ok: true,
-        summaryState: {
-            ...normalized,
-            schemaVersion: 1,
-            updatedAt,
-            intent,
-            summary,
-            state,
-            openQuestions: normalizeSummaryArray(normalized.openQuestions),
-            blockers: normalizeSummaryArray(normalized.blockers),
-            nextActions: normalizeSummaryArray(normalized.nextActions),
-            links: normalizeSummaryArray(normalized.links),
-            structureChangeLog: normalizeSummaryArray(normalized.structureChangeLog),
-        },
-    };
-}
-
-function normalizeSessionTitleInput(title: unknown, maxLength = MAX_SESSION_TITLE_LENGTH): string {
-    return String(title || "").trim().slice(0, maxLength);
-}
-
-function getNamedAgentTitlePrefix(session: { agentId?: string | null; title?: string | null } | null | undefined): string | null {
-    if (!session?.agentId) return null;
-    const currentTitle = String(session.title || "").trim();
-    if (!currentTitle) return null;
-    const separatorIndex = currentTitle.indexOf(": ");
-    if (separatorIndex > 0) return currentTitle.slice(0, separatorIndex).trim() || null;
-    return null;
-}
-
-function buildStickySessionTitle(
-    session: { agentId?: string | null; title?: string | null } | null | undefined,
-    requestedTitle: unknown,
-): string {
-    const normalizedTitle = normalizeSessionTitleInput(requestedTitle);
-    const prefix = getNamedAgentTitlePrefix(session);
-    if (!prefix) return normalizedTitle;
-
-    const prefixLabel = `${prefix}: `;
-    const maxSuffixLength = Math.max(0, MAX_SESSION_TITLE_LENGTH - prefixLabel.length);
-    if (maxSuffixLength <= 0) return prefix.slice(0, MAX_SESSION_TITLE_LENGTH);
-    return `${prefixLabel}${normalizedTitle.slice(0, maxSuffixLength)}`;
-}
-
-export async function prepareStickySessionTitleUpdate(
-    catalog: Pick<SessionCatalog, "getSession">,
-    sessionId: string,
-    requestedTitle: unknown,
-): Promise<{ ok: true; updates: { title: string; titleLocked: true } } | { ok: false; message: string }> {
-    const session = await catalog.getSession(sessionId);
-    if (!session) return { ok: false, message: `Session ${sessionId.slice(0, 8)} was not found.` };
-    if (session.isSystem) return { ok: false, message: "System session titles are fixed" };
-
-    const title = buildStickySessionTitle(session, requestedTitle);
-    if (!title) return { ok: false, message: "Title cannot be empty" };
-    return { ok: true, updates: { title, titleLocked: true } };
 }
 
 function buildContractJson(contract: unknown, parentSessionId: string, childSessionId: string): Record<string, unknown> | null {
@@ -1395,6 +1353,23 @@ export function registerActivities(
             });
         };
 
+        // Same-turn draw serialization: parallel draw_canvas calls in one
+        // assistant message would otherwise race the derive-write-record
+        // section and mint duplicate revisions.
+        async function latestCanvasDataRev(catalog: any, sessionId: string): Promise<number> {
+    const rows = await catalog.getSessionEventsBefore(
+        sessionId, Number.MAX_SAFE_INTEGER, 5, ["session.canvas_data"],
+    );
+    let latest = 0;
+    for (const row of rows || []) {
+        const rev = Number((row as any)?.data?.dataRev);
+        if (Number.isFinite(rev) && rev > latest && Number.isInteger(rev)) latest = rev;
+    }
+    return latest;
+}
+
+let canvasDrawChain: Promise<void> = Promise.resolve();
+
         const controlToolBridge = {
             /**
              * Send a message to a session AS ITS USER.
@@ -2023,7 +1998,7 @@ export function registerActivities(
                 const running = children.filter(child => child.status === "running").map(child => child.orchId);
                 return running.length > 0 ? running : children.map(child => child.orchId);
             },
-            listSessions: async (args?: { include_system?: boolean; owner_query?: string; owner_kind?: string; query?: string; session_id?: string; agent_id?: string; state?: string; parent_session_id?: string; group_id?: string; include_children?: boolean; updated_since?: string; summary_updated_since?: string; limit?: number }) => {
+            listSessions: async (args?: { include_system?: boolean; owner_query?: string; owner_kind?: string; query?: string; session_id?: string; agent_id?: string; state?: string; parent_session_id?: string; group_id?: string; include_children?: boolean; updated_since?: string;  limit?: number }) => {
                 try {
                     const sdkClient = await getInlineClient();
                     const effectiveArgs = sanitizeAutonomousSystemSessionFilters(args);
@@ -2037,7 +2012,6 @@ export function registerActivities(
                     const groupFilter = typeof groupFilterRaw === "string" ? groupFilterRaw.trim() : undefined;
                     const includeChildren = effectiveArgs?.include_children === true;
                     const updatedSince = Date.parse(String(effectiveArgs?.updated_since || ""));
-                    const summaryUpdatedSince = Date.parse(String(effectiveArgs?.summary_updated_since || ""));
                     const sessions = (await sdkClient.listSessions()).filter((session: any) => matchesSessionOwnerFilters(session, {
                         includeSystem: effectiveArgs?.include_system === true,
                         ownerQuery: effectiveArgs?.owner_query,
@@ -2054,18 +2028,11 @@ export function registerActivities(
                             const updatedAt = Date.parse(session.updatedAt || session.lastActiveAt || session.createdAt || "");
                             if (!Number.isFinite(updatedAt) || updatedAt < updatedSince) return false;
                         }
-                        if (Number.isFinite(summaryUpdatedSince)) {
-                            const summaryUpdatedAt = Date.parse(session.summaryUpdatedAt || "");
-                            if (!Number.isFinite(summaryUpdatedAt) || summaryUpdatedAt < summaryUpdatedSince) return false;
-                        }
                         if (query) {
                             const haystack = [
                                 session.sessionId,
                                 session.title,
                                 session.agentId,
-                                session.shortSummary,
-                                session.summaryState?.intent,
-                                session.summaryState?.summary,
                                 formatSessionOwnerLabel(session),
                             ].map((part) => String(part || "").toLowerCase()).join(" ");
                             if (!haystack.includes(query)) return false;
@@ -2081,50 +2048,12 @@ export function registerActivities(
                         `    Owner: ${formatSessionOwnerLabel(s)}\n` +
                         `    Agent: ${s.agentId ?? "generic"}\n` +
                         `    Group: ${s.viewerGroupId ?? "none"}\n` +
-                        `    Summary: ${s.shortSummary ?? s.summaryState?.summary ?? "(no summary)"}\n` +
-                        `    Summary Updated: ${s.summaryUpdatedAt ? new Date(s.summaryUpdatedAt).toISOString() : "never"}\n` +
                         `    Status: ${s.status}, Iterations: ${s.iterations ?? 0}\n` +
                         `    Parent: ${s.parentSessionId ?? "none"}`
                     );
                     return `[SYSTEM: Active sessions (${sessions.length}):\n${lines.join("\n")}]`;
                 } catch (err: any) {
                     return `[SYSTEM: list_sessions failed: ${err?.message || String(err)}]`;
-                }
-            },
-            updateSessionSummary: async (args: { summary_state?: any; short_summary?: string; title?: string }) => {
-                try {
-                    if (isReadOnlyTuner()) return `[SYSTEM: update_session_summary is disabled for read-only agent-tuner sessions.]`;
-                    if (!catalog) return `[SYSTEM: update_session_summary failed: CMS catalog is unavailable.]`;
-                    const hasSummaryState = Object.prototype.hasOwnProperty.call(args ?? {}, "summary_state") && args.summary_state !== undefined && args.summary_state !== null;
-                    const hasTitle = Object.prototype.hasOwnProperty.call(args ?? {}, "title");
-                    if (!hasSummaryState && !hasTitle) {
-                        return `[SYSTEM: update_session_summary failed: summary_state or title is required.]`;
-                    }
-
-                    let normalizedSummary: { ok: true; summaryState: Record<string, unknown> } | undefined;
-                    if (hasSummaryState) {
-                        const summaryResult = normalizeSummaryState(args.summary_state);
-                        if (!summaryResult.ok) return `[SYSTEM: update_session_summary failed: ${summaryResult.message}]`;
-                        normalizedSummary = summaryResult;
-                    }
-
-                    const titleUpdate = hasTitle
-                        ? await prepareStickySessionTitleUpdate(catalog, input.sessionId, args.title)
-                        : undefined;
-                    if (titleUpdate && !titleUpdate.ok) return `[SYSTEM: update_session_summary failed: ${titleUpdate.message}]`;
-
-                    const updated: string[] = [];
-                    if (normalizedSummary) {
-                        await catalog.updateSessionSummary(input.sessionId, normalizedSummary.summaryState as any, args.short_summary);
-                        updated.push("summary");
-                    }
-                    if (titleUpdate?.ok) {
-                        await catalog.updateSession(input.sessionId, titleUpdate.updates);
-                        updated.push("title");
-                    }
-                    return `[SYSTEM: Session ${updated.join(" and ")} updated.]`;
-                } catch (err: any) {
-                    return `[SYSTEM: update_session_summary failed: ${err?.message || String(err)}]`;
                 }
             },
             sendSessionMessage: async (args: { session_id: string; subject: string; body: string; reason?: string; expects_response?: boolean; expires_at?: string }) => {
@@ -2279,6 +2208,215 @@ export function registerActivities(
                     return `[SYSTEM: delete_agent failed: ${err?.message || String(err)}]`;
                 }
             },
+            // ── Canvas (root sessions only) ─────────────────────────────
+            //
+            // Three layers of the root gate, because they fail differently:
+            // the DECLARATION is filtered off child sessions in
+            // session-manager (catalog row's parentSessionId); the bridge
+            // methods are absent when THIS execution knows its parent
+            // (input.parentSessionId — absent on frozen pre-1.0.32
+            // orchestration versions, hence the third layer); and each method
+            // re-checks the catalog row itself, which is the authority.
+            //
+            // ATOMICITY: drawCanvas persists the canvas_updated event HERE,
+            // awaited, immediately after the byte write — derive, write, and
+            // record happen inside one serialized section, so parallel tool
+            // calls in one assistant message cannot mint duplicate revs.
+            // session-proxy's generic onEvent persister treats
+            // canvas_updated as already-persisted (see EPHEMERAL_TYPES); the
+            // handler's opts.onEvent emit is the live-push half only.
+            ...(input.parentSessionId ? {} : {
+                drawCanvas: async (args: { html?: string; fromArtifact?: { sessionId?: string; filename: string; expectedSha256?: string }; note?: string; responseContract?: Record<string, any> }) => {
+                    if (!artifactStore) return { error: "this worker has no artifact store" };
+                    if (!catalog) return { error: "canvas requires the CMS catalog" };
+                    const run = canvasDrawChain.then(async () => {
+                        const row = await catalog.getSession(input.sessionId).catch(() => null);
+                        if ((row as any)?.parentSessionId) {
+                            return { error: "the canvas is only available on root sessions" };
+                        }
+                        const rev = (await latestCanvasRev(catalog, input.sessionId)) + 1;
+                        // Source resolution. fromArtifact pulls bytes store-side —
+                        // the same trust stance as read_artifact/write_artifact's
+                        // cross-session paths (the artifact layer is worker-trusted);
+                        // the model never carries the document.
+                        let html: string;
+                        let source: { kind: "artifact"; sessionId: string; filename: string; sha256: string } | undefined;
+                        if (args.fromArtifact) {
+                            const from = args.fromArtifact;
+                            const sourceSessionId = String(from.sessionId || input.sessionId);
+                            const filename = String(from.filename || "");
+                            let text: string;
+                            try {
+                                text = await artifactStore.downloadArtifactText(sourceSessionId, filename);
+                            } catch (err: any) {
+                                return { error: `could not read artifact ${filename} from session ${sourceSessionId}: ${err?.message || String(err)}` };
+                            }
+                            const fetchedBytes = Buffer.byteLength(text, "utf8");
+                            if (fetchedBytes > 900_000) {
+                                return { error: `artifact ${filename} is ${fetchedBytes} bytes; the canvas cap is 900 KB` };
+                            }
+                            const sha256 = nodeCrypto.createHash("sha256").update(text, "utf8").digest("hex");
+                            if (from.expectedSha256 && sha256 !== from.expectedSha256) {
+                                return { error: `SHA_MISMATCH: artifact ${filename} hashes ${sha256}, expected ${from.expectedSha256}; nothing was drawn` };
+                            }
+                            if (!text.trim()) {
+                                return { error: `artifact ${filename} is empty; to clear the canvas pass html: ""` };
+                            }
+                            html = text;
+                            source = { kind: "artifact", sessionId: sourceSessionId, filename, sha256 };
+                        } else {
+                            html = String(args.html ?? "");
+                        }
+                        // Interface card: extract the embedded manifest, resolve the
+                        // EFFECTIVE contract (explicit argument wins; else the
+                        // manifest's, revalidated by the same normalizer; an invalid
+                        // embedded contract with no explicit override fails the draw
+                        // closed rather than arming nothing silently).
+                        const extraction = html ? extractCanvasAppManifest(html) : { manifest: null };
+                        let effectiveContract = args.responseContract;
+                        let manifestWarning: string | undefined;
+                        if (!effectiveContract && html) {
+                            if (extraction.error && !args.fromArtifact) {
+                                // Inline draw with a broken manifest attempt: tolerate —
+                                // the author is iterating live and passed no contract —
+                                // but SAY SO, or they first learn at reuse time when the
+                                // fromArtifact draw fails closed.
+                                manifestWarning = `CANVAS-APP-MANIFEST attempt is broken (${extraction.error}); drawn without it — fix the comment before saving this as an app.`;
+                            } else if (extraction.error) {
+                                return { error: `the artifact's CANVAS-APP-MANIFEST is broken: ${extraction.error}. Fix the stored app or pass an explicit responseContract.` };
+                            }
+                            if (extraction.manifest?.responseContract !== undefined) {
+                                const normalized = normalizeCanvasResponseContract(extraction.manifest.responseContract);
+                                if (normalized.error) {
+                                    return { error: `the embedded CANVAS-APP-MANIFEST contract is invalid: ${normalized.error}. Fix the stored app or pass an explicit responseContract.` };
+                                }
+                                effectiveContract = normalized.contract;
+                            }
+                        }
+                        const app = canvasAppCard(extraction.manifest);
+                        const note = args.note ? String(args.note) : undefined;
+                        await artifactStore.uploadArtifact(
+                            input.sessionId, CANVAS_ARTIFACT_FILENAME, html, "text/html",
+                            // Pinned on EVERY draw, not just the first: uploads
+                            // replace artifact metadata wholesale, so a pin set
+                            // once at rev 1 was silently erased by rev 2.
+                            { pinned: true } as any,
+                        );
+                        const sizeBytes = Buffer.byteLength(html, "utf8");
+                        // Durable commit BEFORE returning: a rev is only ever
+                        // advertised after both its bytes and its event exist.
+                        // The response contract rides the event so every
+                        // client learns it exactly where it learns the rev —
+                        // live push and cold snapshot alike, no extra fetch.
+                        await catalog.recordEvents(input.sessionId, [{
+                            eventType: "session.canvas_updated",
+                            data: {
+                                rev,
+                                sizeBytes,
+                                ...(note ? { note } : {}),
+                                ...(effectiveContract ? { responseContract: effectiveContract } : {}),
+                                ...(source ? { source } : {}),
+                            },
+                        }], workerNodeId);
+                        return {
+                            rev,
+                            sizeBytes,
+                            ...(source ? { source } : {}),
+                            ...(app ? { app } : {}),
+                            ...(effectiveContract ? { responseContract: effectiveContract } : {}),
+                            ...(manifestWarning ? { manifestWarning } : {}),
+                        };
+                    }).catch((err: any) => ({ error: err?.message || String(err) }));
+                    canvasDrawChain = run.then(() => undefined, () => undefined);
+                    return run;
+                },
+                updateCanvas: async (args: { data: Record<string, any>; note?: string }) => {
+                    if (!catalog) return { error: "canvas requires the CMS catalog" };
+                    const run = canvasDrawChain.then(async () => {
+                        const row = await catalog.getSession(input.sessionId).catch(() => null);
+                        if ((row as any)?.parentSessionId) {
+                            return { error: "the canvas is only available on root sessions" };
+                        }
+                        if ((await latestCanvasRev(catalog, input.sessionId)) === 0) {
+                            return { error: "no canvas has been drawn on this session — draw_canvas first; ticks patch an existing page" };
+                        }
+                        const dataRev = (await latestCanvasDataRev(catalog, input.sessionId)) + 1;
+                        const sizeBytes = Buffer.byteLength(JSON.stringify(args.data), "utf8");
+                        // The payload rides the durable event — it IS the
+                        // replay source for cold loads; no artifact write.
+                        await catalog.recordEvents(input.sessionId, [{
+                            eventType: "session.canvas_data",
+                            data: {
+                                dataRev,
+                                sizeBytes,
+                                payload: args.data,
+                                ...(args.note ? { note: String(args.note) } : {}),
+                            },
+                        }], workerNodeId);
+                        return { dataRev, sizeBytes };
+                    }).catch((err: any) => ({ error: err?.message || String(err) }));
+                    canvasDrawChain = run.then(() => undefined, () => undefined);
+                    return run;
+                },
+                readCanvas: async (args: { offset?: number; maxBytes?: number; manifestOnly?: boolean }) => {
+                    if (!artifactStore) return { error: "this worker has no artifact store" };
+                    if (!catalog) return { error: "canvas requires the CMS catalog" };
+                    try {
+                        // Log FIRST: the event log is the single authority on
+                        // whether a canvas exists. Orphan bytes from a crashed
+                        // half-draw (or a user-uploaded canvas.html) read as
+                        // "not drawn" — the documented conservative answer.
+                        // Known window: a crash BETWEEN byte write and event
+                        // write on a redraw serves rev-N metadata over rev-N+1
+                        // bytes until the next successful draw. Self-healing;
+                        // accepted.
+                        if (args.manifestOnly) {
+                            // The interface card without the bytes: embedded
+                            // manifest summary from the stored document plus the
+                            // ARMED contract from the latest draw event — the
+                            // pair an inheriting agent needs to interpret
+                            // canvas-action messages and author ticks.
+                            const latest = await latestCanvasEventData(catalog, input.sessionId);
+                            if (latest.rev === 0) return { exists: false };
+                            const docText = await artifactStore.downloadArtifactText(input.sessionId, CANVAS_ARTIFACT_FILENAME);
+                            const extraction = extractCanvasAppManifest(docText);
+                            const card = canvasAppCard(extraction.manifest);
+                            // Events are writable via send_session_event with no
+                            // validation — the armed contract re-passes the
+                            // normalizer here so an injected megabyte "contract"
+                            // cannot ride a cheap read into model context.
+                            const armed = normalizeCanvasResponseContract(latest.responseContract);
+                            return {
+                                exists: true,
+                                rev: latest.rev,
+                                sizeBytes: Buffer.byteLength(docText, "utf8"),
+                                ...(card ? { app: card } : {}),
+                                ...(armed.contract ? { responseContract: armed.contract } : {}),
+                                ...(extraction.error ? { manifestError: extraction.error } : {}),
+                            };
+                        }
+                        const rev = await latestCanvasRev(catalog, input.sessionId);
+                        if (rev === 0) return { exists: false };
+                        const text = await artifactStore.downloadArtifactText(input.sessionId, CANVAS_ARTIFACT_FILENAME);
+                        const offset = Math.max(0, Math.floor(Number(args.offset) || 0));
+                        const maxChars = Math.min(262_144, Math.max(1, Math.floor(Number(args.maxBytes) || 65_536)));
+                        const content = text.slice(offset, offset + maxChars);
+                        return {
+                            exists: true,
+                            rev,
+                            sizeBytes: Buffer.byteLength(text, "utf8"),
+                            // offset/paging are UTF-16 code units ("characters");
+                            // sizeChars is the value offset reconciles against.
+                            sizeChars: text.length,
+                            offset,
+                            content,
+                            truncated: offset + content.length < text.length,
+                        };
+                    } catch (err: any) {
+                        return { error: err?.message || String(err) };
+                    }
+                },
+            }),
         } as const;
 
         // Cooperative cancellation: poll for lock steal
@@ -2313,6 +2451,15 @@ export function registerActivities(
                 // client event buffer (starving the milestone-only sequence view).
                 "assistant.tool_call_delta",
                 "user.message", // Already recorded explicitly above — skip the SDK's duplicate
+                // Persisted ATOMICALLY by the drawCanvas bridge method (derive
+                // + write + record in one awaited, serialized section). The
+                // handler's emit is the live-push half only; recording it here
+                // too would double-insert every revision.
+                "session.canvas_updated",
+                // Same contract for data ticks: the updateCanvas bridge method
+                // records the event (payload inline) inside the serialized
+                // section — the generic path must not double-insert it.
+                "session.canvas_data",
             ]);
             const onEvent = catalog
                 ? (event: { eventType: string; data: unknown }) => {
@@ -3261,7 +3408,10 @@ export function registerActivities(
                     const content = (evt.data as any)?.content;
                     if (content) {
                         const trimmed = String(content).trim();
-                        if (trimmed) {
+                        // Canvas actions are wire-format JSON, not prose —
+                        // titling a session "canvas-action action send data"
+                        // is how one leaked into a session list.
+                        if (trimmed && !trimmed.startsWith("[canvas-action] ")) {
                             lines.push(`User: ${trimmed.slice(0, 200)}`);
                             userMessages.push(trimmed);
                         }

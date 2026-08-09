@@ -32,11 +32,13 @@ const GENERIC_SIGN_IN_MESSAGE = "Use your organization's identity provider to op
 const DEEP_LINK_SESSION_STORAGE_KEY = "pilotswarm.portal.deepLinkSession";
 
 /**
- * A deep-link target: `?session=<id>[&artifact=<filename>][&view=full]`.
+ * A deep-link target: `?session=<id>[&artifact=<filename>][&view=full|canvas]`.
  *
  * The artifact form is what the agent's show_artifact tool hands back and what
  * the Files "copy link" button produces, so a link pasted into chat, mailed to
  * a colleague, or opened in a new tab all land on the same preview.
+ * `view=canvas` opens the session with its canvas up — the shareable "look at
+ * the dashboard" link.
  */
 function readDeepLinkTargetFromUrl() {
     if (typeof window === "undefined" || !window.location) return null;
@@ -44,10 +46,12 @@ function readDeepLinkTargetFromUrl() {
     const sessionId = (params.get("session") || "").trim();
     if (!sessionId) return null;
     const artifact = (params.get("artifact") || "").trim();
+    const view = (params.get("view") || "").trim().toLowerCase();
     return {
         sessionId,
         artifact: artifact || null,
-        fullscreen: (params.get("view") || "").trim().toLowerCase() === "full",
+        fullscreen: view === "full",
+        canvas: view === "canvas",
     };
 }
 
@@ -73,6 +77,7 @@ function parseStashedDeepLinkTarget(raw) {
         return {
             sessionId,
             artifact: parsed?.artifact ? String(parsed.artifact) : null,
+            canvas: Boolean(parsed?.canvas),
             fullscreen: Boolean(parsed?.fullscreen),
         };
     } catch {
@@ -597,7 +602,15 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
                 //
                 // A phone has no room for both and gets the full-viewport
                 // overlay instead.
-                if (!active || !initialSessionId || !deepLinkTarget?.artifact) return null;
+                if (!active || !initialSessionId) return null;
+                // ?view=canvas: land with the canvas up. Desktop flips the
+                // right column; the phone follows the flip tick into its
+                // canvas tab (the same path an agent-driven flip takes).
+                if (deepLinkTarget?.canvas) {
+                    controller.dispatch({ type: "canvas/flip", sessionId: initialSessionId });
+                    return null;
+                }
+                if (!deepLinkTarget?.artifact) return null;
                 const isPhone = typeof window !== "undefined"
                     && typeof window.matchMedia === "function"
                     && window.matchMedia("(max-width: 920px)").matches;

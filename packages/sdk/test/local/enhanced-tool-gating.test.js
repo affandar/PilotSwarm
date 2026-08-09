@@ -242,7 +242,7 @@ describe("E1: enhanced facts (search) + no graph", () => {
         const { names } = await register({ factStore: fakeEnhancedStore(), agentIdentity: "agent-tuner" });
         assert(hasAll(names, ["read_facts", ...SEARCH_TOOLS]), "tuner keeps the full read surface");
         assert(!names.has("store_fact") && !names.has("delete_fact"), "tuner gets no fact mutation");
-        assert(!names.has("update_session_summary") && !names.has("send_session_message"),
+        assert(!names.has("send_session_message"),
             "tuner gets no mutating system tools");
     });
 
@@ -401,7 +401,7 @@ describe("E1: base facts + graph (composition tier)", () => {
 // explicit, named invariant rather than a side-assertion.
 describe("E1c: agent-tuner is strictly read-only (never a mutating tool)", () => {
     const FACT_WRITES = ["store_fact", "delete_fact", ...TOMBSTONE_MUTATIONS];
-    const MUTATING_SYSTEM = ["update_session_summary", "send_session_message", "reply_session_message"];
+    const MUTATING_SYSTEM = ["send_session_message", "reply_session_message"];
     // Sub-agent / lifecycle controls the tuner must NEVER receive. The tuner is
     // allowed ONLY the read members check_agents + list_sessions (session-manager
     // readOnlyTunerSubAgentToolNames); everything else here is a mutation.

@@ -106,11 +106,6 @@ function sessionStatusLabelForVisualStatus(session, status) {
     return status;
 }
 
-function getSessionSummaryStatusLabel(session) {
-    const status = getSessionVisualStatus(session);
-    if (!status || status === "unknown") return "";
-    return sessionStatusLabelForVisualStatus(session, status);
-}
 
 /**
  * The label + timestamp the session-detail box shows, as ONE derivation shared
@@ -1176,7 +1171,7 @@ export function selectSessionRows(state) {
         const ownerSearchText = effectiveOwner
             ? `${ownerDisplayName(effectiveOwner, "")} ${effectiveOwner.email || ""}`
             : "";
-        const summarySearchText = `${session?.shortSummary || ""} ${session?.summaryState?.intent || ""} ${session?.summaryState?.summary || ""}`;
+        const summarySearchText = "";
         return matchesSearchQuery(row.text, query)
             || matchesSearchQuery(row.sessionId, query)
             || matchesSearchQuery(ownerSearchText, query)
@@ -1557,7 +1552,7 @@ export function selectActiveChat(state) {
             .replace(/[\r\n]+/g, " ")
             .trim() || " ";
         const memberRows = memberSessions.map((candidate) => (
-            `| ${markdownCell(candidate.title || candidate.sessionId)} | ${markdownCell(candidate.status || "unknown")} | ${markdownCell(candidate.shortSummary || "")} |`
+            `| ${markdownCell(candidate.title || candidate.sessionId)} | ${markdownCell(candidate.status || "unknown")} |`
         ));
         const lines = [
             `# ${session.title || session.groupId}`,
@@ -1575,8 +1570,8 @@ export function selectActiveChat(state) {
             "## Members",
             ...(memberRows.length > 0
                 ? [
-                    "| Session | Status | Summary |",
-                    "|---|---|---|",
+                    "| Session | Status |",
+                    "|---|---|",
                     ...memberRows,
                 ]
                 : ["_No top-level members._"]),
@@ -1588,9 +1583,6 @@ export function selectActiveChat(state) {
             text: lines.filter((line, index) => index === 1 || String(line || "").length > 0).join("\n"),
             createdAt: session.updatedAt || Date.now(),
         }];
-    }
-    if (state.ui?.chatViewMode === "summary") {
-        return buildSessionSummaryCards(session);
     }
     const history = state.history.bySessionId.get(sessionId);
     const chat = history?.chat || [];
@@ -1616,123 +1608,6 @@ export function selectActiveChat(state) {
         messages.push(sessionErrorMessage);
     }
     return messages;
-}
-
-function buildSessionSummaryCards(session) {
-    const normalizeSummaryMarkdownText = (value) => {
-        const source = String(value || "");
-        if (!source.includes("\\n")) return source;
-        return source
-            .replace(/\\\\n/g, "\n")
-            .replace(/\\n/g, "\n");
-    };
-
-    const summaryState = session?.summaryState && typeof session.summaryState === "object" && !Array.isArray(session.summaryState)
-        ? session.summaryState
-        : null;
-    const stateJson = summaryState?.state && typeof summaryState.state === "object" && !Array.isArray(summaryState.state)
-        ? summaryState.state
-        : null;
-    const title = buildSessionDisplayTitle(session) || session?.title || session?.sessionId || "Session";
-    const lines = [];
-    lines.push(`# ${title}`);
-    lines.push("");
-
-    // Compact metadata header — status / intent / updated on their own
-    // lines, each as a bold-labeled value. Skipped when empty.
-    const metaPairs = [];
-    const statusLabel = getSessionSummaryStatusLabel(session);
-    if (statusLabel) metaPairs.push(["Status", statusLabel]);
-    if (summaryState?.intent) metaPairs.push(["Intent", String(summaryState.intent)]);
-    if (session?.summaryUpdatedAt) {
-        const ts = formatTimestamp(session.summaryUpdatedAt);
-        if (ts) metaPairs.push(["Updated", ts]);
-    }
-    for (const [label, value] of metaPairs) {
-        lines.push(`**${label}:** ${value}`);
-    }
-    if (metaPairs.length > 0) lines.push("");
-
-    // Free-form summary paragraph (uses the LLM-authored summary if present,
-    // otherwise the short summary the CLI rolls up).
-    const narrative = normalizeSummaryMarkdownText(summaryState?.summary || session?.shortSummary || "").trim();
-    if (narrative) {
-        lines.push(narrative);
-        lines.push("");
-    }
-
-    // Structured state — each key:value renders as a bold-labeled bullet.
-    // Lists/objects are rendered as nested bullets so arrays of "progress"
-    // steps don't appear as JSON blobs.
-    if (stateJson) {
-        const entries = Object.entries(stateJson)
-            .filter(([, value]) => value !== null && value !== undefined && !(typeof value === "string" && !value.trim()));
-        if (entries.length > 0) {
-            lines.push("## State");
-            for (const [key, value] of entries) {
-                if (Array.isArray(value)) {
-                    if (value.length === 0) {
-                        lines.push(`- **${key}:** _(empty)_`);
-                    } else {
-                        lines.push(`- **${key}:**`);
-                        for (const item of value.slice(0, 16)) {
-                            const text = typeof item === "string"
-                                ? normalizeSummaryMarkdownText(item)
-                                : JSON.stringify(item);
-                            lines.push(`  - ${text}`);
-                        }
-                    }
-                } else if (value && typeof value === "object") {
-                    lines.push(`- **${key}:**`);
-                    for (const [subKey, subValue] of Object.entries(value).slice(0, 16)) {
-                        const text = typeof subValue === "string"
-                            ? normalizeSummaryMarkdownText(subValue)
-                            : JSON.stringify(subValue);
-                        lines.push(`  - **${subKey}:** ${text}`);
-                    }
-                } else {
-                    lines.push(`- **${key}:** ${normalizeSummaryMarkdownText(String(value))}`);
-                }
-            }
-            lines.push("");
-        }
-    }
-
-    // Structured tail sections. Each section renders only if it actually
-    // has items; skipped sections do not occupy vertical space.
-    for (const [heading, field] of [["Blockers", "blockers"], ["Open Questions", "openQuestions"], ["Next Actions", "nextActions"]]) {
-        const items = Array.isArray(summaryState?.[field]) ? summaryState[field].filter(Boolean).slice(0, 12) : [];
-        if (items.length === 0) continue;
-        lines.push(`## ${heading}`);
-        for (const item of items) {
-            lines.push(`- ${typeof item === "string" ? normalizeSummaryMarkdownText(item) : JSON.stringify(item)}`);
-        }
-        lines.push("");
-    }
-
-    if (!summaryState && !narrative) {
-        lines.push("_No summary has been written yet for this session._");
-    }
-
-    // Collapse trailing blank lines so the pane doesn't render empty rows
-    // at the bottom.
-    while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
-
-    return [{
-        id: `summary:${session?.sessionId || "none"}`,
-        role: "system",
-        noChrome: true,
-        text: lines.join("\n"),
-        createdAt: session?.summaryUpdatedAt || session?.updatedAt || Date.now(),
-    }];
-}
-
-export function selectActiveOutboxMessages(state) {
-    const sessionId = state.sessions.activeSessionId;
-    if (!sessionId) return [];
-    return Array.isArray(state.outbox?.bySessionId?.[sessionId])
-        ? state.outbox.bySessionId[sessionId].map((item) => buildPendingOutboxMessage(sessionId, item)).filter(Boolean)
-        : [];
 }
 
 function prefixRuns(text, color = "gray", options = {}) {
@@ -2593,7 +2468,6 @@ function liveActivityPhaseText(item) {
 // so visibility is governed by session status rather than transcript role.
 // `options.spinnerFrame` animates the marker.
 export function selectLiveActivityLines(state, options = {}) {
-    if (state?.ui?.chatViewMode === "summary") return [];
     const session = selectActiveSession(state);
     if (!session || session.isGroup) return [];
     const status = String(session?.status || "").toLowerCase();
@@ -2665,7 +2539,7 @@ export function selectLiveActivityLines(state, options = {}) {
 // Keyed on identities rather than fields on purpose: selectActiveChat is NOT a
 // pure function of the chat array — it also appends a pending-question message,
 // an answered-question message and a session-error message, and branches on
-// ui.chatViewMode and branding. Anything derived from `session` therefore has
+// branding. Anything derived from `session` therefore has
 // to invalidate when `session` does, which identity comparison gives for free.
 //
 // `byId` is in the key for two reasons found by adversarial review, both of
@@ -2695,7 +2569,6 @@ export function selectChatLines(state, maxWidth = 80, options = {}) {
         session: memoSessionId ? state?.sessions?.byId?.[memoSessionId] ?? null : null,
         byId: state?.sessions?.byId ?? null,
         chat: state?.history?.bySessionId?.get?.(memoSessionId)?.chat ?? null,
-        viewMode: state?.ui?.chatViewMode ?? null,
         branding: state?.branding ?? null,
         principal: state?.auth?.principal ?? null,
         maxWidth,
@@ -2754,6 +2627,10 @@ export function selectChatLines(state, maxWidth = 80, options = {}) {
             lines.push(buildRegenRefusedLine(message, maxWidth));
         } else if (message?.kind === "regen-failed") {
             lines.push(buildRegenFailedLine(message, maxWidth));
+        } else if (message?.kind === "canvas-update") {
+            lines.push(buildCanvasUpdateLine(message, message.sessionId || memoSessionId));
+        } else if (message?.kind === "canvas-action") {
+            lines.push(buildCanvasActionLine(message));
         } else {
             const messageLines = buildChatMessageLines(message, maxWidth, buildOptions);
             appendChatBlockLines(lines, messageLines);
@@ -2768,6 +2645,92 @@ export function selectChatLines(state, maxWidth = 80, options = {}) {
         }
     }
     return memoize(lines.length > 0 ? lines : [{ text: "No messages yet.", color: "gray" }]);
+}
+
+/**
+ * The canvas-update transcript line — carried by BOTH hosts, rendered by one.
+ *
+ * The line is flagged `canvasUpdate: true`; the portal's chat renderer skips
+ * flagged lines outright (there, the canvas pane updating is the whole
+ * signal), while the TUI renders it as an ordinary artifact link, press-a
+ * affordance and all — a host that cannot render the canvas needs the link.
+ */
+/**
+ * Everything the Canvas toggle and pane need about the ACTIVE session's
+ * canvas, in one read: whether one exists, its revision and caption, and
+ * whether the yellow unseen-changes badge should light
+ * (latestRev > lastViewedRev, and only while the canvas is not on screen).
+ */
+export function selectCanvasView(state) {
+    const sessionId = state?.sessions?.activeSessionId || null;
+    const entry = sessionId ? state?.canvas?.bySessionId?.[sessionId] : null;
+    const prefs = sessionId ? state?.canvas?.prefs?.[sessionId] : null;
+    const latestRev = entry?.latestRev || 0;
+    const lastViewedRev = prefs?.lastViewedRev || 0;
+    const latestDataRev = entry?.latestDataRev || 0;
+    const lastViewedDataRev = prefs?.lastViewedDataRev || 0;
+    const mode = state?.ui?.rightPaneMode === "canvas" ? "canvas" : "panes";
+    // A cleared canvas (draw_canvas("") → sizeBytes 0) no longer exists for
+    // affordance purposes: no phone tab, no badge, blank teaching state.
+    // Unknown size (null — snapshot degrade) is presumed drawn.
+    const exists = latestRev > 0 && entry?.sizeBytes !== 0;
+    return {
+        sessionId,
+        mode,
+        exists,
+        latestRev,
+        note: entry?.note || "",
+        sizeBytes: entry?.sizeBytes ?? null,
+        snapshotLoaded: Boolean(entry?.snapshotLoaded),
+        optedOut: Boolean(prefs?.optedOut),
+        lastViewedRev,
+        flipSeq: state?.canvas?.flipSeq || 0,
+        responseContract: entry?.responseContract || null,
+        latestDataRev,
+        lastViewedDataRev,
+        dataPayload: entry?.dataPayload || null,
+        unseen: exists && (latestRev > lastViewedRev || latestDataRev > lastViewedDataRev) && mode !== "canvas",
+    };
+}
+
+/**
+ * A validated canvas response on its way to the agent. Flagged so the PORTAL
+ * chat skips it (the canvas redraw is the visible half of the loop) while the
+ * TUI — which renders no canvas and would otherwise show a silent gap in the
+ * conversation — gets a compact dim line.
+ */
+function buildCanvasActionLine(message) {
+    const dataKeys = message?.data && typeof message.data === "object" ? Object.keys(message.data) : [];
+    const detail = dataKeys.length === 1 && typeof message.data[dataKeys[0]] === "string"
+        ? message.data[dataKeys[0]].slice(0, 120)
+        : (dataKeys.length ? JSON.stringify(message.data).slice(0, 120) : "");
+    return {
+        runs: [
+            { text: "[canvas] ", color: "cyan", bold: true },
+            { text: `${message.action || "action"}`, color: "white" },
+            ...(detail ? [{ text: ` — ${detail}`, color: "gray" }] : []),
+        ],
+        canvasAction: true,
+    };
+}
+
+function buildCanvasUpdateLine(message, sessionId) {
+    const rev = Number(message?.rev) || 0;
+    const note = typeof message?.note === "string" && message.note.trim() ? ` — ${message.note.trim()}` : "";
+    const runs = [
+        { text: "[canvas] ", color: "cyan", bold: true },
+        { text: `rev ${rev}${note} `, color: "white" },
+    ];
+    if (sessionId) {
+        runs.push({
+            text: "[artifact: canvas.html]",
+            color: "cyan",
+            underline: true,
+            href: `artifact://${sessionId}/canvas.html`,
+        });
+        runs.push({ text: " (press a to download)", color: "gray" });
+    }
+    return { runs, canvasUpdate: true };
 }
 
 function buildRuleLine(label, color, maxWidth) {
@@ -2823,6 +2786,14 @@ function buildRegenFailedLine(message, maxWidth) {
     const cause = raw.length > 120 ? `${raw.slice(0, 117)}…` : raw;
     const label = ` ✕ regeneration failed at ${stage}${cause ? ` · ${cause}` : ""} `;
     return buildRuleLine(label, "red", maxWidth);
+}
+
+export function selectActiveOutboxMessages(state) {
+    const sessionId = state.sessions.activeSessionId;
+    if (!sessionId) return [];
+    return Array.isArray(state.outbox?.bySessionId?.[sessionId])
+        ? state.outbox.bySessionId[sessionId].map((item) => buildPendingOutboxMessage(sessionId, item)).filter(Boolean)
+        : [];
 }
 
 export function selectOutboxOverlayLines(state, maxWidth = 80, options = {}) {
@@ -2956,9 +2927,7 @@ export function selectChatPaneChrome(state, options = {}) {
     const outboxItems = Array.isArray(state.outbox?.bySessionId?.[session.sessionId])
         ? state.outbox.bySessionId[session.sessionId]
         : [];
-    const progress = state.ui?.chatViewMode === "summary"
-        ? null
-        : buildLiveProgressState(session, history, history?.chat || [], outboxItems);
+    const progress = buildLiveProgressState(session, history, history?.chat || [], outboxItems);
 
     // Border top-right: status · model · context (mirrors the session-row meta),
     // with the live turn-progress label appended while a turn is running.
@@ -4266,11 +4235,9 @@ export function selectStatusBar(state) {
             right: "up/down move · space toggle · ctrl-g group · c cancel · d complete · D hard delete · V/esc exit",
         };
     }
-    const chatViewMode = state.ui?.chatViewMode === "summary" ? "summary" : "transcript";
-    const chatViewHint = chatViewMode === "summary" ? "s transcript" : "s summary";
     const hints = {
         [FOCUS_REGIONS.SESSIONS]: `up/down switch · ctrl-u/ctrl-d page · ctrl-g move group · f filter · P pin · V select · d done · D delete · r refresh · t title · v visibility · S share · [/] resize pane · {/} columns · T themes · ? help · a linked items · drag copy · tab next pane · p prompt`,
-        [FOCUS_REGIONS.CHAT]: `${chatViewHint} · j/k scroll · ctrl-u/ctrl-d page · e older history · g/G top/bottom · d done · ${fullscreenHint} · [/] resize pane · {/} columns · T themes · ? help · a linked items · drag copy · tab next pane · p prompt`,
+        [FOCUS_REGIONS.CHAT]: `j/k scroll · ctrl-u/ctrl-d page · e older history · g/G top/bottom · d done · ${fullscreenHint} · [/] resize pane · {/} columns · T themes · ? help · a linked items · drag copy · tab next pane · p prompt`,
         [FOCUS_REGIONS.INSPECTOR]: state.ui.inspectorTab === "logs"
             ? `j/k scroll · ctrl-u/ctrl-d page · g/G top/bottom · d done · t tail · f filter · ${fullscreenHint} · left/right tab · [/] resize pane · {/} columns · T themes · ? help · a linked items · drag copy · tab next pane`
             : state.ui.inspectorTab === "stats"
@@ -4855,13 +4822,8 @@ function buildSequenceStatsLines(state, session, maxWidth) {
         if (!body) body = "orchestration stats unavailable";
     }
 
-    if (maxWidth <= 52) {
-        return [fitRuns([
-            { text: "Stats ", color: "cyan", bold: true },
-            { text: body, color: "white" },
-        ], Math.max(18, maxWidth))];
-    }
-
+    // Narrow panes used to degrade to a single truncated line; a box whose
+    // content wraps reads better on a phone and costs two rows of chrome.
     return buildMessageCardLines({
         title: "Stats",
         body,
@@ -5884,8 +5846,10 @@ export function selectSessionGroupNameModal(state, maxWidth = 76) {
     const value = String(modal.value || "");
     const sessionCount = Array.isArray(modal.sessionIds) ? modal.sessionIds.length : 0;
     const previewTitle = value.trim() || "…";
+    const renaming = modal.mode === "rename";
     return {
-        title: modal.title || "New Group",
+        title: modal.title || (renaming ? "Rename Group" : "New Group"),
+        mode: renaming ? "rename" : "create",
         value,
         cursorIndex: Math.max(0, Math.min(Number(modal.cursorIndex) || 0, value.length)),
         placeholder: "Type a group name",
@@ -5893,15 +5857,17 @@ export function selectSessionGroupNameModal(state, maxWidth = 76) {
         helpLines: [
             [
                 { text: "Enter", color: "cyan", bold: true },
-                { text: " create and move  ", color: "gray" },
+                { text: renaming ? " rename  " : " create and move  ", color: "gray" },
                 { text: "Esc", color: "cyan", bold: true },
                 { text: " cancel", color: "gray" },
             ],
             [{ text: "", color: "gray" }],
-            [{ text: `The new group will contain ${sessionCount} selected session${sessionCount === 1 ? "" : "s"}.`, color: "gray" }],
+            renaming
+                ? [{ text: "Only the group's name changes; its sessions stay put.", color: "gray" }]
+                : [{ text: `The new group will contain ${sessionCount} selected session${sessionCount === 1 ? "" : "s"}.`, color: "gray" }],
         ],
         detailsLines: [
-            [{ text: "New group: ", color: "gray" }, { text: previewTitle, color: "white", bold: true }],
+            [{ text: renaming ? "Rename to: " : "New group: ", color: "gray" }, { text: previewTitle, color: "white", bold: true }],
             [{ text: "Groups are containers only; session actions remain per-session.", color: "gray" }],
         ],
         idealWidth: Math.min(Math.max(56, displayLength(previewTitle) + 18), maxWidth),
@@ -6328,6 +6294,20 @@ function formatSessionAge(ts) {
     return `${Math.floor(days / 7)}w`;
 }
 
+// Card-row timestamp: month, day, clock — no year, no "at", no timezone.
+// Cards live inside fitted boxes on a ~44-column phone; the full form is 29
+// characters and its padStart alignment dragged EVERY row in the table past
+// the card interior, wrapping all of them. Recency is what these rows convey;
+// the year and zone are noise there (the full form remains on Created/Updated).
+function formatCardTimestamp(ts) {
+    if (!ts) return "—";
+    const date = ts instanceof Date ? ts : new Date(ts);
+    if (Number.isNaN(date.getTime())) return "—";
+    const day = date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    const clock = date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", second: "2-digit" });
+    return `${day}, ${clock}`;
+}
+
 function formatLocalTimestamp(ts) {
     if (!ts) return "—";
     const date = ts instanceof Date ? ts : new Date(ts);
@@ -6470,7 +6450,7 @@ function buildSessionStatsLines(state, session, maxWidth) {
             ["Cache Read",  formatCompactNumber(summary.tokensCacheRead)],
             ["Cache Write", formatCompactNumber(summary.tokensCacheWrite)],
             ["Hit Ratio",   hitRatioLabel],
-        ]),
+        ], { maxWidth: Math.max(12, w - 4) }),
         width: w,
         titleColor: "green",
         borderColor: "gray",
@@ -6506,9 +6486,9 @@ function buildSessionStatsLines(state, session, maxWidth) {
             ["Dehydrations",    String(summary.dehydrationCount)],
             ["Hydrations",      String(summary.hydrationCount)],
             ["Lossy Handoffs",  String(summary.lossyHandoffCount)],
-            ["Last Dehydrated", summary.lastDehydratedAt ? formatLocalTimestamp(summary.lastDehydratedAt) : null],
-            ["Last Hydrated",   summary.lastHydratedAt ? formatLocalTimestamp(summary.lastHydratedAt) : null],
-        ]),
+            ["Last Dehydrated", summary.lastDehydratedAt ? formatCardTimestamp(summary.lastDehydratedAt) : null],
+            ["Last Hydrated",   summary.lastHydratedAt ? formatCardTimestamp(summary.lastHydratedAt) : null],
+        ], { maxWidth: Math.max(12, w - 4) }),
         width: w,
         titleColor: "yellow",
         borderColor: "gray",
@@ -6636,8 +6616,17 @@ function formatKeyValueTable(pairs, options = {}) {
     const labelWidth = rows.reduce((max, [label]) => Math.max(max, String(label).length), 0);
     const valueWidth = rows.reduce((max, [, value]) => Math.max(max, String(value).length), 0);
     const filler = " ".repeat(gap);
+    // One oversized value must not wrap every row: the aligned grid pads each
+    // row to labelWidth+gap+valueWidth, so a single 29-char timestamp used to
+    // push ALL rows past a narrow card's interior. When the grid cannot fit,
+    // keep label alignment but let each value sit flush after its label —
+    // short rows stay whole and only the long row wraps.
+    const maxWidth = Number(options.maxWidth);
+    const aligned = !Number.isFinite(maxWidth) || labelWidth + gap + valueWidth <= maxWidth;
     return rows
-        .map(([label, value]) => `${String(label).padEnd(labelWidth)}${filler}${String(value).padStart(valueWidth)}`)
+        .map(([label, value]) => (aligned
+            ? `${String(label).padEnd(labelWidth)}${filler}${String(value).padStart(valueWidth)}`
+            : `${String(label).padEnd(labelWidth)}${filler}${String(value)}`))
         .join("\n");
 }
 

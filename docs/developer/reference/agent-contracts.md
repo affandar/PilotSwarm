@@ -174,20 +174,12 @@ Why it matters:
 - artifact links are how durable outputs move back to the user
 - losing the export step produces confusing “the file exists somewhere” behavior
 
-## 13. Session Summary State Is Structured
+## 13. Session Summary State Is Structured (RETIRED)
 
-Contract:
-
-- agents call `update_session_summary` automatically after first meaningful work and after notable changes
-- no-op timer wakes, cron heartbeats, and unchanged checks should not rewrite summary state
-- `summary_state` is a JSON object, not a string
-- the required shape is `{ schemaVersion: 1, updatedAt, intent, summary, state, openQuestions, blockers, nextActions, links, structureChangeLog }`
-- missing optional arrays may be normalized to `[]`, but tool descriptions and prompts should show the full shape
-
-Why it matters:
-
-- session lists, search, and the Summary tab depend on durable summary state
-- smaller models need an explicit object shape to avoid passing a short string
+Session summaries were removed in v0.5.36 — `update_session_summary` no
+longer exists and no agent should be instructed to maintain summary state.
+The session canvas (`draw_canvas`) superseded it as the standing at-a-glance
+surface. Data-layer columns linger for a few releases; instructions must not.
 
 ## 14. Cross-Session Request/Response Uses Reply Tooling
 

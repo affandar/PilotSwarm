@@ -489,13 +489,12 @@ describe("session refresh UI recovery", () => {
             }],
         });
         store.dispatch({ type: "sessions/selected", sessionId: "timer-joke-session" });
-        store.dispatch({ type: "ui/chatViewMode", mode: "summary" });
 
         await controller.syncSessionDetail("timer-joke-session");
         let rowText = selectSessionRows(store.getState())[0]?.text || "";
-        let summaryText = linesText(selectChatLines(store.getState(), 120));
+        let storedStatus = store.getState().sessions.byId["timer-joke-session"]?.status;
         assertIncludes(rowText, "~ Joke sender", "same-age idle detail should not clear the visible wait icon");
-        assertIncludes(summaryText, "Status: waiting", "same-age idle detail should not flicker the summary status to idle");
+        assertEqual(storedStatus, "waiting", "same-age idle detail should not flicker the stored status to idle");
 
         const originalNow = Date.now;
         let nowMs = 1_000;
@@ -507,9 +506,9 @@ describe("session refresh UI recovery", () => {
             };
             await controller.syncSessionDetail("timer-joke-session");
             rowText = selectSessionRows(store.getState())[0]?.text || "";
-            summaryText = linesText(selectChatLines(store.getState(), 120));
+            storedStatus = store.getState().sessions.byId["timer-joke-session"]?.status;
             assertIncludes(rowText, "~ Joke sender", "newer idle detail should keep the wait icon for the 5s anti-flicker hold");
-            assertIncludes(summaryText, "Status: idle", "newer idle detail should clear the summary waiting status immediately");
+            assertEqual(storedStatus, "idle", "newer idle detail should update the stored status immediately");
 
             nowMs += 5_000;
             await controller.syncSessionDetail("timer-joke-session");
@@ -759,103 +758,7 @@ describe("session refresh UI recovery", () => {
         assertIncludes(statsText, "gpt-5.5:xhigh", "session stats should append reasoning effort to the model label");
     });
 
-    it("renders session summary as plain structured chat-pane content", () => {
-        const { store } = createController();
 
-        store.dispatch({
-            type: "sessions/loaded",
-            sessions: [{
-                sessionId: "summary-session",
-                title: "Summary Session",
-                status: "running",
-                shortSummary: "A compact summary.",
-                summaryUpdatedAt: 2000,
-                summaryState: {
-                    intent: "Inspect structured summaries",
-                    summary: "Collected structured state for display.",
-                    state: {
-                        status: "complete",
-                        progress: ["Collected evidence", "Prepared report"],
-                        result: { verdict: "pass" },
-                    },
-                    blockers: ["None"],
-                    openQuestions: [],
-                    nextActions: ["Ship it"],
-                },
-                createdAt: 1,
-                updatedAt: 2,
-            }],
-        });
-        store.dispatch({ type: "sessions/selected", sessionId: "summary-session" });
-        store.dispatch({ type: "ui/chatViewMode", mode: "summary" });
-
-        const chat = selectActiveChat(store.getState());
-        assertEqual(chat.length, 1, "summary mode should render one summary message");
-        assertEqual(chat[0]?.noChrome, true, "summary should render without card chrome");
-        assertEqual(Boolean(chat[0]?.cardTitle), false, "summary should not be a message card");
-
-        const rendered = linesText(selectChatLines(store.getState(), 80));
-        assertIncludes(rendered, "Summary Session", "summary pane should include the session title");
-        assertIncludes(rendered, "State", "summary pane should include the structured state section");
-        assertIncludes(rendered, "Collected evidence", "summary pane should render array state items as readable bullets");
-        assertIncludes(rendered, "verdict", "summary pane should render object state keys");
-        assertEqual(rendered.includes("Session Summary"), false, "summary pane should not render a card title");
-
-        const chrome = selectChatPaneChrome(store.getState());
-        // titleRight mirrors the session-row meta (status·model·context) even in
-        // summary mode; only the transient live-progress label must be
-        // suppressed — animateTitleRight (below) verifies no live progress runs.
-        const summaryTitleRightText = (chrome.titleRight || []).map((run) => run?.text || "").join("");
-        assertEqual(/thinking|working|sending/i.test(summaryTitleRightText), false, "summary mode should suppress transient live-progress labels");
-        assertEqual(chrome.animateTitleRight, false, "summary mode should not animate the chat title");
-    });
-
-    it("renders summary from the reduced native TUI chat selector state", () => {
-        const { store } = createController();
-
-        store.dispatch({
-            type: "sessions/loaded",
-            sessions: [{
-                sessionId: "native-summary-session",
-                title: "Native Summary Session",
-                status: "idle",
-                shortSummary: "Native summary text.",
-                summaryUpdatedAt: 2000,
-                summaryState: {
-                    intent: "Verify native selector",
-                    summary: "Native summary text.",
-                    state: { status: "complete" },
-                },
-                createdAt: 1,
-                updatedAt: 2,
-            }],
-        });
-        store.dispatch({ type: "sessions/selected", sessionId: "native-summary-session" });
-        store.dispatch({ type: "ui/chatViewMode", mode: "summary" });
-        store.dispatch({ type: "ui/focus", focusRegion: FOCUS_REGIONS.CHAT });
-
-        const rootState = store.getState();
-        const reducedNativeState = {
-            branding: rootState.branding,
-            connection: rootState.connection,
-            ui: { chatViewMode: rootState.ui.chatViewMode },
-            sessions: {
-                activeSessionId: rootState.sessions.activeSessionId,
-                byId: {
-                    [rootState.sessions.activeSessionId]: rootState.sessions.byId[rootState.sessions.activeSessionId],
-                },
-            },
-            history: { bySessionId: new Map() },
-        };
-
-        const rendered = linesText(selectChatLines(reducedNativeState, 80));
-        assertIncludes(rendered, "Native Summary Session", "native reduced state should render the summary view title");
-        assertIncludes(rendered, "Native summary text.", "native reduced state should render summary content");
-        assertEqual(rendered.includes("Start interacting with this session"), false, "native summary view should not fall back to transcript/splash content");
-
-        const status = selectStatusBar(rootState);
-        assertIncludes(status.right, "s transcript", "chat status hint should advertise toggling back from summary first");
-    });
 
     it("renders group details as plain markdown tables instead of a system card", () => {
         const { store } = createController();
@@ -895,7 +798,7 @@ describe("session refresh UI recovery", () => {
         assertEqual(chat[0]?.noChrome, true, "group details should render without card chrome");
         assertEqual(Boolean(chat[0]?.cardTitle), false, "group details should not be a system card");
         assertIncludes(chat[0]?.text || "", "| Metric | Count |", "group details should be backed by a metric markdown table");
-        assertIncludes(chat[0]?.text || "", "| Session | Status | Summary |", "group details should be backed by a members markdown table");
+        assertIncludes(chat[0]?.text || "", "| Session | Status |", "group details should be backed by a members markdown table");
 
         const rendered = linesText(selectChatLines(store.getState(), 80));
         assertIncludes(rendered, "Metric", "group details should include a metric table");

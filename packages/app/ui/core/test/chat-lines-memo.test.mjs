@@ -7,7 +7,7 @@
 //
 // WHY IDENTITY, NOT FIELDS: selectActiveChat is NOT a pure function of the chat
 // array. It appends a pending-question message, an answered-question message
-// and a session-error message, and branches on ui.chatViewMode and branding.
+// and a session-error message, and branches on branding.
 // A cache keyed on `chat` alone would keep showing the old transcript when a
 // question arrives. These tests pin each of those invalidations.
 import test from "node:test";
@@ -21,7 +21,7 @@ const SESSION_ID = "s1";
 // misses on session identity alone, and a test meant to prove (say) that `chat`
 // is compared would pass even if it were not. Two of these did exactly that
 // until mutation testing caught it.
-function makeState({ chat, session = {}, sessionObject = null, branding = null, viewMode = null, principal = null }) {
+function makeState({ chat, session = {}, sessionObject = null, branding = null, principal = null }) {
     const sessionValue = sessionObject || { sessionId: SESSION_ID, owner: null, ...session };
     return {
         sessions: {
@@ -29,7 +29,7 @@ function makeState({ chat, session = {}, sessionObject = null, branding = null, 
             byId: { [SESSION_ID]: sessionValue },
         },
         history: { bySessionId: new Map([[SESSION_ID, { chat, activity: [], events: [] }]]) },
-        ui: viewMode ? { chatViewMode: viewMode } : {},
+        ui: {},
         branding,
         auth: { principal },
     };
@@ -83,15 +83,6 @@ test("appending to the chat invalidates, with the session identity unchanged", (
     const after = selectChatLines(makeState({ chat: grown, sessionObject: STABLE_SESSION }), 100);
     assert.notEqual(after, before, "a new message did not invalidate");
     assert.ok(JSON.stringify(after).includes("another"));
-});
-
-test("switching chat view mode invalidates, with the session identity unchanged", () => {
-    const before = selectChatLines(makeState({ chat: CHAT, sessionObject: STABLE_SESSION }), 100);
-    const after = selectChatLines(
-        makeState({ chat: CHAT, sessionObject: STABLE_SESSION, viewMode: "summary" }),
-        100,
-    );
-    assert.notEqual(after, before, "the summary view served the transcript's cached lines");
 });
 
 test("the memo is bounded and still serves the most recent widths", () => {

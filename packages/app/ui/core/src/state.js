@@ -128,13 +128,48 @@ export function normalizeStoredCollapsedSessionIds(value) {
     return out;
 }
 
+/**
+ * Right-column mode: the inspector/activity split, or the session canvas.
+ * Anything unrecognized falls back to panes — a stored value from a newer
+ * build must not strand an older portal in a mode it cannot render.
+ */
+export function normalizeStoredRightPaneMode(value) {
+    return value === "canvas" ? "canvas" : "panes";
+}
+
+/**
+ * Per-session canvas preferences: what this user has chosen and seen.
+ *
+ * `optedOut` — the user manually left canvas mode this session, so agent
+ * draws badge instead of flipping. `lastViewedRev` — the highest revision
+ * this user has had on screen; the yellow badge is latestRev > lastViewedRev.
+ * Persisted (like pinned ids) so the overnight case lights the badge on
+ * reopen with no extra query.
+ */
+export function normalizeStoredCanvasPrefs(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    const out = {};
+    for (const [sessionId, entry] of Object.entries(value)) {
+        const id = String(sessionId || "").trim();
+        if (!id || !entry || typeof entry !== "object") continue;
+        const lastViewedRev = Number(entry.lastViewedRev);
+        const lastViewedDataRev = Number(entry.lastViewedDataRev);
+        out[id] = {
+            optedOut: entry.optedOut === true,
+            lastViewedRev: Number.isFinite(lastViewedRev) && lastViewedRev > 0 ? Math.floor(lastViewedRev) : 0,
+            lastViewedDataRev: Number.isFinite(lastViewedDataRev) && lastViewedDataRev > 0 ? Math.floor(lastViewedDataRev) : 0,
+        };
+    }
+    return out;
+}
+
 export function normalizeStoredActiveSessionId(value) {
     if (value == null) return null;
     const id = String(value).trim();
     return id ? id : null;
 }
 
-export function createInitialState({ mode = "local", branding = null, docs = null, themeId = null, chatViewMode = null, sessionOwnerFilter = null, layoutAdjustments = null, pinnedSessionIds = null, collapsedSessionIds = null, activeSessionId = null, sessionOrder = null } = {}) {
+export function createInitialState({ mode = "local", branding = null, docs = null, themeId = null, sessionOwnerFilter = null, layoutAdjustments = null, pinnedSessionIds = null, collapsedSessionIds = null, activeSessionId = null, sessionOrder = null, rightPaneMode = null, canvasPrefs = null } = {}) {
     const hasStoredSessionOwnerFilter = sessionOwnerFilter != null;
     const hasStoredCollapsedSessionIds = collapsedSessionIds != null;
     const initialLayoutAdjustments = normalizeStoredLayoutAdjustments(layoutAdjustments);
@@ -164,7 +199,9 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             sequenceSelectedTurn: null,
             // "rich" was retired as a view mode; a persisted "rich" falls
             // through to the transcript.
-            chatViewMode: chatViewMode === "summary" ? "summary" : "transcript",
+            // Which face the right column wears: the inspector/activity panes
+            // or the session canvas. Persisted.
+            rightPaneMode: normalizeStoredRightPaneMode(rightPaneMode),
             statsViewMode: "session",
             prompt: "",
             promptCursor: 0,
@@ -300,6 +337,18 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
                 scope: "selectedSession",
                 query: "",
             },
+        },
+        canvas: {
+            // Runtime knowledge of each session's canvas, fed by the
+            // selection-burst snapshot and then by canvas_updated events.
+            // { latestRev, note, sizeBytes, snapshotLoaded } per session.
+            bySessionId: {},
+            // Persisted per-user attention state — see normalizeStoredCanvasPrefs.
+            prefs: normalizeStoredCanvasPrefs(canvasPrefs),
+            // Ticks on every agent-driven flip. Hosts whose pane state lives
+            // outside ui.rightPaneMode (the phone's tab strip) watch this to
+            // bring their canvas surface forward.
+            flipSeq: 0,
         },
         logs: {
             available: false,

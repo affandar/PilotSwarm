@@ -527,12 +527,27 @@ button {
   justify-content: flex-start;
 }
 
-/* The action strip is the whole toolbar on a phone, so centre it rather than
-   letting it hang off the leading edge. It still scrolls when it overflows. */
-.ps-toolbar.is-mobile .ps-toolbar-row,
-.ps-toolbar.is-mobile .ps-toolbar-row-actions {
-  justify-content: center;
+/* Phone toolbar: TWO groups on one row — actions left, the three view modes
+   right. Those modes used to be word tabs pinned to the bottom of the screen;
+   folding them up here hands that whole strip to the chat pane (the mobile
+   workspace grid gives reclaimed height to its 1fr chat row). */
+.ps-toolbar.is-mobile .ps-toolbar-row {
+  justify-content: space-between;
   width: 100%;
+  gap: 8px;
+}
+
+.ps-toolbar.is-mobile .ps-toolbar-row-actions {
+  justify-content: flex-start;
+}
+
+/* The view-mode group must never shrink or scroll away — it is navigation. */
+.ps-toolbar.is-mobile .ps-toolbar-row-actions.is-panes {
+  justify-content: flex-end;
+  flex: none;
+  overflow: visible;
+  padding-left: 8px;
+  border-left: 1px solid var(--ps-border);
 }
 
 .ps-toolbar-row {
@@ -945,6 +960,36 @@ button {
   place-items: center;
   cursor: row-resize;
   position: relative;
+}
+
+/* The 1px seam is the DIVIDER; the grab target must not be. This invisible
+   band widens the pointer surface to ~9px so (a) the seam is actually
+   grabbable and (b) the cursor holds steady while streaming re-renders wobble
+   the adjacent panes by fractions of a pixel — with a 1px target, that wobble
+   walked the pane boundary back and forth under a stationary pointer and the
+   cursor flickered between resize and default. The z-index keeps the band
+   above the pane edges it overlaps. */
+.ps-column-resizer,
+.ps-row-resizer {
+  z-index: 2;
+}
+
+.ps-column-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  right: -4px;
+}
+
+.ps-row-resizer::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -4px;
+  bottom: -4px;
 }
 
 .ps-column-resizer::before {
@@ -2247,7 +2292,14 @@ body.is-resizing-pane-y iframe {
 }
 
 .ps-artifact-pane-type {
-  flex: none;
+  /* Shrinkable with ellipsis, not flex:none — the canvas header puts the rev
+     NOTE here, and an agent's long caption was running clean under the zoom
+     control and the close button. */
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--ps-muted);
   font-size: 10.5px;
   letter-spacing: 0.06em;
@@ -3057,7 +3109,10 @@ body.is-resizing-pane-y iframe {
   }
 
   .portal-main {
-    padding: 8px;
+    /* Tighter at the BOTTOM than the sides: that strip sat empty between the
+       last panel border and Safari's toolbar, and vertical pixels are the
+       scarce ones on a phone. */
+    padding: 8px 8px 2px;
   }
 
   .portal-header {
@@ -4110,6 +4165,15 @@ body.is-resizing-pane-y iframe {
 .ps-html-preview-frame.is-staging {
   position: absolute;
   inset: 0;
+  /* Explicit box, not inset-stretching: an iframe is a REPLACED element, so
+     `top:0; bottom:0` does not stretch it the way it stretches a div — it
+     keeps its intrinsic 300x150 and drops `bottom`. The staging frame was
+     therefore 150px tall no matter the pane, and every page that measured
+     its viewport once at load baked those 150px in (a full-height game
+     rendered as a sliver under a black void). Percentages resolve against
+     the positioned host, which is the real pane box. */
+  width: 100%;
+  height: 100%;
   opacity: 0;
   pointer-events: none;
 }
@@ -7066,5 +7130,318 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
    hairline. */
 .ps-workspace-grid .ps-column-resizer-handle,
 .ps-workspace-grid .ps-row-resizer-handle {
+  display: none;
+}
+
+/* ── Session canvas ──────────────────────────────────────────────────────────
+   Canvas mode reuses the artifact reader's chrome classes (.ps-artifact-pane
+   and friends) so the two right-column takeovers read as one family. Only the
+   canvas-specific pieces live here. */
+
+/* The yellow unseen-changes badge: latestRev > lastViewedRev while the canvas
+   is not on screen. Yellow deliberately — it is the theme-independent "look
+   at me" register, and every theme's palette keeps it legible. */
+.ps-canvas-toggle {
+  position: relative;
+  display: inline-flex;
+}
+
+.ps-canvas-badge {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #f2c231;
+  /* The yellow reads on dark chrome by itself but vanishes into win95 grey
+     and white toolbars (1.1:1) — the foreground-mixed outline is what makes
+     it a dot on EVERY theme, and the surface ring separates it from the
+     glyph underneath. */
+  border: 1px solid color-mix(in srgb, var(--ps-foreground) 60%, transparent);
+  box-shadow: 0 0 0 2px var(--ps-surface);
+  pointer-events: none;
+}
+
+.ps-canvas-badge.is-inline {
+  position: static;
+  display: inline-block;
+  margin-left: 6px;
+  box-shadow: none;
+  vertical-align: middle;
+}
+
+/* Fetch-failure chip: the frame keeps whatever revision it has; this floats
+   the truth (and the way out) over it instead of lying with a stale header. */
+.ps-canvas-load-error {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--ps-border);
+  border-radius: 6px;
+  background: var(--ps-chrome-strong);
+  color: var(--ps-foreground);
+  font-size: 12px;
+  z-index: 3;
+}
+
+/* The blank canvas is a standard teaching message, not an empty pane — it
+   explains the feature at the exact moment the user is looking at its
+   absence. */
+.ps-canvas-blank {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 24px 28px;
+  text-align: center;
+  color: var(--ps-muted);
+  font-size: 13px;
+}
+
+.ps-canvas-blank-title {
+  color: var(--ps-foreground);
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.ps-canvas-blank p {
+  margin: 0;
+  max-width: 34rem;
+}
+
+/* Full-screen phone canvas: the artifact overlay's chrome, one pane inside. */
+.ps-canvas-overlay .ps-canvas-pane {
+  flex: 1;
+  min-height: 0;
+}
+
+/* The right column hosts the panes AND a hidden, kept-alive canvas layer —
+   unmounting the canvas iframe destroys the page's state, so toggling only
+   flips visibility. visibility (not display) keeps layout real: the frame's
+   measured box never collapses, so no settle-reload fires on re-show. */
+.ps-workspace-column-host {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ps-workspace-column-host > .ps-workspace-column {
+  flex: 1;
+  min-height: 0;
+}
+
+.ps-canvas-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+}
+
+.ps-canvas-layer.is-hidden,
+.ps-canvas-overlay.is-hidden {
+  /* Off-screen transform, NOT visibility: iOS tears down a frame's
+     subscroller state when it stops being rendered, so a visibility-hidden
+     canvas came back scrolled to the top. A transformed frame stays
+     rendered (and composited off-screen), keeping scroll offsets, form
+     state, and the page's world exactly as the user left it. */
+  transform: translateX(-200vw);
+  pointer-events: none;
+}
+
+/* While the phone's canvas overlay is up, stop rubber-band chaining into the
+   shell — but do NOT make body overflow:hidden: on iOS a fully unscrollable
+   parent chain is part of what left canvas pans with nowhere to land. */
+.ps-canvas-lock {
+  overscroll-behavior: none;
+}
+
+.ps-canvas-overlay {
+  overscroll-behavior: contain;
+}
+
+/* iOS gesture delegation into the CANVAS frame.
+   The artifact-reader chain sets `touch-action: manipulation` (parent-page
+   pinch-zoom for fixed-width documents), and the canvas inherited it by
+   sharing those classes. The canvas does not want it: the page owns ALL of
+   its input, and on iOS a non-auto touch-action on a cross-origin iframe's
+   chain makes WebKit handle pans in the PARENT — whose canvas chain has no
+   scroller — instead of delegating to the frame's document. Observed on
+   device: a taller-than-viewport page that cannot be scrolled at all until
+   a stray tap forces a child hit-test. `auto` delegates unconditionally. */
+.ps-canvas-pane,
+.ps-canvas-pane .ps-artifact-pane-body,
+.ps-canvas-pane .ps-html-preview-host,
+.ps-canvas-pane .ps-html-preview-frame {
+  touch-action: auto;
+}
+
+/* Canvas double-buffer, iOS edition: the frame must NEVER load hidden.
+   iOS registers an iframe in its async touch-scrolling tree at load; a frame
+   that is opacity:0 + pointer-events:none at that moment (the reader-style
+   staging state) can miss registration and stay pan-dead until a tap forces
+   a synchronous hit-test — pages "unscrollable until you press a button".
+   So the canvas staging frame loads VISIBLE and interactive, stacked UNDER
+   the live frame, and BOTH frames are absolutely positioned so promote is a
+   z-index-only swap — no layout or stacking rebuild, nothing to repaint.
+   Canvas-scoped: reader artifacts may have transparent backgrounds and
+   would shimmer with an understack.
+
+   And no WHITE anywhere: the reader paints its frame #fff for documents
+   that assume a white page, but on the canvas that white base is what iOS
+   rubber-band overscroll reveals past the page edges, and what any repaint
+   beat flashes. The frame goes transparent over a surface-colored host —
+   `color-scheme: light dark` on the frame element keeps browsers from
+   force-opaquing the cross-origin base over a scheme mismatch. */
+.ps-canvas-pane .ps-html-preview-host {
+  background: var(--ps-surface);
+}
+
+.ps-canvas-pane .ps-html-preview-frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 2;
+  background: transparent;
+  color-scheme: light dark;
+}
+
+.ps-canvas-pane .ps-html-preview-frame.is-staging {
+  z-index: 1;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Loaded-canvas marker: green dot bottom-left, mirroring the unseen dot's
+   construction in the opposite corner. Outline = empty, green = loaded,
+   green + yellow = loaded with unseen changes. */
+.ps-canvas-loaded-dot {
+  position: absolute;
+  bottom: 1px;
+  left: 1px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #34d399;
+  border: 1px solid color-mix(in srgb, var(--ps-foreground) 45%, transparent);
+  box-shadow: 0 0 0 2px var(--ps-surface);
+  pointer-events: none;
+}
+
+/* The canvas pane header leads with the glyph, not the word. The bar's
+   baseline alignment floats an SVG above the text's visual middle, so the
+   canvas heading centers instead. */
+.ps-canvas-pane .ps-artifact-pane-heading {
+  align-items: center;
+}
+
+.ps-canvas-pane-glyph {
+  display: inline-flex;
+  align-items: center;
+  line-height: 0;
+}
+
+.ps-canvas-pane .ps-artifact-pane-type {
+  font-size: 11.5px;
+}
+
+/* Phone canvas viewer: ✕ and zoom need finger-sized targets. Wider, not
+   taller — the bar's height is fine; the miss risk is horizontal. */
+.ps-canvas-overlay .ps-artifact-pane-btn {
+  min-width: 52px;
+  min-height: 34px;
+  font-size: 16px;
+}
+
+.ps-canvas-overlay .ps-html-zoom-btn {
+  min-width: 44px;
+  min-height: 34px;
+  font-size: 15px;
+}
+
+.ps-canvas-overlay .ps-html-zoom {
+  gap: 4px;
+}
+
+/* Phone Main pane layouts (cycled by the Main toolbar button): split is the
+   two-row default; chat-only and sessions-only each hand their pane the whole
+   height. Replaced chat-focus mode, whose CSS below is now inert. */
+.ps-mobile-workspace.is-chat-only,
+.ps-mobile-workspace.is-sessions-only {
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.ps-mobile-workspace.is-sessions-only > .ps-panel,
+.ps-mobile-workspace.is-chat-only > .ps-mobile-chat-pane {
+  min-height: 0;
+  height: 100%;
+}
+
+/* Sessions-only shows the list AND its detail box, so release the split
+   layout's height cap on the pane. */
+.ps-mobile-workspace.is-sessions-only .ps-mobile-session-pane {
+  max-height: none;
+}
+
+/* The session list may pan sideways when its rows overflow — long titles and
+   model names are routinely wider than a phone. Vertical stays the primary
+   axis (see useHorizontalPanOptIn: sideways needs a deliberate, mostly
+   horizontal swipe), and rows stop truncating so there is something to reach. */
+.ps-mobile-session-pane .ps-action-list {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  /* iOS draws its overlay scrollbar against the scrolled CONTENT when a
+     container pans both axes, so the indicator slid across the rows as a
+     stray vertical line. The gesture is the affordance on a phone; drop the
+     chrome. */
+  scrollbar-width: none;
+}
+
+.ps-mobile-session-pane .ps-action-list::-webkit-scrollbar {
+  display: none;
+}
+
+/* Rows must be intrinsically WIDE for there to be anything to pan to: the
+   default row clamps itself to the pane (max-width:100% on .ps-list-button,
+   ellipsis on the title text), so the list's scrollWidth equalled its
+   clientWidth and a sideways swipe moved nothing. On the phone pane the row
+   grows to its content and the title stops ellipsizing; the list scrolls.
+   Panning stays deliberate — useHorizontalPanOptIn keeps touch-action at
+   pan-y until a mostly-horizontal gesture unlocks it. */
+.ps-session-pane.ps-mobile-session-pane .ps-action-list .ps-list-button {
+  width: max-content;
+  min-width: 100%;
+  max-width: none;
+}
+
+.ps-session-pane.ps-mobile-session-pane .ps-action-list .ps-session-row-title__text,
+.ps-session-pane.ps-mobile-session-pane .ps-action-list .ps-line {
+  overflow: visible;
+  text-overflow: clip;
+}
+
+/* The mobile inspector KEEPS horizontal scroll: the sequence grid is sized to
+   fit (2 columns of slack for iOS's wider monospace), but logs, execution
+   history and wide tables genuinely exceed a phone — clipping them made the
+   overflow unreachable instead of merely inconvenient. What must not happen is
+   a DRIFTING overlay scrollbar, so the chrome is hidden and the touch gesture
+   is the whole affordance. */
+.ps-mobile-pane-fill .ps-scroll-panel,
+.ps-mobile-pane-fill .ps-panel-sticky {
+  scrollbar-width: none;
+}
+
+.ps-mobile-pane-fill .ps-scroll-panel::-webkit-scrollbar,
+.ps-mobile-pane-fill .ps-panel-sticky::-webkit-scrollbar {
   display: none;
 }

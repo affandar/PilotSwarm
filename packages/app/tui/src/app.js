@@ -932,10 +932,6 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
         }
 
         if (focus === "chat" || focus === "inspector" || focus === "activity") {
-            if (focus === "chat" && plainShortcut && input === "s") {
-                controller.handleCommand(UI_COMMANDS.TOGGLE_CHAT_VIEW).catch(() => {});
-                return;
-            }
             if (key.upArrow || input === "k") {
                 controller.handleCommand(UI_COMMANDS.SCROLL_UP).catch(() => {});
                 return;

@@ -158,7 +158,6 @@ export async function startTuiApp(config) {
         mode: config.mode,
         branding: config.branding,
         themeId: userConfig.themeId,
-        chatViewMode: userConfig.chatViewMode,
         sessionOwnerFilter: userConfig.sessionOwnerFilter,
         layoutAdjustments: userConfig.layoutAdjustments,
         pinnedSessionIds: userConfig.pinnedSessionIds,
@@ -255,7 +254,6 @@ export async function startTuiApp(config) {
 
     // Persist theme changes to config file
     let lastPersistedThemeId = store.getState().ui.themeId;
-    let lastPersistedChatViewMode = store.getState().ui.chatViewMode;
     let lastPersistedSessionOwnerFilter = JSON.stringify(store.getState().sessions.ownerFilter || null);
     let lastPersistedLayoutAdjustments = JSON.stringify({
         paneAdjust: store.getState().ui.layout?.paneAdjust || 0,
@@ -268,7 +266,6 @@ export async function startTuiApp(config) {
     store.subscribe(() => {
         const state = store.getState();
         const currentThemeId = state.ui.themeId;
-        const currentChatViewMode = state.ui.chatViewMode;
         const currentSessionOwnerFilter = state.sessions.ownerFilter || null;
         const currentSessionOwnerFilterJson = JSON.stringify(currentSessionOwnerFilter);
         const currentLayoutAdjustments = {
@@ -288,12 +285,6 @@ export async function startTuiApp(config) {
         if (currentThemeId && currentThemeId !== lastPersistedThemeId) {
             lastPersistedThemeId = currentThemeId;
             patch.themeId = currentThemeId;
-            changed = true;
-        }
-
-        if ((currentChatViewMode === "summary" || currentChatViewMode === "transcript") && currentChatViewMode !== lastPersistedChatViewMode) {
-            lastPersistedChatViewMode = currentChatViewMode;
-            patch.chatViewMode = currentChatViewMode;
             changed = true;
         }
 

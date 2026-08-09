@@ -230,7 +230,152 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "agent_package_namespaces",
             sql: migration_0043_agent_package_namespaces(schema),
         },
+        {
+            version: "0044",
+            name: "list_sessions_page_ms_cursor",
+            sql: migration_0044_list_sessions_page_ms_cursor(schema),
+        },
     ];
+}
+
+
+
+// ─── Migration 0044: ms-space keyset for session paging ──────────
+//
+// PG stores updated_at at MICROsecond precision; the wire cursor is a JS Date
+// (milliseconds). Comparing an ms-truncated cursor against full-precision
+// columns silently skipped every same-millisecond row that landed at a page
+// boundary — cms-read-bounds is the detector, open since v0.5.31. Predicate
+// and ORDER BY now both truncate to milliseconds, so (trunc_ms, session_id)
+// is a total order the ms cursor addresses exactly. Function replace only —
+// same signature, no table DDL, no lock exposure.
+function migration_0044_list_sessions_page_ms_cursor(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- 0044_list_sessions_page_ms_cursor: keyset comparisons in millisecond space.
+CREATE OR REPLACE FUNCTION ${s}.cms_list_sessions_page(
+    p_limit                 INT         DEFAULT 51,
+    p_cursor_updated_at     TIMESTAMPTZ DEFAULT NULL,
+    p_cursor_session_id     TEXT        DEFAULT NULL,
+    p_include_deleted       BOOL        DEFAULT FALSE,
+    p_viewer_provider       TEXT        DEFAULT NULL,
+    p_viewer_subject        TEXT        DEFAULT NULL,
+    p_viewer_system_visible BOOL        DEFAULT TRUE,
+    p_placement_provider    TEXT        DEFAULT NULL,
+    p_placement_subject     TEXT        DEFAULT NULL
+) RETURNS TABLE (
+    session_id         TEXT,
+    orchestration_id   TEXT,
+    title              TEXT,
+    title_locked       BOOLEAN,
+    state              TEXT,
+    model              TEXT,
+    reasoning_effort   TEXT,
+    group_id           TEXT,
+    short_summary      TEXT,
+    summary_state      JSONB,
+    summary_updated_at TIMESTAMPTZ,
+    created_at         TIMESTAMPTZ,
+    updated_at         TIMESTAMPTZ,
+    last_active_at     TIMESTAMPTZ,
+    deleted_at         TIMESTAMPTZ,
+    current_iteration  INTEGER,
+    last_error         TEXT,
+    parent_session_id  TEXT,
+    wait_reason        TEXT,
+    is_system          BOOLEAN,
+    agent_id           TEXT,
+    splash             TEXT,
+    owner_provider     TEXT,
+    owner_subject      TEXT,
+    owner_email        TEXT,
+    owner_display_name TEXT,
+    splash_mobile      TEXT,
+    visibility         TEXT,
+    root_session_id    TEXT
+) AS $$
+DECLARE
+    v_limit INT := GREATEST(1, LEAST(COALESCE(p_limit, 51), 201));
+    v_placement_user BIGINT;
+BEGIN
+    IF p_placement_provider IS NOT NULL AND p_placement_subject IS NOT NULL THEN
+        SELECT u.user_id INTO v_placement_user
+        FROM ${s}.users u
+        WHERE u.provider = BTRIM(p_placement_provider) AND u.subject = BTRIM(p_placement_subject);
+    END IF;
+    RETURN QUERY
+    SELECT
+        sess.session_id,
+        sess.orchestration_id,
+        sess.title,
+        sess.title_locked,
+        sess.state,
+        sess.model,
+        sess.reasoning_effort,
+        usgp.group_id,
+        sess.short_summary,
+        sess.summary_state,
+        sess.summary_updated_at,
+        sess.created_at,
+        sess.updated_at,
+        sess.last_active_at,
+        sess.deleted_at,
+        sess.current_iteration,
+        sess.last_error,
+        sess.parent_session_id,
+        sess.wait_reason,
+        sess.is_system,
+        sess.agent_id,
+        sess.splash,
+        u.provider     AS owner_provider,
+        u.subject      AS owner_subject,
+        u.email        AS owner_email,
+        u.display_name AS owner_display_name,
+        sess.splash_mobile,
+        sess.visibility,
+        sess.root_session_id
+    FROM ${s}.sessions sess
+    LEFT JOIN ${s}.session_owners so ON so.session_id = sess.session_id
+    LEFT JOIN ${s}.users u ON u.user_id = so.user_id
+    LEFT JOIN ${s}.user_session_group_placements usgp
+        ON usgp.user_id = v_placement_user AND usgp.root_session_id = sess.session_id
+    WHERE
+        (p_include_deleted OR sess.deleted_at IS NULL)
+        AND (
+            p_cursor_updated_at IS NULL
+            OR date_trunc('milliseconds', sess.updated_at) < date_trunc('milliseconds', p_cursor_updated_at)
+            OR (
+                date_trunc('milliseconds', sess.updated_at) = date_trunc('milliseconds', p_cursor_updated_at)
+                AND sess.session_id < p_cursor_session_id
+            )
+        )
+        AND (
+            p_viewer_provider IS NULL
+            OR EXISTS (
+                SELECT 1
+                FROM ${s}.sessions r
+                LEFT JOIN ${s}.session_owners rso ON rso.session_id = r.session_id
+                LEFT JOIN ${s}.users ru ON ru.user_id = rso.user_id
+                WHERE r.session_id = COALESCE(sess.root_session_id, sess.session_id)
+                  AND (
+                    (r.is_system AND p_viewer_system_visible)
+                    OR (ru.provider = BTRIM(p_viewer_provider) AND ru.subject = BTRIM(p_viewer_subject))
+                    OR COALESCE(r.visibility, 'private') IN ('shared_read', 'shared_write')
+                    OR EXISTS (
+                        SELECT 1 FROM ${s}.session_shares sh
+                        JOIN ${s}.users vu ON vu.user_id = sh.user_id
+                        WHERE sh.session_id = r.session_id
+                          AND vu.provider = BTRIM(p_viewer_provider)
+                          AND vu.subject = BTRIM(p_viewer_subject)
+                    )
+                  )
+            )
+        )
+    ORDER BY date_trunc('milliseconds', sess.updated_at) DESC, sess.session_id DESC
+    LIMIT v_limit;
+END;
+$$ LANGUAGE plpgsql;
+`;
 }
 
 // ─── Migration 0040: worker registry ─────────────────────────────

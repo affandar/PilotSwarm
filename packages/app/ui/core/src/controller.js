@@ -10,6 +10,7 @@ import {
     getNextHistoryEventLimit,
 } from "./history.js";
 import { applySessionUsageEvent, cloneContextUsageSnapshot } from "./context-usage.js";
+import { validateCanvasAction, formatCanvasActionPrompt, createCanvasActionLimiter } from "./canvas-actions.js";
 import { shouldKeepRecoverableTransportWarning } from "./session-errors.js";
 import {
     computeLegacyLayout,
@@ -2444,6 +2445,11 @@ export class PilotSwarmUiController {
             if (!existingHistory?.events?.length) {
                 await this.ensureSessionHistory(selected, { force: true }).catch(() => {});
             }
+            // Boot-restore can hydrate the selection through THIS branch
+            // instead of loadSession (whether the profile poll beats the first
+            // sessions refresh is a race), so the canvas snapshot must be
+            // armed here too. Memoized — refreshes after the first are free.
+            this.ensureCanvasSnapshot(selected).catch(() => {});
             if (this.activeSessionSubscriptionId !== selected) {
                 this.attachActiveSession(selected);
             }
@@ -4163,6 +4169,13 @@ export class PilotSwarmUiController {
         await this.syncSessionDetail(sessionId).catch(() => {});
         this.attachActiveSession(sessionId);
         this.ensureInspectorData().catch(() => {});
+        // Canvas snapshot rides the selection burst. Invalidate-then-fetch on
+        // every selection, deliberately: the live event stream only covers the
+        // ATTACHED session, so a session's canvas knowledge goes stale the
+        // moment you switch away — re-selection is the continuity break, and
+        // one indexed limit-1 row is noise against the burst above.
+        this.dispatch({ type: "canvas/snapshotInvalidate", sessionId });
+        this.ensureCanvasSnapshot(sessionId).catch(() => {});
     }
 
     /**
@@ -4229,6 +4242,135 @@ export class PilotSwarmUiController {
         return true;
     }
 
+    /**
+     * Apply a live `session.canvas_updated` event: converge content always,
+     * flip the right column only when it is unmistakably appropriate.
+     *
+     * Flip guards (the artifact-presented set, plus the user's own choices):
+     * active session only, fresh only, not already in canvas mode, and never
+     * after the user has manually toggled away this session — their explicit
+     * choice downgrades flips to the unseen-changes badge.
+     */
+    applyCanvasUpdate(sessionId, event) {
+        const rev = Number(event?.data?.rev);
+        if (!sessionId || !Number.isFinite(rev) || rev <= 0) return false;
+        this.dispatch({
+            type: "canvas/updated",
+            sessionId,
+            rev,
+            note: typeof event?.data?.note === "string" ? event.data.note : "",
+            sizeBytes: event?.data?.sizeBytes,
+            responseContract: event?.data?.responseContract,
+        });
+
+        const state = this.getState();
+        if (sessionId !== state.sessions.activeSessionId) return true;
+        if (state.canvas.prefs[sessionId]?.optedOut) return true;
+        const createdAt = event?.createdAt ? Date.parse(event.createdAt) : Number.NaN;
+        if (Number.isFinite(createdAt) && Date.now() - createdAt > PRESENTED_ARTIFACT_FRESHNESS_MS) {
+            return true;
+        }
+        // canvas/flip rather than a plain mode change: it ticks flipSeq even
+        // when the mode is already "canvas", because a phone can be off its
+        // canvas tab while the mode state still says canvas — the tick is
+        // what brings the tab back. On desktop the repeat dispatch is a no-op.
+        this.dispatch({ type: "canvas/flip", sessionId });
+        return true;
+    }
+
+    /**
+     * The cold-load snapshot: one indexed lookup against the full durable log,
+     * fired per session as part of the selection burst and memoized. Its
+     * result is definitive both ways — an event means a canvas exists at that
+     * rev; nothing means none has ever been drawn. The client never
+     * blind-loads canvas.html on a hunch.
+     */
+    /**
+     * A structured response posted by the canvas page, on its way to the
+     * agent. The CanvasFrame already proved provenance (the message came from
+     * the live canvas iframe and nothing else); this is the rest of the
+     * pipeline: validate against the CURRENT revision's contract (no contract
+     * → accept nothing), rate-limit (the page is agent-authored JS speaking
+     * as the viewer), then send it as a real user message through the
+     * ordinary transport path — no outbox, no optimistic chat bubble. The
+     * history pipeline recognizes the canonical prefix and keeps it out of
+     * the portal chat pane; the transcript still records it for provenance.
+     */
+    submitCanvasAction(sessionId, message) {
+        if (!sessionId) return Promise.resolve({ ok: false, reason: "no session" });
+        // Creator-only, mirrored from the server's enforcement (the server is
+        // the authority; this is the friendly refusal). The canvas mutates —
+        // a shared viewer may be looking at a different revision than the one
+        // the creator is conversing through, so their clicks must not speak.
+        const me = this.getState().auth?.principal || null;
+        const ownerRow = this.getState().sessions.byId[sessionId]?.owner || null;
+        if (me && ownerRow && (String(ownerRow.provider || "") !== String(me.provider || "")
+            || String(ownerRow.subject || "") !== String(me.subject || ""))) {
+            return Promise.resolve({ ok: false, reason: "only the session's creator can use canvas controls" });
+        }
+        const contract = this.getState().canvas.bySessionId[sessionId]?.responseContract || null;
+        const verdict = validateCanvasAction(contract, message);
+        if (!verdict.ok) return Promise.resolve(verdict);
+        if (!this.canvasActionLimiters) this.canvasActionLimiters = new Map();
+        let limiter = this.canvasActionLimiters.get(sessionId);
+        if (!limiter) {
+            limiter = createCanvasActionLimiter();
+            this.canvasActionLimiters.set(sessionId, limiter);
+        }
+        if (!limiter()) return Promise.resolve({ ok: false, reason: "rate limited" });
+        const prompt = formatCanvasActionPrompt(verdict.action, verdict.data);
+        return this.transport.sendMessage(sessionId, prompt, { enqueueOnly: true })
+            .then(() => {
+                this.syncSessionEvents(sessionId).catch(() => {});
+                return { ok: true, action: verdict.action };
+            })
+            .catch((error) => ({ ok: false, reason: error?.message || String(error) }));
+    }
+
+    async ensureCanvasSnapshot(sessionId) {
+        if (!sessionId) return;
+        if (this.getState().canvas.bySessionId[sessionId]?.snapshotLoaded) return;
+        if (typeof this.transport.getSessionEventsBefore !== "function") {
+            // A transport without the filtered query (older direct mode) still
+            // converges via live events; record the attempt so we do not spin.
+            this.dispatch({ type: "canvas/snapshot", sessionId, rev: 0 });
+            return;
+        }
+        try {
+            const rows = await this.transport.getSessionEventsBefore(
+                sessionId, Number.MAX_SAFE_INTEGER, 1, ["session.canvas_updated"],
+            );
+            const top = Array.isArray(rows) ? rows[0] : null;
+            this.dispatch({
+                type: "canvas/snapshot",
+                sessionId,
+                rev: Number(top?.data?.rev) || 0,
+                note: typeof top?.data?.note === "string" ? top.data.note : "",
+                sizeBytes: top?.data?.sizeBytes,
+                responseContract: top?.data?.responseContract,
+            });
+            // The latest data tick is the page's cold-load state — replay it
+            // so a freshly loaded shell can reconstruct without the agent.
+            if ((Number(top?.data?.rev) || 0) > 0) {
+                const dataRows = await this.transport.getSessionEventsBefore(
+                    sessionId, Number.MAX_SAFE_INTEGER, 1, ["session.canvas_data"],
+                ).catch(() => []);
+                const tick = Array.isArray(dataRows) ? dataRows[0] : null;
+                if (tick?.data?.dataRev) {
+                    this.dispatch({
+                        type: "canvas/data",
+                        sessionId,
+                        dataRev: Number(tick.data.dataRev),
+                        payload: tick.data.payload,
+                        note: typeof tick.data.note === "string" ? tick.data.note : "",
+                    });
+                }
+            }
+        } catch {
+            // Leave snapshotLoaded unset — the next selection retries.
+        }
+    }
+
     mergeSessionEvent(sessionId, event) {
         if (!sessionId || !event) return false;
         const state = this.getState();
@@ -4278,6 +4420,23 @@ export class PilotSwarmUiController {
         //    in the transcript and the deep link are for.
         if (event.eventType === "session.artifact_presented") {
             this.maybeRevealPresentedArtifact(sessionId, event);
+        }
+        // Canvas: CONTENT convergence is ungated — a stale canvas_updated in a
+        // reconnect replay must still advance latestRev and refresh a mounted
+        // pane. Only the FLIP is guarded (below). This deliberately diverges
+        // from artifact_presented, which drops stale events outright: a
+        // presentation is an action, a canvas is state.
+        if (event.eventType === "session.canvas_updated") {
+            this.applyCanvasUpdate(sessionId, event);
+        }
+        if (event.eventType === "session.canvas_data") {
+            this.dispatch({
+                type: "canvas/data",
+                sessionId,
+                dataRev: Number(event?.data?.dataRev),
+                payload: event?.data?.payload,
+                note: typeof event?.data?.note === "string" ? event.data.note : "",
+            });
         }
         this.reconcileOutboxAgainstEvent(sessionId, event);
         const derivedModel = extractSessionModelFromEvent(event);
@@ -4453,6 +4612,15 @@ export class PilotSwarmUiController {
         const eligible = this.getMovableGroupSessionSelection();
 
         if (eligible.length === 0) {
+            // With a GROUP active, the folder button means "this group":
+            // rename it. (Creating from here always made a second group —
+            // reported as a surprise on the phone.)
+            const active = state.sessions.activeSessionId
+                ? state.sessions.byId[state.sessions.activeSessionId]
+                : null;
+            if (active?.isGroup && active.groupId) {
+                return this.openRenameGroupModal(active);
+            }
             // Nothing selected is a legitimate intent: make an empty folder to
             // drag sessions into, rather than scolding the user.
             return this.openCreateEmptyGroupModal();
@@ -4519,6 +4687,32 @@ export class PilotSwarmUiController {
 
     async createSessionGroupFromSelection() {
         return this.openMoveToGroupModal();
+    }
+
+    /** Rename the active group in place (same modal, rename mode). */
+    openRenameGroupModal(group) {
+        if (typeof this.transport.updateSessionGroup !== "function") {
+            this.dispatch({ type: "ui/status", text: "Group rename is not supported by this transport" });
+            return null;
+        }
+        const state = this.getState();
+        const current = String(group.title || "").trim();
+        this.dispatch({
+            type: "ui/modal",
+            modal: {
+                type: "sessionGroupName",
+                mode: "rename",
+                groupId: group.groupId,
+                title: "Rename Group",
+                previousFocus: state.ui.focusRegion,
+                sessionIds: [],
+                value: current,
+                cursorIndex: current.length,
+                maxLength: 80,
+            },
+        });
+        this.dispatch({ type: "ui/status", text: "Edit the group name and press Enter" });
+        return null;
     }
 
     /** Name-and-create an EMPTY group (no sessions), ready to drag into. */
@@ -4672,6 +4866,19 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "ui/status", text: "Group name cannot be empty" });
             return;
         }
+        if (modal.mode === "rename" && modal.groupId) {
+            const previousFocusRename = modal.previousFocus;
+            this.dispatch({ type: "ui/modal", modal: null });
+            if (previousFocusRename) this.setFocus(previousFocusRename);
+            try {
+                await this.transport.updateSessionGroup(modal.groupId, { title });
+                this.dispatch({ type: "ui/status", text: `Renamed group to "${title}"` });
+                await this.refreshSessions().catch(() => {});
+            } catch (error) {
+                this.dispatch({ type: "ui/status", text: `Rename failed: ${error?.message || String(error)}` });
+            }
+            return;
+        }
         if (typeof this.transport.createSessionGroup !== "function") {
             this.dispatch({ type: "ui/status", text: "Session grouping is not supported by this transport" });
             return;
@@ -4728,22 +4935,7 @@ export class PilotSwarmUiController {
         return sessionId ? state.sessions.byId[sessionId] || null : null;
     }
 
-    toggleChatViewMode() {
-        const activeSession = this.getActiveSession();
-        if (activeSession?.isGroup) {
-            this.dispatch({ type: "ui/status", text: "Session groups show group details" });
-            return;
-        }
-        const nextMode = this.getState().ui?.chatViewMode === "summary" ? "transcript" : "summary";
-        this.dispatch({ type: "ui/chatViewMode", mode: nextMode });
-        this.dispatch({ type: "ui/status", text: nextMode === "summary" ? "Showing session summary" : "Showing chat transcript" });
-    }
 
-    setChatViewMode(mode) {
-        if (mode !== "summary" && mode !== "transcript") return;
-        if (this.getActiveSession()?.isGroup) return;
-        this.dispatch({ type: "ui/chatViewMode", mode });
-    }
 
     /**
      * Opens the agent step of the new-session flow.
@@ -7829,7 +8021,9 @@ export class PilotSwarmUiController {
                     pane: "chat",
                     offset: 0,
                 });
-            } else if (preserveChatView && previousScrollOffset > 0) {
+            } else if (preserveChatView && previousScrollOffset > 0 && !options.autoTriggered) {
+                // EXPLICIT "load older" (the TUI's `e`): jump up to the start
+                // of what was just fetched — the user asked to SEE it.
                 const nextState = this.getState();
                 const nextRenderedLines = this.getActiveChatRenderMetrics(nextState).totalLines;
                 const addedLines = Math.max(0, nextRenderedLines - previousRenderedLines);
@@ -7841,6 +8035,13 @@ export class PilotSwarmUiController {
                     });
                 }
             }
+            // AUTO-triggered (scrolling reached the top): change NOTHING. The
+            // offset is distance-from-BOTTOM, which prepended content cannot
+            // move — leaving it alone keeps the viewport glued to the exact
+            // messages the user was reading, and they scroll on into the new
+            // page naturally. Adding the delta here teleported the view to
+            // the TOP of a 3.3x-larger window — observed as "loading history
+            // takes you way back instead of a few pages up".
 
             const stateLabel = history.hasOlderEvents
                 ? options.autoTriggered
@@ -8522,9 +8723,6 @@ export class PilotSwarmUiController {
                 return;
             case UI_COMMANDS.OPEN_ARTIFACT_UPLOAD:
                 this.openArtifactUploadModal();
-                return;
-            case UI_COMMANDS.TOGGLE_CHAT_VIEW:
-                this.toggleChatViewMode();
                 return;
             case UI_COMMANDS.CLOSE_MODAL:
                 this.closeModal();

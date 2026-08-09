@@ -6,7 +6,7 @@
 // of chat-block-width-cache.test.mjs, which tested nothing else.
 //
 // Two contracts outlived the feature and are kept here:
-//   - "rich" must stay REJECTED as a chatViewMode, and a stored profile that
+//   - retired chat view modes stay gone, and a stored profile that
 //     still says "rich" must degrade to the transcript rather than wedging.
 //   - No theme may quietly claim `richChat`. The field was dropped from
 //     createTheme entirely, so this guards against it coming back on a theme
@@ -32,7 +32,7 @@ function renderState(history) {
     };
 }
 
-// "rich" was retired as a chatViewMode. The mode path must REJECT it
+// "rich" was retired long ago; the summary mode followed it out
 // everywhere, and stored profiles that still say "rich" quietly land on the
 // transcript — that half of the contract is what this test is for, and it
 // still holds.
@@ -43,31 +43,6 @@ function renderState(history) {
 // Re-pointing the assertion at another theme would have re-asserted a feature
 // that no longer exists, so it is dropped rather than moved. If the rich
 // transcript comes back, the flag and its test come back together.
-test("rich is a theme property, not a chatViewMode", () => {
-    const initial = createInitialState({});
-    assert.equal(initial.ui.chatViewMode, "transcript");
-
-    const afterRich = appReducer(initial, { type: "ui/chatViewMode", mode: "rich" });
-    assert.equal(afterRich.ui.chatViewMode, "transcript", "reducer rejects the retired mode");
-
-    const summary = appReducer(initial, { type: "ui/chatViewMode", mode: "summary" });
-    assert.equal(summary.ui.chatViewMode, "summary", "summary/transcript still toggle");
-
-    // Persisted "rich" from an old profile degrades to transcript on boot.
-    assert.equal(createInitialState({ chatViewMode: "rich" }).ui.chatViewMode, "transcript");
-    assert.equal(createInitialState({ chatViewMode: "summary" }).ui.chatViewMode, "summary");
-
-    // No theme opts into the rich transcript any more. `richChat` was dropped
-    // from createTheme outright, so the value is undefined rather than false —
-    // what matters is that nothing claims it, not which falsy value it holds.
-    for (const entry of listThemes()) {
-        assert.ok(!getTheme(entry.id).richChat, `${entry.id} must not claim the retired rich transcript`);
-    }
-});
-
-// A title that arrived already HTML-escaped (an LLM summarizing escaped
-// material) rendered its entities literally, e.g. "PostgreSQL &amp; MySQL".
-// Titles are plain text at every render site, so they decode on read.
 test("session titles decode HTML entities for display", () => {
     assert.equal(decodeHtmlEntitiesForDisplay("PostgreSQL &amp; MySQL"), "PostgreSQL & MySQL");
     assert.equal(decodeHtmlEntitiesForDisplay("a &lt;b&gt; c"), "a <b> c");

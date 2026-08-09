@@ -80,7 +80,8 @@ can read what it last wrote.*
 ## Goals
 
 - One persistent, revisioned visual surface per root session.
-- Whole-document replace semantics — idempotent, schema-checkable, replayable.
+- Whole-document replace semantics — simple to reason about, schema-checkable,
+  replayable (each draw mints a fresh rev; the store keeps only the latest bytes).
 - The agent can read its own canvas back, paged, across turns and epochs.
 - Live updates in every open portal view of the session — any user with
   read access, not just the owner — without flashes.
@@ -111,8 +112,8 @@ sessions table. It is the wrong mirror:
   rows should not carry that (the 0029 migration incident is the standing
   lesson on touching the sessions table casually).
 - Every session detail fetch would pay for bytes it almost never wants.
-- The artifact store already provides exactly the needed machinery: the 2 MB
-  write path, blob storage, retention and pinning, deep links, regen
+- The artifact store already provides exactly the needed machinery: the 1 MiB
+  text write path, blob storage, retention and pinning, deep links, regen
   survival (artifacts are documented to survive context regeneration), and —
   decisively — the portal's hardened sandboxed HTML renderer with
   double-buffered reload, artifact-scoped zoom, and fit-width.
@@ -492,12 +493,65 @@ Phase 3 — only if pulled by real use:
 
 ---
 
+## Future: interactive canvas
+
+> **Superseded by implementation (2026-08-08).** Interactive canvases shipped
+> with a different design than sketched below: creator-only posting (not
+> write-access), `[canvas-action] {"action":...,"data":...}` wire format, a
+> declared `responseContract` validated browser-side (default-closed), and a
+> burst-3-per-3s limiter. This section is kept as history; the shipped truth
+> lives in the html-visuals skill and docs/proposals/canvas-apps.md. (postMessage actions)
+
+Status: designed, not built. The ask: buttons and text inputs on the canvas
+whose values reach the agent, so a drawn dashboard can also be a control
+panel ("Approve", "Retry", a filter box the agent reacts to).
+
+The sandbox already permits exactly one clean channel. The canvas iframe runs
+`allow-scripts` with an opaque origin and no network — but `parent.postMessage`
+works from opaque origins by design. Nothing about the sandbox needs to relax.
+
+The chain, end to end:
+
+1. **In the page** (agent-authored, documented in `html-visuals`):
+
+       <button onclick="parent.postMessage({ type: 'canvas-action',
+           action: 'approve', data: { id: 42 } }, '*')">Approve</button>
+
+   A text input is the same shape — read its value into `data` on submit.
+2. **CanvasFrame** adds a `message` listener that accepts events ONLY from the
+   live iframe's `contentWindow`, validates `{type: 'canvas-action'}`, caps the
+   serialized payload (8 KB), and rate-limits (burst 5, ~1/s sustained) before
+   handing to the controller. The staging frame and every other window on the
+   page are ignored by the source check.
+3. **Controller → transport → one new web op** `submitCanvasAction(sessionId,
+   {action, data})`. Authz: session WRITE access — clicking is messaging, so it
+   takes the same right as send-message; viewers with read-only shares can
+   watch the canvas but not drive the session.
+4. **Delivery rides the existing pending-message machinery** — no new
+   orchestration surface, so frozen versions stay safe. The action lands as a
+   user-side line with provenance:
+   `[canvas] @affan clicked approve {"id":42}` — the agent handles it like any
+   other message and typically answers by redrawing.
+5. **Base prompt**: a short addition — you MAY embed controls; clicks arrive
+   as `[canvas]` messages from a named user; keep forms to buttons and simple
+   inputs; never rely on page state surviving a redraw (the redraw replaces
+   the document, so bake current values back into the HTML you draw).
+
+Threat model: the HTML is agent-authored, so a payload is agent-shaped at
+best and must be treated as untrusted user input to the agent (same trust
+level as a chat message, which is exactly how it is delivered). The payload
+cap and rate limit bound the blast radius of a runaway `setInterval` page.
+The TUI renders no canvas, so it gains no controls — parity is not attempted.
+
+Cost: one web op + CMS wake path, a CanvasFrame listener, prompt/skill
+paragraphs, and tests — comparable to the badge/flip slice of Phase 1.
+
 ## Risks
 
-- **The binding size limit is the model's output budget, not the 2 MB
+- **The binding size limit is the model's output budget, not the 1 MiB
   artifact cap.** The HTML arrives inline in the tool call, LLM-generated:
   300 KB of markup is roughly 75–100K output tokens in one call. Practical
-  canvases are tens of KB, which makes whole-replace self-limiting; the 2 MB
+  canvases are tens of KB, which makes whole-replace self-limiting; the 1 MiB
   store cap is a distant backstop. `html-visuals` already steers agents away
   from embedded rasters, and `draw_canvas` returns `sizeBytes` so the agent
   sees its own budget.
@@ -515,7 +569,7 @@ Phase 3 — only if pulled by real use:
 
 ## Open questions
 
-- Should `draw_canvas` enforce a soft size warning below the hard 2 MB cap
+- Should `draw_canvas` enforce a soft size warning below the hard 1 MiB cap
   (e.g. warn in the tool result above 512 KB)?
 - Does the Canvas button live in the inspector tab strip or beside the
   column like the resizer chrome? (Pure placement; decide in implementation

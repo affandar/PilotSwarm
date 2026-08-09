@@ -85,3 +85,28 @@ test("reaching the top of a transcript of LONG messages also loads older history
         "tall messages blocked the top-of-chat history load — the offset gate is back",
     );
 });
+
+// The anchoring contract, pinned after a live report: loading older history
+// from the SCROLL path must not move the view. The offset is distance-from-
+// bottom, which prepended content cannot shift — so auto-loads leave it
+// untouched and the reader stays on the same messages. Only the EXPLICIT
+// "load older" command jumps up to the newly fetched page.
+test("auto-load keeps the reading position; explicit load jumps to the fetched page", async () => {
+    const { controller } = makeController({ tall: false });
+    const offsetBefore = 40;
+    controller.dispatch({ type: "ui/scroll", pane: "chat", offset: offsetBefore });
+
+    await controller.expandSessionHistory(SESSION, {
+        requestedScrollOffset: offsetBefore,
+        autoTriggered: true,
+        eventTypes: undefined,
+    });
+    assert.equal(controller.getState().ui.scroll.chat, offsetBefore,
+        "auto-triggered load teleported the reader — the offset must not change");
+
+    await controller.expandSessionHistory(SESSION, {
+        requestedScrollOffset: offsetBefore,
+    });
+    assert.ok(controller.getState().ui.scroll.chat >= offsetBefore,
+        "the explicit path may jump up to show what was fetched");
+});

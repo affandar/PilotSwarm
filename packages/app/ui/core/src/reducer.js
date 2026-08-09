@@ -8,6 +8,7 @@ import {
     normalizeArtifactEntries,
     normalizeSessionOwnerFilter,
     normalizeStoredActiveSessionId,
+    normalizeStoredCanvasPrefs,
     normalizeStoredCollapsedSessionIds,
     normalizeStoredLayoutAdjustments,
     normalizeStoredPinnedSessionIds,
@@ -83,6 +84,39 @@ function prunePinnedIds(ids, byId) {
         // matches no row and hoists nothing; a wrongly dropped one costs the
         // user their pin permanently.
         if (!session || isPinnableSession(session)) out.push(id);
+    }
+    return out;
+}
+
+/**
+ * Fold a freshly applied profile's canvasPrefs over the local map. Two rules:
+ *
+ * - `lastViewedRev` merges by MAX. A poll snapshotted before a local view and
+ *   applied after must not regress what this window has already seen — same
+ *   monotonicity the revision counter itself keeps.
+ * - Entries prune like pins: absent-from-listing proves nothing (the listing
+ *   is paged), but a session PRESENT as a child or group can never have a
+ *   canvas, and a default-valued entry ({optedOut:false, lastViewedRev:0})
+ *   says nothing worth storing. Both drop, which is what keeps the map from
+ *   growing one dead key per session forever.
+ */
+function mergeCanvasPrefs(local, stored, byId) {
+    const out = {};
+    const keys = new Set([...Object.keys(stored || {}), ...Object.keys(local || {})]);
+    for (const sessionId of keys) {
+        const storedEntry = (stored || {})[sessionId];
+        const localEntry = (local || {})[sessionId];
+        const merged = {
+            // A local-only entry (viewed since the poll was snapshotted) must
+            // survive the apply — dropping it un-views what this window saw.
+            optedOut: storedEntry ? storedEntry.optedOut : Boolean(localEntry?.optedOut),
+            lastViewedRev: Math.max(storedEntry?.lastViewedRev || 0, localEntry?.lastViewedRev || 0),
+            lastViewedDataRev: Math.max(storedEntry?.lastViewedDataRev || 0, localEntry?.lastViewedDataRev || 0),
+        };
+        if (!merged.optedOut && merged.lastViewedRev === 0 && merged.lastViewedDataRev === 0) continue;
+        const session = byId?.[sessionId];
+        if (session && (session.parentSessionId || session.isGroup)) continue;
+        out[sessionId] = merged;
     }
     return out;
 }
@@ -772,8 +806,9 @@ export function appReducer(state, action) {
             // say "rich" fall through to the transcript below.
             const hasTouchScale = Object.prototype.hasOwnProperty.call(settings, "touchScale")
                 && typeof settings.touchScale === "boolean";
-            const hasChatViewMode = Object.prototype.hasOwnProperty.call(settings, "chatViewMode")
-                && (settings.chatViewMode === "summary" || settings.chatViewMode === "transcript");
+            const hasRightPaneMode = Object.prototype.hasOwnProperty.call(settings, "rightPaneMode")
+                && (settings.rightPaneMode === "canvas" || settings.rightPaneMode === "panes");
+            const hasCanvasPrefs = Object.prototype.hasOwnProperty.call(settings, "canvasPrefs");
             const hasPins = Object.prototype.hasOwnProperty.call(settings, "pinnedSessionIds");
             const hasCollapsed = Object.prototype.hasOwnProperty.call(settings, "collapsedSessionIds");
             const hasSessionOrder = Object.prototype.hasOwnProperty.call(settings, "sessionOrder");
@@ -836,27 +871,14 @@ export function appReducer(state, action) {
                     ...selection.ui,
                     themeId: hasTheme ? settings.themeId.trim() : selection.ui.themeId,
                     touchScale: hasTouchScale ? settings.touchScale : selection.ui.touchScale,
-                    chatViewMode: hasChatViewMode ? settings.chatViewMode : selection.ui.chatViewMode,
+                    rightPaneMode: hasRightPaneMode ? settings.rightPaneMode : selection.ui.rightPaneMode,
                     layout: nextLayout,
                 },
+                canvas: hasCanvasPrefs
+                    ? { ...state.canvas, prefs: mergeCanvasPrefs(state.canvas.prefs, normalizeStoredCanvasPrefs(settings.canvasPrefs), hasLoadedSessions ? state.sessions.byId : null) }
+                    : state.canvas,
             };
         }
-
-        case "ui/chatViewMode":
-            if (action.mode !== "summary" && action.mode !== "transcript") {
-                return state;
-            }
-            return {
-                ...state,
-                ui: {
-                    ...state.ui,
-                    chatViewMode: action.mode,
-                    scroll: {
-                        ...state.ui.scroll,
-                        chat: 0,
-                    },
-                },
-            };
 
         case "ui/modal":
             return {
@@ -2586,6 +2608,174 @@ export function appReducer(state, action) {
                         : false,
                 },
             };
+
+        // ── Canvas ──────────────────────────────────────────────────────
+        // The right column's mode plus the per-session attention state that
+        // decides flip-vs-badge. Viewed-marking deliberately does NOT live in
+        // these mode transitions: only the rendering surface knows what is
+        // actually on screen, so `canvas/viewed` is dispatched by the canvas
+        // pane when a revision really displays. Inferring "viewed" from mode
+        // changes marked revs seen on a phone whose layout never showed the
+        // pane, and left session-switches-while-in-canvas-mode unviewed.
+        //   - entering canvas mode is always a user gesture → clears opt-out
+        //   - a MANUAL switch away records the opt-out (future draws badge)
+        //   - `canvas/flip` is the agent-driven variant: same mode change,
+        //     plus a flipSeq tick that hosts with their own pane state (the
+        //     phone's tab strip) listen to
+        case "ui/rightPaneMode": {
+            const mode = action.mode === "canvas" ? "canvas" : "panes";
+            const sessionId = action.sessionId || state.sessions.activeSessionId || null;
+            let prefs = state.canvas.prefs;
+            if (sessionId) {
+                const prev = prefs[sessionId] || { optedOut: false, lastViewedRev: 0 };
+                if (mode === "canvas" && prev.optedOut) {
+                    // Coming back by hand un-opts-out: the user has shown the
+                    // canvas is welcome again, so future draws may flip.
+                    prefs = { ...prefs, [sessionId]: { ...prev, optedOut: false } };
+                } else if (mode === "panes" && action.manual && !prev.optedOut) {
+                    prefs = { ...prefs, [sessionId]: { ...prev, optedOut: true } };
+                }
+            }
+            return {
+                ...state,
+                ui: { ...state.ui, rightPaneMode: mode },
+                canvas: { ...state.canvas, prefs },
+            };
+        }
+
+        // The agent-driven flip. The guards (active session, freshness,
+        // opt-out) live in the controller; by the time this dispatches the
+        // flip is decided. flipSeq ticks even when the mode is already
+        // "canvas" — a phone can be off the canvas tab while the persisted
+        // mode still says canvas, and the tick is what brings its tab back.
+        case "canvas/flip": {
+            return {
+                ...state,
+                ui: { ...state.ui, rightPaneMode: "canvas" },
+                canvas: { ...state.canvas, flipSeq: (state.canvas.flipSeq || 0) + 1 },
+            };
+        }
+
+        // The surface's receipt: revision `rev` (a draw) and/or `dataRev` (a
+        // tick) actually rendered on screen. Both feed the unseen badge.
+        case "canvas/viewed": {
+            const sessionId = String(action.sessionId || "").trim();
+            if (!sessionId) return state;
+            const rev = Number(action.rev);
+            const dataRev = Number(action.dataRev);
+            const prev = state.canvas.prefs[sessionId] || { optedOut: false, lastViewedRev: 0, lastViewedDataRev: 0 };
+            const nextRev = Number.isFinite(rev) && rev > (prev.lastViewedRev || 0) ? rev : (prev.lastViewedRev || 0);
+            const nextDataRev = Number.isFinite(dataRev) && dataRev > (prev.lastViewedDataRev || 0) ? dataRev : (prev.lastViewedDataRev || 0);
+            if (nextRev === (prev.lastViewedRev || 0) && nextDataRev === (prev.lastViewedDataRev || 0)) return state;
+            return {
+                ...state,
+                canvas: {
+                    ...state.canvas,
+                    prefs: { ...state.canvas.prefs, [sessionId]: { ...prev, lastViewedRev: nextRev, lastViewedDataRev: nextDataRev } },
+                },
+            };
+        }
+
+        case "canvas/updated": {
+            const sessionId = String(action.sessionId || "").trim();
+            const rev = Number(action.rev);
+            if (!sessionId || !Number.isFinite(rev) || rev <= 0) return state;
+            const existing = state.canvas.bySessionId[sessionId] || {};
+            // Monotonic: replays and out-of-order merges must never regress
+            // the known revision (freshness gates the FLIP, never the data).
+            if ((existing.latestRev || 0) >= rev) return state;
+            return {
+                ...state,
+                canvas: {
+                    ...state.canvas,
+                    bySessionId: {
+                        ...state.canvas.bySessionId,
+                        [sessionId]: {
+                            ...existing,
+                            latestRev: rev,
+                            note: typeof action.note === "string" ? action.note : "",
+                            sizeBytes: Number.isFinite(Number(action.sizeBytes)) ? Number(action.sizeBytes) : null,
+                            // The contract belongs to the revision: a draw
+                            // without one REVOKES interactivity (default
+                            // closed), so no carry-over from the previous rev.
+                            responseContract: action.responseContract && typeof action.responseContract === "object"
+                                ? action.responseContract
+                                : null,
+                        },
+                    },
+                },
+            };
+        }
+
+        // A data tick: content for the page, in place. Never flips (ticks do
+        // not interrupt) — but it DOES count toward the unseen badge via
+        // latestDataRev vs lastViewedDataRev. Monotonic like the draw rev.
+        case "canvas/data": {
+            const sessionId = String(action.sessionId || "").trim();
+            const dataRev = Number(action.dataRev);
+            if (!sessionId || !Number.isFinite(dataRev) || dataRev <= 0) return state;
+            const existing = state.canvas.bySessionId[sessionId] || {};
+            if ((existing.latestDataRev || 0) >= dataRev) return state;
+            return {
+                ...state,
+                canvas: {
+                    ...state.canvas,
+                    bySessionId: {
+                        ...state.canvas.bySessionId,
+                        [sessionId]: {
+                            ...existing,
+                            latestDataRev: dataRev,
+                            dataPayload: action.payload && typeof action.payload === "object" ? action.payload : null,
+                        },
+                    },
+                },
+            };
+        }
+
+        case "canvas/snapshot": {
+            const sessionId = String(action.sessionId || "").trim();
+            if (!sessionId) return state;
+            const existing = state.canvas.bySessionId[sessionId] || {};
+            const rev = Number(action.rev) || 0;
+            return {
+                ...state,
+                canvas: {
+                    ...state.canvas,
+                    bySessionId: {
+                        ...state.canvas.bySessionId,
+                        [sessionId]: {
+                            ...existing,
+                            // Events may have beaten the snapshot; never regress.
+                            latestRev: Math.max(existing.latestRev || 0, rev),
+                            note: (existing.latestRev || 0) > rev ? existing.note : (typeof action.note === "string" ? action.note : existing.note || ""),
+                            sizeBytes: (existing.latestRev || 0) > rev ? existing.sizeBytes : (Number.isFinite(Number(action.sizeBytes)) ? Number(action.sizeBytes) : existing.sizeBytes ?? null),
+                            responseContract: (existing.latestRev || 0) > rev
+                                ? (existing.responseContract ?? null)
+                                : (action.responseContract && typeof action.responseContract === "object" ? action.responseContract : null),
+                            snapshotLoaded: true,
+                        },
+                    },
+                },
+            };
+        }
+
+        // Continuity break (windowed bulk reload replaced gap-free replay):
+        // the memoized snapshot can no longer be trusted — re-take on next need.
+        case "canvas/snapshotInvalidate": {
+            const sessionId = String(action.sessionId || "").trim();
+            const existing = state.canvas.bySessionId[sessionId];
+            if (!sessionId || !existing?.snapshotLoaded) return state;
+            return {
+                ...state,
+                canvas: {
+                    ...state.canvas,
+                    bySessionId: {
+                        ...state.canvas.bySessionId,
+                        [sessionId]: { ...existing, snapshotLoaded: false },
+                    },
+                },
+            };
+        }
 
         case "files/htmlViewMode":
             return {

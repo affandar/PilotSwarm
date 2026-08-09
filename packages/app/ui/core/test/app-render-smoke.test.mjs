@@ -100,12 +100,9 @@ test("the Files tab renders with an artifact selected and marked", () => {
     assert.doesNotThrow(() => render(controller), "Files tab with marks must render");
 });
 
-test("both chat view modes render", () => {
-    for (const mode of ["transcript", "rich", "summary"]) {
-        const controller = makeController();
-        controller.dispatch({ type: "ui/chatViewMode", chatViewMode: mode });
-        assert.doesNotThrow(() => render(controller), `chat view "${mode}" must render`);
-    }
+test("the chat view renders", () => {
+    const controller = makeController();
+    assert.doesNotThrow(() => render(controller), "chat view must render");
 });
 
 // The suite rendered at 1440px only, so every mobile-only branch — the mobile

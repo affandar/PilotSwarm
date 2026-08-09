@@ -13,3 +13,4 @@ export * from "./selectors.js";
 export * from "./controller.js";
 export { isThemeLight } from "./themes/helpers.js";
 export * from "./themes/index.js";
+export { validateCanvasAction, formatCanvasActionPrompt, parseCanvasActionContent, isCanvasActionContent, createCanvasActionLimiter, CANVAS_ACTION_PREFIX } from "./canvas-actions.js";

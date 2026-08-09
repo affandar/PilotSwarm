@@ -30,6 +30,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { extractCanvasAppManifest, normalizeCanvasResponseContract } from "./canvas-app-manifest.js";
 import { defineTool } from "@github/copilot-sdk";
 import type { Tool } from "@github/copilot-sdk";
 import type { ArtifactStore } from "./session-store.js";
@@ -144,14 +145,14 @@ export function createArtifactTools(opts: {
                         "Copy another session's artifact server-side (source 3 of 3). " +
                         "Bytes move store-to-store.",
                     properties: {
-                        sessionId: { type: "string", description: "Session that owns the source artifact." },
+                        sessionId: { type: "string", description: "Session that owns the source artifact. Defaults to this session — the save-the-canvas recipe needs only a filename." },
                         filename: { type: "string", description: "Source artifact filename." },
                         expectedSha256: {
                             type: "string",
-                            description: "Optional precondition: fail with SHA_MISMATCH if the copied bytes hash differently.",
+                            description: "Optional precondition: fail with SHA_MISMATCH if the copied bytes hash differently (sha256 of the stored bytes, as reported by list_artifacts/read_artifact metaOnly).",
                         },
                     },
-                    required: ["sessionId", "filename"],
+                    required: ["filename"],
                 },
                 contentType: {
                     type: "string",
@@ -215,8 +216,11 @@ export function createArtifactTools(opts: {
                 if (params.fromArtifact) {
                     const from = params.fromArtifact;
                     const filename = params.filename || path.basename(from.filename);
+                    // Source session defaults to self: the canonical save-as
+                    // ("copy my canvas.html to apps/<name>.html") should not
+                    // require the model to know its own session id.
                     const metadata = await blobStore.copyArtifact(
-                        from.sessionId, from.filename, sessionId, filename, { pinned },
+                        from.sessionId || sessionId, from.filename, sessionId, filename, { pinned },
                     );
                     if (from.expectedSha256 && metadata.sha256 !== from.expectedSha256) {
                         await blobStore.deleteArtifact(sessionId, metadata.filename);
@@ -277,6 +281,13 @@ export function createArtifactTools(opts: {
                     type: "boolean",
                     description: "Return metadata only — no content transfer.",
                 },
+                manifestOnly: {
+                    type: "boolean",
+                    description:
+                        "Return only the artifact's embedded CANVAS-APP-MANIFEST (name, description, "
+                        + "responseContract, data/usage notes) — the cheap way to learn a stored canvas app's "
+                        + "interface before draw_canvas({fromArtifact}). Never returns the document bytes.",
+                },
                 toFile: {
                     type: "string",
                     description:
@@ -303,20 +314,46 @@ export function createArtifactTools(opts: {
             sessionId: string;
             filename: string;
             metaOnly?: boolean;
+            manifestOnly?: boolean;
             toFile?: string;
             encoding?: "utf-8" | "base64";
             maxBytes?: number;
             offset?: number;
         }) => {
-            if (params.metaOnly && params.toFile) {
+            if ([params.metaOnly, params.manifestOnly, params.toFile].filter(Boolean).length > 1) {
                 return toolError(
                     "EXCLUSIVE_MODE",
-                    "metaOnly and toFile are mutually exclusive.",
-                    "Use metaOnly for metadata, toFile to materialize bytes, or neither for inline content.",
+                    "metaOnly, manifestOnly, and toFile are mutually exclusive.",
+                    "Use metaOnly for metadata, manifestOnly for a canvas app's interface card, toFile to materialize bytes, or none for inline content.",
                 );
             }
 
             try {
+                if (params.manifestOnly) {
+                    const text = await blobStore.downloadArtifactText(params.sessionId, params.filename);
+                    const extraction = extractCanvasAppManifest(text);
+                    // Same discipline as every other card surface: the contract
+                    // is returned POST-normalizer (4 KB cap) or not at all — a
+                    // 40 KB "contract" must not ride the cheap read into context.
+                    let manifest = extraction.manifest;
+                    let contractError;
+                    if (manifest?.responseContract !== undefined) {
+                        const normalized = normalizeCanvasResponseContract(manifest.responseContract);
+                        const { responseContract: _raw, ...rest } = manifest;
+                        manifest = normalized.contract ? { ...rest, responseContract: normalized.contract } : rest;
+                        if (normalized.error) contractError = normalized.error;
+                    }
+                    return JSON.stringify({
+                        success: true,
+                        sessionId: params.sessionId,
+                        filename: params.filename,
+                        sizeBytes: Buffer.byteLength(text, "utf8"),
+                        manifest,
+                        ...(extraction.error ? { manifestError: extraction.error } : {}),
+                        ...(contractError ? { manifestContractError: contractError } : {}),
+                    });
+                }
+
                 if (params.metaOnly) {
                     const metadata = await blobStore.statArtifact(params.sessionId, params.filename);
                     if (!metadata) {

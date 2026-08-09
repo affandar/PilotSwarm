@@ -1,4 +1,5 @@
 import { formatHumanDurationSeconds, formatTimestamp, shortSessionId, stripTerminalMarkupTags, summarizeJson } from "./formatting.js";
+import { isCanvasActionContent, parseCanvasActionContent } from "./canvas-actions.js";
 import { formatCompactionActivityRuns } from "./context-usage.js";
 import { canonicalSystemTitle } from "./system-titles.js";
 
@@ -30,6 +31,9 @@ export const CHAT_HISTORY_EVENT_TYPES = [
     // silently never flipped. Observed live — two attempts died on
     // ARTIFACT_TOO_LARGE with nothing shown in the transcript.
     "session.regenerate_failed",
+    // Canvas revisions — kept in backward chat paging so the TUI's artifact
+    // link line survives history loads (the portal skips the line either way).
+    "session.canvas_updated",
 ];
 
 // Build the inline transcript divider marking a session-regeneration epoch
@@ -379,6 +383,13 @@ function sharesClientMessageId(left, right) {
 function areMessagesEquivalent(left, right) {
     if (!left || !right) return false;
     if (left.role !== right.role) return false;
+    // Canvas revision lines are platform-minted, exactly-once (one durable
+    // event per rev), and share identical text by design (the artifact://
+    // link) — the redelivery time-window below would eat rev N-1 on every
+    // reload, making the transcript disagree with what live append showed.
+    if (left.kind === "canvas-update" || right.kind === "canvas-update") {
+        return left.kind === right.kind && left.id === right.id;
+    }
 
     const leftText = comparableMessageText(left);
     const rightText = comparableMessageText(right);
@@ -457,6 +468,33 @@ function buildChatMessage(event, role) {
     const rawText = messageTextFromEvent(event);
     const sessionMessageCard = buildSessionMessageChatCard(event, rawText);
     if (sessionMessageCard) return sessionMessageCard;
+
+    // A structured canvas response — the browser sent it on the viewer's
+    // behalf after validating it against the drawn contract. One item shape
+    // from ONE builder, so bulk load and live append cannot disagree. The
+    // portal chat hides it (the redraw is the visible half of the loop);
+    // the TUI shows a compact line.
+    if (role === "user" && isCanvasActionContent(rawText)) {
+        const parsed = parseCanvasActionContent(rawText);
+        if (parsed) {
+            return {
+                id: `${event.sessionId}:${event.seq}`,
+                kind: "canvas-action",
+                role: "user",
+                action: parsed.action,
+                data: parsed.data,
+                text: rawText,
+                time: formatTimestamp(event.createdAt),
+                createdAt: event.createdAt instanceof Date ? event.createdAt.getTime() : new Date(event.createdAt).getTime(),
+                // Without the ids, the distinct-ids rule can never fire and two
+                // genuine same-payload submissions within 10s collapse to one
+                // falsely-"redelivered" bubble while the activity feed shows two.
+                ...(Array.isArray(event?.data?.clientMessageIds) && event.data.clientMessageIds.length > 0
+                    ? { clientMessageIds: event.data.clientMessageIds }
+                    : {}),
+            };
+        }
+    }
 
     const text = stripLeadingSenderMarker(extractVisibleChatText(rawText, role));
     if (!hasVisibleMessageText(text)) return null;
@@ -711,6 +749,31 @@ function formatActivity(event) {
             break;
         }
 
+        case "session.canvas_updated": {
+            const data = (event?.data ?? {}) || {};
+            const rev = Number(data.rev) || 0;
+            const note = typeof data.note === "string" && data.note.trim() ? ` — ${data.note.trim()}` : "";
+            // Server-side artifact draws record their source; surfacing it here
+            // distinguishes "rendered the stored app" from an inline redraw the
+            // same honest way ticks are distinguished from draws.
+            const sourceName = typeof data.source?.filename === "string" && data.source.filename.trim()
+                ? ` from ${data.source.filename.trim()}`
+                : "";
+            runs = buildLabeledActivityRuns(time, "[canvas]", "cyan", `rev ${rev}${sourceName}${note}`, "white");
+            break;
+        }
+
+        case "session.canvas_data": {
+            // A data TICK, deliberately distinct from a full redraw: the page
+            // patched itself in place; no document was replaced.
+            const data = (event?.data ?? {}) || {};
+            const dataRev = Number(data.dataRev) || 0;
+            const kb = Number.isFinite(Number(data.sizeBytes)) ? ` (${(Number(data.sizeBytes) / 1024).toFixed(1)} KB)` : "";
+            const note = typeof data.note === "string" && data.note.trim() ? ` — ${data.note.trim()}` : "";
+            runs = buildLabeledActivityRuns(time, "[canvas]", "cyan", `data tick ${dataRev}${kb}${note}`, "white");
+            break;
+        }
+
         case "tool.execution_start":
             runs = formatToolActivityRuns(time, event, "start");
             break;
@@ -934,6 +997,43 @@ export function getNextHistoryEventLimit(currentLimit = DEFAULT_HISTORY_EVENT_LI
     return nextLimit || Math.min(100_000, safeCurrent * 2);
 }
 
+/**
+ * The canvas event's chat item, shared verbatim by the bulk loader and the
+ * live append path — a reload must not change the transcript. `text` carries
+ * the bare artifact URI because the TUI's press-a picker extracts
+ * `artifact://` links from message text; the rendered line builds its own
+ * runs and never shows this string.
+ */
+function buildCanvasChatItem(event) {
+    const sessionId = event.sessionId || null;
+    return {
+        id: `${event.sessionId || ""}:${event.seq}:canvas`,
+        kind: "canvas-update",
+        role: "canvas-update",
+        sessionId,
+        rev: Number(event?.data?.rev) || 0,
+        note: typeof event?.data?.note === "string" ? event.data.note : "",
+        text: sessionId ? `artifact://${sessionId}/canvas.html` : "",
+        createdAt: event.createdAt instanceof Date ? event.createdAt.getTime() : new Date(event.createdAt).getTime(),
+    };
+}
+
+/** The diagnostic feed line for a validated canvas response. */
+function buildCanvasActionActivity(event, item) {
+    const time = formatTimestamp(event.createdAt);
+    const detail = `action ${item.action}${Object.keys(item.data || {}).length ? " " + summarizeJson(item.data) : ""}`;
+    const runs = buildLabeledActivityRuns(time, "[canvas]", "cyan", detail, "white");
+    return {
+        id: `${event.sessionId}:${event.seq}:canvas-action`,
+        eventType: event.eventType,
+        time,
+        seq: Number.isFinite(Number(event?.seq)) ? Number(event.seq) : 0,
+        createdAt: event.createdAt instanceof Date ? event.createdAt.getTime() : new Date(event.createdAt).getTime(),
+        text: flattenRunsText(runs),
+        line: runs,
+    };
+}
+
 export function buildHistoryModel(events = [], options = {}) {
     const requestedLimit = Math.max(
         DEFAULT_HISTORY_EVENT_LIMIT,
@@ -949,6 +1049,23 @@ export function buildHistoryModel(events = [], options = {}) {
             activity.push(...buildEmbeddedSystemNoticeActivityItems(event, "user"));
             const message = buildChatMessage(event, "user");
             if (message) chat.push(message);
+            if (message?.kind === "canvas-action") {
+                const actionActivity = buildCanvasActionActivity(event, message);
+                if (actionActivity) activity.push(actionActivity);
+            }
+            continue;
+        }
+        if (event.eventType === "session.canvas_updated") {
+            // A flagged chat item, not a plain message: the PORTAL chat skips
+            // it entirely (the canvas pane updating is the signal there),
+            // while the TUI — which cannot render the canvas — shows it as an
+            // ordinary artifact link. Shared data, host-chosen affordance,
+            // same precedent as the download hint. `text` carries the bare
+            // artifact URI for the TUI's press-a picker, which extracts
+            // `artifact://` links from message text.
+            chat.push(buildCanvasChatItem(event));
+            const activityItem = formatActivity(event);
+            if (activityItem) activity.push(activityItem);
             continue;
         }
         if (event.eventType === "assistant.message") {
@@ -1038,8 +1155,12 @@ export function appendEventToHistory(history, event) {
 
     if (event.eventType === "user.message") {
         next.activity.push(...buildEmbeddedSystemNoticeActivityItems(event, "user"));
-        next.activity = clampHistoryItems(next.activity, loadedEventLimit);
         const message = buildChatMessage(event, "user");
+        if (message?.kind === "canvas-action") {
+            const actionActivity = buildCanvasActionActivity(event, message);
+            if (actionActivity) next.activity.push(actionActivity);
+        }
+        next.activity = clampHistoryItems(next.activity, loadedEventLimit);
         if (!message) return next;
         // Prospective flag: covers a bulk load where the stop event arrived
         // before this message in the reduce order.
@@ -1050,6 +1171,18 @@ export function appendEventToHistory(history, event) {
         next.chat = reconcileOptimisticMessage(next.chat, message);
         next.chat.push(message);
         next.chat = clampHistoryItems(dedupeChatMessages(next.chat), loadedEventLimit);
+        return next;
+    }
+    if (event.eventType === "session.canvas_updated") {
+        // Same flagged chat item the bulk loader builds — the live path and
+        // the history path must agree or a reload would change the transcript.
+        next.chat.push(buildCanvasChatItem(event));
+        next.chat = clampHistoryItems(next.chat, loadedEventLimit);
+        const canvasActivity = formatActivity(event);
+        if (canvasActivity) {
+            next.activity.push(canvasActivity);
+            next.activity = clampHistoryItems(next.activity, loadedEventLimit);
+        }
         return next;
     }
     if (event.eventType === "assistant.message") {

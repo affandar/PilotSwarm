@@ -524,13 +524,13 @@ async function testLlmSetModelFailureIsTerminal() {
     let summaryCalls = 0;
     fakeSession.scriptedToolCalls = [
         { name: "set_session_model", args: { model: INVALID_MODEL_ID } },
-        { name: "update_session_summary", args: { summary_state: { schemaVersion: 1, updatedAt: new Date().toISOString(), intent: "wrong", summary: "wrong", state: {}, openQuestions: [], blockers: [], nextActions: [], links: [], structureChangeLog: [] } } },
+        { name: "send_session_message", args: { session_id: "someone-else", subject: "wrong", body: "should never send" } },
     ];
     const managed = new ManagedSession("llm-failed-switch-terminal", fakeSession, {});
     const result = await managed.runTurn("switch to an invalid model", {
         controlToolBridge: {
             setSessionModel: async () => `[SYSTEM: set_session_model failed: Unknown model: ${INVALID_MODEL_ID}]`,
-            updateSessionSummary: async () => { summaryCalls += 1; return "ok"; },
+            sendSessionMessage: async () => { summaryCalls += 1; return "ok"; },
         },
     });
 
@@ -544,13 +544,13 @@ async function testLlmSetModelNonAcceptedResultIsTerminal() {
     let summaryCalls = 0;
     fakeSession.scriptedToolCalls = [
         { name: "set_session_model", args: { model: "github-copilot:gpt-5.5" } },
-        { name: "update_session_summary", args: { summary_state: { schemaVersion: 1, updatedAt: new Date().toISOString(), intent: "wrong", summary: "wrong", state: {}, openQuestions: [], blockers: [], nextActions: [], links: [], structureChangeLog: [] } } },
+        { name: "send_session_message", args: { session_id: "someone-else", subject: "wrong", body: "should never send" } },
     ];
     const managed = new ManagedSession("llm-nonaccepted-switch-terminal", fakeSession, {});
     const result = await managed.runTurn("try to switch unavailable", {
         controlToolBridge: {
             setSessionModel: async () => "[SYSTEM: set_session_model rejected by policy.]",
-            updateSessionSummary: async () => { summaryCalls += 1; return "ok"; },
+            sendSessionMessage: async () => { summaryCalls += 1; return "ok"; },
         },
     });
 

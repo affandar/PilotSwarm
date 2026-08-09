@@ -1110,10 +1110,23 @@ export class SessionManager {
         // whole purpose is to change agents — so the strip applies only to the
         // legacy id, and dies with it.
         const isTunerSession = effectiveSerializableConfig.agentIdentity === "agent-tuner";
-        const mutatingSystemToolNames = new Set(["update_session_summary", "send_session_message", "reply_session_message"]);
+        const mutatingSystemToolNames = new Set(["send_session_message", "reply_session_message", "draw_canvas",
+    "update_canvas"]);
         const userTools = config.tools ?? [];
+        // Canvas tools are ROOT-only, and THIS is the declaration half of that
+        // gate: sessionConfig.tools below is the sole chokepoint where
+        // declarations reach the CLI (registerTools only refreshes the
+        // handler map), and it has no notion of parentage — the catalog row
+        // fetched above does. A child that saw the declaration while its
+        // per-turn handler set excluded the tool would have its call silently
+        // dropped by the CLI (no handler, no response, turn hangs), which is
+        // strictly worse than an error. Fail open on an unreadable row: the
+        // per-turn handler still refuses with a clear message.
+        const canvasToolNames = new Set(["draw_canvas", "update_canvas", "read_canvas"]);
+        const isChildSession = Boolean((catalogRow as any)?.parentSessionId);
         const systemTools = ManagedSession.systemToolDefs()
-            .filter((tool: any) => !isTunerSession || !mutatingSystemToolNames.has(tool.name));
+            .filter((tool: any) => !isTunerSession || !mutatingSystemToolNames.has(tool.name))
+            .filter((tool: any) => !isChildSession || !canvasToolNames.has(tool.name));
         const readOnlyTunerSubAgentToolNames = new Set(["check_agents", "list_sessions"]);
         const subAgentTools = ManagedSession.subAgentToolDefs()
             .filter((tool: any) => !isTunerSession || readOnlyTunerSubAgentToolNames.has(tool.name));
