@@ -311,6 +311,42 @@ export class PilotSwarmWorker {
             effectiveSessionStateDir,
         );
 
+        // ── Worker-startup defaults diagnostics ──────────────────────────────
+        // Emit the exact worker-level state that flows into EVERY session the
+        // node serves (skills, custom agents, MCP servers, model catalog, state
+        // dirs). Pairs with the per-session "GHCP-SDK createSession params" line
+        // in SessionManager: this shows what the worker BOOTED with; that shows
+        // what a specific turn RESOLVED to. Together they pinpoint whether a
+        // missing skill/agent is a load-time (worker) or bind-time (session)
+        // problem — the CP2 tripwire for `.github`/skills enumeration.
+        const startupTrace = this.config.traceWriter ?? ((m: string) => console.log(m));
+        try {
+            const skillNames = [...this._loadedSkills.keys()];
+            const skillDirsProbe = (this._loadedSkillDirs ?? []).map((d) => ({
+                dir: d,
+                exists: (() => { try { return fs.existsSync(d); } catch { return false; } })(),
+            }));
+            startupTrace(
+                "[PilotSwarmWorker] worker-defaults " + JSON.stringify({
+                    workerNodeId: this.config.workerNodeId ?? "(unset)",
+                    processCwd: process.cwd(),
+                    copilotHome: process.env.COPILOT_HOME ?? "(unset)",
+                    sessionStateDir: effectiveSessionStateDir ?? "(unset)",
+                    skillDirectoriesCount: skillDirsProbe.length,
+                    skillDirectories: skillDirsProbe,
+                    loadedSkillCount: skillNames.length,
+                    loadedSkillNames: skillNames,
+                    customAgentCount: this._loadedAgents.length,
+                    customAgentNames: this._loadedAgents.map((a) => a.name),
+                    mcpServerNames: Object.keys(this._loadedMcpServers),
+                    defaultModel: this._modelProviders?.defaultModel ?? "(unset)",
+                    modelCatalogCount: this._modelProviders?.allModels.length ?? 0,
+                }),
+            );
+        } catch (defErr) {
+            startupTrace(`[PilotSwarmWorker] worker-defaults diagnostics failed: ${String((defErr as Error)?.message ?? defErr)}`);
+        }
+
         // Poll for model_providers.json changes (30s, unref'd so it never
         // holds the process open). On reload, swap the worker's registry AND
         // the SessionManager's — new sessions and per-turn model resolution

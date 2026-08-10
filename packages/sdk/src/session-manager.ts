@@ -1315,6 +1315,64 @@ export class SessionManager {
             ...(Object.keys(effectiveMcpServers).length > 0 && { mcpServers: effectiveMcpServers }),
         };
 
+        // ── GHCP SDK session-config diagnostics ──────────────────────────────
+        // Log the exact parameters that govern WHERE the Copilot CLI looks for
+        // skills/instructions/agents, plus on-disk existence probes for the
+        // enlistment's `.github` tree. This is the CP2 tripwire: if a target repo
+        // checkout succeeds but the CLI still can't see `<repo>/.github`,
+        // this line shows whether it was a working-directory, config-discovery,
+        // or enable-skills problem (the three knobs that gate `.github` skills).
+        // NOTE: PilotSwarm's OWN bundled skills reach the model via
+        // `skillDirectories` + the search_skills knowledge index — the CLI's
+        // `.github` auto-discovery is a SEPARATE path gated by
+        // enableConfigDiscovery (SDK default: false) / enableSkills.
+        try {
+            const effWorkingDir = sessionConfig.workingDirectory ?? process.cwd();
+            const probeGithub = (base: string | undefined) => {
+                if (!base) return { base: "(unset)", github: false, skills: false, agents: false, prompts: false, instructions: false };
+                const p = (sub: string) => { try { return fs.existsSync(path.join(base, sub)); } catch { return false; } };
+                return {
+                    base,
+                    github: p(".github"),
+                    skills: p(path.join(".github", "skills")),
+                    agents: p(path.join(".github", "agents")),
+                    prompts: p(path.join(".github", "prompts")),
+                    instructions: p(path.join(".github", "instructions")),
+                };
+            };
+            const skillDirsProbe = (sessionConfig.skillDirectories ?? []).map((d: string) => ({
+                dir: d,
+                exists: (() => { try { return fs.existsSync(d); } catch { return false; } })(),
+            }));
+            emitSessionManagerTrace(
+                sessionId,
+                "GHCP-SDK createSession params " + JSON.stringify({
+                    sessionId,
+                    model: sessionConfig.model,
+                    turnIndex: turnIndex ?? null,
+                    workingDirectory: sessionConfig.workingDirectory ?? "(unset -> CLI uses process.cwd())",
+                    processCwd: process.cwd(),
+                    copilotHome: process.env.COPILOT_HOME ?? "(unset)",
+                    enableConfigDiscovery: sessionConfig.enableConfigDiscovery ?? "(unset -> SDK default false)",
+                    enableSkills: sessionConfig.enableSkills ?? "(unset -> falls back to enableConfigDiscovery)",
+                    configDirectory: sessionConfig.configDirectory ?? "(unset)",
+                    skillDirectoriesCount: skillDirsProbe.length,
+                    skillDirectories: skillDirsProbe,
+                    customAgentsCount: Array.isArray(sessionConfig.customAgents) ? sessionConfig.customAgents.length : 0,
+                    mcpServerNames: Object.keys(effectiveMcpServers),
+                    githubProbeWorkingDir: probeGithub(effWorkingDir),
+                    githubProbeCwd: probeGithub(process.cwd()),
+                }),
+                { trace },
+            );
+        } catch (probeErr: unknown) {
+            emitSessionManagerTrace(
+                sessionId,
+                `GHCP-SDK createSession params probe failed: ${normalizeError(probeErr).message}`,
+                { trace, level: "warn" },
+            );
+        }
+
         let copilotSession: CopilotSession;
 
         // 1. Check if already in memory (warm) — update config in case
