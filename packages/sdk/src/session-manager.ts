@@ -105,6 +105,19 @@ export interface WorkerDefaults {
     appDefaultDescriptor?: import("./prompt-layers.js").PromptLayerDescriptor;
     /** Skill directories to pass to the Copilot SDK. */
     skillDirectories?: string[];
+    /**
+     * Default session workingDirectory (platform-owned). Applied only when the
+     * per-session config does not specify one. Maps to the SDK session-config
+     * `workingDirectory`; roots the CLI's `.github` config discovery.
+     */
+    sessionWorkingDirectory?: string;
+    /**
+     * Enable the SDK's config discovery (skill dirs + MCP servers from the
+     * session `workingDirectory`) for every session. SDK default is false.
+     */
+    enableConfigDiscovery?: boolean;
+    /** Explicit override for the SDK session-config `enableSkills`. */
+    enableSkills?: boolean;
     /** Custom agents to pass to the Copilot SDK. */
     customAgents?: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; skills?: string[]; mcpServers?: Record<string, any> }>;
     /**
@@ -1287,7 +1300,12 @@ export class SessionManager {
             // configDir is intentionally omitted: the Copilot CLI does not honor it for
             // state placement (verified against @github/copilot 1.0.36). State location is
             // controlled exclusively via COPILOT_HOME, set on the spawned CLI in ensureClient().
-            workingDirectory: config.workingDirectory,
+            //
+            // workingDirectory: prefer the per-session value; otherwise fall back
+            // to the platform-owned default (e.g. the ADO agent's enlistment
+            // checkout). This is what roots the CLI's `.github` config discovery
+            // — the customer never has to know the agent's checkout path.
+            workingDirectory: config.workingDirectory ?? this.workerDefaults.sessionWorkingDirectory,
             hooks: config.hooks,
             onPermissionRequest: (config as any).onPermissionRequest ?? approvePermissionForSession,
             infiniteSessions: { enabled: true },
@@ -1312,6 +1330,12 @@ export class SessionManager {
             // are the bound agent's own resolved map (see above).
             ...(this.workerDefaults.skillDirectories?.length && { skillDirectories: this.workerDefaults.skillDirectories }),
             ...(this.workerDefaults.customAgents?.length && { customAgents: this.workerDefaults.customAgents }),
+            // Platform-owned discovery knobs: when set, gate the CLI's
+            // auto-discovery of an enlistment's `.github` skills/MCP servers
+            // (rooted at workingDirectory). Only spread when explicitly set so
+            // sessions without a checkout keep the SDK defaults.
+            ...(this.workerDefaults.enableConfigDiscovery != null && { enableConfigDiscovery: this.workerDefaults.enableConfigDiscovery }),
+            ...(this.workerDefaults.enableSkills != null && { enableSkills: this.workerDefaults.enableSkills }),
             ...(Object.keys(effectiveMcpServers).length > 0 && { mcpServers: effectiveMcpServers }),
         };
 

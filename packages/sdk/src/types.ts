@@ -948,6 +948,33 @@ export interface PilotSwarmWorkerOptions {
     skillDirectories?: string[];
 
     /**
+     * Default working directory applied to every session this worker serves,
+     * used ONLY when the session's own config does not specify one. The
+     * platform (never the customer) owns this: e.g. the ADO serve harness
+     * points it at the agent's enlistment checkout so the Copilot CLI can
+     * discover the repo's `.github` skills/agents/instructions. Maps to the
+     * SDK session-config `workingDirectory`.
+     */
+    sessionWorkingDirectory?: string;
+
+    /**
+     * When true, enables the Copilot SDK's config discovery for every session
+     * (auto-discovers skill directories + MCP servers from the session's
+     * `workingDirectory`, e.g. an enlistment's `.github/skills`). SDK default
+     * is false; PilotSwarm's own bundled skills load via `skillDirectories`
+     * regardless of this flag. Set by the platform when it roots sessions at a
+     * checkout. Maps to the SDK session-config `enableConfigDiscovery`.
+     */
+    enableConfigDiscovery?: boolean;
+
+    /**
+     * Explicit override for the SDK session-config `enableSkills`. Leave unset
+     * to keep the SDK default (skills on). When false, NO skills load at all
+     * (including `skillDirectories`).
+     */
+    enableSkills?: boolean;
+
+    /**
      * Additional custom agents (beyond plugins).
      * Passed directly to the SDK's `customAgents` config.
      */
