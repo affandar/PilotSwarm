@@ -8,6 +8,9 @@ name: Build Windows Worker
 # Does not touch the existing Linux publish-npm.yml flow.
 
 on:
+  push:                    # auto-run on this prototype branch so we can see output pre-merge
+    branches:
+      - feature/windows-worker-packaging
   workflow_dispatch:
     inputs:
       build_image:
