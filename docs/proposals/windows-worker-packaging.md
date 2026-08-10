@@ -78,8 +78,9 @@ steps:
   - uses: actions/setup-node@v4
     with: { node-version: "24" }
   - run: |
-      npm ci --omit=dev          # resolves duroxide-windows-x64 (prebuilt .node)
-      npm run build              # tsc -> dist/
+      npm ci                     # FULL install — typescript is a devDependency, needed to build
+      npm run build              # tsc -> dist/ (sdk, horizon-store, app)
+      npm prune --omit=dev       # drop dev deps; keeps duroxide-windows-x64 prod prebuild
   - name: Stage the runnable tree   # mirrors Dockerfile.worker's COPY manifest
     shell: pwsh
     run: |
@@ -158,6 +159,31 @@ packaging line on the same job later.
    `SIGTERM` the way Linux does. Validate graceful drain-on-terminate, or rely on the duroxide lease
    reclaim (30s) as the safety net. **Not a concern for the ADO host process** (drain is driven by the
    long-wait-release policy, not pod termination).
+4. **Two-phase install (build vs. ship).** `typescript@^5` is an sdk **devDependency**, so
+   `npm ci --omit=dev` alone can't build — the job must `npm ci` (full) → `npm run build` →
+   `npm prune --omit=dev` to end with a runtime-only `node_modules` (the prod prune keeps the
+   `duroxide-windows-x64` optional prebuild). This mirrors how the Linux image builds `dist/` in the
+   full-`npm ci` publish job and only `COPY`s it into the `--omit=dev` runtime image.
+
+## Validation (local dry-run on a Windows box, 2026-08-10)
+
+Ran the shared-core + both tails against a real Windows checkout (Node 24.13.1) — enough to de-risk
+the platform-specific claims. Prototype files: [`deploy/Dockerfile.worker.windows`](../../deploy/Dockerfile.worker.windows)
+and [`​.github/workflows/build-windows-worker.yml`](../../.github/workflows/build-windows-worker.yml).
+
+| Check | Result |
+|---|---|
+| `duroxide-windows-x64` resolves via npm os/cpu gating | ✅ `node_modules\duroxide-windows-x64\duroxide.win32-x64-msvc.node` present |
+| **Native addon dlopens on Windows** (MSVC runtime) | ✅ `require('duroxide')` loads (`PostgresProvider`, `Runtime`, …) — the top risk, cleared |
+| Build tail (`tsc`) produces `dist/` | ✅ built the missing `horizon-store/dist` via `tsc` |
+| Stage is self-contained | ✅ `worker.js` + all `dist/` + the `.node` staged (648 MB unpruned) |
+| **Worker runs from the packaged bundle** | ✅ booted framework prompt + 4 system agents from the *staged* tree; stopped only at the expected `DATABASE_URL` config boundary — no code/platform/addon failure |
+| Zip tail (`Compress-Archive` / `ZipFile`) | ✅ archive contains the `.node` (14.7 MB) + `worker.js` |
+
+**Notes surfaced by the dry-run:** (a) the full unpruned tree is ~648 MB / 41k files — the
+`npm prune --omit=dev` step matters for zip size/time; (b) the workflow's original
+`npm ci --omit=dev` → `npm run build` ordering was corrected to the two-phase pattern above after the
+build failed with `tsc: not found`.
 
 ## Windows AKS specifics (only if we pursue Tail 2)
 
