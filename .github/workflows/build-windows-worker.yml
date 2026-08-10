@@ -64,6 +64,7 @@ jobs:
             "packages\sdk\examples\worker.js",
             "packages\sdk\examples\worker-smoke.mjs",
             "packages\sdk\examples\db-reach.mjs",
+            "packages\sdk\examples\duroxide-pg-reach.mjs",
             "packages\sdk\api",
             "packages\app\tui\plugins",
             "packages\horizon-store\dist",
