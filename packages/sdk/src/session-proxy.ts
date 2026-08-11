@@ -916,15 +916,49 @@ export function registerActivities(
         // churn). This line makes the executed input's truth visible.
         activityCtx.traceInfo(`[runTurn] session=${input.sessionId} attachments=${Array.isArray(input.attachments) ? input.attachments.length : "absent"}`);
 
-        // ── Pre-turn reconcile hook (git-hydration MVP) ──────────────────
+        // ── Timing instrumentation (git-hydration) ───────────────────────
+        // A worker begins DISPATCHING this turn the moment the activity starts
+        // running on it. We stamp that instant and time the pre-work phases —
+        // git enlistment reconcile (cold turns only) and session-state prepare
+        // — so any hydration delay before real model/tool work is visible.
+        //
+        // Cold vs warm: on a repo-affinity worker the session-tree is PINNED,
+        // so one worker runs turn 0…N. Only the COLD turn (turn 0 or a cross-
+        // worker resume) pays session-state hydrate, a fresh SDK resume, AND
+        // the git enlistment reconcile; warm turns reuse the resident
+        // ManagedSession and pay only the model/tool work. We capture residency
+        // BEFORE any getOrCreate so aggregation can split one-time acquisition
+        // cost from cheap recurring warm turns, and so reconcile is scoped to
+        // acquisition rather than every turn.
+        // Safe here: this is an activity handler (non-deterministic wall-clock
+        // is allowed; the handler already uses Date.now()/new Date()).
+        const acquiredAtMs = Date.now();
+        let reconcileMs = 0;
+        let workBeginMs = 0;
+        const wasResident = sessionManager.isSessionResident(input.sessionId);
+        const acquireMode = wasResident ? "warm" : "cold";
+        activityCtx.traceInfo(`[runTurn] turn dispatched session=${input.sessionId} turn=${input.turnIndex ?? 0} epoch=${input.transcriptEpoch ?? 0} mode=${acquireMode} worker=${workerNodeId ?? "(unset)"}`);
+
+        // ── Hydration-scoped reconcile hook (git-hydration) ──────────────
         // A collocated git-repo-worker uses this to sync its reused local
-        // enlistment against the node-local git-cache mirror BEFORE the
-        // session touches the working directory. With worker concurrency
-        // pinned to 1 this runs on an idle tree (no other turn holds the
-        // single job slot), so the reconcile is the brief window in which the
-        // worker is "unavailable" for jobs. A reconcile failure fails THIS
-        // turn cleanly rather than executing against a stale/half-synced tree.
-        if (beforeRunTurn) {
+        // enlistment against the node-local git-cache mirror when a session is
+        // ACQUIRED onto the worker — i.e. a COLD turn (turn 0, or a cross-
+        // worker resume after the session-state was hydrated onto this node).
+        //
+        // We deliberately do NOT reconcile on warm turns. A pinned repo-
+        // affinity worker runs turn 0…N for the same resident session; the
+        // reconcile does `reset --hard origin/HEAD`, which would wipe the
+        // session's own mid-session working-tree edits on every subsequent
+        // turn. Scoping it to hydration syncs the tree once per acquisition
+        // (the moment it is safe — nothing has touched the tree yet) and then
+        // leaves the working directory alone for the life of the session.
+        //
+        // With worker concurrency pinned to 1 the reconcile runs on an idle
+        // tree (no other turn holds the single job slot). A reconcile failure
+        // fails THIS turn cleanly rather than executing against a stale/half-
+        // synced tree.
+        if (beforeRunTurn && !wasResident) {
+            const reconcileStartMs = Date.now();
             try {
                 await beforeRunTurn({
                     sessionId: input.sessionId,
@@ -932,11 +966,15 @@ export function registerActivities(
                     config: input.config,
                     trace: (m: string) => activityCtx.traceInfo(m),
                 });
+                reconcileMs = Date.now() - reconcileStartMs;
+                activityCtx.traceInfo(`[runTurn] enlistment reconcile complete (cold acquisition) session=${input.sessionId} turn=${input.turnIndex ?? 0} reconcile=${reconcileMs}ms`);
             } catch (err) {
                 const message = `beforeRunTurn reconcile failed: ${err instanceof Error ? err.message : String(err)}`;
                 activityCtx.traceInfo(`[runTurn] ${message}`);
                 return { type: "error", message } as TurnResult;
             }
+        } else if (beforeRunTurn) {
+            activityCtx.traceInfo(`[runTurn] enlistment reconcile skipped (warm turn) session=${input.sessionId} turn=${input.turnIndex ?? 0}`);
         }
 
         const turnTelemetry = {
@@ -2641,6 +2679,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 );
             }
 
+            workBeginMs = Date.now();
+            const preWorkMs = workBeginMs - acquiredAtMs;
+            activityCtx.traceInfo(`[runTurn] begin work session=${input.sessionId} turn=${input.turnIndex ?? 0} mode=${acquireMode} worker=${workerNodeId ?? "(unset)"}: dispatch->work=${preWorkMs}ms (reconcile=${reconcileMs}ms prepare=${preWorkMs - reconcileMs}ms)`);
             activityCtx.traceInfo(`[runTurn] invoking ManagedSession.runTurn for ${input.sessionId}`);
 
             // Record turn_started CMS event
@@ -2881,7 +2922,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     content: result.content.trim(),
                 } as TurnResult;
             }
-            activityCtx.traceInfo(`[runTurn] ManagedSession.runTurn completed for ${input.sessionId} type=${result.type}`);
+            const workMs = workBeginMs ? Date.now() - workBeginMs : 0;
+            const totalMs = Date.now() - acquiredAtMs;
+            activityCtx.traceInfo(`[runTurn] ManagedSession.runTurn completed for ${input.sessionId} type=${result.type} mode=${acquireMode} work=${workMs}ms total(dispatch->done)=${totalMs}ms`);
 
             // Drain event writes before the atomic post-turn writeback records
             // session.turn_completed.
@@ -3309,6 +3352,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         input: { sessionId: string },
     ): Promise<void> => {
         const trace = activityTrace(activityCtx, "hydrateSession");
+        const hydrateStartMs = Date.now();
         const hydrationSpan = otelTrace.getTracer("pilotswarm-lifecycle").startSpan("session.hydration", {
             attributes: {
                 "pilotswarm.session_id": input.sessionId,
@@ -3326,7 +3370,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 hydrationSpan.setStatus({ code: SpanStatusCode.ERROR, message: errorMessage(error) });
                 throw error;
             }
-            trace(`session=${input.sessionId} complete`);
+            trace(`session=${input.sessionId} complete hydrate=${Date.now() - hydrateStartMs}ms`);
             hydrationSpan.setAttribute("pilotswarm.hydration_result", "completed");
             if (catalog) {
                 // Best-effort: metric summary and the session.hydrated event are

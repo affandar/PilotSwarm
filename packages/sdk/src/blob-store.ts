@@ -340,6 +340,7 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
             );
         }
         const sessionDir = path.join(this.sessionStateDir, sessionId);
+        const hydrateStartMs = Date.now();
         logBlobStore("info", sessionId, "hydrate start", {
             container: this.containerName,
             dir: sessionDir,
@@ -763,6 +764,7 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
 
     async hydrateSnapshot(sessionId: string, epoch?: number): Promise<SnapshotHydrateResult> {
         const sessionDir = path.join(this.sessionStateDir, sessionId);
+        const startMs = Date.now();
         const blob = this.containerClient.getBlockBlobClient(this.snapshotBlobName(sessionId, epoch));
         const tarPath = path.join(os.tmpdir(), `ps-hydrate-${sessionId}-${process.pid}-${Date.now()}.tar`);
 
@@ -797,6 +799,8 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
         logBlobStore("info", sessionId, "versioned hydrate complete", {
             version: probe.version,
             legacy: probe.legacy,
+            elapsedMs: Date.now() - startMs,
+            ...(tarSizeBytes != null ? { tarSizeBytes } : {}),
             ...(isLegacyEpoch(epoch) ? {} : { epoch }),
         });
         return {

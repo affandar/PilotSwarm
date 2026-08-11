@@ -18,13 +18,18 @@
  *   - At startup this worker clones ONE reused working enlistment FROM that
  *     mirror (`git clone --no-hardlinks`, so objects are copied and the
  *     enlistment is self-contained) and chdir's into it.
- *   - BEFORE every job the SDK calls our `beforeRunTurn` hook, which fetches
- *     from the mirror and hard-resets the enlistment to the target ref
- *     (reconcileEnlistment). Because PILOTSWARM_WORKER_CONCURRENCY=1, the single
- *     job slot is the mutex: while a reconcile runs the worker claims no other
- *     job — a brief "unavailable" window — and the tree is guaranteed idle.
- *     Once a job is running, the daemon's fetch/prune on the mirror can never
- *     affect it (append-only + copied objects). Freshness bound = last fetch.
+ *   - When a session is ACQUIRED onto this worker (a COLD turn — turn 0 or a
+ *     cross-worker resume), the SDK calls our `beforeRunTurn` hook, which
+ *     fetches from the mirror and hard-resets the enlistment to the target ref
+ *     (reconcileEnlistment). The SDK scopes this to hydration/acquisition: on
+ *     warm turns of a pinned repo-affinity session the hook is NOT called, so a
+ *     long session's own mid-session working-tree edits survive across turns
+ *     (a per-turn `reset --hard` would wipe them). Because
+ *     PILOTSWARM_WORKER_CONCURRENCY=1, the single job slot is the mutex: while a
+ *     reconcile runs the worker claims no other job — a brief "unavailable"
+ *     window — and the tree is guaranteed idle. Once a job is running, the
+ *     daemon's fetch/prune on the mirror can never affect it (append-only +
+ *     copied objects). Freshness bound = last fetch at acquisition.
  *
  * Env vars: everything examples/worker.js accepts, plus:
  *   GIT_CACHE_MIRROR   — absolute path to the node-local bare mirror for this

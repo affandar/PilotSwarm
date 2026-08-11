@@ -208,6 +208,16 @@ export class SessionManager {
         return this.sessions.size;
     }
     /**
+     * True iff a warm ManagedSession for `sessionId` is already resident in
+     * this worker's memory (i.e. the next turn is a WARM turn on a pinned
+     * worker, not a cold acquisition/resume). Used by the runTurn timing
+     * instrumentation to separate one-time acquisition cost (turn 0 / cross-
+     * worker resume, which pays hydrate) from cheap recurring warm turns.
+     */
+    isSessionResident(sessionId: string): boolean {
+        return this.sessions.has(sessionId);
+    }
+    /**
      * Records which CopilotClient each warm session is bound to (keyed by
      * the GitHub Copilot token). When the resolved token for a session
      * changes (for example the owner edited their per-user key in the
