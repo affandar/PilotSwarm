@@ -289,7 +289,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Create a session. Owner is the authenticated principal; visibility defaults to the deployment default.
+     * Create a session. Owner is the authenticated principal; visibility defaults to the deployment default. Optional repo pins the session to a git-hydration repo enlistment (routes turns only to matching git-repo-workers).
      * @remarks `POST /sessions` — access: `session:create`
      */
     createSession(params: {
@@ -298,10 +298,11 @@ export interface ManagementOps {
         contextTier?: any;
         groupId?: any;
         visibility?: any;
+        repo?: any;
     }): Promise<any>;
 
     /**
-     * Create a session bound to a named agent.
+     * Create a session bound to a named agent. Optional repo pins the session to a git-hydration repo enlistment.
      * @remarks `POST /sessions/for-agent` — access: `session:create`
      */
     createSessionForAgent(params: {
@@ -315,6 +316,7 @@ export interface ManagementOps {
         initialPrompt?: any;
         groupId?: any;
         visibility?: any;
+        repo?: any;
     }): Promise<any>;
 
     /**

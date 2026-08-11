@@ -219,6 +219,9 @@ export class PilotSwarmClient {
                 childContract: resolvedConfig.childContract,
                 tools: resolvedConfig.tools,
                 workingDirectory: resolvedConfig.workingDirectory,
+                // Repo-affinity (git-hydration) rides the raw input: the
+                // upstream `resolvedConfig` projection does not carry `repo`.
+                repo: config?.repo,
                 hooks: resolvedConfig.hooks,
                 waitThreshold: resolvedConfig.waitThreshold ?? this.config.waitThreshold,
                 toolNames: resolvedConfig.toolNames,
@@ -287,6 +290,8 @@ export class PilotSwarmClient {
         splash?: string;
         splashMobile?: string;
         initialPrompt?: string;
+        /** Repo-affinity routing: target repo enlistment for this session. */
+        repo?: string;
         owner?: SessionOwnerInfo | null;
         groupId?: string | null;
         visibility?: SessionVisibility | null;
@@ -304,6 +309,7 @@ export class PilotSwarmClient {
             reasoningEffort: opts?.reasoningEffort,
             contextTier: opts?.contextTier,
             toolNames: opts?.toolNames,
+            repo: opts?.repo,
             onUserInputRequest: opts?.onUserInputRequest,
             agentId: agentName,
             boundAgentName: agentName,
@@ -722,6 +728,10 @@ export class PilotSwarmClient {
                 ...overrides,
             };
             if (merged.waitThreshold == null) merged.waitThreshold = this.config.waitThreshold;
+            // Repo-affinity (git-hydration): the projection above does not
+            // carry `repo`, so thread the in-memory value through explicitly.
+            // A repo persisted on the row (stored) still survives the spread.
+            if (fullConfig?.repo != null) merged.repo = fullConfig.repo;
             serializableConfig = merged;
             // A pre-0072 row with no map entry still starts minimal; the
             // worker-side bound-agent backfill remains the safety net there.
