@@ -402,6 +402,15 @@ Listed roughly in the order we'd add them.
 8. **OAuth token broker** (see §9) — refresh-backed per-user ADO tokens.
 9. **Pre-baked node image / premium-disk mount** — the true VHD-cache analog for
    the very hottest repos: the base enlistment is already on the node at boot.
+10. **Efficient native Windows worker image build** (deferred — currently the
+    fleet runs a **shared Linux image with PowerShell Core installed**, since
+    pwsh runs natively on Linux and satisfies the "must run PowerShell" need).
+    A native Windows container image is achievable but each build iteration is
+    10–20 min (multi-GB servercore base pull, no official Node-on-servercore
+    base, slow Windows layer file-churn) vs. ~3.5 min for the Linux image, so it
+    was parked. The motivation (why we still want Windows) and the challenge
+    findings are in
+    [`../proposals/windows-worker-image-followup.md`](../proposals/windows-worker-image-followup.md).
 
 ---
 
