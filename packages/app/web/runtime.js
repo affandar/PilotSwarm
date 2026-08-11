@@ -13,6 +13,46 @@ function normalizeParams(params) {
     return params && typeof params === "object" ? params : {};
 }
 
+// ── Repo-affinity fail-fast (git-hydration) ──────────────────────────────
+// A session may declare a target repo enlistment; turns are then routed only
+// to git-repo-workers tagged for that repo. If the repo is unknown/unserviced
+// the turn would enqueue with a tag no worker matches and hang forever, so we
+// reject at create time instead.
+//
+// STUB: this allowlist is a hardcoded placeholder. TODO(git-hydration): source
+// it from the deployed git-repo-worker DaemonSets / worker registry (a repo is
+// serviceable iff at least one live worker advertises `repo:<name>`).
+const KNOWN_REPOS = new Set([
+    "sql-ai-marketplace",
+    "sqltelemetry",
+    "dsmaindev",
+]);
+
+const REPO_NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
+
+/**
+ * Validate an optional `repo` create-param. Returns the normalized repo name
+ * (or undefined when unset). Throws INVALID_REQUEST for malformed or unknown
+ * repos so an un-routable turn never gets enqueued.
+ */
+function validateRepoParam(raw) {
+    if (raw == null || raw === "") return undefined;
+    const repo = String(raw).trim().toLowerCase();
+    if (!REPO_NAME_RE.test(repo)) {
+        throw Object.assign(
+            new Error("repo must be a DNS-safe short name ([a-z0-9-], <=63 chars)"),
+            { code: "INVALID_REQUEST" },
+        );
+    }
+    if (!KNOWN_REPOS.has(repo)) {
+        throw Object.assign(
+            new Error(`repo "${repo}" is not a known git-hydration enlistment`),
+            { code: "INVALID_REQUEST" },
+        );
+    }
+    return repo;
+}
+
 function clampInteger(value, defaultValue, min, max) {
     if (value == null) return defaultValue;
     const numeric = Number(value);
@@ -781,6 +821,7 @@ export class PortalRuntime {
                 return this.transport.getExecutionHistory(safeParams.sessionId, safeParams.executionId);
             case "createSession": {
                 await this._assertPlacementGroupOwned(safeParams.groupId, authContext, { isAdmin });
+                const repo = validateRepoParam(safeParams.repo);
                 const created = await this.transport.createSession({
                     model: safeParams.model,
                     reasoningEffort: safeParams.reasoningEffort,
@@ -788,11 +829,13 @@ export class PortalRuntime {
                     groupId: safeParams.groupId,
                     owner,
                     visibility: normalizeVisibility(safeParams.visibility, this.authz.defaultVisibility),
+                    ...(repo ? { repo } : {}),
                 });
                 return this._ensureCreatedPlacement(created, safeParams.groupId, authContext, isAdmin);
             }
             case "createSessionForAgent": {
                 await this._assertPlacementGroupOwned(safeParams.groupId, authContext, { isAdmin });
+                const repo = validateRepoParam(safeParams.repo);
                 const created = await this.transport.createSessionForAgent(safeParams.agentName, {
                     model: safeParams.model,
                     reasoningEffort: safeParams.reasoningEffort,
@@ -805,6 +848,7 @@ export class PortalRuntime {
                     owner,
                     isAdmin,
                     visibility: normalizeVisibility(safeParams.visibility, this.authz.defaultVisibility),
+                    ...(repo ? { repo } : {}),
                 });
                 return this._ensureCreatedPlacement(created, safeParams.groupId, authContext, isAdmin);
             }

@@ -501,7 +501,7 @@ export function createSessionProxy(
             turnIndex?: number,
             turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; cycleOrigin?: "cron" | "cron_at"; retryCount?: number; clientMessageIds?: string[]; sender?: unknown; snapshot?: { expectedVersion?: number; turnKey: string }; attachments?: Array<{ filename: string; contentType: string; sizeBytes: number }>; transcriptEpoch?: number; epochStart?: boolean },
         ) {
-            return ctx.scheduleActivityOnSession(
+            const runTurnTask = ctx.scheduleActivityOnSession(
                 // The epoch-start turn is a distinct activity name (runTurn2):
                 // pre-1.0.67 workers don't register it, so a rolling deploy can
                 // never hand the fresh-epoch create to a worker that would
@@ -536,6 +536,13 @@ export function createSessionProxy(
                 },
                 affinityKey,
             );
+            // Repo-affinity routing (git-hydration): stamp a `repo:<name>` tag
+            // on the runTurn activity so only a git-repo-worker whose
+            // workerTagFilter includes that tag can dequeue it. Untagged when
+            // config.repo is unset (any default worker may serve).
+            return config.repo && typeof runTurnTask?.withTag === "function"
+                ? runTurnTask.withTag(`repo:${config.repo}`)
+                : runTurnTask;
         },
         dehydrate(reason: string, eventData?: Record<string, unknown>) {
             return ctx.scheduleActivityOnSession(

@@ -156,6 +156,8 @@ export type {
     SendAttachmentInput,
     PromptAttachmentRef,
 } from "./types.js";
+/** Duroxide activity routing filter — re-exported for worker `workerTagFilter`. */
+export type { TagFilter } from "duroxide";
 export {
     IMAGE_ATTACHMENT_CONTENT_TYPES,
     ATTACHMENT_MAX_BYTES,

@@ -63,6 +63,41 @@ function parseNonNegativeInt(raw: unknown): number | undefined {
     return Math.floor(normalized);
 }
 
+/**
+ * @internal Resolve the duroxide worker tag filter (activity routing) for
+ * repo-affinity: explicit `workerTagFilter` option > env `PILOTSWARM_WORKER_TAGS`
+ * (comma-separated tags) > undefined (duroxide default `"defaultOnly"` —
+ * untagged activities only). Returning undefined keeps a plain worker from
+ * ever dequeuing a repo-tagged turn.
+ *
+ * Tag mode (`PILOTSWARM_WORKER_TAG_MODE`, default `"defaultAnd"`):
+ *   - `"defaultAnd"` -> `{ defaultAnd: [...] }` — untagged activities PLUS the
+ *     listed tags. This is the correct mode for repo affinity: a session's
+ *     turn is a mix of the repo-tagged `runTurn`/`runTurn2` activity and many
+ *     UNTAGGED on-session support activities (hydrate/dehydrate/checkpoint/
+ *     updateCmsState/recordSessionEvent/...). A `{ tags: [...] }` worker would
+ *     serve only `runTurn` and hang the turn on every support activity, so a
+ *     repo worker must accept untagged activities too while still rejecting
+ *     OTHER repos' tagged turns.
+ *   - `"tags"` -> `{ tags: [...] }` — strictly the listed tags (e.g. a
+ *     dedicated GPU pool that runs nothing untagged).
+ */
+function resolveWorkerTagFilter(
+    explicit: PilotSwarmWorkerOptions["workerTagFilter"],
+    envRaw: unknown,
+    modeRaw: unknown = process.env.PILOTSWARM_WORKER_TAG_MODE,
+): PilotSwarmWorkerOptions["workerTagFilter"] | undefined {
+    if (explicit !== undefined) return explicit;
+    if (typeof envRaw !== "string") return undefined;
+    const tags = envRaw.split(",").map((t) => t.trim()).filter(Boolean);
+    if (tags.length === 0) return undefined;
+    const mode = (typeof modeRaw === "string" ? modeRaw : "").trim().toLowerCase();
+    if (mode === "tags") return { tags };
+    // Default: repo-affinity mode — untagged support activities plus the
+    // repo's tagged runTurn, still rejecting other repos' tagged turns.
+    return { defaultAnd: tags };
+}
+
 /** @internal Resolve the worker-wide turn cap: explicit option > deployment env > SDK default. */
 export function resolveWorkerTurnTimeoutMs(
     explicitValue: unknown,
@@ -641,6 +676,11 @@ export class PilotSwarmWorker {
         const inspectClient = new Client(this._provider);
         this.sessionManager.setDuroxideClient(inspectClient);
 
+        const workerTagFilter = resolveWorkerTagFilter(
+            this.config.workerTagFilter,
+            process.env.PILOTSWARM_WORKER_TAGS,
+        );
+
         const runtimeOptions = {
             orchestrationConcurrency,
             workerConcurrency,
@@ -652,6 +692,7 @@ export class PilotSwarmWorker {
             maxSessionsPerRuntime: this.config.maxSessionsPerRuntime ?? 50,
             sessionIdleTimeoutMs: this.config.sessionIdleTimeoutMs ?? 3_600_000,
             workerNodeId: this.config.workerNodeId,
+            ...(workerTagFilter !== undefined ? { workerTagFilter } : {}),
         };
 
         this.runtime = new Runtime(this._provider, runtimeOptions);
@@ -662,7 +703,8 @@ export class PilotSwarmWorker {
             `workerLockTimeoutMs=${runtimeOptions.workerLockTimeoutMs}, ` +
             `maxSessionsPerRuntime=${runtimeOptions.maxSessionsPerRuntime}, ` +
             `sessionIdleTimeoutMs=${runtimeOptions.sessionIdleTimeoutMs}, ` +
-            `workerNodeId=${runtimeOptions.workerNodeId ?? "(unset)"}`,
+            `workerNodeId=${runtimeOptions.workerNodeId ?? "(unset)"}, ` +
+            `workerTagFilter=${workerTagFilter ? JSON.stringify(workerTagFilter) : "(defaultOnly)"}`,
         );
         if (!runtimeOptions.workerNodeId) {
             // Without a stable process-level session identity, duroxide

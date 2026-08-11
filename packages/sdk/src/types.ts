@@ -1,4 +1,5 @@
 import type { Tool, SessionConfig } from "@github/copilot-sdk";
+import type { TagFilter } from "duroxide";
 import type { SessionStateStore } from "./session-store.js";
 import type { ReasoningEffort } from "./model-providers.js";
 import type { EmbeddingEndpointConfig } from "./facts-store.js";
@@ -177,6 +178,15 @@ export interface SerializableSessionConfig {
     /** Internal: orchestration-generated system guidance for the next turn only. */
     turnSystemPrompt?: string;
     workingDirectory?: string;
+    /**
+     * Target repo enlistment this session must run against (git-hydration).
+     * When set, the orchestration stamps a `repo:<repo>` duroxide routing tag
+     * on each runTurn activity so only a git-repo-worker that declares that
+     * tag (via `workerTagFilter`) can dequeue the turn. Omitted => generic,
+     * untagged session that any default worker may serve. DNS-safe short name
+     * (e.g. "dsmaindev", "sql-ai-marketplace").
+     */
+    repo?: string;
     /** Wait threshold in seconds. Waits shorter than this sleep in-process. */
     waitThreshold?: number;
     /** Internal: name of the bound agent definition whose prompt should be layered into this session. */
@@ -752,6 +762,18 @@ export interface PilotSwarmWorkerOptions {
      * for jobs (guaranteed idle because worker concurrency is pinned to 1).
      */
     beforeRunTurn?: BeforeRunTurnHook;
+    /**
+     * Activity routing filter (git-hydration repo affinity). Restricts which
+     * duroxide activities this worker will dequeue. The git-repo-worker sets
+     * `{ tags: ["repo:<name>"] }` so it ONLY serves turns for its enlisted
+     * repo — a hard scheduling guarantee that a repo-scoped worker never
+     * picks up a job for a different repo. When omitted the worker falls back
+     * to the env var `PILOTSWARM_WORKER_TAGS` (comma-separated tags →
+     * `{ tags: [...] }`); when neither is set duroxide's default
+     * `"defaultOnly"` applies (untagged activities only), so a plain worker
+     * will NOT accidentally serve a repo-tagged turn.
+     */
+    workerTagFilter?: TagFilter;
     /**
      * Dynamically install registry agent packages
      * (docs/proposals/agent-packages.md). When set, the worker materializes

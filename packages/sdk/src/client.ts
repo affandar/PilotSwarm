@@ -163,6 +163,7 @@ export class PilotSwarmClient {
                 childContract: config.childContract,
                 tools: config.tools,
                 workingDirectory: config.workingDirectory,
+                repo: config.repo,
                 hooks: config.hooks,
                 waitThreshold: config.waitThreshold ?? this.config.waitThreshold,
                 toolNames: config.toolNames,
@@ -215,6 +216,8 @@ export class PilotSwarmClient {
         splash?: string;
         splashMobile?: string;
         initialPrompt?: string;
+        /** Repo-affinity routing: target repo enlistment for this session. */
+        repo?: string;
         owner?: SessionOwnerInfo | null;
         groupId?: string | null;
         visibility?: SessionVisibility | null;
@@ -232,6 +235,7 @@ export class PilotSwarmClient {
             reasoningEffort: opts?.reasoningEffort,
             contextTier: opts?.contextTier,
             toolNames: opts?.toolNames,
+            repo: opts?.repo,
             onUserInputRequest: opts?.onUserInputRequest,
             agentId: agentName,
             boundAgentName: agentName,
@@ -576,6 +580,10 @@ export class PilotSwarmClient {
             contextTier: fullConfig?.contextTier,
             systemMessage: fullConfig?.systemMessage,
             workingDirectory: fullConfig?.workingDirectory,
+            // Repo-affinity routing (git-hydration): rides the durable
+            // orchestration input so the worker's session-proxy stamps the
+            // `repo:<name>` tag on each runTurn activity.
+            repo: fullConfig?.repo,
             waitThreshold: fullConfig?.waitThreshold ?? this.config.waitThreshold,
             boundAgentName: fullConfig?.boundAgentName,
             promptLayering: fullConfig?.promptLayering,
