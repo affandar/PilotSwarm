@@ -30,6 +30,9 @@ param storageAccountName string
 ])
 param skuName string = 'Standard_LRS'
 
+@description('Allow storage account shared-key (local auth) access. Defaults to true to preserve the legacy scripts/deploy-aks.sh connection-string flow. Set to false for managed-identity-only deployments (required in tenants enforcing the Safe Secrets Standard / SFI-ID4.2.1 policy, which denies allowSharedKeyAccess=true). The MI-based worker/portal path (PILOTSWARM_USE_MANAGED_IDENTITY=1 + DefaultAzureCredential) does not use shared keys.')
+param allowSharedKeyAccess bool = true
+
 @description('Principal ID of the AKS kubelet UAMI that needs Blob Data Reader on manifest containers.')
 param aksKubeletPrincipalId string
 
@@ -57,7 +60,7 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   properties: {
     accessTier: 'Hot'
     allowBlobPublicAccess: false
-    allowSharedKeyAccess: true
+    allowSharedKeyAccess: allowSharedKeyAccess
     minimumTlsVersion: 'TLS1_2'
     supportsHttpsTrafficOnly: true
   }
