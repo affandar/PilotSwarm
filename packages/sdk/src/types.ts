@@ -699,6 +699,34 @@ export interface SessionPolicy {
 
 // ─── Worker Options ──────────────────────────────────────────────
 
+/**
+ * Pre-turn reconcile hook (git-hydration MVP).
+ *
+ * Invoked at the very top of the `runTurn` activity — BEFORE the session
+ * touches its working directory or spawns the Copilot CLI. A worker that is
+ * collocated with a node-local git-cache mirror (see
+ * SqlOrchestrationPlatform/docs/AKS-GIT-HYDRATION.md) uses this to fetch its
+ * reused local enlistment from the mirror and hard-reset it to the target
+ * ref, so every job runs on a tree that matches the latest periodic fetch.
+ *
+ * Concurrency contract: a git-repo-worker pins `PILOTSWARM_WORKER_CONCURRENCY`
+ * to 1, so the single job slot IS the mutex — while this hook runs the worker
+ * cannot claim another job (it is briefly "unavailable"), and the tree is
+ * guaranteed idle. The hook also self-serializes internally so bumping
+ * concurrency later degrades to "jobs queue behind a reconcile" rather than a
+ * torn working tree.
+ *
+ * Throwing fails THIS turn cleanly (before any model/tool work) rather than
+ * running a job against a stale or half-synced enlistment. Off by default.
+ */
+export type BeforeRunTurnHook = (ctx: {
+    sessionId: string;
+    turnIndex?: number;
+    config: SerializableSessionConfig;
+    /** Activity-scoped trace sink (maps to duroxide `traceInfo`). */
+    trace: (message: string) => void;
+}) => void | Promise<void>;
+
 export interface PilotSwarmWorkerOptions {
     store: string;
     /** GitHub token. Required unless a custom `provider` is specified. */
@@ -716,6 +744,14 @@ export interface PilotSwarmWorkerOptions {
      */
     workerLockTimeoutMs?: number;
     workerNodeId?: string;
+    /**
+     * Pre-turn reconcile hook (git-hydration MVP). See {@link BeforeRunTurnHook}.
+     * Off by default; the git-repo-worker entrypoint sets it to fetch its
+     * local enlistment from the node-local mirror before each job. The brief
+     * time this hook runs is the window in which the worker is "unavailable"
+     * for jobs (guaranteed idle because worker concurrency is pinned to 1).
+     */
+    beforeRunTurn?: BeforeRunTurnHook;
     /**
      * Dynamically install registry agent packages
      * (docs/proposals/agent-packages.md). When set, the worker materializes

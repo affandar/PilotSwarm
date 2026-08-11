@@ -135,6 +135,7 @@ export type {
 export type {
     PilotSwarmClientOptions,
     PilotSwarmWorkerOptions,
+    BeforeRunTurnHook,
     ManagedSessionConfig,
     PilotSwarmSessionStatus,
     PilotSwarmSessionInfo,

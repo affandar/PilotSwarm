@@ -853,6 +853,12 @@ export function registerActivities(
     workerNodeId?: string,
     /** Artifact store — resolves image attachment refs to bytes inside runTurn. */
     artifactStore?: ArtifactStore | null,
+    /**
+     * Pre-turn reconcile hook (git-hydration MVP) — invoked at the top of the
+     * `runTurn` activity before the session touches its working directory.
+     * See {@link import("./types.js").BeforeRunTurnHook}.
+     */
+    beforeRunTurn?: import("./types.js").BeforeRunTurnHook,
 ) {
     // Shared config for every activity-layer internal PilotSwarmClient /
     // PilotSwarmManagementClient. Carries the FULL facts/CMS target (07 P3) so
@@ -902,6 +908,29 @@ export function registerActivities(
         // WITHOUT them (suspected work-item redelivery after eviction/lock
         // churn). This line makes the executed input's truth visible.
         activityCtx.traceInfo(`[runTurn] session=${input.sessionId} attachments=${Array.isArray(input.attachments) ? input.attachments.length : "absent"}`);
+
+        // ── Pre-turn reconcile hook (git-hydration MVP) ──────────────────
+        // A collocated git-repo-worker uses this to sync its reused local
+        // enlistment against the node-local git-cache mirror BEFORE the
+        // session touches the working directory. With worker concurrency
+        // pinned to 1 this runs on an idle tree (no other turn holds the
+        // single job slot), so the reconcile is the brief window in which the
+        // worker is "unavailable" for jobs. A reconcile failure fails THIS
+        // turn cleanly rather than executing against a stale/half-synced tree.
+        if (beforeRunTurn) {
+            try {
+                await beforeRunTurn({
+                    sessionId: input.sessionId,
+                    turnIndex: input.turnIndex,
+                    config: input.config,
+                    trace: (m: string) => activityCtx.traceInfo(m),
+                });
+            } catch (err) {
+                const message = `beforeRunTurn reconcile failed: ${err instanceof Error ? err.message : String(err)}`;
+                activityCtx.traceInfo(`[runTurn] ${message}`);
+                return { type: "error", message } as TurnResult;
+            }
+        }
 
         const turnTelemetry = {
             tokensInput: 0,
