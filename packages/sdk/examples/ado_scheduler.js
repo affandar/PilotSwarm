@@ -30,7 +30,7 @@
  * deploy/gitops/ado-scheduler/**. Design:
  * SqlOrchestrationPlatform/docs/PILOTSWARM_ADO_WORKER_DESIGN.md §4.2.
  *
- * Env — durable store (same contract as cp1-serve-one.mjs):
+ * Env — durable store (same contract as session-worker.mjs):
  *   PGHOST_FQDN, PGDB, PGUSER_ENTRA, PGPORT       store coordinates
  *   PG_ENTRA_TOKEN                                Entra token as libpq password
  *                                                 (optional when using MI)

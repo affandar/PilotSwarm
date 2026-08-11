@@ -1,22 +1,29 @@
 #!/usr/bin/env node
 /**
- * CP1 bounded single-turn serve — the worker side of the ADO e2e.
+ * Bounded single-turn session worker.
  *
  * Boots a REAL PilotSwarm worker (a duroxide Runtime) against the deployed
  * durable store, serves the ONE already-seeded turn for the target session
  * (SESSION_ID), confirms the response landed in the store, then stops and
- * exits. Bounded so the ADO pipeline job completes on its own.
+ * exits. Bounded so a per-run invoker (e.g. an ADO pipeline job) completes on
+ * its own.
+ *
+ * Substrate-agnostic: it talks only to the durable store and calls no
+ * ADO/CI APIs. ADO is merely the current invoker — the one ADO-flavored input
+ * is the optional BUILD_SOURCESDIRECTORY checkout dir (with the generic
+ * PILOTSWARM_SESSION_WORKING_DIR override) used to root the session so the
+ * Copilot CLI can discover the enlistment's `.github` skills/agents.
  *
  * The turn is seeded OUT OF BAND by the customer client (the local portal's
  * REST API). This process only provides the worker (the compute that claims
  * and runs the turn) and then asserts completion by reading the session's
  * latest response straight from the CMS — no orchestration id required.
  *
- * CP1 scoping note: this worker is UNSCOPED (no tag filter yet — see TODO
- * ado-hybrid-tag-pin). It is safe ONLY because CP1 has no other workers
- * polling the store (the AKS worker pool is empty / scaled to zero), making
- * this the sole consumer. Do NOT run this against a store with other active
- * workers until the tag-based pin lands.
+ * Scoping note: this worker is UNSCOPED (no tag filter yet — see TODO
+ * ado-hybrid-tag-pin). It is safe ONLY when no other workers poll the store
+ * (the AKS worker pool is empty / scaled to zero), making this the sole
+ * consumer. Do NOT run this against a store with other active workers until
+ * the tag-based pin lands.
  *
  * Env:
  *   DATABASE_URL          full store URL (overrides the PG* builder if set)
@@ -62,7 +69,7 @@ function redact(url) {
 
 const truthy = (v) => ["1", "true", "yes", "on"].includes(String(v || "").trim().toLowerCase());
 
-const OK = "SERVE_OK: ADO worker served the seeded turn against the deployed store";
+const OK = "SERVE_OK: worker served the seeded turn against the deployed store";
 const FAIL = "SERVE_FAIL";
 const timeoutMs = Number.parseInt(process.env.SERVE_TIMEOUT_MS || "300000", 10);
 const pollMs = Number.parseInt(process.env.SERVE_POLL_MS || "3000", 10);
@@ -77,7 +84,7 @@ let worker = null;
 let mgmt = null;
 
 try {
-    console.log(`[cp1-serve] node ${process.version} on ${os.platform()}-${os.arch()} (${os.hostname()})`);
+    console.log(`[session-worker] node ${process.version} on ${os.platform()}-${os.arch()} (${os.hostname()})`);
 
     const sessionId = process.env.SESSION_ID || process.env.SESSION_TREE_ID;
     if (!sessionId) throw new Error("SESSION_ID is required");
@@ -85,9 +92,9 @@ try {
     const store = buildStoreUrl();
     const useManagedIdentity = truthy(process.env.PILOTSWARM_USE_MANAGED_IDENTITY);
     const aadDbUser = process.env.PILOTSWARM_DB_AAD_USER || undefined;
-    console.log(`[cp1-serve] store: ${redact(store)} (managedIdentity=${useManagedIdentity})`);
-    console.log(`[cp1-serve] target session=${sessionId}`);
-    console.log(`[cp1-serve] model provider: type=${process.env.LLM_PROVIDER_TYPE || "(unset)"} model=${process.env.COPILOT_MODEL || "(unset)"} endpoint=${process.env.LLM_ENDPOINT || "(unset)"}`);
+    console.log(`[session-worker] store: ${redact(store)} (managedIdentity=${useManagedIdentity})`);
+    console.log(`[session-worker] target session=${sessionId}`);
+    console.log(`[session-worker] model provider: type=${process.env.LLM_PROVIDER_TYPE || "(unset)"} model=${process.env.COPILOT_MODEL || "(unset)"} endpoint=${process.env.LLM_ENDPOINT || "(unset)"}`);
 
     const workerNodeId = process.env.WORKER_NODE_ID
         || process.env.AGENT_NAME || process.env.POD_NAME || `${os.hostname()}#${process.pid}`;
@@ -116,9 +123,9 @@ try {
         ? true
         : truthy(process.env.PILOTSWARM_ENABLE_CONFIG_DISCOVERY);
     if (sessionWorkingDirectory) {
-        console.log(`[cp1-serve] platform session workingDirectory=${sessionWorkingDirectory} (enableConfigDiscovery=${enableConfigDiscovery}) — repo .github skills/agents will be discovered`);
+        console.log(`[session-worker] platform session workingDirectory=${sessionWorkingDirectory} (enableConfigDiscovery=${enableConfigDiscovery}) — repo .github skills/agents will be discovered`);
     } else {
-        console.log(`[cp1-serve] no enlistment checkout detected (PILOTSWARM_SESSION_WORKING_DIR / BUILD_SOURCESDIRECTORY lacked .github); sessions use the worker cwd — repo .github skills NOT discovered (enableConfigDiscovery=${enableConfigDiscovery})`);
+        console.log(`[session-worker] no enlistment checkout detected (PILOTSWARM_SESSION_WORKING_DIR / BUILD_SOURCESDIRECTORY lacked .github); sessions use the worker cwd — repo .github skills NOT discovered (enableConfigDiscovery=${enableConfigDiscovery})`);
     }
 
     const { PilotSwarmWorker, PilotSwarmManagementClient } = await import("pilotswarm-sdk");
@@ -136,13 +143,13 @@ try {
         blobConnectionString: process.env.AZURE_STORAGE_CONNECTION_STRING || undefined,
         blobContainer: process.env.AZURE_STORAGE_CONTAINER || undefined,
     });
-    console.log(`[cp1-serve] worker constructed (workerNodeId=${workerNodeId}); starting runtime...`);
+    console.log(`[session-worker] worker constructed (workerNodeId=${workerNodeId}); starting runtime...`);
     await worker.start();
-    console.log("[cp1-serve] worker.start() complete — runtime is polling the durable store");
+    console.log("[session-worker] worker.start() complete — runtime is polling the durable store");
 
     mgmt = new PilotSwarmManagementClient({ store, useManagedIdentity, aadDbUser });
     await mgmt.start();
-    console.log(`[cp1-serve] observing session completion (timeout=${timeoutMs}ms, poll=${pollMs}ms)...`);
+    console.log(`[session-worker] observing session completion (timeout=${timeoutMs}ms, poll=${pollMs}ms)...`);
 
     const t0 = Date.now();
     let latest = null;
@@ -150,7 +157,7 @@ try {
         latest = await mgmt.getLatestResponse(sessionId).catch(() => null);
         const type = latest?.type;
         if (type === "completed" || type === "error" || type === "input_required") {
-            console.log(`[cp1-serve] session reached terminal response type=${type} in ${Date.now() - t0}ms`);
+            console.log(`[session-worker] session reached terminal response type=${type} in ${Date.now() - t0}ms`);
             break;
         }
         await new Promise((r) => setTimeout(r, pollMs));
