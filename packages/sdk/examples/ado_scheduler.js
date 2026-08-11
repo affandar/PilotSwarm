@@ -126,8 +126,21 @@ const cfg = {
     onlySessionId: process.env.SCHED_SESSION_ID || null,
 };
 
-const log = (msg) => console.log(`[ado-scheduler] ${msg}`);
-const errlog = (msg) => console.error(`[ado-scheduler] ${msg}`);
+const iso = () => new Date().toISOString();
+const log = (msg) => console.log(`${iso()} [ado-scheduler] ${msg}`);
+const errlog = (msg) => console.error(`${iso()} [ado-scheduler] ${msg}`);
+
+// ─── steady-state log suppression ────────────────────────────────────────────
+// The poll loop re-evaluates every session each pass (~every pollMs). Logging
+// every session's placement decision each pass floods the log with identical
+// "skip … colocate (lease ok)" lines. Instead we log a session's decision only
+// when it CHANGES, and emit a periodic heartbeat so liveness is still visible.
+// Set SCHED_VERBOSE=1 to restore per-pass logging of every decision.
+const VERBOSE = truthy(process.env.SCHED_VERBOSE);
+const HEARTBEAT_MS = intEnv("SCHED_HEARTBEAT_MS", 60000);
+const lastDecisionSig = new Map(); // sessionId -> "action:reason"
+let lastObservedSig = null;
+let lastHeartbeatMs = 0;
 
 // ─── credentials ─────────────────────────────────────────────────────────────
 const credential = new DefaultAzureCredential();
@@ -288,15 +301,35 @@ async function pass(mgmt, pool) {
         !s.parentSessionId && !s.isSystem && s.status === cfg.targetStatus);
     if (cfg.onlySessionId) candidates = candidates.filter((s) => s.sessionId === cfg.onlySessionId);
 
-    log(`observed ${sessions.length} sessions; ${candidates.length} runnable root candidate(s)` +
-        (cfg.onlySessionId ? ` (filtered to ${cfg.onlySessionId})` : ""));
+    // Heartbeat: force a full re-log of the observed line + every decision on a
+    // fixed cadence so the log periodically shows the current steady state.
+    const heartbeat = VERBOSE || (nowMs - lastHeartbeatMs >= HEARTBEAT_MS);
+    if (heartbeat) lastHeartbeatMs = nowMs;
+
+    // Prune decision signatures for sessions no longer observed as candidates so
+    // a re-appearing session logs its decision afresh (and the map stays bounded).
+    const candidateIds = new Set(candidates.map((s) => s.sessionId));
+    for (const id of lastDecisionSig.keys()) {
+        if (!candidateIds.has(id)) lastDecisionSig.delete(id);
+    }
+
+    const observedSig = `${sessions.length}/${candidates.length}`;
+    if (heartbeat || observedSig !== lastObservedSig) {
+        log(`observed ${sessions.length} sessions; ${candidates.length} runnable root candidate(s)` +
+            (cfg.onlySessionId ? ` (filtered to ${cfg.onlySessionId})` : ""));
+        lastObservedSig = observedSig;
+    }
 
     let queued = 0;
     for (const s of candidates) {
         const affinity = await getAffinity(pool, s.sessionId);
         const decision = decidePlacement(s, affinity, nowMs);
         if (decision.action !== "queue-ado-run") {
-            log(`  skip ${s.sessionId} — ${decision.action}: ${decision.reason}`);
+            const sig = `${decision.action}:${decision.reason}`;
+            if (VERBOSE || heartbeat || lastDecisionSig.get(s.sessionId) !== sig) {
+                log(`  skip ${s.sessionId} — ${decision.action}: ${decision.reason}`);
+            }
+            lastDecisionSig.set(s.sessionId, sig);
             continue;
         }
         if (queued >= cfg.maxQueuePerPass) {
@@ -334,6 +367,7 @@ try {
     log(`ADO: org=${cfg.adoOrg} project="${cfg.adoProject}" pipeline=${cfg.pipelineId} ref=${cfg.branchRef} pilotswarmRef=${cfg.pilotswarmRef}`);
     log(`store: ${cfg.host}/${cfg.database} user=${cfg.user} mi=${cfg.useMi} cmsSchema=${cfg.cmsSchema} affinitySchema=${cfg.affinitySchema}`);
     log(`loop: pollMs=${cfg.pollMs} once=${cfg.once} dryRun=${cfg.dryRun} maxQueue/pass=${cfg.maxQueuePerPass} targetStatus=${cfg.targetStatus} retryOnLeaseExpiry=${cfg.retryOnLeaseExpiry}`);
+    log(`logging: verbose=${VERBOSE} heartbeatMs=${HEARTBEAT_MS} (change-only per-session logging; set SCHED_VERBOSE=1 for per-pass)`);
 
     // Load the ADO PAT from Key Vault (workload identity) before any queue call.
     await loadAdoPatFromKeyVault();
