@@ -1,0 +1,207 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pilotswarm-git-cache-scripts
+  namespace: pilotswarm-git-cache
+  labels:
+    app.kubernetes.io/name: pilotswarm
+    app.kubernetes.io/component: git-cache
+# The node-local mirror maintainer for the AKS git-hydration data plane
+# (see SqlOrchestrationPlatform/docs/AKS-GIT-HYDRATION.md, section 5). This
+# script is intentionally URL-FREE: the repo it maintains is supplied entirely
+# via env (REPO_URL / REPO_NAME) by the concrete per-repo DaemonSet, whose
+# values live OUTSIDE this GitHub repo. One pod per node keeps a bare mirror
+# fresh at $CACHE_ROOT/$REPO_NAME.git on a node-local hostPath, so worker pods
+# materialize by local reference-clone instead of a network clone.
+data:
+  fetch-loop.sh: |
+    #!/bin/sh
+    # -----------------------------------------------------------------------
+    # PilotSwarm git-cache: node-local bare-mirror maintainer (DaemonSet).
+    # Lifecycle: (1) initial `git clone --mirror` -> node hostPath, heavily
+    # logged + timed; (2) clear the node's cache-not-ready taint + add a
+    # ready label so workers may schedule; (3) loop `git fetch --prune` on a
+    # configurable interval with GC disabled (append-only mirror).
+    # Busybox/ash + alpine/git compatible. No bashisms.
+    # -----------------------------------------------------------------------
+    set -eu
+
+    REPO_URL="${REPO_URL:?REPO_URL is required (set by the per-repo DaemonSet)}"
+    REPO_NAME="${REPO_NAME:?REPO_NAME is required (set by the per-repo DaemonSet)}"
+    CACHE_ROOT="${CACHE_ROOT:-/mnt/git-cache}"
+    FETCH_INTERVAL_SECONDS="${FETCH_INTERVAL_SECONDS:-3600}"
+    FETCH_JITTER_SECONDS="${FETCH_JITTER_SECONDS:-300}"
+    # Node readiness gating (section 6). The node pool boots pre-tainted with
+    # CACHE_NOT_READY_TAINT_KEY; this daemon removes it once the mirror exists
+    # and stamps READY_LABEL_KEY=ready so worker pods can select the node.
+    CACHE_NOT_READY_TAINT_KEY="${CACHE_NOT_READY_TAINT_KEY:-pilotswarm.io/cache-not-ready}"
+    READY_LABEL_KEY="${READY_LABEL_KEY:-pilotswarm.io/git-cache-${REPO_NAME}}"
+    NODE_NAME="${NODE_NAME:-unknown-node}"
+
+    MIRROR_DIR="$CACHE_ROOT/$REPO_NAME.git"
+    TMP_DIR="$CACHE_ROOT/.$REPO_NAME.git.tmp"
+    READY_SENTINEL="$CACHE_ROOT/$REPO_NAME.ready"
+
+    export GIT_TERMINAL_PROMPT=0
+    export HOME="${HOME:-/root}"
+
+    ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+    log() { printf '%s [git-hydration] [%s] [%s] %s\n' "$(ts)" "$REPO_NAME" "$NODE_NAME" "$*"; }
+
+    # --- best-effort tooling for node self-patching (curl + jq) -------------
+    # git is already in the image; curl/jq are only needed for the node taint/
+    # label REST calls. If they can't be installed (e.g. offline node), the
+    # mirror still works — only the readiness-gating step degrades to a warning.
+    if ! command -v curl >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+      if command -v apk >/dev/null 2>&1; then
+        log "installing curl+jq for node readiness gating ..."
+        apk add --no-cache curl jq >/dev/null 2>&1 || log "WARN apk add curl/jq failed; node taint gating will be skipped"
+      fi
+    fi
+
+    # --- ADO auth (never logged) -------------------------------------------
+    # PAT -> HTTP Basic ':<PAT>' injected per-invocation via http.extraHeader,
+    # so the secret never lands on argv we echo, on disk, or in git config.
+    AUTH_B64=""
+    if [ -n "${ADO_PAT:-}" ]; then
+      AUTH_B64="$(printf ':%s' "$ADO_PAT" | base64 | tr -d '\n')"
+      log "ADO PAT present -> authenticating mirror fetches as Basic (redacted)"
+    else
+      log "WARN no ADO_PAT set -> assuming an unauthenticated/anonymous remote"
+    fi
+
+    run_git() {
+      if [ -n "$AUTH_B64" ]; then
+        git -c "http.extraHeader=AUTHORIZATION: Basic $AUTH_B64" "$@"
+      else
+        git "$@"
+      fi
+    }
+
+    # --- Kubernetes REST helpers (self node patch) -------------------------
+    K8S_API="https://kubernetes.default.svc"
+    SA_DIR="/var/run/secrets/kubernetes.io/serviceaccount"
+    k8s_can_patch() {
+      command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 && [ -r "$SA_DIR/token" ]
+    }
+    k8s_call() {
+      # Usage: k8s_call METHOD PATH [CONTENT_TYPE DATA]
+      # Emits the response body on stdout and returns 0 ONLY on a 2xx status,
+      # so callers never log success for a rejected request (e.g. an AKS
+      # admission webhook refusing a pool-managed taint deletion).
+      _m="$1"; _p="$2"; _ct="${3:-}"; _d="${4:-}"
+      _body="/tmp/k8s-resp.$$"
+      set -- curl -sS --max-time 15 --cacert "$SA_DIR/ca.crt" \
+        -H "Authorization: Bearer $(cat "$SA_DIR/token")" \
+        -X "$_m" -o "$_body" -w '%{http_code}'
+      [ -n "$_ct" ] && set -- "$@" -H "Content-Type: $_ct"
+      [ -n "$_d" ] && set -- "$@" --data "$_d"
+      _code="$("$@" "$K8S_API$_p" 2>/dev/null || echo 000)"
+      [ -f "$_body" ] && cat "$_body"
+      rm -f "$_body"
+      case "$_code" in 2*) return 0 ;; *) return 1 ;; esac
+    }
+
+    mark_node_ready() {
+      if ! k8s_can_patch; then
+        log "WARN cannot self-patch node (missing curl/jq/token) -> leaving taint/label to an operator"
+        return 0
+      fi
+      # (1) Ready label — the PRIMARY readiness signal. Worker pods select nodes
+      # via required nodeAffinity on this label, so it is what actually gates
+      # scheduling on a warm cache (AKS-GIT-HYDRATION.md section 6).
+      if k8s_call PATCH "/api/v1/nodes/$NODE_NAME" 'application/merge-patch+json' \
+          "{\"metadata\":{\"labels\":{\"$READY_LABEL_KEY\":\"ready\"}}}" >/dev/null; then
+        log "node labeled $READY_LABEL_KEY=ready (readiness signal for workers)"
+      else
+        log "WARN failed to add ready label $READY_LABEL_KEY"
+      fi
+      # (2) Best-effort taint removal. On AKS a taint configured on the node
+      # pool is protected by the aks-node-validating-webhook and CANNOT be
+      # removed in-cluster; in that case we KEEP it as a permanent hard gate
+      # (only cache-aware pods tolerate it) and rely on the ready label above.
+      node_json="$(k8s_call GET "/api/v1/nodes/$NODE_NAME" || true)"
+      if [ -n "$node_json" ]; then
+        remaining="$(printf '%s' "$node_json" | jq -c --arg k "$CACHE_NOT_READY_TAINT_KEY" \
+          '[.spec.taints[]? | select(.key != $k)]' 2>/dev/null || echo 'null')"
+        has_taint="$(printf '%s' "$node_json" | jq -r --arg k "$CACHE_NOT_READY_TAINT_KEY" \
+          'any(.spec.taints[]?; .key == $k)' 2>/dev/null || echo 'false')"
+        if [ "$remaining" != "null" ] && [ "$has_taint" = "true" ]; then
+          if k8s_call PATCH "/api/v1/nodes/$NODE_NAME" 'application/merge-patch+json' \
+              "{\"spec\":{\"taints\":$remaining}}" >/dev/null; then
+            log "cleared node taint $CACHE_NOT_READY_TAINT_KEY (workers may now schedule)"
+          else
+            log "note: taint $CACHE_NOT_READY_TAINT_KEY retained (removal blocked, e.g. AKS pool-managed) -> ready label is the gate"
+          fi
+        fi
+      fi
+    }
+
+    # --- 1) initial mirror (the expensive, frontloaded step) ---------------
+    mkdir -p "$CACHE_ROOT"
+    if [ -d "$MIRROR_DIR" ]; then
+      log "mirror already present at $MIRROR_DIR (surviving hostPath) -> skipping initial clone"
+    else
+      rm -rf "$TMP_DIR"
+      log "==== INITIAL CLONE starting ===="
+      log "cloning --mirror $REPO_URL -> $MIRROR_DIR"
+      clone_start="$(date +%s)"
+      if run_git clone --mirror "$REPO_URL" "$TMP_DIR"; then
+        clone_end="$(date +%s)"
+        # Disable auto-GC: keep the mirror append-only so a borrowing worker
+        # clone can never race a repack (see AKS-GIT-HYDRATION.md section 5).
+        git --git-dir="$TMP_DIR" config gc.auto 0
+        mv "$TMP_DIR" "$MIRROR_DIR"
+        size="$(du -sh "$MIRROR_DIR" 2>/dev/null | cut -f1)"
+        log "==== INITIAL CLONE COMPLETE in $((clone_end - clone_start))s (size=${size:-unknown}) ===="
+      else
+        clone_end="$(date +%s)"
+        log "==== INITIAL CLONE FAILED after $((clone_end - clone_start))s -> will retry next loop ===="
+        rm -rf "$TMP_DIR"
+      fi
+    fi
+
+    # --- 2) readiness sentinel + node gating -------------------------------
+    if [ -d "$MIRROR_DIR" ]; then
+      : > "$READY_SENTINEL"
+      log "readiness sentinel written: $READY_SENTINEL"
+      mark_node_ready
+    fi
+
+    # --- 3) steady-state fetch loop (delta only, GC off) -------------------
+    log "entering fetch loop: interval=${FETCH_INTERVAL_SECONDS}s jitter<=${FETCH_JITTER_SECONDS}s gc.auto=0"
+    cycle=0
+    while true; do
+      # Jittered sleep so N nodes don't all hit ADO on the same second.
+      jitter="$(awk -v m="$FETCH_JITTER_SECONDS" 'BEGIN{srand();print int(rand()*(m+1))}' 2>/dev/null || echo 0)"
+      sleep_for=$((FETCH_INTERVAL_SECONDS + jitter))
+      log "sleeping ${sleep_for}s until next fetch (interval=${FETCH_INTERVAL_SECONDS}s + jitter=${jitter}s)"
+      sleep "$sleep_for"
+
+      cycle=$((cycle + 1))
+      if [ ! -d "$MIRROR_DIR" ]; then
+        # Initial clone previously failed; retry it inline.
+        log "mirror missing at fetch #$cycle -> retrying INITIAL CLONE"
+        rm -rf "$TMP_DIR"
+        rc_start="$(date +%s)"
+        if run_git clone --mirror "$REPO_URL" "$TMP_DIR"; then
+          git --git-dir="$TMP_DIR" config gc.auto 0
+          mv "$TMP_DIR" "$MIRROR_DIR"
+          : > "$READY_SENTINEL"
+          log "retry clone COMPLETE in $(( $(date +%s) - rc_start ))s"
+          mark_node_ready
+        else
+          log "retry clone FAILED after $(( $(date +%s) - rc_start ))s"
+          rm -rf "$TMP_DIR"
+        fi
+        continue
+      fi
+
+      log "fetch #$cycle starting (git fetch --prune)"
+      f_start="$(date +%s)"
+      if run_git --git-dir="$MIRROR_DIR" fetch --prune --no-write-fetch-head origin "+refs/heads/*:refs/heads/*" "+refs/tags/*:refs/tags/*"; then
+        log "fetch #$cycle COMPLETE in $(( $(date +%s) - f_start ))s"
+      else
+        log "WARN fetch #$cycle FAILED after $(( $(date +%s) - f_start ))s (mirror kept; will retry)"
+      fi
+    done

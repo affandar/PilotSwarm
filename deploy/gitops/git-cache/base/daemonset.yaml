@@ -1,0 +1,138 @@
+# -----------------------------------------------------------------------------
+# PilotSwarm git-cache DaemonSet — node-local bare-mirror maintainer.
+# AKS git-hydration data plane, one pod per node (AKS-GIT-HYDRATION.md section 5).
+#
+# THIS FILE IS A URL-FREE GENERIC. It is intentionally NOT directly applyable:
+# the __TOKENS__ below are filled per-repo by the deployment scripts that live
+# OUTSIDE this GitHub repo (SQL-AI-Marketplace/SqlOrchestrationPlatform/Admin/
+# PilotSwarm/git-hydration/apply.ps1), because the target ADO repo URLs must not
+# be persisted here. One instantiation per hot repo; a DaemonSet runs one pod on
+# every node matching its nodeSelector, so a 5-node labeled pool => 5 mirrors.
+#
+# Tokens (all substituted by apply.ps1 from a per-repo .env):
+#   __REPO_NAME__               DNS-safe short name (e.g. sql-ai-marketplace)
+#   __REPO_URL__                ADO clone URL (lives only in the ADO repo)
+#   __FETCH_INTERVAL_SECONDS__  steady-state fetch cadence (default 3600)
+#   __FETCH_JITTER_SECONDS__    max added jitter per cycle (default 300)
+#   __CACHE_HOSTPATH__          node-local host dir backing the mirror. Default
+#                               /mnt/pilotswarm-git-cache (the VM temp/resource
+#                               disk). Big-repo pools override this to an
+#                               OS-disk path (e.g. /var/lib/pilotswarm-git-cache)
+#                               when the temp disk is too small.
+# -----------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: pilotswarm-git-cache-__REPO_NAME__
+  namespace: pilotswarm-git-cache
+  labels:
+    app.kubernetes.io/name: pilotswarm
+    app.kubernetes.io/component: git-cache
+    pilotswarm.io/git-cache-repo: __REPO_NAME__
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pilotswarm
+      app.kubernetes.io/component: git-cache
+      pilotswarm.io/git-cache-repo: __REPO_NAME__
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pilotswarm
+        app.kubernetes.io/component: git-cache
+        pilotswarm.io/git-cache-repo: __REPO_NAME__
+    spec:
+      serviceAccountName: pilotswarm-git-cache
+      # Only run on this repo's labeled node pool (set at pool provision time).
+      nodeSelector:
+        pilotswarm.io/git-cache-repo: __REPO_NAME__
+      tolerations:
+        # The node pool boots pre-tainted with cache-not-ready. On AKS this
+        # taint is pool-managed and cannot be removed in-cluster (the
+        # aks-node-validating-webhook blocks it), so it stays as a PERMANENT
+        # hard gate: only cache-aware pods (this daemon + workers that tolerate
+        # it AND require the ready label) ever land here. Readiness is conveyed
+        # by the pilotswarm.io/git-cache-<repo>=ready label the daemon adds.
+        - key: pilotswarm.io/cache-not-ready
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+        # Also tolerate the common control-plane / spot taints so the mirror
+        # can seed on any node in the pool.
+        - operator: Exists
+          effect: NoSchedule
+      securityContext:
+        # Root: the daemon writes the node-local hostPath mirror and installs
+        # curl/jq for the node self-patch. It is a trusted node-local cache.
+        runAsUser: 0
+        runAsGroup: 0
+      containers:
+        - name: git-cache
+          image: alpine/git:2.45.2
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "/scripts/fetch-loop.sh"]
+          env:
+            - name: REPO_NAME
+              value: "__REPO_NAME__"
+            - name: REPO_URL
+              value: "__REPO_URL__"
+            - name: CACHE_ROOT
+              value: "/mnt/git-cache"
+            - name: FETCH_INTERVAL_SECONDS
+              value: "__FETCH_INTERVAL_SECONDS__"
+            - name: FETCH_JITTER_SECONDS
+              value: "__FETCH_JITTER_SECONDS__"
+            - name: CACHE_NOT_READY_TAINT_KEY
+              value: "pilotswarm.io/cache-not-ready"
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            # ADO PAT for private clones. Optional so the DaemonSet applies
+            # before the secret exists; the script warns and treats the remote
+            # as anonymous if absent. The secret's VALUES live only in the ADO
+            # deployment repo, never here.
+            - name: ADO_PAT
+              valueFrom:
+                secretKeyRef:
+                  name: pilotswarm-git-cache-ado-pat
+                  key: ADO_PAT
+                  optional: true
+          volumeMounts:
+            - name: git-cache
+              mountPath: /mnt/git-cache
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+          readinessProbe:
+            # READY only once the mirror sentinel exists, so downstream tooling
+            # (and the node ready-label) reflect a materialized cache.
+            exec:
+              command: ["/bin/sh", "-c", "test -f /mnt/git-cache/$REPO_NAME.ready"]
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 1000
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+      volumes:
+        # Node-local mirror store. Survives pod restarts and image redeploys —
+        # only a genuinely empty node disk triggers a reseed (section 5). The
+        # host path is __CACHE_HOSTPATH__: the temp/resource disk by default,
+        # or an OS-disk path for repos too big for the temp disk.
+        - name: git-cache
+          hostPath:
+            path: __CACHE_HOSTPATH__
+            type: DirectoryOrCreate
+        - name: scripts
+          configMap:
+            name: pilotswarm-git-cache-scripts
+            defaultMode: 0755

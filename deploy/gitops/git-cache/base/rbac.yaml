@@ -1,0 +1,40 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pilotswarm-git-cache
+  namespace: pilotswarm-git-cache
+  labels:
+    app.kubernetes.io/name: pilotswarm
+    app.kubernetes.io/component: git-cache
+---
+# The mirror daemon patches its OWN node: it removes the startup
+# `cache-not-ready` taint and adds a `<repo>=ready` label once the mirror is
+# materialized (AKS-GIT-HYDRATION.md section 6, readiness gating). That needs
+# cluster-scoped get/patch on nodes. Scoped to nodes only; no other verbs.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pilotswarm-git-cache-node-patcher
+  labels:
+    app.kubernetes.io/name: pilotswarm
+    app.kubernetes.io/component: git-cache
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: pilotswarm-git-cache-node-patcher
+  labels:
+    app.kubernetes.io/name: pilotswarm
+    app.kubernetes.io/component: git-cache
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: pilotswarm-git-cache-node-patcher
+subjects:
+  - kind: ServiceAccount
+    name: pilotswarm-git-cache
+    namespace: pilotswarm-git-cache

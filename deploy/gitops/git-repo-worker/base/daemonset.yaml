@@ -1,0 +1,217 @@
+# -----------------------------------------------------------------------------
+# PilotSwarm git-repo-worker — a headless worker collocated 1:1 with the
+# git-cache mirror DaemonSet on a per-repo node pool.
+# AKS git-hydration lifecycle (AKS-GIT-HYDRATION.md sections 5 & 6):
+#   - Co-scheduled with the mirror daemon from node boot (tolerates the pool's
+#     cache-not-ready taint, selects the pool by git-cache-repo label).
+#   - An initContainer (wait-for-mirror) blocks the worker process from starting
+#     until the daemon has written this node's readiness sentinel, so a worker
+#     never polls PostgreSQL for a job on a still-warming node.
+#   - Once live, the worker keeps ONE reused working enlistment (writable
+#     emptyDir), cloned once from the node-local bare mirror. BEFORE every job it
+#     fetches from the mirror and hard-resets to the target ref. With
+#     PILOTSWARM_WORKER_CONCURRENCY=1 the single job slot is the mutex: the
+#     reconcile runs on an idle tree (worker briefly "unavailable"), and once a
+#     job runs the daemon's hourly `git fetch` (gc off -> append-only) can never
+#     race it.
+#
+# THIS FILE IS URL-FREE. __REPO_NAME__ is a DNS-safe short name substituted by
+# the deployment scripts that live OUTSIDE this GitHub repo (SQL-AI-Marketplace/
+# SqlOrchestrationPlatform/Admin/PilotSwarm/git-hydration/apply.ps1). The ADO
+# repo URLs never appear here.
+#
+# Tokens (substituted by apply.ps1 from a per-repo .env):
+#   __REPO_NAME__   DNS-safe short name; must match the git-cache pool label
+#   __IMAGE__       worker container image (ACR ref), same image as the Deployment
+# -----------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: git-repo-worker-__REPO_NAME__
+  namespace: pilotswarm
+  labels:
+    app.kubernetes.io/name: pilotswarm
+    app.kubernetes.io/component: git-repo-worker
+    pilotswarm.io/git-cache-repo: __REPO_NAME__
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pilotswarm
+      app.kubernetes.io/component: git-repo-worker
+      pilotswarm.io/git-cache-repo: __REPO_NAME__
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pilotswarm
+        app.kubernetes.io/component: git-repo-worker
+        pilotswarm.io/git-cache-repo: __REPO_NAME__
+        azure.workload.identity/use: "true"
+    spec:
+      serviceAccountName: copilot-runtime-worker
+      # Land on this repo's git-cache pool, next to the mirror daemon.
+      nodeSelector:
+        pilotswarm.io/git-cache-repo: __REPO_NAME__
+      tolerations:
+        # The pool is dedicated + pre-tainted; cache-aware pods tolerate it so
+        # they co-schedule with the mirror from boot (readiness is gated below
+        # by the initContainer, NOT by taint removal — see the design note).
+        - key: pilotswarm.io/cache-not-ready
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+        - key: kubernetes.azure.com/scalesetpriority
+          operator: Equal
+          value: spot
+          effect: NoSchedule
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+      initContainers:
+        # 1) Job-acceptance gate. Block until the git-cache daemon on THIS node
+        #    has completed the initial mirror and written the sentinel. Because
+        #    the worker polls PG for jobs, not-started == cannot-accept-a-job, so
+        #    this is a race-free readiness gate for a still-warming node.
+        - name: wait-for-mirror
+          image: busybox:1.36
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              SENT="/mnt/git-cache/__REPO_NAME__.ready"
+              echo "[wait-for-mirror] waiting for $SENT (git-cache initial clone) ..."
+              t=0
+              until [ -f "$SENT" ]; do
+                sleep 2; t=$((t+2))
+                if [ $((t % 30)) -eq 0 ]; then echo "[wait-for-mirror] still waiting after ${t}s ..."; fi
+              done
+              echo "[wait-for-mirror] mirror ready after ${t}s -> starting worker"
+          volumeMounts:
+            - name: git-cache
+              mountPath: /mnt/git-cache
+              readOnly: true
+        # 2) Prepare the copilot home scratch dir (same as the Deployment path).
+        - name: init-copilot-home
+          image: busybox:1.36
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+          command:
+            - sh
+            - -lc
+            - |
+              set -eu
+              mkdir -p /home/node/.copilot/session-state && chown -R 1000:1000 /home/node/.copilot
+              mkdir -p /mnt/enlistment && chown -R 1000:1000 /mnt/enlistment
+          volumeMounts:
+            - name: copilot-home
+              mountPath: /home/node/.copilot
+            - name: enlistment
+              mountPath: /mnt/enlistment
+      containers:
+        - name: git-repo-worker
+          image: __IMAGE__
+          imagePullPolicy: IfNotPresent
+          command: ["node", "packages/sdk/examples/git-repo-worker.js"]
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: RUST_LOG
+              value: "info"
+            - name: PS_MODEL_PROVIDERS_PATH
+              value: "/app/config/model_providers.json"
+            # One PilotSwarm job per pod at a time. This single job slot is the
+            # mutex that makes reconcile-before-job race-free: while the worker
+            # reconciles its enlistment it claims no other job (see git-repo-worker.js).
+            - name: PILOTSWARM_WORKER_CONCURRENCY
+              value: "1"
+            # git-cache collocation: the node-local bare mirror this worker clones
+            # its enlistment from and fetches from before each job. Read-only mount
+            # below; only the git-cache daemon writes it.
+            - name: GIT_CACHE_ROOT
+              value: "/mnt/git-cache"
+            - name: GIT_CACHE_REPO
+              value: "__REPO_NAME__"
+            - name: GIT_CACHE_MIRROR
+              value: "/mnt/git-cache/__REPO_NAME__.git"
+            # Reused working enlistment (writable emptyDir). Cloned once from the
+            # mirror, then fetch + hard-reset before each job. GIT_ENLISTMENT_REF
+            # is unset -> reconcile targets the mirror's default branch.
+            - name: GIT_ENLISTMENT_ROOT
+              value: "/mnt/enlistment"
+          envFrom:
+            - configMapRef:
+                name: worker-env
+            - secretRef:
+                name: copilot-worker-secrets
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "1Gi"
+            limits:
+              cpu: "1000m"
+              memory: "2Gi"
+          readinessProbe:
+            # Belt-and-suspenders on top of the initContainer gate: keep the pod
+            # out of any Service Endpoints until the mirror sentinel is present.
+            exec:
+              command: ["sh", "-c", "test -f /mnt/git-cache/$GIT_CACHE_REPO.ready"]
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            failureThreshold: 1000
+          volumeMounts:
+            - name: copilot-home
+              mountPath: /home/node/.copilot
+            - name: enlistment
+              mountPath: /mnt/enlistment
+            - name: secrets-store
+              mountPath: /mnt/secrets-store
+              readOnly: true
+            - name: model-providers
+              mountPath: /app/config
+              readOnly: true
+            # Node-local mirror, READ-ONLY: the worker clones its enlistment from
+            # it once and `git fetch`es from it before each job; only the git-cache
+            # daemon writes. Objects are copied into the enlistment (--no-hardlinks),
+            # so an active job never depends on the mirror mid-fetch.
+            - name: git-cache
+              mountPath: /mnt/git-cache
+              readOnly: true
+      volumes:
+        - name: copilot-home
+          emptyDir: {}
+        # Reused working enlistment. Node-local, pod-scoped: wiped on pod
+        # restart, which just triggers a one-time re-clone from the warm mirror.
+        - name: enlistment
+          emptyDir: {}
+        - name: secrets-store
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: copilot-worker-secrets
+        - name: model-providers
+          configMap:
+            name: copilot-worker-model-providers
+            items:
+              - key: model_providers.json
+                path: model_providers.json
+        # Same node-local hostPath the git-cache DaemonSet seeds. Shared at the
+        # node level (namespace-independent); the worker mounts it read-only.
+        - name: git-cache
+          hostPath:
+            path: /mnt/pilotswarm-git-cache
+            type: DirectoryOrCreate
+      restartPolicy: Always
+      # Must exceed PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS so graceful drain
+      # (lifecycle §3.8) can finish in-flight turns before the pod is killed.
+      terminationGracePeriodSeconds: 90
