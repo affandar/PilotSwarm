@@ -300,9 +300,6 @@ export class PilotSwarmWorker {
                 appDefaultDescriptor: this._appDefaultDescriptor ?? undefined,
                 skillDirectories: this._loadedSkillDirs,
                 customAgents: this._loadedAgents,
-                sessionWorkingDirectory: options.sessionWorkingDirectory,
-                enableConfigDiscovery: options.enableConfigDiscovery,
-                enableSkills: options.enableSkills,
                 mcpServers: this._loadedMcpServers,
                 agentMcpServers: this._agentMcpServers,
                 baseMcpServers: this._baseMcpServers,
@@ -342,9 +339,13 @@ export class PilotSwarmWorker {
                     customAgentCount: this._loadedAgents.length,
                     customAgentNames: this._loadedAgents.map((a) => a.name),
                     mcpServerNames: Object.keys(this._loadedMcpServers),
-                    sessionWorkingDirectory: this.config.sessionWorkingDirectory ?? "(unset -> sessions use their own cwd)",
-                    enableConfigDiscovery: this.config.enableConfigDiscovery ?? "(unset -> SDK default false)",
-                    enableSkills: this.config.enableSkills ?? "(unset -> SDK default on)",
+                    // These three are not worker-owned options: sessions inherit
+                    // the Copilot SDK defaults. workingDirectory falls back to the
+                    // worker process cwd (chdir the process to root discovery),
+                    // enableConfigDiscovery defaults off, enableSkills defaults on.
+                    sessionWorkingDirectory: "(SDK default -> process.cwd())",
+                    enableConfigDiscovery: "(SDK default -> false)",
+                    enableSkills: "(SDK default -> on)",
                     defaultModel: this._modelProviders?.defaultModel ?? "(unset)",
                     modelCatalogCount: this._modelProviders?.allModels.length ?? 0,
                 }),
