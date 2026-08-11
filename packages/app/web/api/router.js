@@ -69,6 +69,9 @@ function sendError(res, error, fallbackStatus) {
     // (4xx: validation, not-found, auth, lifecycle conflicts) keep their
     // message because it is actionable and non-sensitive.
     const message = status >= 500 ? "Internal server error" : (error?.message || String(error));
+    if (status >= 500) {
+        console.error("[api][500]", error?.message, "| code:", error?.code, "| cause:", error?.cause?.message || error?.cause, "\n", error?.stack);
+    }
     const envelope = { ok: false, error: { code, message } };
     if (status < 500 && Array.isArray(error?.candidates)) {
         envelope.error.candidates = error.candidates;
