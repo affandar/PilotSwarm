@@ -321,7 +321,7 @@ export class PilotSwarmWorker {
         // in SessionManager: this shows what the worker BOOTED with; that shows
         // what a specific turn RESOLVED to. Together they pinpoint whether a
         // missing skill/agent is a load-time (worker) or bind-time (session)
-        // problem — the CP2 tripwire for `.github`/skills enumeration.
+        // problem — the tripwire for `.github`/skills enumeration.
         const startupTrace = this.config.traceWriter ?? ((m: string) => console.log(m));
         try {
             const skillNames = [...this._loadedSkills.keys()];

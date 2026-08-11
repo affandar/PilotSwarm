@@ -1342,7 +1342,7 @@ export class SessionManager {
         // ── GHCP SDK session-config diagnostics ──────────────────────────────
         // Log the exact parameters that govern WHERE the Copilot CLI looks for
         // skills/instructions/agents, plus on-disk existence probes for the
-        // enlistment's `.github` tree. This is the CP2 tripwire: if a target repo
+        // enlistment's `.github` tree. This is the tripwire: if a target repo
         // checkout succeeds but the CLI still can't see `<repo>/.github`,
         // this line shows whether it was a working-directory, config-discovery,
         // or enable-skills problem (the three knobs that gate `.github` skills).

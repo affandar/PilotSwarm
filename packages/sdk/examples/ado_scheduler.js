@@ -53,14 +53,15 @@
  *   SCHED_ONCE                 (default: off)  one observe/decide/act pass, then exit
  *   SCHED_DRY_RUN              (default: off)  decide + log, but never queue / write affinity
  *   SCHED_MAX_QUEUE_PER_PASS   (default: 1)    safety cap on runs queued per pass
- *   SCHED_LEASE_TTL_SECONDS    (default: 1200) CP1b lease covers a full run lifetime.
+ *   SCHED_LEASE_TTL_SECONDS    (default: 1200) the lease covers a full run lifetime.
  *                                              ado-placement.ts uses 45s, which assumes the
  *                                              worker RENEWS the lease on each heartbeat (the
- *                                              crash signal). CP1b has no heartbeat-renewal
- *                                              wiring yet, so a 45s lease would lapse while a
- *                                              run is still booting and the loop would
- *                                              double-queue. A long lease is the CP1b stand-in;
- *                                              TODO(cp2-heartbeat): renew on workerHeartbeat and
+ *                                              crash signal). This scheduler has no
+ *                                              heartbeat-renewal wiring yet, so a 45s lease
+ *                                              would lapse while a run is still booting and the
+ *                                              loop would double-queue. A long lease is the
+ *                                              current stand-in;
+ *                                              TODO(heartbeat-lease): renew on workerHeartbeat and
  *                                              restore the 45s crash-detection semantics.
  *   SCHED_TARGET_STATUS        (default: running)  CMS status that means "needs compute"
  *   SCHED_RETRY_ON_LEASE_EXPIRY (default: off)  when a session is STILL a candidate
@@ -68,7 +69,7 @@
  *                                              to drive it terminal. Re-queuing then (the
  *                                              default before this flag) produced a perpetual
  *                                              run storm because there is no heartbeat-renewed
- *                                              lease or run-status reconcile yet (CP2). Until
+ *                                              lease or run-status reconcile yet. Until
  *                                              those land we attempt each session ONCE; set
  *                                              this to 1 to restore blind retry-on-expiry.
  *   SCHED_AFFINITY_SCHEMA      (default: PILOTSWARM_CMS_SCHEMA or copilot_sessions)
@@ -125,8 +126,8 @@ const cfg = {
     onlySessionId: process.env.SCHED_SESSION_ID || null,
 };
 
-const log = (msg) => console.log(`[cp1b-sched] ${msg}`);
-const errlog = (msg) => console.error(`[cp1b-sched] ${msg}`);
+const log = (msg) => console.log(`[ado-scheduler] ${msg}`);
+const errlog = (msg) => console.error(`[ado-scheduler] ${msg}`);
 
 // ─── credentials ─────────────────────────────────────────────────────────────
 const credential = new DefaultAzureCredential();
@@ -217,9 +218,9 @@ async function upsertAffinity(pool, a) {
 }
 
 // ─── placement decision (mirrors src/ado-placement.ts — SOURCE OF TRUTH) ─────
-// CP1b root-only: sub-agent co-location, hold/release and wake are deferred (CP2).
+// Root-only: sub-agent co-location, hold/release and wake are deferred (future work).
 function decidePlacement(session, affinity, nowMs) {
-    if (session.parentSessionId) return { action: "colocate", reason: "sub-agent (deferred to CP2)" };
+    if (session.parentSessionId) return { action: "colocate", reason: "sub-agent (deferred)" };
     if (affinity) {
         const leaseMs = affinity.lease_expires_at ? new Date(affinity.lease_expires_at).getTime() : 0;
         const alive = nowMs < leaseMs && affinity.run_state !== "releasing";
@@ -227,7 +228,7 @@ function decidePlacement(session, affinity, nowMs) {
         // Lease lapsed but the session is STILL a candidate → its prior run
         // never drove it terminal (failed / canceled / no worker). Blindly
         // re-queuing here is what caused the run storm: with no heartbeat-
-        // renewed lease or run-status reconcile (CP2), every lapse re-fires a
+        // renewed lease or run-status reconcile, every lapse re-fires a
         // run forever. Attempt each session ONCE until that lands; the flag
         // restores the old behavior when we're ready.
         if (!cfg.retryOnLeaseExpiry) {
@@ -244,7 +245,7 @@ function decidePlacement(session, affinity, nowMs) {
 // ─── ADO REST — queue a pipeline run (mirrors AdoWorkerActivator) ─────────────
 async function queueAdoRun(sessionId) {
     const pgToken = await pgPassword();
-    // ADO auth: a scoped PAT (ADO_PAT, HTTP Basic) is the CP1b path — the
+    // ADO auth: a scoped PAT (ADO_PAT, HTTP Basic) is the current path — the
     // scheduler's workload-identity SP is not an msdata org member (adding it
     // needs org "Add Users", which the operator lacks), so the passwordless
     // AAD-token route can't queue yet. When ADO_PAT is unset, fall back to a
