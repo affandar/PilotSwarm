@@ -11,8 +11,11 @@
  * Substrate-agnostic: it talks only to the durable store and calls no
  * ADO/CI APIs. ADO is merely the current invoker — the one ADO-flavored input
  * is the optional BUILD_SOURCESDIRECTORY checkout dir (with the generic
- * PILOTSWARM_SESSION_WORKING_DIR override) used to root the session so the
- * Copilot CLI can discover the enlistment's `.github` skills/agents.
+ * PILOTSWARM_SESSION_WORKING_DIR override). When it points at a checkout that
+ * contains `.github`, the harness chdir's into it so the Copilot CLI's default
+ * workingDirectory (process.cwd()) roots there. Note: `.github` skill/agent
+ * AUTO-discovery is a separate SDK knob (enableConfigDiscovery, default OFF)
+ * that this harness does not force on — sessions use the GHCP SDK defaults.
  *
  * The turn is seeded OUT OF BAND by the customer client (the local portal's
  * REST API). This process only provides the worker (the compute that claims
@@ -99,13 +102,20 @@ try {
     const workerNodeId = process.env.WORKER_NODE_ID
         || process.env.AGENT_NAME || process.env.POD_NAME || `${os.hostname()}#${process.pid}`;
 
-    // Platform-owned session working directory: when the ADO agent checked out
-    // the enlistment (`checkout: self`), root every served session at that
-    // checkout so the Copilot CLI discovers the repo's `.github`
-    // skills/agents/instructions. The CUSTOMER never sets this — the platform
-    // derives it from the agent's checkout (BUILD_SOURCESDIRECTORY), or an
-    // explicit PILOTSWARM_SESSION_WORKING_DIR override. Guarded by an on-disk
-    // `.github` probe so an empty (`checkout: none`) sources dir is ignored.
+    // Root the served sessions at the enlistment checkout WITHOUT any custom
+    // worker option: the Copilot SDK's default workingDirectory is the worker
+    // process cwd, so we simply chdir into the checkout. When the ADO agent
+    // checked out the enlistment (`checkout: self`), this lets the CLI's own
+    // discovery resolve against the repo. The CUSTOMER never sets this — the
+    // platform derives it from the agent's checkout (BUILD_SOURCESDIRECTORY),
+    // or an explicit PILOTSWARM_SESSION_WORKING_DIR override. Guarded by an
+    // on-disk `.github` probe so an empty (`checkout: none`) sources dir is
+    // ignored.
+    //
+    // NOTE: `.github` skills/agents auto-discovery is a separate SDK knob
+    // (enableConfigDiscovery, default OFF) that is NOT plumbed as a PilotSwarm
+    // worker option — sessions fall back to the GHCP SDK defaults. Rooting cwd
+    // here only affects the CLI's own working directory, not skill discovery.
     let sessionWorkingDirectory;
     const workDirCandidates = [
         process.env.PILOTSWARM_SESSION_WORKING_DIR,
@@ -116,17 +126,17 @@ try {
             if (fs.existsSync(path.join(cand, ".github"))) { sessionWorkingDirectory = cand; break; }
         } catch { /* ignore probe errors */ }
     }
-    // Config discovery (the gate for `.github/skills` auto-discovery, SDK
-    // default off) is turned on automatically whenever we rooted a checkout;
-    // an explicit env can force it on without a detected checkout.
-    const enableConfigDiscovery = sessionWorkingDirectory
-        ? true
-        : truthy(process.env.PILOTSWARM_ENABLE_CONFIG_DISCOVERY);
     if (sessionWorkingDirectory) {
-        console.log(`[session-worker] platform session workingDirectory=${sessionWorkingDirectory} (enableConfigDiscovery=${enableConfigDiscovery}) — repo .github skills/agents will be discovered`);
+        try {
+            process.chdir(sessionWorkingDirectory);
+            console.log(`[session-worker] chdir -> ${sessionWorkingDirectory} (enlistment checkout with .github); Copilot CLI workingDirectory falls back to this cwd`);
+        } catch (err) {
+            console.log(`[session-worker] failed to chdir to ${sessionWorkingDirectory}: ${err?.message ?? err}; sessions use the current cwd (${process.cwd()})`);
+        }
     } else {
-        console.log(`[session-worker] no enlistment checkout detected (PILOTSWARM_SESSION_WORKING_DIR / BUILD_SOURCESDIRECTORY lacked .github); sessions use the worker cwd — repo .github skills NOT discovered (enableConfigDiscovery=${enableConfigDiscovery})`);
+        console.log(`[session-worker] no enlistment checkout detected (PILOTSWARM_SESSION_WORKING_DIR / BUILD_SOURCESDIRECTORY lacked .github); sessions use the worker cwd (${process.cwd()})`);
     }
+    console.log(`[session-worker] .github auto-discovery uses the GHCP SDK default (enableConfigDiscovery OFF) — repo .github skills are NOT auto-enumerated by this harness`);
 
     const { PilotSwarmWorker, PilotSwarmManagementClient } = await import("pilotswarm-sdk");
 
@@ -137,8 +147,6 @@ try {
         traceWriter: (m) => console.log(m),
         useManagedIdentity,
         aadDbUser,
-        sessionWorkingDirectory,
-        enableConfigDiscovery,
         blobAccountUrl: process.env.AZURE_STORAGE_ACCOUNT_URL || undefined,
         blobConnectionString: process.env.AZURE_STORAGE_CONNECTION_STRING || undefined,
         blobContainer: process.env.AZURE_STORAGE_CONTAINER || undefined,
