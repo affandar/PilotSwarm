@@ -66,6 +66,9 @@ function sendError(res, error, fallbackStatus) {
     // (4xx: validation, not-found, auth, lifecycle conflicts) keep their
     // message because it is actionable and non-sensitive.
     const message = status >= 500 ? "Internal server error" : (error?.message || String(error));
+    if (status >= 500) {
+        console.error("[api][500]", error?.message, "| code:", error?.code, "| cause:", error?.cause?.message || error?.cause, "\n", error?.stack);
+    }
     const envelope = { ok: false, error: { code, message } };
     // Structured validation detail (agent-package uploads): per-rule codes +
     // messages the dialog renders verbatim. 4xx-only, never on faults.
