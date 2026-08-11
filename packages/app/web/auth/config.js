@@ -60,6 +60,9 @@ export function inferAuthProviderId(env = process.env) {
     ) {
         return "entra";
     }
+    if (env.PORTAL_AUTH_PROXY_MODE || env.PORTAL_AUTH_PROXY_JWKS_URL) {
+        return "proxy";
+    }
     return "none";
 }
 

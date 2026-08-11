@@ -235,6 +235,11 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "list_sessions_page_ms_cursor",
             sql: migration_0044_list_sessions_page_ms_cursor(schema),
         },
+        {
+            version: "0045",
+            name: "session_canvases",
+            sql: migration_0045_session_canvases(schema),
+        },
     ];
 }
 
@@ -9080,5 +9085,60 @@ RETURNS TABLE(
      WHERE p.enabled
      ORDER BY p.name, p.scope, p.owner_provider, p.owner_subject;
 $$ LANGUAGE sql;
+`;
+}
+
+
+/**
+ * 0045 — session_canvases: one row per (session, slot).
+ *
+ * The canvas revision has always been DERIVED from the session.canvas_updated
+ * event log by scanning a small trailing window. With one canvas per session
+ * that window always contained the latest rev; with five interleaved slots it
+ * does not — slot 2's latest draw falls outside the window after slot 1 draws
+ * a few times. This table is the per-slot authority-cache: written on every
+ * draw, read for the next rev, and joinable from the sessions list so a row
+ * can say "this session has canvases" without replaying events.
+ *
+ * The event log REMAINS the durable source; a missed upsert self-heals on the
+ * next draw via the event-scan fallback. Backfill seeds slot 1 (and any slot
+ * already present in event data) from the latest valid event per slot.
+ */
+function migration_0045_session_canvases(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+CREATE TABLE IF NOT EXISTS ${s}.session_canvases (
+    session_id  TEXT     NOT NULL REFERENCES ${s}.sessions(session_id) ON DELETE CASCADE,
+    slot        SMALLINT NOT NULL CHECK (slot BETWEEN 1 AND 5),
+    name        TEXT     NOT NULL DEFAULT '',
+    latest_rev  INTEGER  NOT NULL DEFAULT 0,
+    size_bytes  INTEGER,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (session_id, slot)
+);
+
+INSERT INTO ${s}.session_canvases (session_id, slot, name, latest_rev, size_bytes, updated_at)
+SELECT e.session_id,
+       e.slot,
+       COALESCE(e.data->>'name', ''),
+       (e.data->>'rev')::int,
+       NULLIF(e.data->>'sizeBytes', '')::int,
+       e.created_at
+FROM (
+    SELECT DISTINCT ON (session_id, COALESCE(NULLIF(data->>'slot', '')::smallint, 1))
+           session_id,
+           COALESCE(NULLIF(data->>'slot', '')::smallint, 1) AS slot,
+           data,
+           created_at
+    FROM ${s}.session_events
+    WHERE event_type = 'session.canvas_updated'
+      AND (data->>'rev') ~ '^[0-9]+$'
+      AND COALESCE(NULLIF(data->>'slot', ''), '1') ~ '^[1-5]$'
+    ORDER BY session_id,
+             COALESCE(NULLIF(data->>'slot', '')::smallint, 1),
+             (data->>'rev')::int DESC
+) e
+WHERE EXISTS (SELECT 1 FROM ${s}.sessions ss WHERE ss.session_id = e.session_id)
+ON CONFLICT (session_id, slot) DO NOTHING;
 `;
 }

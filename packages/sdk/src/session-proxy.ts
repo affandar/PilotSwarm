@@ -56,6 +56,25 @@ const SYSTEM_AGENT_IDS = new Set(["pilotswarm", "sweeper", "resourcemgr", "facts
  */
 export const CANVAS_ARTIFACT_FILENAME = "canvas.html";
 
+/** Slot 1 keeps the historical name; 2-5 are canvas2.html .. canvas5.html. */
+export function canvasArtifactFilename(slot: number): string {
+    return slot <= 1 ? CANVAS_ARTIFACT_FILENAME : `canvas${slot}.html`;
+}
+
+/** 1-5, defaulting absent to 1. Returns null for anything else. */
+function normalizeCanvasSlot(value: unknown): number | null {
+    if (value === undefined || value === null || value === "") return 1;
+    const n = Number(value);
+    if (!Number.isInteger(n) || n < 1 || n > 5) return null;
+    return n;
+}
+
+/** Event rows predate slots; a missing slot means slot 1. */
+function eventSlot(row: any): number {
+    const n = Number(row?.data?.slot);
+    return Number.isInteger(n) && n >= 1 && n <= 5 ? n : 1;
+}
+
 /**
  * The current canvas revision, from the durable event log — the single
  * authority. Reads a small window rather than exactly one row and takes the
@@ -66,16 +85,21 @@ export const CANVAS_ARTIFACT_FILENAME = "canvas.html";
 // Latest canvas draw's full data (rev + armed contract) — same bounded event
 // query as latestCanvasRev; used by read_canvas(manifestOnly) so an inheriting
 // agent learns what the browser is currently enforcing.
-async function latestCanvasEventData(catalog: any, sessionId: string): Promise<{ rev: number; responseContract?: Record<string, any> }> {
+async function latestCanvasEventData(catalog: any, sessionId: string, slot = 1): Promise<{ rev: number; responseContract?: Record<string, any> }> {
     // No empty-coerce on failure: a transient read error that reads as "no
     // canvas" would mint rev 1 over a live rev-12 canvas (clients' monotonic
     // guards then discard the draw while the tool reports success). Callers
     // route the throw to a structured { error }.
+    //
+    // Window 30, not 5: five interleaved slots can push one slot's latest
+    // draw well past a five-event window. The session_canvases table is the
+    // fast path; this scan is the durable fallback.
     const rows = await catalog.getSessionEventsBefore(
-        sessionId, Number.MAX_SAFE_INTEGER, 5, ["session.canvas_updated"],
+        sessionId, Number.MAX_SAFE_INTEGER, 30, ["session.canvas_updated"],
     );
     let latest: { rev: number; responseContract?: Record<string, any> } = { rev: 0 };
     for (const row of rows || []) {
+        if (eventSlot(row) !== slot) continue;
         const rev = Number((row?.data as any)?.rev);
         if (Number.isFinite(rev) && Number.isInteger(rev) && rev > latest.rev) {
             latest = { rev, responseContract: (row?.data as any)?.responseContract };
@@ -84,12 +108,20 @@ async function latestCanvasEventData(catalog: any, sessionId: string): Promise<{
     return latest;
 }
 
-async function latestCanvasRev(catalog: any, sessionId: string): Promise<number> {
+async function latestCanvasRev(catalog: any, sessionId: string, slot = 1): Promise<number> {
+    // Table first (migration 0045); event scan as the durable fallback for
+    // rows the table has not seen (legacy sessions, a missed upsert).
+    try {
+        const rows = await catalog.getSessionCanvases?.(sessionId);
+        const hit = (rows || []).find((r: any) => Number(r.slot) === slot);
+        if (hit && Number(hit.latestRev) > 0) return Number(hit.latestRev);
+    } catch { /* fall through to the event scan */ }
     const rows = await catalog.getSessionEventsBefore(
-        sessionId, Number.MAX_SAFE_INTEGER, 5, ["session.canvas_updated"],
+        sessionId, Number.MAX_SAFE_INTEGER, 30, ["session.canvas_updated"],
     );
     let latest = 0;
     for (const row of rows || []) {
+        if (eventSlot(row) !== slot) continue;
         const rev = Number((row?.data as any)?.rev);
         if (Number.isFinite(rev) && rev > latest && Number.isInteger(rev)) latest = rev;
     }
@@ -1356,12 +1388,13 @@ export function registerActivities(
         // Same-turn draw serialization: parallel draw_canvas calls in one
         // assistant message would otherwise race the derive-write-record
         // section and mint duplicate revisions.
-        async function latestCanvasDataRev(catalog: any, sessionId: string): Promise<number> {
+        async function latestCanvasDataRev(catalog: any, sessionId: string, slot = 1): Promise<number> {
     const rows = await catalog.getSessionEventsBefore(
-        sessionId, Number.MAX_SAFE_INTEGER, 5, ["session.canvas_data"],
+        sessionId, Number.MAX_SAFE_INTEGER, 30, ["session.canvas_data"],
     );
     let latest = 0;
     for (const row of rows || []) {
+        if (eventSlot(row) !== slot) continue;
         const rev = Number((row as any)?.data?.dataRev);
         if (Number.isFinite(rev) && rev > latest && Number.isInteger(rev)) latest = rev;
     }
@@ -2225,16 +2258,22 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             // session-proxy's generic onEvent persister treats
             // canvas_updated as already-persisted (see EPHEMERAL_TYPES); the
             // handler's opts.onEvent emit is the live-push half only.
-            ...(input.parentSessionId ? {} : {
-                drawCanvas: async (args: { html?: string; fromArtifact?: { sessionId?: string; filename: string; expectedSha256?: string }; note?: string; responseContract?: Record<string, any> }) => {
+            // Every session gets the canvas bridge — root, sub-agent, and
+            // sub-sub-agent alike. Each draws its OWN canvases; there is no
+            // cross-session canvas access here, so a child cannot touch its
+            // parent's surface any more than a stranger's.
+            ...({
+                drawCanvas: async (args: { html?: string; fromArtifact?: { sessionId?: string; filename: string; expectedSha256?: string }; note?: string; responseContract?: Record<string, any>; slot?: number; name?: string }) => {
                     if (!artifactStore) return { error: "this worker has no artifact store" };
                     if (!catalog) return { error: "canvas requires the CMS catalog" };
+                    const slot = normalizeCanvasSlot(args.slot);
+                    if (slot === null) return { error: "slot must be an integer 1-5" };
+                    const rawName = args.name === undefined ? undefined : String(args.name).trim();
+                    if (rawName !== undefined && rawName.length > 60) {
+                        return { error: "name must be 60 characters or fewer" };
+                    }
                     const run = canvasDrawChain.then(async () => {
-                        const row = await catalog.getSession(input.sessionId).catch(() => null);
-                        if ((row as any)?.parentSessionId) {
-                            return { error: "the canvas is only available on root sessions" };
-                        }
-                        const rev = (await latestCanvasRev(catalog, input.sessionId)) + 1;
+                        const rev = (await latestCanvasRev(catalog, input.sessionId, slot)) + 1;
                         // Source resolution. fromArtifact pulls bytes store-side —
                         // the same trust stance as read_artifact/write_artifact's
                         // cross-session paths (the artifact layer is worker-trusted);
@@ -2296,7 +2335,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         const app = canvasAppCard(extraction.manifest);
                         const note = args.note ? String(args.note) : undefined;
                         await artifactStore.uploadArtifact(
-                            input.sessionId, CANVAS_ARTIFACT_FILENAME, html, "text/html",
+                            input.sessionId, canvasArtifactFilename(slot), html, "text/html",
                             // Pinned on EVERY draw, not just the first: uploads
                             // replace artifact metadata wholesale, so a pin set
                             // once at rev 1 was silently erased by rev 2.
@@ -2312,14 +2351,26 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                             eventType: "session.canvas_updated",
                             data: {
                                 rev,
+                                slot,
+                                ...(rawName !== undefined ? { name: rawName } : {}),
                                 sizeBytes,
                                 ...(note ? { note } : {}),
                                 ...(effectiveContract ? { responseContract: effectiveContract } : {}),
                                 ...(source ? { source } : {}),
                             },
                         }], workerNodeId);
+                        // The per-slot cache (migration 0045). Non-fatal on
+                        // purpose: the event above is durable, and the next
+                        // draw falls back to the event scan if this row is
+                        // missing — failing the draw over a cache write would
+                        // invert the dependency.
+                        try {
+                            await catalog.upsertSessionCanvas?.(input.sessionId, slot, rawName ?? null, rev, sizeBytes);
+                        } catch { /* self-heals on the next draw */ }
                         return {
                             rev,
+                            slot,
+                            ...(rawName !== undefined ? { name: rawName } : {}),
                             sizeBytes,
                             ...(source ? { source } : {}),
                             ...(app ? { app } : {}),
@@ -2330,17 +2381,15 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     canvasDrawChain = run.then(() => undefined, () => undefined);
                     return run;
                 },
-                updateCanvas: async (args: { data: Record<string, any>; note?: string }) => {
+                updateCanvas: async (args: { data: Record<string, any>; note?: string; slot?: number }) => {
                     if (!catalog) return { error: "canvas requires the CMS catalog" };
+                    const slot = normalizeCanvasSlot(args.slot);
+                    if (slot === null) return { error: "slot must be an integer 1-5" };
                     const run = canvasDrawChain.then(async () => {
-                        const row = await catalog.getSession(input.sessionId).catch(() => null);
-                        if ((row as any)?.parentSessionId) {
-                            return { error: "the canvas is only available on root sessions" };
+                        if ((await latestCanvasRev(catalog, input.sessionId, slot)) === 0) {
+                            return { error: `no canvas has been drawn in slot ${slot} — draw_canvas first; ticks patch an existing page` };
                         }
-                        if ((await latestCanvasRev(catalog, input.sessionId)) === 0) {
-                            return { error: "no canvas has been drawn on this session — draw_canvas first; ticks patch an existing page" };
-                        }
-                        const dataRev = (await latestCanvasDataRev(catalog, input.sessionId)) + 1;
+                        const dataRev = (await latestCanvasDataRev(catalog, input.sessionId, slot)) + 1;
                         const sizeBytes = Buffer.byteLength(JSON.stringify(args.data), "utf8");
                         // The payload rides the durable event — it IS the
                         // replay source for cold loads; no artifact write.
@@ -2348,19 +2397,40 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                             eventType: "session.canvas_data",
                             data: {
                                 dataRev,
+                                slot,
                                 sizeBytes,
                                 payload: args.data,
                                 ...(args.note ? { note: String(args.note) } : {}),
                             },
                         }], workerNodeId);
-                        return { dataRev, sizeBytes };
+                        return { dataRev, slot, sizeBytes };
                     }).catch((err: any) => ({ error: err?.message || String(err) }));
                     canvasDrawChain = run.then(() => undefined, () => undefined);
                     return run;
                 },
-                readCanvas: async (args: { offset?: number; maxBytes?: number; manifestOnly?: boolean }) => {
+                // Bring an ALREADY-DRAWN canvas to the user's screen without
+                // redrawing it: no bytes, no new rev, nothing marked unseen.
+                // The portal routes the event through the same flip guards a
+                // draw uses (active session, freshness, per-slot opt-out).
+                showCanvas: async (args: { slot?: number }) => {
+                    if (!catalog) return { error: "canvas requires the CMS catalog" };
+                    const slot = normalizeCanvasSlot(args.slot);
+                    if (slot === null) return { error: "slot must be an integer 1-5" };
+                    const rev = await latestCanvasRev(catalog, input.sessionId, slot);
+                    if (rev === 0) {
+                        return { error: `nothing has been drawn in slot ${slot} — draw_canvas first; show_canvas only presents an existing canvas` };
+                    }
+                    await catalog.recordEvents(input.sessionId, [{
+                        eventType: "session.canvas_presented",
+                        data: { slot, rev },
+                    }], workerNodeId);
+                    return { presented: true, slot, rev };
+                },
+                readCanvas: async (args: { offset?: number; maxBytes?: number; manifestOnly?: boolean; slot?: number }) => {
                     if (!artifactStore) return { error: "this worker has no artifact store" };
                     if (!catalog) return { error: "canvas requires the CMS catalog" };
+                    const slot = normalizeCanvasSlot(args.slot);
+                    if (slot === null) return { error: "slot must be an integer 1-5" };
                     try {
                         // Log FIRST: the event log is the single authority on
                         // whether a canvas exists. Orphan bytes from a crashed
@@ -2376,9 +2446,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                             // ARMED contract from the latest draw event — the
                             // pair an inheriting agent needs to interpret
                             // canvas-action messages and author ticks.
-                            const latest = await latestCanvasEventData(catalog, input.sessionId);
+                            const latest = await latestCanvasEventData(catalog, input.sessionId, slot);
                             if (latest.rev === 0) return { exists: false };
-                            const docText = await artifactStore.downloadArtifactText(input.sessionId, CANVAS_ARTIFACT_FILENAME);
+                            const docText = await artifactStore.downloadArtifactText(input.sessionId, canvasArtifactFilename(slot));
                             const extraction = extractCanvasAppManifest(docText);
                             const card = canvasAppCard(extraction.manifest);
                             // Events are writable via send_session_event with no
@@ -2395,9 +2465,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                                 ...(extraction.error ? { manifestError: extraction.error } : {}),
                             };
                         }
-                        const rev = await latestCanvasRev(catalog, input.sessionId);
+                        const rev = await latestCanvasRev(catalog, input.sessionId, slot);
                         if (rev === 0) return { exists: false };
-                        const text = await artifactStore.downloadArtifactText(input.sessionId, CANVAS_ARTIFACT_FILENAME);
+                        const text = await artifactStore.downloadArtifactText(input.sessionId, canvasArtifactFilename(slot));
                         const offset = Math.max(0, Math.floor(Number(args.offset) || 0));
                         const maxChars = Math.min(262_144, Math.max(1, Math.floor(Number(args.maxBytes) || 65_536)));
                         const content = text.slice(offset, offset + maxChars);
@@ -2456,6 +2526,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 // handler's emit is the live-push half only; recording it here
                 // too would double-insert every revision.
                 "session.canvas_updated",
+                // Same contract as canvas_updated: the showCanvas bridge
+                // records it durably itself; the emit is live-push only.
+                "session.canvas_presented",
                 // Same contract for data ticks: the updateCanvas bridge method
                 // records the event (payload inline) inside the serialized
                 // section — the generic path must not double-insert it.

@@ -682,4 +682,29 @@ describe("inline control tool execution", () => {
             { role: "system", content: "" },
         ]);
     });
+
+    it("strips null response-only fields that strict OpenAI-compatible providers reject", async () => {
+        const fakeSession = new FakeCopilotSession();
+        fakeSession._chatMessages = [
+            { role: "user", content: "hi" },
+            // What OpenAI and Azure emit and accept back, but which Fireworks
+            // rejects with "Extra inputs are not permitted, field:
+            // 'messages[N].refusal', value: None".
+            { role: "assistant", content: "hello", refusal: null, annotations: null },
+            // A real value must survive — only nulls are safe to drop.
+            { role: "assistant", content: "nope", refusal: "I cannot help with that" },
+            { role: "user", content: "bye" },
+        ];
+
+        const managed = new ManagedSession("strip-null-response-fields", fakeSession, {});
+        const result = await managed.runTurn("continue");
+
+        expect(result.type).toBe("completed");
+        expect(fakeSession._chatMessages).toEqual([
+            { role: "user", content: "hi" },
+            { role: "assistant", content: "hello" },
+            { role: "assistant", content: "nope", refusal: "I cannot help with that" },
+            { role: "user", content: "bye" },
+        ]);
+    });
 });

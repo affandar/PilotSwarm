@@ -1,6 +1,7 @@
 import { createNoAuthProvider } from "./providers/none.js";
 import { createEntraAuthProvider } from "./providers/entra.js";
 import { createDevAuthProvider } from "./providers/dev.js";
+import { createProxyAuthProvider } from "./providers/proxy.js";
 import { authorizePrincipal } from "./authz/engine.js";
 import { loadAuthorizationPolicy, resolveAuthProviderId, resolvePluginAuthConfigFromPluginDirs } from "./config.js";
 
@@ -11,6 +12,9 @@ const PROVIDERS = {
     // PORTAL_AUTH_PROVIDER=dev selects it, and its factory throws without
     // PORTAL_AUTH_DEV_ALLOW=true (see providers/dev.js).
     dev: createDevAuthProvider,
+    // Identity established by an identity-aware proxy in front of the portal.
+    // Has no browser half: the proxy signs the user in before the SPA loads.
+    proxy: createProxyAuthProvider,
 };
 
 const NO_AUTH_UNKNOWN_PRINCIPAL = Object.freeze({
@@ -91,7 +95,10 @@ export async function authenticateToken(token, req) {
     const policy = getAuthorizationPolicy();
 
     if (provider.enabled) {
-        if (!token) {
+        // A provider may establish identity from the request itself rather
+        // than from a bearer token — a proxy in front of the portal puts it in
+        // a header, and there is no token for the browser to send.
+        if (!token && !provider.authenticatesFromRequest) {
             return buildDeniedResult({
                 status: 401,
                 error: "Unauthorized",

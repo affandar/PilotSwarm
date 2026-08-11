@@ -742,8 +742,15 @@ export class PilotSwarmManagementClient {
         const hasMore = rows.length > limit;
         const last = visibleRows[visibleRows.length - 1];
 
+        // Canvas summaries ride the list DTO so the portal can mark rows on
+        // cold load without replaying events. Optional method, non-fatal:
+        // a catalog without it (tests, older DBs) just ships no canvases.
+        const canvasesById = await this._catalog!.listSessionCanvasesFor?.(visibleRows.map((r: any) => r.sessionId)).catch(() => null);
         return {
-            sessions: visibleRows.map(sessionViewFromCmsRow),
+            sessions: visibleRows.map((row: any) => ({
+                ...sessionViewFromCmsRow(row),
+                ...(canvasesById?.get(row.sessionId)?.length ? { canvases: canvasesById.get(row.sessionId) } : {}),
+            })),
             hasMore,
             ...(hasMore && last
                 ? { nextCursor: { updatedAt: last.updatedAt.getTime(), sessionId: last.sessionId } }

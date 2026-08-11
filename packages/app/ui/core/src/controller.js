@@ -1,4 +1,5 @@
 import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./commands.js";
+import { canvasKey as canvasPrefKey } from "./state.js";
 import { parseAgentSourceLink } from "./repo-links.js";
 import { importPackageFilesFromLink, readImportedPackageName } from "./repo-import.js";
 import {
@@ -2414,6 +2415,17 @@ export class PilotSwarmUiController {
         if (pendingGroupRows) {
             this.dispatch({ type: "sessions/groupsLoaded", groups: pendingGroupRows, sessions });
         }
+        // Canvas summaries ride the list rows (session_canvases join) — seed
+        // the store so rows mark on cold load, before any session is selected
+        // or any live event arrives. Never regresses what live events already
+        // know; see the canvas/seed reducer.
+        const canvasSeed = [];
+        for (const row of sessions) {
+            for (const c of Array.isArray(row?.canvases) ? row.canvases : []) {
+                canvasSeed.push({ sessionId: row.sessionId, slot: c.slot, name: c.name, latestRev: c.latestRev, sizeBytes: c.sizeBytes });
+            }
+        }
+        if (canvasSeed.length) this.dispatch({ type: "canvas/seed", entries: canvasSeed });
         this.dispatch({ type: "sessions/loaded", sessions });
         this.refreshOpenSessionOwnerFilterModal();
         const selected = this.getState().sessions.activeSessionId;
@@ -4254,9 +4266,13 @@ export class PilotSwarmUiController {
     applyCanvasUpdate(sessionId, event) {
         const rev = Number(event?.data?.rev);
         if (!sessionId || !Number.isFinite(rev) || rev <= 0) return false;
+        const rawSlot = Number(event?.data?.slot);
+        const slot = Number.isInteger(rawSlot) && rawSlot >= 1 && rawSlot <= 5 ? rawSlot : 1;
         this.dispatch({
             type: "canvas/updated",
             sessionId,
+            slot,
+            ...(typeof event?.data?.name === "string" ? { name: event.data.name } : {}),
             rev,
             note: typeof event?.data?.note === "string" ? event.data.note : "",
             sizeBytes: event?.data?.sizeBytes,
@@ -4265,7 +4281,9 @@ export class PilotSwarmUiController {
 
         const state = this.getState();
         if (sessionId !== state.sessions.activeSessionId) return true;
-        if (state.canvas.prefs[sessionId]?.optedOut) return true;
+        // The opt-out is PER SLOT: leaving one canvas by hand must not
+        // silence a different canvas's first draw.
+        if (state.canvas.prefs[canvasPrefKey(sessionId, slot)]?.optedOut) return true;
         const createdAt = event?.createdAt ? Date.parse(event.createdAt) : Number.NaN;
         if (Number.isFinite(createdAt) && Date.now() - createdAt > PRESENTED_ARTIFACT_FRESHNESS_MS) {
             return true;
@@ -4274,7 +4292,7 @@ export class PilotSwarmUiController {
         // when the mode is already "canvas", because a phone can be off its
         // canvas tab while the mode state still says canvas — the tick is
         // what brings the tab back. On desktop the repeat dispatch is a no-op.
-        this.dispatch({ type: "canvas/flip", sessionId });
+        this.dispatch({ type: "canvas/flip", sessionId, slot });
         return true;
     }
 
@@ -4337,29 +4355,55 @@ export class PilotSwarmUiController {
             return;
         }
         try {
+            // A 30-event window, not 1: five interleaved slots mean the top
+            // event only describes the most recently drawn slot. Latest per
+            // slot wins; every drawn slot gets its snapshot.
             const rows = await this.transport.getSessionEventsBefore(
-                sessionId, Number.MAX_SAFE_INTEGER, 1, ["session.canvas_updated"],
+                sessionId, Number.MAX_SAFE_INTEGER, 30, ["session.canvas_updated"],
             );
-            const top = Array.isArray(rows) ? rows[0] : null;
-            this.dispatch({
-                type: "canvas/snapshot",
-                sessionId,
-                rev: Number(top?.data?.rev) || 0,
-                note: typeof top?.data?.note === "string" ? top.data.note : "",
-                sizeBytes: top?.data?.sizeBytes,
-                responseContract: top?.data?.responseContract,
-            });
-            // The latest data tick is the page's cold-load state — replay it
-            // so a freshly loaded shell can reconstruct without the agent.
-            if ((Number(top?.data?.rev) || 0) > 0) {
+            const bySlot = new Map();
+            for (const row of Array.isArray(rows) ? rows : []) {
+                const slot = Number(row?.data?.slot) || 1;
+                const rev = Number(row?.data?.rev) || 0;
+                if (!bySlot.has(slot) || rev > (Number(bySlot.get(slot)?.data?.rev) || 0)) bySlot.set(slot, row);
+            }
+            // Always at least a slot-1 snapshot (rev 0 marks snapshotLoaded
+            // so this does not respin).
+            if (!bySlot.has(1)) bySlot.set(1, null);
+            let anyDrawn = false;
+            for (const [slot, top] of bySlot) {
+                const rev = Number(top?.data?.rev) || 0;
+                if (rev > 0) anyDrawn = true;
+                this.dispatch({
+                    type: "canvas/snapshot",
+                    sessionId,
+                    slot,
+                    rev,
+                    ...(typeof top?.data?.name === "string" ? { name: top.data.name } : {}),
+                    note: typeof top?.data?.note === "string" ? top.data.note : "",
+                    sizeBytes: top?.data?.sizeBytes,
+                    responseContract: top?.data?.responseContract,
+                });
+            }
+            // The latest data tick per slot is that page's cold-load state —
+            // replay it so a freshly loaded shell reconstructs without the
+            // agent.
+            if (anyDrawn) {
                 const dataRows = await this.transport.getSessionEventsBefore(
-                    sessionId, Number.MAX_SAFE_INTEGER, 1, ["session.canvas_data"],
+                    sessionId, Number.MAX_SAFE_INTEGER, 30, ["session.canvas_data"],
                 ).catch(() => []);
-                const tick = Array.isArray(dataRows) ? dataRows[0] : null;
-                if (tick?.data?.dataRev) {
+                const tickBySlot = new Map();
+                for (const row of Array.isArray(dataRows) ? dataRows : []) {
+                    const slot = Number(row?.data?.slot) || 1;
+                    const dr = Number(row?.data?.dataRev) || 0;
+                    if (!tickBySlot.has(slot) || dr > (Number(tickBySlot.get(slot)?.data?.dataRev) || 0)) tickBySlot.set(slot, row);
+                }
+                for (const [slot, tick] of tickBySlot) {
+                    if (!tick?.data?.dataRev) continue;
                     this.dispatch({
                         type: "canvas/data",
                         sessionId,
+                        slot,
                         dataRev: Number(tick.data.dataRev),
                         payload: tick.data.payload,
                         note: typeof tick.data.note === "string" ? tick.data.note : "",
@@ -4369,6 +4413,27 @@ export class PilotSwarmUiController {
         } catch {
             // Leave snapshotLoaded unset — the next selection retries.
         }
+    }
+
+    /**
+     * An agent asked to PRESENT an already-drawn canvas — no bytes, no rev,
+     * nothing marked unseen. Same guards as a draw's auto-flip: only the
+     * active session, only a fresh event (a reconnect replay must not yank
+     * the view), and the user's manual dismissal of that slot still wins.
+     */
+    applyCanvasPresented(sessionId, event) {
+        const rawSlot = Number(event?.data?.slot);
+        const slot = Number.isInteger(rawSlot) && rawSlot >= 1 && rawSlot <= 5 ? rawSlot : 1;
+        if (!sessionId) return false;
+        const state = this.getState();
+        if (sessionId !== state.sessions.activeSessionId) return false;
+        if (state.canvas.prefs[canvasPrefKey(sessionId, slot)]?.optedOut) return false;
+        const createdAt = event?.createdAt ? Date.parse(event.createdAt) : Number.NaN;
+        if (Number.isFinite(createdAt) && Date.now() - createdAt > PRESENTED_ARTIFACT_FRESHNESS_MS) {
+            return false;
+        }
+        this.dispatch({ type: "canvas/flip", sessionId, slot });
+        return true;
     }
 
     mergeSessionEvent(sessionId, event) {
@@ -4429,10 +4494,14 @@ export class PilotSwarmUiController {
         if (event.eventType === "session.canvas_updated") {
             this.applyCanvasUpdate(sessionId, event);
         }
+        if (event.eventType === "session.canvas_presented") {
+            this.applyCanvasPresented(sessionId, event);
+        }
         if (event.eventType === "session.canvas_data") {
             this.dispatch({
                 type: "canvas/data",
                 sessionId,
+                slot: Number(event?.data?.slot) || 1,
                 dataRev: Number(event?.data?.dataRev),
                 payload: event?.data?.payload,
                 note: typeof event?.data?.note === "string" ? event.data.note : "",
@@ -7449,7 +7518,15 @@ export class PilotSwarmUiController {
 
     applyPaneVisualScrollOffset(pane, offset, options = {}, state = this.getState()) {
         const maxOffset = this.getPaneMaxScrollOffset(pane, state);
-        const nextOffset = Math.max(0, Math.min(Number(offset) || 0, maxOffset));
+        // fromViewport: the offset was measured off the real DOM (scrollTop /
+        // row height), which the browser has already bounded. Clamping it
+        // against the CONTROLLER's max — counted in TUI render-metric rows, a
+        // different unit — teleported the pane on the first wheel tick: one
+        // 100px notch re-applied as metric-max × 16px, thousands of pixels
+        // away. The two row spaces must never clamp each other.
+        const nextOffset = options.fromViewport
+            ? Math.max(0, Number(offset) || 0)
+            : Math.max(0, Math.min(Number(offset) || 0, maxOffset));
         if (this.paneUsesStickyBottomFollow(pane, state)) {
             const followBottom = options.followBottom !== undefined
                 ? Boolean(options.followBottom)
@@ -7468,7 +7545,7 @@ export class PilotSwarmUiController {
     updatePaneScrollFromViewport(pane, offset, options = {}) {
         const state = this.getState();
         if (this.paneUsesStickyBottomFollow(pane, state)) {
-            this.applyPaneVisualScrollOffset(pane, offset, options, state);
+            this.applyPaneVisualScrollOffset(pane, offset, { ...options, fromViewport: true }, state);
             return;
         }
         this.scrollPaneTo(pane, offset);

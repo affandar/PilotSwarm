@@ -203,7 +203,7 @@ test("prefs survive a profile round-trip, reject garbage, merge by max, and prun
         settings: {
             canvasPrefs: {
                 s1: { optedOut: true, lastViewedRev: 5 },       // stale rev
-                kid: { optedOut: true, lastViewedRev: 1 },       // child — prune
+                kid: { optedOut: true, lastViewedRev: 1 },       // child — KEPT: children draw now
                 dead: { optedOut: false, lastViewedRev: 0 },     // default — prune
             },
         },
@@ -211,7 +211,9 @@ test("prefs survive a profile round-trip, reject garbage, merge by max, and prun
     assert.equal(state.canvas.prefs.s1.lastViewedRev, 7, "max-merge: the poll's stale 5 must not un-view 7");
     assert.equal(state.canvas.prefs.s1.optedOut, true);
     assert.equal(state.canvas.prefs.s9.lastViewedRev, 2, "a local-only entry survives the apply");
-    assert.equal(state.canvas.prefs.kid, undefined, "child sessions cannot have canvases");
+    // Sub-agents draw their own canvases as of multi-canvas, so a child's
+    // viewed-state is real data and must survive the apply.
+    assert.deepEqual(state.canvas.prefs.kid, { optedOut: true, lastViewedRev: 1, lastViewedDataRev: 0 });
     assert.equal(state.canvas.prefs.dead, undefined, "all-default entries store nothing");
 });
 
@@ -223,7 +225,9 @@ test("the snapshot query is definitive both ways, memoized, and selection re-arm
     const c = controllerWith({
         transport: {
             getSessionEventsBefore: async (sessionId, beforeSeq, limit, types) => {
-                assert.equal(limit, 1);
+                // 30, not 1: five interleaved slots mean the single top event
+                // only describes the most recently drawn slot.
+                assert.equal(limit, 30);
                 if (types[0] === "session.canvas_data") {
                     dataCalls += 1;
                     return [];

@@ -79,13 +79,10 @@ const SHOW_ARTIFACT_TOOL_SPEC = {
  * The canvas tools — declaration AND per-turn handler both build from these
  * specs, the same drift-proofing SHOW_ARTIFACT_TOOL_SPEC uses.
  *
- * Root sessions only. The gate is the control bridge itself: session-proxy
- * puts drawCanvas/readCanvas on the bridge only when the session has no
- * parent, and the per-turn tool list includes these tools only when the
- * bridge carries them. The static declarations below exist so the schemas
- * reach the CLI server at session create; a child's every turn re-registers
- * its tool list without them (registerTools is authoritative per turn), and
- * a child that hallucinates the call anyway hits the handler's bridge guard.
+ * Every session has them, root and sub-agent alike, and every session draws
+ * only its OWN canvases — up to five slots (canvas.html, canvas2..canvas5),
+ * each with a rev and an agent-chosen name. The parent's canvases and a
+ * child's are fully independent surfaces.
  */
 /**
  * The canvas response contract, normalized to its canonical shape or refused.
@@ -105,8 +102,9 @@ export { normalizeCanvasResponseContract } from "./canvas-app-manifest.js";
 
 const DRAW_CANVAS_TOOL_SPEC = {
     description:
-        "Replace this session's canvas — the persistent visual surface rendered live in the user's portal — "
-        + "with a complete HTML document. Root sessions only. "
+        "Replace one of this session's canvases — persistent visual surfaces rendered live in the user's portal — "
+        + "with a complete HTML document. Up to five canvases per session (slot 1-5, default 1), each with its own "
+        + "revision history and a friendly name you set. "
         + "Draw when the user asks for something visual (draw, visualize, chart this, keep a dashboard), or when an "
         + "outcome you are delivering would be GREATLY clarified by a quick graphic. Most replies need no drawing. "
         + "Drawing switches the user's view to the canvas, so draw only when that interruption is earned — and never "
@@ -128,6 +126,14 @@ const DRAW_CANVAS_TOOL_SPEC = {
             note: {
                 type: "string",
                 description: "Optional one-line caption for this revision (shown in the canvas header and activity feed).",
+            },
+            slot: {
+                type: "number",
+                description: "Which canvas to draw, 1-5. Default 1. Slots are independent surfaces with their own revisions.",
+            },
+            name: {
+                type: "string",
+                description: "Friendly name for this canvas, shown beside its revision (e.g. 'Poker table', 'Metrics'). Max 60 chars; omitting it keeps the current name.",
             },
             fromArtifact: {
                 type: "object",
@@ -168,7 +174,7 @@ const DRAW_CANVAS_TOOL_SPEC = {
 
 const UPDATE_CANVAS_TOOL_SPEC = {
     description:
-        "Send a JSON data tick to the canvas page WITHOUT replacing the document. Root sessions only. "
+        "Send a JSON data tick to a canvas page WITHOUT replacing the document (slot 1-5, default 1). "
         + "Use when the canvas's CONTENT changes but its layout does not — dashboards, tickers, watchers: "
         + "draw the shell once with draw_canvas (declare data.example in the contract and register a message "
         + "listener calling one idempotent applyData(data)), then tick with update_canvas. The payload arrives "
@@ -188,15 +194,37 @@ const UPDATE_CANVAS_TOOL_SPEC = {
                 type: "string",
                 description: "Optional one-line caption for the activity feed.",
             },
+            slot: {
+                type: "number",
+                description: "Which canvas to tick, 1-5. Default 1.",
+            },
         },
         required: ["data"],
     },
     handler: async () => "stub",
 } as const;
 
+const SHOW_CANVAS_TOOL_SPEC = {
+    description:
+        "Bring one of this session's ALREADY-DRAWN canvases to the user's screen without redrawing it "
+        + "(slot 1-5, default 1). No bytes, no new revision, and nothing is marked unseen — it only turns the "
+        + "user's view to a canvas that already exists: opening the canvas if it is closed, or switching slots "
+        + "if a different one is showing. Use it when the conversation returns to something you drew earlier. "
+        + "It respects the user's choices the same way draws do: if they dismissed that canvas this session, "
+        + "the view stays put. To change content, use draw_canvas or update_canvas instead.",
+    parameters: {
+        type: "object",
+        properties: {
+            slot: { type: "number", description: "Which canvas to present, 1-5. Default 1." },
+        },
+        required: [],
+    },
+    handler: async () => "stub",
+} as const;
+
 const READ_CANVAS_TOOL_SPEC = {
     description:
-        "Read this session's current canvas HTML back, paged. Root sessions only. "
+        "Read one of this session's canvases back as HTML, paged (slot 1-5, default 1). "
         + "Use it before iterating on an existing drawing, and after context regeneration — the canvas survives even "
         + "when your memory of drawing it does not. "
         + "Read selectively: page with offset/maxBytes rather than round-tripping a large document every turn.",
@@ -204,6 +232,7 @@ const READ_CANVAS_TOOL_SPEC = {
         type: "object",
         properties: {
             offset: { type: "number", description: "Character offset to start reading from (default 0)." },
+            slot: { type: "number", description: "Which canvas to read, 1-5. Default 1." },
             maxBytes: { type: "number", description: "Maximum characters to return (default 65536, cap 262144)." },
             manifestOnly: {
                 type: "boolean",
@@ -303,6 +332,36 @@ function sanitizeMessageContent(message: any): number {
     return normalized;
 }
 
+/**
+ * Response-only message fields that carry no information when null.
+ *
+ * OpenAI and Azure emit these and accept them coming back. Strict
+ * OpenAI-compatible endpoints do not — they validate the request schema and
+ * reject unknown keys outright instead of ignoring them. Fireworks answers
+ * `400 Extra inputs are not permitted, field: 'messages[N].refusal', value:
+ * None`, and only once the conversation is long enough for a message carrying
+ * one to re-enter the replayed history. So the provider looks healthy for
+ * several turns and then fails, which makes it easy to misread as flakiness.
+ *
+ * The same class of bug is well documented against other clients for
+ * `stream_options`, `promptCacheKey`, `service_tier`, and replayed
+ * `tool_calls[].call_id`. Stripping is safe precisely because it is limited to
+ * null values: a null `refusal` says nothing that omitting it does not.
+ */
+const NULL_ONLY_RESPONSE_FIELDS = ["refusal", "annotations", "audio", "function_call"] as const;
+
+function stripNullResponseOnlyFields(message: any): number {
+    if (!message || typeof message !== "object") return 0;
+    let stripped = 0;
+    for (const field of NULL_ONLY_RESPONSE_FIELDS) {
+        if (Object.prototype.hasOwnProperty.call(message, field) && message[field] == null) {
+            delete message[field];
+            stripped += 1;
+        }
+    }
+    return stripped;
+}
+
 function sanitizeCopilotMessagesForReplay(messages: any): number {
     if (!Array.isArray(messages)) return 0;
     let normalized = 0;
@@ -320,6 +379,7 @@ function sanitizeCopilotMessagesForReplay(messages: any): number {
         // that shape, so coerce them to the semantically-equivalent empty
         // string before sending the next turn.
         normalized += sanitizeMessageContent(message);
+        normalized += stripNullResponseOnlyFields(message);
     }
     return normalized;
 }
@@ -785,8 +845,9 @@ export class ManagedSession {
         const drawCanvasTool = defineTool("draw_canvas", DRAW_CANVAS_TOOL_SPEC);
         const updateCanvasTool = defineTool("update_canvas", UPDATE_CANVAS_TOOL_SPEC);
         const readCanvasTool = defineTool("read_canvas", READ_CANVAS_TOOL_SPEC);
+        const showCanvasTool = defineTool("show_canvas", SHOW_CANVAS_TOOL_SPEC);
 
-        return [waitTool, waitOnWorkerTool, cronTool, cronAtTool, askUserTool, reportCycleTool, listModelsTool, setSessionModelTool, regenerateContextTool, regenerateAgentTool, sendSessionMessageTool, replySessionMessageTool, showArtifactTool, drawCanvasTool, updateCanvasTool, readCanvasTool];
+        return [waitTool, waitOnWorkerTool, cronTool, cronAtTool, askUserTool, reportCycleTool, listModelsTool, setSessionModelTool, regenerateContextTool, regenerateAgentTool, sendSessionMessageTool, replySessionMessageTool, showArtifactTool, drawCanvasTool, updateCanvasTool, readCanvasTool, showCanvasTool];
     }
 
     /**
@@ -1461,10 +1522,10 @@ export class ManagedSession {
         // predicate, so a child neither sees nor can run them.
         const drawCanvasTool = defineTool("draw_canvas", {
             ...DRAW_CANVAS_TOOL_SPEC,
-            handler: async (args: { html?: string; fromArtifact?: { sessionId?: string; filename?: string; expectedSha256?: string }; note?: string; responseContract?: unknown }) => {
+            handler: async (args: { html?: string; fromArtifact?: { sessionId?: string; filename?: string; expectedSha256?: string }; note?: string; responseContract?: unknown; slot?: number; name?: string }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("draw_canvas");
                 if (typeof (controlBridge as any)?.drawCanvas !== "function") {
-                    return "Error: draw_canvas is only available on root sessions.";
+                    return "Error: the canvas bridge is unavailable on this session.";
                 }
                 if (args?.html !== undefined && typeof args.html !== "string") {
                     return "Error: html must be a string (the complete document; empty string clears).";
@@ -1495,6 +1556,8 @@ export class ManagedSession {
                 const contractResult = html === "" ? {} : normalizeCanvasContractShared(args?.responseContract);
                 if (contractResult.error) return `Error: invalid responseContract: ${contractResult.error}`;
                 const result = await (controlBridge as any).drawCanvas({
+                    ...(args?.slot !== undefined ? { slot: args.slot } : {}),
+                    ...(args?.name !== undefined ? { name: String(args.name) } : {}),
                     ...(html !== undefined ? { html } : {}),
                     ...(fromArtifact ? { fromArtifact: {
                         ...(fromArtifact.sessionId ? { sessionId: String(fromArtifact.sessionId) } : {}),
@@ -1516,6 +1579,8 @@ export class ManagedSession {
                 return JSON.stringify({
                     drawn: true,
                     rev: result.rev,
+                    ...(result.slot ? { slot: result.slot } : {}),
+                    ...(result.name !== undefined ? { name: result.name } : {}),
                     sizeBytes: result.sizeBytes,
                     // The interface card: manifest summary + the EFFECTIVE
                     // contract (post-precedence, post-normalization — what the
@@ -1538,13 +1603,13 @@ export class ManagedSession {
 
         const updateCanvasTool = defineTool("update_canvas", {
             ...UPDATE_CANVAS_TOOL_SPEC,
-            handler: async (args: { data?: unknown; note?: string }) => {
+            handler: async (args: { data?: unknown; note?: string; slot?: number }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("update_canvas");
                 if (Array.isArray(args?.data)) {
                     return "Error: data must be a JSON object (the page's whole-state payload), not an array — wrap it: { items: [...] }.";
                 }
                 if (typeof (controlBridge as any)?.updateCanvas !== "function") {
-                    return "Error: update_canvas is only available on root sessions.";
+                    return "Error: the canvas bridge is unavailable on this session.";
                 }
                 if (!args?.data || typeof args.data !== "object") {
                     return "Error: data must be a JSON object (the whole-state payload for the page's applyData).";
@@ -1555,7 +1620,7 @@ export class ManagedSession {
                     return `Error: data tick is ${sizeBytes} bytes serialized; the cap is 32768. Aggregate before sending, or redraw if the shape truly grew.`;
                 }
                 const note = args?.note ? String(args.note) : undefined;
-                const result = await (controlBridge as any).updateCanvas({ data: args.data, note });
+                const result = await (controlBridge as any).updateCanvas({ data: args.data, note, ...(args?.slot !== undefined ? { slot: args.slot } : {}) });
                 if (result?.error) return `Error: could not update the canvas: ${result.error}`;
                 return JSON.stringify({
                     updated: true,
@@ -1566,17 +1631,33 @@ export class ManagedSession {
             },
         });
 
+        const showCanvasTool = defineTool("show_canvas", {
+            ...SHOW_CANVAS_TOOL_SPEC,
+            handler: async (args: { slot?: number }) => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("show_canvas");
+                if (typeof (controlBridge as any)?.showCanvas !== "function") {
+                    return "Error: the canvas bridge is unavailable on this session.";
+                }
+                const result = await (controlBridge as any).showCanvas({
+                    ...(args?.slot !== undefined ? { slot: args.slot } : {}),
+                });
+                if (result?.error) return `Error: could not present the canvas: ${result.error}`;
+                return JSON.stringify({ presented: true, slot: result.slot, rev: result.rev,
+                    reminder: "The user's view turns to that canvas (unless they dismissed it). Nothing was redrawn." });
+            },
+        });
         const readCanvasTool = defineTool("read_canvas", {
             ...READ_CANVAS_TOOL_SPEC,
-            handler: async (args: { offset?: number; maxBytes?: number; manifestOnly?: boolean }) => {
+            handler: async (args: { offset?: number; maxBytes?: number; manifestOnly?: boolean; slot?: number }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("read_canvas");
                 if (typeof (controlBridge as any)?.readCanvas !== "function") {
-                    return "Error: read_canvas is only available on root sessions.";
+                    return "Error: the canvas bridge is unavailable on this session.";
                 }
                 const result = await (controlBridge as any).readCanvas({
                     offset: args?.offset,
                     maxBytes: args?.maxBytes,
                     manifestOnly: Boolean(args?.manifestOnly),
+                    ...(args?.slot !== undefined ? { slot: args.slot } : {}),
                 });
                 if (result?.error) return `Error: could not read the canvas: ${result.error}`;
                 if (!result?.exists) return "No canvas has been drawn on this session yet.";
@@ -2078,7 +2159,7 @@ export class ManagedSession {
         });
 
         const SYSTEM_TOOL_NAMES = new Set([
-    "update_canvas","wait", "wait_on_worker", "cron", "cron_at", "ask_user", "report_cycle", "list_available_models", "set_session_model", "send_session_message", "reply_session_message", "show_artifact", "draw_canvas", "read_canvas", "spawn_agent", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "delete_agent"]);
+    "update_canvas","wait", "wait_on_worker", "cron", "cron_at", "ask_user", "report_cycle", "list_available_models", "set_session_model", "send_session_message", "reply_session_message", "show_artifact", "draw_canvas", "read_canvas", "show_canvas", "spawn_agent", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "delete_agent"]);
 
         // Merge user tools with system tools
         const userTools = this.config.tools ?? [];
@@ -2121,7 +2202,7 @@ export class ManagedSession {
         // the schema. Gate both halves on the same list so there is no tool
         // that exists-but-is-hidden in an ordinary session.
         const isManagerSession = holdsManagerBundle(this.config.agentIdentity);
-        const mutatingSystemToolNames = new Set(["send_session_message", "reply_session_message", "draw_canvas",
+        const mutatingSystemToolNames = new Set(["send_session_message", "reply_session_message", "draw_canvas", "show_canvas",
     "update_canvas"]);
         const systemToolsForTurn: Tool<any>[] = isServiceSession ? [] : [
             waitTool,
@@ -2149,6 +2230,7 @@ export class ManagedSession {
             drawCanvasTool,
             updateCanvasTool,
             readCanvasTool,
+            showCanvasTool,
         ].filter((tool: any) => !isReadOnlyTuner || !mutatingSystemToolNames.has(tool.name));
         const subAgentToolsForTurn = isServiceSession
             ? []

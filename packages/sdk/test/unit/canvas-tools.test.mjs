@@ -1,20 +1,19 @@
 /**
  * The canvas tools' wiring contract — every quiet failure mode pinned.
  *
- * Shaped by the adversarial review of the first cut, which found the original
- * gating model broken: declarations reach the CLI through session-manager's
- * sessionConfig.tools chokepoint (registerTools only refreshes the handler
- * map), so per-turn exclusion alone left children SEEING tools whose calls
- * the CLI would silently drop — a hang, not an error. The corrected model:
+ * The model as of multi-canvas: EVERY session has the tools — root,
+ * sub-agent, sub-sub-agent — and each draws only its OWN canvases, up to five
+ * slots (canvas.html, canvas2..canvas5), each slot with its own revision
+ * sequence and an agent-chosen name. There is no root gate any more:
  *
- *   - DECLARATIONS are filtered off child sessions in session-manager, from
- *     the catalog row's parentSessionId (the authority).
- *   - HANDLERS are registered on every session, root or child, and refuse
- *     with a clear message when the bridge lacks the canvas methods — the
- *     worst residual case is a refusal, never a hang.
+ *   - DECLARATIONS ride sessionConfig.tools for every session.
+ *   - HANDLERS are registered every turn and refuse with a clear message when
+ *     the bridge is absent (direct mode) — a refusal, never a hang.
  *   - The BRIDGE persists the canvas_updated event itself, awaited, inside a
  *     serialized derive→write→record section, and the generic event persister
  *     lists canvas_updated as already-persisted. One delivery path.
+ *   - Revs come from the session_canvases table first (migration 0045), with
+ *     a slot-filtered 30-event scan as the durable fallback.
  *
  * Run: node --test test/unit/canvas-tools.test.mjs
  */
@@ -41,12 +40,15 @@ test("both canvas tools are declared to the model", () => {
     // html is no longer hard-required — fromArtifact is the alternate source
     // and the handler enforces exactly-one (schema XOR is not model-reliable).
     assert.deepEqual(draw.parameters.required, []);
-    assert.match(draw.description, /root sessions only/i);
+    assert.match(draw.description, /slot 1-5/i, "the model learns about slots from the description");
+    assert.match(draw.description, /friendly name/i);
     assert.match(draw.description, /do not paste canvas links/i);
+    assert.ok(draw.parameters.properties.slot, "slot param missing");
+    assert.ok(draw.parameters.properties.name, "name param missing");
 
     const read = declaredTool("read_canvas");
     assert.ok(read, "read_canvas missing from systemToolDefs()");
-    assert.deepEqual(Object.keys(read.parameters.properties).sort(), ["manifestOnly", "maxBytes", "offset"]);
+    assert.deepEqual(Object.keys(read.parameters.properties).sort(), ["manifestOnly", "maxBytes", "offset", "slot"]);
 });
 
 test("declaration and handler share one spec object, both tools", () => {
@@ -56,32 +58,37 @@ test("declaration and handler share one spec object, both tools", () => {
     }
 });
 
-test("the DECLARATION half of the root gate lives in session-manager, off the catalog row", () => {
-    // This is the finding-1 fix: the chokepoint where declarations reach the
-    // CLI must filter canvas tools for child sessions, or children see tools
-    // whose calls hang. The predicate is the catalog row, not activity input.
-    assert.match(SM, /canvasToolNames = new Set\(\["draw_canvas", "update_canvas", "read_canvas"\]\)/);
-    assert.match(SM, /isChildSession = Boolean\(\(catalogRow as any\)\?\.parentSessionId\)/);
-    assert.match(SM, /!isChildSession \|\| !canvasToolNames\.has\(tool\.name\)/);
+test("sub-agents are NOT filtered out of the canvas declarations", () => {
+    // The root gate is gone by design: children draw their own canvases. The
+    // old filter silently un-declaring the tools for child sessions must not
+    // return — a child that cannot see the tools cannot draw.
+    assert.ok(!/canvasToolNames/.test(SM), "the child declaration filter must stay deleted");
+    assert.ok(!/!isChildSession \|\| !canvasToolNames/.test(SM));
 });
 
 test("the HANDLER half is registered on every session and refuses instead of hanging", () => {
     // Per-turn registration is unconditional — a declared tool with no
     // handler is a silent drop in the CLI. The refusal is the guard.
-    assert.match(MS, /drawCanvasTool,\n\s*updateCanvasTool,\n\s*readCanvasTool,\n\s*\]\.filter/,
+    assert.match(MS, /drawCanvasTool,\n\s*updateCanvasTool,\n\s*readCanvasTool,\n\s*showCanvasTool,\n\s*\]\.filter/,
         "canvas tools must be unconditionally in systemToolsForTurn");
     assert.ok(!/\(controlBridge as any\)\?\.drawCanvas \? \[drawCanvasTool/.test(MS),
         "the old bridge-conditional registration must be gone");
-    assert.match(MS, /draw_canvas is only available on root sessions/);
-    assert.match(MS, /read_canvas is only available on root sessions/);
+    // The refusal names the real condition (no bridge), not a root-only rule
+    // that no longer exists.
+    assert.match(MS, /the canvas bridge is unavailable on this session/);
+    assert.ok(!/only available on root sessions/.test(MS), "root-only wording must be gone");
 });
 
-test("the bridge is gated on execution input AND re-checks the catalog row", () => {
-    // input.parentSessionId is absent on frozen pre-1.0.32 orchestration
-    // versions, so the method itself re-checks the row — the authority.
-    assert.match(SP, /\.\.\.\(input\.parentSessionId \? \{\} : \{\s*\n\s*drawCanvas/);
-    assert.match(SP, /getSession\(input\.sessionId\)\.catch\(\(\) => null\);\s*\n\s*if \(\(row as any\)\?\.parentSessionId\)/,
-        "drawCanvas must refuse when the catalog row names a parent");
+test("the bridge carries the canvas methods for every session", () => {
+    // The root gate is deleted on both of its old layers: the spread that
+    // withheld the methods from children, and the in-body catalog re-check.
+    assert.ok(!/input\.parentSessionId \? \{\} : \{\s*\n\s*drawCanvas/.test(SP),
+        "the parent-gated spread must stay deleted");
+    assert.ok(!/the canvas is only available on root sessions/.test(SP),
+        "the in-body root refusal must stay deleted");
+    // Slot validation is the new front door.
+    assert.match(SP, /slot must be an integer 1-5/);
+    assert.match(SP, /canvasArtifactFilename\(slot\)/);
 });
 
 test("draw is atomic: derive→write→record in one awaited, serialized section", () => {
@@ -130,10 +137,12 @@ test("every draw pins; there is no first-draw-only pin to be erased by the secon
     assert.ok(!/setArtifactPinned/.test(block), "pinning is part of the upload, not a separate racy call");
 });
 
-test("rev derivation is hardened: max of a window of VALID revs, from the log only", () => {
+test("rev derivation: table first, slot-filtered 30-event scan as the durable fallback", () => {
     assert.match(SP, /async function latestCanvasRev/);
-    assert.match(SP, /Number\.MAX_SAFE_INTEGER, 5, \["session\.canvas_updated"\]/,
-        "a window, not one row — one garbage event must not reset the sequence");
+    assert.match(SP, /getSessionCanvases\?\.\(sessionId\)/, "the 0045 table is the fast path");
+    assert.match(SP, /Number\.MAX_SAFE_INTEGER, 30, \["session\.canvas_updated"\]/,
+        "a WIDE window — five interleaved slots push a slot's latest past five events");
+    assert.match(SP, /eventSlot\(row\) !== slot/, "the scan filters by slot");
     assert.match(SP, /Number\.isFinite\(rev\) && rev > latest && Number\.isInteger\(rev\)/);
 });
 
@@ -213,10 +222,10 @@ test("update_canvas is declared, root-gated everywhere, and never interrupts", (
     const tool = declaredTool("update_canvas");
     assert.ok(tool, "update_canvas missing from systemToolDefs()");
     assert.deepEqual(tool.parameters.required, ["data"]);
-    assert.match(tool.description, /Root sessions only/i);
+    assert.match(tool.description, /slot 1-5/i);
     assert.match(tool.description, /no view\s+flip/i, "ticks must advertise they never steal the screen");
     assert.match(tool.description, /DO mark the canvas unseen/i, "and that they light the badge");
-    assert.match(MS, /update_canvas is only available on root sessions/);
+    assert.ok(tool.parameters.properties.slot, "slot param missing");
     // Tuner may never tick; children never see it.
     for (const src of [MS, SM]) {
         assert.match(/mutatingSystemToolNames = new Set\(\[[^\]]*\]\)/.exec(src)[0], /"update_canvas"/);
@@ -277,7 +286,7 @@ test("the draw tool result is the interface card, never the bytes", () => {
 test("read_canvas manifestOnly returns the card plus the ARMED contract", () => {
     const read = declaredTool("read_canvas");
     assert.ok(read.parameters.properties.manifestOnly, "manifestOnly param missing");
-    assert.match(SP, /latestCanvasEventData\(catalog, input\.sessionId\)/);
+    assert.match(SP, /latestCanvasEventData\(catalog, input\.sessionId, slot\)/);
     // The armed contract re-passes the normalizer (events are writable
     // unvalidated via send_session_event) before riding into context.
     assert.match(SP, /\.\.\.\(armed\.contract \? \{ responseContract: armed\.contract \} : \{\}\)/);
@@ -312,7 +321,36 @@ test("second-pass review fixes: rev reads fail loud, armed contracts renormalize
     // the normalizer before riding a cheap read into context.
     assert.match(SP, /const armed = normalizeCanvasResponseContract\(latest\.responseContract\)/);
     // Ticks against a never-drawn canvas refuse instead of badging a blank.
-    assert.match(SP, /no canvas has been drawn on this session — draw_canvas first/);
+    assert.match(SP, /no canvas has been drawn in slot \$\{slot\} — draw_canvas first/);
     // Arrays are not ticks.
     assert.match(MS, /data must be a JSON object .+not an array/);
+});
+
+// ─── show_canvas: present without redrawing ──────────────────────
+
+test("show_canvas is declared, slot-aware, and honest about what it does", () => {
+    const tool = declaredTool("show_canvas");
+    assert.ok(tool, "show_canvas missing from systemToolDefs()");
+    assert.ok(tool.parameters.properties.slot, "slot param missing");
+    assert.deepEqual(tool.parameters.required, []);
+    assert.match(tool.description, /without redrawing/i);
+    assert.match(tool.description, /nothing is marked unseen/i);
+});
+
+test("the bridge presents only what exists, durably, with no new rev", () => {
+    const block = SP.slice(SP.indexOf("showCanvas: async"), SP.indexOf("readCanvas: async"));
+    // Refuses an undrawn slot rather than flipping to a blank pane.
+    assert.match(block, /nothing has been drawn in slot \$\{slot\}/);
+    // Emits the durable presented event with slot + CURRENT rev — no rev mint.
+    assert.match(block, /session\.canvas_presented/);
+    assert.ok(!/rev \+ 1|rev\+1/.test(block), "presenting must never mint a revision");
+    // The generic persister must skip it — the bridge already recorded it.
+    const ephemeral = /EPHEMERAL_TYPES = new Set\(\[[\s\S]*?\]\);/.exec(SP)[0];
+    assert.match(ephemeral, /"session\.canvas_presented"/);
+});
+
+test("presenting is a tuner-blocked mutation and a first-class system tool", () => {
+    for (const src of [MS, SM]) {
+        assert.match(/mutatingSystemToolNames = new Set\(\[[^\]]*\]\)/.exec(src)[0], /"show_canvas"/);
+    }
 });

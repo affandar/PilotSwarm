@@ -266,7 +266,15 @@ describe("portal browser contracts", () => {
         assertIncludes(webApp, 'type: "code"', "portal chat renderer should recognize code fence blocks");
         assertIncludes(webApp, "ps-chat-code-block", "portal chat renderer should render code fences with a dedicated code block style");
         assertIncludes(webApp, "controller.adjustSessionPaneSplit", "web app should support resizing the session list vertically");
-        assertIncludes(webApp, "controller.adjustActivityPaneSplit", "web app should support resizing the inspector/activity split vertically");
+        // The portal seam is pixel-continuous (ui/diagnosticsSplitAdjust); the
+        // row-quantized adjustActivityPaneSplit stays TUI-only. Pinning the
+        // dispatch AND the minmax template catches both halves regressing.
+        assertIncludes(webApp, 'type: "ui/diagnosticsSplitAdjust"', "web app should support resizing the inspector/activity split vertically");
+        // minmax(0px, ...) — zero ON PURPOSE: either pane can be dragged
+        // fully shut and pulled back open with the same seam (field request).
+        // The clamp living in the grid template, not in legacy row-collapse
+        // logic, is the contract.
+        assertIncludes(webApp, "minmax(0px, calc(50% +", "the diagnostics split must clamp via minmax, with full collapse allowed");
         assertIncludes(layout, "sessionPaneAdjust", "layout computation should persist vertical session-pane adjustments");
         assertIncludes(state, "normalizeStoredLayoutAdjustments", "shared state should normalize persisted pane-size adjustments");
         assertIncludes(state, "themeId: getTheme(themeId)?.id || DEFAULT_THEME_ID", "shared initial state should honor persisted theme ids and fall back when a saved theme no longer ships");

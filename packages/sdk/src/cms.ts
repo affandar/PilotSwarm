@@ -926,6 +926,11 @@ export interface FleetDirectiveRow {
 }
 
 export interface SessionCatalog {
+    /** Per-slot canvas cache (migration 0045); optional so test doubles need not implement it. */
+    upsertSessionCanvas?(sessionId: string, slot: number, name: string | null, latestRev: number, sizeBytes: number | null): Promise<void>;
+    getSessionCanvases?(sessionId: string): Promise<Array<{ slot: number; name: string; latestRev: number; sizeBytes: number | null; updatedAt: string }>>;
+    listSessionCanvasesFor?(sessionIds: string[]): Promise<Map<string, Array<{ slot: number; name: string; latestRev: number; sizeBytes: number | null }>>>;
+
     /** Create schema and tables if they don't exist. */
     initialize(): Promise<void>;
 
@@ -2005,6 +2010,72 @@ export class PgSessionCatalog implements SessionCatalog {
             `SELECT ${this.sql.fn.recordEvents}($1, $2, $3)`,
             [sessionId, JSON.stringify(events), workerNodeId ?? null],
         );
+    }
+
+    /**
+     * Per-slot canvas cache — see migration 0045. The event log stays the
+     * durable source; this is what makes per-slot revs O(1) and lets the
+     * sessions list say "has canvases" without replaying events. A missed
+     * write self-heals on the next draw (the bridge falls back to an event
+     * scan when the row is absent), so callers treat failures as non-fatal.
+     */
+    async upsertSessionCanvas(sessionId: string, slot: number, name: string | null, latestRev: number, sizeBytes: number | null): Promise<void> {
+        await this.pool.query(
+            `INSERT INTO "${this.sql.schema}".session_canvases (session_id, slot, name, latest_rev, size_bytes, updated_at)
+             VALUES ($1, $2, COALESCE($3, ''), $4, $5, now())
+             ON CONFLICT (session_id, slot) DO UPDATE SET
+                 latest_rev = GREATEST("${this.sql.schema}".session_canvases.latest_rev, EXCLUDED.latest_rev),
+                 name = CASE WHEN $3 IS NULL THEN "${this.sql.schema}".session_canvases.name ELSE EXCLUDED.name END,
+                 size_bytes = EXCLUDED.size_bytes,
+                 updated_at = now()`,
+            [sessionId, slot, name, latestRev, sizeBytes],
+        );
+    }
+
+    /**
+     * Drawn canvases for MANY sessions in one query — the sessions-list
+     * attachment. Only rows with a real rev; empty ids short-circuit.
+     */
+    async listSessionCanvasesFor(sessionIds: string[]): Promise<Map<string, Array<{ slot: number; name: string; latestRev: number; sizeBytes: number | null }>>> {
+        const ids = (sessionIds || []).map((x) => String(x || "").trim()).filter(Boolean);
+        const out = new Map<string, Array<{ slot: number; name: string; latestRev: number; sizeBytes: number | null }>>();
+        if (ids.length === 0) return out;
+        const { rows } = await this.pool.query(
+            `SELECT session_id, slot, name, latest_rev, size_bytes
+             FROM "${this.sql.schema}".session_canvases
+             WHERE session_id = ANY($1) AND latest_rev > 0
+             ORDER BY session_id, slot`,
+            [ids],
+        );
+        for (const r of rows) {
+            const list = out.get(r.session_id) || [];
+            list.push({
+                slot: Number(r.slot),
+                name: String(r.name || ""),
+                latestRev: Number(r.latest_rev) || 0,
+                sizeBytes: r.size_bytes == null ? null : Number(r.size_bytes),
+            });
+            out.set(r.session_id, list);
+        }
+        return out;
+    }
+
+    /** All drawn canvases for one session, ordered by slot. */
+    async getSessionCanvases(sessionId: string): Promise<Array<{ slot: number; name: string; latestRev: number; sizeBytes: number | null; updatedAt: string }>> {
+        const { rows } = await this.pool.query(
+            `SELECT slot, name, latest_rev, size_bytes, updated_at
+             FROM "${this.sql.schema}".session_canvases
+             WHERE session_id = $1
+             ORDER BY slot`,
+            [sessionId],
+        );
+        return rows.map((r: any) => ({
+            slot: Number(r.slot),
+            name: String(r.name || ""),
+            latestRev: Number(r.latest_rev) || 0,
+            sizeBytes: r.size_bytes == null ? null : Number(r.size_bytes),
+            updatedAt: r.updated_at instanceof Date ? r.updated_at.toISOString() : String(r.updated_at),
+        }));
     }
 
     async getSessionEvents(sessionId: string, afterSeq?: number, limit?: number, eventTypes?: string[]): Promise<SessionEvent[]> {

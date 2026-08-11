@@ -659,7 +659,11 @@ button {
   transform: none;
 }
 
+/* The content region: everything between the toolbar and the bottom of the
+   viewport. Positioned, because the phone's canvas is an absolute layer that
+   fills exactly this box (see .ps-mobile-canvas-layer). */
 .ps-workspace {
+  position: relative;
   flex: 1;
   min-height: 0;
   overflow: hidden;
@@ -681,6 +685,9 @@ button {
 }
 
 .ps-workspace-grid {
+  /* The containing block for a full-screen canvas: it covers the workspace
+     and stops at the portal header, which stays on screen as the way back. */
+  position: relative;
   display: grid;
   /* Explicit single row: implicit auto rows can size to content in some
      engines and push panes past the container, clipping the bottom. */
@@ -1125,6 +1132,11 @@ body.is-resizing-pane-y iframe {
       color-mix(in srgb, var(--ps-panel-accent, var(--ps-border)) 10%, var(--ps-surface)) 100%
     );
   margin-bottom: 0;
+  /* Narrow columns (diagnostics beside a canvas) must wrap the action
+     buttons onto a second line, not slide them out of the pane. Wide panels
+     never wrap, so nothing changes where there is room. */
+  flex-wrap: wrap;
+  row-gap: 4px;
 }
 
 .ps-panel-title {
@@ -1144,6 +1156,11 @@ body.is-resizing-pane-y iframe {
   gap: 8px;
   min-width: 0;
   margin-left: auto;
+  /* Same rule as the header itself: in a narrow diagnostics column the
+     action buttons wrap instead of sliding out of the pane. */
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  row-gap: 4px;
 }
 
 .ps-panel-title-right {
@@ -4002,8 +4019,12 @@ body.is-resizing-pane-y iframe {
     min-width: 0;
   }
 
+  /* The toolbar fills its column so the tools group (diagnostics, admin) can
+     sit at the header's right edge — margin-left:auto has no room to push in
+     a content-sized bar. The session controls stay centred: the left group
+     takes the slack on both sides of it. */
   .portal-header-slot .ps-toolbar {
-    justify-content: center;
+    width: 100%;
   }
 
   /* The toolbar row is gone from the shell — reclaim its padding, but NOT all
@@ -7218,10 +7239,76 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
   max-width: 34rem;
 }
 
-/* Full-screen phone canvas: the artifact overlay's chrome, one pane inside. */
-.ps-canvas-overlay .ps-canvas-pane {
+/* The phone's canvas: a layer filling the CONTENT REGION — the same box the
+   Main, Activity and Inspector panes get, from under the toolbar to the bottom
+   of the viewport. It used to be a fixed full-viewport overlay, which took the
+   portal header and the toolbar with it; those stay put now, and the toolbar's
+   Canvas button stays reachable. No border, no rounding, no inset: it fills
+   the region exactly. */
+.ps-mobile-canvas-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  background: var(--ps-surface);
+  overscroll-behavior: contain;
+}
+
+.ps-mobile-canvas-layer .ps-canvas-pane {
   flex: 1;
   min-height: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+/* MAXIMIZED: the same element, restyled — absolute-in-region becomes fixed
+   over the whole viewport, above the portal header and the toolbar. A class
+   swap, deliberately: moving the layer in the DOM would reload its iframe and
+   reset whatever is running on the canvas. Nothing here creates a containing
+   block for it (no transform/filter/contain on .ps-workspace or its
+   ancestors), so `fixed` really does escape the content region.
+   The safe-area padding keeps the strip — and the way back — out from under a
+   notch; the layer's BOX is still the full viewport. */
+.ps-mobile-canvas-layer.is-maximized {
+  position: fixed;
+  z-index: 70;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* One thin line: the revision left, the maximize toggle hard right. It stays
+   this height in BOTH states — full-screen is not a reason to grow chrome. */
+.ps-canvas-pane .ps-artifact-pane-bar.is-rev-strip {
+  padding: 2px 4px 2px 10px;
+  flex-wrap: nowrap;
+}
+
+/* Wider, not taller: the strip's height is the whole point, and on a phone
+   the miss risk is horizontal anyway (the same trade the old canvas viewer
+   buttons made). 16px tall is what keeps the row at the ~21px it measured
+   before the button existed — a taller target would grow every canvas's
+   chrome by more than the target is worth. */
+.ps-canvas-max-btn {
+  display: grid;
+  place-items: center;
+  margin-left: auto;
+  flex: none;
+  min-width: 44px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ps-muted);
+  cursor: pointer;
+}
+
+.ps-canvas-max-btn:hover,
+.ps-canvas-max-btn:focus-visible {
+  background: color-mix(in srgb, var(--ps-highlight-background) 22%, transparent);
+  color: var(--ps-foreground);
 }
 
 /* The right column hosts the panes AND a hidden, kept-alive canvas layer —
@@ -7241,6 +7328,149 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
   min-height: 0;
 }
 
+/* Canvas and diagnostics side by side.
+   The host stacks vertically by default because it only ever held ONE column
+   at a time — the canvas OVERLAID the inspector/activity split rather than
+   sitting beside it. They are independent columns now and share the width. */
+.ps-workspace-column-host.is-split {
+  flex-direction: row;
+}
+
+/* The canvas is an overlay (position: absolute, just below) whenever it takes
+   the whole right side. Sharing that side with diagnostics it has to be a real
+   flex item instead, or the two render on top of each other — which is exactly
+   what happened before this rule existed.
+   Only while VISIBLE: a hidden canvas is moved away by a transform rather than
+   display:none, so in flow it would still reserve a column's worth of width. */
+.ps-workspace-column-host.is-split > .ps-canvas-layer:not(.is-hidden) {
+  position: relative;
+  inset: auto;
+}
+
+/* Without an explicit basis the track gets flex-shrunk to about a pixel: a
+   drag handle nobody can hit. */
+.ps-workspace-column-host.is-split > .ps-column-resizer {
+  flex: 0 0 var(--ps-resizer-track);
+  align-self: stretch;
+}
+
+/* The canvas slot controls: arrows + a dropdown, only rendered when the
+   session has more than one drawn canvas. */
+.ps-canvas-slot-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 6px;
+}
+
+.ps-canvas-slot-select {
+  max-width: 140px;
+  font: inherit;
+  font-size: 0.82rem;
+  color: var(--ps-foreground);
+  background: transparent;
+  border: 1px solid var(--ps-border);
+  border-radius: 5px;
+  padding: 0 4px;
+  height: 20px;
+}
+
+/* The canvas marker on a session row.
+   Muted while it only says "a canvas exists" — the list is dense and every row
+   competes for the same eye. The unseen state is the one worth interrupting
+   for, so it takes the accent AND grows a filled dot: two signals, so it still
+   reads without colour. */
+.ps-session-canvas-mark {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  margin-right: 4px;
+  color: var(--ps-muted, #8b939f);
+  opacity: 0.75;
+}
+
+.ps-session-canvas-mark.is-unseen {
+  color: var(--ps-accent, #d69a3f);
+  opacity: 1;
+}
+
+/* Full-screen canvas on the desktop: covers chat and the session list, and
+   STOPS at the portal header.
+
+   `absolute` against .ps-workspace-grid, not `fixed` against the viewport. A
+   fixed layer swallowed the header too, which took the toolbar — and with it
+   every way back — off screen. Anchoring to the workspace keeps the header
+   visible without anyone having to measure its height.
+
+   Above the panes but BELOW modals and toasts, which must stay reachable.
+
+   Both selectors on purpose. The split rule above is four classes deep, so a
+   plain `.ps-canvas-layer.is-maximized` loses to it on specificity and the
+   canvas would stay a column while claiming to be full screen. */
+.ps-workspace-column-host > .ps-canvas-layer.is-maximized,
+.ps-workspace-column-host.is-split > .ps-canvas-layer.is-maximized {
+  position: absolute;
+  inset: 0;
+  z-index: 60;
+}
+
+/* While a canvas is maximized its HOST must stop being a positioned ancestor,
+   or the absolute inset above resolves against the right-hand column and
+   "full screen" covers only that column — measured, not hypothetical. With
+   the host static, the canvas positions against .ps-workspace-grid. */
+.ps-workspace-column-host.has-maximized {
+  position: static;
+}
+
+/* The toolbar is three columns — spacer | main controls | right rail — so
+   the main group is dead-centre in EVERY mode. Auto margins only centre in
+   leftover space, and the full-screen strip was shoving the group sideways. */
+/* Desktop only: the mobile toolbar keeps its own row layout, and this grid
+   squeezed its action buttons out of view — measured, not hypothetical. */
+.ps-toolbar:not(.is-mobile) {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  width: 100%;
+}
+
+.ps-toolbar-side {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ps-toolbar-side.is-right {
+  justify-content: flex-end;
+}
+
+/* The canvas header controls (rev · zoom · zen · restore), portalled here
+   while the canvas is full screen. */
+.ps-toolbar-canvas-slot {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ps-toolbar-canvas-rev {
+  color: var(--ps-muted);
+  font-size: 0.86rem;
+  white-space: nowrap;
+}
+
+/* The line between the canvas controls and the standing tools. */
+.ps-toolbar-divider {
+  width: 1px;
+  height: 20px;
+  background: var(--ps-border);
+  flex: none;
+}
+
+.ps-toolbar-actions.is-tools {
+  flex: none;
+}
+
 .ps-canvas-layer {
   position: absolute;
   inset: 0;
@@ -7248,7 +7478,7 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
 }
 
 .ps-canvas-layer.is-hidden,
-.ps-canvas-overlay.is-hidden {
+.ps-mobile-canvas-layer.is-hidden {
   /* Off-screen transform, NOT visibility: iOS tears down a frame's
      subscroller state when it stops being rendered, so a visibility-hidden
      canvas came back scrolled to the top. A transformed frame stays
@@ -7258,15 +7488,11 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
   pointer-events: none;
 }
 
-/* While the phone's canvas overlay is up, stop rubber-band chaining into the
-   shell — but do NOT make body overflow:hidden: on iOS a fully unscrollable
-   parent chain is part of what left canvas pans with nowhere to land. */
+/* While the phone's canvas is up, stop rubber-band chaining into the shell —
+   but do NOT make body overflow:hidden: on iOS a fully unscrollable parent
+   chain is part of what left canvas pans with nowhere to land. */
 .ps-canvas-lock {
   overscroll-behavior: none;
-}
-
-.ps-canvas-overlay {
-  overscroll-behavior: contain;
 }
 
 /* iOS gesture delegation into the CANVAS frame.
@@ -7355,23 +7581,9 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
   font-size: 11.5px;
 }
 
-/* Phone canvas viewer: ✕ and zoom need finger-sized targets. Wider, not
-   taller — the bar's height is fine; the miss risk is horizontal. */
-.ps-canvas-overlay .ps-artifact-pane-btn {
-  min-width: 52px;
-  min-height: 34px;
-  font-size: 16px;
-}
-
-.ps-canvas-overlay .ps-html-zoom-btn {
-  min-width: 44px;
-  min-height: 34px;
-  font-size: 15px;
-}
-
-.ps-canvas-overlay .ps-html-zoom {
-  gap: 4px;
-}
+/* The phone canvas header carries no buttons at all now — only the revision —
+   so the finger-target overrides that used to widen its ✕ and zoom controls
+   are gone with them. The desktop bar keeps both controls at desktop size. */
 
 /* Phone Main pane layouts (cycled by the Main toolbar button): split is the
    two-row default; chat-only and sessions-only each hand their pane the whole
@@ -7444,4 +7656,23 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
 .ps-mobile-pane-fill .ps-scroll-panel::-webkit-scrollbar,
 .ps-mobile-pane-fill .ps-panel-sticky::-webkit-scrollbar {
   display: none;
+}
+
+/* Text buttons converted to glyphs: square, centered, tooltip-labelled. */
+.ps-mini-button.is-icon,
+.portal-secondary-button.is-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 8px;
+  line-height: 1;
+}
+
+/* Version/status parked in the toolbar rail: right-aligned stack, quiet. */
+.ps-toolbar-meta-slot .portal-header-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  margin-right: 4px;
 }

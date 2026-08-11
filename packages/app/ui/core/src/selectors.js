@@ -1,4 +1,5 @@
 import { INSPECTOR_TABS, FOCUS_REGIONS } from "./commands.js";
+import { canvasKey as canvasSlotKey, parseCanvasKey } from "./state.js";
 import { isManuallyOrderableSession } from "./session-tree.js";
 import {
     createSplashCard,
@@ -1125,6 +1126,10 @@ export function selectSessionRows(state) {
             // built under one branding to a caller using another, and the root
             // session's name would flip between them.
             state.branding?.title,
+            // The canvas marker below reads these. Without them the memo hands
+            // back a row built before the draw and the marker never appears.
+            state.canvas?.bySessionId?.[entry.sessionId],
+            state.canvas?.prefs?.[entry.sessionId],
         ];
         const cached = memo.get(entry.sessionId);
         if (cached && sameRowDeps(cached.deps, deps)) return cached.row;
@@ -1160,6 +1165,15 @@ export function selectSessionRows(state) {
                 : null,
             orderable: isManuallyOrderableSession(session),
             orderContainer: manualOrderContainerKey(session, pinned),
+            // Canvas state for THIS row. The toolbar badge answers the same
+            // question for the active session only; the list has to answer it
+            // for every session at once, which is the point — a canvas drawn
+            // in a session you are not looking at is otherwise invisible.
+            //
+            //   null      no canvas, or one that was cleared
+            //   "canvas"  a canvas exists and nothing is new
+            //   "unseen"  it changed since this user last looked at it
+            canvasMark: sessionCanvasMark(state, entry.sessionId),
         };
         memo.set(entry.sessionId, { deps, row });
         return row;
@@ -2661,21 +2675,87 @@ export function selectChatLines(state, maxWidth = 80, options = {}) {
  * whether the yellow unseen-changes badge should light
  * (latestRev > lastViewedRev, and only while the canvas is not on screen).
  */
+/**
+ * The canvas marker for one session row.
+ *
+ * Same rules selectCanvasView applies to the active session, minus the
+ * on-screen check: a row's marker describes the SESSION, not the layout, so it
+ * does not care which column happens to be open.
+ *
+ * A cleared canvas (draw_canvas("") -> sizeBytes 0) no longer exists. Unknown
+ * size (null, from a degraded snapshot) is presumed drawn — a marker that is
+ * occasionally early beats one that silently never shows.
+ */
+export function sessionCanvasMark(state, sessionId) {
+    if (!sessionId) return null;
+    // Aggregate across the session's slots: ANY unseen slot lights the dot;
+    // any drawn slot at all marks the row. Slot 1 is the bare id key.
+    let mark = null;
+    for (let slot = 1; slot <= 5; slot += 1) {
+        const key = canvasSlotKey(sessionId, slot);
+        const entry = state?.canvas?.bySessionId?.[key];
+        const prefs = state?.canvas?.prefs?.[key];
+        if (!entry) {
+            // No live state loaded (cold page). canvasPrefs persist per user,
+            // so a slot this user has ever VIEWED still marks — plain, never
+            // "unseen": whether it changed since is unknowable client-side.
+            if ((prefs?.lastViewedRev || 0) > 0) mark = mark || "canvas";
+            continue;
+        }
+        const latestRev = entry.latestRev || 0;
+        if (latestRev <= 0 || entry.sizeBytes === 0) continue;
+        const unseen = latestRev > (prefs?.lastViewedRev || 0)
+            || (entry.latestDataRev || 0) > (prefs?.lastViewedDataRev || 0);
+        if (unseen) return "unseen";
+        mark = "canvas";
+    }
+    return mark;
+}
+
 export function selectCanvasView(state) {
     const sessionId = state?.sessions?.activeSessionId || null;
-    const entry = sessionId ? state?.canvas?.bySessionId?.[sessionId] : null;
-    const prefs = sessionId ? state?.canvas?.prefs?.[sessionId] : null;
+    // The pane shows ONE slot at a time. An out-of-range or never-drawn slot
+    // falls back to 1 so a stale selection can never strand the pane.
+    const wantedSlot = Number(state?.ui?.canvasSlot) || 1;
+    const bySessionId = state?.canvas?.bySessionId || {};
+    // Every drawn slot of the active session, for the selector and arrows.
+    const slots = [];
+    if (sessionId) {
+        for (let slot = 1; slot <= 5; slot += 1) {
+            const e = bySessionId[canvasSlotKey(sessionId, slot)];
+            if (!e || (e.latestRev || 0) <= 0 || e.sizeBytes === 0) continue;
+            const p = state?.canvas?.prefs?.[canvasSlotKey(sessionId, slot)];
+            slots.push({
+                slot,
+                name: typeof e.name === "string" ? e.name : "",
+                latestRev: e.latestRev || 0,
+                unseen: (e.latestRev || 0) > (p?.lastViewedRev || 0)
+                    || (e.latestDataRev || 0) > (p?.lastViewedDataRev || 0),
+            });
+        }
+    }
+    const slot = slots.some((s2) => s2.slot === wantedSlot) ? wantedSlot : 1;
+    const key = sessionId ? canvasSlotKey(sessionId, slot) : null;
+    const entry = key ? bySessionId[key] : null;
+    const prefs = key ? state?.canvas?.prefs?.[key] : null;
     const latestRev = entry?.latestRev || 0;
     const lastViewedRev = prefs?.lastViewedRev || 0;
     const latestDataRev = entry?.latestDataRev || 0;
     const lastViewedDataRev = prefs?.lastViewedDataRev || 0;
-    const mode = state?.ui?.rightPaneMode === "canvas" ? "canvas" : "panes";
+    // Read from canvasOpen, not the retired rightPaneMode enum. Diagnostics
+    // moving to its own column means "not canvas" no longer implies "panes",
+    // and this drives the unseen badge, which must light whenever the canvas
+    // is off screen.
+    const mode = state?.ui?.canvasOpen ? "canvas" : "panes";
     // A cleared canvas (draw_canvas("") → sizeBytes 0) no longer exists for
     // affordance purposes: no phone tab, no badge, blank teaching state.
     // Unknown size (null — snapshot degrade) is presumed drawn.
     const exists = latestRev > 0 && entry?.sizeBytes !== 0;
     return {
         sessionId,
+        slot,
+        slots,
+        name: typeof entry?.name === "string" ? entry.name : "",
         mode,
         exists,
         latestRev,

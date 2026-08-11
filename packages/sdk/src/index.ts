@@ -181,7 +181,16 @@ export { createInspectTools } from "./inspect-tools.js";
 export { createResourceManagerTools } from "./resourcemgr-tools.js";
 // Model providers
 export { loadModelProviders, ModelProviderRegistry } from "./model-providers.js";
-export type { ModelEntry, ModelDescriptor, ModelProviderConfig, ModelProvidersFile, ResolvedProvider, ReasoningEffort, ContextTier } from "./model-providers.js";
+// A BYOK reasoning effort rides on the provider baseUrl as a path prefix —
+// exported so the proxy that strips it (grimfanda
+// deploy/openai-compat-proxy.mjs) has one place to read the contract from.
+export {
+    REASONING_EFFORT_PATH_PREFIX,
+    applyReasoningEffortToProviderConfig,
+    decodeReasoningEffortFromBaseUrl,
+    encodeReasoningEffortInBaseUrl,
+} from "./model-providers.js";
+export type { ModelEntry, ModelDescriptor, ModelProviderConfig, ModelProvidersFile, ProviderType, ResolvedProvider, ReasoningEffort, ContextTier } from "./model-providers.js";
 export { composeSystemPrompt, extractPromptContent, mergePromptSections } from "./prompt-layering.js";
 export type { PromptLayeringKind } from "./prompt-layering.js";
 export {

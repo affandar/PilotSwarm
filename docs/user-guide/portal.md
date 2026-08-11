@@ -15,8 +15,9 @@ Either:
 
 For a pinned Docker quickstart, replace `latest` with `0.4.0`.
 
-For deployments with Entra ID auth enabled (production), you'll see a
-sign-in flow first. For local development, sign-in is bypassed.
+For deployments with Entra ID auth enabled, you'll see a sign-in flow first.
+With identity-aware proxy auth, the proxy completes sign-in before the portal
+loads. For local development, sign-in is normally bypassed.
 
 ## Layout overview
 

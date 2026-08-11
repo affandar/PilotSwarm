@@ -9,7 +9,10 @@ import {
     normalizeSessionOwnerFilter,
     normalizeStoredActiveSessionId,
     normalizeStoredCanvasPrefs,
+    canvasKey,
+    parseCanvasKey,
     normalizeStoredCollapsedSessionIds,
+    normalizeStoredDesktopPanes,
     normalizeStoredLayoutAdjustments,
     normalizeStoredPinnedSessionIds,
     normalizeStoredSessionOrder,
@@ -112,10 +115,15 @@ function mergeCanvasPrefs(local, stored, byId) {
             optedOut: storedEntry ? storedEntry.optedOut : Boolean(localEntry?.optedOut),
             lastViewedRev: Math.max(storedEntry?.lastViewedRev || 0, localEntry?.lastViewedRev || 0),
             lastViewedDataRev: Math.max(storedEntry?.lastViewedDataRev || 0, localEntry?.lastViewedDataRev || 0),
+            // Latest write wins is unknowable here; the local value is the one
+            // this window just dragged, so it outranks the poll.
+            ...((localEntry?.zenRailPx || storedEntry?.zenRailPx)
+                ? { zenRailPx: localEntry?.zenRailPx || storedEntry?.zenRailPx }
+                : {}),
         };
-        if (!merged.optedOut && merged.lastViewedRev === 0 && merged.lastViewedDataRev === 0) continue;
-        const session = byId?.[sessionId];
-        if (session && (session.parentSessionId || session.isGroup)) continue;
+        if (!merged.optedOut && merged.lastViewedRev === 0 && merged.lastViewedDataRev === 0 && !merged.zenRailPx) continue;
+        const session = byId?.[parseCanvasKey(sessionId).sessionId];
+        if (session && session.isGroup) continue;
         out[sessionId] = merged;
     }
     return out;
@@ -808,6 +816,17 @@ export function appReducer(state, action) {
                 && typeof settings.touchScale === "boolean";
             const hasRightPaneMode = Object.prototype.hasOwnProperty.call(settings, "rightPaneMode")
                 && (settings.rightPaneMode === "canvas" || settings.rightPaneMode === "panes");
+            // The two independent columns. A profile written by a build that
+            // predates them carries only rightPaneMode, so fall back to
+            // migrating that — see normalizeStoredDesktopPanes.
+            const hasDesktopPanes = Object.prototype.hasOwnProperty.call(settings, "desktopPanes")
+                && settings.desktopPanes && typeof settings.desktopPanes === "object";
+            const nextDesktopPanes = (hasDesktopPanes || hasRightPaneMode)
+                ? normalizeStoredDesktopPanes(
+                    hasDesktopPanes ? settings.desktopPanes : null,
+                    hasRightPaneMode ? settings.rightPaneMode : null,
+                )
+                : null;
             const hasCanvasPrefs = Object.prototype.hasOwnProperty.call(settings, "canvasPrefs");
             const hasPins = Object.prototype.hasOwnProperty.call(settings, "pinnedSessionIds");
             const hasCollapsed = Object.prototype.hasOwnProperty.call(settings, "collapsedSessionIds");
@@ -872,6 +891,9 @@ export function appReducer(state, action) {
                     themeId: hasTheme ? settings.themeId.trim() : selection.ui.themeId,
                     touchScale: hasTouchScale ? settings.touchScale : selection.ui.touchScale,
                     rightPaneMode: hasRightPaneMode ? settings.rightPaneMode : selection.ui.rightPaneMode,
+                    ...(nextDesktopPanes
+                        ? { canvasOpen: nextDesktopPanes.canvasOpen, diagnosticsOpen: nextDesktopPanes.diagnosticsOpen, canvasZen: nextDesktopPanes.zen === true }
+                        : {}),
                     layout: nextLayout,
                 },
                 canvas: hasCanvasPrefs
@@ -942,6 +964,46 @@ export function appReducer(state, action) {
                     layout: {
                         ...(state.ui.layout || {}),
                         portalSessionColumnAdjust: Number(action.portalSessionColumnAdjust) || 0,
+                    },
+                },
+            };
+
+        // Where the canvas/diagnostics seam sits when both columns are open.
+        // A pixel delta from an even split of the right side, like the other
+        // adjusts. Closing a column is a separate action — see
+        // CanvasDiagnosticsResizeHandle, which decides that on release.
+        case "ui/canvasPaneAdjust":
+            return {
+                ...state,
+                ui: {
+                    ...state.ui,
+                    layout: {
+                        ...(state.ui.layout || {}),
+                        canvasPaneAdjust: Number(action.canvasPaneAdjust) || 0,
+                    },
+                },
+            };
+
+        case "ui/diagnosticsSplitAdjust":
+            return {
+                ...state,
+                ui: {
+                    ...state.ui,
+                    layout: {
+                        ...(state.ui.layout || {}),
+                        diagnosticsSplitAdjust: Number(action.diagnosticsSplitAdjust) || 0,
+                    },
+                },
+            };
+
+        case "ui/diagnosticsPaneAdjust":
+            return {
+                ...state,
+                ui: {
+                    ...state.ui,
+                    layout: {
+                        ...(state.ui.layout || {}),
+                        diagnosticsPaneAdjust: Number(action.diagnosticsPaneAdjust) || 0,
                     },
                 },
             };
@@ -2638,9 +2700,85 @@ export function appReducer(state, action) {
             }
             return {
                 ...state,
-                ui: { ...state.ui, rightPaneMode: mode },
+                ui: { ...state.ui, rightPaneMode: mode, canvasOpen: mode === "canvas" },
                 canvas: { ...state.canvas, prefs },
             };
+        }
+
+        // Canvas as a column of its own. Same opt-out bookkeeping as the old
+        // mode switch above — closing by hand still says "do not flip me back",
+        // opening by hand still withdraws that — but closing the canvas no
+        // longer implies showing anything else, because Diagnostics is now a
+        // separate column with its own toggle.
+        //
+        // `open` may be omitted to mean "toggle".
+        case "ui/canvasOpen": {
+            const open = typeof action.open === "boolean" ? action.open : !state.ui.canvasOpen;
+            const sessionId = action.sessionId || state.sessions.activeSessionId || null;
+            let prefs = state.canvas.prefs;
+            if (sessionId) {
+                const prev = prefs[sessionId] || { optedOut: false, lastViewedRev: 0 };
+                if (open && prev.optedOut) {
+                    prefs = { ...prefs, [sessionId]: { ...prev, optedOut: false } };
+                } else if (!open && action.manual && !prev.optedOut) {
+                    prefs = { ...prefs, [sessionId]: { ...prev, optedOut: true } };
+                }
+            }
+            return {
+                ...state,
+                // rightPaneMode is kept in step for anything still reading it.
+                // Closing always drops full screen: otherwise the next open
+                // comes back covering the workspace with no warning.
+                ui: {
+                    ...state.ui,
+                    canvasOpen: open,
+                    rightPaneMode: open ? "canvas" : "panes",
+                    ...(open ? {} : { canvasMaximized: false, canvasZen: false }),
+                },
+                canvas: { ...state.canvas, prefs },
+            };
+        }
+
+        // Diagnostics — today's Inspector + Activity, travelling as one column.
+        // No canvas bookkeeping: it has nothing to do with the canvas, which is
+        // the whole point of splitting the old enum in two.
+        // Zen: sessions hidden, chat a narrow rail, canvas the workbench.
+        // Turning it on opens the canvas; it means nothing without one.
+        case "ui/canvasZen": {
+            const on = typeof action.on === "boolean" ? action.on : !state.ui.canvasZen;
+            if (on === Boolean(state.ui.canvasZen)) return state;
+            return {
+                ...state,
+                ui: { ...state.ui, canvasZen: on, ...(on ? { canvasOpen: true, rightPaneMode: "canvas" } : {}) },
+            };
+        }
+
+        // The zen chat-rail width for one session. Clamped so a wild drag can
+        // never wedge the rail off screen or crush the canvas.
+        case "canvas/zenRail": {
+            const sessionId = String(action.sessionId || "").trim();
+            const px = Number(action.px);
+            if (!sessionId || !Number.isFinite(px)) return state;
+            const prev = state.canvas.prefs[sessionId] || { optedOut: false, lastViewedRev: 0 };
+            const clamped = Math.max(260, Math.min(720, Math.round(px)));
+            return {
+                ...state,
+                canvas: { ...state.canvas, prefs: { ...state.canvas.prefs, [sessionId]: { ...prev, zenRailPx: clamped } } },
+            };
+        }
+
+        // Full-screen canvas. The header stays put and the canvas covers the
+        // workspace below it, so there is always a way back.
+        case "ui/canvasMaximized": {
+            const on = typeof action.on === "boolean" ? action.on : !state.ui.canvasMaximized;
+            if (on === Boolean(state.ui.canvasMaximized)) return state;
+            return { ...state, ui: { ...state.ui, canvasMaximized: on } };
+        }
+
+        case "ui/diagnosticsOpen": {
+            const open = typeof action.open === "boolean" ? action.open : !state.ui.diagnosticsOpen;
+            if (open === state.ui.diagnosticsOpen) return state;
+            return { ...state, ui: { ...state.ui, diagnosticsOpen: open } };
         }
 
         // The agent-driven flip. The guards (active session, freshness,
@@ -2649,11 +2787,25 @@ export function appReducer(state, action) {
         // "canvas" — a phone can be off the canvas tab while the persisted
         // mode still says canvas, and the tick is what brings its tab back.
         case "canvas/flip": {
+            const slot = Number.isInteger(Number(action.slot)) && Number(action.slot) >= 1 && Number(action.slot) <= 5
+                ? Number(action.slot) : 1;
             return {
                 ...state,
-                ui: { ...state.ui, rightPaneMode: "canvas" },
+                // Opens the canvas column ON THE SLOT THAT DREW; leaves
+                // Diagnostics exactly as the user left it. An agent drawing
+                // must not close their panels.
+                ui: { ...state.ui, rightPaneMode: "canvas", canvasOpen: true, canvasSlot: slot },
                 canvas: { ...state.canvas, flipSeq: (state.canvas.flipSeq || 0) + 1 },
             };
+        }
+
+        // Which of the active session's canvases the pane shows. In-memory
+        // only: a reload lands on slot 1 (or wherever the next flip points).
+        case "ui/canvasSlot": {
+            const slot = Number.isInteger(Number(action.slot)) && Number(action.slot) >= 1 && Number(action.slot) <= 5
+                ? Number(action.slot) : 1;
+            if (slot === (state.ui.canvasSlot || 1)) return state;
+            return { ...state, ui: { ...state.ui, canvasSlot: slot } };
         }
 
         // The surface's receipt: revision `rev` (a draw) and/or `dataRev` (a
@@ -2663,7 +2815,8 @@ export function appReducer(state, action) {
             if (!sessionId) return state;
             const rev = Number(action.rev);
             const dataRev = Number(action.dataRev);
-            const prev = state.canvas.prefs[sessionId] || { optedOut: false, lastViewedRev: 0, lastViewedDataRev: 0 };
+            const key = canvasKey(sessionId, action.slot);
+            const prev = state.canvas.prefs[key] || { optedOut: false, lastViewedRev: 0, lastViewedDataRev: 0 };
             const nextRev = Number.isFinite(rev) && rev > (prev.lastViewedRev || 0) ? rev : (prev.lastViewedRev || 0);
             const nextDataRev = Number.isFinite(dataRev) && dataRev > (prev.lastViewedDataRev || 0) ? dataRev : (prev.lastViewedDataRev || 0);
             if (nextRev === (prev.lastViewedRev || 0) && nextDataRev === (prev.lastViewedDataRev || 0)) return state;
@@ -2671,16 +2824,49 @@ export function appReducer(state, action) {
                 ...state,
                 canvas: {
                     ...state.canvas,
-                    prefs: { ...state.canvas.prefs, [sessionId]: { ...prev, lastViewedRev: nextRev, lastViewedDataRev: nextDataRev } },
+                    prefs: { ...state.canvas.prefs, [key]: { ...prev, lastViewedRev: nextRev, lastViewedDataRev: nextDataRev } },
                 },
             };
+        }
+
+        // The sessions-list seed: rev+name per slot from session_canvases,
+        // merged under the live entries. Never regresses a rev a live event
+        // already delivered, never sets snapshotLoaded (the full snapshot —
+        // note, contract, data replay — still loads on selection).
+        case "canvas/seed": {
+            const entries = Array.isArray(action.entries) ? action.entries : [];
+            if (!entries.length) return state;
+            let next = null;
+            for (const e of entries) {
+                const sessionId = String(e?.sessionId || "").trim();
+                const rev = Number(e?.latestRev);
+                const slotN = Number(e?.slot);
+                if (!sessionId || !Number.isFinite(rev) || rev <= 0) continue;
+                if (!Number.isInteger(slotN) || slotN < 1 || slotN > 5) continue;
+                const key = canvasKey(sessionId, slotN);
+                const existing = (next || state.canvas.bySessionId)[key] || {};
+                if ((existing.latestRev || 0) >= rev && existing.name !== undefined) continue;
+                next = next || { ...state.canvas.bySessionId };
+                next[key] = {
+                    ...existing,
+                    slot: slotN,
+                    latestRev: Math.max(existing.latestRev || 0, rev),
+                    ...(typeof e.name === "string" && existing.name === undefined ? { name: e.name } : {}),
+                    ...(existing.sizeBytes === undefined && e.sizeBytes !== undefined ? { sizeBytes: e.sizeBytes } : {}),
+                };
+            }
+            if (!next) return state;
+            return { ...state, canvas: { ...state.canvas, bySessionId: next } };
         }
 
         case "canvas/updated": {
             const sessionId = String(action.sessionId || "").trim();
             const rev = Number(action.rev);
             if (!sessionId || !Number.isFinite(rev) || rev <= 0) return state;
-            const existing = state.canvas.bySessionId[sessionId] || {};
+            const slot = Number.isInteger(Number(action.slot)) && Number(action.slot) >= 1 && Number(action.slot) <= 5
+                ? Number(action.slot) : 1;
+            const key = canvasKey(sessionId, slot);
+            const existing = state.canvas.bySessionId[key] || {};
             // Monotonic: replays and out-of-order merges must never regress
             // the known revision (freshness gates the FLIP, never the data).
             if ((existing.latestRev || 0) >= rev) return state;
@@ -2690,8 +2876,10 @@ export function appReducer(state, action) {
                     ...state.canvas,
                     bySessionId: {
                         ...state.canvas.bySessionId,
-                        [sessionId]: {
+                        [key]: {
                             ...existing,
+                            slot,
+                            ...(typeof action.name === "string" ? { name: action.name } : {}),
                             latestRev: rev,
                             note: typeof action.note === "string" ? action.note : "",
                             sizeBytes: Number.isFinite(Number(action.sizeBytes)) ? Number(action.sizeBytes) : null,
@@ -2712,9 +2900,12 @@ export function appReducer(state, action) {
         // latestDataRev vs lastViewedDataRev. Monotonic like the draw rev.
         case "canvas/data": {
             const sessionId = String(action.sessionId || "").trim();
+            const slot = Number.isInteger(Number(action.slot)) && Number(action.slot) >= 1 && Number(action.slot) <= 5
+                ? Number(action.slot) : 1;
+            const key = canvasKey(sessionId, slot);
             const dataRev = Number(action.dataRev);
             if (!sessionId || !Number.isFinite(dataRev) || dataRev <= 0) return state;
-            const existing = state.canvas.bySessionId[sessionId] || {};
+            const existing = state.canvas.bySessionId[key] || {};
             if ((existing.latestDataRev || 0) >= dataRev) return state;
             return {
                 ...state,
@@ -2722,7 +2913,7 @@ export function appReducer(state, action) {
                     ...state.canvas,
                     bySessionId: {
                         ...state.canvas.bySessionId,
-                        [sessionId]: {
+                        [key]: {
                             ...existing,
                             latestDataRev: dataRev,
                             dataPayload: action.payload && typeof action.payload === "object" ? action.payload : null,
@@ -2735,7 +2926,10 @@ export function appReducer(state, action) {
         case "canvas/snapshot": {
             const sessionId = String(action.sessionId || "").trim();
             if (!sessionId) return state;
-            const existing = state.canvas.bySessionId[sessionId] || {};
+            const slot = Number.isInteger(Number(action.slot)) && Number(action.slot) >= 1 && Number(action.slot) <= 5
+                ? Number(action.slot) : 1;
+            const key = canvasKey(sessionId, slot);
+            const existing = state.canvas.bySessionId[key] || {};
             const rev = Number(action.rev) || 0;
             return {
                 ...state,
@@ -2743,8 +2937,10 @@ export function appReducer(state, action) {
                     ...state.canvas,
                     bySessionId: {
                         ...state.canvas.bySessionId,
-                        [sessionId]: {
+                        [key]: {
                             ...existing,
+                            slot,
+                            ...(typeof action.name === "string" && ((existing.latestRev || 0) <= rev) ? { name: action.name } : {}),
                             // Events may have beaten the snapshot; never regress.
                             latestRev: Math.max(existing.latestRev || 0, rev),
                             note: (existing.latestRev || 0) > rev ? existing.note : (typeof action.note === "string" ? action.note : existing.note || ""),
@@ -2765,6 +2961,8 @@ export function appReducer(state, action) {
             const sessionId = String(action.sessionId || "").trim();
             const existing = state.canvas.bySessionId[sessionId];
             if (!sessionId || !existing?.snapshotLoaded) return state;
+            // Slots 2-5 of the same session invalidate with slot 1: the flag
+            // that gates re-take lives on the slot-1 entry.
             return {
                 ...state,
                 canvas: {

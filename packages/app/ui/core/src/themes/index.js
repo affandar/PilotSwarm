@@ -61,7 +61,7 @@ const THEMES = Object.freeze([
 
 const THEME_MAP = new Map(THEMES.map((theme) => [theme.id, theme]));
 
-export const DEFAULT_THEME_ID = noctisObscuroTheme.id;
+export const DEFAULT_THEME_ID = workspaceDarkTheme.id;
 
 export { THEME_GROUP_ORDER } from "./helpers.js";
 

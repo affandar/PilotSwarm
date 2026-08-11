@@ -96,10 +96,13 @@ Discover the deployment's mode first — never hardcode it:
 
 ```js
 const authConfig = await api.getAuthConfig();
-// { enabled, provider: "none" | "entra", client: { clientId, authority, redirectUri } | null }
+// { enabled, provider: "none" | "entra" | "proxy", client: { clientId, authority, redirectUri } | null }
 ```
 
 - **`none`** — pass no `getAccessToken`; you're done.
+- **`proxy`** — the identity-aware proxy signs the user in before the SPA
+  loads and injects identity into same-origin HTTP/WebSocket requests. Pass no
+  `getAccessToken`; `authConfig.client` is `null`.
 - **`entra`, browser SPA** — feed the discovered `clientId`/`authority` into
   MSAL's SPA flow and hand the token getter to `ApiClient`:
 

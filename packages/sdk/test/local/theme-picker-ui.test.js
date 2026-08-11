@@ -25,10 +25,10 @@ function createController() {
 }
 
 describe("theme picker UI behavior", () => {
-    it("defaults new workspaces to Noctis Obscuro", () => {
-        assertEqual(DEFAULT_THEME_ID, "noctis-obscuro", "shared default theme should be Noctis Obscuro");
+    it("defaults new workspaces to Workspace Dark", () => {
+        assertEqual(DEFAULT_THEME_ID, "workspace-dark", "shared default theme should be Workspace Dark");
         const state = createInitialState({ mode: "local" });
-        assertEqual(state.ui.themeId, "noctis-obscuro", "new state should inherit the shared default theme");
+        assertEqual(state.ui.themeId, "workspace-dark", "new state should inherit the shared default theme");
     });
 
     it("honors a persisted theme id during initial state creation", () => {
@@ -37,7 +37,7 @@ describe("theme picker UI behavior", () => {
 
         // A persisted id for a theme that no longer ships falls back to the default.
         const stale = createInitialState({ mode: "local", themeId: "noctis-viola" });
-        assertEqual(stale.ui.themeId, "noctis-obscuro", "removed theme ids fall back to the default theme");
+        assertEqual(stale.ui.themeId, "workspace-dark", "removed theme ids fall back to the default theme");
     });
 
     it("honors persisted pane split adjustments during initial state creation", () => {

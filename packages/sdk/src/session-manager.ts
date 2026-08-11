@@ -3,6 +3,7 @@ import { ManagedSession } from "./managed-session.js";
 import type { SessionStateStore } from "./session-store.js";
 import { SESSION_STATE_MISSING_PREFIX, type AbortTurnResult, type ManagedSessionConfig, type SerializableSessionConfig } from "./types.js";
 import type { ModelProviderRegistry } from "./model-providers.js";
+import { applyReasoningEffortToProviderConfig } from "./model-providers.js";
 import { createFactTools } from "./facts-tools.js";
 import { createGraphTools } from "./graph-tools.js";
 import { createInspectTools, NO_VIEWER, type InspectViewer } from "./inspect-tools.js";
@@ -163,6 +164,78 @@ function buildEffectivePromptLayers(workerDefaults: WorkerDefaults, config: Seri
  *
  * @internal
  */
+/**
+ * Capability declaration for a model the Copilot catalog does not know.
+ *
+ * Returns undefined when the catalog says nothing useful — an empty override
+ * is worse than none, since it would assert "no vision, no reasoning" rather
+ * than "unknown".
+ *
+ * @internal Exported for test/unit/byok-context-window.test.mjs only.
+ */
+export function buildByokModelCapabilities(
+    descriptor: any,
+    contextTier?: string,
+): { supports?: Record<string, boolean>; limits?: Record<string, unknown> } | undefined {
+    if (!descriptor) return undefined;
+
+    const supports: Record<string, boolean> = {};
+    if (Array.isArray(descriptor.supportedReasoningEfforts) && descriptor.supportedReasoningEfforts.length > 0) {
+        supports.reasoningEffort = true;
+    }
+    if (descriptor.vision) supports.vision = true;
+
+    const limits: Record<string, unknown> = {};
+    const sizes = descriptor.contextWindowSizes;
+    if (sizes && typeof sizes === "object") {
+        // Prefer the session's tier, else the largest declared — the catalog
+        // is stating what the model can do, not what this turn will use.
+        const tierValue = contextTier ? sizes[contextTier] : undefined;
+        const window = Number.isFinite(tierValue)
+            ? Number(tierValue)
+            : Math.max(...Object.values(sizes).map((v) => Number(v)).filter((v) => Number.isFinite(v)), 0);
+        if (window > 0) {
+            limits.max_context_window_tokens = window;
+            // max_prompt_tokens is the one that actually does anything.
+            // Measured against @github/copilot-sdk 1.0.9 with kimi-k3, three
+            // arms, one message each, reading session.usage_info.tokenLimit:
+            //   max_context_window_tokens alone -> 128000 (the runtime default)
+            //   max_prompt_tokens alone         -> 1048576
+            //   both                            -> 1048576
+            // tokenLimit is what the child process divides by to decide when to
+            // compact, so without this line the declaration changes nothing and
+            // a 1M model still compacts at ~102K.
+            limits.max_prompt_tokens = window;
+        }
+    }
+    if (descriptor.vision && typeof descriptor.vision === "object") {
+        const v: Record<string, unknown> = {};
+        if (Number.isFinite(descriptor.vision.maxImages)) v.max_prompt_images = Number(descriptor.vision.maxImages);
+        if (Number.isFinite(descriptor.vision.maxImageBytes)) v.max_prompt_image_size = Number(descriptor.vision.maxImageBytes);
+        if (Array.isArray(descriptor.vision.supportedMediaTypes)) v.supported_media_types = descriptor.vision.supportedMediaTypes;
+        if (Object.keys(v).length > 0) limits.vision = v;
+    }
+
+    // `limits` is the only part that does real work, so a supports-only block
+    // is dropped entirely.
+    //
+    // Declaring supports.reasoningEffort does NOT make the runtime send
+    // reasoning_effort for a BYOK provider — measured five ways, see the note
+    // at the sessionConfig call site. So a block carrying only `supports`
+    // buys nothing, while still overriding runtime state for every BYOK model
+    // in every deployment that has no contextWindowSizes in its catalog.
+    // Measured against waldemort's catalog: 8 of its 14 models declare
+    // supportedReasoningEfforts and no contextWindowSizes, so without this
+    // line they would each start receiving {supports:{reasoningEffort:true}}
+    // for no gain. A model that really can see gets limits.vision, so vision
+    // declarations still survive.
+    if (Object.keys(limits).length === 0) return undefined;
+    return {
+        ...(Object.keys(supports).length > 0 ? { supports } : {}),
+        limits,
+    };
+}
+
 export class SessionManager {
     /**
      * Resolved inspect viewers, keyed by session id. Static so it is shared
@@ -360,9 +433,11 @@ export class SessionManager {
         maxImageBytes?: number;
     }> {
         let sdkModelName = String(modelRef || "").trim();
+        // Hoisted out of the try: the declared-capability check below needs it.
+        let descriptor: ReturnType<NonNullable<typeof this.workerDefaults.modelProviders>["getDescriptor"]> | undefined;
         try {
             const normalized = this.normalizeModelRef(modelRef || undefined);
-            const descriptor = this.workerDefaults.modelProviders?.getDescriptor(normalized);
+            descriptor = this.workerDefaults.modelProviders?.getDescriptor(normalized);
             if (descriptor?.modelName) sdkModelName = descriptor.modelName;
             else if (normalized) sdkModelName = normalized.includes(":") ? normalized.split(":").slice(1).join(":") : normalized;
         } catch {
@@ -370,6 +445,29 @@ export class SessionManager {
             if (sdkModelName.includes(":")) sdkModelName = sdkModelName.split(":").slice(1).join(":");
         }
         if (!sdkModelName) return { modelId: "", known: false, vision: false };
+
+        // A DECLARED capability wins, and skips the catalog entirely.
+        //
+        // The catalog below is the Copilot model list. A BYOK model — Fireworks,
+        // a local vLLM — is never in it, so the lookup returns no entry, this
+        // function reports `vision: false`, and the attachment gate drops every
+        // image before its bytes are fetched. No amount of catalog querying can
+        // fix that; only the operator knows, and this is where they say so.
+        //
+        // Absent a declaration nothing changes: Copilot and Azure models keep
+        // resolving from the catalog exactly as before, and an unknown model
+        // still fails closed.
+        if (descriptor?.vision) {
+            const declared = descriptor.vision;
+            return {
+                modelId: sdkModelName,
+                known: true,
+                vision: true,
+                ...(Array.isArray(declared.supportedMediaTypes) ? { supportedMediaTypes: declared.supportedMediaTypes } : {}),
+                ...(Number.isFinite(declared.maxImages) ? { maxImages: Number(declared.maxImages) } : {}),
+                ...(Number.isFinite(declared.maxImageBytes) ? { maxImageBytes: Number(declared.maxImageBytes) } : {}),
+            };
+        }
 
         // Consult the catalog on the client that will serve this session's
         // turns. Prefer the recorded binding; on a cold worker the gate runs
@@ -1036,16 +1134,37 @@ export class SessionManager {
         const registry = this.workerDefaults.modelProviders;
         const effectiveModel = this.normalizeModelRef(config.model) || "";
         const resolvedProvider = registry?.resolve(effectiveModel);
-        const resolvedProviderConfig = this._resolveProviderConfig(effectiveModel);
-        let sdkModelName = effectiveModel;
-        let modelDescriptor: import("./model-providers.js").ModelDescriptor | undefined;
-        if (registry && effectiveModel) {
-            const desc = registry.getDescriptor(effectiveModel);
-            if (desc) {
-                sdkModelName = desc.modelName;
-                modelDescriptor = desc;
+        const baseProviderConfig = this._resolveProviderConfig(effectiveModel);
+        const sdkModelName = effectiveModel && registry?.getDescriptor(effectiveModel)?.modelName
+            ? registry.getDescriptor(effectiveModel)!.modelName
+            : effectiveModel;
+        const modelDescriptor = registry && effectiveModel
+            ? registry.getDescriptor(effectiveModel)
+            : undefined;
+
+        // `config.reasoningEffort` is passed to the SDK on its own below, and
+        // for provider `type: github` that is what works. For a provider
+        // declared `type: openai-proxy` the `@github/copilot` child process
+        // drops it before the HTTP request is built, so it rides in the
+        // provider baseUrl as a path prefix and the proxy at that baseUrl
+        // strips it back off. Every other provider type is untouched, and a
+        // session with no effort set is untouched.
+        //
+        // It used to ride in the model NAME. @github/copilot 1.0.79 parses
+        // `model:key=value` as its own model-options syntax and rejects
+        // unknown keys, so every such turn failed with
+        // "Unknown model option key: effort". See
+        // applyReasoningEffortToProviderConfig for the measurements.
+        const resolvedProviderConfig = baseProviderConfig.provider
+            ? {
+                ...baseProviderConfig,
+                provider: applyReasoningEffortToProviderConfig(
+                    baseProviderConfig.provider,
+                    modelDescriptor,
+                    config.reasoningEffort,
+                ),
             }
-        }
+            : baseProviderConfig;
 
         // Context-window tier: only models whose catalog entry declares
         // supportedContextTiers get the field at all. An explicit valid tier
@@ -1058,6 +1177,13 @@ export class SessionManager {
                 ? config.contextTier
                 : (modelDescriptor?.defaultContextTier ?? "default"))
             : undefined;
+
+        // Built from the deployment's own catalog — the only place that knows
+        // anything about a BYOK model. Deliberately AFTER the tier resolution
+        // above: the declared window must match the tier this session actually
+        // runs at, and before normalization config.contextTier can still be
+        // unset or stale. See the modelCapabilities note at the config object.
+        const byokModelCapabilities = buildByokModelCapabilities(modelDescriptor, config.contextTier);
 
         // Resolve the per-user GitHub Copilot token only when a catalog
         // is wired in. Skipping the await on the no-catalog path matters
@@ -1110,7 +1236,7 @@ export class SessionManager {
         // whole purpose is to change agents — so the strip applies only to the
         // legacy id, and dies with it.
         const isTunerSession = effectiveSerializableConfig.agentIdentity === "agent-tuner";
-        const mutatingSystemToolNames = new Set(["send_session_message", "reply_session_message", "draw_canvas",
+        const mutatingSystemToolNames = new Set(["send_session_message", "reply_session_message", "draw_canvas", "show_canvas",
     "update_canvas"]);
         const userTools = config.tools ?? [];
         // Canvas tools are ROOT-only, and THIS is the declaration half of that
@@ -1122,11 +1248,10 @@ export class SessionManager {
         // dropped by the CLI (no handler, no response, turn hangs), which is
         // strictly worse than an error. Fail open on an unreadable row: the
         // per-turn handler still refuses with a clear message.
-        const canvasToolNames = new Set(["draw_canvas", "update_canvas", "read_canvas"]);
-        const isChildSession = Boolean((catalogRow as any)?.parentSessionId);
+        // Canvas tools are declared for EVERY session now — sub-agents draw
+        // their own canvases (slots 1-5), independent of the parent's.
         const systemTools = ManagedSession.systemToolDefs()
-            .filter((tool: any) => !isTunerSession || !mutatingSystemToolNames.has(tool.name))
-            .filter((tool: any) => !isChildSession || !canvasToolNames.has(tool.name));
+            .filter((tool: any) => !isTunerSession || !mutatingSystemToolNames.has(tool.name));
         const readOnlyTunerSubAgentToolNames = new Set(["check_agents", "list_sessions"]);
         const subAgentTools = ManagedSession.subAgentToolDefs()
             .filter((tool: any) => !isTunerSession || readOnlyTunerSubAgentToolNames.has(tool.name));
@@ -1279,6 +1404,28 @@ export class SessionManager {
             // tool-pinning.ts for the why and the phase-2 opt-out path.
             tools: pinToolsNeverDefer(allTools),
             model: sdkModelName,
+            // Tell the runtime what a BYOK model can do.
+            //
+            // A model outside the Copilot catalog has no capabilities, so the
+            // runtime falls back to defaults — including a 128000 token limit
+            // that makes a 1M-window model compact roughly 8x too early.
+            // Declaring limits.max_prompt_tokens here fixes that; the reported
+            // tokenLimit becomes the real window. Measured, see
+            // buildByokModelCapabilities.
+            //
+            // It does NOT fix reasoning effort. Declaring
+            // supports.reasoningEffort = true still does not put
+            // `reasoning_effort` on the outgoing request for a BYOK provider —
+            // verified on the multi-provider `providers`/`models` surface, with
+            // enableConfigDiscovery on, and via the runtime's own
+            // `model:defaultReasoningEffort=high` option. That is why
+            // applyReasoningEffortToProviderConfig still exists.
+            //
+            // Only for non-github providers: Copilot models have real catalog
+            // data and must not be overridden by our guesses.
+            ...(resolvedProviderConfig.provider && byokModelCapabilities
+                ? { modelCapabilities: byokModelCapabilities }
+                : {}),
             ...(config.reasoningEffort ? { reasoningEffort: config.reasoningEffort } : {}),
             ...(config.contextTier ? { contextTier: config.contextTier } : {}),
             systemMessage: systemMessage

@@ -37,8 +37,8 @@ are still accepted, but nested `portal.branding` / `portal.ui` is preferred.
 
 Portal auth itself is configured separately from plugin metadata. The portal
 ships with a provider-based auth layer: `none` by default, plus optional Entra
-ID support. That keeps room for alternate providers such as AWS IAM without
-baking a single identity system into portal core.
+ID and identity-aware proxy support. That keeps a single identity system from
+being baked into portal core.
 
 ---
 

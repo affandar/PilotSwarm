@@ -44,6 +44,11 @@ Auth mode is discovered from the public `GET /api/v1/auth/config`
   interactive browser flow / auth code + PKCE (`pilotswarm auth login`; `--device-code` for headless hosts). WebSocket upgrades accept the
   bearer header or the subprotocol list `["access_token", <token>]` and
   close `4401`/`4403` on failure.
+- **`proxy`** — the identity-aware front door authenticates the user and adds
+  a signed assertion or trusted identity headers to each HTTP and WebSocket
+  request. Browser clients send no bearer token directly; discovery returns
+  `client: null`. Direct origin access must be blocked when unsigned header
+  mode is enabled.
 
 Admission follows the portal's authorization engine (app roles →
 email allowlists → `PORTAL_AUTHZ_DEFAULT_ROLE`); a `403` body carries the

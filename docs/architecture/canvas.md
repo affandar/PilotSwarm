@@ -1,28 +1,29 @@
 # Session Canvas
 
-The canvas is a root session's standing visual surface: one live HTML document
-per session that the agent draws, updates in place, and reuses — rendered in
-the portal beside the chat, surviving reloads, context regeneration, and
-worker moves. It replaced the retired session-summary mechanism as the
-at-a-glance answer to "what is this session showing me?"
+The canvas is a session's standing visual workspace: up to five named live HTML
+documents that the agent draws, updates in place, presents, and reuses —
+rendered in the portal beside the chat, surviving reloads, context
+regeneration, and worker moves. Root and sub-agent sessions have the same
+canvas tools. The workspace replaced the retired session-summary mechanism as
+the at-a-glance answer to "what is this session showing me?"
 
 This is the as-built reference. Design history lives in
 [proposals/session-canvas.md](../proposals/session-canvas.md) (v1) and
 [proposals/canvas-apps.md](../proposals/canvas-apps.md) (reusable apps;
 phases 2–3 there are designed but unshipped).
 
-## The spine: one artifact, one event stream
+## The spine: one artifact per slot, one event stream
 
-A drawn canvas is exactly two durable facts:
+A drawn canvas slot is exactly two durable facts:
 
-1. **Bytes** — the reserved, always-pinned artifact `canvas.html` on the
-   session. Every draw replaces it wholesale (there is no patching of the
-   document; in-place *data* updates ride ticks, below).
+1. **Bytes** — one reserved, always-pinned artifact on the session. Slot 1
+   keeps the original `canvas.html` filename; slots 2–5 use `canvas2.html`
+   through `canvas5.html`. Every draw replaces that slot wholesale (there is
+   no document patching; in-place *data* updates ride ticks, below).
 2. **A `session.canvas_updated` event** carrying `{rev, sizeBytes, note?,
-   responseContract?, source?}`. `rev` is monotonic, derived from the latest
-   events at draw time. The event is the single authority: bytes without an
-   event (a crashed half-draw, a hand-uploaded canvas.html) read as "not
-   drawn".
+   slot, name?, responseContract?, source?}`. `rev` is monotonic within the
+   slot, derived from its latest events at draw time. The event is the single
+   authority: bytes without an event read as "not drawn".
 
 Ordering is bytes-then-event, awaited, inside a per-session serialized draw
 chain in the session proxy — a rev is only ever advertised after both halves
@@ -33,12 +34,14 @@ than reading as "no canvas" (which would mint rev 1 over a live canvas).
 
 Clients — portal, TUI — learn revisions from the same event they'd learn
 anything else from: live push and cold snapshot alike, no side channel. The
-portal keeps per-session canvas prefs (last viewed rev/dataRev, opt-outs)
-merged max-wins across devices.
+portal keeps per-session, per-slot canvas prefs (selection, last viewed
+rev/dataRev, and dismissal opt-outs) merged max-wins across devices. A catalog
+cache records slot names and latest revisions for efficient cold loads; the
+durable event stream remains authoritative.
 
 ## Tools
 
-All three are declared on **root sessions only** (see Gating).
+All four tools accept `slot` 1–5 and default to slot 1.
 
 ### `draw_canvas`
 
@@ -54,7 +57,8 @@ Exactly one source per call:
   activity feed line (`[canvas] rev N from <file>`).
 
 Optional on either source: `note` (revision caption) and `responseContract`
-(interactivity, below).
+(interactivity, below). `name` assigns a friendly slot label up to 60
+characters; omitting it preserves the current name.
 
 **The tool result is the interface card** — rev, size, source, the embedded
 manifest summary, and the *effective* contract (post-precedence,
@@ -64,7 +68,7 @@ incoming actions and author ticks.
 
 ### `update_canvas`
 
-A JSON data tick: `{data, note?}` → a durable `session.canvas_data` event
+A JSON data tick: `{data, note?, slot?}` → a durable `session.canvas_data` event
 (payload inline, ≤32 KB serialized, monotonic `dataRev`). The page receives
 `{type: "canvas-data", data, dataRev}` via postMessage and applies it with an
 idempotent `applyData(data)`; the platform replays the latest tick into any
@@ -72,13 +76,22 @@ freshly loaded page. Ticks never steal the screen and write no chat line, but
 they do mark the canvas unseen (the toggle badges). Ticks against a
 never-drawn canvas are refused. Layout change = redraw; content change = tick.
 
+### `show_canvas`
+
+Presents an already-drawn slot without changing its bytes or revision. It
+records `session.canvas_presented {slot, rev}` and asks the portal to open that
+canvas or switch slots. It creates no unseen state and obeys the same active
+session, freshness, and per-slot dismissal guards as draw-driven presentation.
+Use it when conversation returns to an existing visual; use `draw_canvas` or
+`update_canvas` when the content itself changes.
+
 ### `read_canvas`
 
-Paged text (`offset`/`maxBytes`) — or `manifestOnly: true` for the interface
-card without the bytes: the embedded manifest summary plus the **armed**
-contract from the latest draw event (re-validated on the way out). This is the
-re-learning path after context regeneration or for an agent that inherited a
-canvas it did not draw.
+Paged text (`slot` plus `offset`/`maxBytes`) — or `manifestOnly: true` for the
+interface card without the bytes: the embedded manifest summary plus the
+**armed** contract from that slot's latest draw event (re-validated on the way
+out). This is the re-learning path after context regeneration or for an agent
+that inherited a canvas it did not draw.
 
 ## Interactivity: the response contract
 
@@ -157,7 +170,7 @@ phases 2–3).
 
 ## Presentation
 
-The portal renders the canvas in a sandboxed iframe
+The portal renders the selected canvas in a sandboxed iframe
 (`allow-scripts allow-popups allow-popups-to-escape-sandbox`, no
 `allow-same-origin`, `allow="autoplay *"` — an opaque origin can never match
 the default `'src'` allowlist). New revisions load through a visible
@@ -178,15 +191,13 @@ Viewed-marking comes only from the frame's own promote receipt while visible
 — never from mode transitions — so the unseen badge (draws and ticks both
 set it) means what it says.
 
-## Gating and limits
+## Availability and limits
 
-- **Root sessions only, gated in two places**: declarations are filtered in
-  session-manager off the catalog row's `parentSessionId` (the authority);
-  handlers are registered everywhere and refuse with a clear message when the
-  bridge lacks the method — the worst residual case is an error, never a
-  hang. Children — including the system agents, which are children of the
-  PilotSwarm root — have no canvas and no canvas tools; their delivery path
-  is `write_artifact` + `show_artifact`.
+- **Every session may own canvases.** Root sessions and sub-agents receive the
+  same canvas declarations and handlers. Each session owns its own slots;
+  drawing in a child does not mutate the parent's canvases.
+- **Slots**: 1–5, default 1. Revisions, names, latest ticks, stored artifacts,
+  and dismissal/view state are independent per slot.
 - **Caps**: document ≤900 KB (store text cap is 1 MiB); ticks ≤32 KB;
   contract 16×16 fields / 4 KB (+1 KB `data`); action payloads ≤8 KB with
   2048-char strings; card prose 400 chars/field.

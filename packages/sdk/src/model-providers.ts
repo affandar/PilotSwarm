@@ -47,14 +47,67 @@ export interface ModelEntry {
     defaultContextTier?: ContextTier;
     /** Optional token capacity for each supported context-window tier. */
     contextWindowSizes?: Partial<Record<ContextTier, number>>;
+    /**
+     * Vision support for a BYOK model.
+     *
+     * Only ever needed for a non-Copilot provider. The Copilot catalog
+     * reports vision itself through `capabilities.supports.vision`, but an
+     * OpenAI-compatible provider (Fireworks, a local vLLM) appears in no
+     * catalog at all — so without a declaration here `getModelVisionInfo`
+     * cannot find an entry, reports `vision: false`, and every attachment is
+     * dropped as `no_vision_support` before its bytes are even fetched.
+     *
+     * Declaring it for a model that cannot actually see turns a clean refusal
+     * into a provider error, so state it only where it is true.
+     */
+    vision?: ModelVisionCapability;
 }
+
+/** What a BYOK model accepts when it can see images. Limits are optional. */
+export interface ModelVisionCapability {
+    maxImages?: number;
+    maxImageBytes?: number;
+    supportedMediaTypes?: string[];
+}
+
+/**
+ * Provider types a model catalog may declare.
+ *
+ * `openai-proxy` is an OPT-IN variant of `openai`. On the wire it is exactly
+ * an OpenAI-shaped endpoint — the resolved SDK provider config says `openai`,
+ * because the Copilot SDK's own union has no other value. The single
+ * difference: PilotSwarm appends the session's reasoning effort to `baseUrl`
+ * as a path segment (`<baseUrl>/x-reasoning-effort/high`), because the child
+ * process that builds the HTTP request drops `reasoning_effort` for every
+ * non-Copilot provider and the url is the only thing that survives untouched.
+ *
+ * Declaring `openai-proxy` is a PROMISE that whatever is at `baseUrl` strips
+ * that segment back off before the real provider sees it. The reference
+ * implementation is `deploy/openai-compat-proxy.mjs` in the grimfanda repo.
+ * Point `openai-proxy` at a raw provider and every request with an effort set
+ * 404s, because no provider serves a route under `/x-reasoning-effort/high`.
+ *
+ * Note where the segment lands. It is appended to the END of `baseUrl`, and
+ * the runtime then appends its own route, so a `baseUrl` with a path of its
+ * own puts the segment in the MIDDLE of the request path:
+ *
+ *   http://127.0.0.1:8787      ->  /x-reasoning-effort/high/chat/completions
+ *   http://127.0.0.1:8787/v1   ->  /v1/x-reasoning-effort/high/chat/completions
+ *
+ * A stripper that anchors its match to the front of the path handles only the
+ * first. Match the segment wherever it appears.
+ *
+ * `github`, `openai`, `azure` and `anthropic` behave exactly as they always
+ * have. Nothing is encoded for them.
+ */
+export type ProviderType = "github" | "azure" | "openai" | "openai-proxy" | "anthropic";
 
 /** A single provider entry in model_providers.json. */
 export interface ModelProviderConfig {
     /** Unique identifier for this provider (e.g. "azure-openai", "github-copilot"). */
     id: string;
-    /** Provider type. */
-    type: "github" | "azure" | "openai" | "anthropic";
+    /** Provider type. See ProviderType — `openai-proxy` is opt-in and has a contract. */
+    type: ProviderType;
     /**
      * GitHub token (type=github only). Supports `env:VAR_NAME` syntax.
      * When type=github, the SDK uses the Copilot API — no baseUrl needed.
@@ -90,8 +143,8 @@ export interface ModelDescriptor {
     modelName: string;
     /** Provider ID. */
     providerId: string;
-    /** Provider type. */
-    providerType: "github" | "azure" | "openai" | "anthropic";
+    /** Provider type. See ProviderType. */
+    providerType: ProviderType;
     /** Short description of when to use this model. */
     description?: string;
     /** Relative cost tier. */
@@ -106,14 +159,16 @@ export interface ModelDescriptor {
     defaultContextTier?: ContextTier;
     /** Optional token capacity for each supported context-window tier. */
     contextWindowSizes?: Partial<Record<ContextTier, number>>;
+    /** Declared vision support — see ModelEntry.vision. */
+    vision?: ModelVisionCapability;
 }
 
 /** Resolved provider info for a specific model — ready to use. */
 export interface ResolvedProvider {
     /** The provider ID from model_providers.json. */
     providerId: string;
-    /** Provider type. */
-    type: "github" | "azure" | "openai" | "anthropic";
+    /** Provider type as DECLARED — `openai-proxy` stays distinguishable here. */
+    type: ProviderType;
     /** Raw model name (for SDK config). */
     modelName: string;
     /** Resolved GitHub token (type=github only). */
@@ -121,6 +176,10 @@ export interface ResolvedProvider {
     /**
      * Copilot SDK ProviderConfig — passed to SessionConfig.provider.
      * Undefined for type=github (uses githubToken instead).
+     *
+     * The type here is the SDK's own union, which knows nothing about
+     * `openai-proxy`; that value is mapped to `openai` in `resolve()` and must
+     * never leak into this object.
      */
     sdkProvider?: {
         type: "openai" | "azure" | "anthropic";
@@ -193,6 +252,7 @@ export class ModelProviderRegistry {
                     ...(supportedContextTiers.length > 0 ? { supportedContextTiers } : {}),
                     ...(defaultContextTier ? { defaultContextTier } : {}),
                     ...(Object.keys(contextWindowSizes).length > 0 ? { contextWindowSizes } : {}),
+                    ...(entry.vision ? { vision: entry.vision } : {}),
                 };
                 this.descriptors.set(qualified, desc);
                 this.qualifiedToProvider.set(qualified, p);
@@ -279,12 +339,18 @@ export class ModelProviderRegistry {
             ? `${baseUrl.replace(/\/+$/, "")}/deployments/${desc.modelName}`
             : baseUrl;
 
+        // `openai-proxy` is a PilotSwarm-only distinction. The Copilot SDK's
+        // provider union is openai | azure | anthropic, so it is mapped back to
+        // `openai` right here and never reaches the SDK. The declared type
+        // survives on `type` above, which is what the effort encoding reads.
+        const sdkProviderType = provider.type === "openai-proxy" ? "openai" : provider.type;
+
         return {
             providerId: provider.id,
             type: provider.type,
             modelName: desc.modelName,
             sdkProvider: {
-                type: provider.type,
+                type: sdkProviderType,
                 baseUrl: resolvedUrl,
                 apiKey: resolveEnvValue(provider.apiKey),
                 ...(provider.type === "azure" && {
@@ -328,6 +394,118 @@ export class ModelProviderRegistry {
         lines.push(`\nDefault: ${this._defaultModel || "none"}`);
         return lines.join("\n");
     }
+}
+
+// ─── Reasoning effort carried on the provider baseUrl ────────────
+
+/**
+ * The path segment that carries a reasoning effort to a stripping proxy.
+ *
+ * Why the URL, of all places. PilotSwarm takes a per-session reasoning effort
+ * and hands it to `@github/copilot-sdk` as `config.reasoningEffort`. The SDK
+ * spawns the `@github/copilot` binary, and THAT child process builds the HTTP
+ * request. It only emits `reasoning_effort` for the Copilot API (provider
+ * `type: github`); for every BYOK provider the field is dropped before the
+ * request exists. Measured with an HTTP proxy in front of both Fireworks and
+ * Azure AI Foundry: the outbound body carried `model`, `tools`, and nothing
+ * else. So the effort has to ride on something the runtime forwards verbatim.
+ *
+ * It used to ride in the model NAME, as `kimi-k3::effort=high`. That broke
+ * hard on @github/copilot 1.0.79, which parses `model:key=value` as its own
+ * model-options syntax and rejects unknown keys:
+ *
+ *     Execution failed: Unknown model option key: effort
+ *
+ * Every turn with an effort set failed. The old comment argued a colon was
+ * safe because no provider id uses one — which checked our naming and not the
+ * runtime's, and the runtime is the thing doing the parsing. (Its own valid
+ * keys are `defaultReasoningEffort` and `defaultReasoningSummary`; neither
+ * puts `reasoning_effort` on a BYOK request, so neither helps here.)
+ *
+ * The baseUrl path is a better carrier. The runtime treats it as opaque and
+ * appends its own route to it, verified end to end:
+ *
+ *     baseUrl   http://127.0.0.1:8787/x-reasoning-effort/high
+ *     proxy saw POST /x-reasoning-effort/high/chat/completions
+ *
+ * Only providers declared `type: "openai-proxy"` get this — an explicit
+ * promise that the server at that baseUrl strips the prefix back off. Every
+ * other provider type is left byte-identical, which is what keeps deployments
+ * without such a proxy working.
+ *
+ * The decoder lives in the grimfanda repo, `deploy/openai-compat-proxy.mjs`.
+ * Changing this string breaks that proxy — change both together.
+ */
+export const REASONING_EFFORT_PATH_PREFIX = "/x-reasoning-effort";
+
+/** Matches exactly what `encodeReasoningEffortInBaseUrl` writes, and nothing else. */
+const BASE_URL_EFFORT_PATTERN = /^(.*)\/x-reasoning-effort\/([a-z]+)$/;
+
+/**
+ * Append a reasoning effort to a provider baseUrl.
+ *
+ * Returns the url unchanged for an absent or unknown effort, and for a url
+ * that already carries one. Low-level: `applyReasoningEffortToProviderConfig`
+ * decides WHETHER a provider should be encoded at all.
+ */
+export function encodeReasoningEffortInBaseUrl(baseUrl: string, effort?: ReasoningEffort | null): string {
+    const url = String(baseUrl || "");
+    if (!url) return url;
+    if (!effort || !REASONING_EFFORTS.has(String(effort))) return url;
+    if (decodeReasoningEffortFromBaseUrl(url).reasoningEffort) return url;
+    // Trailing slashes are stripped first, or the proxy sees a doubled slash
+    // and the prefix no longer matches at the front of the path.
+    return `${url.replace(/\/+$/, "")}${REASONING_EFFORT_PATH_PREFIX}/${effort}`;
+}
+
+/**
+ * Split an encoded effort back off a provider baseUrl.
+ *
+ * The mirror of `encodeReasoningEffortInBaseUrl`, kept here so the two are
+ * verified against each other. Anything that is not an exact
+ * `<url>/x-reasoning-effort/<known level>` comes back untouched with a null
+ * effort — a real baseUrl must never be truncated by a near-miss.
+ */
+export function decodeReasoningEffortFromBaseUrl(
+    encodedBaseUrl: string,
+): { baseUrl: string; reasoningEffort: ReasoningEffort | null } {
+    const url = String(encodedBaseUrl || "");
+    const match = BASE_URL_EFFORT_PATTERN.exec(url);
+    if (!match) return { baseUrl: url, reasoningEffort: null };
+    if (!REASONING_EFFORTS.has(match[2])) return { baseUrl: url, reasoningEffort: null };
+    return { baseUrl: match[1], reasoningEffort: match[2] as ReasoningEffort };
+}
+
+/**
+ * The provider config to put on the SDK session config — the whole decision.
+ *
+ * Encodes ONLY when all of these hold:
+ *   1. an effort is set for the session,
+ *   2. the model has a catalog entry (nothing is claimed about a model the
+ *      registry has never heard of),
+ *   3. the provider is declared `type: "openai-proxy"` — an explicit promise
+ *      that its `baseUrl` strips the prefix back off. `github`, `openai`,
+ *      `azure` and `anthropic` are left byte-identical,
+ *   4. the catalog entry DECLARES that effort in `supportedReasoningEfforts`
+ *      — sending a level a model does not accept is exactly the 400 this
+ *      exists to avoid. Mirrors how an unsupported context tier is dropped.
+ *
+ * Anything else returns the config unchanged, by identity, so a caller can
+ * spread it without allocating.
+ */
+export function applyReasoningEffortToProviderConfig<T extends { baseUrl?: string } | undefined>(
+    providerConfig: T,
+    descriptor: ModelDescriptor | undefined,
+    reasoningEffort?: ReasoningEffort | null,
+): T {
+    if (!providerConfig || !providerConfig.baseUrl) return providerConfig;
+    if (!reasoningEffort || !descriptor) return providerConfig;
+    if (descriptor.providerType !== "openai-proxy") return providerConfig;
+    const supported = descriptor.supportedReasoningEfforts ?? [];
+    if (!supported.includes(reasoningEffort)) return providerConfig;
+    const baseUrl = encodeReasoningEffortInBaseUrl(providerConfig.baseUrl, reasoningEffort);
+    if (baseUrl === providerConfig.baseUrl) return providerConfig;
+    return { ...providerConfig, baseUrl };
 }
 
 // ─── Loader ──────────────────────────────────────────────────────

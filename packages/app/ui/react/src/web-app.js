@@ -252,6 +252,16 @@ function normalizeProfileSettings(settings) {
     if (candidate.rightPaneMode === "canvas" || candidate.rightPaneMode === "panes") {
         normalized.rightPaneMode = candidate.rightPaneMode;
     }
+    // The two independent desktop columns. This normalizer WHITELISTS keys, so
+    // an unlisted one is dropped on the way to the server without a word —
+    // which is exactly how a toggle looks like it never persisted.
+    if (hasOwn(candidate, "desktopPanes") && candidate.desktopPanes && typeof candidate.desktopPanes === "object") {
+        normalized.desktopPanes = {
+            canvasOpen: candidate.desktopPanes.canvasOpen === true,
+            diagnosticsOpen: candidate.desktopPanes.diagnosticsOpen === true,
+            zen: candidate.desktopPanes.zen === true,
+        };
+    }
     if (hasOwn(candidate, "canvasPrefs")) {
         normalized.canvasPrefs = normalizeStoredCanvasPrefs(candidate.canvasPrefs);
     }
@@ -319,7 +329,7 @@ function hasOwn(value, key) {
     return Boolean(value && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, key));
 }
 
-function profileSettingsFromViewState(state, preservedOtherTouchScale = null, preservedRightPaneMode = null) {
+function profileSettingsFromViewState(state, preservedOtherTouchScale = null, preservedRightPaneMode = null, preservedDesktopPanes = null) {
     return normalizeProfileSettings({
         themeId: state.themeId,
         [touchScaleKey()]: state.touchScale,
@@ -329,6 +339,9 @@ function profileSettingsFromViewState(state, preservedOtherTouchScale = null, pr
             sessionPaneAdjust: state.sessionPaneAdjust,
             portalSessionColumnAdjust: state.portalSessionColumnAdjust,
             activityPaneAdjust: state.activityPaneAdjust,
+            canvasPaneAdjust: state.canvasPaneAdjust,
+            diagnosticsPaneAdjust: state.diagnosticsPaneAdjust,
+            diagnosticsSplitAdjust: state.diagnosticsSplitAdjust,
         },
         pinnedSessionIds: state.pinnedIds,
         sessionOrder: state.manualOrder,
@@ -339,11 +352,23 @@ function profileSettingsFromViewState(state, preservedOtherTouchScale = null, pr
         // write its own value — it preserves the last-known stored one, or a
         // desktop that flipped to canvas would be flipped back by the phone's
         // next save.
+        //
+        // desktopPanes replaces it and is preserved the same way, for the same
+        // reason. rightPaneMode is still written so a rolled-back build reads
+        // something sane.
         ...(isNarrowViewport()
-            ? (preservedRightPaneMode === "canvas" || preservedRightPaneMode === "panes"
-                ? { rightPaneMode: preservedRightPaneMode }
-                : {})
-            : { rightPaneMode: state.rightPaneMode }),
+            ? {
+                ...(preservedRightPaneMode === "canvas" || preservedRightPaneMode === "panes"
+                    ? { rightPaneMode: preservedRightPaneMode }
+                    : {}),
+                ...(preservedDesktopPanes && typeof preservedDesktopPanes === "object"
+                    ? { desktopPanes: preservedDesktopPanes }
+                    : {}),
+            }
+            : {
+                rightPaneMode: state.canvasOpen ? "canvas" : "panes",
+                desktopPanes: { canvasOpen: state.canvasOpen === true, diagnosticsOpen: state.diagnosticsOpen === true, zen: state.canvasZen === true },
+            }),
         canvasPrefs: state.canvasPrefs,
         // setCurrentUserProfileSettings REPLACES the settings object, so the
         // other device class's slot has to be written back verbatim or saving
@@ -374,7 +399,14 @@ function buildDefaultProfileSettingsFromState(state, preservedOtherTouchScale = 
             ? (preservedRightPaneMode === "canvas" || preservedRightPaneMode === "panes"
                 ? { rightPaneMode: preservedRightPaneMode }
                 : {})
-            : { rightPaneMode: state?.ui?.rightPaneMode }),
+            : {
+                rightPaneMode: state?.ui?.rightPaneMode,
+                desktopPanes: {
+                    canvasOpen: state?.ui?.canvasOpen === true,
+                    diagnosticsOpen: state?.ui?.diagnosticsOpen === true,
+                    zen: state?.ui?.canvasZen === true,
+                },
+            }),
         canvasPrefs: state?.canvas?.prefs,
         ...(typeof preservedOtherTouchScale === "boolean"
             ? { [otherTouchScaleKey()]: preservedOtherTouchScale }
@@ -423,6 +455,9 @@ function materializeProfileSettings(remoteSettings, defaults) {
         // clobber a local flip/badge advance the server has not persisted yet.
         // An omitted key leaves the profileSettings/apply guards preserving
         // the current value.
+        ...(hasOwn(normalizedRemote, "desktopPanes")
+            ? { desktopPanes: normalizedRemote.desktopPanes }
+            : {}),
         ...(hasOwn(normalizedRemote, "rightPaneMode")
             ? { rightPaneMode: normalizedRemote.rightPaneMode }
             : {}),
@@ -474,6 +509,65 @@ function shallowEqualObject(left, right) {
 function clampNumber(value, min, max) {
     return Math.max(min, Math.min(max, value));
 }
+
+/**
+ * Below this, releasing a drag CLOSES the column rather than leaving a sliver.
+ *
+ * "Resized to 0 toggles it off" is the rule, but a pointer rarely lands on
+ * exactly 0 — without a threshold you get a 3px column you cannot read, cannot
+ * grab, and did not ask for. 120px is about the narrowest either column is
+ * still useful at.
+ */
+const PORTAL_COLUMN_SNAP_CLOSED_PX = 120;
+
+/** Width of the draggable track between the canvas and diagnostics columns. */
+const PORTAL_COLUMN_RESIZER_PX = 16;
+
+/**
+ * The narrowest the canvas should OPEN at. Not a clamp — drag it smaller if
+ * you like, or drag it away entirely.
+ *
+ * A canvas is a rendered page being looked at, so it needs enough width for a
+ * normal document column. The inherited fr split left it near 200px.
+ */
+const PORTAL_CANVAS_MIN_PX = 480;
+
+/**
+ * Wide enough to OPEN the canvas by default on a first visit.
+ *
+ * Sessions and chat need roughly 224px + 500px to stay comfortable, and the
+ * canvas wants PORTAL_CANVAS_MIN_PX beside them. 1440 clears that with room to
+ * spare and is a real device width (a 14" MacBook, a 900p desktop), so the
+ * common laptop gets a canvas and a small window does not get three cramped
+ * columns.
+ */
+const PORTAL_CANVAS_DEFAULT_MIN_VIEWPORT_PX = 1440;
+
+/**
+ * Whether this profile has ever expressed a preference about the two columns.
+ *
+ * The width-based default must fire only in its absence: someone who CLOSED
+ * the canvas has stored `{canvasOpen: false}`, which is a choice and reads
+ * nothing like "unset". A legacy rightPaneMode counts too — it is the same
+ * preference in the older shape.
+ */
+function hasStoredDesktopPanes(settings) {
+    if (!settings || typeof settings !== "object") return false;
+    if (settings.desktopPanes && typeof settings.desktopPanes === "object") return true;
+    return settings.rightPaneMode === "canvas" || settings.rightPaneMode === "panes";
+}
+
+/**
+ * The widths the two optional columns OPEN at, in pixels. 2:1 — the canvas is
+ * the thing being looked at; diagnostics is a readout beside it.
+ *
+ * Pixels, not shares of the window, because of the rule the fr model broke:
+ * when a column closes, the freed space goes to chat + sessions — never to
+ * the surviving column. A pane owns its width; chat flexes.
+ */
+const PORTAL_CANVAS_COL_DEFAULT_PX = 640;
+const PORTAL_DIAG_COL_DEFAULT_PX = 320;
+
 
 function portalSessionColumnBounds(width) {
     const safeWidth = Math.max(0, Number(width) || 0);
@@ -4056,6 +4150,7 @@ function SessionRowContent({ row, theme, structured = false, showInlineDetail = 
         return React.createElement(React.Fragment, null,
             plain.statusColor ? React.createElement(StatusDot, { color: plain.statusColor, node: row.depth > 0 }) : null,
             React.createElement(OwnerAvatar, { badge: row.ownerBadge }),
+            React.createElement(SessionCanvasMark, { mark: row.canvasMark }),
             React.createElement("span", { className: "ps-session-row-title__text" },
                 React.createElement(Runs, { runs: plain.rest, theme })));
     }
@@ -4078,6 +4173,7 @@ function SessionRowContent({ row, theme, structured = false, showInlineDetail = 
             React.createElement("div", { className: "ps-session-row-title" },
                 title.statusColor ? React.createElement(StatusDot, { color: title.statusColor, node: row.depth > 0 }) : null,
                 React.createElement(OwnerAvatar, { badge: row.ownerBadge }),
+                React.createElement(SessionCanvasMark, { mark: row.canvasMark }),
                 // Runs wrapped in ONE element: the title is a flex row so the
                 // avatar centres against the text, and the runs keep normal
                 // inline flow inside the wrapper. Flexing the runs directly
@@ -4233,6 +4329,12 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         // so the reconstruction below must carry it or the click does nothing
         // visible (the same omission that blinded the Node Map).
         listDeselected: Boolean(state.sessions.listDeselected),
+        // The canvas markers read these. This synthetic state is exactly the
+        // trap the branding comment below describes: omit a slice here and
+        // every row computes as if it were empty — the markers were null on
+        // every row until these two lines existed.
+        canvasBySessionId: state.canvas?.bySessionId,
+        canvasPrefs: state.canvas?.prefs,
     }), shallowEqualObject);
     const computedRows = React.useMemo(() => selectSessionRows({
         sessions: {
@@ -4256,7 +4358,11 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         // deployment, while the controller's own calls (which pass real state)
         // produced the branded name.
         branding: viewState.branding,
-    }), [viewState.activeSessionId, viewState.auth, viewState.branding, viewState.connectionMode, viewState.filterQuery, viewState.listDeselected, viewState.ownerFilter, viewState.pinnedIds, viewState.manualOrder, viewState.selectedIds, viewState.selectMode, viewState.sessionsById, viewState.sessionsFlat]);
+        canvas: {
+            bySessionId: viewState.canvasBySessionId,
+            prefs: viewState.canvasPrefs,
+        },
+    }), [viewState.activeSessionId, viewState.auth, viewState.branding, viewState.canvasBySessionId, viewState.canvasPrefs, viewState.connectionMode, viewState.filterQuery, viewState.listDeselected, viewState.ownerFilter, viewState.pinnedIds, viewState.manualOrder, viewState.selectedIds, viewState.selectMode, viewState.sessionsById, viewState.sessionsFlat]);
     // Hold the previous rows when a poll produced identical output.
     const rows = useStableValue(computedRows);
     const activeSession = viewState.activeSessionId
@@ -5942,6 +6048,49 @@ function ArtifactTakeoverPane({ controller, onClose }) {
 }
 
 /**
+ * The phone's canvas: a LAYER over the content region, not a full screen.
+ *
+ * It used to be a fixed, full-viewport overlay — the portal header and the
+ * toolbar disappeared behind it too, so looking at a drawing meant leaving the
+ * app and finding your way back. It now fills exactly the region the Main,
+ * Activity and Inspector panes share: top edge under the toolbar, bottom edge
+ * at the viewport, edge to edge, no inset. The header and the toolbar (with
+ * its Canvas button, the only way in or out — there is no ✕ here) stay put.
+ *
+ * It is rendered as a SIBLING of that region's content, not inside any pane,
+ * because the frame has to outlive every pane: the canvas runs interactive
+ * pages, and switching to Inspector and back must not reset a running game.
+ *
+ * Maximized, it goes truly full-screen: the same element flips from absolute
+ * inside the region to fixed over the whole viewport, covering the portal
+ * header and the toolbar too. That is a CLASS change on one div and nothing
+ * else — the frame is never moved in the DOM, so a game survives the toggle.
+ * The thin strip persists in both states; only the right-hand button flips.
+ */
+function MobileCanvasLayer({ controller, visible = true }) {
+    const [maximized, setMaximized] = React.useState(false);
+    const toggleMaximized = React.useCallback(() => setMaximized((current) => !current), []);
+    // Leaving the canvas drops full-screen, so coming back lands in the inset
+    // presentation rather than a takeover the user has to undo before they can
+    // reach the toolbar again.
+    React.useEffect(() => {
+        if (!visible) setMaximized(false);
+    }, [visible]);
+    // Kept MOUNTED while hidden: unmounting destroys the sandboxed document,
+    // and with it everything the user typed and scrolled. The hidden state is
+    // an off-screen transform (see .ps-mobile-canvas-layer.is-hidden), so the
+    // frame keeps a real, unchanged box and no settle-reload fires on re-show.
+    return React.createElement("div", {
+        className: `ps-mobile-canvas-layer${maximized ? " is-maximized" : ""}${visible ? "" : " is-hidden"}`,
+        ...(visible ? {} : { inert: true, "aria-hidden": "true" }),
+    },
+        React.createElement(CanvasPane, {
+            controller, mobile: true, visible, focusOnPromote: true,
+            maximized, onToggleMaximized: toggleMaximized,
+        }));
+}
+
+/**
  * Mobile artifact viewer — a genuine full-viewport overlay, not a pane.
  *
  * Rendered OUTSIDE the workspace and fixed to the viewport, so the portal
@@ -5949,19 +6098,6 @@ function ArtifactTakeoverPane({ controller, onClose }) {
  * phone should feel like pushing a detail screen, the way a native app does,
  * not like shrinking content into one more box. Desktop never mounts this.
  */
-/**
- * The phone's canvas: FULL-SCREEN, opened by the same toolbar toggle the
- * desktop has, closed by the pane's ✕ back to whatever was on screen. The
- * former bottom-nav tab is gone — one affordance on every device class.
- */
-function MobileCanvasOverlay({ controller, onClose, visible = true }) {
-    // Kept MOUNTED while hidden: unmounting destroys the sandboxed document,
-    // and with it everything the user typed and scrolled. visibility (not
-    // display) keeps layout real so no resize-reload fires on re-show.
-    return React.createElement("div", { className: `ps-artifact-overlay ps-canvas-overlay${visible ? "" : " is-hidden"}`, ...(visible ? {} : { inert: true, "aria-hidden": "true" }) },
-        React.createElement(CanvasPane, { controller, mobile: true, onClose, visible, focusOnPromote: true }));
-}
-
 function MobileArtifactOverlay({ controller }) {
     const view = useControllerSelector(controller, (state) => {
         const id = state.files.selectedArtifactId || "";
@@ -6067,6 +6203,114 @@ function CanvasGlyph() {
 }
 
 /**
+ * Diagnostics: a bug, for "debug".
+ *
+ * Not a cog — the admin console owns that — and not sliders, which the filter
+ * funnel is already close enough to.
+ */
+function DiagnosticsGlyph() {
+    // Bigger than its neighbours on purpose, and drawn heavier. A bug is a
+    // busier shape than a funnel or a cog: at 16px with hairline legs it
+    // collapsed into a smudge, so it takes 20px and a thicker stroke to read
+    // as the same visual weight.
+    const stroke = { fill: "none", stroke: "currentColor", strokeWidth: 1.7, strokeLinecap: "round", strokeLinejoin: "round" };
+    return React.createElement("svg", { viewBox: "0 0 20 20", width: 20, height: 20, "aria-hidden": "true" },
+        // Shell, with the seam that says beetle rather than pill.
+        React.createElement("path", { d: "M6.2 8.6a3.8 3.8 0 0 1 7.6 0v2.9a3.8 3.8 0 0 1-7.6 0z", ...stroke }),
+        React.createElement("path", { d: "M6.2 10.3h7.6", ...stroke }),
+        // Head and antennae.
+        React.createElement("path", { d: "M7.6 6.5a2.4 2.4 0 0 1 4.8 0", ...stroke }),
+        React.createElement("path", { d: "M8 4.4 6.9 2.9M12 4.4l1.1-1.5", ...stroke }),
+        // Legs: three a side, the outer two angled so the silhouette reads.
+        React.createElement("path", { d: "M6.3 8.6 3.8 7.4M6.2 10.6H3.6M6.3 12.6 3.8 13.9", ...stroke }),
+        React.createElement("path", { d: "M13.7 8.6 16.2 7.4M13.8 10.6h2.6M13.7 12.6l2.5 1.3", ...stroke }));
+}
+
+/**
+ * The canvas marker on a session row.
+ *
+ * Two states, and they must be tellable apart at a glance in a dense list:
+ *   "canvas"  outline only — a canvas exists here
+ *   "unseen"  outline plus a filled dot — it changed since you last looked
+ *
+ * Shape carries the meaning, not colour alone: the dot is visible in either
+ * theme and to a reader who cannot separate the two hues.
+ */
+function SessionCanvasMark({ mark }) {
+    if (mark !== "canvas" && mark !== "unseen") return null;
+    const unseen = mark === "unseen";
+    const stroke = { fill: "none", stroke: "currentColor", strokeWidth: 1.5, strokeLinecap: "round", strokeLinejoin: "round" };
+    return React.createElement("span", {
+        className: `ps-session-canvas-mark${unseen ? " is-unseen" : ""}`,
+        title: unseen ? "Canvas updated since you last viewed it" : "This session has a canvas",
+        "aria-label": unseen ? "Canvas updated" : "Has a canvas",
+        role: "img",
+    },
+    React.createElement("svg", { viewBox: "0 0 16 16", width: 12, height: 12, "aria-hidden": "true" },
+        React.createElement("rect", { x: 1.6, y: 2.6, width: 12.8, height: 9.2, rx: 1.4, ...stroke }),
+        React.createElement("path", { d: "M6 14.4h4", ...stroke }),
+        unseen
+            ? React.createElement("circle", { cx: 12.4, cy: 4.6, r: 2.4, fill: "currentColor", stroke: "none" })
+            : null));
+}
+
+/**
+ * The canvas slot controls: a dropdown when the session has more than one
+ * drawn canvas, plus prev/next arrows. Hidden entirely with one canvas —
+ * the common case stays exactly as it always looked. Slot state is
+ * ui.canvasSlot (in-memory; the selector clamps to a drawn slot).
+ */
+function CanvasSlotControls({ controller, view, compact = false }) {
+    const slots = Array.isArray(view.slots) ? view.slots : [];
+    if (slots.length <= 1) return null;
+    const order = slots.map((s2) => s2.slot);
+    const at = Math.max(0, order.indexOf(view.slot));
+    const go = (delta) => {
+        const next = order[(at + delta + order.length) % order.length];
+        controller.dispatch({ type: "ui/canvasSlot", slot: next });
+    };
+    const labelFor = (s2) => (s2.name ? s2.name : `canvas ${s2.slot}`) + (s2.unseen ? " •" : "");
+    return React.createElement("span", { className: `ps-canvas-slot-controls${compact ? " is-compact" : ""}` },
+        React.createElement("button", {
+            type: "button", className: "ps-artifact-pane-btn",
+            onClick: () => go(-1), title: "Previous canvas", "aria-label": "Previous canvas",
+        }, "\u2039"),
+        React.createElement("select", {
+            className: "ps-canvas-slot-select",
+            value: view.slot,
+            onChange: (e) => controller.dispatch({ type: "ui/canvasSlot", slot: Number(e.target.value) }),
+            "aria-label": "Choose canvas",
+            title: "Choose canvas",
+        }, slots.map((s2) => React.createElement("option", { key: s2.slot, value: s2.slot }, labelFor(s2)))),
+        React.createElement("button", {
+            type: "button", className: "ps-artifact-pane-btn",
+            onClick: () => go(1), title: "Next canvas", "aria-label": "Next canvas",
+        }, "\u203a"));
+}
+
+/** Zen: a narrow chat rail beside a wide canvas. */
+function ZenGlyph() {
+    const stroke = { fill: "none", stroke: "currentColor", strokeWidth: 1.6, strokeLinecap: "round", strokeLinejoin: "round" };
+    return React.createElement("svg", { viewBox: "0 0 20 20", width: 15, height: 15, "aria-hidden": "true" },
+        React.createElement("rect", { x: 2.2, y: 3.4, width: 3.6, height: 13.2, rx: 1, ...stroke }),
+        React.createElement("rect", { x: 8.2, y: 3.4, width: 9.6, height: 13.2, rx: 1, ...stroke }));
+}
+
+/** Corners pushing OUT — take the whole screen. */
+function MaximizeGlyph() {
+    const stroke = { fill: "none", stroke: "currentColor", strokeWidth: 1.9, strokeLinecap: "round", strokeLinejoin: "round" };
+    return React.createElement("svg", { viewBox: "0 0 20 20", width: 13, height: 13, "aria-hidden": "true" },
+        React.createElement("path", { d: "M8 3H3v5M12 3h5v5M12 17h5v-5M8 17H3v-5", ...stroke }));
+}
+
+/** Corners pulling IN — back to the canvas inset in the content region. */
+function RestoreGlyph() {
+    const stroke = { fill: "none", stroke: "currentColor", strokeWidth: 1.9, strokeLinecap: "round", strokeLinejoin: "round" };
+    return React.createElement("svg", { viewBox: "0 0 20 20", width: 13, height: 13, "aria-hidden": "true" },
+        React.createElement("path", { d: "M3 8h5V3M17 8h-5V3M17 12h-5v5M3 12h5v5", ...stroke }));
+}
+
+/**
  * Double-buffered canvas frame with PER-REVISION blob URLs.
  *
  * Deliberately not the artifact preview panel: that component nulls its frame
@@ -6076,7 +6320,7 @@ function CanvasGlyph() {
  * loads hidden-but-painted behind the live frame and is promoted on load, so
  * a live redraw is a composite swap of something already drawn.
  */
-function CanvasFrame({ controller, sessionId, latestRev, zoom, visible = true, focusOnPromote = false, dataRev = 0, dataPayload = null }) {
+function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible = true, focusOnPromote = false, dataRev = 0, dataPayload = null }) {
     const [live, setLive] = React.useState(null);       // { url, rev }
     const [staging, setStaging] = React.useState(null); // { url, rev }
     const [loadError, setLoadError] = React.useState(null); // { rev }
@@ -6131,7 +6375,7 @@ function CanvasFrame({ controller, sessionId, latestRev, zoom, visible = true, f
         if (!controller || !sessionId || !latestRev) return undefined;
         let cancelled = false;
         let retryTimer = null;
-        fetchArtifactHtmlObjectUrl(controller, sessionId, "canvas.html")
+        fetchArtifactHtmlObjectUrl(controller, sessionId, slot <= 1 ? "canvas.html" : `canvas${slot}.html`)
             .then((url) => {
                 if (cancelled) { URL.revokeObjectURL(url); return; }
                 // A staging revision that never loaded is superseded here —
@@ -6159,7 +6403,7 @@ function CanvasFrame({ controller, sessionId, latestRev, zoom, visible = true, f
             cancelled = true;
             if (retryTimer) clearTimeout(retryTimer);
         };
-    }, [controller, sessionId, latestRev, retryTick]);
+    }, [controller, sessionId, slot, latestRev, retryTick]);
 
     // Session switch / unmount: drop both frames — a different session is a
     // different document, and showing the old canvas under a new session is a
@@ -6201,7 +6445,7 @@ function CanvasFrame({ controller, sessionId, latestRev, zoom, visible = true, f
         // toggle) still promotes new revisions in the background — those are
         // NOT viewed; the badge must light until the user actually looks.
         if (controller && sessionId && visibleRef.current) {
-            controller.dispatch({ type: "canvas/viewed", sessionId, rev: frame.rev });
+            controller.dispatch({ type: "canvas/viewed", sessionId, slot, rev: frame.rev });
         }
         // iOS: a programmatic focus into the freshly promoted frame is the
         // synchronous interaction that registers its scroller — the code
@@ -6229,7 +6473,7 @@ function CanvasFrame({ controller, sessionId, latestRev, zoom, visible = true, f
         // On-screen injection = seen; hidden injection leaves the badge lit
         // until the user actually looks (the catch-up below files it then).
         if (controller && sessionId && visibleRef.current) {
-            controller.dispatch({ type: "canvas/viewed", sessionId, dataRev });
+            controller.dispatch({ type: "canvas/viewed", sessionId, slot, dataRev });
         }
     }, [live, dataRev, dataPayload, controller, sessionId]);
 
@@ -6237,7 +6481,7 @@ function CanvasFrame({ controller, sessionId, latestRev, zoom, visible = true, f
     // viewing it — this is what clears a badge earned while hidden.
     React.useEffect(() => {
         if (visible && live && controller && sessionId) {
-            controller.dispatch({ type: "canvas/viewed", sessionId, rev: live.rev, ...(dataRev ? { dataRev } : {}) });
+            controller.dispatch({ type: "canvas/viewed", sessionId, slot, rev: live.rev, ...(dataRev ? { dataRev } : {}) });
             if (focusOnPromote) {
                 try { liveIframeElRef.current?.focus({ preventScroll: true }); } catch { /* best effort */ }
             }
@@ -6327,12 +6571,20 @@ function CanvasFrame({ controller, sessionId, latestRev, zoom, visible = true, f
 }
 
 /**
- * Canvas mode for the right column: the session's standing display, rendered
- * from the reserved canvas.html artifact and converging live on
- * canvas_updated events. Replaces the inspector/activity split while active;
- * the artifact reader still takes precedence while open and returns here.
+ * The session's standing display: rendered from the reserved canvas.html
+ * artifact and converging live on canvas_updated events.
+ *
+ * Desktop mounts it in the right column, where it replaces the
+ * inspector/activity split while active (the artifact reader still takes
+ * precedence while open and returns here). The phone mounts it as a layer over
+ * the content region — see MobileCanvasLayer — and gets a stripped header: the
+ * revision on one thin line with a maximize toggle, no zoom control and no ✕,
+ * because there the toolbar's Canvas button is the only way in or out.
+ *
+ * maximized / onToggleMaximized are the phone's full-screen state, owned by
+ * MobileCanvasLayer. Passing no handler simply omits the button.
  */
-function CanvasPane({ controller, mobile = false, onClose = null, visible = true, focusOnPromote = false }) {
+function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote = false, maximized = false, onToggleMaximized = null }) {
     const view = useControllerSelector(controller, selectCanvasView, shallowEqualObject);
     const zoom = useControllerSelector(controller, (state) => Number(state.files.htmlZoom) || 1);
     const setZoom = React.useCallback((next) => {
@@ -6346,38 +6598,127 @@ function CanvasPane({ controller, mobile = false, onClose = null, visible = true
         if (view.sessionId) controller.ensureCanvasSnapshot(view.sessionId).catch(() => {});
     }, [controller, view.sessionId]);
 
-    const backToPanes = React.useCallback(() => {
-        controller.dispatch({ type: "ui/rightPaneMode", mode: "panes", sessionId: view.sessionId, manual: true });
+    const zenOn = useControllerSelector(controller, (s) => s?.ui?.canvasZen === true);
+    const [toolbarSlot, setToolbarSlot] = React.useState(null);
+    React.useEffect(() => {
+        if (!maximized) { setToolbarSlot(null); return undefined; }
+        // The slot is rendered by the Toolbar in the SAME commit that flips
+        // maximized, so poll one frame rather than racing it.
+        let raf = 0;
+        const find = () => {
+            const el = document.getElementById("ps-toolbar-canvas-slot");
+            if (el) setToolbarSlot(el);
+            else raf = requestAnimationFrame(find);
+        };
+        find();
+        return () => cancelAnimationFrame(raf);
+    }, [maximized]);
+    const closeCanvas = React.useCallback(() => {
+        controller.dispatch({ type: "ui/canvasOpen", open: false, sessionId: view.sessionId, manual: true });
     }, [controller, view.sessionId]);
-    const close = onClose || (!mobile ? backToPanes : null);
+
+    // The phone's header is ONE thin line: `rev 4` on the left, the
+    // maximize/restore toggle hard right. Nothing else — no ✕ (the toolbar's
+    // Canvas button is the way out) and no zoom control, because every pixel
+    // of height here is canvas the user can no longer see.
+    //
+    // The strip renders whenever there is a revision to name OR the canvas is
+    // maximized. That second half is not cosmetic: maximized covers the whole
+    // viewport including the toolbar, so if a cleared canvas (sizeBytes 0)
+    // dropped the strip it would take the only way back with it.
+    const showRevStrip = mobile && (view.exists || maximized);
+    const header = mobile
+        ? (showRevStrip
+            ? React.createElement("header", { className: "ps-artifact-pane-bar is-rev-strip" },
+                React.createElement("span", { className: "ps-artifact-pane-type", title: view.note || undefined },
+                    view.exists ? `${view.name ? `${view.name} \u00b7 ` : ""}rev ${view.latestRev}` : ""),
+                React.createElement(CanvasSlotControls, { controller, view, compact: true }),
+                onToggleMaximized
+                    ? React.createElement("button", {
+                        type: "button",
+                        className: "ps-canvas-max-btn",
+                        onClick: onToggleMaximized,
+                        title: maximized ? "Back to the inset canvas" : "Maximize — cover the whole screen",
+                        "aria-label": maximized ? "Restore canvas" : "Maximize canvas",
+                    }, React.createElement(maximized ? RestoreGlyph : MaximizeGlyph))
+                    : null)
+            : null)
+        : (maximized ? (toolbarSlot ? createPortal(React.createElement(React.Fragment, null,
+            view.exists
+                ? React.createElement("span", { className: "ps-toolbar-canvas-rev" }, `${view.name ? `${view.name} \u00b7 ` : ""}rev ${view.latestRev}`)
+                : null,
+            React.createElement(CanvasSlotControls, { controller, view, compact: true }),
+            view.exists ? React.createElement(HtmlZoomControl, { zoom, setZoom }) : null,
+            React.createElement("button", {
+                type: "button",
+                className: `ps-artifact-pane-btn${zenOn ? " is-active" : ""}`,
+                // Full screen covers the workspace, so a bare zen toggle
+                // changes state UNDER the layer and looks dead. From here zen
+                // means "step down into zen": drop full screen in the same
+                // click so the change is visible.
+                onClick: () => {
+                    controller.dispatch({ type: "ui/canvasMaximized", on: false });
+                    controller.dispatch({ type: "ui/canvasZen", on: !zenOn });
+                },
+                title: zenOn ? "Leave zen — bring back sessions and panels" : "Zen — chat rail + canvas only",
+                "aria-label": zenOn ? "Leave zen mode" : "Zen mode",
+            }, React.createElement(ZenGlyph)),
+            React.createElement("button", {
+                type: "button",
+                className: "ps-artifact-pane-btn ps-toolbar-canvas-restore",
+                onClick: () => controller.dispatch({ type: "ui/canvasMaximized", on: false }),
+                title: "Back to the workspace",
+                "aria-label": "Restore canvas",
+            }, React.createElement(RestoreGlyph))), toolbarSlot) : null)
+        : React.createElement("header", { className: "ps-artifact-pane-bar" },
+            React.createElement("span", { className: "ps-artifact-pane-heading" },
+                React.createElement("span", { className: "ps-artifact-pane-name ps-canvas-pane-glyph", title: view.note || "Canvas" },
+                    React.createElement(CanvasGlyph)),
+                view.exists
+                    ? React.createElement("span", { className: "ps-artifact-pane-type", title: view.note || undefined },
+                        `${view.name ? `${view.name} \u00b7 ` : ""}rev ${view.latestRev}`)
+                    : null,
+                React.createElement(CanvasSlotControls, { controller, view })),
+            React.createElement("span", { className: "ps-artifact-pane-actions" },
+                view.exists ? React.createElement(HtmlZoomControl, { zoom, setZoom }) : null,
+                // Zen: sessions step away, chat becomes a rail, the canvas is
+                // the workbench. The mode for "the work happens on the canvas,
+                // chat is for steering".
+                React.createElement("button", {
+                    type: "button",
+                    className: `ps-artifact-pane-btn${zenOn ? " is-active" : ""}`,
+                    onClick: () => controller.dispatch({ type: "ui/canvasZen" }),
+                    title: zenOn ? "Leave zen — bring back sessions and panels" : "Zen — chat rail + canvas only",
+                    "aria-label": zenOn ? "Leave zen mode" : "Zen mode",
+                }, React.createElement(ZenGlyph)),
+                // Full screen. No ✕ beside it: the toolbar's Canvas button is
+                // the way out, and a second close control in a pane that also
+                // has a toggle is one affordance too many.
+                //
+                // While full screen this whole bar is hidden and the rev and
+                // the way back are promoted into the portal header, so the
+                // control never disappears with the pane that drew it.
+                React.createElement("button", {
+                    type: "button",
+                    className: "ps-artifact-pane-btn",
+                    onClick: () => controller.dispatch({ type: "ui/canvasMaximized", on: true }),
+                    title: "Full screen — hide chat and sessions",
+                    "aria-label": "Full screen canvas",
+                }, React.createElement(MaximizeGlyph)))));
 
     return React.createElement("section", {
         className: "ps-artifact-pane ps-canvas-pane",
         role: "region",
         "aria-label": "Session canvas",
     },
-    React.createElement("header", { className: "ps-artifact-pane-bar" },
-        React.createElement("span", { className: "ps-artifact-pane-heading" },
-            React.createElement("span", { className: "ps-artifact-pane-name ps-canvas-pane-glyph", title: view.note || "Canvas" },
-                React.createElement(CanvasGlyph)),
-            view.exists
-                ? React.createElement("span", { className: "ps-artifact-pane-type", title: view.note || undefined },
-                    `rev ${view.latestRev}`)
-                : null),
-        React.createElement("span", { className: "ps-artifact-pane-actions" },
-            view.exists ? React.createElement(HtmlZoomControl, { zoom, setZoom }) : null,
-            close ? React.createElement("button", {
-                type: "button",
-                className: "ps-artifact-pane-btn",
-                onClick: close,
-                title: mobile ? "Close the canvas" : "Back to the inspector and activity panes",
-                "aria-label": mobile ? "Close canvas" : "Back to panes",
-            }, "✕") : null)),
+    header,
     React.createElement("div", { className: "ps-artifact-pane-body" },
         view.exists
             ? React.createElement(CanvasFrame, {
+                key: `slot:${view.slot}`,
                 controller,
                 sessionId: view.sessionId,
+                slot: view.slot,
                 latestRev: view.latestRev,
                 zoom,
                 visible,
@@ -7659,7 +8000,7 @@ function IconButton({ icon, label, onClick, disabled = false, active = false, cl
     tooltipNode);
 }
 
-function Toolbar({ controller, mobile, canvasOverlayOpen = false, onToggleCanvasOverlay = null, mobilePane = "workspace", onSelectMobilePane = null, mobileMainLayout = "split" }) {
+function Toolbar({ controller, mobile, canvasPaneOpen = false, onToggleCanvasPane = null, mobilePane = "workspace", onSelectMobilePane = null, mobileMainLayout = "split" }) {
     const [headerSlot, setHeaderSlot] = React.useState(null);
     React.useEffect(() => {
         if (typeof document === "undefined") return;
@@ -7671,6 +8012,12 @@ function Toolbar({ controller, mobile, canvasOverlayOpen = false, onToggleCanvas
     }, [mobile]);
     const adminVisible = useControllerSelector(controller, (state) => Boolean(state.admin?.visible));
     const canvasView = useControllerSelector(controller, selectCanvasView, shallowEqualObject);
+    const diagnosticsOpen = useControllerSelector(controller, (s) => s?.ui?.diagnosticsOpen === true);
+    const canvasMaximized = useControllerSelector(controller, (s) => s?.ui?.canvasMaximized === true);
+    // The artifact reader takes over the right side; while it is up, the
+    // surface on screen is NOT the canvas, so the canvas toggle must not
+    // read as active (its next press still shows the canvas).
+    const artifactReaderOpen = useControllerSelector(controller, (s) => Boolean(s?.files?.paneOpen && s?.files?.selectedArtifactId));
 
     // Icon-first toolbar: the glyph is the affordance, the label rides a
     // tooltip (desktop hover via title; mobile long-press via IconButton).
@@ -7698,37 +8045,54 @@ function Toolbar({ controller, mobile, canvasOverlayOpen = false, onToggleCanvas
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_THEME_PICKER).catch(() => {}),
         },
         // Canvas toggle, both device classes: the desktop flips the right
-        // column, the phone toggles a full-screen overlay — one affordance,
-        // one badge. While the canvas
-        // is hidden, an undisplayed revision lights the badge.
+        // column, the phone lays the canvas over the chat transcript — one
+        // affordance, one badge, and on the phone the ONLY way in or out (the
+        // canvas itself carries no ✕ there). While the canvas is hidden, an
+        // undisplayed revision lights the badge.
         {
             key: "canvas",
             icon: React.createElement(CanvasGlyph),
-            label: (mobile ? canvasOverlayOpen : canvasView.mode === "canvas")
-                ? (mobile ? "Close the canvas" : "Show inspector and activity")
+            label: (mobile ? canvasPaneOpen : (canvasView.mode === "canvas" && !artifactReaderOpen))
+                ? "Hide the canvas"
                 : "Show canvas",
             onClick: () => {
                 if (mobile) {
-                    if (onToggleCanvasOverlay) onToggleCanvasOverlay();
+                    if (onToggleCanvasPane) onToggleCanvasPane();
                     return;
                 }
-                if (canvasView.mode === "canvas") {
-                    controller.dispatch({ type: "ui/rightPaneMode", mode: "panes", sessionId: canvasView.sessionId, manual: true });
-                } else {
-                    controller.dispatch({ type: "ui/rightPaneMode", mode: "canvas", sessionId: canvasView.sessionId });
-                }
+                // Desktop: the canvas is a column of its own now. Closing it
+                // shows nothing in its place — Diagnostics has its own toggle.
+                controller.dispatch({
+                    type: "ui/canvasOpen",
+                    open: canvasView.mode !== "canvas",
+                    sessionId: canvasView.sessionId,
+                    manual: true,
+                });
             },
-            active: mobile ? canvasOverlayOpen : canvasView.mode === "canvas",
+            active: mobile ? canvasPaneOpen : (canvasView.mode === "canvas" && !artifactReaderOpen),
             badge: mobile
                 ? (canvasView.exists
                     && (canvasView.latestRev > (canvasView.lastViewedRev || 0)
                         || (canvasView.latestDataRev || 0) > (canvasView.lastViewedDataRev || 0))
-                    && !canvasOverlayOpen)
+                    && !canvasPaneOpen)
                 : canvasView.unseen,
             // Three states: plain outline (empty), green dot bottom-left
             // (loaded), green + yellow (loaded with unseen changes).
             loadedDot: canvasView.exists,
         },
+        // Diagnostics — Inspector + Activity as one column, desktop only.
+        //
+        // They used to be tabs inside the chat pane and were always present.
+        // Off by default now, and behind this toggle: they are instrumentation,
+        // not part of reading a conversation. The phone keeps them as nav tabs,
+        // where there is no column to put them in.
+        ...(mobile ? [] : [{
+            key: "diagnostics",
+            icon: React.createElement(DiagnosticsGlyph),
+            label: diagnosticsOpen ? "Hide diagnostics" : "Show diagnostics (inspector and activity)",
+            onClick: () => controller.dispatch({ type: "ui/diagnosticsOpen" }),
+            active: diagnosticsOpen,
+        }]),
         // Admin console is desktop-only: its settings tree, package detail
         // and file preview need width the phone layout cannot give them, so
         // the button is omitted rather than shipped half-working.
@@ -7773,20 +8137,34 @@ function Toolbar({ controller, mobile, canvasOverlayOpen = false, onToggleCanvas
             chat: "Main — chat only (tap for sessions only)",
             sessions: "Main — sessions only (tap for both)",
         };
+        // Two tabs, not three: the row was out of space, and Inspector +
+        // Activity are one idea on the desktop already (Diagnostics, the
+        // bug). The bug button opens the inspector; tapping it again while
+        // inside diagnostics flips inspector <-> activity; the main button is
+        // always the way back.
+        const onDiagnostics = mobilePane === "inspector" || mobilePane === "activity";
+        const nextDiagnosticsPane = mobilePane === "inspector" ? "activity" : "inspector";
         const paneDefs = [
             { id: "workspace", icon: MainLayoutGlyph, label: mainLabels[mobileMainLayout] || mainLabels.split, focus: "chat" },
-            { id: "activity", icon: ActivityPaneGlyph, label: "Activity", focus: "activity" },
-            { id: "inspector", icon: InspectorPaneGlyph, label: "Inspector", focus: "inspector" },
+            {
+                id: nextDiagnosticsPane,
+                icon: DiagnosticsGlyph,
+                active: onDiagnostics,
+                label: onDiagnostics
+                    ? (mobilePane === "inspector" ? "Diagnostics — inspector (tap for activity)" : "Diagnostics — activity (tap for inspector)")
+                    : "Diagnostics — inspector and activity",
+                focus: nextDiagnosticsPane,
+            },
         ];
         return React.createElement("div", { className: "ps-toolbar is-mobile" },
             React.createElement("div", { className: "ps-toolbar-row ps-toolbar-row-primary" },
                 React.createElement("div", { className: "ps-toolbar-row-actions" }, buttonDefs.map(renderButton)),
                 React.createElement("div", { className: "ps-toolbar-row-actions is-panes" },
                     paneDefs.map((def) => React.createElement(IconButton, {
-                        key: def.id,
+                        key: def.id === "workspace" ? "workspace" : "diagnostics",
                         icon: React.createElement(def.icon),
                         label: def.label,
-                        active: mobilePane === def.id,
+                        active: def.active ?? (mobilePane === def.id),
                         onClick: () => {
                             if (onSelectMobilePane) onSelectMobilePane(def.id, def.focus);
                         },
@@ -7794,8 +8172,53 @@ function Toolbar({ controller, mobile, canvasOverlayOpen = false, onToggleCanvas
         );
     }
 
+    // Two groups. Diagnostics and the admin console are TOOLS — they act on
+    // the app rather than on the conversation — so they sit apart from the
+    // session controls, hard right. Everything else keeps its order.
+    const RIGHT_GROUP = new Set(["diagnostics", "admin"]);
+
+    // While the canvas is full screen, ANY other button first drops full
+    // screen and then does its own job. Pressing Filter and watching nothing
+    // happen behind a canvas — or watching a panel open where you cannot see
+    // it — is the confusing half of every full-screen mode. The Canvas toggle
+    // is exempt: it already means "put the canvas away", and closing drops the
+    // flag in the reducer.
+    const withRestore = (def) => (!canvasMaximized || def.key === "canvas" ? def : {
+        ...def,
+        onClick: (...args) => {
+            controller.dispatch({ type: "ui/canvasMaximized", on: false });
+            return def.onClick?.(...args);
+        },
+    });
+
+    const leftButtons = buttonDefs.filter((d) => !RIGHT_GROUP.has(d.key)).map(withRestore);
+    const rightButtons = buttonDefs.filter((d) => RIGHT_GROUP.has(d.key)).map(withRestore);
     const toolbar = React.createElement("div", { className: "ps-toolbar" },
-        React.createElement("div", { className: "ps-toolbar-actions" }, buttonDefs.map(renderButton)),
+        // Three columns: spacer | main controls | right rail. The main group
+        // sits in the CENTER column, so it stays dead-centre in every mode —
+        // an auto margin only centres in leftover space, and the full-screen
+        // strip was shoving it sideways.
+        React.createElement("div", { className: "ps-toolbar-side is-left", "aria-hidden": "true" }),
+        React.createElement("div", { className: "ps-toolbar-actions" }, leftButtons.map(renderButton)),
+        React.createElement("div", { className: "ps-toolbar-side is-right" },
+            // The portal header parks its version/status meta here, LEFT of
+            // the tool buttons, and its sign-out glyph in the slot after
+            // them — one right-aligned cluster: meta · bug · settings · out.
+            React.createElement("span", { className: "ps-toolbar-meta-slot", id: "ps-toolbar-meta-slot" }),
+            // While the canvas is full screen its header controls (rev, zoom,
+            // zen, restore) portal INTO this slot from CanvasPane — zoom state
+            // lives there, so the controls come to the toolbar rather than
+            // their state moving out.
+            canvasMaximized
+                ? React.createElement("span", { className: "ps-toolbar-canvas-slot", id: "ps-toolbar-canvas-slot" })
+                : null,
+            canvasMaximized
+                ? React.createElement("span", { className: "ps-toolbar-divider", "aria-hidden": "true" })
+                : null,
+            rightButtons.length
+                ? React.createElement("div", { className: "ps-toolbar-actions is-tools" }, rightButtons.map(renderButton))
+                : null,
+            React.createElement("span", { className: "ps-toolbar-signout-slot", id: "ps-toolbar-signout-slot" })),
     );
 
     // Rich desktop UI: the toolbar lives IN the portal header (one top bar)
@@ -8084,110 +8507,301 @@ function SessionColumnResizeHandle({ controller, portalSessionColumnAdjust = 0 }
         React.createElement("span", { className: "ps-column-resizer-dot" })));
 }
 
-/**
- * How many pixels the inspector/activity seam actually moves per row of adjust.
- *
- * The split is stored in character ROWS, but the column renders them as `fr`
- * — so one row of adjustment moves the seam by (column height / total rows)
- * pixels, whatever that happens to be. Dividing the pointer delta by a fixed
- * GRID_CELL_HEIGHT only tracks if the column is exactly rows × 19px tall, and
- * it is not: the column excludes the header and toolbar above it, and the row
- * height moves with the type scale. So the seam ran ahead of the pointer or
- * trailed behind it, and the error grew with the drag.
- *
- * Both operands are fixed for the duration of a drag — the split moves, the
- * total does not — so this is measured once at pointerdown rather than on
- * every pointermove.
- */
-function measureActivityRowPx(controller, handleEl) {
-    try {
-        const layout = controller.getCurrentLayout?.();
-        const rows = (layout?.inspectorPaneHeight || 0) + (layout?.activityPaneHeight || 0);
-        const column = handleEl?.closest?.(".ps-workspace-column");
-        if (!column || rows <= 0) return GRID_CELL_HEIGHT;
-        // The resizer's own track is not part of either pane's share.
-        const usable = column.clientHeight - (handleEl.getBoundingClientRect().height || 0);
-        const pxPerRow = usable / rows;
-        return Number.isFinite(pxPerRow) && pxPerRow > 0 ? pxPerRow : GRID_CELL_HEIGHT;
-    } catch {
-        return GRID_CELL_HEIGHT;
-    }
-}
 
-function ActivityRowResizeHandle({ controller, activityPaneAdjust = 0 }) {
+/**
+ * The seam between the canvas and diagnostics columns.
+ *
+ * Only rendered when both are open — with one column the outer chat/right
+ * handle is already the only split there is.
+ *
+ * Drag either column below PORTAL_COLUMN_SNAP_CLOSED_PX and releasing CLOSES
+ * it: the user asked for "resized to 0 means toggled off, and it has to be
+ * toggled back on". The adjust is reset at the same time, so re-opening from
+ * the toolbar comes back at the even split rather than at the sliver that
+ * closed it.
+ */
+function CanvasDiagnosticsResizeHandle({ controller, canvasPaneAdjust = 0, diagnosticsPaneAdjust = 0 }) {
     const dragStateRef = React.useRef(null);
     const [dragging, setDragging] = React.useState(false);
 
+    const widths = (ca, da) => ({
+        canvas: PORTAL_CANVAS_COL_DEFAULT_PX + (Number(ca) || 0),
+        diag: PORTAL_DIAG_COL_DEFAULT_PX + (Number(da) || 0),
+    });
+
+    // Moving the seam trades pixels between the two columns; the total — and
+    // therefore chat — does not move. Below the snap on release, the starved
+    // column CLOSES and both widths reset, so reopening is always usable.
+    const commit = (ca, da) => {
+        const w = widths(ca, da);
+        if (w.canvas < PORTAL_COLUMN_SNAP_CLOSED_PX || w.diag < PORTAL_COLUMN_SNAP_CLOSED_PX) {
+            controller.dispatch({ type: "ui/canvasPaneAdjust", canvasPaneAdjust: 0 });
+            controller.dispatch({ type: "ui/diagnosticsPaneAdjust", diagnosticsPaneAdjust: 0 });
+            controller.dispatch(w.canvas < PORTAL_COLUMN_SNAP_CLOSED_PX
+                ? { type: "ui/canvasOpen", open: false, manual: true }
+                : { type: "ui/diagnosticsOpen", open: false });
+            return;
+        }
+        controller.dispatch({ type: "ui/canvasPaneAdjust", canvasPaneAdjust: ca });
+        controller.dispatch({ type: "ui/diagnosticsPaneAdjust", diagnosticsPaneAdjust: da });
+    };
+
     React.useEffect(() => {
         if (!dragging) return undefined;
-
-        const stopDragging = () => {
+        const onMove = (event) => {
+            const st = dragStateRef.current;
+            if (!st) return;
+            const dx = event.clientX - st.startX;
+            controller.dispatch({ type: "ui/canvasPaneAdjust", canvasPaneAdjust: st.startCanvas + dx });
+            controller.dispatch({ type: "ui/diagnosticsPaneAdjust", diagnosticsPaneAdjust: st.startDiag - dx });
+        };
+        const onUp = () => {
+            const st = dragStateRef.current;
             dragStateRef.current = null;
             setDragging(false);
-            document.body.classList.remove("is-resizing-pane-y");
+            document.body.classList.remove("is-resizing-pane-x");
+            if (st) {
+                const ui = controller.getState()?.ui?.layout || {};
+                commit(ui.canvasPaneAdjust ?? 0, ui.diagnosticsPaneAdjust ?? 0);
+            }
         };
-
-        const onPointerMove = (event) => {
-            const dragState = dragStateRef.current;
-            if (!dragState) return;
-            const deltaCells = Math.round((event.clientY - dragState.startY) / dragState.pxPerRow);
-            const deltaIncrement = deltaCells - dragState.appliedCells;
-            if (!deltaIncrement) return;
-            controller.adjustActivityPaneSplit(-deltaIncrement);
-            dragState.appliedCells = deltaCells;
-        };
-
-        window.addEventListener("pointermove", onPointerMove);
-        window.addEventListener("pointerup", stopDragging);
-        window.addEventListener("pointercancel", stopDragging);
-
+        window.addEventListener("pointermove", onMove);
+        window.addEventListener("pointerup", onUp);
+        window.addEventListener("pointercancel", onUp);
         return () => {
-            window.removeEventListener("pointermove", onPointerMove);
-            window.removeEventListener("pointerup", stopDragging);
-            window.removeEventListener("pointercancel", stopDragging);
-            document.body.classList.remove("is-resizing-pane-y");
+            window.removeEventListener("pointermove", onMove);
+            window.removeEventListener("pointerup", onUp);
+            window.removeEventListener("pointercancel", onUp);
         };
     }, [controller, dragging]);
 
     return React.createElement("button", {
         type: "button",
-        className: `ps-row-resizer${dragging ? " is-dragging" : ""}`,
-        title: "Drag to resize the activity pane. Double-click to reset.",
-        "aria-label": "Resize activity pane",
+        className: `ps-column-resizer${dragging ? " is-dragging" : ""}`,
+        title: "Drag to trade width between the canvas and diagnostics. Drag one away to close it. Double-click to reset.",
+        "aria-label": "Resize canvas and diagnostics columns",
         onPointerDown: (event) => {
             if (event.button !== 0) return;
             event.preventDefault();
             capturePointerForDrag(event);
             dragStateRef.current = {
-                startY: event.clientY,
-                appliedCells: 0,
-                // MEASURED, not assumed — see measureActivityRowPx.
-                pxPerRow: measureActivityRowPx(controller, event.currentTarget),
+                startX: event.clientX,
+                startCanvas: Number(canvasPaneAdjust) || 0,
+                startDiag: Number(diagnosticsPaneAdjust) || 0,
             };
+            setDragging(true);
+            document.body.classList.add("is-resizing-pane-x");
+        },
+        onDoubleClick: () => {
+            controller.dispatch({ type: "ui/canvasPaneAdjust", canvasPaneAdjust: 0 });
+            controller.dispatch({ type: "ui/diagnosticsPaneAdjust", diagnosticsPaneAdjust: 0 });
+        },
+        onKeyDown: (event) => {
+            if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+            event.preventDefault();
+            const dx = event.key === "ArrowRight" ? 24 : -24;
+            commit((Number(canvasPaneAdjust) || 0) + dx, (Number(diagnosticsPaneAdjust) || 0) - dx);
+        },
+    },
+    React.createElement("span", { className: "ps-column-resizer-handle", "aria-hidden": "true" },
+        React.createElement("span", { className: "ps-column-resizer-dot" }),
+        React.createElement("span", { className: "ps-column-resizer-dot" }),
+        React.createElement("span", { className: "ps-column-resizer-dot" })));
+}
+
+/** The zen seam: drags the chat rail, remembered per session. */
+function ZenRailResizeHandle({ controller, sessionId, railPx = 380 }) {
+    const dragStateRef = React.useRef(null);
+    const [dragging, setDragging] = React.useState(false);
+    React.useEffect(() => {
+        if (!dragging) return undefined;
+        const onMove = (event) => {
+            const st = dragStateRef.current;
+            if (!st) return;
+            controller.dispatch({ type: "canvas/zenRail", sessionId, px: st.start + (event.clientX - st.startX) });
+        };
+        const onUp = () => {
+            dragStateRef.current = null;
+            setDragging(false);
+            document.body.classList.remove("is-resizing-pane-x");
+        };
+        window.addEventListener("pointermove", onMove);
+        window.addEventListener("pointerup", onUp);
+        window.addEventListener("pointercancel", onUp);
+        return () => {
+            window.removeEventListener("pointermove", onMove);
+            window.removeEventListener("pointerup", onUp);
+            window.removeEventListener("pointercancel", onUp);
+        };
+    }, [controller, dragging, sessionId]);
+    return React.createElement("button", {
+        type: "button",
+        className: `ps-column-resizer${dragging ? " is-dragging" : ""}`,
+        title: "Drag to resize chat against the canvas (remembered for this session)",
+        "aria-label": "Resize the zen chat rail",
+        onPointerDown: (event) => {
+            if (event.button !== 0) return;
+            event.preventDefault();
+            capturePointerForDrag(event);
+            dragStateRef.current = { startX: event.clientX, start: railPx };
+            setDragging(true);
+            document.body.classList.add("is-resizing-pane-x");
+        },
+        onKeyDown: (event) => {
+            if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+            event.preventDefault();
+            controller.dispatch({ type: "canvas/zenRail", sessionId, px: railPx + (event.key === "ArrowRight" ? 24 : -24) });
+        },
+    },
+    React.createElement("span", { className: "ps-column-resizer-handle", "aria-hidden": "true" },
+        React.createElement("span", { className: "ps-column-resizer-dot" }),
+        React.createElement("span", { className: "ps-column-resizer-dot" }),
+        React.createElement("span", { className: "ps-column-resizer-dot" })));
+}
+
+/**
+ * The seam between chat and the right block. Chat flexes, so this drags the
+ * width of the column beside it — canvas when open, else diagnostics. The
+ * other column never moves: growing chat shrinks only its neighbour.
+ */
+function ChatRightResizeHandle({ controller, target, adjust = 0 }) {
+    const dragStateRef = React.useRef(null);
+    const [dragging, setDragging] = React.useState(false);
+    const actionType = target === "canvas" ? "ui/canvasPaneAdjust" : "ui/diagnosticsPaneAdjust";
+    const key = target === "canvas" ? "canvasPaneAdjust" : "diagnosticsPaneAdjust";
+    const base = target === "canvas" ? PORTAL_CANVAS_COL_DEFAULT_PX : PORTAL_DIAG_COL_DEFAULT_PX;
+
+    const commit = (next) => {
+        if (base + next < PORTAL_COLUMN_SNAP_CLOSED_PX) {
+            controller.dispatch({ type: actionType, [key]: 0 });
+            controller.dispatch(target === "canvas"
+                ? { type: "ui/canvasOpen", open: false, manual: true }
+                : { type: "ui/diagnosticsOpen", open: false });
+            return;
+        }
+        controller.dispatch({ type: actionType, [key]: next });
+    };
+
+    React.useEffect(() => {
+        if (!dragging) return undefined;
+        const onMove = (event) => {
+            const st = dragStateRef.current;
+            if (!st) return;
+            // Pointer right = chat grows = the neighbour gives up the pixels.
+            controller.dispatch({ type: actionType, [key]: st.startAdjust - (event.clientX - st.startX) });
+        };
+        const onUp = () => {
+            const st = dragStateRef.current;
+            dragStateRef.current = null;
+            setDragging(false);
+            document.body.classList.remove("is-resizing-pane-x");
+            if (st) commit((controller.getState()?.ui?.layout || {})[key] ?? 0);
+        };
+        window.addEventListener("pointermove", onMove);
+        window.addEventListener("pointerup", onUp);
+        window.addEventListener("pointercancel", onUp);
+        return () => {
+            window.removeEventListener("pointermove", onMove);
+            window.removeEventListener("pointerup", onUp);
+            window.removeEventListener("pointercancel", onUp);
+        };
+    }, [controller, dragging, actionType, key]);
+
+    return React.createElement("button", {
+        type: "button",
+        className: `ps-column-resizer${dragging ? " is-dragging" : ""}`,
+        title: "Drag to resize. Drag the column away to close it. Double-click to reset.",
+        "aria-label": "Resize the right column",
+        onPointerDown: (event) => {
+            if (event.button !== 0) return;
+            event.preventDefault();
+            capturePointerForDrag(event);
+            dragStateRef.current = { startX: event.clientX, startAdjust: Number(adjust) || 0 };
+            setDragging(true);
+            document.body.classList.add("is-resizing-pane-x");
+        },
+        onDoubleClick: () => controller.dispatch({ type: actionType, [key]: 0 }),
+        onKeyDown: (event) => {
+            if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+            event.preventDefault();
+            commit((Number(adjust) || 0) - (event.key === "ArrowRight" ? 24 : -24));
+        },
+    },
+    React.createElement("span", { className: "ps-column-resizer-handle", "aria-hidden": "true" },
+        React.createElement("span", { className: "ps-column-resizer-dot" }),
+        React.createElement("span", { className: "ps-column-resizer-dot" }),
+        React.createElement("span", { className: "ps-column-resizer-dot" })));
+}
+
+/**
+ * The inspector/activity seam, in continuous pixels — it follows the pointer
+ * 1:1. Replaces the row-quantized ActivityRowResizeHandle for the portal:
+ * that one converted drags to whole terminal rows (~20px notches) against
+ * geometry computed from the whole viewport rather than this column, and the
+ * legacy layout could snap-collapse a pane mid-drag. The grid's minmax does
+ * all the clamping now.
+ */
+function DiagnosticsSplitResizeHandle({ controller, splitAdjust = 0 }) {
+    const dragStateRef = React.useRef(null);
+    const [dragging, setDragging] = React.useState(false);
+    React.useEffect(() => {
+        if (!dragging) return undefined;
+        const onMove = (event) => {
+            const st = dragStateRef.current;
+            if (!st) return;
+            // Clamped to the half-height each side can actually give. Without
+            // this the stored value keeps counting past the edge while the
+            // bar stops — and the pointer leads the seam by the overshoot on
+            // the way back.
+            const next = Math.max(-st.half, Math.min(st.half, st.start + (event.clientY - st.startY)));
+            controller.dispatch({ type: "ui/diagnosticsSplitAdjust", diagnosticsSplitAdjust: next });
+        };
+        const onUp = () => {
+            dragStateRef.current = null;
+            setDragging(false);
+            document.body.classList.remove("is-resizing-pane-y");
+        };
+        window.addEventListener("pointermove", onMove);
+        window.addEventListener("pointerup", onUp);
+        window.addEventListener("pointercancel", onUp);
+        return () => {
+            window.removeEventListener("pointermove", onMove);
+            window.removeEventListener("pointerup", onUp);
+            window.removeEventListener("pointercancel", onUp);
+            document.body.classList.remove("is-resizing-pane-y");
+        };
+    }, [controller, dragging]);
+    return React.createElement("button", {
+        type: "button",
+        className: `ps-row-resizer${dragging ? " is-dragging" : ""}`,
+        title: "Drag to resize the inspector and activity panes. Double-click to reset.",
+        "aria-label": "Resize the inspector and activity panes",
+        onPointerDown: (event) => {
+            if (event.button !== 0) return;
+            event.preventDefault();
+            capturePointerForDrag(event);
+            const col = event.currentTarget.closest(".ps-workspace-column");
+            const half = Math.max(0, ((col?.getBoundingClientRect?.().height || 0) - 16) / 2);
+            dragStateRef.current = { startY: event.clientY, start: Number(splitAdjust) || 0, half };
             setDragging(true);
             document.body.classList.add("is-resizing-pane-y");
         },
-        onDoubleClick: () => {
-            if (!activityPaneAdjust) return;
-            controller.adjustActivityPaneSplit(-activityPaneAdjust);
-        },
+        onDoubleClick: () => controller.dispatch({ type: "ui/diagnosticsSplitAdjust", diagnosticsSplitAdjust: 0 }),
         onKeyDown: (event) => {
-            if (event.key === "ArrowUp") {
-                event.preventDefault();
-                controller.adjustActivityPaneSplit(1);
-                return;
-            }
-            if (event.key === "ArrowDown") {
-                event.preventDefault();
-                controller.adjustActivityPaneSplit(-1);
-            }
+            if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+            event.preventDefault();
+            controller.dispatch({
+                type: "ui/diagnosticsSplitAdjust",
+                diagnosticsSplitAdjust: (Number(splitAdjust) || 0) + (event.key === "ArrowDown" ? 16 : -16),
+            });
         },
     },
     React.createElement("span", { className: "ps-row-resizer-handle", "aria-hidden": "true" },
-        React.createElement("span", { className: "ps-row-resizer-dot" }),
-        React.createElement("span", { className: "ps-row-resizer-dot" }),
-        React.createElement("span", { className: "ps-row-resizer-dot" })));
+        React.createElement("span", { className: "ps-column-resizer-dot" }),
+        React.createElement("span", { className: "ps-column-resizer-dot" }),
+        React.createElement("span", { className: "ps-column-resizer-dot" })));
 }
+
 
 
 function ModalLayer({ controller }) {
@@ -9225,7 +9839,13 @@ function AdminConsolePanel({ controller, mobile = false }) {
     const header = React.createElement("header", { className: "ps-admin-console__header" },
         React.createElement("h2", null, "Admin Console"),
         React.createElement("span", { className: "ps-admin-console__who" }, principalLabel),
-        React.createElement("button", { type: "button", className: "ps-mini-button", onClick: onClose }, "Close"));
+        React.createElement("button", {
+            type: "button",
+            className: "ps-mini-button is-icon",
+            onClick: onClose,
+            title: "Close the admin console",
+            "aria-label": "Close the admin console",
+        }, "\u2715"));
 
     const ghcpSection = React.createElement(AdminGhcpSection, {
         view, draftRef, onBeginEdit, onCancelEdit, onClear, onSubmit, onDraftChange, onRefresh, controller,
@@ -9312,10 +9932,15 @@ function AdminWorkersPane({ controller, view }) {
                     `${workers.summaryText}${counts.pools > 1 ? ` · ${counts.pools} pools` : ""}${counts.draining ? ` · ${counts.draining} draining` : ""}`)
                 : null,
             React.createElement("button", {
-                type: "button", className: "ps-mini-button",
-                disabled: Boolean(workers.loading),
+                type: "button",
+                className: "ps-mini-button is-icon",
                 onClick: () => controller.refreshAdminWorkers(),
-            }, workers.loading ? "Refreshing…" : "Refresh")),
+                disabled: Boolean(workers.loading),
+                title: workers.loading ? "Refreshing…" : "Refresh the worker list",
+                "aria-label": "Refresh the worker list",
+            }, React.createElement("svg", { viewBox: "0 0 20 20", width: 15, height: 15, fill: "none", stroke: "currentColor", strokeWidth: 1.7, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true" },
+                React.createElement("path", { d: "M16.2 8.2A6.4 6.4 0 0 0 4.6 6.4M3.8 11.8a6.4 6.4 0 0 0 11.6 1.8" }),
+                React.createElement("path", { d: "M16.4 3.6v4.6h-4.6M3.6 16.4v-4.6h4.6" })))),
         workers.error
             ? React.createElement("div", { className: "ps-admin-console__error", role: "alert" }, workers.error)
             : null,
@@ -9951,6 +10576,11 @@ export function PilotSwarmWebApp({ controller }) {
         activeSessionId: rootState.sessions.activeSessionId || null,
         promptRows: getStatePromptRows(rootState),
         rightPaneMode: rootState.ui.rightPaneMode || "panes",
+        // The two optional desktop columns, independent of each other.
+        canvasOpen: rootState.ui.canvasOpen === true,
+        diagnosticsOpen: rootState.ui.diagnosticsOpen === true,
+        canvasMaximized: rootState.ui.canvasMaximized === true,
+        canvasZen: rootState.ui.canvasZen === true,
         // Live reference — reducer updates replace the object, so
         // shallow-equal sees changes and the save effect fires.
         canvasPrefs: rootState.canvas?.prefs,
@@ -9959,6 +10589,9 @@ export function PilotSwarmWebApp({ controller }) {
         sessionPaneAdjust: rootState.ui.layout?.sessionPaneAdjust ?? 0,
         portalSessionColumnAdjust: rootState.ui.layout?.portalSessionColumnAdjust ?? 0,
         activityPaneAdjust: rootState.ui.layout?.activityPaneAdjust ?? 0,
+        canvasPaneAdjust: rootState.ui.layout?.canvasPaneAdjust ?? 0,
+        diagnosticsPaneAdjust: rootState.ui.layout?.diagnosticsPaneAdjust ?? 0,
+        diagnosticsSplitAdjust: rootState.ui.layout?.diagnosticsSplitAdjust ?? 0,
         focusRegion: rootState.ui.focusRegion,
         inspectorTab: rootState.ui.inspectorTab,
         filesFullscreen: Boolean(rootState.files.fullscreen),
@@ -9975,6 +10608,9 @@ export function PilotSwarmWebApp({ controller }) {
     // Last-known stored rightPaneMode — the desktop-owned slot a phone must
     // carry through its saves untouched (see profileSettingsFromViewState).
     const desktopRightPaneModeRef = React.useRef(null);
+    // Same preservation contract as desktopRightPaneModeRef: a phone must not
+    // overwrite the desktop's column toggles with its own (absent) ones.
+    const desktopPanesRef = React.useRef(null);
     const profileSettingsSaveTimerRef = React.useRef(null);
     const profileSettingsPollTimerRef = React.useRef(null);
     const profileSettingsPollInFlightRef = React.useRef(false);
@@ -9993,44 +10629,54 @@ export function PilotSwarmWebApp({ controller }) {
     // so it follows the flip TICK instead (which fires even when the mode was
     // already "canvas" — e.g. a persisted mode with the user on Main).
     const canvasShellView = useControllerSelector(controller, selectCanvasView, shallowEqualObject);
-    const [mobileCanvasOpen, setMobileCanvasOpen] = React.useState(false);
+    // "canvas" is a fourth value of mobilePane, alongside workspace, activity
+    // and inspector — the canvas is one more thing that can be showing in the
+    // content region, not a screen layered over the app.
+    const mobileCanvasOpen = mobilePane === "canvas";
+    // Which pane the canvas was opened FROM. Toggling it off puts that back —
+    // chat, activity or inspector — instead of dropping the user on Main.
+    const paneBeforeCanvasRef = React.useRef("workspace");
     // Once opened, the canvas stays MOUNTED (hidden) for the rest of the
     // session selection — page state (typed input, scroll, game progress)
     // survives toggling. A session switch remounts fresh via the key below.
     const [mobileCanvasEverOpened, setMobileCanvasEverOpened] = React.useState(false);
     const [desktopCanvasEverOpened, setDesktopCanvasEverOpened] = React.useState(false);
     React.useEffect(() => {
-        setMobileCanvasOpen(false);
+        setMobilePane((current) => (current === "canvas" ? (paneBeforeCanvasRef.current || "workspace") : current));
         setMobileCanvasEverOpened(false);
         setDesktopCanvasEverOpened(false);
     }, [canvasShellView.sessionId]);
-    // iOS scroll-chaining: while the overlay is up, a pan that Safari decides
+    // iOS scroll-chaining: while the canvas is up, a pan that Safari decides
     // is not the iframe's must not scroll the app shell behind it.
     React.useEffect(() => {
         if (typeof document === "undefined") return undefined;
         document.body.classList.toggle("ps-canvas-lock", Boolean(mobile && mobileCanvasOpen));
         return () => document.body.classList.remove("ps-canvas-lock");
     }, [mobile, mobileCanvasOpen]);
+    const openMobileCanvas = React.useCallback(() => {
+        if (mobilePane !== "canvas") paneBeforeCanvasRef.current = mobilePane;
+        setMobilePane("canvas");
+        setMobileCanvasEverOpened(true);
+        // Entering by hand un-opts-out, same as the desktop toggle.
+        controller.dispatch({ type: "ui/rightPaneMode", mode: "canvas", sessionId: canvasShellView.sessionId });
+    }, [controller, mobilePane, canvasShellView.sessionId]);
+    const closeMobileCanvas = React.useCallback(() => {
+        setMobilePane(paneBeforeCanvasRef.current || "workspace");
+        // Mirror the desktop ✕ exactly: a deliberate close is the opt-out
+        // gesture — later draws badge the toggle instead of re-covering the
+        // transcript, and reopening clears the opt-out.
+        controller.dispatch({ type: "ui/rightPaneMode", mode: "panes", sessionId: canvasShellView.sessionId, manual: true });
+    }, [controller, canvasShellView.sessionId]);
     const canvasFlipSeqRef = React.useRef(canvasShellView.flipSeq);
     React.useEffect(() => {
         if (canvasShellView.flipSeq === canvasFlipSeqRef.current) return;
         canvasFlipSeqRef.current = canvasShellView.flipSeq;
-        if (mobile) { setMobileCanvasOpen(true); setMobileCanvasEverOpened(true); }
-    }, [canvasShellView.flipSeq, mobile]);
-    const closeMobileCanvas = React.useCallback(() => {
-        setMobileCanvasOpen(false);
-        // Mirror the desktop ✕ exactly: a deliberate close is the opt-out
-        // gesture — later draws badge the toggle instead of re-covering the
-        // screen, and reopening clears the opt-out.
-        controller.dispatch({ type: "ui/rightPaneMode", mode: "panes", sessionId: canvasShellView.sessionId, manual: true });
-    }, [controller, canvasShellView.sessionId]);
+        if (mobile) openMobileCanvas();
+    }, [canvasShellView.flipSeq, mobile, openMobileCanvas]);
     const toggleMobileCanvas = React.useCallback(() => {
         if (mobileCanvasOpen) { closeMobileCanvas(); return; }
-        setMobileCanvasOpen(true);
-        setMobileCanvasEverOpened(true);
-        // Entering by hand un-opts-out, same as the desktop toggle.
-        controller.dispatch({ type: "ui/rightPaneMode", mode: "canvas", sessionId: canvasShellView.sessionId });
-    }, [mobileCanvasOpen, closeMobileCanvas, controller, canvasShellView.sessionId]);
+        openMobileCanvas();
+    }, [mobileCanvasOpen, closeMobileCanvas, openMobileCanvas]);
 
     // gridViewport used to be PUBLISHED here via controller.setViewport — a
     // second writer to ui.layout that derived columns from the hard-coded
@@ -10083,16 +10729,40 @@ export function PilotSwarmWebApp({ controller }) {
                 if (remoteNormalized.rightPaneMode === "canvas" || remoteNormalized.rightPaneMode === "panes") {
                     desktopRightPaneModeRef.current = remoteNormalized.rightPaneMode;
                 }
+                // Its own check: a profile written by this build carries
+                // desktopPanes and need not carry the legacy enum at all.
+                if (remoteNormalized.desktopPanes) {
+                    desktopPanesRef.current = remoteNormalized.desktopPanes;
+                }
                 defaultProfileSettingsRef.current = buildDefaultProfileSettingsFromState(
-                    controller.getState(), otherTouchScaleRef.current, desktopRightPaneModeRef.current,
+                    controller.getState(), otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current,
                 );
+                // First visit on a desktop wide enough to hold it: open the
+                // canvas. A workspace that opens as chat alone hides the thing
+                // most sessions are FOR, and the canvas needs real width to be
+                // worth showing — below the breakpoint chat alone is better.
+                //
+                // Folded into the settings rather than dispatched separately.
+                // A separate dispatch raced the re-baseline at the end of this
+                // same poll: the new value was recorded as "already saved",
+                // never written, and the next poll put it back. Going through
+                // the settings means the normal apply-and-save path carries it.
+                //
+                // Only when NOTHING is stored. An explicit choice, including
+                // closing the canvas, is a preference from then on. Not
+                // live-responsive either: narrowing the window never closes a
+                // canvas the user opened on purpose.
+                const wantsDefaultCanvas = !hasStoredDesktopPanes(remoteNormalized)
+                    && !isNarrowViewport()
+                    && window.innerWidth >= PORTAL_CANVAS_DEFAULT_MIN_VIEWPORT_PX;
                 const settings = materializeProfileSettings(
                     profile?.profileSettings,
                     defaultProfileSettingsRef.current,
                 );
+                if (wantsDefaultCanvas) settings.desktopPanes = { canvasOpen: true, diagnosticsOpen: false };
                 const settingsJson = JSON.stringify(settings);
                 const currentSettingsBeforeApply = profileSettingsFromViewState(
-                    controller.getState(), otherTouchScaleRef.current, desktopRightPaneModeRef.current,
+                    controller.getState(), otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current,
                 );
                 const currentSettingsBeforeApplyJson = JSON.stringify(currentSettingsBeforeApply);
                 const hasUnpersistedLocalChange = profileSettingsHydratedRef.current
@@ -10105,6 +10775,22 @@ export function PilotSwarmWebApp({ controller }) {
                     controller.dispatch({ type: "profileSettings/apply", settings });
                     appliedProfileSettingsJsonRef.current = settingsJson;
                 }
+
+                // First run on this account, on a desktop wide enough to hold
+                // it: open the canvas. A workspace that opens as chat alone
+                // hides the thing most sessions are FOR, and the canvas needs
+                // real width to be worth showing — below the breakpoint chat
+                // alone is the better default.
+                //
+                // Once only, and only when nothing is stored. An explicit
+                // choice, including closing it, is a stored preference from
+                // then on and is never second-guessed. Not live-responsive
+                // either: narrowing the window does not close a canvas the
+                // user opened on purpose.
+                // remoteNormalized, NOT `settings`: the merged object always
+                // carries desktopPanes because the defaults are synthesized
+                // from current state, so it can never say "unset" and the
+                // default below would never fire.
 
                 // lastProfileSettingsJson is what the SAVE effect diffs against
                 // to decide whether anything needs writing. Refreshing it on
@@ -10119,7 +10805,7 @@ export function PilotSwarmWebApp({ controller }) {
                 // remote state by definition and there is nothing to lose).
                 if (!profileSettingsHydratedRef.current || !hasPendingLocalWrite) {
                     const currentSettings = profileSettingsFromViewState(
-                        controller.getState(), otherTouchScaleRef.current, desktopRightPaneModeRef.current,
+                        controller.getState(), otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current,
                     );
                     lastProfileSettingsJsonRef.current = JSON.stringify(currentSettings);
                 }
@@ -10153,7 +10839,7 @@ export function PilotSwarmWebApp({ controller }) {
 
     React.useEffect(() => {
         if (!profileSettingsHydratedRef.current) return undefined;
-        const settings = profileSettingsFromViewState(state, otherTouchScaleRef.current, desktopRightPaneModeRef.current);
+        const settings = profileSettingsFromViewState(state, otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current);
         const settingsJson = JSON.stringify(settings);
         if (lastProfileSettingsJsonRef.current === settingsJson) return undefined;
         lastProfileSettingsJsonRef.current = settingsJson;
@@ -10230,11 +10916,66 @@ export function PilotSwarmWebApp({ controller }) {
     // precedence while open, and its ✕ leaves rightPaneMode untouched — so
     // closing a preview returns to the canvas, restore-what-was-displaced.
     const canvasModeActive = !mobile
-        && state.rightPaneMode === "canvas"
+        && state.canvasOpen
         && !filesFullscreenActive;
+    // sessionId is a dep ON PURPOSE, not just canvasModeActive. The reset
+    // effect above wipes the gate whenever the session settles or switches —
+    // and on a cold load the settings poll applies canvasOpen BEFORE the
+    // sessions list has loaded, so activeSessionId lands in a LATER commit.
+    // Keyed on canvasModeActive alone this never re-fired (the flag had not
+    // changed), the gate stayed false, and a canvas that was open by stored
+    // preference or by the wide-screen default simply never rendered.
+    // Effects run in declaration order, so within one commit the reset runs
+    // first and this one wins: active canvas => mounted canvas, always.
     React.useEffect(() => {
         if (canvasModeActive) setDesktopCanvasEverOpened(true);
-    }, [canvasModeActive]);
+    }, [canvasModeActive, canvasShellView.sessionId]);
+
+    // Diagnostics — Inspector + Activity as one column, beside the canvas
+    // rather than instead of it. The artifact reader still takes the whole
+    // right side while it is open, as it always did.
+    const diagnosticsActive = !mobile
+        && state.diagnosticsOpen
+        && !filesFullscreenActive
+        && !artifactPaneActive
+        // Zen is chat + canvas only; diagnostics keeps its stored toggle and
+        // returns when zen ends.
+        && !(state.canvasZen && state.canvasOpen);
+    // Whether the right side of the workspace exists at all. Both columns off
+    // is the default: sessions and chat, nothing else. An absent column takes
+    // no width and grows no resizer — off means gone, not collapsed.
+    const rightSideActive = artifactPaneActive || canvasModeActive || diagnosticsActive;
+
+    // In the STORE, not local state: the header owns the way out (the rev
+    // strip is promoted up there while full screen), and every other toolbar
+    // button has to be able to drop it before doing its own job.
+    const canvasMaximized = state.canvasMaximized && canvasModeActive;
+    // Zen: chat rail + canvas workbench. Diagnostics steps aside but keeps
+    // its stored toggle; the session list hides entirely.
+    const zenActive = state.canvasZen && canvasModeActive && !artifactPaneActive;
+    const zenRailPx = Math.max(260, Math.min(720,
+        Number(state.canvasPrefs?.[state.activeSessionId]?.zenRailPx) || 380));
+    // Escape steps down one rung: full screen -> zen -> normal workspace.
+    React.useEffect(() => {
+        if (!canvasMaximized && !zenActive) return undefined;
+        const onKey = (e) => {
+            if (e.key !== "Escape") return;
+            controller.dispatch(canvasMaximized
+                ? { type: "ui/canvasMaximized", on: false }
+                : { type: "ui/canvasZen", on: false });
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [controller, canvasMaximized, zenActive]);
+
+    // The right block is exactly as wide as the columns in it. Pixels, not a
+    // share of the window: when a column closes, its pixels go to chat and
+    // sessions — never to the surviving column. That is the whole model.
+    const canvasColPx = Math.max(0, PORTAL_CANVAS_COL_DEFAULT_PX + (Number(state.canvasPaneAdjust) || 0));
+    const diagColPx = Math.max(0, PORTAL_DIAG_COL_DEFAULT_PX + (Number(state.diagnosticsPaneAdjust) || 0));
+    const rightSidePx = (canvasModeActive ? canvasColPx : 0)
+        + (canvasModeActive && diagnosticsActive ? 1 : 0) // the hairline seam
+        + (diagnosticsActive ? diagColPx : 0);
 
     // Closing hands the column back — or collapses it again, if the user had
     // already resized it away before opening the pane. Both cases live in the
@@ -10246,15 +10987,34 @@ export function PilotSwarmWebApp({ controller }) {
     const estimatedMainGridWidth = Math.max(0, (viewport.width || 0) * 0.68);
     const measuredMainGridWidth = mainGridViewport.width || estimatedMainGridWidth;
     const sessionColumnWidth = portalSessionColumnWidth(measuredMainGridWidth, state.portalSessionColumnAdjust);
-    const sessionColumnMode = portalSessionColumnMode(sessionColumnWidth);
+    const sessionColumnMode = zenActive ? "hidden" : portalSessionColumnMode(sessionColumnWidth);
     const sessionColumnTrack = sessionColumnMode === "hidden"
         ? "0px"
         : `clamp(0px, calc(${PORTAL_SESSION_COLUMN_RATIO * 100}% + ${Number(state.portalSessionColumnAdjust) || 0}px), max(0px, calc(100% - 14rem - 32px)))`;
 
     const desktopWorkspace = React.createElement("div", {
-        className: "ps-workspace-grid",
+        className: `ps-workspace-grid${rightSideActive ? "" : " is-right-hidden"}`,
         style: {
-            gridTemplateColumns: `minmax(0, ${layout.leftWidth}fr) var(--ps-resizer-track, 16px) minmax(0, ${layout.rightWidth}fr)`,
+            // With both optional columns off there is no right side and no
+            // resizer for one: chat takes the whole width. Leaving a 0fr track
+            // and its 16px resizer behind would put a drag handle against the
+            // window edge that reveals nothing.
+            //
+            // With the canvas up the right track gets a pixel FLOOR. The fr
+            // ratio comes from computeLegacyLayout, which was tuned when the
+            // right column only ever held the inspector/activity split — it
+            // left the canvas around 200px, too narrow to read a page in.
+            // Capped at 55% so the floor can never crush chat on a narrow
+            // window; below that the user drags, or closes a column.
+            gridTemplateColumns: artifactPaneActive
+                ? `minmax(0, ${layout.leftWidth}fr) var(--ps-resizer-track, 16px) minmax(0, ${layout.rightWidth}fr)`
+                : (zenActive
+                    // Zen: chat is a rail, the canvas is the workbench. The
+                    // rail width is remembered for THIS session only.
+                    ? `${zenRailPx}px var(--ps-resizer-track, 16px) minmax(0, 1fr)`
+                    : (rightSideActive
+                        ? `minmax(0, 1fr) var(--ps-resizer-track, 16px) min(${rightSidePx}px, 60%)`
+                        : "minmax(0, 1fr)")),
         },
     },
     React.createElement("div", {
@@ -10282,53 +11042,102 @@ export function PilotSwarmWebApp({ controller }) {
         style: { gridColumn: "3" },
     },
         React.createElement(ChatPane, { controller }))),
-    React.createElement(ColumnResizeHandle, { controller, paneAdjust: state.paneAdjust }),
-    // The artifact reader takes the WHOLE right column — inspector, resizer and
-    // activity all step aside. The column keeps its width and resizer, so the
-    // chat/reader split is dragged exactly like the chat/inspector one was.
-    React.createElement("div", { className: "ps-workspace-column-host" },
+    rightSideActive
+        ? (artifactPaneActive
+            ? React.createElement(ColumnResizeHandle, { controller, paneAdjust: state.paneAdjust })
+            : (zenActive
+                ? React.createElement(ZenRailResizeHandle, { controller, sessionId: state.activeSessionId, railPx: zenRailPx })
+                : React.createElement(ChatRightResizeHandle, {
+                    controller,
+                    target: canvasModeActive ? "canvas" : "diagnostics",
+                    adjust: canvasModeActive ? state.canvasPaneAdjust : state.diagnosticsPaneAdjust,
+                })))
+        : null,
+    // The right side of the workspace: canvas and diagnostics, side by side
+    // and independent. Either, both, or neither.
+    //
+    // A flex ROW rather than more grid tracks. The outer grid's third track is
+    // still sized against chat by the handle above, so that drag keeps meaning
+    // exactly what it always meant: chat versus everything to its right.
+    //
+    // DOM order is the visual order: canvas, then diagnostics. Diagnostics is
+    // always rightmost, whether or not the canvas is up.
+    //
+    // The artifact reader still takes the WHOLE right side while it is open —
+    // canvas, inspector and activity all step aside — which is why
+    // diagnosticsActive already excludes it.
+    React.createElement("div", { className: `ps-workspace-column-host is-split${canvasMaximized ? " has-maximized" : ""}` },
     artifactPaneActive
         ? React.createElement("div", { className: "ps-workspace-column is-artifact" },
             React.createElement(ArtifactTakeoverPane, { controller, onClose: closeArtifactPane }))
-        : React.createElement("div", {
-        className: "ps-workspace-column",
-        style: { gridTemplateRows: `${layout.inspectorPaneHeight}fr var(--ps-resizer-track, 16px) ${layout.activityPaneHeight}fr` },
-    },
-    React.createElement("div", {
-        className: "ps-workspace-pane-slot",
-        style: { gridRow: "1" },
-    },
-        !layout.inspectorHidden ? React.createElement(InspectorPane, { controller, mobile: false }) : null),
-    React.createElement("div", {
-        style: {
-            gridRow: "2",
-            minHeight: 0,
-            display: "flex",
-            flexDirection: "column",
-        },
-    },
-        React.createElement(ActivityRowResizeHandle, { controller, activityPaneAdjust: state.activityPaneAdjust })),
-    React.createElement("div", {
-        className: "ps-workspace-pane-slot",
-        style: { gridRow: "3" },
-    },
-        // The artifact preview takes over the activity slot while an artifact
-        // is selected, so it inherits the row resizer and can be sized freely.
-        // It yields back to Activity the moment the selection clears.
-        artifactPreviewDetached
-            ? React.createElement(FilesPane, { controller, focused: false, previewOnly: true })
-            : (!layout.activityHidden ? React.createElement(ActivityPane, { controller }) : null))),
-    // The canvas keeps its DOCUMENT alive across toggles: once opened for
-    // this session it stays mounted in a hidden layer — unmounting destroys
-    // typed input, scroll position, and any running page. Session switches
-    // remount fresh via the key.
+        : null,
+    // The canvas keeps its DOCUMENT alive across toggles: once opened for this
+    // session it stays mounted in a hidden layer — unmounting destroys typed
+    // input, scroll position, and any running page. Session switches remount
+    // fresh via the key. It is FIRST in the DOM so it sits left of
+    // diagnostics; while hidden it is display:none and takes no width.
     desktopCanvasEverOpened
         ? React.createElement("div", {
             key: `canvas:${state.activeSessionId || ""}`,
-            className: `ps-workspace-column is-artifact ps-canvas-layer${canvasModeActive && !artifactPaneActive ? "" : " is-hidden"}`,
+            className: `ps-workspace-column is-artifact ps-canvas-layer${canvasModeActive && !artifactPaneActive ? "" : " is-hidden"}${canvasMaximized && canvasModeActive && !artifactPaneActive ? " is-maximized" : ""}`,
+            // Sharing the right side: canvas takes a fixed slice and
+            // diagnostics absorbs the rest, so the handle between them moves
+            // one number. Alone, or full screen, it simply fills its box.
+            style: canvasModeActive && !artifactPaneActive && diagnosticsActive && !canvasMaximized
+                ? { flex: `0 0 ${canvasColPx}px`, minWidth: 0 }
+                : undefined,
             ...(canvasModeActive && !artifactPaneActive ? {} : { inert: true, "aria-hidden": "true" }),
         },
-            React.createElement(CanvasPane, { controller, visible: canvasModeActive && !artifactPaneActive }))
+            React.createElement(CanvasPane, {
+                controller,
+                visible: canvasModeActive && !artifactPaneActive,
+                maximized: canvasMaximized,
+            }))
+        : null,
+    // Only when BOTH are up. With one column the outer chat/right handle is
+    // already the only split there is, and a second handle would resize
+    // nothing.
+    canvasModeActive && diagnosticsActive
+        ? React.createElement(CanvasDiagnosticsResizeHandle, { controller, canvasPaneAdjust: state.canvasPaneAdjust, diagnosticsPaneAdjust: state.diagnosticsPaneAdjust })
+        : null,
+    // Diagnostics: yesterday's inspector-over-activity column, unchanged
+    // inside, now behind its own toggle and rightmost.
+    diagnosticsActive
+        ? React.createElement("div", {
+            className: "ps-workspace-column",
+            style: {
+                // Continuous PIXEL split, minmax-clamped so neither pane can
+                // be dragged away or collapse behind your back. The old
+                // `${rows}fr` template rode the TUI's row-quantized layout —
+                // ~20px notches and threshold-triggered collapse flips.
+                // minmax(0,...): either pane may be dragged fully shut and
+                // pulled back open with the same seam. The handle clamps the
+                // adjust to the column's real height at drag time, so the bar
+                // tracks the pointer 1:1 instead of detaching at a floor.
+                gridTemplateRows: `minmax(0px, calc(50% + ${Math.round(Number(state.diagnosticsSplitAdjust) || 0)}px)) var(--ps-resizer-track, 16px) minmax(0px, 1fr)`,
+                ...(canvasModeActive ? { flex: "1 1 0%", minWidth: 0 } : null),
+            },
+        },
+            React.createElement("div", {
+                className: "ps-workspace-pane-slot",
+                style: { gridRow: "1" },
+            },
+                React.createElement(InspectorPane, { controller, mobile: false })),
+            React.createElement("div", {
+                style: { gridRow: "2", minHeight: 0, display: "flex", flexDirection: "column" },
+            },
+                React.createElement(DiagnosticsSplitResizeHandle, { controller, splitAdjust: state.diagnosticsSplitAdjust })),
+            React.createElement("div", {
+                className: "ps-workspace-pane-slot",
+                style: { gridRow: "3" },
+            },
+                // The artifact preview takes over the activity slot while an
+                // artifact is selected, so it inherits the row resizer and can
+                // be sized freely. It yields back to Activity the moment the
+                // selection clears.
+                artifactPreviewDetached
+                    ? React.createElement(FilesPane, { controller, focused: false, previewOnly: true })
+                    : React.createElement(ActivityPane, { controller })))
         : null));
     const fullscreenWorkspace = React.createElement("div", { className: "ps-workspace-full" },
         React.createElement(InspectorPane, { controller, mobile: false }));
@@ -10352,7 +11161,24 @@ export function PilotSwarmWebApp({ controller }) {
             React.createElement(InspectorPane, { controller, mobile: true }));
     else if (mobilePane === "activity") mobileContent = React.createElement("div", { className: "ps-mobile-pane-fill" },
         React.createElement(ActivityPane, { controller }));
+    // The canvas fills the whole region, so there is nothing to render under
+    // it — the layer below is a SIBLING of this content and covers it. Drawing
+    // a pane here would only be invisible work.
+    else if (mobilePane === "canvas") mobileContent = null;
     else mobileContent = React.createElement(MobileWorkspace, { controller, layout: mobileMainLayout });
+
+    // The phone's canvas layer: a sibling of the content region's pane, NOT a
+    // child of any pane. That is deliberate — panes mount and unmount as the
+    // toolbar switches between Main, Activity and Inspector, and the canvas
+    // frame has to survive all of it. Only a session change (which rekeys it)
+    // or a reload may take a running page down.
+    const mobileCanvasLayer = mobile && mobileCanvasEverOpened
+        ? React.createElement(MobileCanvasLayer, {
+            key: `canvas:${canvasShellView.sessionId || ""}`,
+            controller,
+            visible: mobileCanvasOpen,
+        })
+        : null;
 
     return React.createElement(ControllerContext.Provider, { value: controller },
         React.createElement("div", { ref: viewportRef, className: "ps-web-shell" },
@@ -10362,13 +11188,14 @@ export function PilotSwarmWebApp({ controller }) {
         React.createElement(Toolbar, {
             controller,
             mobile,
-            canvasOverlayOpen: mobileCanvasOpen,
-            onToggleCanvasOverlay: toggleMobileCanvas,
+            canvasPaneOpen: mobileCanvasOpen,
+            onToggleCanvasPane: toggleMobileCanvas,
             mobilePane,
             mobileMainLayout,
             onSelectMobilePane: (paneId, focus) => {
                 // Tapping Main while already on Main cycles its layout; from
-                // another pane it just returns you to Main, unchanged.
+                // another pane (the canvas included) it just returns you to
+                // Main, unchanged.
                 if (paneId === "workspace" && mobilePane === "workspace") {
                     setMobileMainLayout((current) => (
                         current === "split" ? "chat" : current === "chat" ? "sessions" : "split"
@@ -10383,17 +11210,10 @@ export function PilotSwarmWebApp({ controller }) {
                 ? React.createElement(AdminConsolePanel, { controller, mobile })
                 : (filesFullscreenActive
                     ? fullscreenWorkspace
-                    : (mobile ? mobileContent : desktopWorkspace))),
+                    : (mobile ? mobileContent : desktopWorkspace)),
+            mobileCanvasLayer),
         mobile && filesFullscreenActive
             ? React.createElement(MobileArtifactOverlay, { controller })
-            : null,
-        mobile && mobileCanvasEverOpened
-            ? React.createElement(MobileCanvasOverlay, {
-                key: `canvas:${canvasShellView.sessionId || ""}`,
-                controller,
-                onClose: closeMobileCanvas,
-                visible: mobileCanvasOpen,
-            })
             : null,
         React.createElement(ModalLayer, { controller })));
 }

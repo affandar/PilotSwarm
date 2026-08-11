@@ -23,7 +23,7 @@ they are internal, not a supported integration surface.
             ╔═══════════════════════════════════════╗
             ║            THE WEB API SEAM           ║
             ║   HTTP  /api/v1   ·   WS  /api/v1/ws  ║
-            ║   auth: none | entra   ·   { ok, … }  ║
+            ║ auth: none | entra | proxy · { ok, … }║
             ╚═══════════════════╦═══════════════════╝
                                 ▼
             ┌───────────────────────────────────────┐

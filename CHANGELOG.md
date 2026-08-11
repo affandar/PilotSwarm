@@ -1,5 +1,62 @@
 # Changelog
 
+## 0.5.38 — 2026-08-11
+
+Canvas grows from one root-only surface into a small session workspace: every
+session can own five named canvases, switch among them without redrawing, and
+keep each slot's revisions and live data independent. The portal adds an
+identity-aware proxy auth provider and a denser, more flexible canvas and
+diagnostics layout, while OpenAI-compatible BYOK sessions preserve the model
+capabilities declared by operators. The release closes with a green baseline
+and HorizonDB all-providers matrix.
+
+### Added
+
+- **Five named canvases per session.** `draw_canvas`, `update_canvas`, and
+  `read_canvas` accept slots 1–5; draws may assign a friendly name; each slot
+  keeps independent document and data revisions. Slot 1 remains
+  `canvas.html` for compatibility, while slots 2–5 use `canvas2.html` through
+  `canvas5.html`. Canvas tools are available to sub-agents as well as roots,
+  and migration 0045 adds the per-slot catalog cache used by cold portal loads.
+
+- **`show_canvas`.** Agents can bring an already-drawn slot back to the user's
+  screen without replacing bytes, creating a revision, or marking content
+  unseen. The durable `session.canvas_presented` event follows the same
+  freshness and user-dismissal guards as a draw.
+
+- **Identity-aware proxy authentication.** `PORTAL_AUTH_PROVIDER=proxy`
+  supports signed assertions from Cloudflare Access, Google IAP, AWS ALB,
+  Pomerium, oauth2-proxy, Authelia, Authentik, and similar front doors. JWT
+  mode validates JWKS, issuer, and audience; unsigned forwarded-header mode
+  fails startup unless the operator explicitly confirms the origin is isolated.
+
+### Changed
+
+- **Canvas and diagnostics workspace.** Desktop canvas and diagnostics are
+  independent columns with canvas slot controls, cold-load markers, a centered
+  toolbar, and per-session zen/full-screen behavior. Mobile combines Inspector
+  and Activity behind one diagnostics tab while preserving a content-region
+  canvas and an explicit whole-screen maximize state. The default theme for a
+  new workspace is now Workspace Dark.
+
+- **OpenAI-compatible BYOK contracts.** Provider-declared vision and context
+  capabilities now reach the Copilot runtime, reasoning effort is carried on
+  the proxy base URL instead of changing model identity, and unsupported
+  capability blocks are omitted. Replay also strips null response-only fields
+  before sending historical messages back through strict OpenAI-compatible
+  endpoints.
+
+### Fixed
+
+- **Portal pane geometry and controls.** The diagnostics seam can collapse
+  fully and remains aligned while dragging; activity loading uses the shared
+  working indicator; canvas controls, right-rail actions, narrow headers, and
+  theme foregrounds remain usable across desktop and mobile layouts.
+
+- **Theme tests follow the shipped default.** New-workspace and stale-theme
+  fallback assertions now track Workspace Dark instead of the retired Noctis
+  Obscuro default.
+
 ## 0.5.37 — 2026-08-08
 
 The session canvas ships — a standing, session-owned visual surface that the

@@ -1,4 +1,5 @@
 import React from "react";
+import { createPortal } from "react-dom";
 import { createWebPilotSwarmController, PilotSwarmWebApp } from "pilotswarm/ui-react";
 import { getTheme } from "pilotswarm/ui-core";
 import { selectSessionFilterExceptionNotice, selectStatusBar } from "pilotswarm/ui-core";
@@ -497,6 +498,25 @@ function useBuildFreshness() {
 
 function PortalHeader({ account, authEnabled, isAdmin = false, branding, onSignOut, versionLabel = null, statusText = "", themeIcon = null }) {
     const buildStale = useBuildFreshness();
+    // The desktop toolbar (portalled into this header) exposes two slots so
+    // the right side reads as ONE cluster: version/status · bug · settings ·
+    // sign-out. Found after mount — the toolbar renders in the same commit
+    // cycle — and re-sought while absent (mobile has no slots; fall back to
+    // the inline layout below).
+    const [metaSlot, setMetaSlot] = React.useState(null);
+    const [signOutSlot, setSignOutSlot] = React.useState(null);
+    React.useEffect(() => {
+        let raf = 0;
+        const find = () => {
+            const m = document.getElementById("ps-toolbar-meta-slot");
+            const o = document.getElementById("ps-toolbar-signout-slot");
+            setMetaSlot(m || null);
+            setSignOutSlot(o || null);
+            if (!m || !o) raf = requestAnimationFrame(find);
+        };
+        find();
+        return () => cancelAnimationFrame(raf);
+    });
     // Admins are marked with a leading "(*)" so elevated rights are visible at a glance.
     const baseName = account?.name || account?.username || "Signed in";
     const name = isAdmin ? `(*) ${baseName}` : baseName;
@@ -517,9 +537,9 @@ function PortalHeader({ account, authEnabled, isAdmin = false, branding, onSignO
         // the app has ONE top bar instead of a header plus a button strip.
         // Always rendered (empty otherwise) so the portal target is stable.
         React.createElement("div", { className: "portal-header-slot", id: "ps-header-toolbar-slot" }),
-        (authEnabled || versionLabel || statusText)
-            ? React.createElement("div", { className: "portal-header-user" },
-                React.createElement("div", { className: "portal-header-meta" },
+        (() => {
+            const metaNode = (versionLabel || statusText || buildStale)
+                ? React.createElement("div", { className: "portal-header-meta" },
                     versionLabel
                         ? React.createElement("span", { className: "portal-header-version" }, versionLabel)
                         : null,
@@ -533,15 +553,36 @@ function PortalHeader({ account, authEnabled, isAdmin = false, branding, onSignO
                         : null,
                     statusText
                         ? React.createElement("span", { className: "portal-header-status" }, statusText)
-                        : null),
-                authEnabled
-                    ? React.createElement("button", {
-                        type: "button",
-                        className: "portal-secondary-button",
-                        onClick: () => onSignOut().catch(() => {}),
-                    }, "Sign Out")
-                    : null)
-            : null,
+                        : null)
+                : null;
+            const signOutNode = authEnabled
+                ? React.createElement("button", {
+                    type: "button",
+                    // Same classes as the bug/settings buttons, so all three
+                    // land the exact same size.
+                    className: signOutSlot ? "ps-toolbar-button ps-icon-button" : "portal-secondary-button is-icon",
+                    onClick: () => onSignOut().catch(() => {}),
+                    title: "Sign out",
+                    "aria-label": "Sign out",
+                }, React.createElement("svg", { viewBox: "0 0 20 20", width: 16, height: 16, fill: "none", stroke: "currentColor", strokeWidth: 1.7, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true" },
+                    React.createElement("path", { d: "M12.5 3.5H5.5a1.5 1.5 0 0 0-1.5 1.5v10a1.5 1.5 0 0 0 1.5 1.5h7" }),
+                    React.createElement("path", { d: "M13.5 6.8 16.7 10l-3.2 3.2M16.5 10H8" })))
+                : null;
+            if (metaSlot || signOutSlot) {
+                return React.createElement(React.Fragment, null,
+                    metaSlot && metaNode ? createPortal(metaNode, metaSlot) : null,
+                    signOutSlot && signOutNode ? createPortal(signOutNode, signOutSlot) : null,
+                    // Anything the slots could not take stays inline.
+                    (!metaSlot && metaNode) || (!signOutSlot && signOutNode)
+                        ? React.createElement("div", { className: "portal-header-user" },
+                            !metaSlot ? metaNode : null,
+                            !signOutSlot ? signOutNode : null)
+                        : null);
+            }
+            return (metaNode || signOutNode)
+                ? React.createElement("div", { className: "portal-header-user" }, metaNode, signOutNode)
+                : null;
+        })(),
     );
 }
 

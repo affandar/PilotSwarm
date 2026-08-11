@@ -56,7 +56,7 @@ AZURE_STORAGE_CONTAINER=copilot-sessions
 The shipped browser portal supports provider-based auth.
 
 - default: `none`
-- built-in optional provider: `entra`
+- built-in optional providers: `entra`, `proxy`
 
 Enable Entra for portal deployments with:
 
@@ -103,6 +103,42 @@ belongs in new app roles checked explicitly in code.
 > the `pilotswarm-portal-app-reg` skill for full usage. For
 > npm-orchestrator stamps, this is wired into the new-env flow by the
 > `pilotswarm-npm-deployer` agent.
+
+For deployments already protected by an identity-aware reverse proxy, use the
+request-authenticated `proxy` provider. The default `jwt` mode verifies the
+proxy's signed assertion, including issuer and audience:
+
+```bash
+PORTAL_AUTH_PROVIDER=proxy
+PORTAL_AUTH_PROXY_MODE=jwt
+PORTAL_AUTH_PROXY_JWKS_URL=https://access.example.com/cdn-cgi/access/certs
+PORTAL_AUTH_PROXY_ISSUER=https://access.example.com
+PORTAL_AUTH_PROXY_AUDIENCE=<application-audience>
+# Optional; defaults to Cloudflare Access's assertion header.
+# PORTAL_AUTH_PROXY_JWT_HEADER=cf-access-jwt-assertion
+```
+
+Claim names are configurable with `PORTAL_AUTH_PROXY_SUBJECT_CLAIM`,
+`PORTAL_AUTH_PROXY_EMAIL_CLAIM`, `PORTAL_AUTH_PROXY_NAME_CLAIM`,
+`PORTAL_AUTH_PROXY_ROLES_CLAIM`, and `PORTAL_AUTH_PROXY_GROUPS_CLAIM`.
+Authorization still flows through the ordinary `PORTAL_AUTHZ_*` policy.
+
+Unsigned header mode is only safe when the portal origin cannot be reached
+except through the trusted proxy. It deliberately refuses startup without the
+explicit acknowledgement:
+
+```bash
+PORTAL_AUTH_PROVIDER=proxy
+PORTAL_AUTH_PROXY_MODE=header
+PORTAL_AUTH_PROXY_TRUST_HEADERS=true
+# Defaults: x-forwarded-user, x-forwarded-email,
+# x-forwarded-preferred-username, x-forwarded-groups
+```
+
+Override those names with `PORTAL_AUTH_PROXY_SUBJECT_HEADER`,
+`PORTAL_AUTH_PROXY_EMAIL_HEADER`, `PORTAL_AUTH_PROXY_NAME_HEADER`, and
+`PORTAL_AUTH_PROXY_GROUPS_HEADER`. The proxy completes sign-in before the SPA
+loads, so this provider has no browser-side PKCE flow or token cache.
 
 Portal branding and sign-in copy come from `plugin.json.portal`, with
 `plugin.json.tui` used as a fallback when the portal plugin metadata does not

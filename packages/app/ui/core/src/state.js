@@ -73,11 +73,23 @@ export function normalizeStoredLayoutAdjustments(layoutAdjustments) {
     const sessionPaneAdjust = Number(candidate.sessionPaneAdjust);
     const portalSessionColumnAdjust = Number(candidate.portalSessionColumnAdjust);
     const activityPaneAdjust = Number(candidate.activityPaneAdjust);
+    // Canvas is a column of its own now rather than a face the right column
+    // wears, so it needs its own remembered width. Same mechanism as the rest:
+    // a pixel delta from the computed base, persisted per user.
+    const canvasPaneAdjust = Number(candidate.canvasPaneAdjust);
+    const diagnosticsPaneAdjust = Number(candidate.diagnosticsPaneAdjust);
+    const diagnosticsSplitAdjust = Number(candidate.diagnosticsSplitAdjust);
     return {
         paneAdjust: Number.isFinite(paneAdjust) ? Math.trunc(paneAdjust) : 0,
         sessionPaneAdjust: Number.isFinite(sessionPaneAdjust) ? Math.trunc(sessionPaneAdjust) : 0,
         portalSessionColumnAdjust: Number.isFinite(portalSessionColumnAdjust) ? Math.trunc(portalSessionColumnAdjust) : 0,
         activityPaneAdjust: Number.isFinite(activityPaneAdjust) ? Math.trunc(activityPaneAdjust) : 0,
+        canvasPaneAdjust: Number.isFinite(canvasPaneAdjust) ? Math.trunc(canvasPaneAdjust) : 0,
+        diagnosticsPaneAdjust: Number.isFinite(diagnosticsPaneAdjust) ? Math.trunc(diagnosticsPaneAdjust) : 0,
+        // The inspector/activity seam inside Diagnostics, in PIXELS from an
+        // even split. The old row-quantized TUI adjust made browser drags
+        // jump in ~20px notches.
+        diagnosticsSplitAdjust: Number.isFinite(diagnosticsSplitAdjust) ? Math.trunc(diagnosticsSplitAdjust) : 0,
     };
 }
 
@@ -132,9 +144,64 @@ export function normalizeStoredCollapsedSessionIds(value) {
  * Right-column mode: the inspector/activity split, or the session canvas.
  * Anything unrecognized falls back to panes — a stored value from a newer
  * build must not strand an older portal in a mode it cannot render.
+ *
+ * @deprecated Superseded by the independent `canvasOpen` / `diagnosticsOpen`
+ * booleans. Kept only to migrate a value written by an older build — see
+ * normalizeStoredDesktopPanes.
  */
 export function normalizeStoredRightPaneMode(value) {
     return value === "canvas" ? "canvas" : "panes";
+}
+
+/**
+ * Which of the two optional desktop columns are on screen.
+ *
+ * Canvas and Diagnostics used to be one enum (`rightPaneMode`), so the right
+ * column could only ever wear one face. They are independent now: either, both,
+ * or neither. Diagnostics is the old inspector/activity split, moved out of the
+ * chat pane and travelling as one unit.
+ *
+ * Both default to OFF. A pane that is off has no width and no resizer — it is
+ * absent, not collapsed to nothing.
+ *
+ * Migrating a stored `rightPaneMode`:
+ *   "canvas" -> canvas on. That was a deliberate choice, so it is honored.
+ *   "panes"  -> both off. "panes" was the default value rather than a choice,
+ *               and the new default is a clean two-column workspace.
+ */
+export function normalizeStoredDesktopPanes(value, legacyRightPaneMode) {
+    const candidate = value && typeof value === "object" ? value : null;
+    if (candidate && (typeof candidate.canvasOpen === "boolean" || typeof candidate.diagnosticsOpen === "boolean")) {
+        return {
+            canvasOpen: candidate.canvasOpen === true,
+            diagnosticsOpen: candidate.diagnosticsOpen === true,
+            // Zen: chat as a narrow rail, canvas as the workbench. Only
+            // meaningful with the canvas open.
+            zen: candidate.zen === true && candidate.canvasOpen === true,
+        };
+    }
+    return {
+        canvasOpen: legacyRightPaneMode === "canvas",
+        diagnosticsOpen: false,
+        zen: false,
+    };
+}
+
+/**
+ * The store key for one canvas surface. Slot 1 keeps the bare session id so
+ * every reader written before slots existed keeps working untouched; slots
+ * 2-5 append "#<slot>". Used for canvas.bySessionId AND canvas.prefs.
+ */
+export function canvasKey(sessionId, slot) {
+    const id = String(sessionId || "");
+    const n = Number(slot);
+    return Number.isInteger(n) && n >= 2 && n <= 5 ? `${id}#${n}` : id;
+}
+
+/** The inverse: `sessionId#3` -> { sessionId, slot: 3 }; bare id -> slot 1. */
+export function parseCanvasKey(key) {
+    const m = /^(.*)#([2-5])$/.exec(String(key || ""));
+    return m ? { sessionId: m[1], slot: Number(m[2]) } : { sessionId: String(key || ""), slot: 1 };
 }
 
 /**
@@ -154,10 +221,13 @@ export function normalizeStoredCanvasPrefs(value) {
         if (!id || !entry || typeof entry !== "object") continue;
         const lastViewedRev = Number(entry.lastViewedRev);
         const lastViewedDataRev = Number(entry.lastViewedDataRev);
+        const zenRailPx = Number(entry.zenRailPx);
         out[id] = {
             optedOut: entry.optedOut === true,
             lastViewedRev: Number.isFinite(lastViewedRev) && lastViewedRev > 0 ? Math.floor(lastViewedRev) : 0,
             lastViewedDataRev: Number.isFinite(lastViewedDataRev) && lastViewedDataRev > 0 ? Math.floor(lastViewedDataRev) : 0,
+            // Zen chat-rail width, remembered for THIS session only.
+            ...(Number.isFinite(zenRailPx) && zenRailPx > 0 ? { zenRailPx: Math.floor(zenRailPx) } : {}),
         };
     }
     return out;
@@ -169,7 +239,11 @@ export function normalizeStoredActiveSessionId(value) {
     return id ? id : null;
 }
 
-export function createInitialState({ mode = "local", branding = null, docs = null, themeId = null, sessionOwnerFilter = null, layoutAdjustments = null, pinnedSessionIds = null, collapsedSessionIds = null, activeSessionId = null, sessionOrder = null, rightPaneMode = null, canvasPrefs = null } = {}) {
+export function createInitialState({ mode = "local", branding = null, docs = null, themeId = null, sessionOwnerFilter = null, layoutAdjustments = null, pinnedSessionIds = null, collapsedSessionIds = null, activeSessionId = null, sessionOrder = null, rightPaneMode = null, desktopPanes: storedDesktopPanes = null, canvasPrefs = null } = {}) {
+    const desktopPanes = normalizeStoredDesktopPanes(
+        storedDesktopPanes,
+        normalizeStoredRightPaneMode(rightPaneMode),
+    );
     const hasStoredSessionOwnerFilter = sessionOwnerFilter != null;
     const hasStoredCollapsedSessionIds = collapsedSessionIds != null;
     const initialLayoutAdjustments = normalizeStoredLayoutAdjustments(layoutAdjustments);
@@ -201,7 +275,21 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // through to the transcript.
             // Which face the right column wears: the inspector/activity panes
             // or the session canvas. Persisted.
-            rightPaneMode: normalizeStoredRightPaneMode(rightPaneMode),
+            //
+            // @deprecated Read by nothing that decides layout any more — the
+            // two booleans below do that. Still derived so a build that rolls
+            // back, and anything still reading the old key, sees a sane value.
+            rightPaneMode: desktopPanes.canvasOpen ? "canvas" : "panes",
+            // The two optional desktop columns, independent of each other.
+            // Both off is the default workspace: sessions and chat only.
+            canvasOpen: desktopPanes.canvasOpen,
+            diagnosticsOpen: desktopPanes.diagnosticsOpen,
+            // Chat-rail + canvas-workbench mode. Persisted with the columns.
+            canvasZen: desktopPanes.zen,
+            // Canvas filling the workspace. Deliberately NOT persisted: it is
+            // a "look at this now" gesture, and returning to a portal with no
+            // chat and no session list would read as a broken app.
+            canvasMaximized: false,
             statsViewMode: "session",
             prompt: "",
             promptCursor: 0,
