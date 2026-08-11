@@ -3,8 +3,39 @@
 # (prebuilds link against GLIBC_2.39; bookworm-slim is 2.36 and crashes at dlopen).
 FROM node:24-trixie-slim
 
-# Install CA certificates for HTTPS
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+# Base runtime deps:
+#   ca-certificates  HTTPS
+#   git              git-repo-worker.js shells out to clone/fetch/reset the
+#                    enlistment from the node-local mirror (git-cache collocation).
+#   curl             fetch the PowerShell tarball below (slim has no curl).
+#   libicu-dev       PowerShell's globalization runtime dependency (pulls the
+#                    correct libicu soname for this Debian release).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates git curl libicu-dev \
+ && rm -rf /var/lib/apt/lists/*
+
+# The node-local git-cache mirror this worker clones/fetches from is written by
+# the git-cache daemon (root) and mounted read-only; the worker runs as the
+# non-root `node` user (below), so git's "dubious ownership" guard would abort
+# every clone/fetch. Trust all repo paths in the SYSTEM git config — safe.directory
+# is honored ONLY from system/global config files, never from -c or GIT_CONFIG_*
+# env, so this must be baked into the image (not passed via the DaemonSet env).
+RUN git config --system --add safe.directory '*'
+
+# PowerShell (pwsh) — the SQL agent skills/tooling drive `powershell`/`pwsh`, and
+# PowerShell Core runs natively on Linux, so a Linux worker image satisfies the
+# "must run PowerShell" requirement without Windows containers. Installed from the
+# distro-agnostic release tarball (the packages.microsoft.com apt repo lags new
+# Debian releases like trixie). See docs/proposals/windows-worker-image-followup.md
+# for why a native Windows image build was deferred.
+ARG PWSH_VERSION=7.4.6
+RUN curl -fsSL "https://github.com/PowerShell/PowerShell/releases/download/v${PWSH_VERSION}/powershell-${PWSH_VERSION}-linux-x64.tar.gz" -o /tmp/pwsh.tar.gz \
+ && mkdir -p /opt/microsoft/powershell/7 \
+ && tar zxf /tmp/pwsh.tar.gz -C /opt/microsoft/powershell/7 \
+ && chmod +x /opt/microsoft/powershell/7/pwsh \
+ && ln -s /opt/microsoft/powershell/7/pwsh /usr/bin/pwsh \
+ && rm /tmp/pwsh.tar.gz \
+ && pwsh --version
 
 WORKDIR /app
 
