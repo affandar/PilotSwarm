@@ -562,6 +562,30 @@ access.
 - An Azure Database for PostgreSQL (Flexible Server)
 - An Azure Storage Account (for session blob storage)
 
+### Known limitation: storage account shared-key access
+
+The BaseInfra storage module (`deploy/services/base-infra/bicep/storage.bicep`)
+provisions the `copilot-sessions` account with **`allowSharedKeyAccess`
+defaulting to `true`**, because the legacy `scripts/deploy-aks.sh` flow
+authenticates to blob storage with an `AZURE_STORAGE_CONNECTION_STRING`
+(shared-key). Tenants that enforce the **Safe Secrets Standard / SFI-ID4.2.1**
+Azure Policy (`SFI-ID4.2.1 Storage Accounts - Central Enforcement`) **deny**
+`allowSharedKeyAccess=true` and the deployment fails with
+`RequestDisallowedByPolicy` (`aka.ms/safesecretsstandard`).
+
+The managed-identity worker/portal path (`PILOTSWARM_USE_MANAGED_IDENTITY=1` +
+`DefaultAzureCredential`) does **not** use shared keys, so on a
+policy-enforcing tenant deploy the module with shared-key access disabled:
+
+```bash
+az deployment group create ... \
+  --template-file deploy/services/base-infra/bicep/storage.bicep \
+  --parameters allowSharedKeyAccess=false ...   # MI-only; required by SFI-ID4.2.1
+```
+
+The `allowSharedKeyAccess` parameter defaults to `true` only to preserve the
+connection-string flow; new MI-based stamps should pass `false`.
+
 ## WARNING: Runaway Deployments
 
 **Before deploying**, always check for old worker pods in other namespaces that may still be connected to the same database:
