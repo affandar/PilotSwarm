@@ -34,6 +34,10 @@ RUN npm ci --omit=dev --force
 COPY packages/sdk/dist/ ./packages/sdk/dist/
 COPY packages/sdk/plugins/ ./packages/sdk/plugins/
 COPY packages/sdk/examples/worker.js ./packages/sdk/examples/
+# git-repo-worker entrypoint (AKS git-hydration): reused-enlistment worker that
+# reconciles from a node-local git-cache mirror before each job. Selected via a
+# `command:` override in deploy/gitops/git-repo-worker; harmless otherwise.
+COPY packages/sdk/examples/git-repo-worker.js ./packages/sdk/examples/
 COPY packages/app/tui/plugins/ ./packages/app/tui/plugins/
 
 # api-client (plain ESM) — the SDK's dist/web/api-connection.js imports it at
