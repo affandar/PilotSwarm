@@ -1294,6 +1294,13 @@ export class SessionManager {
             // the worker process into the enlistment checkout — no PilotSwarm
             // option required.
             workingDirectory: config.workingDirectory,
+            // PLACEHOLDER (make generic later): unconditionally enable `.github`
+            // config discovery + skill enumeration so a repo-checkout worker
+            // surfaces the enlistment's `.github/skills` (and MCP/agents) from the
+            // working directory. Today these are hard-wired true; they should
+            // become per-session/per-workload config knobs, not blanket defaults.
+            enableConfigDiscovery: true,
+            enableSkills: true,
             hooks: config.hooks,
             onPermissionRequest: (config as any).onPermissionRequest ?? approvePermissionForSession,
             infiniteSessions: { enabled: true },
