@@ -1,0 +1,30 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Default ado-scheduler overlay. Mirrors the worker overlay shape: base + a
+# capability-component list. The `ado-scheduler-replacements` component holds the
+# env-driven replacements (IMAGE, WI annotation); future variants slot in as
+# additional components alongside it.
+
+# Namespace re-asserted at the overlay level so the overlay-generated
+# `ado-scheduler-env` ConfigMap is created in the same namespace as the base
+# resources, which lets nameReference rewrite `envFrom.configMapRef.name` to the
+# hashed form.
+namespace: pilotswarm
+
+resources:
+  - ../../base
+
+components:
+  - ../../components/ado-scheduler-replacements
+
+# Fresh ConfigMap built from the rendered `.env`. The `.env` file is substituted
+# in-place by the deploy pipeline from the env map. Name-suffix hash is
+# intentionally enabled (kustomize default): each `.env` change yields a new
+# ConfigMap name, kustomize rewrites the envFrom reference, the Deployment spec
+# changes, and Flux rolls the pod. Without the hash the pod would keep loading
+# stale env until a manual `kubectl rollout restart`.
+configMapGenerator:
+  - name: ado-scheduler-env
+    envs:
+      - .env

@@ -1,0 +1,34 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+# Env-driven replacements for the ado-scheduler overlay.
+#
+# Sourced from the overlay-generated `ado-scheduler-env` ConfigMap (each
+# overlay's configMapGenerator builds it from `.env`). Components run AFTER the
+# overlay's resources are loaded, so the ConfigMap is visible when these
+# replacements fire. Mirrors worker/components/worker-replacements, minus the
+# SecretProviderClass targets (the scheduler has no CSI secrets — it uses
+# workload identity for PG + ADO tokens).
+
+replacements:
+  - source:
+      kind: ConfigMap
+      name: ado-scheduler-env
+      fieldPath: data.IMAGE
+    targets:
+      - select:
+          kind: Deployment
+          name: pilotswarm-ado-scheduler
+        fieldPaths:
+          - spec.template.spec.containers.[name=ado-scheduler].image
+
+  - source:
+      kind: ConfigMap
+      name: ado-scheduler-env
+      fieldPath: data.WORKLOAD_IDENTITY_CLIENT_ID
+    targets:
+      - select:
+          kind: ServiceAccount
+          name: pilotswarm-ado-scheduler
+        fieldPaths:
+          - metadata.annotations.[azure.workload.identity/client-id]

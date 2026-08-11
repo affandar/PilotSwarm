@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Base Kustomize tree for the pilotswarm-ado-scheduler deployable (the ADO
+# placement provider — the control-plane singleton that observes runnable
+# session trees and queues ADO worker pipeline runs). Mirrors the worker base
+# (deploy/gitops/worker/base) but is a singleton and carries no CSI
+# SecretProviderClass: the scheduler authenticates PG + ADO via workload
+# identity at runtime, so there is no Key Vault / secrets-store wiring here.
+#
+# Resource YAMLs intentionally do NOT carry metadata.namespace. The overlay
+# sets the kustomize-level `namespace:` field, which fans into every
+# namespaceable resource (including the generated ConfigMap) and keeps
+# nameReference rewriting (envFrom.configMapRef.name -> hashed name) working.
+#
+# Env-driven wiring (configMapGenerator from .env, replacements for IMAGE /
+# WORKLOAD_IDENTITY_CLIENT_ID) lives in the overlay + replacements component so
+# the overlay's freshly-created ConfigMap is the single source of truth.
+
+resources:
+  - namespace.yaml
+  - service-account.yaml
+  - deployment.yaml
