@@ -58,26 +58,39 @@ function validateRepoParam(raw) {
 }
 
 /**
- * Validate/normalize the optional `callerAuth` create param: a delegated MCP
- * credential `{ token, allowedServers?, ttlSeconds? }`. Returns undefined when
- * absent, or a sanitized object. NEVER logged (contains a bearer token).
+ * Validate/normalize the optional `callerAuth` create param: delegated MCP
+ * credentials `{ audienceTokens: { <aud>: <token>, … }, allowedServers?, ttlSeconds? }`.
+ * Returns undefined when absent, or a sanitized object. NEVER logged (contains
+ * bearer tokens).
  */
 function validateCallerAuthParam(raw) {
     if (raw == null) return undefined;
     if (typeof raw !== "object" || Array.isArray(raw)) {
         throw Object.assign(
-            new Error("callerAuth must be an object { token, allowedServers?, ttlSeconds? }"),
+            new Error("callerAuth must be an object { audienceTokens, allowedServers?, ttlSeconds? }"),
             { code: "INVALID_REQUEST" },
         );
     }
-    const token = typeof raw.token === "string" ? raw.token.trim() : "";
-    if (!token) {
+    const rawTokens = raw.audienceTokens;
+    if (rawTokens == null || typeof rawTokens !== "object" || Array.isArray(rawTokens)) {
         throw Object.assign(
-            new Error("callerAuth.token is required and must be a non-empty string"),
+            new Error("callerAuth.audienceTokens is required and must be an object mapping audience -> token"),
             { code: "INVALID_REQUEST" },
         );
     }
-    const out = { token };
+    const audienceTokens = {};
+    for (const [aud, tok] of Object.entries(rawTokens)) {
+        const audience = typeof aud === "string" ? aud.trim() : "";
+        const token = typeof tok === "string" ? tok.trim() : "";
+        if (audience && token) audienceTokens[audience] = token;
+    }
+    if (Object.keys(audienceTokens).length === 0) {
+        throw Object.assign(
+            new Error("callerAuth.audienceTokens must contain at least one non-empty audience -> token entry"),
+            { code: "INVALID_REQUEST" },
+        );
+    }
+    const out = { audienceTokens };
     if (Array.isArray(raw.allowedServers)) {
         out.allowedServers = raw.allowedServers
             .filter((s) => typeof s === "string" && s.trim())

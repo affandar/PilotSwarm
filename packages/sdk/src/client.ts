@@ -125,8 +125,9 @@ export class PilotSwarmClient {
         /** Sharing level for a new ROOT session (children resolve through their root). */
         visibility?: SessionVisibility | null;
         /**
-         * Delegated MCP credential: a caller-supplied bearer token to present to
-         * repo-declared remote MCP servers "as the user". Persisted to Key Vault
+         * Delegated MCP credentials: a caller-supplied `{ audience: token }` map,
+         * one bearer per downstream audience the repo-declared remote MCP servers
+         * require, presented to each server "as the user". Persisted to Key Vault
          * (name derived from the session id) and resolved fresh worker-side per
          * turn — never carried in the durable orchestration payload. No-op unless
          * the deployment sets `CALLER_AUTH_KEYVAULT_NAME`.
@@ -195,22 +196,23 @@ export class PilotSwarmClient {
             this.parentSessionIds.set(sessionId, config.parentSessionId);
         }
 
-        // Delegated MCP credential: persist to Key Vault under a name derived
-        // from the session id so the worker can resolve it fresh per turn. No-op
-        // unless the deployment configures a vault. Never logged; a store failure
-        // must not silently drop the credential — surface it to the caller.
-        if (config?.callerAuth?.token) {
+        // Delegated MCP credentials: persist the `{ audience: token }` map to Key
+        // Vault under a name derived from the session id so the worker can resolve
+        // it fresh per turn. No-op unless the deployment configures a vault. Never
+        // logged; a store failure must not silently drop the credentials — surface
+        // it to the caller.
+        if (config?.callerAuth?.audienceTokens && Object.keys(config.callerAuth.audienceTokens).length > 0) {
             const vaultName = (process.env.CALLER_AUTH_KEYVAULT_NAME || "").trim();
             if (!vaultName) {
                 throw new Error(
                     "callerAuth was supplied but CALLER_AUTH_KEYVAULT_NAME is not configured on this deployment; " +
-                    "cannot persist the delegated credential.",
+                    "cannot persist the delegated credentials.",
                 );
             }
             await storeCallerAuth({
                 vaultName,
                 sessionId,
-                token: config.callerAuth.token,
+                audienceTokens: config.callerAuth.audienceTokens,
                 owner: config.owner
                     ? { provider: config.owner.provider, subject: config.owner.subject }
                     : null,

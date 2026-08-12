@@ -9,7 +9,8 @@ import { createInspectTools, NO_VIEWER, type InspectViewer } from "./inspect-too
 import { pinToolsNeverDefer } from "./tool-pinning.js";
 import type { SessionCatalog } from "./cms.js";
 import { SYSTEM_USER_PRINCIPAL } from "./cms.js";
-import { resolveCallerAuth, injectMcpAuthorization } from "./caller-auth.js";
+import { resolveCallerAuth } from "./caller-auth.js";
+import { resolveMcpServerAuth, multiTokenProvider } from "./mcp-auth-discovery.js";
 import { evaluateRoleObservation } from "../api/src/session-authz.js";
 
 /**
@@ -1283,24 +1284,56 @@ export class SessionManager {
 
         // Delegated MCP access (repo-stored config + caller-delegated auth):
         // when the caller supplied a credential at createSession — persisted to
-        // Key Vault under a name derived from the session id — and any effective
-        // remote MCP server lacks an explicit Authorization header, inject the
-        // caller's bearer so the session reaches those servers "as the user".
-        // Resolved fresh here (never carried in the durable payload); absence is
-        // the common case and never fails the turn.
+        // Key Vault under a name derived from the session id — resolve upstream
+        // auth for each remote MCP server by DISCOVERING its required audience
+        // at runtime (RFC 6750 challenge -> RFC 9728 protected-resource-metadata)
+        // and injecting the caller's bearer only when its `aud` matches. The
+        // worker managed identity is NEVER presented to an upstream server; a
+        // server whose audience the caller cannot satisfy FAST-FAILS the session
+        // (see mcp-auth-discovery.ts, and its phase-2 skip TODO). No hardcoded
+        // server->audience table (this ships in a public repo). Resolved fresh
+        // here (never carried in the durable payload). Traces go to stdout so
+        // they surface in `kubectl logs`, and to the session trace sink.
+        //
+        // TODO(perf): this runs PER TURN, before the warm-session reuse check
+        // below (~"const existing = this.sessions.get(sessionId)"). On a warm
+        // reuse turn the probed servers are even discarded (updateConfig carries
+        // no mcpServers), so every turn pays a Key Vault read + a 401/PRM
+        // discovery round-trip per remote server for nothing, and a transient
+        // PRM blip fast-fails an otherwise-healthy warm turn. The audience a
+        // server requires is stable for a session's lifetime, so memoize the
+        // resolved { server -> audience } (or the whole resolved map) once per
+        // SESSION-TREE (root session id) and reuse it across turns and across
+        // every sub-agent session in the tree; only re-resolve on cold
+        // create/resume or when the effective server set changes. Discovery
+        // failures on a warm turn should be non-fatal (keep the already-resolved
+        // servers) rather than fast-failing.
         const callerAuthVault = (process.env.CALLER_AUTH_KEYVAULT_NAME || "").trim();
         const hasRemoteMcp = Object.values(effectiveMcpServers).some(
             (c: any) => c && (c.type === "http" || c.type === "sse" || (c.url && !c.command)),
         );
         if (callerAuthVault && hasRemoteMcp) {
-            const callerToken = await resolveCallerAuth({
+            const audienceTokens = await resolveCallerAuth({
                 vaultName: callerAuthVault,
                 sessionId,
                 trace: (m) => emitSessionManagerTrace(sessionId, m, { trace }),
             });
-            if (callerToken) {
-                const result = injectMcpAuthorization(effectiveMcpServers, callerToken, {
-                    trace: (m) => emitSessionManagerTrace(sessionId, m, { trace }),
+            if (audienceTokens && Object.keys(audienceTokens).length > 0) {
+                const dualTrace = (m: string) => {
+                    console.log(m);
+                    emitSessionManagerTrace(sessionId, m, { trace });
+                };
+                // The client minted one token per required audience up front and
+                // sent an { audience: token } map (persisted to Key Vault). The
+                // worker only ROUTES by each server's discovered `aud` — no
+                // server->audience table (public repo), no OBO exchange, and the
+                // worker identity is never presented upstream. A server whose
+                // audience is absent from the map FAST-FAILS (see mcp-auth-discovery.ts).
+                const getCallerToken = multiTokenProvider(audienceTokens);
+                const result = await resolveMcpServerAuth({
+                    servers: effectiveMcpServers,
+                    getCallerToken,
+                    trace: dualTrace,
                 });
                 effectiveMcpServers = result.servers;
             }

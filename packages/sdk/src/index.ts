@@ -171,8 +171,31 @@ export { loadSkills, loadSkillsSync, composeDeclaredSkillsPrompt } from "./skill
 export { loadAgentFiles, systemAgentUUID, systemChildAgentUUID, listBundledAgentNames, agentSupportsDirectStart } from "./agent-loader.js";
 export { loadMcpConfig, loadRepoMcpConfig } from "./mcp-loader.js";
 export type { MCPServerConfig, LoadRepoMcpOptions } from "./mcp-loader.js";
-export { callerAuthSecretName, storeCallerAuth, resolveCallerAuth, injectMcpAuthorization } from "./caller-auth.js";
+export { callerAuthSecretName, storeCallerAuth, resolveCallerAuth } from "./caller-auth.js";
 export type { StoreCallerAuthOptions, CallerAuthInput } from "./caller-auth.js";
+export {
+    resolveMcpServerAuth,
+    discoverServerAudience,
+    parseWwwAuthenticate,
+    appIdUriFromScope,
+    normalizeAudience,
+    decodeJwtAudiences,
+    audienceMatches,
+    defaultHttpDeps,
+    multiTokenProvider,
+    McpAuthFastFailError,
+} from "./mcp-auth-discovery.js";
+export type {
+    WwwAuthenticate,
+    ProtectedResourceMetadata,
+    DiscoveredAudience,
+    HttpDeps,
+    ProbeResult,
+    ResolveMcpAuthOptions,
+    ResolveMcpAuthResult,
+    CallerTokenProvider,
+    RequiredAudience,
+} from "./mcp-auth-discovery.js";
 export type { Skill } from "./skills.js";
 // Local-mode user principal constant (Admin Console / per-user GitHub Copilot key)
 export { LOCAL_DEFAULT_USER_PRINCIPAL } from "./session-owner-utils.js";
