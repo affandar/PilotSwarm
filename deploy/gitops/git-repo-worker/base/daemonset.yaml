@@ -32,6 +32,13 @@
 #   __ADO_PAT_KV_SECRET_URI__  optional Key Vault secret URI for the ADO Code:Read
 #                       PAT used by PluginSpec ADO clones; the worker reads it via
 #                       its managed identity (no PAT in a Secret). Empty = none.
+#   __REPO_MCP_ALLOW__  optional comma-delimited allowlist of MCP server ids (from
+#                       the repo's own .vscode/mcp.json) to load + grant to every
+#                       session on this repo-pinned fleet. Empty = all remote servers.
+#   __CALLER_AUTH_KEYVAULT_NAME__  optional Key Vault name where the portal stores a
+#                       caller's delegated bearer (ps-caller-<sessionId>); the worker
+#                       reads it and injects it into repo-declared remote MCP servers
+#                       "as the caller". Empty = delegated caller auth off.
 # -----------------------------------------------------------------------------
 apiVersion: apps/v1
 kind: DaemonSet
@@ -190,6 +197,23 @@ spec:
             # k8s Secret. Empty when the repo has no private-ADO plugin sources.
             - name: ADO_PAT_KEYVAULT_SECRET_URI
               value: "__ADO_PAT_KV_SECRET_URI__"
+            # Delegated MCP (repo-stored config): the MCP servers this repo
+            # declares in its own .vscode/mcp.json are loaded at startup and
+            # granted to every session on this repo-pinned fleet (URL-free — the
+            # list comes from the enlistment itself, not from here). REPO_MCP_ALLOW
+            # curates which server ids load (comma-delimited; empty = all remote
+            # servers). Loading is on by default; set REPO_MCP_ENABLED=0 to disable.
+            - name: REPO_MCP_ALLOW
+              value: "__REPO_MCP_ALLOW__"
+            # Delegated caller auth: Key Vault name where the portal persists a
+            # caller's delegated bearer at createSession (secret name derived from
+            # the session id: ps-caller-<sessionId>). The worker reads it via its
+            # managed identity and injects Authorization: Bearer into repo-declared
+            # remote MCP servers that lack an explicit auth header — i.e. connects
+            # to those servers "as the caller". Resolved fresh per turn (never in
+            # the durable payload). Empty = delegated caller auth off.
+            - name: CALLER_AUTH_KEYVAULT_NAME
+              value: "__CALLER_AUTH_KEYVAULT_NAME__"
             # NOTE: the worker runs as non-root and reads a root-owned read-only
             # mirror, so git needs safe.directory set. That is baked into the
             # image's SYSTEM git config (deploy/Dockerfile.worker) — git ignores

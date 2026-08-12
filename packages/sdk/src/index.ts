@@ -169,7 +169,10 @@ export {
 // Skills loader
 export { loadSkills, loadSkillsSync, composeDeclaredSkillsPrompt } from "./skills.js";
 export { loadAgentFiles, systemAgentUUID, systemChildAgentUUID, listBundledAgentNames, agentSupportsDirectStart } from "./agent-loader.js";
-export { loadMcpConfig } from "./mcp-loader.js";
+export { loadMcpConfig, loadRepoMcpConfig } from "./mcp-loader.js";
+export type { MCPServerConfig, LoadRepoMcpOptions } from "./mcp-loader.js";
+export { callerAuthSecretName, storeCallerAuth, resolveCallerAuth, injectMcpAuthorization } from "./caller-auth.js";
+export type { StoreCallerAuthOptions, CallerAuthInput } from "./caller-auth.js";
 export type { Skill } from "./skills.js";
 // Local-mode user principal constant (Admin Console / per-user GitHub Copilot key)
 export { LOCAL_DEFAULT_USER_PRINCIPAL } from "./session-owner-utils.js";
@@ -293,6 +296,8 @@ export {
     parsePluginSpec,
     installPluginSpecs,
     fetchKeyVaultSecret,
+    getKeyVaultSecretOptional,
+    putKeyVaultSecret,
     adoCloneUrl,
     PLUGIN_SPEC_SCHEMES,
 } from "./plugin-spec.js";

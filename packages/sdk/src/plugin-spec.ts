@@ -256,6 +256,125 @@ function httpsGetJson(
     });
 }
 
+/** Mint a Key Vault data-plane AAD token via DefaultAzureCredential (the same
+ * credential the blob + pg factories and `fetchKeyVaultSecret` use). */
+async function keyVaultAadToken(): Promise<string> {
+    const { DefaultAzureCredential } = await import("@azure/identity");
+    const credential = new DefaultAzureCredential();
+    const token = await credential.getToken("https://vault.azure.net/.default");
+    if (!token?.token) {
+        throw new Error("Key Vault: managed identity returned no AAD token (getToken empty)");
+    }
+    return token.token;
+}
+
+/** Minimal https request with a method + optional body (GET/PUT/DELETE), used
+ * for the Key Vault REST data plane without adding @azure/keyvault-secrets. */
+function httpsRequestJson(
+    method: string,
+    url: string,
+    headers: Record<string, string>,
+    body?: string,
+): Promise<{ status: number; body: string }> {
+    return new Promise((resolve, reject) => {
+        const u = new URL(url);
+        const req = https.request(
+            {
+                method,
+                hostname: u.hostname,
+                path: u.pathname + u.search,
+                port: u.port || 443,
+                headers,
+            },
+            (res) => {
+                let data = "";
+                res.setEncoding("utf8");
+                res.on("data", (chunk) => { data += chunk; });
+                res.on("end", () => resolve({ status: res.statusCode ?? 0, body: data }));
+            },
+        );
+        req.on("error", reject);
+        if (body) req.write(body);
+        req.end();
+    });
+}
+
+/**
+ * Read a Key Vault secret, returning null when it does not exist (HTTP 404)
+ * instead of throwing. For optional per-session secrets whose absence is the
+ * common case (a session created without a delegated caller credential). Other
+ * non-200 statuses still throw. The value is never logged here.
+ */
+export async function getKeyVaultSecretOptional(opts: {
+    vaultName: string;
+    secretName: string;
+    trace?: (message: string) => void;
+}): Promise<string | null> {
+    const aad = await keyVaultAadToken();
+    const url =
+        `https://${opts.vaultName}.vault.azure.net/secrets/` +
+        `${encodeURIComponent(opts.secretName)}?api-version=7.4`;
+    const { status, body } = await httpsRequestJson("GET", url, {
+        Authorization: `Bearer ${aad}`,
+        Accept: "application/json",
+    });
+    if (status === 404) return null;
+    if (status !== 200) {
+        throw new Error(`Key Vault GET ${opts.vaultName}/${opts.secretName} failed: HTTP ${status}`);
+    }
+    try {
+        const parsed = JSON.parse(body) as { value?: string };
+        return parsed?.value ?? null;
+    } catch {
+        throw new Error(`Key Vault GET ${opts.vaultName}/${opts.secretName} returned non-JSON body`);
+    }
+}
+
+/**
+ * Write (create/update) a Key Vault secret with an optional expiry and tags,
+ * via DefaultAzureCredential + the Key Vault REST data plane over node `https`
+ * (no @azure/keyvault-secrets dependency). The value is never logged.
+ *
+ * `expiresUnix` sets the secret's `exp` attribute (Key Vault marks it unusable
+ * after that time but does NOT auto-purge — a sweeper must delete expired
+ * secrets). `tags` carry non-secret metadata (e.g. owner principal, allowed
+ * server ids) for a confused-deputy check and for the sweeper.
+ */
+export async function putKeyVaultSecret(opts: {
+    vaultName: string;
+    secretName: string;
+    value: string;
+    expiresUnix?: number;
+    tags?: Record<string, string>;
+    trace?: (message: string) => void;
+}): Promise<void> {
+    const aad = await keyVaultAadToken();
+    const url =
+        `https://${opts.vaultName}.vault.azure.net/secrets/` +
+        `${encodeURIComponent(opts.secretName)}?api-version=7.4`;
+    const payload: { value: string; attributes?: { exp: number }; tags?: Record<string, string> } = {
+        value: opts.value,
+    };
+    if (opts.expiresUnix) payload.attributes = { exp: opts.expiresUnix };
+    if (opts.tags) payload.tags = opts.tags;
+    opts.trace?.(
+        `[caller-auth] storing secret ${opts.vaultName}/${opts.secretName} in Key Vault via managed identity`,
+    );
+    const { status } = await httpsRequestJson(
+        "PUT",
+        url,
+        {
+            Authorization: `Bearer ${aad}`,
+            "Content-Type": "application/json",
+            Accept: "application/json",
+        },
+        JSON.stringify(payload),
+    );
+    if (status !== 200) {
+        throw new Error(`Key Vault PUT ${opts.vaultName}/${opts.secretName} failed: HTTP ${status}`);
+    }
+}
+
 /** A filesystem-safe cache-dir slug for a repo clone (path is NOT included so
  * multiple subpaths of the same repo/ref share ONE clone). */
 function repoCloneSlug(entry: PluginSpecEntry): string {

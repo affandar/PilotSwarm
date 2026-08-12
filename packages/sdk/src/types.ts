@@ -184,7 +184,7 @@ export interface SerializableSessionConfig {
      * on each runTurn activity so only a git-repo-worker that declares that
      * tag (via `workerTagFilter`) can dequeue the turn. Omitted => generic,
      * untagged session that any default worker may serve. DNS-safe short name
-     * (e.g. "dsmaindev", "sql-ai-marketplace").
+     * (e.g. "my-repo", "example-service").
      */
     repo?: string;
     /** Wait threshold in seconds. Waits shorter than this sleep in-process. */

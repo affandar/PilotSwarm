@@ -19,14 +19,18 @@ function normalizeParams(params) {
 // the turn would enqueue with a tag no worker matches and hang forever, so we
 // reject at create time instead.
 //
-// STUB: this allowlist is a hardcoded placeholder. TODO(git-hydration): source
-// it from the deployed git-repo-worker DaemonSets / worker registry (a repo is
-// serviceable iff at least one live worker advertises `repo:<name>`).
-const KNOWN_REPOS = new Set([
-    "sql-ai-marketplace",
-    "sqltelemetry",
-    "dsmaindev",
-]);
+// STUB: this allowlist is sourced from the PILOTSWARM_KNOWN_REPOS env var
+// (comma/space-separated repo short-names) so no enlistment names are baked
+// into source. TODO(git-hydration): source it from the deployed
+// git-repo-worker DaemonSets / worker registry (a repo is serviceable iff at
+// least one live worker advertises `repo:<name>`). When unset, no repo is
+// considered serviceable and repo-targeted sessions are rejected at create.
+const KNOWN_REPOS = new Set(
+    (process.env.PILOTSWARM_KNOWN_REPOS || "")
+        .split(/[\s,]+/)
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean),
+);
 
 const REPO_NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
 
@@ -51,6 +55,39 @@ function validateRepoParam(raw) {
         );
     }
     return repo;
+}
+
+/**
+ * Validate/normalize the optional `callerAuth` create param: a delegated MCP
+ * credential `{ token, allowedServers?, ttlSeconds? }`. Returns undefined when
+ * absent, or a sanitized object. NEVER logged (contains a bearer token).
+ */
+function validateCallerAuthParam(raw) {
+    if (raw == null) return undefined;
+    if (typeof raw !== "object" || Array.isArray(raw)) {
+        throw Object.assign(
+            new Error("callerAuth must be an object { token, allowedServers?, ttlSeconds? }"),
+            { code: "INVALID_REQUEST" },
+        );
+    }
+    const token = typeof raw.token === "string" ? raw.token.trim() : "";
+    if (!token) {
+        throw Object.assign(
+            new Error("callerAuth.token is required and must be a non-empty string"),
+            { code: "INVALID_REQUEST" },
+        );
+    }
+    const out = { token };
+    if (Array.isArray(raw.allowedServers)) {
+        out.allowedServers = raw.allowedServers
+            .filter((s) => typeof s === "string" && s.trim())
+            .map((s) => s.trim());
+    }
+    if (raw.ttlSeconds != null) {
+        const ttl = Number(raw.ttlSeconds);
+        if (Number.isFinite(ttl) && ttl > 0) out.ttlSeconds = Math.floor(ttl);
+    }
+    return out;
 }
 
 function clampInteger(value, defaultValue, min, max) {
@@ -822,6 +859,7 @@ export class PortalRuntime {
             case "createSession": {
                 await this._assertPlacementGroupOwned(safeParams.groupId, authContext, { isAdmin });
                 const repo = validateRepoParam(safeParams.repo);
+                const callerAuth = validateCallerAuthParam(safeParams.callerAuth);
                 const created = await this.transport.createSession({
                     model: safeParams.model,
                     reasoningEffort: safeParams.reasoningEffort,
@@ -830,12 +868,14 @@ export class PortalRuntime {
                     owner,
                     visibility: normalizeVisibility(safeParams.visibility, this.authz.defaultVisibility),
                     ...(repo ? { repo } : {}),
+                    ...(callerAuth ? { callerAuth } : {}),
                 });
                 return this._ensureCreatedPlacement(created, safeParams.groupId, authContext, isAdmin);
             }
             case "createSessionForAgent": {
                 await this._assertPlacementGroupOwned(safeParams.groupId, authContext, { isAdmin });
                 const repo = validateRepoParam(safeParams.repo);
+                const callerAuth = validateCallerAuthParam(safeParams.callerAuth);
                 const created = await this.transport.createSessionForAgent(safeParams.agentName, {
                     model: safeParams.model,
                     reasoningEffort: safeParams.reasoningEffort,
@@ -849,6 +889,7 @@ export class PortalRuntime {
                     isAdmin,
                     visibility: normalizeVisibility(safeParams.visibility, this.authz.defaultVisibility),
                     ...(repo ? { repo } : {}),
+                    ...(callerAuth ? { callerAuth } : {}),
                 });
                 return this._ensureCreatedPlacement(created, safeParams.groupId, authContext, isAdmin);
             }

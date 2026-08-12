@@ -29,6 +29,7 @@ import { getDuroxideStorageProvider, getRuntimeStorageProvider } from "./storage
 import { deriveStatusFromCmsAndRuntime, shouldSyncCompletedStatus, shouldSyncFailedStatus } from "./session-status.js";
 import { assertUnambiguousProvider, isWebOptions, type PilotSwarmWebOptions } from "./web/api-connection.js";
 import { WebPilotSwarmClient } from "./web/web-client.js";
+import { storeCallerAuth, type CallerAuthInput } from "./caller-auth.js";
 
 // duroxide is CommonJS — use createRequire for ESM compatibility
 import { createRequire } from "node:module";
@@ -123,6 +124,14 @@ export class PilotSwarmClient {
         groupId?: string | null;
         /** Sharing level for a new ROOT session (children resolve through their root). */
         visibility?: SessionVisibility | null;
+        /**
+         * Delegated MCP credential: a caller-supplied bearer token to present to
+         * repo-declared remote MCP servers "as the user". Persisted to Key Vault
+         * (name derived from the session id) and resolved fresh worker-side per
+         * turn — never carried in the durable orchestration payload. No-op unless
+         * the deployment sets `CALLER_AUTH_KEYVAULT_NAME`.
+         */
+        callerAuth?: CallerAuthInput | null;
     }): Promise<PilotSwarmSession> {
         // ── Policy enforcement (client-side) ─────────────────
         const policy = this._sessionPolicy;
@@ -185,6 +194,30 @@ export class PilotSwarmClient {
         if (config?.parentSessionId) {
             this.parentSessionIds.set(sessionId, config.parentSessionId);
         }
+
+        // Delegated MCP credential: persist to Key Vault under a name derived
+        // from the session id so the worker can resolve it fresh per turn. No-op
+        // unless the deployment configures a vault. Never logged; a store failure
+        // must not silently drop the credential — surface it to the caller.
+        if (config?.callerAuth?.token) {
+            const vaultName = (process.env.CALLER_AUTH_KEYVAULT_NAME || "").trim();
+            if (!vaultName) {
+                throw new Error(
+                    "callerAuth was supplied but CALLER_AUTH_KEYVAULT_NAME is not configured on this deployment; " +
+                    "cannot persist the delegated credential.",
+                );
+            }
+            await storeCallerAuth({
+                vaultName,
+                sessionId,
+                token: config.callerAuth.token,
+                owner: config.owner
+                    ? { provider: config.owner.provider, subject: config.owner.subject }
+                    : null,
+                allowedServers: config.callerAuth.allowedServers,
+                ttlSeconds: config.callerAuth.ttlSeconds,
+            });
+        }
         // Track nestingLevel for sub-agent depth enforcement
         if (config?.nestingLevel != null) {
             this.nestingLevels.set(sessionId, config.nestingLevel);
@@ -221,6 +254,8 @@ export class PilotSwarmClient {
         owner?: SessionOwnerInfo | null;
         groupId?: string | null;
         visibility?: SessionVisibility | null;
+        /** Delegated MCP credential — see createSession. */
+        callerAuth?: CallerAuthInput | null;
     }): Promise<PilotSwarmSession> {
         // Validate the agent exists and is non-system
         const allowed = this._allowedAgentNames;
@@ -236,6 +271,7 @@ export class PilotSwarmClient {
             contextTier: opts?.contextTier,
             toolNames: opts?.toolNames,
             repo: opts?.repo,
+            callerAuth: opts?.callerAuth ?? null,
             onUserInputRequest: opts?.onUserInputRequest,
             agentId: agentName,
             boundAgentName: agentName,

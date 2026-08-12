@@ -9,6 +9,7 @@ import { createInspectTools, NO_VIEWER, type InspectViewer } from "./inspect-too
 import { pinToolsNeverDefer } from "./tool-pinning.js";
 import type { SessionCatalog } from "./cms.js";
 import { SYSTEM_USER_PRINCIPAL } from "./cms.js";
+import { resolveCallerAuth, injectMcpAuthorization } from "./caller-auth.js";
 import { evaluateRoleObservation } from "../api/src/session-authz.js";
 
 /**
@@ -1275,10 +1276,35 @@ export class SessionManager {
         const boundAgentMcpServers = effectiveSerializableConfig.boundAgentName
             ? this.workerDefaults.agentMcpServers?.[effectiveSerializableConfig.boundAgentName]
             : undefined;
-        const effectiveMcpServers = {
+        let effectiveMcpServers = {
             ...(this.workerDefaults.baseMcpServers ?? {}),
             ...(boundAgentMcpServers ?? {}),
         };
+
+        // Delegated MCP access (repo-stored config + caller-delegated auth):
+        // when the caller supplied a credential at createSession — persisted to
+        // Key Vault under a name derived from the session id — and any effective
+        // remote MCP server lacks an explicit Authorization header, inject the
+        // caller's bearer so the session reaches those servers "as the user".
+        // Resolved fresh here (never carried in the durable payload); absence is
+        // the common case and never fails the turn.
+        const callerAuthVault = (process.env.CALLER_AUTH_KEYVAULT_NAME || "").trim();
+        const hasRemoteMcp = Object.values(effectiveMcpServers).some(
+            (c: any) => c && (c.type === "http" || c.type === "sse" || (c.url && !c.command)),
+        );
+        if (callerAuthVault && hasRemoteMcp) {
+            const callerToken = await resolveCallerAuth({
+                vaultName: callerAuthVault,
+                sessionId,
+                trace: (m) => emitSessionManagerTrace(sessionId, m, { trace }),
+            });
+            if (callerToken) {
+                const result = injectMcpAuthorization(effectiveMcpServers, callerToken, {
+                    trace: (m) => emitSessionManagerTrace(sessionId, m, { trace }),
+                });
+                effectiveMcpServers = result.servers;
+            }
+        }
 
         const sessionConfig: any = {
             sessionId,
