@@ -25,6 +25,13 @@
 # Tokens (substituted by the deploy scripts from a per-repo .env):
 #   __REPO_NAME__       DNS-safe short name; must match the git-cache pool label
 #   __IMAGE__           worker container image (ACR ref), same image as the Deployment
+#   __WORKER_MAX_UNAVAILABLE__  rolling-update concurrency for the worker fleet.
+#                       Unlike git-cache this NEVER touches ADO — a roll is a
+#                       node-local fetch+reset of the persistent enlistment
+#                       hostPath from the node-local mirror (seconds on a warm
+#                       node). So the only cost is a temporary dip in job-serving
+#                       slots; jobs queue in PG and drain. Default 50% (rounds
+#                       down, min 1) keeps a serving majority while rolling fast.
 #   __CACHE_HOSTPATH__  node-local dir the git-cache DaemonSet seeds; MUST match
 #                       the git-cache CACHE_HOSTPATH for this repo (defaults to
 #                       the OS disk /var/lib; a pool may override to /mnt). The
@@ -61,10 +68,16 @@ spec:
       app.kubernetes.io/name: pilotswarm
       app.kubernetes.io/component: git-repo-worker
       pilotswarm.io/git-cache-repo: __REPO_NAME__
+  # maxUnavailable bounds how many worker pods roll at once. The worker never
+  # touches ADO: a roll is a node-local fetch+reset of the persistent enlistment
+  # hostPath from the node-local mirror (seconds on a warm node), so the only
+  # cost is a temporary reduction in job-serving slots — jobs queue in PG and
+  # drain. Default 50% (rounds down, min 1) keeps a serving majority while
+  # rolling aggressively. Token substituted from WORKER_MAX_UNAVAILABLE.
   updateStrategy:
     type: RollingUpdate
     rollingUpdate:
-      maxUnavailable: 1
+      maxUnavailable: __WORKER_MAX_UNAVAILABLE__
   template:
     metadata:
       labels:
@@ -254,8 +267,9 @@ spec:
             # for jobs (see git-repo-worker.js markReady) — and removes it on
             # drain. So "Ready" means "can accept a job", NOT merely "the mirror
             # exists": a worker doing its one-time cold enlistment clone honestly
-            # reports NotReady, and a RollingUpdate (maxUnavailable:1) won't move
-            # to the next node until this worker can truly serve. The initContainer
+            # reports NotReady, and a RollingUpdate won't count more than
+            # maxUnavailable pods down at once — nor advance a given pod's slot
+            # until this worker can truly serve. The initContainer
             # (wait-for-mirror) still gates process start on the mirror sentinel.
             exec:
               command: ["sh", "-c", "test -f /home/node/.copilot/worker.ready"]

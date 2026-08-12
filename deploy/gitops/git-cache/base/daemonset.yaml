@@ -19,6 +19,13 @@
 #                               disk): durable across VM deallocate and
 #                               SKU-agnostic. A pool may override this to /mnt to
 #                               use a large ephemeral temp/resource disk instead.
+#   __CACHE_MAX_UNAVAILABLE__   rolling-update concurrency: the worst-case number
+#                               of nodes doing a COLD `git clone --mirror` from
+#                               ADO at the same time. A warm/no-op roll never
+#                               blocks on ADO (readiness is sentinel-gated before
+#                               the first fetch), so this only throttles fresh-
+#                               node / moved-mirror reseeds. Default 1 (safe for
+#                               big mirrors); small-mirror repos may raise it.
 # -----------------------------------------------------------------------------
 apiVersion: apps/v1
 kind: DaemonSet
@@ -35,10 +42,14 @@ spec:
       app.kubernetes.io/name: pilotswarm
       app.kubernetes.io/component: git-cache
       pilotswarm.io/git-cache-repo: __REPO_NAME__
+  # maxUnavailable bounds how many nodes update at once. The only rollout step
+  # that touches ADO is a COLD node's initial mirror clone (a warm roll is a
+  # no-op — readiness is sentinel-gated before any fetch), so this is in effect
+  # "max concurrent cold ADO clones". Token substituted from CACHE_MAX_UNAVAILABLE.
   updateStrategy:
     type: RollingUpdate
     rollingUpdate:
-      maxUnavailable: 1
+      maxUnavailable: __CACHE_MAX_UNAVAILABLE__
   template:
     metadata:
       labels:
