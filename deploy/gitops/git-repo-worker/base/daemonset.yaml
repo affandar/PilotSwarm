@@ -26,8 +26,8 @@
 #   __REPO_NAME__       DNS-safe short name; must match the git-cache pool label
 #   __IMAGE__           worker container image (ACR ref), same image as the Deployment
 #   __CACHE_HOSTPATH__  node-local dir the git-cache DaemonSet seeds; MUST match
-#                       the git-cache CACHE_HOSTPATH for this repo (big repos put
-#                       it on an OS-disk path like /var/lib instead of /mnt). The
+#                       the git-cache CACHE_HOSTPATH for this repo (defaults to
+#                       the OS disk /var/lib; a pool may override to /mnt). The
 #                       worker's reused enlistment is a sibling on the SAME disk,
 #                       "__CACHE_HOSTPATH__-enlistment" (survives pod restarts /
 #                       node reboots), so this disk must fit mirror + enlistment.
@@ -288,8 +288,8 @@ spec:
         # (health check + reconcile-fallback re-clone). DaemonSet => one worker
         # per node and the pool is pinned to one repo, so this path is never
         # shared. It holds a full working tree (~repo size): the disk backing
-        # __CACHE_HOSTPATH__ must fit mirror + enlistment (big repos already use
-        # a large OS-disk path).
+        # __CACHE_HOSTPATH__ (the OS disk by default) must fit mirror +
+        # enlistment; size the pool's OS disk accordingly for big repos.
         - name: enlistment
           hostPath:
             path: __CACHE_HOSTPATH__-enlistment
@@ -303,7 +303,7 @@ spec:
         # Same node-local hostPath the git-cache DaemonSet seeds. Shared at the
         # node level (namespace-independent); the worker mounts it read-only.
         # __CACHE_HOSTPATH__ MUST match the git-cache CACHE_HOSTPATH for this repo
-        # (default /mnt/pilotswarm-git-cache; big repos use an OS-disk path).
+        # (default /var/lib/pilotswarm-git-cache; a pool may override to /mnt).
         - name: git-cache
           hostPath:
             path: __CACHE_HOSTPATH__
