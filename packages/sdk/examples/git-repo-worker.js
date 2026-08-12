@@ -56,7 +56,7 @@ import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { PilotSwarmWorker, horizonConfigFromEnv } from "pilotswarm-sdk";
+import { PilotSwarmWorker, horizonConfigFromEnv, installPluginSpecs, fetchKeyVaultSecret } from "pilotswarm-sdk";
 
 // Sentinel value written to KV by the bicep-deploy `seed-secrets` step for
 // optional secrets the user didn't provide (CSI Secret Store requires
@@ -203,6 +203,62 @@ if (pluginDirs.length === 0 && fs.existsSync("/app/plugin/plugin.json")) {
 
 console.log(`[git-repo-worker] Pod: ${podName}`);
 console.log(`[git-repo-worker] Store: ${process.env.DATABASE_URL?.replace(/\/\/.*@/, "//***@")}`);
+
+// PluginSpec: deployment-configured external plugin sources (';'-delimited).
+// Each entry (e.g. "ado-git:<org>/<project>/<repo>:plugins/<name>") is
+// downloaded to local pod storage and appended to pluginDirs, so the GHCP
+// SDK loads its agents/skills like any other plugin dir. Per-entry failures are
+// quarantined and never block worker startup. Accepts PLUGIN_SPEC or PluginSpec.
+const pluginSpec = process.env.PLUGIN_SPEC ?? process.env.PluginSpec;
+if (pluginSpec && pluginSpec.trim()) {
+    const cacheDir = process.env.PLUGIN_SPEC_CACHE_DIR
+        || path.join(process.env.HOME || "/home/node", ".copilot", "plugin-spec");
+    console.log(`[git-repo-worker] PluginSpec: loading external plugins (cacheDir=${cacheDir})`);
+    const t0 = Date.now();
+
+    // ADO clones need a Code:Read credential. Prefer a direct ADO_PAT env; else
+    // fetch it straight from the same Key Vault the git-cache seeds from, using
+    // the worker's managed identity (no PAT ever stored in a k8s Secret). The
+    // vault + secret are named by ADO_PAT_KEYVAULT_SECRET_URI, e.g.
+    // https://<vault>.vault.azure.net/secrets/<name>.
+    let adoPat = process.env.ADO_PAT?.trim() || undefined;
+    if (!adoPat) {
+        const kvUri = process.env.ADO_PAT_KEYVAULT_SECRET_URI?.trim();
+        if (kvUri) {
+            try {
+                const u = new URL(kvUri);
+                const vaultName = u.hostname.split(".")[0];
+                const secretName = decodeURIComponent((u.pathname.match(/\/secrets\/([^/]+)/) || [])[1] || "");
+                if (!vaultName || !secretName) throw new Error(`malformed ADO_PAT_KEYVAULT_SECRET_URI: ${kvUri}`);
+                adoPat = await fetchKeyVaultSecret({ vaultName, secretName, trace: (m) => console.log(m) });
+                console.log(`[git-repo-worker] PluginSpec: ADO PAT resolved from Key Vault ${vaultName}/${secretName}`);
+            } catch (err) {
+                console.warn(`[git-repo-worker] PluginSpec: Key Vault PAT fetch failed (continuing without ADO auth): ${err?.message ?? err}`);
+            }
+        }
+    }
+
+    try {
+        const { pluginDirs: specDirs, results } = await installPluginSpecs({
+            spec: pluginSpec,
+            cacheDir,
+            adoPat,
+            githubToken: process.env.GITHUB_TOKEN || undefined,
+            trace: (m) => console.log(m),
+        });
+        for (const dir of specDirs) pluginDirs.push(dir);
+        const failed = results.filter((r) => r.status === "error");
+        console.log(
+            `[git-repo-worker] PluginSpec: ${specDirs.length} resolved, ${failed.length} failed ` +
+            `in ${Date.now() - t0}ms; pluginDirs now ${pluginDirs.length}`,
+        );
+        for (const dir of specDirs) console.log(`[git-repo-worker] PluginSpec dir: ${dir}`);
+        for (const f of failed) console.warn(`[git-repo-worker] PluginSpec entry failed: ${f.entry.raw} — ${f.error}`);
+    } catch (err) {
+        console.warn(`[git-repo-worker] PluginSpec install error (continuing): ${err?.message ?? err}`);
+    }
+}
+
 if (pluginDirs.length > 0) console.log(`[git-repo-worker] Plugin dirs: ${pluginDirs.join(", ")}`);
 if (process.env.SESSION_STATE_DIR) console.log(`[git-repo-worker] Session state dir: ${process.env.SESSION_STATE_DIR}`);
 

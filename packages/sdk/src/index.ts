@@ -288,6 +288,20 @@ export type {
     AgentPackageInstallResult,
     InstalledAgentPackage,
 } from "./agent-package-installer.js";
+// ─── PluginSpec (deployment-configured external plugin sources) ──
+export {
+    parsePluginSpec,
+    installPluginSpecs,
+    fetchKeyVaultSecret,
+    adoCloneUrl,
+    PLUGIN_SPEC_SCHEMES,
+} from "./plugin-spec.js";
+export type {
+    PluginSpecEntry,
+    PluginSpecScheme,
+    PluginSpecInstallResult,
+    InstallPluginSpecsResult,
+} from "./plugin-spec.js";
 export type {
     WorkerRow,
     WorkerPhase,
