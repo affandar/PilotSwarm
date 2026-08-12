@@ -179,6 +179,12 @@ spec:
             # is unset -> reconcile targets the mirror's default branch.
             - name: GIT_ENLISTMENT_ROOT
               value: "/mnt/enlistment"
+            # Readiness sentinel path — MUST match the readinessProbe below. The
+            # worker writes it only after worker.start() (enlistment synced +
+            # polling) and removes it on drain; it lives on the pod-scoped
+            # copilot-home emptyDir, so it is always absent at a fresh/cold start.
+            - name: WORKER_READY_FILE
+              value: "/home/node/.copilot/worker.ready"
             # PluginSpec: ;-delimited external plugin repos (ADO/GitHub) the
             # worker downloads at startup and appends to its plugin dirs, so the
             # GHCP SDK loads their agents + skills (e.g. "show me all skills"
@@ -231,10 +237,16 @@ spec:
               cpu: "1000m"
               memory: "2Gi"
           readinessProbe:
-            # Belt-and-suspenders on top of the initContainer gate: keep the pod
-            # out of any Service Endpoints until the mirror sentinel is present.
+            # Truthful readiness: the worker writes this sentinel only AFTER
+            # worker.start() resolves — enlistment cloned/synced AND polling PG
+            # for jobs (see git-repo-worker.js markReady) — and removes it on
+            # drain. So "Ready" means "can accept a job", NOT merely "the mirror
+            # exists": a worker doing its one-time cold enlistment clone honestly
+            # reports NotReady, and a RollingUpdate (maxUnavailable:1) won't move
+            # to the next node until this worker can truly serve. The initContainer
+            # (wait-for-mirror) still gates process start on the mirror sentinel.
             exec:
-              command: ["sh", "-c", "test -f /mnt/git-cache/$GIT_CACHE_REPO.ready"]
+              command: ["sh", "-c", "test -f /home/node/.copilot/worker.ready"]
             initialDelaySeconds: 5
             periodSeconds: 15
             failureThreshold: 1000
