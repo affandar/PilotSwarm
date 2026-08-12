@@ -1,6 +1,6 @@
 # Shared PilotSwarm namespace. BOTH the git-cache (mirror) and git-repo-worker
 # DaemonSets live here; the two components are distinguished by resource name
-# (pilotswarm-git-cache-* vs git-repo-worker-*) and the
+# (git-cache-* vs git-repo-worker-*) and the
 # app.kubernetes.io/component label — NOT by separate namespaces. This object is
 # created by whichever component deploys first (apply-cache.ps1 runs before
 # apply-worker.ps1); re-applying it is idempotent.
