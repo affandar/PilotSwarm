@@ -24,7 +24,7 @@ apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: pilotswarm-git-cache-__REPO_NAME__
-  namespace: pilotswarm-git-cache
+  namespace: pilotswarm
   labels:
     app.kubernetes.io/name: pilotswarm
     app.kubernetes.io/component: git-cache

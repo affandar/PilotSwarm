@@ -2,7 +2,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: pilotswarm-git-cache
-  namespace: pilotswarm-git-cache
+  namespace: pilotswarm
   labels:
     app.kubernetes.io/name: pilotswarm
     app.kubernetes.io/component: git-cache
@@ -37,4 +37,4 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: pilotswarm-git-cache
-    namespace: pilotswarm-git-cache
+    namespace: pilotswarm
