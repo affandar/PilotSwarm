@@ -15,7 +15,7 @@ per-repo node-pool autoscaling, and the balloon/standby buffer (§6) are separat
 |---|---|
 | `base/configmap-fetch-loop.yaml` | The maintainer script (`fetch-loop.sh`). Clone → gate node → hourly `fetch --prune`, GC off. Contains **no repo URL**. |
 | `base/daemonset.yaml` | Generic DaemonSet with `__TOKENS__`. **Not directly applyable** — instantiated per repo by the deploy scripts. |
-| `base/namespace.yaml` | `pilotswarm-git-cache` namespace. |
+| `base/namespace.yaml` | Shared `pilotswarm` namespace (also hosts the git-repo-worker DaemonSets; components differ by name + `app.kubernetes.io/component` label). |
 | `base/rbac.yaml` | ServiceAccount + `ClusterRole`/binding granting `get/list/patch` on **nodes** (for the self taint/label). |
 
 > **Why no URLs here:** the target ADO repo URLs must not be persisted in this
@@ -55,7 +55,7 @@ Every line is `<ISO-8601 UTC>Z [git-hydration] [<repo>] [<node>] …`. Key marke
 Tail a repo's mirrors:
 
 ```
-kubectl -n pilotswarm-git-cache logs -l pilotswarm.io/git-cache-repo=<repo> -f --prefix
+kubectl -n pilotswarm logs -l pilotswarm.io/git-cache-repo=<repo> -f --prefix
 ```
 
 ## Tunables (env on the DaemonSet)

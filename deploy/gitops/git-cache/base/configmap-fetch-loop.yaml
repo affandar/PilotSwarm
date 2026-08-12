@@ -2,7 +2,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: pilotswarm-git-cache-scripts
-  namespace: pilotswarm-git-cache
+  namespace: pilotswarm
   labels:
     app.kubernetes.io/name: pilotswarm
     app.kubernetes.io/component: git-cache
