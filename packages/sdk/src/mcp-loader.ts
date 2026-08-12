@@ -32,6 +32,48 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { parse as parseJsonc, type ParseError, printParseErrorCode } from "jsonc-parser";
+
+// ─── JSONC parsing ───────────────────────────────────────────────
+
+/**
+ * Parse an MCP config file that may be JSONC rather than strict JSON.
+ *
+ * RATIONALE: VS Code's `.vscode/mcp.json` (and, by extension, the MCP configs
+ * customers hand-author) is JSON-with-comments — the same format VS Code uses
+ * for `settings.json`. Real repos routinely carry `//` line comments to
+ * annotate or temporarily disable a server, and trailing commas after the last
+ * entry. Strict `JSON.parse` throws on both, which previously caused the loader
+ * to silently load ZERO servers for such a repo (the whole file is rejected on
+ * the first comment), so delegated MCP appeared broken when the config was in
+ * fact valid VS Code JSONC.
+ *
+ * We use `jsonc-parser` (the library VS Code itself uses) rather than stripping
+ * comments with a regex: a naive stripper would corrupt the `//` inside server
+ * URLs (e.g. `"https://mcp.example.net"`), whereas `jsonc-parser` is
+ * string-aware and only treats line and block comments OUTSIDE of string
+ * literals as comments. `allowTrailingComma` covers the other common JSONC
+ * affordance.
+ *
+ * The parser is lenient (it recovers from errors and returns a best-effort
+ * value); we collect its errors and treat any as a hard parse failure so a
+ * genuinely broken file is still reported, not silently half-loaded.
+ *
+ * @returns the parsed value.
+ * @throws if the content cannot be parsed as JSONC.
+ */
+function parseMcpJsonc(raw: string): unknown {
+    const errors: ParseError[] = [];
+    const value = parseJsonc(raw, errors, { allowTrailingComma: true });
+    if (errors.length > 0) {
+        const first = errors[0];
+        throw new Error(
+            `${printParseErrorCode(first.error)} at offset ${first.offset}` +
+            (errors.length > 1 ? ` (+${errors.length - 1} more)` : ""),
+        );
+    }
+    return value;
+}
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -109,7 +151,7 @@ export function loadMcpConfig(pluginDir: string): Record<string, MCPServerConfig
 
     try {
         const raw = fs.readFileSync(mcpPath, "utf-8");
-        const parsed = JSON.parse(raw);
+        const parsed = parseMcpJsonc(raw);
 
         if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
             console.warn(`[mcp-loader] Invalid .mcp.json in ${absDir}: expected object`);
@@ -212,6 +254,8 @@ export interface LoadRepoMcpOptions {
  * layered on separately.
  *
  * Format differences handled vs. the Copilot `.mcp.json` loader:
+ *   - The file is parsed as JSONC (VS Code's format): line and block
+ *     comments and trailing commas are tolerated. See `parseMcpJsonc`.
  *   - VS Code wraps entries under a top-level `servers` key (and may carry an
  *     `inputs` array); a flat top-level map is also accepted as a fallback.
  *   - Entries may omit `tools`; Copilot requires it, so a missing or empty list
@@ -239,7 +283,7 @@ export function loadRepoMcpConfig(
 
     let parsed: any;
     try {
-        parsed = JSON.parse(fs.readFileSync(mcpPath, "utf-8"));
+        parsed = parseMcpJsonc(fs.readFileSync(mcpPath, "utf-8"));
     } catch (err: any) {
         console.warn(`[mcp-loader] Failed to parse ${mcpPath}: ${err.message}`);
         return {};
