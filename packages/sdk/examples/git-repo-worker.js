@@ -161,25 +161,59 @@ if (gitCacheMirror) {
         }
     };
 
-    // One-time at startup: clone the working enlistment FROM the local mirror.
-    // --no-hardlinks copies objects into the enlistment's own store so it is
-    // fully self-contained; the daemon's fetch/prune on the mirror can never
-    // affect an in-flight job. chdir so the Copilot CLI roots discovery here.
+    // Clone the working enlistment FROM the local mirror. --no-hardlinks copies
+    // objects into the enlistment's own store so it is fully self-contained; the
+    // daemon's fetch/prune on the mirror can never affect an in-flight job.
+    const cloneEnlistment = () => {
+        fs.mkdirSync(path.dirname(enlistmentDir), { recursive: true });
+        console.log(`[git-repo-worker] cloning enlistment from mirror ${gitCacheMirror} -> ${enlistmentDir} (one-time)`);
+        const t0 = Date.now();
+        execFileSync("git", ["clone", "--no-hardlinks", gitCacheMirror, enlistmentDir], {
+            stdio: ["ignore", "pipe", "pipe"], encoding: "utf8",
+            env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+        });
+        // Match the mirror's maintenance posture: never repack/prune under an
+        // active job. Objects stay append-only for the pod's lifetime.
+        runGit(enlistmentDir, ["config", "gc.auto", "0"]);
+        console.log(`[git-repo-worker] enlistment ready in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+    };
+
+    // Is an existing enlistment a COMPLETE, usable clone? On a node-local
+    // (hostPath) enlistment that survives pod restarts, a pod killed mid-clone
+    // leaves a `.git` behind but an incomplete object store / unborn HEAD —
+    // reusing it would crash the first reconcile. Cheap gate: HEAD must peel to
+    // a commit object present locally, and origin must be wired to the mirror.
+    // (Deeper corruption — e.g. missing blobs — is caught by the reconcile
+    // fallback in prepareEnlistment below.)
+    const enlistmentIsHealthy = () => {
+        if (!fs.existsSync(path.join(enlistmentDir, ".git"))) return false;
+        try {
+            runGit(enlistmentDir, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);
+            return runGit(enlistmentDir, ["config", "--get", "remote.origin.url"]).length > 0;
+        } catch {
+            return false;
+        }
+    };
+
+    // One-time at startup: ensure a usable enlistment exists, then chdir into it
+    // so the Copilot CLI roots discovery here. Reuses a healthy node-local
+    // enlistment (the hostPath fast path — no re-clone on pod restart / node
+    // reboot); re-clones a torn/partial one.
     const ensureEnlistment = () => {
-        if (!fs.existsSync(path.join(enlistmentDir, ".git"))) {
-            fs.mkdirSync(path.dirname(enlistmentDir), { recursive: true });
-            console.log(`[git-repo-worker] cloning enlistment from mirror ${gitCacheMirror} -> ${enlistmentDir} (one-time)`);
-            const t0 = Date.now();
-            execFileSync("git", ["clone", "--no-hardlinks", gitCacheMirror, enlistmentDir], {
-                stdio: ["ignore", "pipe", "pipe"], encoding: "utf8",
-                env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
-            });
-            // Match the mirror's maintenance posture: never repack/prune under
-            // an active job. Objects stay append-only for the pod's lifetime.
-            runGit(enlistmentDir, ["config", "gc.auto", "0"]);
-            console.log(`[git-repo-worker] enlistment ready in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+        if (enlistmentIsHealthy()) {
+            // Drop any stale git lock left by a process killed mid-operation; the
+            // reconcile that follows (checkout --force + reset --hard) heals the
+            // working tree itself.
+            for (const lock of ["index.lock", "HEAD.lock", "shallow.lock"]) {
+                try { fs.rmSync(path.join(enlistmentDir, ".git", lock), { force: true }); } catch { /* ignore */ }
+            }
+            console.log(`[git-repo-worker] reusing existing enlistment at ${enlistmentDir} (validated)`);
         } else {
-            console.log(`[git-repo-worker] reusing existing enlistment at ${enlistmentDir}`);
+            if (fs.existsSync(enlistmentDir)) {
+                console.warn(`[git-repo-worker] enlistment at ${enlistmentDir} is incomplete/corrupt — re-cloning`);
+                fs.rmSync(enlistmentDir, { recursive: true, force: true });
+            }
+            cloneEnlistment();
         }
         process.chdir(enlistmentDir);
         console.log(`[git-repo-worker] cwd -> ${enlistmentDir} (CLI discovery root)`);
@@ -209,9 +243,22 @@ if (gitCacheMirror) {
         log(`[git-repo-worker] reconciled to ${sha.slice(0, 12)} in ${Date.now() - t0}ms (READY)`);
     });
 
-    // Prepare the enlistment now so the first job starts on a synced tree.
+    // Prepare the enlistment now so the first job starts on a synced tree. If
+    // the reconcile fails on a reused enlistment (torn state the cheap health
+    // check missed — e.g. missing blobs after a mid-clone kill), discard it and
+    // re-clone once. This restores the "always start clean" safety that the old
+    // emptyDir gave for free, now that the enlistment survives on hostPath.
     ensureEnlistment();
-    reconcileEnlistment();
+    try {
+        await reconcileEnlistment();
+    } catch (err) {
+        console.warn(`[git-repo-worker] initial reconcile failed (${err?.message ?? err}) — discarding enlistment and re-cloning`);
+        process.chdir(path.dirname(enlistmentDir));
+        fs.rmSync(enlistmentDir, { recursive: true, force: true });
+        cloneEnlistment();
+        process.chdir(enlistmentDir);
+        await reconcileEnlistment();
+    }
 
     // Repo-stored MCP servers (delegated MCP access — repo-stored half): a
     // repo-pinned worker exposes the servers the repo declares for its own

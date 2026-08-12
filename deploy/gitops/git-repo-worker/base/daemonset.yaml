@@ -7,13 +7,16 @@
 #   - An initContainer (wait-for-mirror) blocks the worker process from starting
 #     until the daemon has written this node's readiness sentinel, so a worker
 #     never polls PostgreSQL for a job on a still-warming node.
-#   - Once live, the worker keeps ONE reused working enlistment (writable
-#     emptyDir), cloned once from the node-local bare mirror. BEFORE every job it
-#     fetches from the mirror and hard-resets to the target ref. With
+#   - Once live, the worker keeps ONE reused working enlistment (a node-local
+#     hostPath, __CACHE_HOSTPATH__-enlistment, on the same disk as the mirror),
+#     cloned once from the node-local bare mirror. BEFORE every job it fetches
+#     from the mirror and hard-resets to the target ref. With
 #     PILOTSWARM_WORKER_CONCURRENCY=1 the single job slot is the mutex: the
 #     reconcile runs on an idle tree (worker briefly "unavailable"), and once a
 #     job runs the daemon's hourly `git fetch` (gc off -> append-only) can never
-#     race it.
+#     race it. Because the enlistment is a hostPath it survives pod restarts and
+#     node reboots, so a restarted worker skips the one-time clone and just
+#     reconciles (seconds); a torn tree is self-healed by re-clone.
 #
 # THIS FILE IS URL-FREE. __REPO_NAME__ is a DNS-safe short name substituted by
 # the deployment scripts that live OUTSIDE this GitHub repo (in the private
@@ -24,7 +27,10 @@
 #   __IMAGE__           worker container image (ACR ref), same image as the Deployment
 #   __CACHE_HOSTPATH__  node-local dir the git-cache DaemonSet seeds; MUST match
 #                       the git-cache CACHE_HOSTPATH for this repo (big repos put
-#                       it on an OS-disk path like /var/lib instead of /mnt).
+#                       it on an OS-disk path like /var/lib instead of /mnt). The
+#                       worker's reused enlistment is a sibling on the SAME disk,
+#                       "__CACHE_HOSTPATH__-enlistment" (survives pod restarts /
+#                       node reboots), so this disk must fit mirror + enlistment.
 #   __PLUGIN_SPEC__     optional ;-delimited external plugin repos the worker
 #                       downloads at startup and adds to its plugin dirs; the
 #                       concrete value (which names an ADO org/project/repo) is
@@ -130,7 +136,12 @@ spec:
             - |
               set -eu
               mkdir -p /home/node/.copilot/session-state && chown -R 1000:1000 /home/node/.copilot
-              mkdir -p /mnt/enlistment && chown -R 1000:1000 /mnt/enlistment
+              # Non-recursive: the enlistment is now a persistent hostPath that may
+              # already hold a full ~repo-size working tree (all files created by the
+              # worker as uid 1000). Only the mount root needs its owner fixed so the
+              # worker can create/replace the enlistment; a chown -R would needlessly
+              # walk the whole tree on every pod restart.
+              mkdir -p /mnt/enlistment && chown 1000:1000 /mnt/enlistment
           volumeMounts:
             - name: copilot-home
               mountPath: /home/node/.copilot
@@ -174,9 +185,10 @@ spec:
               value: "__REPO_NAME__"
             - name: GIT_CACHE_MIRROR
               value: "/mnt/git-cache/__REPO_NAME__.git"
-            # Reused working enlistment (writable emptyDir). Cloned once from the
-            # mirror, then fetch + hard-reset before each job. GIT_ENLISTMENT_REF
-            # is unset -> reconcile targets the mirror's default branch.
+            # Reused working enlistment (writable node-local hostPath — see the
+            # enlistment volume below). Cloned once from the mirror, then fetch +
+            # hard-reset before each job. GIT_ENLISTMENT_REF is unset -> reconcile
+            # targets the mirror's default branch.
             - name: GIT_ENLISTMENT_ROOT
               value: "/mnt/enlistment"
             # Readiness sentinel path — MUST match the readinessProbe below. The
@@ -268,10 +280,20 @@ spec:
       volumes:
         - name: copilot-home
           emptyDir: {}
-        # Reused working enlistment. Node-local, pod-scoped: wiped on pod
-        # restart, which just triggers a one-time re-clone from the warm mirror.
+        # Reused working enlistment. Node-local hostPath on the SAME disk as the
+        # mirror (__CACHE_HOSTPATH__ + "-enlistment" sibling), so it survives pod
+        # restarts and node reboots: a restarted worker skips the one-time
+        # ~minutes clone and just fetch+reset-reconciles from the mirror (seconds).
+        # A torn tree (pod killed mid-clone) is self-healed by git-repo-worker.js
+        # (health check + reconcile-fallback re-clone). DaemonSet => one worker
+        # per node and the pool is pinned to one repo, so this path is never
+        # shared. It holds a full working tree (~repo size): the disk backing
+        # __CACHE_HOSTPATH__ must fit mirror + enlistment (big repos already use
+        # a large OS-disk path).
         - name: enlistment
-          emptyDir: {}
+          hostPath:
+            path: __CACHE_HOSTPATH__-enlistment
+            type: DirectoryOrCreate
         - name: model-providers
           configMap:
             name: copilot-worker-model-providers
