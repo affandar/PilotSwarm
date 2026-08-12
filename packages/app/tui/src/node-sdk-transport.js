@@ -1339,7 +1339,7 @@ export class NodeSdkTransport {
         return model || null;
     }
 
-    async createSession({ model, reasoningEffort, contextTier, owner, groupId, visibility, repo } = {}) {
+    async createSession({ model, reasoningEffort, contextTier, owner, groupId, visibility, repo, callerAuth } = {}) {
         const effectiveModel = await this.assertSessionModelCreatable({ model, owner });
         const session = await this.client.createSession({
             ...(model ? { model } : {}),
@@ -1349,6 +1349,7 @@ export class NodeSdkTransport {
             ...(groupId ? { groupId } : {}),
             ...(visibility ? { visibility } : {}),
             ...(repo ? { repo } : {}),
+            ...(callerAuth ? { callerAuth } : {}),
         });
         this.sessionHandles.set(session.sessionId, session);
         const created = await this.mgmt.getSession(session.sessionId).catch(() => null);
@@ -1360,7 +1361,7 @@ export class NodeSdkTransport {
         };
     }
 
-    async createSessionForAgent(agentName, { model, reasoningEffort, contextTier, title, splash, splashMobile, initialPrompt, owner, isAdmin, groupId, visibility, repo } = {}) {
+    async createSessionForAgent(agentName, { model, reasoningEffort, contextTier, title, splash, splashMobile, initialPrompt, owner, isAdmin, groupId, visibility, repo, callerAuth } = {}) {
         // Registry (package) agents are not in the static baked allowlist —
         // resolve the union, enforce user-scope ownership, then delegate the
         // CANONICAL catalog name (the client's allowlist and the CMS row use
@@ -1378,6 +1379,7 @@ export class NodeSdkTransport {
             ...(groupId ? { groupId } : {}),
             ...(visibility ? { visibility } : {}),
             ...(repo ? { repo } : {}),
+            ...(callerAuth ? { callerAuth } : {}),
         });
         this.sessionHandles.set(session.sessionId, session);
         const created = await this.mgmt.getSession(session.sessionId).catch(() => null);

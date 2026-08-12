@@ -56,7 +56,7 @@ import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { PilotSwarmWorker, horizonConfigFromEnv, installPluginSpecs, fetchKeyVaultSecret } from "pilotswarm-sdk";
+import { PilotSwarmWorker, horizonConfigFromEnv, installPluginSpecs, fetchKeyVaultSecret, loadRepoMcpConfig } from "pilotswarm-sdk";
 
 // Sentinel value written to KV by the bicep-deploy `seed-secrets` step for
 // optional secrets the user didn't provide (CSI Secret Store requires
@@ -84,6 +84,10 @@ const gitCacheMirror = process.env.GIT_CACHE_MIRROR
 // beforeRunTurn reconcile hook — wired into the worker config below only when a
 // mirror is configured. Plain (non-git-cache) deployments leave it undefined.
 let beforeRunTurn;
+
+// Repo-stored MCP servers loaded from the enlistment's own .vscode/mcp.json.
+// A repo-pinned worker grants these to every session it runs (see below).
+let repoMcpServers = {};
 
 if (gitCacheMirror) {
     if (!fs.existsSync(gitCacheMirror)) {
@@ -182,6 +186,38 @@ if (gitCacheMirror) {
     ensureEnlistment();
     reconcileEnlistment();
 
+    // Repo-stored MCP servers (delegated MCP access — repo-stored half): a
+    // repo-pinned worker exposes the servers the repo declares for its own
+    // developers in .vscode/mcp.json to every session it runs, so a customer
+    // talking to this repo's agent can reach the repo's MCP servers without
+    // attaching them per request. Loaded once
+    // here, after the enlistment is synced; passed as direct worker mcpServers
+    // config below (every-session base grant). Remote (http/sse) servers only
+    // by default — repo stdio servers are authored for a developer box and
+    // won't run on this Linux worker. Disable via REPO_MCP_ENABLED=0.
+    if (!["0", "false", "off", "no"].includes((process.env.REPO_MCP_ENABLED || "").trim().toLowerCase())) {
+        try {
+            repoMcpServers = loadRepoMcpConfig(enlistmentDir, {
+                remoteOnly: !["0", "false", "off", "no"].includes(
+                    (process.env.REPO_MCP_REMOTE_ONLY || "").trim().toLowerCase(),
+                ),
+                allow: (process.env.REPO_MCP_ALLOW || "")
+                    .split(",")
+                    .map((s) => s.trim())
+                    .filter(Boolean),
+                trace: (m) => console.log(m),
+            });
+            const names = Object.keys(repoMcpServers);
+            if (names.length > 0) {
+                console.log(`[git-repo-worker] repo MCP servers (every-session): ${names.join(", ")}`);
+            } else {
+                console.log(`[git-repo-worker] no repo MCP servers loaded from ${enlistmentDir}/.vscode/mcp.json`);
+            }
+        } catch (err) {
+            console.warn(`[git-repo-worker] repo MCP load error (continuing): ${err?.message ?? err}`);
+        }
+    }
+
     // The SDK invokes this at the top of every runTurn, before the session
     // touches the working directory — the brief "unavailable" reconcile window.
     beforeRunTurn = async ({ trace }) => { await reconcileEnlistment(trace); };
@@ -277,6 +313,10 @@ const worker = new PilotSwarmWorker({
     workerNodeId: podName,
     systemMessage: SYSTEM_MESSAGE,
     pluginDirs,
+    // Repo-stored MCP servers from the enlistment's .vscode/mcp.json. Direct
+    // worker-config mcpServers apply to EVERY session on this (repo-pinned)
+    // worker — exactly the every-session grant this repo's sessions want.
+    mcpServers: repoMcpServers,
     // Pre-turn reconcile (git-hydration MVP): sync the local enlistment from
     // the node-local mirror before each job. Undefined unless a mirror is set.
     beforeRunTurn,
