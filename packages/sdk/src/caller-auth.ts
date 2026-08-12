@@ -1,17 +1,21 @@
 /**
  * Delegated MCP access — caller credential store (AKV stopgap).
  *
- * When a caller creates a session with a delegated credential (their bearer
- * token for a downstream MCP audience, e.g. an Azure DevOps-audience token that
- * a repo-declared MCP server accepts), the platform must present that token
- * to the repo-declared MCP servers "as the user" — WITHOUT baking it into the
+ * When a caller creates a session with delegated credentials (one bearer token
+ * per downstream MCP audience its repo-declared servers require — e.g. an
+ * Azure DevOps-audience token for a code-intelligence server, and a separate
+ * token for a service that exposes its own `api://` app), the platform must
+ * present the RIGHT token to each
+ * repo-declared MCP server "as the user" — WITHOUT baking any of them into the
  * durable orchestration payload (replayed in history) or into a plaintext
  * Postgres column.
  *
- * This module implements the stopgap agreed for the first cut:
- *   - The token is written to Azure Key Vault under a name DERIVED from the
- *     session id (`ps-caller-<sessionId>`), so no session-row column / DB
- *     migration is needed — the worker recomputes the name from the session id.
+ * The client mints those tokens up front (it holds the consent) and sends an
+ * `{ audience: token }` map. This module implements the stopgap store for it:
+ *   - The map is JSON-serialized and written to Azure Key Vault under a name
+ *     DERIVED from the session id (`ps-caller-<sessionId>`), so no session-row
+ *     column / DB migration is needed — the worker recomputes the name and
+ *     matches each server's discovered `aud` against the map keys.
  *   - The secret carries an `exp` attribute (TTL) and `tags` (owner principal,
  *     allowed server ids) for a confused-deputy check and a future sweeper.
  *   - The portal writes it at create time (its identity has Key Vault write);
@@ -35,13 +39,14 @@ export function callerAuthSecretName(sessionId: string): string {
 }
 
 /**
- * Caller-supplied delegated credential payload accepted at session creation.
- * Only `token` is required; the rest tune persistence/authorization tagging.
+ * Caller-supplied delegated credentials accepted at session creation. Only
+ * `audienceTokens` is required; the rest tune persistence/authorization tagging.
  */
 export interface CallerAuthInput {
-    /** The caller's delegated bearer token (never logged). */
-    token: string;
-    /** MCP server ids the caller intends this token for (informational tag). */
+    /** The caller's `{ audience: token }` map — one delegated bearer per
+     * downstream audience its servers require (never logged). */
+    audienceTokens: Record<string, string>;
+    /** MCP server ids the caller intends these tokens for (informational tag). */
     allowedServers?: string[];
     /** Secret lifetime in seconds; defaults to 2h. */
     ttlSeconds?: number;
@@ -50,20 +55,21 @@ export interface CallerAuthInput {
 export interface StoreCallerAuthOptions {
     vaultName: string;
     sessionId: string;
-    /** The caller's delegated bearer token (never logged). */
-    token: string;
+    /** The caller's `{ audience: token }` map (never logged). */
+    audienceTokens: Record<string, string>;
     /** Owner principal, stored as non-secret tags for a confused-deputy check. */
     owner?: { provider?: string | null; subject?: string | null } | null;
-    /** Server ids the token is authorized for (informational tag today). */
+    /** Server ids the tokens are authorized for (informational tag today). */
     allowedServers?: string[];
-    /** Secret lifetime; defaults to 2h (caps exposure; token itself is short-lived). */
+    /** Secret lifetime; defaults to 2h (caps exposure; tokens themselves are short-lived). */
     ttlSeconds?: number;
     trace?: (message: string) => void;
 }
 
 /**
- * Persist a caller's delegated credential for `sessionId` as a Key Vault secret.
- * Returns the secret name written (the ref the worker recomputes).
+ * Persist a caller's delegated credentials for `sessionId` as a single Key Vault
+ * secret whose value is the JSON-serialized `{ audience: token }` map. Returns
+ * the secret name written (the ref the worker recomputes).
  */
 export async function storeCallerAuth(opts: StoreCallerAuthOptions): Promise<string> {
     const secretName = callerAuthSecretName(opts.sessionId);
@@ -78,7 +84,7 @@ export async function storeCallerAuth(opts: StoreCallerAuthOptions): Promise<str
     await putKeyVaultSecret({
         vaultName: opts.vaultName,
         secretName,
-        value: opts.token,
+        value: JSON.stringify(opts.audienceTokens ?? {}),
         expiresUnix,
         tags,
         trace: opts.trace,
@@ -87,18 +93,20 @@ export async function storeCallerAuth(opts: StoreCallerAuthOptions): Promise<str
 }
 
 /**
- * Resolve the caller credential for `sessionId`, or null when none was stored
- * (the common case — a session created without a delegated credential). Absence
- * (Key Vault 404) is not an error.
+ * Resolve the caller's `{ audience: token }` map for `sessionId`, or null when
+ * none was stored (the common case — a session created without delegated
+ * credentials). Absence (Key Vault 404) is not an error; neither is a malformed
+ * secret value (treated as "no delegated auth", surfaced in trace).
  */
 export async function resolveCallerAuth(opts: {
     vaultName: string;
     sessionId: string;
     trace?: (message: string) => void;
-}): Promise<string | null> {
+}): Promise<Record<string, string> | null> {
     const secretName = callerAuthSecretName(opts.sessionId);
+    let raw: string | null;
     try {
-        return await getKeyVaultSecretOptional({
+        raw = await getKeyVaultSecretOptional({
             vaultName: opts.vaultName,
             secretName,
             trace: opts.trace,
@@ -109,47 +117,20 @@ export async function resolveCallerAuth(opts: {
         opts.trace?.(`[caller-auth] resolve failed for ${secretName}: ${err?.message ?? err}`);
         return null;
     }
-}
-
-/** True when an MCP server config is a remote (http/sse) server. */
-function isRemoteMcpServer(cfg: any): boolean {
-    return !!cfg && (cfg.type === "http" || cfg.type === "sse" || (typeof cfg.url === "string" && !cfg.command));
-}
-
-/**
- * Inject `Authorization: Bearer <token>` into remote MCP servers that do not
- * already carry an explicit `Authorization` header. Mutates a SHALLOW copy of
- * each affected server (never the shared catalog object) and returns a new map.
- *
- * Only remote servers are touched — stdio servers run locally as the worker and
- * do not take a bearer. A server that already declares an Authorization header
- * (repo author supplied one) is left as-is.
- */
-export function injectMcpAuthorization(
-    servers: Record<string, any>,
-    token: string,
-    opts?: { only?: string[]; trace?: (message: string) => void },
-): { servers: Record<string, any>; injected: string[] } {
-    const only = opts?.only && opts.only.length > 0 ? new Set(opts.only) : null;
-    const out: Record<string, any> = {};
-    const injected: string[] = [];
-    for (const [name, cfg] of Object.entries(servers ?? {})) {
-        if (!isRemoteMcpServer(cfg) || (only && !only.has(name))) {
-            out[name] = cfg;
-            continue;
+    if (raw == null) return null;
+    try {
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+            opts.trace?.(`[caller-auth] secret ${secretName} is not a JSON object; ignoring`);
+            return null;
         }
-        const headers: Record<string, string> = { ...(cfg.headers ?? {}) };
-        const hasAuth = Object.keys(headers).some((h) => h.toLowerCase() === "authorization");
-        if (hasAuth) {
-            out[name] = cfg;
-            continue;
+        const map: Record<string, string> = {};
+        for (const [aud, tok] of Object.entries(parsed as Record<string, unknown>)) {
+            if (typeof tok === "string" && tok.length > 0) map[aud] = tok;
         }
-        headers.Authorization = `Bearer ${token}`;
-        out[name] = { ...cfg, headers };
-        injected.push(name);
+        return Object.keys(map).length > 0 ? map : null;
+    } catch (err: any) {
+        opts.trace?.(`[caller-auth] secret ${secretName} JSON parse failed: ${err?.message ?? err}`);
+        return null;
     }
-    if (injected.length > 0) {
-        opts?.trace?.(`[caller-auth] injected delegated Authorization into MCP server(s): ${injected.join(", ")}`);
-    }
-    return { servers: out, injected };
 }

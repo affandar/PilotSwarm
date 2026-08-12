@@ -185,8 +185,31 @@ export { canvasArtifactFilename, normalizeCanvasSlot, latestCanvasEventData, lat
 export { buildCanvasAppCatalogRecord, normalizeCanvasAppInterface, CANVAS_APP_NAME_RE, CANVAS_INTERFACE_MAX_BYTES } from "./canvas-app-manifest.js";
 export type { CanvasAppInterface } from "./canvas-app-manifest.js";
 export type { McpAllowlistAgent } from "./mcp-loader.js";
-export { callerAuthSecretName, storeCallerAuth, resolveCallerAuth, injectMcpAuthorization } from "./caller-auth.js";
+export { callerAuthSecretName, storeCallerAuth, resolveCallerAuth } from "./caller-auth.js";
 export type { StoreCallerAuthOptions, CallerAuthInput } from "./caller-auth.js";
+export {
+    resolveMcpServerAuth,
+    discoverServerAudience,
+    parseWwwAuthenticate,
+    appIdUriFromScope,
+    normalizeAudience,
+    decodeJwtAudiences,
+    audienceMatches,
+    defaultHttpDeps,
+    multiTokenProvider,
+    McpAuthFastFailError,
+} from "./mcp-auth-discovery.js";
+export type {
+    WwwAuthenticate,
+    ProtectedResourceMetadata,
+    DiscoveredAudience,
+    HttpDeps,
+    ProbeResult,
+    ResolveMcpAuthOptions,
+    ResolveMcpAuthResult,
+    CallerTokenProvider,
+    RequiredAudience,
+} from "./mcp-auth-discovery.js";
 export type { Skill } from "./skills.js";
 // Local-mode user principal constant (Admin Console / per-user GitHub Copilot key)
 export { LOCAL_DEFAULT_USER_PRINCIPAL } from "./session-owner-utils.js";
