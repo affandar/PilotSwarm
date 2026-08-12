@@ -16,16 +16,22 @@
 #     race it.
 #
 # THIS FILE IS URL-FREE. __REPO_NAME__ is a DNS-safe short name substituted by
-# the deployment scripts that live OUTSIDE this GitHub repo (SQL-AI-Marketplace/
-# SqlOrchestrationPlatform/Admin/PilotSwarm/git-hydration/apply.ps1). The ADO
-# repo URLs never appear here.
+# the deployment scripts that live OUTSIDE this GitHub repo (in the private
+# ops repo, under a git-hydration/ folder). The ADO repo URLs never appear here.
 #
-# Tokens (substituted by apply.ps1 from a per-repo .env):
+# Tokens (substituted by the deploy scripts from a per-repo .env):
 #   __REPO_NAME__       DNS-safe short name; must match the git-cache pool label
 #   __IMAGE__           worker container image (ACR ref), same image as the Deployment
 #   __CACHE_HOSTPATH__  node-local dir the git-cache DaemonSet seeds; MUST match
 #                       the git-cache CACHE_HOSTPATH for this repo (big repos put
 #                       it on an OS-disk path like /var/lib instead of /mnt).
+#   __PLUGIN_SPEC__     optional ;-delimited external plugin repos the worker
+#                       downloads at startup and adds to its plugin dirs; the
+#                       concrete value (which names an ADO org/project/repo) is
+#                       kept in the per-repo .env, never here. Empty = none.
+#   __ADO_PAT_KV_SECRET_URI__  optional Key Vault secret URI for the ADO Code:Read
+#                       PAT used by PluginSpec ADO clones; the worker reads it via
+#                       its managed identity (no PAT in a Secret). Empty = none.
 # -----------------------------------------------------------------------------
 apiVersion: apps/v1
 kind: DaemonSet
@@ -166,6 +172,24 @@ spec:
             # is unset -> reconcile targets the mirror's default branch.
             - name: GIT_ENLISTMENT_ROOT
               value: "/mnt/enlistment"
+            # PluginSpec: ;-delimited external plugin repos (ADO/GitHub) the
+            # worker downloads at startup and appends to its plugin dirs, so the
+            # GHCP SDK loads their agents + skills (e.g. "show me all skills"
+            # surfaces them). URL-free here: the concrete value names an ADO
+            # org/project/repo and is substituted per-repo by the deploy scripts
+            # from values/<repo>.env. Empty string = no external plugins. Private
+            # ADO clones authenticate with a Code:Read PAT the worker reads from
+            # Key Vault via its managed identity (ADO_PAT_KEYVAULT_SECRET_URI
+            # below) — no PAT is stored in a Secret. The worker also accepts a
+            # direct ADO_PAT env, and the literal env name PluginSpec as an alias.
+            - name: PLUGIN_SPEC
+              value: "__PLUGIN_SPEC__"
+            # Key Vault secret URI for the ADO Code:Read PAT used by PluginSpec
+            # ADO clones (https://<vault>.vault.azure.net/secrets/<name>). The
+            # worker's managed identity reads it directly — no PAT lands in a
+            # k8s Secret. Empty when the repo has no private-ADO plugin sources.
+            - name: ADO_PAT_KEYVAULT_SECRET_URI
+              value: "__ADO_PAT_KV_SECRET_URI__"
             # NOTE: the worker runs as non-root and reads a root-owned read-only
             # mirror, so git needs safe.directory set. That is baked into the
             # image's SYSTEM git config (deploy/Dockerfile.worker) — git ignores
