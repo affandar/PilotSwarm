@@ -72,6 +72,33 @@ for (const k of Object.keys(process.env)) {
 const logLevel = process.env.LOG_LEVEL || "info";
 const podName = process.env.POD_NAME || os.hostname();
 
+// --- Readiness sentinel ----------------------------------------------------
+// The k8s readinessProbe (daemonset.yaml) checks this file. We write it ONLY
+// after worker.start() resolves — i.e. the enlistment has been cloned/synced
+// AND the worker is actually polling PostgreSQL for jobs — and we remove it the
+// moment we begin draining. This makes "Ready" mean "can accept a job" instead
+// of merely "the node-local mirror exists": a still-warming worker (the one-time
+// ~minutes cold enlistment clone) now honestly reports NotReady, and a rolling
+// update won't tear down the next node's worker until this one can truly serve.
+// The path lives on the pod-scoped copilot-home volume (emptyDir), so it is
+// always absent at a fresh/cold start regardless of the enlistment's volume type.
+const readyFile = process.env.WORKER_READY_FILE || "/home/node/.copilot/worker.ready";
+const markReady = () => {
+    try {
+        fs.mkdirSync(path.dirname(readyFile), { recursive: true });
+        fs.writeFileSync(readyFile, `${podName} ${new Date().toISOString()}\n`);
+        console.log(`[git-repo-worker] readiness sentinel written -> ${readyFile} (READY: accepting jobs)`);
+    } catch (err) {
+        console.warn(`[git-repo-worker] could not write readiness sentinel ${readyFile}: ${err?.message ?? err}`);
+    }
+};
+const clearReady = () => {
+    try { fs.rmSync(readyFile, { force: true }); } catch { /* best effort */ }
+};
+// Defensive: begin NotReady even if the sentinel path is ever backed by a
+// persistent volume — a stale file must never survive into a fresh process.
+clearReady();
+
 // --- git-cache collocation -------------------------------------------------
 // The initContainer already guaranteed the mirror is present before we start;
 // this is a defensive re-check + observability. If GIT_CACHE_MIRROR is set but
@@ -342,6 +369,8 @@ const worker = new PilotSwarmWorker({
 
 await worker.start();
 console.log(`[git-repo-worker] Started ✓ Polling for orchestrations...`);
+// Enlistment is synced and the worker is now polling — advertise Ready.
+markReady();
 if (worker.loadedAgents.length > 0) {
     console.log(`[git-repo-worker] Agents: ${worker.loadedAgents.map(a => a.name).join(", ")}`);
 }
@@ -351,6 +380,9 @@ if (worker.loadedAgents.length > 0) {
 // terminationGracePeriodSeconds must exceed the drain budget.
 async function shutdown(signal) {
     console.log(`[git-repo-worker] ${signal} received, draining...`);
+    // Flip NotReady before draining so nothing counts us as available while we
+    // finish in-flight turns (rolling updates / Endpoints see us leave first).
+    clearReady();
     await worker.gracefulShutdown();
     process.exit(0);
 }
