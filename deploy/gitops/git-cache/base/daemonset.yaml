@@ -15,10 +15,10 @@
 #   __FETCH_INTERVAL_SECONDS__  steady-state fetch cadence (default 3600)
 #   __FETCH_JITTER_SECONDS__    max added jitter per cycle (default 300)
 #   __CACHE_HOSTPATH__          node-local host dir backing the mirror. Default
-#                               /mnt/pilotswarm-git-cache (the VM temp/resource
-#                               disk). Big-repo pools override this to an
-#                               OS-disk path (e.g. /var/lib/pilotswarm-git-cache)
-#                               when the temp disk is too small.
+#                               /var/lib/pilotswarm-git-cache (the managed OS
+#                               disk): durable across VM deallocate and
+#                               SKU-agnostic. A pool may override this to /mnt to
+#                               use a large ephemeral temp/resource disk instead.
 # -----------------------------------------------------------------------------
 apiVersion: apps/v1
 kind: DaemonSet
@@ -126,8 +126,8 @@ spec:
       volumes:
         # Node-local mirror store. Survives pod restarts and image redeploys —
         # only a genuinely empty node disk triggers a reseed (section 5). The
-        # host path is __CACHE_HOSTPATH__: the temp/resource disk by default,
-        # or an OS-disk path for repos too big for the temp disk.
+        # host path is __CACHE_HOSTPATH__: the managed OS disk (/var/lib) by
+        # default, or a pool may override to an ephemeral temp disk (/mnt).
         - name: git-cache
           hostPath:
             path: __CACHE_HOSTPATH__

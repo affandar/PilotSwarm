@@ -3,7 +3,7 @@
 Node-local **bare-mirror maintainer** for the AKS git-hydration design
 (`SqlOrchestrationPlatform/docs/AKS-GIT-HYDRATION.md`, §5). One pod per node
 keeps a fresh `git --mirror` of a single repo on the node's disk
-(`hostPath: /mnt/pilotswarm-git-cache`), so PilotSwarm worker pods later
+(`hostPath: /var/lib/pilotswarm-git-cache`), so PilotSwarm worker pods later
 materialize a working tree by **local reference-clone**, never a network clone.
 
 This is the **data plane only** (the mirror + readiness gating). Worker pods,
