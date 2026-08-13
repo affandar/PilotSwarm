@@ -289,6 +289,23 @@ function hasAuthorizationHeader(cfg: any): boolean {
     return !!headers && Object.keys(headers).some((h) => h.toLowerCase() === "authorization");
 }
 
+/** Is this server a best-effort fleet default (see `loadDefaultMcpConfig`)? */
+function isOptionalMcpServer(cfg: any): boolean {
+    return !!cfg && cfg.optional === true;
+}
+
+/**
+ * Return `cfg` with the PilotSwarm-only `optional` tag removed. `optional` is a
+ * deployment tag consumed HERE (skip-vs-fast-fail); the Copilot CLI must never
+ * see it. Clones only when the tag is present so shared base-map configs are
+ * never mutated in place.
+ */
+function stripOptionalTag(cfg: any): any {
+    if (!cfg || typeof cfg !== "object" || !("optional" in cfg)) return cfg;
+    const { optional: _optional, ...rest } = cfg;
+    return rest;
+}
+
 export class McpAuthFastFailError extends Error {
     constructor(
         public readonly serverName: string,
@@ -374,12 +391,20 @@ export interface ResolveMcpAuthResult {
  *   - Probe + discover its required audience.
  *   - No audience discovered (open server) → leave unauthenticated.
  *   - Provider returns a token for that audience → inject it.
- *   - Provider returns `null` (no caller credential for it) → **FAST-FAIL**.
+ *   - Provider returns `null` (no caller credential for it):
+ *       - server tagged `optional: true` (a best-effort fleet default) → **SKIP**
+ *         it (drop from the map) so the session still runs without it.
+ *       - otherwise (a repo-declared server the repo explicitly asked for) →
+ *         **FAST-FAIL**.
  *
- * TODO(delegated-mcp, phase 2): instead of fast-failing when the provider has no
- * credential for a server's audience, SKIP that server (drop it from the map)
- * so the session still runs with whatever servers the caller CAN reach. Kept as
- * a hard fail for now so the gap is loud and obvious during bring-up.
+ * The PilotSwarm-only `optional` tag is consumed here and stripped from every
+ * emitted server so the Copilot CLI never sees it (like the `default` tag).
+ *
+ * TODO(delegated-mcp, phase 2): consider extending the optional-skip behavior
+ * from best-effort fleet defaults to ALL servers (repo-declared included), so a
+ * session always runs with whatever servers the caller CAN reach. Kept as a
+ * hard fail for repo-declared servers for now so a missing credential the repo
+ * explicitly asked for stays loud and obvious.
  *
  * The worker managed identity is intentionally never used as a fallback for the
  * upstream connection (confused-deputy protection).
@@ -399,12 +424,12 @@ export async function resolveMcpServerAuth(opts: ResolveMcpAuthOptions): Promise
 
     for (const [name, cfg] of Object.entries(opts.servers ?? {})) {
         if (!isRemoteMcpServer(cfg)) {
-            out[name] = cfg;
+            out[name] = stripOptionalTag(cfg);
             continue;
         }
         if (hasAuthorizationHeader(cfg)) {
             trace(`[mcp-auth] server "${name}": explicit Authorization present, leaving as-is`);
-            out[name] = cfg;
+            out[name] = stripOptionalTag(cfg);
             continue;
         }
 
@@ -430,7 +455,7 @@ export async function resolveMcpServerAuth(opts: ResolveMcpAuthOptions): Promise
         if (!discovered) {
             // No auth required (or undiscoverable): connect unauthenticated.
             trace(`[mcp-auth] server "${name}": no discoverable auth requirement; connecting unauthenticated`);
-            out[name] = cfg;
+            out[name] = stripOptionalTag(cfg);
             continue;
         }
 
@@ -449,7 +474,7 @@ export async function resolveMcpServerAuth(opts: ResolveMcpAuthOptions): Promise
 
         if (token) {
             headers.Authorization = `Bearer ${token}`;
-            out[name] = { ...cfg, headers };
+            out[name] = stripOptionalTag({ ...cfg, headers });
             injected.push(name);
             trace(
                 `[mcp-auth] server "${name}": obtained caller token for ${normalizeAudience(discovered.appIdUri)}; ` +
@@ -459,7 +484,18 @@ export async function resolveMcpServerAuth(opts: ResolveMcpAuthOptions): Promise
         }
 
         // No caller credential for this audience. Never substitute platform
-        // identity. Fast-fail (see phase-2 TODO above to skip instead).
+        // identity. A best-effort fleet default (`optional: true`) is SKIPPED so
+        // the session still runs without it; a repo-declared server the repo
+        // explicitly asked for FAST-FAILS.
+        if (isOptionalMcpServer(cfg)) {
+            trace(
+                `[mcp-auth] server "${name}": optional fleet default requires audience ` +
+                    `"${normalizeAudience(discovered.appIdUri)}" but the caller has no matching credential; ` +
+                    `SKIPPING it (session continues without this server)`,
+            );
+            continue;
+        }
+
         const msg =
             `[mcp-auth] FAST-FAIL: server "${name}" requires audience ` +
             `"${normalizeAudience(discovered.appIdUri)}" but the caller could not obtain a matching ` +

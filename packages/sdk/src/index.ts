@@ -172,8 +172,8 @@ export {
 // Skills loader
 export { loadSkills, loadSkillsSync, composeDeclaredSkillsPrompt } from "./skills.js";
 export { loadAgentFiles, systemAgentUUID, systemChildAgentUUID, listBundledAgentNames, agentSupportsDirectStart } from "./agent-loader.js";
-export { loadMcpConfig, mcpAllowlistAdmits, listRestrictedMcpServerNames, listDeploymentMcpServerNames, loadRepoMcpConfig } from "./mcp-loader.js";
-export type { MCPServerConfig, LoadRepoMcpOptions } from "./mcp-loader.js";
+export { loadMcpConfig, mcpAllowlistAdmits, listRestrictedMcpServerNames, listDeploymentMcpServerNames, loadRepoMcpConfig, loadDefaultMcpConfig } from "./mcp-loader.js";
+export type { MCPServerConfig, LoadRepoMcpOptions, LoadDefaultMcpOptions } from "./mcp-loader.js";
 export {
     readCanvasKv, writeCanvasKv, validateCanvasKvKey, canvasKvGlobMatches, resolveCanvasKvViewer, decideCanvasKvWrite,
     CanvasKvError, CANVAS_KV_KEY_MAX, CANVAS_KV_VALUE_MAX_BYTES, CANVAS_KV_MAX_KEYS, CANVAS_KV_MAX_BYTES, CANVAS_KV_LIST_PAGE,
