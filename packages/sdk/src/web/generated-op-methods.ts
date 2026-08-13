@@ -97,6 +97,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "readFacts",
     "regenerateSession",
     "renameSession",
+    "republishAgentPackageVersion",
     "restartSystemSession",
     "revokeSessionShare",
     "searchFacts",
@@ -239,11 +240,14 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Delete a package: every version and its artifacts. Creator or admin. Live sessions using its agents fail resolution on their next turn.
+     * Delete a package: every version and its artifacts. Creator or admin. Live sessions using its agents fail resolution on their next turn. `scope` picks which same-named copy.
      * @remarks `DELETE /agent-packages/:name` — access: `authed`
      */
     deleteAgentPackage(params: {
         name: string;
+        scope?: string;
+        ownerProvider?: string;
+        ownerSubject?: string;
     }): Promise<any>;
 
     /**
@@ -339,11 +343,14 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * One package with its full version history.
+     * One package with its full version history. `scope` picks which same-named copy.
      * @remarks `GET /agent-packages/:name` — access: `authed`
      */
     getAgentPackage(params: {
         name: string;
+        scope?: string;
+        ownerProvider?: string;
+        ownerSubject?: string;
     }): Promise<any>;
 
     /**
@@ -354,6 +361,9 @@ export interface ManagementOps {
         name: string;
         semver?: string;
         filePath?: string;
+        scope?: string;
+        ownerProvider?: string;
+        ownerSubject?: string;
     }): Promise<any>;
 
     /**
@@ -363,6 +373,9 @@ export interface ManagementOps {
     getAgentPackageTree(params: {
         name: string;
         semver?: string;
+        scope?: string;
+        ownerProvider?: string;
+        ownerSubject?: string;
     }): Promise<any>;
 
     /**
@@ -836,12 +849,15 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Pin the active version (rollback). Creator or admin; fleet converges on the next epoch poll.
+     * Pin the active version (rollback). Creator or admin; fleet converges on the next epoch poll. `scope` picks which same-named copy.
      * @remarks `PUT /agent-packages/:name/active` — access: `authed`
      */
     pinAgentPackageVersion(params: {
         name: string;
         semver?: any;
+        scope?: any;
+        ownerProvider?: any;
+        ownerSubject?: any;
     }): Promise<any>;
 
     /**
@@ -901,6 +917,16 @@ export interface ManagementOps {
     renameSession(params: {
         sessionId: string;
         title?: any;
+    }): Promise<any>;
+
+    /**
+     * Publish an existing version's exact bytes into the same-named package in another scope (user↔shared). THE update path for an already-published shared package — promote can only move a row to an unused name. Creator or admin.
+     * @remarks `POST /agent-packages/:name/republish` — access: `authed`
+     */
+    republishAgentPackageVersion(params: {
+        name: string;
+        semver?: any;
+        targetScope?: any;
     }): Promise<any>;
 
     /**
@@ -976,21 +1002,26 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Enable/disable a package fleet-wide. Creator or admin.
+     * Enable/disable a package fleet-wide. Creator or admin. `scope` picks which same-named copy.
      * @remarks `PUT /agent-packages/:name/enabled` — access: `authed`
      */
     setAgentPackageEnabled(params: {
         name: string;
         enabled?: any;
+        scope?: any;
+        ownerProvider?: any;
+        ownerSubject?: any;
     }): Promise<any>;
 
     /**
-     * Promote (shared) or demote (user). Creator or admin; running agents unaffected.
+     * Promote (shared) or demote (user). The source copy is implied by the direction: promote moves the caller's (or named owner's) user copy, demote moves the shared one. Creator or admin; running agents unaffected.
      * @remarks `PUT /agent-packages/:name/scope` — access: `authed`
      */
     setAgentPackageScope(params: {
         name: string;
         scope?: any;
+        ownerProvider?: any;
+        ownerSubject?: any;
     }): Promise<any>;
 
     /**
@@ -1252,6 +1283,7 @@ export function createManagementOps(
         readFacts: (params: Record<string, unknown> = {}) => callOp("readFacts", params),
         regenerateSession: (params: Record<string, unknown> = {}) => callOp("regenerateSession", params),
         renameSession: (params: Record<string, unknown> = {}) => callOp("renameSession", params),
+        republishAgentPackageVersion: (params: Record<string, unknown> = {}) => callOp("republishAgentPackageVersion", params),
         restartSystemSession: (params: Record<string, unknown> = {}) => callOp("restartSystemSession", params),
         revokeSessionShare: (params: Record<string, unknown> = {}) => callOp("revokeSessionShare", params),
         searchFacts: (params: Record<string, unknown> = {}) => callOp("searchFacts", params),

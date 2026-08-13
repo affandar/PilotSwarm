@@ -1009,6 +1009,8 @@ export interface SessionCatalog {
     pinAgentPackageVersion(name: string, semver: string, actor: AgentPrincipal | null, isAdmin: boolean, selector?: AgentPackageSelector | null): Promise<void>;
     /** Returns artifact filenames of deleted versions for post-commit artifact cleanup. */
     deleteAgentPackage(name: string, actor: AgentPrincipal | null, isAdmin: boolean, selector?: AgentPackageSelector | null): Promise<string[]>;
+    /** How many published versions reference this content-addressed blob (>0 ⇒ never delete it). */
+    countAgentPackageArtifactRefs(artifactFilename: string): Promise<number>;
 
     upsertAgentWorkerState(workerNodeId: string, epoch: number, installed: Record<string, unknown>): Promise<void>;
     listAgentWorkerState(): Promise<AgentWorkerStateRow[]>;
@@ -3089,6 +3091,20 @@ export class PgSessionCatalog implements SessionCatalog {
             [name, actor?.provider ?? null, actor?.subject ?? null, isAdmin, ...selectorArgs(selector)],
         );
         return rows.map((r: any) => String(r.artifact_filename)).filter(Boolean);
+    }
+
+    /**
+     * How many published version rows reference this artifact blob filename.
+     * Blob files are content-addressed (name@semver.sha), so identical bytes
+     * published under the same name+semver in two scopes share ONE file. A
+     * cleanup path must never delete a blob this reports > 0 for.
+     */
+    async countAgentPackageArtifactRefs(artifactFilename: string): Promise<number> {
+        const { rows } = await this.pool.query(
+            `SELECT count(*)::int AS n FROM "${this.sql.schema}".agent_package_versions WHERE artifact_filename = $1`,
+            [artifactFilename],
+        );
+        return Number(rows?.[0]?.n ?? 0);
     }
 
     async upsertAgentWorkerState(workerNodeId: string, epoch: number, installed: Record<string, unknown>): Promise<void> {

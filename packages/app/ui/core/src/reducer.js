@@ -19,6 +19,20 @@ import {
     createInitialState,
 } from "./state.js";
 
+/**
+ * Is this package detail/tree/changelog response for a selection the user has
+ * already left? Responses carry the selectionSeq captured when their fetch
+ * started; the NAME alone cannot tell two copies of a shadowed name apart
+ * (scope shadowing: one name, two packages), so a name-only guard let a slow
+ * response for one copy land on top of the other. Name-only actions (older
+ * hosts) keep the historical name compare.
+ */
+function packageResponseIsStale(packages, action) {
+    if (packages.selectedName !== action.name) return true;
+    if (typeof action.seq === "number") return (packages.selectionSeq ?? 0) !== action.seq;
+    return false;
+}
+
 function cloneHistoryMap(historyMap) {
     return new Map(historyMap);
 }
@@ -619,6 +633,7 @@ function applyVisibleSessionSelection(state, nextSessions) {
         sessions = {
             ...sessions,
             activeSessionId: intentTargetId,
+            listDeselected: false,
             navigationIntent: intent.status === "resolved"
                 ? intent
                 : { sessionId: intent.sessionId, status: "resolved" },
@@ -1026,6 +1041,15 @@ export function appReducer(state, action) {
                 ui: {
                     ...state.ui,
                     focusRegion: action.focusRegion,
+                    // The RAW region the caller asked for, before layout
+                    // normalization. A workspace region (sessions/chat) with no
+                    // slot in the current layout normalizes to the first
+                    // focusable pane — inspector, on a phone — so the normalized
+                    // value alone cannot tell "focus the inspector" from
+                    // "sessions got rewritten to inspector". The mobile
+                    // follow-focus pane switch reads this to avoid opening
+                    // diagnostics when the user only asked for the workspace.
+                    requestedFocusRegion: action.requestedFocusRegion ?? action.focusRegion,
                 },
             };
 
@@ -1087,6 +1111,10 @@ export function appReducer(state, action) {
             if (!sessionId) return state;
             const nextSessions = {
                 ...state.sessions,
+                // A deep link is explicit navigation. Keep the list highlight
+                // aligned with the linked chat even if empty-space click had
+                // previously deselected the session row.
+                listDeselected: false,
                 navigationIntent: { sessionId, status: "pending" },
                 filterExceptionId: null,
             };
@@ -2319,6 +2347,7 @@ export function appReducer(state, action) {
                         workerState: Array.isArray(action.workerState) ? action.workerState : [],
                         fetchedAt: Date.now(),
                         selectedName: stillThere ? previous.selectedName : null,
+                        selectedSelector: stillThere ? (previous.selectedSelector ?? null) : null,
                         ...(stillThere ? {} : { detail: null, workspace: { ...previous.workspace, tree: null, selectedPath: null, file: null } }),
                     },
                 },
@@ -2336,6 +2365,18 @@ export function appReducer(state, action) {
                     packages: {
                         ...state.admin.packages,
                         selectedName: action.name || null,
+                        // WHICH copy of the name: {scope, owner} from the row
+                        // the user clicked. One name can be two packages
+                        // (scope shadowing) — without this every read and
+                        // action fell back to "own copy first" and could
+                        // target the row the user was NOT looking at.
+                        selectedSelector: action.selector || null,
+                        // Monotonic selection token. The stale-response guards
+                        // below compare it, because comparing the NAME alone
+                        // cannot tell two copies of a shadowed name apart — a
+                        // slow response for the user copy could land on top of
+                        // the shared copy the user just clicked.
+                        selectionSeq: (state.admin.packages.selectionSeq ?? 0) + 1,
                         detail: null,
                         detailLoading: Boolean(action.name),
                         detailError: null,
@@ -2354,17 +2395,17 @@ export function appReducer(state, action) {
             };
         }
         case "admin/packages/detail/loaded": {
-            if (state.admin.packages.selectedName !== action.name) return state;
+            if (packageResponseIsStale(state.admin.packages, action)) return state;
             return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, detail: action.detail, detailLoading: false, detailError: null } } };
         }
         case "admin/packages/detail/loadFailed": {
-            if (state.admin.packages.selectedName !== action.name) return state;
+            if (packageResponseIsStale(state.admin.packages, action)) return state;
             return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, detail: null, detailLoading: false, detailError: action.error || "Failed to load package" } } };
         }
         case "admin/packages/changelog/loaded": {
             // Stale-response guard, same as the tree: a slow changelog for a
             // previously-selected package must not surface under the current one.
-            if (state.admin.packages.selectedName !== action.name) return state;
+            if (packageResponseIsStale(state.admin.packages, action)) return state;
             return {
                 ...state,
                 admin: {
@@ -2377,7 +2418,7 @@ export function appReducer(state, action) {
             };
         }
         case "admin/packages/tree/loaded": {
-            if (state.admin.packages.selectedName !== action.name) return state;
+            if (packageResponseIsStale(state.admin.packages, action)) return state;
             const topDirs = Array.isArray(action.tree?.dirs)
                 ? action.tree.dirs.filter((dir) => !dir.includes("/"))
                 : [];
@@ -2400,7 +2441,7 @@ export function appReducer(state, action) {
             };
         }
         case "admin/packages/tree/loadFailed": {
-            if (state.admin.packages.selectedName !== action.name) return state;
+            if (packageResponseIsStale(state.admin.packages, action)) return state;
             return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, workspace: { ...state.admin.packages.workspace, treeLoading: false, treeError: action.error || "Failed to load package files" } } } };
         }
         case "admin/packages/toggleDir": {
@@ -2414,11 +2455,17 @@ export function appReducer(state, action) {
             return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, workspace: { ...state.admin.packages.workspace, selectedPath: action.path, file: null, fileLoading: true, fileError: null } } } };
         }
         case "admin/packages/file/loaded": {
+            // Path AND selection token: two copies of a shadowed name have the
+            // SAME file paths (both ship plugin.json), so a slow preview for
+            // the previously-selected copy would otherwise land under the
+            // current one. The seq check tells the two copies apart.
             if (state.admin.packages.workspace.selectedPath !== action.file?.path) return state;
+            if (typeof action.seq === "number" && (state.admin.packages.selectionSeq ?? 0) !== action.seq) return state;
             return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, workspace: { ...state.admin.packages.workspace, file: action.file, fileLoading: false, fileError: null } } } };
         }
         case "admin/packages/file/loadFailed": {
             if (state.admin.packages.workspace.selectedPath !== action.path) return state;
+            if (typeof action.seq === "number" && (state.admin.packages.selectionSeq ?? 0) !== action.seq) return state;
             return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, workspace: { ...state.admin.packages.workspace, fileLoading: false, fileError: action.error || "Failed to load file" } } } };
         }
         case "admin/packages/action/pending": {

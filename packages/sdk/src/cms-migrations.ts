@@ -240,6 +240,11 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "session_canvases",
             sql: migration_0045_session_canvases(schema),
         },
+        {
+            version: "0046",
+            name: "agent_package_delete_blob_refcount",
+            sql: migration_0046_agent_package_delete_blob_refcount(schema),
+        },
     ];
 }
 
@@ -9140,5 +9145,60 @@ FROM (
 ) e
 WHERE EXISTS (SELECT 1 FROM ${s}.sessions ss WHERE ss.session_id = e.session_id)
 ON CONFLICT (session_id, slot) DO NOTHING;
+`;
+}
+
+/**
+ * 0046 — delete only ORPHANED blobs, never a still-referenced one.
+ *
+ * Package blob files are content-addressed: the filename is
+ * `name@semver.sha`, with no scope or owner in it. So a shared package and a
+ * user-scope copy that carry identical bytes — the normal result of testing a
+ * version privately then publishing it to shared, or two users publishing the
+ * same package — reference the SAME blob file. The 0043 delete proc returned
+ * every filename of the deleted package's versions, and the caller deleted
+ * each blob. Deleting one copy therefore destroyed the OTHER copy's bytes:
+ * its active version pointed at a now-missing blob, and every worker
+ * quarantined it fleet-wide on the next install.
+ *
+ * This redefinition returns only filenames that NO surviving version row
+ * still references — computed after the cascade, so "surviving" already
+ * excludes the deleted package. A shared blob is kept; a genuinely orphaned
+ * one is returned for cleanup. CREATE OR REPLACE, no table lock.
+ */
+function migration_0046_agent_package_delete_blob_refcount(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+CREATE OR REPLACE FUNCTION ${s}.cms_delete_agent_package(
+    p_name TEXT, p_actor_provider TEXT, p_actor_subject TEXT, p_is_admin BOOLEAN,
+    p_sel_scope TEXT, p_sel_owner_provider TEXT, p_sel_owner_subject TEXT
+) RETURNS TABLE(artifact_filename TEXT) AS $$
+DECLARE
+    v_pkg ${s}.agent_packages;
+    v_filenames TEXT[];
+BEGIN
+    v_pkg := ${s}.cms_agent_package_authz(
+        p_name, p_actor_provider, p_actor_subject, p_is_admin,
+        p_sel_scope, p_sel_owner_provider, p_sel_owner_subject);
+
+    -- Capture this package's blob filenames BEFORE the cascade removes its
+    -- version rows.
+    SELECT array_agg(DISTINCT v.artifact_filename) INTO v_filenames
+      FROM ${s}.agent_package_versions v
+     WHERE v.package_id = v_pkg.package_id;
+
+    DELETE FROM ${s}.agent_packages WHERE package_id = v_pkg.package_id;
+    PERFORM ${s}.cms_agent_registry_bump();
+
+    -- Return only blobs no SURVIVING version references — never a file a
+    -- same-bytes copy in the other scope still points at.
+    RETURN QUERY
+        SELECT fn FROM unnest(COALESCE(v_filenames, ARRAY[]::TEXT[])) AS fn
+         WHERE NOT EXISTS (
+             SELECT 1 FROM ${s}.agent_package_versions v2
+              WHERE v2.artifact_filename = fn
+         );
+END;
+$$ LANGUAGE plpgsql;
 `;
 }

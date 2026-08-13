@@ -19,6 +19,7 @@ import {
     ATTACHMENTS_MAX_TOTAL_BYTES,
     PgSessionCatalog,
     publishAgentPackageDir,
+    publishPackedAgentPackage,
     deleteAgentPackageEverywhere,
     fetchAgentPackageTarGz,
     readAgentPackageTarGz,
@@ -780,7 +781,13 @@ export class NodeSdkTransport {
     }
 
     _requirePrincipal(owner, isAdmin) {
-        if (owner) return { provider: owner.provider, subject: owner.subject };
+        // Shape-checked, not just truthy: the portal runtime always passes a
+        // real principal here, but a caller that skips the owner/isAdmin args
+        // (direct-mode TUI) must fail closed with this clear error — never
+        // flow a garbage object into the registry as an identity.
+        if (owner && typeof owner.provider === "string" && typeof owner.subject === "string") {
+            return { provider: owner.provider, subject: owner.subject };
+        }
         if (isAdmin) return null;   // anonymous deployments: admin-equivalent
         const err = new Error("agent-package operations require an authenticated principal");
         err.code = "FORBIDDEN";
@@ -821,10 +828,36 @@ export class NodeSdkTransport {
         return ctx.catalog.listAgentPackages(this._requirePrincipal(owner, isAdmin), Boolean(isAdmin));
     }
 
-    async getAgentPackage(name, owner, isAdmin) {
+    /**
+     * Normalize wire selector params ({scope, ownerProvider, ownerSubject})
+     * into the catalog's AgentPackageSelector — which same-named copy an op
+     * means. Authorization is NOT decided here: the registry procs re-check
+     * ownership against the RESOLVED row, so a non-admin naming someone
+     * else's copy still gets FORBIDDEN/invisible from the database.
+     */
+    _packageSelector(selector, isAdmin = false) {
+        if (!selector || typeof selector !== "object") return null;
+        const scope = selector.scope === "shared" || selector.scope === "user" ? selector.scope : null;
+        const provider = typeof selector.ownerProvider === "string" && selector.ownerProvider.trim() ? selector.ownerProvider.trim() : null;
+        const subject = typeof selector.ownerSubject === "string" && selector.ownerSubject.trim() ? selector.ownerSubject.trim() : null;
+        // The owner override targets ANOTHER user's copy, which only an admin
+        // may do. For a non-admin it is dropped, NOT honored-then-denied:
+        // resolving a foreign package and letting the proc answer FORBIDDEN vs
+        // NOT_FOUND would be an existence oracle. Dropped, a non-admin's
+        // selector falls back to own-then-shared resolution, which can only
+        // ever reach their own or shared packages.
+        const owner = isAdmin && provider && subject ? { provider, subject } : null;
+        if (!scope && !owner) return null;
+        return {
+            ...(scope ? { scope } : {}),
+            ...(owner ? { owner } : {}),
+        };
+    }
+
+    async getAgentPackage(name, owner, isAdmin, selector = null) {
         const ctx = await this._agentPackagesContext();
         if (!ctx) return null;
-        return ctx.catalog.getAgentPackage(name, this._requirePrincipal(owner, isAdmin), Boolean(isAdmin));
+        return ctx.catalog.getAgentPackage(name, this._requirePrincipal(owner, isAdmin), Boolean(isAdmin), this._packageSelector(selector, Boolean(isAdmin)));
     }
 
 
@@ -843,36 +876,98 @@ export class NodeSdkTransport {
         return ctx.catalog.listWorkers();
     }
 
-    async setAgentPackageScope(name, scope, owner, isAdmin) {
+    async setAgentPackageScope(name, scope, owner, isAdmin, selector = null) {
         const ctx = await this._agentPackagesContext();
         if (!ctx) throw new Error("agent packages are not available on this deployment");
-        await this._mapAgentPackageErrors(() => ctx.catalog.setAgentPackageScope(name, scope === "shared" ? "shared" : "user",
-            this._requirePrincipal(owner, isAdmin), Boolean(isAdmin)));
+        const targetScope = scope === "shared" ? "shared" : "user";
+        const ownerOverride = this._packageSelector(selector, Boolean(isAdmin))?.owner ?? null;
+        // The SOURCE copy is implied by the direction, but the two directions
+        // need different selectors — and passing an explicit scope selector
+        // DISABLES the SQL admin/NULL-owner fallback (it fires only when the
+        // selector scope is NULL), so name-only is used wherever it resolves
+        // correctly:
+        //   demote (target user): must move the globally-unique SHARED copy,
+        //     so select scope 'shared' explicitly — the shared row is unique,
+        //     no owner fallback is needed to find it.
+        //   promote (target shared): ordinary own-copy-then-shared resolution
+        //     already lands on the caller's own USER copy, and keeping the
+        //     selector NULL preserves the admin/NULL-owner fallback for
+        //     packages minted without an owner. An admin acting on ANOTHER
+        //     user's copy passes that owner explicitly.
+        let sourceSelector = null;
+        if (targetScope === "user") {
+            sourceSelector = { scope: "shared", ...(ownerOverride ? { owner: ownerOverride } : {}) };
+        } else if (ownerOverride) {
+            sourceSelector = { scope: "user", owner: ownerOverride };
+        }
+        await this._mapAgentPackageErrors(() => ctx.catalog.setAgentPackageScope(name, targetScope,
+            this._requirePrincipal(owner, isAdmin), Boolean(isAdmin), sourceSelector));
         return { ok: true };
     }
 
-    async setAgentPackageEnabled(name, enabled, owner, isAdmin) {
+    async setAgentPackageEnabled(name, enabled, owner, isAdmin, selector = null) {
         const ctx = await this._agentPackagesContext();
         if (!ctx) throw new Error("agent packages are not available on this deployment");
         await this._mapAgentPackageErrors(() => ctx.catalog.setAgentPackageEnabled(name, Boolean(enabled),
-            this._requirePrincipal(owner, isAdmin), Boolean(isAdmin)));
+            this._requirePrincipal(owner, isAdmin), Boolean(isAdmin), this._packageSelector(selector, Boolean(isAdmin))));
         return { ok: true };
     }
 
-    async pinAgentPackageVersion(name, semver, owner, isAdmin) {
+    async pinAgentPackageVersion(name, semver, owner, isAdmin, selector = null) {
         const ctx = await this._agentPackagesContext();
         if (!ctx) throw new Error("agent packages are not available on this deployment");
         await this._mapAgentPackageErrors(() => ctx.catalog.pinAgentPackageVersion(name, String(semver || ""),
-            this._requirePrincipal(owner, isAdmin), Boolean(isAdmin)));
+            this._requirePrincipal(owner, isAdmin), Boolean(isAdmin), this._packageSelector(selector, Boolean(isAdmin))));
         return { ok: true };
     }
 
-    async deleteAgentPackage(name, owner, isAdmin) {
+    async deleteAgentPackage(name, owner, isAdmin, selector = null) {
         const ctx = await this._agentPackagesContext();
         if (!ctx) throw new Error("agent packages are not available on this deployment");
-        await this._mapAgentPackageErrors(() => deleteAgentPackageEverywhere(ctx, name, this._requirePrincipal(owner, isAdmin), Boolean(isAdmin)));
+        await this._mapAgentPackageErrors(() => deleteAgentPackageEverywhere(ctx, name, this._requirePrincipal(owner, isAdmin), Boolean(isAdmin), this._packageSelector(selector, Boolean(isAdmin))));
         this._agentPkgTarCache?.clear?.();
         return { ok: true };
+    }
+
+    /**
+     * Publish an existing version's exact bytes into the same-named package
+     * in the OTHER scope. This is the "update the shared package from my
+     * tested user copy" path the console's promote button cannot express —
+     * promote MOVES a row and refuses when the shared name already exists;
+     * this adds a version to it instead.
+     */
+    async republishAgentPackageVersion(name, semver, targetScope, owner, isAdmin) {
+        const ctx = await this._agentPackagesContext();
+        if (!ctx) throw new Error("agent packages are not available on this deployment");
+        const principal = this._requirePrincipal(owner, isAdmin);
+        const target = targetScope === "shared" ? "shared" : "user";
+        const sourceScope = target === "shared" ? "user" : "shared";
+        return await this._mapAgentPackageErrors(async () => {
+            const detail = await ctx.catalog.getAgentPackage(name, principal, Boolean(isAdmin), { scope: sourceScope });
+            if (!detail) {
+                const err = new Error(`AGENT_PACKAGE_NOT_FOUND: no ${sourceScope}-scope package named "${name}" to republish from`);
+                throw err;
+            }
+            const wanted = String(semver || "").trim();
+            const version = wanted
+                ? detail.versions.find((v) => v.semver === wanted)
+                : detail.versions.find((v) => v.versionId === detail.activeVersionId) ?? detail.versions[0];
+            if (!version) {
+                throw new Error(`AGENT_PACKAGE_VERSION_NOT_FOUND: ${name}@${wanted || "(active)"} is not a published ${sourceScope} version`);
+            }
+            const targz = await fetchAgentPackageTarGz(ctx.artifactStore, version.artifactFilename, version.sha256);
+            const outcome = await publishPackedAgentPackage(ctx, {
+                manifest: version.manifest,
+                targz,
+                sha256: version.sha256,
+                scope: target,
+                owner: principal,
+                createdBy: `${this._createdByLabel(owner)} (republish of ${sourceScope} ${name}@${version.semver})`,
+                isAdmin: Boolean(isAdmin),
+            });
+            const { manifest: _m, ...summary } = outcome;
+            return summary;
+        });
     }
 
     /** Inline-files upload → the one publish pipeline. ≤ 2 MB decoded. */
@@ -943,10 +1038,10 @@ export class NodeSdkTransport {
 
     // ── Agent packages: workspace viewer (tree + file preview) ──
 
-    async _agentPackageEntries(name, semver, owner, isAdmin) {
+    async _agentPackageEntries(name, semver, owner, isAdmin, selector = null) {
         const ctx = await this._agentPackagesContext();
         if (!ctx) throw new Error("agent packages are not available on this deployment");
-        const detail = await ctx.catalog.getAgentPackage(name, this._requirePrincipal(owner, isAdmin), Boolean(isAdmin));
+        const detail = await ctx.catalog.getAgentPackage(name, this._requirePrincipal(owner, isAdmin), Boolean(isAdmin), this._packageSelector(selector, Boolean(isAdmin)));
         if (!detail) throw Object.assign(new Error(`package "${name}" not found`), { code: "NOT_FOUND" });
         const version = semver
             ? detail.versions.find((v) => v.semver === semver)
@@ -975,8 +1070,8 @@ export class NodeSdkTransport {
         return { entries, version };
     }
 
-    async getAgentPackageTree(name, semver, owner, isAdmin) {
-        const { entries, version } = await this._agentPackageEntries(name, semver, owner, isAdmin);
+    async getAgentPackageTree(name, semver, owner, isAdmin, selector = null) {
+        const { entries, version } = await this._agentPackageEntries(name, semver, owner, isAdmin, selector);
         const dirs = new Set();
         const files = [];
         for (const entry of entries) {
@@ -994,8 +1089,8 @@ export class NodeSdkTransport {
         };
     }
 
-    async getAgentPackageFile(name, semver, filePath, owner, isAdmin) {
-        const { entries, version } = await this._agentPackageEntries(name, semver, owner, isAdmin);
+    async getAgentPackageFile(name, semver, filePath, owner, isAdmin, selector = null) {
+        const { entries, version } = await this._agentPackageEntries(name, semver, owner, isAdmin, selector);
         const rel = String(filePath || "");
         const entry = entries.find((candidate) => candidate.name === rel);
         if (!entry) throw Object.assign(new Error(`"${rel}" is not in ${name}@${version.semver}`), { code: "NOT_FOUND" });

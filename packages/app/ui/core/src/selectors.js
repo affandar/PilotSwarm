@@ -3724,9 +3724,29 @@ export function selectAdminConsole(state) {
         distinctPackageOwners.add(key);
     }
     const decoratePackageOwners = distinctPackageOwners.size > 1;
+    // Copy-identity helpers: one NAME can be two packages (scope shadowing),
+    // so row selection and highlighting key on (name, scope, owner) — never
+    // the bare name.
+    const packageCopyKey = (name, scope, owner) =>
+        `${name}\u0001${scope === "shared" ? "shared" : "user"}\u0001${scope === "shared" ? "" : (owner?.subject ?? "")}`;
+    const selectedCopyKey = pkgState.selectedName
+        ? packageCopyKey(
+            pkgState.selectedName,
+            pkgState.selectedSelector?.scope ?? null,
+            pkgState.selectedSelector?.owner ?? principal ?? null,
+        )
+        : null;
+    const rowMatchesSelection = (pkg) => {
+        if (admin.section !== "packages" || pkgState.selectedName !== pkg.name) return false;
+        // Legacy selection with no selector: fall back to name-only so an
+        // in-flight selection from an older host still highlights something.
+        if (!pkgState.selectedSelector?.scope) return true;
+        return packageCopyKey(pkg.name, pkg.scope, pkg.owner) === selectedCopyKey;
+    };
     const packageRow = (pkg) => ({
         name: pkg.name,
         scope: pkg.scope === "shared" ? "shared" : "user",
+        owner: pkg.owner ?? null,
         enabled: Boolean(pkg.enabled),
         semver: pkg.active?.semver || null,
         sha7: pkg.active?.sha256 ? String(pkg.active.sha256).slice(0, 7) : null,
@@ -3742,7 +3762,7 @@ export function selectAdminConsole(state) {
             : ownerBadgeFor(resolvePackageOwner(pkg, ownerDirectory)),
         // Highlight only while the Agents section is active — otherwise the
         // GitHub Keys screen shows a double selection.
-        selected: admin.section === "packages" && pkgState.selectedName === pkg.name,
+        selected: rowMatchesSelection(pkg),
     });
     // Admins are served every user-scope package, but another person's private
     // agents are not part of YOUR workspace — keep them out of the main tree
@@ -3787,13 +3807,13 @@ export function selectAdminConsole(state) {
         { id: "ghcp", kind: "section", depth: 0, label: "GitHub Keys", selected: section === "ghcp" },
         { id: "agents", kind: "section", depth: 0, label: "Agents", selected: section === "packages" && !pkgState.selectedName },
         { id: "group:shared", kind: "group", depth: 1, label: "Shared", count: sharedRows.length },
-        ...sharedRows.map((row) => ({ id: `pkg:${row.name}`, kind: "package", depth: 2, label: row.name, ...row })),
+        ...sharedRows.map((row) => ({ id: `pkg:shared:${row.name}`, kind: "package", depth: 2, label: row.name, ...row })),
         { id: "group:user", kind: "group", depth: 1, label: "User", count: userRows.length },
-        ...userRows.map((row) => ({ id: `pkg:${row.name}`, kind: "package", depth: 2, label: row.name, ...row })),
+        ...userRows.map((row) => ({ id: `pkg:user:${row.name}`, kind: "package", depth: 2, label: row.name, ...row })),
         ...(otherUserRows.length > 0
             ? [
                 { id: "group:others", kind: "group", depth: 1, label: "Other users", count: otherUserRows.length },
-                ...otherUserRows.map((row) => ({ id: `pkg:${row.name}`, kind: "package", depth: 2, label: row.name, ...row })),
+                ...otherUserRows.map((row) => ({ id: `pkg:user:${row.owner?.subject ?? "?"}:${row.name}`, kind: "package", depth: 2, label: row.name, ...row })),
             ]
             : []),
         // The worker registry is a hard-gated admin read; hide the section
@@ -3805,7 +3825,10 @@ export function selectAdminConsole(state) {
     const detail = pkgState.detail || null;
     let packageDetail = null;
     if (pkgState.selectedName) {
-        const summary = pkgList.find((pkg) => pkg.name === pkgState.selectedName) || null;
+        const sameName = pkgList.filter((pkg) => pkg.name === pkgState.selectedName);
+        const summary = (pkgState.selectedSelector?.scope
+            ? sameName.find((pkg) => packageCopyKey(pkg.name, pkg.scope, pkg.owner) === selectedCopyKey)
+            : sameName[0]) ?? sameName[0] ?? null;
         const activeVersion = detail?.versions?.find((v) => v.versionId === detail.activeVersionId) || null;
         const manifest = activeVersion?.manifest || summary?.active?.manifest || {};
         // Workers are ephemeral pods: rows for retired pod names linger until
@@ -3819,9 +3842,22 @@ export function selectAdminConsole(state) {
                 return !Number.isNaN(at.getTime()) && at.getTime() >= liveCutoff;
             });
         const fleetTotal = workerRows.length;
+        // Workers report installed state by bare name — except when two
+        // same-named copies are installed at once, where each row gets a
+        // qualified key (name#scope[:owner8]) so the collision stays visible.
+        // Read whichever key this copy answers to.
+        const installedRowFor = (worker) => {
+            const installed = worker.installed || {};
+            const scope = detail?.scope || summary?.scope || pkgState.selectedSelector?.scope || null;
+            const ownerSubject = (detail?.owner?.subject || summary?.owner?.subject || pkgState.selectedSelector?.owner?.subject || "");
+            const qualified = scope === "user"
+                ? `${pkgState.selectedName}#user${ownerSubject ? `:${ownerSubject.slice(0, 8)}` : ""}`
+                : `${pkgState.selectedName}#shared`;
+            return installed[qualified] ?? installed[pkgState.selectedName];
+        };
         const fleetCurrent = activeVersion
-            ? workerRows.filter((worker) => worker.installed?.[pkgState.selectedName]?.semver === activeVersion.semver
-                && worker.installed?.[pkgState.selectedName]?.status === "ok").length
+            ? workerRows.filter((worker) => installedRowFor(worker)?.semver === activeVersion.semver
+                && installedRowFor(worker)?.status === "ok").length
             : 0;
         const canManage = detail ? ownsPackage(detail) : (summary ? ownsPackage(summary) : false);
         packageDetail = {
@@ -3856,6 +3892,12 @@ export function selectAdminConsole(state) {
                 : null,
             actionPending: pkgState.action?.pending || null,
             actionError: pkgState.action?.error || null,
+            // Which same-named copies exist, for the republish affordance and
+            // the shadowing note. Counterparts the caller can SEE only —
+            // exactly what the list already enforces.
+            hasSharedCounterpart: sameName.some((pkg) => pkg.scope === "shared"),
+            hasOwnUserCounterpart: sameName.some((pkg) => pkg.scope !== "shared" && isMinePackage(pkg)),
+            copyCount: sameName.length,
         };
     }
 

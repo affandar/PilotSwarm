@@ -1,5 +1,60 @@
 # Changelog
 
+## 0.5.39 — 2026-08-13
+
+Agent packages become safe to shadow. One package name can exist as a shared
+release and a per-user copy at the same time, and every surface — worker
+sessions, the admin console, the CLI, and the MCP tools — now resolves, edits,
+and rolls back the exact copy you mean instead of guessing. Two rounds of
+adversarial review hardened the new paths against cross-tenant leaks and blob
+loss. The release also fixes a mobile navigation bug and bounds the diagnostics
+split, and ships green across the baseline and HorizonDB all-providers matrix.
+
+### Added
+
+- **A copy selector across the whole package lifecycle.** `{scope, owner}`
+  flows through the protocol, transports, admin console, CLI, and MCP tools, so
+  pin/rollback, enable/disable, delete, and file/tree reads target the intended
+  copy rather than falling back to "own copy, then shared". The owner override
+  is admin-only, so a non-admin can never probe another user's private package.
+
+- **`republishAgentPackageVersion`.** Publishes an existing version's exact
+  bytes into the same-named package in the other scope — the update path a
+  promote cannot express, since promote only moves a row to an unused name. The
+  console gains "Publish to shared" and "Copy to my user scope".
+
+### Changed
+
+- **Workers bind each session to its resolved package copy.** Prompts, tool
+  handlers, MCP grants, and skills all follow the one copy a session's owner
+  resolves to, replacing name-keyed maps that could serve one copy's prompt
+  alongside another copy's tools. A single shared resolver now carries the
+  privacy and shadowing rules into the spawn/create control bridge as well as
+  the tuner activity.
+
+### Fixed
+
+- **The mobile sessions button no longer opens diagnostics.** On a phone the
+  Main (sessions) button focuses the chat, which normalizes to the inspector
+  because a phone has no chat focus slot; the follow-focus effect then read that
+  as "open diagnostics". Focus now carries its raw intent, so only a genuine
+  inspector or activity focus switches the pane.
+
+- **Fail-closed package privacy.** A private user copy is never served as a
+  fallback to another owner's session; a package agent reads only its own
+  copy's MCP grants and composes only its own package's private skills; and the
+  publish warning no longer enumerates other users' private packages.
+
+- **Publish targets the right scope, and deletes are blob-safe.** Publishing to
+  shared while owning a same-named user copy no longer silently no-ops, and
+  staging-cleared and no-op results are announced explicitly. Content-addressed
+  blobs shared by same-bytes copies survive deleting one copy: migration 0046
+  returns only genuinely orphaned blobs, so a delete can no longer strand a
+  sibling copy fleet-wide.
+
+- **Diagnostics split bounds.** The desktop diagnostics column split adjuster is
+  clamped to valid bounds when dragged or nudged by keyboard.
+
 ## 0.5.38 — 2026-08-11
 
 Canvas grows from one root-only surface into a small session workspace: every

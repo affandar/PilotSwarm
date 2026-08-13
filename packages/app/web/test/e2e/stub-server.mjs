@@ -78,6 +78,7 @@ const makeSessions = (count, groupMembers = {}, parents = {}) => Array.from({ le
     model: "github-copilot:claude-sonnet-5",
     agentId: null,
     isSystem: false,
+    owner: { provider: "none", subject: "test", email: "test@example.com", displayName: "Test User" },
     parentSessionId: parents[i] == null ? null : `1111111${parents[i]}-2222-3333-4444-55555555555${parents[i]}`,
     createdAt: 1785000000000,
     updatedAt: 1785000000000 + i,

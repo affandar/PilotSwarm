@@ -1888,7 +1888,7 @@ body.is-resizing-pane-y iframe {
   gap: 1px 10px;
   font-size: var(--ps-font-size-dense);
   line-height: 1.35;
-  /* Height is FIXED by construction: always the same eight rows, every value
+  /* Height is FIXED by construction: always the same ten rows, every value
      clamped to one line. Nothing about the selection can change it, so the
      list never shifts under the cursor while scrolling. */
   align-content: start;

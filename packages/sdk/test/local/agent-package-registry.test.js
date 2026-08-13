@@ -160,6 +160,38 @@ describe("agent-package registry", () => {
         }
     });
 
+    it("delete returns only ORPHANED blobs — a same-bytes sibling keeps its file (0046)", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const catalog = await createCatalog(env);
+        try {
+            const name = `pkg-blob-${env.runId}`;
+            // Two packages, one NAME, IDENTICAL bytes → one content-addressed
+            // blob filename (name@semver.sha) shared by both version rows.
+            const sharedSha = `sha-${name}-shared`;
+            const userVer = await catalog.publishAgentPackage(publishInput(name, "1.0.0", {
+                sha256: sharedSha, artifactFilename: `${name}@1.0.0.shared.tar.gz`,
+            }));
+            const sharedVer = await catalog.publishAgentPackage(publishInput(name, "1.0.0", {
+                scope: "shared", isAdmin: true,
+                sha256: sharedSha, artifactFilename: `${name}@1.0.0.shared.tar.gz`,
+            }));
+            assert(userVer.packageId !== sharedVer.packageId, "two packages");
+
+            // Deleting the user copy must return ZERO filenames to clean up:
+            // the shared copy still references the one shared blob.
+            const orphanedByUserDelete = await catalog.deleteAgentPackage(name, OWNER, false, { scope: "user" });
+            assertEqual(orphanedByUserDelete.length, 0,
+                "the shared sibling still references the blob, so nothing is orphaned");
+
+            // Now deleting the last (shared) copy DOES orphan the blob.
+            const orphanedBySharedDelete = await catalog.deleteAgentPackage(name, OWNER, true, { scope: "shared" });
+            assert(orphanedBySharedDelete.includes(`${name}@1.0.0.shared.tar.gz`),
+                "the last reference gone → the blob is returned for cleanup");
+        } finally {
+            await catalog.close();
+        }
+    });
+
     it("null principals: owner-less publish is admin-only; NULL-owner packages are admin-managed", { timeout: TIMEOUT }, async () => {
         const env = await getEnv();
         const catalog = await createCatalog(env);

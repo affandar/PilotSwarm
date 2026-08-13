@@ -43,14 +43,16 @@ export function registerAgentPackageTools(server: McpServer, ctx: ServerContext)
                 name: z.string().min(1).describe("Package name"),
                 include_tree: z.boolean().optional().describe("Also return the file tree of the active (or given) version"),
                 semver: z.string().optional().describe("Version for the tree (default: active)"),
+                scope: z.enum(["shared", "user"]).optional().describe("Which same-named copy (scope shadowing): default walks your copy, then shared"),
             },
         },
-        withToolErrors(async ({ name, include_tree, semver }) => {
-            const detail = await ops.getAgentPackage({ name });
+        withToolErrors(async ({ name, include_tree, semver, scope }) => {
+            const sel = scope ? { scope } : {};
+            const detail = await ops.getAgentPackage({ name, ...sel });
             if (!detail) return errorResult(`package "${name}" not found or not visible to you`, { name });
             const result: Record<string, unknown> = { package: detail };
             if (include_tree) {
-                result.tree = await ops.getAgentPackageTree({ name, ...(semver ? { semver } : {}) });
+                result.tree = await ops.getAgentPackageTree({ name, ...(semver ? { semver } : {}), ...sel });
             }
             return jsonResult(result);
         }),
@@ -65,10 +67,11 @@ export function registerAgentPackageTools(server: McpServer, ctx: ServerContext)
                 name: z.string().min(1).describe("Package name"),
                 file_path: z.string().min(1).describe("File path inside the package (e.g. agents/triager.agent.md)"),
                 semver: z.string().optional().describe("Version (default: active)"),
+                scope: z.enum(["shared", "user"]).optional().describe("Which same-named copy (scope shadowing)"),
             },
         },
-        withToolErrors(async ({ name, file_path, semver }) => {
-            const file = await ops.getAgentPackageFile({ name, filePath: file_path, ...(semver ? { semver } : {}) });
+        withToolErrors(async ({ name, file_path, semver, scope }) => {
+            const file = await ops.getAgentPackageFile({ name, filePath: file_path, ...(semver ? { semver } : {}), ...(scope ? { scope } : {}) });
             return jsonResult(file);
         }),
     );
@@ -119,6 +122,26 @@ export function registerAgentPackageTools(server: McpServer, ctx: ServerContext)
     );
 
     server.registerTool(
+        "republish_agent_package_version",
+        {
+            title: "Republish Agent Package Version Across Scopes",
+            description:
+                "Publish an existing version's exact bytes into the same-named package in the other scope. "
+                + "THE update path for an already-published shared package: promote can only move a row to an "
+                + "unused name, this adds a version to the existing one. Creator or admin.",
+            inputSchema: {
+                name: z.string().min(1),
+                semver: z.string().optional().describe("Source version (default: the source copy's active version)"),
+                target_scope: z.enum(["shared", "user"]).describe("Destination scope; the source is the same-named package in the other scope"),
+            },
+        },
+        withToolErrors(async ({ name, semver, target_scope }) => {
+            const outcome = await ops.republishAgentPackageVersion({ name, ...(semver ? { semver } : {}), targetScope: target_scope });
+            return jsonResult(outcome);
+        }),
+    );
+
+    server.registerTool(
         "pin_agent_package_version",
         {
             title: "Pin Agent Package Version",
@@ -126,11 +149,12 @@ export function registerAgentPackageTools(server: McpServer, ctx: ServerContext)
             inputSchema: {
                 name: z.string().min(1),
                 semver: z.string().min(1),
+                scope: z.enum(["shared", "user"]).optional().describe("Which same-named copy to pin (scope shadowing): default walks your copy, then shared"),
             },
         },
-        withToolErrors(async ({ name, semver }) => {
-            await ops.pinAgentPackageVersion({ name, semver });
-            return jsonResult({ ok: true, name, active: semver });
+        withToolErrors(async ({ name, semver, scope }) => {
+            await ops.pinAgentPackageVersion({ name, semver, ...(scope ? { scope } : {}) });
+            return jsonResult({ ok: true, name, active: semver, ...(scope ? { scope } : {}) });
         }),
     );
 
@@ -142,11 +166,12 @@ export function registerAgentPackageTools(server: McpServer, ctx: ServerContext)
             inputSchema: {
                 name: z.string().min(1),
                 enabled: z.boolean(),
+                scope: z.enum(["shared", "user"]).optional().describe("Which same-named copy (scope shadowing): default walks your copy, then shared"),
             },
         },
-        withToolErrors(async ({ name, enabled }) => {
-            await ops.setAgentPackageEnabled({ name, enabled });
-            return jsonResult({ ok: true, name, enabled });
+        withToolErrors(async ({ name, enabled, scope }) => {
+            await ops.setAgentPackageEnabled({ name, enabled, ...(scope ? { scope } : {}) });
+            return jsonResult({ ok: true, name, enabled, ...(scope ? { scope } : {}) });
         }),
     );
 
@@ -158,11 +183,12 @@ export function registerAgentPackageTools(server: McpServer, ctx: ServerContext)
             inputSchema: {
                 name: z.string().min(1),
                 confirm: z.literal(true).describe("Must be true — acknowledges the deletion is permanent"),
+                scope: z.enum(["shared", "user"]).optional().describe("Which same-named copy to delete (scope shadowing). Strongly recommended when both copies exist."),
             },
         },
-        withToolErrors(async ({ name }) => {
-            await ops.deleteAgentPackage({ name });
-            return jsonResult({ ok: true, deleted: name });
+        withToolErrors(async ({ name, scope }) => {
+            await ops.deleteAgentPackage({ name, ...(scope ? { scope } : {}) });
+            return jsonResult({ ok: true, deleted: name, ...(scope ? { scope } : {}) });
         }),
     );
 }

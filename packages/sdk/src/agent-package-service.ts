@@ -148,11 +148,18 @@ export async function publishPackedAgentPackage(
     // and same-semver content changes or foreign-package publishes fail before
     // any bytes move. The publish proc re-checks all of it atomically — this
     // is purely to keep the common cases cheap and clean.
-    // isAdmin=true on this READ is deliberate: names are globally unique, so
-    // publish must see a same-named package owned by ANYONE to produce the
-    // right forbidden/conflict answer. Authorization uses opts.isAdmin below;
-    // nothing from the foreign package is returned to the caller.
-    const existing = await ctx.catalog.getAgentPackage(name, opts.owner, true);
+    // isAdmin=true on this READ is deliberate: publish must see a same-named
+    // package owned by ANYONE to produce the right forbidden/conflict answer.
+    // Authorization uses opts.isAdmin below; nothing from the foreign package
+    // is returned to the caller.
+    // The selector pins the TARGET copy. Without it, name resolution walks
+    // "own copy, then shared" — so publishing to SHARED while owning a
+    // same-named user copy dedup'd against the USER copy and reported a
+    // no-op without ever touching the shared package.
+    const existing = await ctx.catalog.getAgentPackage(name, opts.owner, true, {
+        scope: opts.scope,
+        ...(opts.scope === "user" && opts.owner ? { owner: opts.owner } : {}),
+    });
     if (existing) {
         const actorOwns = opts.isAdmin || (
             existing.owner != null && opts.owner != null
@@ -183,6 +190,58 @@ export async function publishPackedAgentPackage(
             );
         }
     }
+
+    // Agent-name overlap across ENABLED packages makes bare-name session
+    // creation ambiguous, and on workers that predate per-copy binding it can
+    // serve one package's prompt with another's tool handlers. Warn — never
+    // block: same-name copies across scopes are the supported shadowing
+    // pattern, and this read is best-effort.
+    //
+    // PRIVACY: only warn about copies the publisher can already SEE — shared
+    // packages, and their own user-scope copies. The install manifest is
+    // fleet-wide (it carries every tenant's packages), so reporting a collision
+    // with another user's private package would leak that package's existence,
+    // name, and owner identity to any publisher — an enumeration oracle. An
+    // admin publishing legitimately sees everything anyway.
+    const warnings = [...(opts.warnings ?? [])];
+    try {
+        const ourAgents = new Set(
+            (manifest.agents ?? []).map((a) => a.name).filter(Boolean),
+        );
+        if (ourAgents.size > 0) {
+            const installed = await ctx.catalog.getAgentPackagesInstallManifest();
+            for (const entry of installed) {
+                const isOwn = entry.owner?.provider === opts.owner?.provider
+                    && entry.owner?.subject === opts.owner?.subject;
+                const isSelf = entry.name === name && entry.scope === opts.scope
+                    && (entry.scope === "shared" || isOwn);
+                if (isSelf) continue;
+                // Skip copies this publisher cannot see: another user's
+                // user-scope package (unless the publisher is an admin).
+                const visible = entry.scope === "shared" || isOwn || opts.isAdmin;
+                if (!visible) continue;
+                const theirAgents = ((entry.manifest as any)?.agents ?? [])
+                    .map((a: any) => a?.name)
+                    .filter(Boolean);
+                const overlap = theirAgents.filter((n: string) => ourAgents.has(n));
+                if (overlap.length > 0) {
+                    // Only name the owner for a copy the reader already sees the
+                    // owner of (their own, or admin). Shared copies belong to
+                    // the deployment, so no owner is named.
+                    const ownerNote = entry.scope === "user" && entry.owner && (isOwn || opts.isAdmin)
+                        ? `, owner ${entry.owner.provider}:${entry.owner.subject}`
+                        : "";
+                    warnings.push({
+                        code: "AGENT_NAME_COLLISION",
+                        message: `agent name(s) ${overlap.map((n: string) => `"${n}"`).join(", ")} `
+                            + `also exist in enabled package "${entry.name}" (${entry.scope}${ownerNote}). `
+                            + `Bare-name session creation is ambiguous while both are enabled — `
+                            + `rename the agent or disable one copy.`,
+                    });
+                }
+            }
+        }
+    } catch { /* warning pass is best-effort; never blocks a publish */ }
 
     // Upload the blob first so a committed registry row never dangles. The
     // sha-suffixed filename means a same-semver race writes two DISTINCT
@@ -221,11 +280,22 @@ export async function publishPackedAgentPackage(
             sizeBytes: targz.length,
             artifactFilename,
             manifest,
-            warnings: opts.warnings ?? [],
+            warnings,
         };
     } catch (error) {
-        // Our blob is orphaned (registry rejected the row) — best-effort cleanup.
-        try { await ctx.artifactStore.deleteArtifact(artifactSessionId, artifactFilename); } catch { /* ignore */ }
+        // Clean up OUR just-uploaded blob (the registry rejected the row) — but
+        // only if no published version references it. Blob files are
+        // content-addressed (name@semver.sha), so this exact file may already
+        // back a same-bytes copy in the other scope (a republish, or another
+        // user's identical publish). Deleting a still-referenced blob would
+        // strand that copy fleet-wide. The failed publish rolled back, so any
+        // reference the registry reports now belongs to a DIFFERENT package.
+        try {
+            const refs = await ctx.catalog.countAgentPackageArtifactRefs(artifactFilename);
+            if (refs === 0) {
+                await ctx.artifactStore.deleteArtifact(artifactSessionId, artifactFilename);
+            }
+        } catch { /* best-effort cleanup; a leaked blob is harmless, a deleted shared one is not */ }
         throw error;
     }
 }
@@ -258,8 +328,9 @@ export async function deleteAgentPackageEverywhere(
     name: string,
     actor: AgentPrincipal | null,
     isAdmin: boolean,
+    selector?: import("./cms.js").AgentPackageSelector | null,
 ): Promise<void> {
-    const filenames = await ctx.catalog.deleteAgentPackage(name, actor, isAdmin);
+    const filenames = await ctx.catalog.deleteAgentPackage(name, actor, isAdmin, selector);
     const artifactSessionId = agentPackagesArtifactSessionId();
     for (const filename of filenames) {
         try {

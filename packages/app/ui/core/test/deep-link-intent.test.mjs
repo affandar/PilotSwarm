@@ -36,6 +36,24 @@ test("pending intent survives sessions/loaded without the target and blocks fall
     assert.equal(state.sessions.activeSessionId, null);
 });
 
+test("resolving a delayed deep-link target restores its visible row highlight", () => {
+    let state = authedState();
+    state = appReducer(state, { type: "sessions/navigationIntent", sessionId: "target" });
+    state = appReducer(state, { type: "sessions/listDeselect" });
+    state = appReducer(state, {
+        type: "sessions/loaded",
+        sessions: [
+            { sessionId: "mine", title: "Mine", status: "idle", owner: ME },
+            { sessionId: "target", title: "Target", status: "idle", owner: ME },
+        ],
+    });
+
+    assert.deepEqual(selectNavigationIntent(state), { sessionId: "target", status: "resolved" });
+    assert.equal(state.sessions.activeSessionId, "target");
+    assert.equal(state.sessions.listDeselected, false);
+    assert.equal(selectSessionRows(state).find((row) => row.sessionId === "target")?.active, true);
+});
+
 test("pending intent survives profileSettings/apply first-apply and then resolves onto the target", () => {
     let state = authedState();
     state = appReducer(state, { type: "sessions/navigationIntent", sessionId: "target" });
@@ -212,11 +230,16 @@ test("setNavigationIntent latches onto an already-loaded session away from the d
     await controller.start({});
     assert.equal(store.getState().sessions.activeSessionId, "s1");
 
+    store.dispatch({ type: "sessions/listDeselect" });
+    assert.equal(store.getState().sessions.listDeselected, true);
+
     controller.setNavigationIntent("s2");
     await controller.stop();
 
     const state = store.getState();
     assert.equal(state.sessions.activeSessionId, "s2");
+    assert.equal(state.sessions.listDeselected, false);
+    assert.equal(selectSessionRows(state).find((row) => row.sessionId === "s2")?.active, true);
     assert.deepEqual(selectNavigationIntent(state), { sessionId: "s2", status: "resolved" });
 });
 

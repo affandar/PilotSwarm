@@ -24,6 +24,8 @@ import { fetchAgentPackageTarGz } from "./agent-package-service.js";
 const META_FILENAME = ".pilotswarm-meta.json";
 
 export interface InstalledAgentPackage {
+    /** Registry row identity — stable across versions, unique across scopes/owners. */
+    packageId: string;
     name: string;
     semver: string;
     sha256: string;
@@ -100,6 +102,7 @@ export async function installAgentPackages(opts: {
     for (const entry of manifest) {
         const dir = path.join(opts.cacheDir, cacheDirNameFor(entry));
         const installed: InstalledAgentPackage = {
+            packageId: entry.packageId,
             name: entry.name,
             semver: entry.semver,
             sha256: entry.sha256,

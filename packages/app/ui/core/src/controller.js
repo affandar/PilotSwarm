@@ -51,6 +51,22 @@ import {
 import { findArtifactEntry } from "./state.js";
 import { getTheme, listThemes } from "./themes/index.js";
 
+/**
+ * The copy selector for a package LIST row: which same-named copy it is.
+ * Scope shadowing means one name can be a shared package AND a user copy at
+ * once; the row's scope (+ owner, for admins looking at someone else's user
+ * copy) is what disambiguates every read and action on it.
+ */
+export function packageRowSelector(row) {
+    if (!row) return null;
+    return {
+        ...(row.scope === "shared" || row.scope === "user" ? { scope: row.scope } : {}),
+        ...(row.scope === "user" && row.owner?.provider && row.owner?.subject
+            ? { owner: { provider: row.owner.provider, subject: row.owner.subject } }
+            : {}),
+    };
+}
+
 const ORCHESTRATION_STATS_REFRESH_MS = 20_000;
 const SESSION_STATS_REFRESH_MS = 20_000;
 const FLEET_STATS_REFRESH_MS = 30_000;
@@ -3062,27 +3078,39 @@ export class PilotSwarmUiController {
         }
     }
 
-    /** Select a package: loads its detail and workspace tree. */
-    async selectAdminPackage(name) {
-        this.dispatch({ type: "admin/packages/select", name });
+    /**
+     * Select a package: loads its detail and workspace tree.
+     *
+     * `selector` = { scope, owner? } from the clicked ROW. One name can be
+     * two packages at once (scope shadowing: a shared copy plus a user
+     * copy), and without the selector every read here resolved "own copy
+     * first" — both rows showed the same history, and actions could land on
+     * the copy the user was not looking at.
+     */
+    async selectAdminPackage(name, selector = null) {
+        this.dispatch({ type: "admin/packages/select", name, selector });
         if (!name) return;
+        // Selection token minted by the reducer just now; every response from
+        // this selection carries it so a slow response for another COPY of
+        // the same name (scope shadowing) can never land on this one.
+        const seq = this.getState().admin?.packages?.selectionSeq ?? 0;
         await Promise.all([
             (async () => {
                 try {
-                    const detail = await this.transport.getAgentPackage(name);
+                    const detail = await this.transport.getAgentPackage(name, selector);
                     if (!detail) throw new Error(`package "${name}" not found`);
-                    this.dispatch({ type: "admin/packages/detail/loaded", name, detail });
+                    this.dispatch({ type: "admin/packages/detail/loaded", name, seq, detail });
                 } catch (error) {
-                    this.dispatch({ type: "admin/packages/detail/loadFailed", name, error: error?.message || String(error) });
+                    this.dispatch({ type: "admin/packages/detail/loadFailed", name, seq, error: error?.message || String(error) });
                 }
             })(),
             (async () => {
                 try {
-                    const tree = await this.transport.getAgentPackageTree(name);
+                    const tree = await this.transport.getAgentPackageTree(name, null, selector);
                     // A slower tree for a PREVIOUS selection must not clobber
                     // the current package's workspace (stale-response race).
-                    if (this.getState().admin?.packages?.selectedName !== name) return;
-                    this.dispatch({ type: "admin/packages/tree/loaded", name, tree });
+                    if ((this.getState().admin?.packages?.selectionSeq ?? 0) !== seq) return;
+                    this.dispatch({ type: "admin/packages/tree/loaded", name, seq, tree });
                     // The package's own CHANGELOG, when it ships one. Loaded
                     // alongside the tree rather than on demand because it is
                     // the first thing a reviewer wants: what changed, why, and
@@ -3091,11 +3119,12 @@ export class PilotSwarmUiController {
                     if (hasChangelog && typeof this.transport.getAgentPackageFile === "function") {
                         void (async () => {
                             try {
-                                const file = await this.transport.getAgentPackageFile(name, null, "CHANGELOG.md");
-                                if (this.getState().admin?.packages?.selectedName !== name) return;
+                                const file = await this.transport.getAgentPackageFile(name, null, "CHANGELOG.md", selector);
+                                if ((this.getState().admin?.packages?.selectionSeq ?? 0) !== seq) return;
                                 this.dispatch({
                                     type: "admin/packages/changelog/loaded",
                                     name,
+                                    seq,
                                     content: typeof file === "string" ? file : (file?.content ?? file?.text ?? ""),
                                 });
                             } catch {
@@ -3104,13 +3133,13 @@ export class PilotSwarmUiController {
                             }
                         })();
                     } else {
-                        this.dispatch({ type: "admin/packages/changelog/loaded", name, content: null });
+                        this.dispatch({ type: "admin/packages/changelog/loaded", name, seq, content: null });
                     }
                     // Default preview: plugin.json (always present in a valid package).
                     const first = tree?.files?.find((f) => f.path === "plugin.json") ?? tree?.files?.[0];
                     if (first) void this.selectAdminPackageFile(first.path);
                 } catch (error) {
-                    this.dispatch({ type: "admin/packages/tree/loadFailed", name, error: error?.message || String(error) });
+                    this.dispatch({ type: "admin/packages/tree/loadFailed", name, seq, error: error?.message || String(error) });
                 }
             })(),
         ]);
@@ -3121,14 +3150,22 @@ export class PilotSwarmUiController {
         const pkgs = this.getState().admin?.packages;
         if (!pkgs?.list?.length) return;
         // Same shared→user projection the settings tree renders, so j/k walks
-        // the list in VISUAL order regardless of transport ordering.
-        const names = [
+        // the list in VISUAL order regardless of transport ordering. Rows are
+        // COPIES, not names: a shadowed name appears once per scope.
+        const rows = [
             ...pkgs.list.filter((p) => p.scope === "shared"),
             ...pkgs.list.filter((p) => p.scope !== "shared"),
-        ].map((p) => p.name);
-        const index = names.indexOf(pkgs.selectedName);
-        const next = names[Math.min(names.length - 1, Math.max(0, (index < 0 ? (delta > 0 ? -1 : 0) : index) + delta))];
-        if (next && next !== pkgs.selectedName) await this.selectAdminPackage(next);
+        ];
+        const keyOf = (row) => `${row.name}\u0001${row.scope ?? ""}\u0001${row.owner?.subject ?? ""}`;
+        const selectedKey = pkgs.selectedName
+            ? `${pkgs.selectedName}\u0001${pkgs.selectedSelector?.scope ?? ""}\u0001${pkgs.selectedSelector?.owner?.subject ?? ""}`
+            : null;
+        let index = rows.findIndex((row) => keyOf(row) === selectedKey);
+        if (index < 0) index = rows.findIndex((row) => row.name === pkgs.selectedName);
+        const next = rows[Math.min(rows.length - 1, Math.max(0, (index < 0 ? (delta > 0 ? -1 : 0) : index) + delta))];
+        if (next && (next.name !== pkgs.selectedName || keyOf(next) !== selectedKey)) {
+            await this.selectAdminPackage(next.name, packageRowSelector(next));
+        }
     }
 
     toggleAdminPackageDir(dir) {
@@ -3139,12 +3176,17 @@ export class PilotSwarmUiController {
         const pkgs = this.getState().admin?.packages;
         const name = pkgs?.selectedName;
         if (!name || !filePath) return;
+        // Tag the preview with the current selection token so a slow file for
+        // one copy can't render under another copy of the same name (their
+        // file paths are identical — both ship plugin.json).
+        const seq = pkgs?.selectionSeq ?? 0;
+        const selector = pkgs?.selectedSelector ?? null;
         this.dispatch({ type: "admin/packages/file/loading", path: filePath });
         try {
-            const file = await this.transport.getAgentPackageFile(name, null, filePath);
-            this.dispatch({ type: "admin/packages/file/loaded", file });
+            const file = await this.transport.getAgentPackageFile(name, null, filePath, selector);
+            this.dispatch({ type: "admin/packages/file/loaded", seq, file });
         } catch (error) {
-            this.dispatch({ type: "admin/packages/file/loadFailed", path: filePath, error: error?.message || String(error) });
+            this.dispatch({ type: "admin/packages/file/loadFailed", seq, path: filePath, error: error?.message || String(error) });
         }
     }
 
@@ -3157,32 +3199,53 @@ export class PilotSwarmUiController {
     async runAdminPackageAction(kind, arg = null) {
         const pkgs = this.getState().admin?.packages;
         const name = pkgs?.selectedName;
+        const selector = pkgs?.selectedSelector ?? null;
         if (!name) return;
         this.dispatch({ type: "admin/packages/action/pending", action: kind });
         try {
             switch (kind) {
                 case "promote":
-                    await this.transport.setAgentPackageScope(name, "shared");
+                    await this.transport.setAgentPackageScope(name, "shared", selector);
                     break;
                 case "demote":
-                    await this.transport.setAgentPackageScope(name, "user");
+                    await this.transport.setAgentPackageScope(name, "user", selector);
+                    break;
+                // Publish the selected copy's version (arg, default active)
+                // into the same-named package in the OTHER scope. THE update
+                // path when the shared name already exists — promote can only
+                // move a row to an unused name.
+                case "republish":
+                    await this.transport.republishAgentPackageVersion(
+                        name, arg, selector?.scope === "shared" ? "user" : "shared",
+                    );
                     break;
                 case "pin":
-                    await this.transport.pinAgentPackageVersion(name, arg);
+                    await this.transport.pinAgentPackageVersion(name, arg, selector);
                     break;
                 case "enable":
                 case "disable":
-                    await this.transport.setAgentPackageEnabled(name, kind === "enable");
+                    await this.transport.setAgentPackageEnabled(name, kind === "enable", selector);
                     break;
                 case "delete":
-                    await this.transport.deleteAgentPackage(name);
+                    await this.transport.deleteAgentPackage(name, selector);
                     break;
                 default:
                     throw new Error(`unknown package action: ${kind}`);
             }
             this.dispatch({ type: "admin/packages/action/done" });
             await this.refreshAdminAgentPackages();
-            if (kind !== "delete") await this.selectAdminPackage(name);
+            // Re-select the copy that still exists. promote/demote MOVE the row
+            // to the other scope, so the pre-action selector now points at a
+            // copy that is gone — re-selecting it would error the pane with
+            // "package not found". Every other action leaves the copy in place.
+            if (kind !== "delete") {
+                const nextSelector = kind === "promote"
+                    ? { scope: "shared", ...(selector?.owner ? { owner: selector.owner } : {}) }
+                    : kind === "demote"
+                        ? { scope: "user", ...(selector?.owner ? { owner: selector.owner } : {}) }
+                        : selector;
+                await this.selectAdminPackage(name, nextSelector);
+            }
         } catch (error) {
             this.dispatch({ type: "admin/packages/action/failed", error: error?.message || String(error) });
         }
@@ -7225,7 +7288,14 @@ export class PilotSwarmUiController {
     }
 
     setFocus(focusRegion) {
-        this.dispatch({ type: "ui/focus", focusRegion: normalizeFocusRegion(focusRegion, this.getCurrentLayout()) });
+        // Carry the raw request alongside the normalized region: on a phone a
+        // workspace region (sessions/chat) normalizes to inspector, and the
+        // mobile follow-focus effect must not read that as "open diagnostics".
+        this.dispatch({
+            type: "ui/focus",
+            focusRegion: normalizeFocusRegion(focusRegion, this.getCurrentLayout()),
+            requestedFocusRegion: focusRegion,
+        });
     }
 
     focusNext() {

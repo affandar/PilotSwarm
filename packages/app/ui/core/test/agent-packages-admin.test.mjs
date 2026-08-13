@@ -407,11 +407,11 @@ test("admin settings tree groups packages by scope with badges and counts", () =
     // "Other users" instead of cluttering her own section.
     assert.equal(user.count, 0, "alice owns no user-scope packages");
     assert.equal(others.count, 1, "bob's private package is grouped separately");
-    const pkgRow = tree.find((r) => r.id === "pkg:incident-kit");
+    const pkgRow = tree.find((r) => r.kind === "package" && r.name === "incident-kit");
     assert.equal(pkgRow.scope, "shared");
     assert.equal(pkgRow.semver, "1.4.0");
     assert.equal(pkgRow.canManage, true, "owner manages their package");
-    const foreign = tree.find((r) => r.id === "pkg:other-kit");
+    const foreign = tree.find((r) => r.kind === "package" && r.name === "other-kit");
     assert.equal(foreign.canManage, false, "non-owner non-admin cannot manage");
     assert.equal(foreign.enabled, false);
 });
@@ -509,17 +509,19 @@ test("the owner filter hides other people's private agents, never yours or share
     // Narrowed to Alice: Bob's private package is not part of her workspace.
     // The deployment's SHARED package still is - it belongs to no one person.
     setFilter({ all: false, includeMe: true, includeShared: true, ownerKeys: [] });
-    assert.ok(!idsFor().includes("pkg:other-kit"), "bob's private package is filtered out");
-    assert.ok(idsFor().includes("pkg:incident-kit"), "a shared package is the deployment's, never filtered");
+    const namesFor = () => selectAdminConsole(store.getState()).settingsTree
+        .filter((r) => r.kind === "package").map((r) => r.name);
+    assert.ok(!namesFor().includes("other-kit"), "bob's private package is filtered out");
+    assert.ok(namesFor().includes("incident-kit"), "a shared package is the deployment's, never filtered");
     assert.equal(idsFor().includes("group:others"), false, "the Other users group goes with it");
 
     // Asking for Bob brings his back - that is what the filter means.
     setFilter({ all: false, includeMe: true, includeShared: true, ownerKeys: [ownerKey("bob")] });
-    assert.ok(idsFor().includes("pkg:other-kit"), "asking for bob shows bob's package");
+    assert.ok(namesFor().includes("other-kit"), "asking for bob shows bob's package");
 
     // `all` is the unfiltered view.
     setFilter({ all: true });
-    assert.ok(idsFor().includes("pkg:other-kit"));
+    assert.ok(namesFor().includes("other-kit"));
 });
 
 test("user-scope packages carry the owner's initials; shared ones keep the scope badge", () => {
@@ -551,9 +553,10 @@ test("user-scope packages carry the owner's initials; shared ones keep the scope
     store.dispatch({ type: "sessions/ownerFilter", filter: { all: true } });
 
     const tree = selectAdminConsole(store.getState()).settingsTree;
-    const shared = tree.find((row) => row.id === "pkg:incident-kit");
-    const bobs = tree.find((row) => row.id === "pkg:other-kit");
-    const carols = tree.find((row) => row.id === "pkg:third-kit");
+    const byName = (name) => tree.find((row) => row.kind === "package" && row.name === name);
+    const shared = byName("incident-kit");
+    const bobs = byName("other-kit");
+    const carols = byName("third-kit");
 
     // Initials come from the createdBy email when no richer identity exists,
     // and are UPPERCASE — they render as a monogram avatar.

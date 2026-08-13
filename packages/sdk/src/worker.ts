@@ -1,4 +1,4 @@
-import { SessionManager } from "./session-manager.js";
+import { SessionManager, packageAgentKey, agentOwnerKey } from "./session-manager.js";
 import { SessionBlobStore, createSessionBlobStore } from "./blob-store.js";
 import { FilesystemArtifactStore, FilesystemSessionStore, type ArtifactStore, type SessionStateStore } from "./session-store.js";
 import { registerActivities } from "./session-proxy.js";
@@ -154,6 +154,8 @@ export class PilotSwarmWorker {
     private _loadedSkillDirs: string[] = [];
     /** Loaded skills by name for agent-declared eager prompt injection. */
     private _loadedSkills = new Map<string, Skill>();
+    /** Every loaded skill with provenance intact — the name-keyed map above collapses duplicates. */
+    private _loadedSkillsAll: Skill[] = [];
     /** Raw loaded user-creatable agent configs from plugins + direct config. */
     private _rawLoadedAgents: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; namespace?: string; crawler?: boolean; harvester?: boolean; promptLayerKind?: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" }> = [];
     /** Optional PilotSwarm-bundled user agents, loaded only when session policy opts in. */
@@ -207,7 +209,7 @@ export class PilotSwarmWorker {
      * Installed-package dir → owning scope/owner, for agents loaded from
      * agent packages. Empty for plugin dirs the deployment configured itself.
      */
-    private _packageDirOwners = new Map<string, { scope: "shared" | "user"; owner: { provider: string; subject: string } | null }>();
+    private _packageDirOwners = new Map<string, { packageId: string; scope: "shared" | "user"; owner: { provider: string; subject: string } | null }>();
     /** Agent-package dynamic install state (docs/proposals/agent-packages.md). */
     private _agentPackagesCacheDir: string | null = null;
     private _agentPackagesRefreshMs = 20_000;
@@ -216,6 +218,8 @@ export class PilotSwarmWorker {
     private _agentPackagesRefreshing = false;
     /** Tools contributed by installed packages, merged under static tools. */
     private _agentPackageTools = new Map<string, Tool<any>>();
+    /** Per-package tool maps — lets a session prefer ITS package's handler on a name collision. */
+    private _agentPackageToolsByPackage = new Map<string, Map<string, Tool<any>>>();
     /** Last install report — carried in the registry heartbeat's state. */
     private _agentPackagesInstalled: Record<string, { semver: string; sha256: string; status: string; error?: string }> = {};
     /** Worker-registry lifecycle phase (docs/proposals/worker-registry.md). */
@@ -360,7 +364,10 @@ export class PilotSwarmWorker {
     private _pushMergedToolRegistry(): void {
         const merged = new Map<string, Tool<any>>(this._agentPackageTools);
         for (const [name, tool] of this.toolRegistry) merged.set(name, tool);
-        this.sessionManager.setToolRegistry(merged);
+        this.sessionManager.setToolRegistry(merged, {
+            byPackage: this._agentPackageToolsByPackage,
+            staticNames: new Set(this.toolRegistry.keys()),
+        });
     }
 
     /** Store full config (with tools/hooks) for a session. */
@@ -958,6 +965,7 @@ export class PilotSwarmWorker {
     private _resetLoadedPluginState(): void {
         this._loadedSkillDirs.length = 0;
         this._loadedSkills.clear();
+        this._loadedSkillsAll.length = 0;
         this._rawLoadedAgents.length = 0;
         this._loadedAgents.length = 0;
         this._loadedSystemAgents.length = 0;
@@ -1007,12 +1015,25 @@ export class PilotSwarmWorker {
             // Import worker modules BEFORE the swap; an import failure
             // quarantines the whole package (prompts included) so a package
             // never half-loads.
+            //
+            // Two registries on purpose. The flat map keeps the historical
+            // "any session can name any tool" behavior, but two enabled
+            // packages may ship the SAME tool name (scope shadowing publishes
+            // a private copy next to the shared one) — there the flat map has
+            // one arbitrary winner. The per-package map lets tool resolution
+            // hand each session the handler from the copy its agent bound to.
             const packageTools = new Map<string, Tool<any>>();
+            const packageToolsByPackage = new Map<string, Map<string, Tool<any>>>();
             for (const pkg of result.packages) {
                 if (pkg.status !== "ok" || !pkg.workerModulePath) continue;
                 try {
                     const tools = await loadAgentPackageTools(pkg, { workerNodeId: this.config.workerNodeId });
-                    for (const tool of tools) packageTools.set((tool as any).name, tool);
+                    const ownMap = new Map<string, Tool<any>>();
+                    for (const tool of tools) {
+                        packageTools.set((tool as any).name, tool);
+                        ownMap.set((tool as any).name, tool);
+                    }
+                    if (ownMap.size > 0) packageToolsByPackage.set(pkg.packageId, ownMap);
                 } catch (error: any) {
                     pkg.status = "error";
                     pkg.error = `worker-module import failed: ${String(error?.message ?? error)}`;
@@ -1028,10 +1049,15 @@ export class PilotSwarmWorker {
             // knowing who owns it at resolution time. Without this map the
             // provenance is lost the moment a package becomes "just another
             // plugin dir", and every loaded agent looks equally public.
+            // Key by the RESOLVED absolute dir: _loadPluginDir looks provenance
+            // up with path.resolve(pluginDir), so an unresolved key here would
+            // miss whenever the cache dir is relative — silently demoting every
+            // package agent to a deployment agent and disabling fail-closed
+            // privacy, MCP qualification, and skill scoping all at once.
             this._packageDirOwners = new Map(
                 result.packages
                     .filter((p) => p.status === "ok")
-                    .map((p) => [p.dir, { scope: p.scope, owner: p.owner }]),
+                    .map((p) => [path.resolve(p.dir), { packageId: p.packageId, scope: p.scope, owner: p.owner }]),
             );
 
             // Synchronous swap — no await between reset and reload, so no
@@ -1040,11 +1066,22 @@ export class PilotSwarmWorker {
             this.config.pluginDirs = [...this._basePluginDirs, ...okDirs];
             this._loadPlugins();
             this._agentPackageTools = packageTools;
+            this._agentPackageToolsByPackage = packageToolsByPackage;
             this._pushMergedToolRegistry();
 
             this._agentPackagesEpoch = result.epoch;
+            // Heartbeat state keys by name for the common case, but two
+            // packages CAN share a name (scope shadowing). Collapsing those
+            // to one row hid exactly the collision an operator needs to see —
+            // duplicated names get a qualified key instead.
+            const installedNameCounts = new Map<string, number>();
+            for (const p of result.packages) {
+                installedNameCounts.set(p.name, (installedNameCounts.get(p.name) ?? 0) + 1);
+            }
             this._agentPackagesInstalled = Object.fromEntries(result.packages.map((p) => [
-                p.name,
+                (installedNameCounts.get(p.name) ?? 0) > 1
+                    ? `${p.name}#${p.scope}${p.scope === "user" && p.owner ? `:${p.owner.subject.slice(0, 8)}` : ""}`
+                    : p.name,
                 { semver: p.semver, sha256: p.sha256, status: p.status, ...(p.error ? { error: p.error } : {}) },
             ]));
             const failed = result.packages.filter((p) => p.status === "error");
@@ -1196,13 +1233,16 @@ export class PilotSwarmWorker {
         if (this.config.skillDirectories?.length) {
             for (const skillsDir of this.config.skillDirectories) {
                 this._loadedSkillDirs.push(skillsDir);
-                for (const skill of loadSkillsSync(skillsDir)) this._loadedSkills.set(skill.name, skill);
+                for (const skill of loadSkillsSync(skillsDir)) {
+                    this._loadedSkills.set(skill.name, skill);
+                    this._loadedSkillsAll.push(skill);
+                }
             }
         }
         if (this.config.customAgents?.length) {
             for (const agent of this.config.customAgents) {
-                this._rawLoadedAgents.push({ ...agent, promptLayerKind: "app-agent" });
                 const descriptor = this._buildLayerDescriptor(agent as any, "app", "inline");
+                this._rawLoadedAgents.push({ ...agent, promptLayerKind: "app-agent", layerDescriptor: descriptor } as any);
                 this._agentPromptLookup[agent.name] = {
                     prompt: agent.prompt,
                     kind: "app-agent",
@@ -1221,6 +1261,7 @@ export class PilotSwarmWorker {
             this.config.systemMessage,
         ]) ?? null;
         this._applyDeclaredAgentSkills();
+        this._finalizeAgentPromptLookup();
         this._resolveAgentMcpServers();
         // IN PLACE: SessionManager holds this exact array as
         // workerDefaults.customAgents — reassigning would strand it on the
@@ -1231,14 +1272,24 @@ export class PilotSwarmWorker {
             // resolved server map (and drop the inherit flag) so the SDK's
             // CustomAgentConfig.mcpServers receives real server configs.
             const { mcpServers: _refs, inheritDefaultMcpServers: _inherit, ...rest } = agent;
+            const mcpKey = (agent as any).packageId
+                ? packageAgentKey((agent as any).packageId, agent.name)
+                : agent.name;
             return {
                 ...rest,
+                // The agent's OWN prompt (skills already composed in), never
+                // the name-keyed lookup: with scope shadowing two copies share
+                // the name and the lookup would hand every copy the default's.
                 prompt: composeSystemPrompt({
                     frameworkBase: this._frameworkBasePrompt,
                     appDefault: this._appDefaultPrompt,
-                    activeAgentPrompt: this._agentPromptLookup[agent.name]?.prompt ?? agent.prompt,
+                    activeAgentPrompt: agent.prompt,
                 }) ?? agent.prompt,
-                ...(this._agentMcpServers[agent.name] ? { mcpServers: this._agentMcpServers[agent.name] } : {}),
+                // mcpKey is the qualified key for a package agent, the bare
+                // name for a deployment/inline one — the only keys registered.
+                ...(this._agentMcpServers[mcpKey]
+                    ? { mcpServers: this._agentMcpServers[mcpKey] }
+                    : {}),
             };
         }));
         this._allowedAgentNamesLive.length = 0;
@@ -1355,29 +1406,134 @@ export class PilotSwarmWorker {
         // overriding earlier ones (same contract as prompt resolution), so
         // ALWAYS assign: a later definition with no MCP declarations must
         // clear a shadowed definition's grants, never inherit them.
+        //
+        // A PACKAGE agent registers ONLY under a package-qualified key, never
+        // the bare name. With scope shadowing two copies share the bare name,
+        // and a bare-name entry is last-write-wins — a session resolving one
+        // copy could read the other's grants (or a user package could strip a
+        // deployment agent's grants fleet-wide). The bare name is therefore
+        // reserved for deployment/inline agents, which have no packageId; the
+        // session-manager reads the qualified key for package copies and the
+        // bare key only for non-package agents.
         for (const agent of [...this._rawLoadedAgents, ...this._loadedSystemAgents]) {
             const resolved: Record<string, any> = {};
             if (agent.inheritDefaultMcpServers === true) {
                 Object.assign(resolved, defaults);
             }
             resolveRefs(`Agent "${agent.name}"`, agent.mcpServers, resolved);
+            const key = (agent as any).packageId
+                ? packageAgentKey((agent as any).packageId, agent.name)
+                : agent.name;
             if (Object.keys(resolved).length > 0) {
-                this._agentMcpServers[agent.name] = resolved;
+                this._agentMcpServers[key] = resolved;
             } else {
-                delete this._agentMcpServers[agent.name];
+                delete this._agentMcpServers[key];
             }
         }
     }
 
+    /**
+     * The package a loaded skill belongs to, or null for a deployment skill.
+     * Matched by directory prefix against the installed package dirs.
+     */
+    private _skillPackageOwner(skill: Skill): { scope: "shared" | "user"; owner: { provider: string; subject: string } | null } | null {
+        if (!skill.dir) return null;
+        // Resolve the skill dir once; the map keys are already resolved.
+        const skillDir = path.resolve(skill.dir);
+        for (const [dir, prov] of this._packageDirOwners) {
+            if (skillDir === dir || skillDir.startsWith(dir + path.sep)) {
+                return { scope: prov.scope, owner: prov.owner };
+            }
+        }
+        return null;
+    }
+
     private _applyDeclaredAgentSkills(): void {
-        const skills = [...this._loadedSkills.values()];
         for (const agent of [...this._rawLoadedAgents, ...this._loadedSystemAgents]) {
             if (!agent.skills?.length) continue;
-            const composed = composeDeclaredSkillsPrompt(agent.prompt, agent.skills, skills);
-            const existing = this._agentPromptLookup[agent.name];
-            if (existing) existing.prompt = composed.prompt;
+            // Resolved to match _packageDirOwners keys (see _skillPackageOwner).
+            const ownDir = (agent as any).packageDir
+                ? path.resolve((agent as any).packageDir as string)
+                : undefined;
+            const ownOwnerKey = agentOwnerKey((agent as any).packageOwner);
+            // Build THIS agent's skill pool. Deployment and shared-package
+            // skills are public by construction. A user-scope package's skills
+            // are PRIVATE to its owner — the worker holds every tenant's
+            // packages, so composing against the flat map let a package agent
+            // pull another user's private skill BODY just by declaring its
+            // name (accidentally on a name collision, or deliberately). Each
+            // agent therefore sees deployment + shared skills + only its OWN
+            // package's skills. A declared name that resolves to none becomes a
+            // normal "missing skill" warning instead of a silent cross-tenant
+            // read.
+            const pool: Skill[] = [];
+            const ownSkills: Skill[] = [];
+            for (const skill of this._loadedSkillsAll) {
+                const prov = this._skillPackageOwner(skill);
+                const skillDir = skill.dir ? path.resolve(skill.dir) : null;
+                const isOwn = Boolean(ownDir && skillDir && skillDir.startsWith(ownDir + path.sep));
+                if (isOwn) { ownSkills.push(skill); continue; }
+                if (!prov || prov.scope !== "user") { pool.push(skill); continue; }
+                // Foreign user-scope skill: include only if same owner (another
+                // copy the same person owns); otherwise exclude.
+                if (ownOwnerKey && agentOwnerKey(prov.owner) === ownOwnerKey) pool.push(skill);
+            }
+            // Own-package skills go LAST so they win a name collision with a
+            // shared/deployment skill (composeDeclaredSkillsPrompt is last-wins).
+            const composed = composeDeclaredSkillsPrompt(agent.prompt, agent.skills, [...pool, ...ownSkills]);
+            // Compose onto the agent itself: each copy of a shadowed name
+            // keeps its own composed prompt instead of fighting over one
+            // name-keyed lookup entry.
+            agent.prompt = composed.prompt;
             for (const missing of composed.missing) {
                 console.warn(`[PilotSwarmWorker] Agent ${agent.name} declares missing skill ${JSON.stringify(missing)}; available skill directories did not provide it.`);
+            }
+        }
+    }
+
+    /**
+     * Rebuild the by-name agent lookup after everything is loaded and skills
+     * are composed.
+     *
+     * With agent-package scope shadowing one NAME can be served by several
+     * enabled packages at once. The incremental per-dir writes above are
+     * last-wins — load order decided which copy every session got, and one
+     * user's private copy could silently replace the shared prompt for the
+     * whole fleet. This pass makes the bare entry deterministic (deployment
+     * code beats shared package beats user package) and records every copy so
+     * session resolution can pick per session owner
+     * (`pickAgentCopyForOwner` in session-manager).
+     */
+    private _finalizeAgentPromptLookup(): void {
+        const byName = new Map<string, any[]>();
+        for (const agent of [...this._rawLoadedAgents, ...this._loadedSystemAgents]) {
+            const list = byName.get(agent.name) ?? [];
+            list.push(agent);
+            byName.set(agent.name, list);
+        }
+        const rank = (agent: any) => agent.packageId == null ? 0 : (agent.packageScope !== "user" ? 1 : 2);
+        for (const [name, agents] of byName) {
+            const winner = [...agents].sort((a, b) => rank(a) - rank(b))[0];
+            const copyOf = (agent: any) => ({
+                prompt: agent.prompt,
+                kind: agent.promptLayerKind ?? "app-agent",
+                descriptor: agent.layerDescriptor,
+                ...(agent.packageId ? {
+                    packageId: agent.packageId,
+                    packageScope: agent.packageScope ?? "shared",
+                    packageOwner: agent.packageOwner ?? null,
+                } : {}),
+            });
+            this._agentPromptLookup[name] = {
+                ...copyOf(winner),
+                ...(agents.length > 1 ? { copies: agents.map(copyOf) } : {}),
+            };
+            if (agents.length > 1) {
+                console.warn(
+                    `[PilotSwarmWorker] agent name "${name}" is served by ${agents.length} loaded copies `
+                    + `(${agents.map((a: any) => a.packageId ? `${a.packageScope ?? "shared"} package` : "deployment").join(", ")}); `
+                    + `sessions resolve their owner's copy, default is the ${winner.packageId ? `${winner.packageScope ?? "shared"} package` : "deployment"} copy`,
+                );
             }
         }
     }
@@ -1434,6 +1590,7 @@ export class PilotSwarmWorker {
             if (appAgentKeys.has(key)) continue;
             const agent = this._availableBundledAgents.get(key)!;
             const descriptor = this._buildLayerDescriptor(agent, "app", agent.namespace || "pilotswarm");
+            (agent as any).layerDescriptor = descriptor;
             this._agentPromptLookup[agent.name] = {
                 prompt: agent.prompt,
                 kind: "app-agent",
@@ -1464,7 +1621,12 @@ export class PilotSwarmWorker {
         const skillsDir = path.join(absDir, "skills");
         if (fs.existsSync(skillsDir)) {
             this._loadedSkillDirs.push(skillsDir);
-            for (const skill of loadSkillsSync(skillsDir)) this._loadedSkills.set(skill.name, skill);
+            for (const skill of loadSkillsSync(skillsDir)) {
+                this._loadedSkills.set(skill.name, skill);
+                // Keep every copy with provenance: same-named skills from two
+                // package copies must not collapse before per-agent compose.
+                this._loadedSkillsAll.push(skill);
+            }
         }
 
         // Agents — tag each with namespace
@@ -1504,6 +1666,7 @@ export class PilotSwarmWorker {
                     }
                 } else if (agent.system) {
                     agent.promptLayerKind = layer === "management" ? "pilotswarm-system-agent" : "app-system-agent";
+                    (agent as any).layerDescriptor = descriptor;
                     this._agentPromptLookup[agent.name] = {
                         prompt: agent.prompt,
                         kind: agent.promptLayerKind,
@@ -1512,6 +1675,7 @@ export class PilotSwarmWorker {
                     this._loadedSystemAgents.push(agent);
                 } else {
                     agent.promptLayerKind = "app-agent";
+                    (agent as any).layerDescriptor = descriptor;
                     this._agentPromptLookup[agent.name] = {
                         prompt: agent.prompt,
                         kind: "app-agent",
@@ -1522,9 +1686,15 @@ export class PilotSwarmWorker {
                     // user. Absent for plain plugin dirs, which are part of
                     // the deployment and public to it by construction.
                     const provenance = this._packageDirOwners.get(absDir);
+                    if (provenance) {
+                        (agent as any).packageId = provenance.packageId;
+                        (agent as any).packageDir = absDir;
+                    }
                     if (provenance && provenance.scope === "user" && provenance.owner) {
                         (agent as any).packageScope = "user";
                         (agent as any).packageOwner = provenance.owner;
+                    } else if (provenance) {
+                        (agent as any).packageScope = "shared";
                     }
                     this._rawLoadedAgents.push(agent);
                 }

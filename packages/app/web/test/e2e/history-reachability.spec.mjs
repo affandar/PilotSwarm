@@ -44,6 +44,8 @@ test("the detail box shows the full session title without changing height", asyn
     const title = await page.locator(".ps-session-detail-field.is-title .ps-session-detail-value").textContent();
     // The row above ellipsizes; the box must carry the whole name.
     expect(title).toContain("A deliberately very long session title");
+    await expect(page.locator(".ps-session-detail-field", { hasText: "Owner" }).locator(".ps-session-detail-value"))
+        .toHaveText("Test User <test@example.com>");
 
     // Height must not move as the selection does — the reason the box exists.
     const rows = page.locator(".ps-session-list-button");

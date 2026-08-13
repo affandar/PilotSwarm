@@ -651,13 +651,23 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
                     } as any,
                 );
                 await artifactStore.deleteArtifact(opts.sessionId, STAGING_ARTIFACT).catch(() => {});
+                const status = (outcome as any)?.status ?? "published";
+                const collisionWarnings = ((outcome as any)?.warnings ?? [])
+                    .filter((w: any) => w?.code === "AGENT_NAME_COLLISION")
+                    .map((w: any) => w.message);
                 return {
-                    status: (outcome as any)?.status ?? "published",
+                    status,
                     package: staged.package,
                     semver: args.semver,
                     scope: args.scope === "shared" ? "shared" : "user",
                     approvedBy: args.approved_by,
-                    note: "Published. The fleet converges on the next registry poll — verify before regenerating anything onto it.",
+                    // "noop" is not success: it means this exact semver+content
+                    // already exists in the TARGET scope — nothing changed.
+                    note: (status === "noop"
+                        ? `NO-OP: ${staged.package}@${args.semver} already exists in ${args.scope === "shared" ? "shared" : "user"} scope with identical content — nothing was published. Bump the semver if you meant to ship a change. `
+                        : "Published. The fleet converges on the next registry poll — verify before regenerating anything onto it. ")
+                        + "Staging was cleared by this publish — stage_agent_package_edit starts fresh for the next edit.",
+                    ...(collisionWarnings.length > 0 ? { warnings: collisionWarnings } : {}),
                 };
             } catch (err: any) {
                 return { error: `publish_agent_package: ${err?.message || String(err)}` };

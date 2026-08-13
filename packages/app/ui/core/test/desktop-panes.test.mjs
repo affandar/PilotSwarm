@@ -24,6 +24,7 @@ import assert from "node:assert/strict";
 import { createStore } from "../src/store.js";
 import { appReducer } from "../src/reducer.js";
 import { createInitialState, normalizeStoredDesktopPanes } from "../src/state.js";
+import { getDiagnosticsSplitAdjustBounds } from "../src/layout.js";
 import { selectCanvasView, sessionCanvasMark } from "../src/selectors.js";
 
 const store = (opts) => createStore(appReducer, createInitialState(opts));
@@ -174,6 +175,20 @@ test("a stored seam position survives a reload", () => {
 test("a non-numeric seam position degrades to the even split", () => {
     const s = createInitialState({ layoutAdjustments: { canvasPaneAdjust: "wide" } });
     assert.equal(s.ui.layout.canvasPaneAdjust, 0);
+});
+
+test("diagnostics split bounds let either vertical pane reach zero", () => {
+    const columnHeight = 728;
+    const dividerHeight = 18;
+    const bounds = getDiagnosticsSplitAdjustBounds(columnHeight, dividerHeight);
+
+    assert.deepEqual(bounds, { minAdjust: -364, maxAdjust: 346 });
+    assert.equal((columnHeight / 2) + bounds.minAdjust, 0, "Inspector track reaches zero");
+    assert.equal(
+        columnHeight - dividerHeight - ((columnHeight / 2) + bounds.maxAdjust),
+        0,
+        "Activity track reaches zero",
+    );
 });
 
 // ─── Canvas markers in the session list ──────────────────────────

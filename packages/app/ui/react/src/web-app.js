@@ -17,6 +17,7 @@ import {
     formatCompactNumber,
     formatCronTimestampForClient,
     formatHumanDurationSeconds,
+    getDiagnosticsSplitAdjustBounds,
     getPromptInputRows,
     getTheme,
     isThemeLight,
@@ -3925,6 +3926,7 @@ function SessionDetailBox({ session, childCount = 0 }) {
         // used, so the box height still cannot move with the selection.
         field("Title", session?.title, "is-title"),
         field("ID", session?.sessionId, "is-id"),
+        field("Owner", session?.owner ? formatAdminPrincipalLabel(session.owner) : null),
         field("Model", model),
         field("Context", context, percent != null && percent >= 85 ? "is-hot" : percent != null && percent >= 70 ? "is-warm" : ""),
         field("Cron", cron, session?.cronActive === true ? "is-armed" : ""),
@@ -8194,12 +8196,13 @@ function Toolbar({ controller, mobile, canvasPaneOpen = false, onToggleCanvasPan
     const leftButtons = buttonDefs.filter((d) => !RIGHT_GROUP.has(d.key)).map(withRestore);
     const rightButtons = buttonDefs.filter((d) => RIGHT_GROUP.has(d.key)).map(withRestore);
     const toolbar = React.createElement("div", { className: "ps-toolbar" },
-        // Three columns: spacer | main controls | right rail. The main group
-        // sits in the CENTER column, so it stays dead-centre in every mode —
-        // an auto margin only centres in leftover space, and the full-screen
-        // strip was shoving it sideways.
-        React.createElement("div", { className: "ps-toolbar-side is-left", "aria-hidden": "true" }),
-        React.createElement("div", { className: "ps-toolbar-actions" }, leftButtons.map(renderButton)),
+        // Three columns: left rail | main controls | right rail. Full-screen
+        // canvas uses the otherwise-empty left rail for the normal actions so
+        // they do not crowd the canvas metadata and controls across the top.
+        React.createElement("div", { className: "ps-toolbar-side is-left" },
+            canvasMaximized ? leftButtons.map(renderButton) : null),
+        React.createElement("div", { className: "ps-toolbar-actions" },
+            canvasMaximized ? null : leftButtons.map(renderButton)),
         React.createElement("div", { className: "ps-toolbar-side is-right" },
             // The portal header parks its version/status meta here, LEFT of
             // the tool buttons, and its sign-out glyph in the slot after
@@ -8749,11 +8752,11 @@ function DiagnosticsSplitResizeHandle({ controller, splitAdjust = 0 }) {
         const onMove = (event) => {
             const st = dragStateRef.current;
             if (!st) return;
-            // Clamped to the half-height each side can actually give. Without
-            // this the stored value keeps counting past the edge while the
-            // bar stops — and the pointer leads the seam by the overshoot on
-            // the way back.
-            const next = Math.max(-st.half, Math.min(st.half, st.start + (event.clientY - st.startY)));
+            // The first grid track is `50% + adjust`, while the divider takes
+            // real space between the two panes. Its bounds are asymmetric:
+            // -column/2 makes Inspector 0px; column/2-divider makes Activity
+            // 0px. Using one symmetric half-range left an 8-9px pane remnant.
+            const next = clamp(st.start + (event.clientY - st.startY), st.minAdjust, st.maxAdjust);
             controller.dispatch({ type: "ui/diagnosticsSplitAdjust", diagnosticsSplitAdjust: next });
         };
         const onUp = () => {
@@ -8781,8 +8784,15 @@ function DiagnosticsSplitResizeHandle({ controller, splitAdjust = 0 }) {
             event.preventDefault();
             capturePointerForDrag(event);
             const col = event.currentTarget.closest(".ps-workspace-column");
-            const half = Math.max(0, ((col?.getBoundingClientRect?.().height || 0) - 16) / 2);
-            dragStateRef.current = { startY: event.clientY, start: Number(splitAdjust) || 0, half };
+            const columnHeight = Math.max(0, col?.getBoundingClientRect?.().height || 0);
+            const dividerHeight = Math.max(0, event.currentTarget.getBoundingClientRect().height || 0);
+            const { minAdjust, maxAdjust } = getDiagnosticsSplitAdjustBounds(columnHeight, dividerHeight);
+            dragStateRef.current = {
+                startY: event.clientY,
+                start: clamp(Number(splitAdjust) || 0, minAdjust, maxAdjust),
+                minAdjust,
+                maxAdjust,
+            };
             setDragging(true);
             document.body.classList.add("is-resizing-pane-y");
         },
@@ -8790,9 +8800,17 @@ function DiagnosticsSplitResizeHandle({ controller, splitAdjust = 0 }) {
         onKeyDown: (event) => {
             if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
             event.preventDefault();
+            const col = event.currentTarget.closest(".ps-workspace-column");
+            const columnHeight = Math.max(0, col?.getBoundingClientRect?.().height || 0);
+            const dividerHeight = Math.max(0, event.currentTarget.getBoundingClientRect().height || 0);
+            const { minAdjust, maxAdjust } = getDiagnosticsSplitAdjustBounds(columnHeight, dividerHeight);
             controller.dispatch({
                 type: "ui/diagnosticsSplitAdjust",
-                diagnosticsSplitAdjust: (Number(splitAdjust) || 0) + (event.key === "ArrowDown" ? 16 : -16),
+                diagnosticsSplitAdjust: clamp(
+                    (Number(splitAdjust) || 0) + (event.key === "ArrowDown" ? dividerHeight : -dividerHeight),
+                    minAdjust,
+                    maxAdjust,
+                ),
             });
         },
     },
@@ -9984,7 +10002,14 @@ function AdminSettingsTree({ controller, view }) {
                     `${row.label}`, React.createElement("span", { className: "ps-admin-tree__count" }, String(row.count ?? 0)));
             }
             const onClick = row.kind === "package"
-                ? () => controller.selectAdminPackage(row.name)
+                // The selector says WHICH copy this row is — one name can be a
+                // shared package and a user copy at once (scope shadowing).
+                ? () => controller.selectAdminPackage(row.name, {
+                    scope: row.scope === "shared" ? "shared" : "user",
+                    ...(row.scope !== "shared" && row.owner?.provider && row.owner?.subject
+                        ? { owner: { provider: row.owner.provider, subject: row.owner.subject } }
+                        : {}),
+                })
                 : () => controller.setAdminSection(row.id === "agents" ? "packages" : row.id === "workers" ? "workers" : "ghcp");
             return React.createElement("button", {
                 key: row.id,
@@ -10100,8 +10125,29 @@ function AdminPackageDetailPane({ controller, view }) {
                     disabled: Boolean(pending),
                     title: `Publish a new version of ${detail.name} from a repo folder`,
                 }, "Update"),
-                React.createElement("button", { type: "button", className: "ps-mini-button", onClick: act(detail.scope === "shared" ? "demote" : "promote"), disabled: Boolean(pending) },
-                    detail.scope === "shared" ? "Demote to user" : "Promote to shared"),
+                // Promote MOVES this row to shared scope, so it only works
+                // while the shared name is free. Once a shared copy exists,
+                // the update path is republish: this version's exact bytes
+                // become a new version of the existing shared package.
+                detail.scope === "user" && detail.hasSharedCounterpart
+                    ? React.createElement("button", {
+                        type: "button",
+                        className: "ps-mini-button",
+                        onClick: act("republish", detail.activeSemver),
+                        disabled: Boolean(pending) || !detail.activeSemver,
+                        title: `Publish ${detail.name}@${detail.activeSemver ?? "?"} into the existing shared package`,
+                    }, pending === "republish" ? "Publishing…" : `Publish ${detail.activeSemver ?? ""} to shared`)
+                    : React.createElement("button", { type: "button", className: "ps-mini-button", onClick: act(detail.scope === "shared" ? "demote" : "promote"), disabled: Boolean(pending) },
+                        detail.scope === "shared" ? "Demote to user" : "Promote to shared"),
+                detail.scope === "shared" && !detail.hasOwnUserCounterpart
+                    ? React.createElement("button", {
+                        type: "button",
+                        className: "ps-mini-button",
+                        onClick: act("republish", detail.activeSemver),
+                        disabled: Boolean(pending) || !detail.activeSemver,
+                        title: "Copy the active version into your user scope as a private test bench",
+                    }, pending === "republish" ? "Copying…" : "Copy to my user scope")
+                    : null,
                 React.createElement("button", { type: "button", className: "ps-mini-button", onClick: act(detail.enabled ? "disable" : "enable"), disabled: Boolean(pending) },
                     detail.enabled ? "Disable" : "Enable"),
                 React.createElement("button", { type: "button", className: "ps-mini-button is-danger", onClick: confirmDelete, disabled: Boolean(pending) }, "Delete"))
@@ -10593,6 +10639,7 @@ export function PilotSwarmWebApp({ controller }) {
         diagnosticsPaneAdjust: rootState.ui.layout?.diagnosticsPaneAdjust ?? 0,
         diagnosticsSplitAdjust: rootState.ui.layout?.diagnosticsSplitAdjust ?? 0,
         focusRegion: rootState.ui.focusRegion,
+        requestedFocusRegion: rootState.ui.requestedFocusRegion,
         inspectorTab: rootState.ui.inspectorTab,
         filesFullscreen: Boolean(rootState.files.fullscreen),
         selectedArtifactId: rootState.files.selectedArtifactId || null,
@@ -10881,10 +10928,20 @@ export function PilotSwarmWebApp({ controller }) {
         // toolbar: the sessions-only layout's list reclaims focus, which
         // bounced the user out of Inspector the instant they tapped it.
         // Returning to Main is the Main button's job now.
-        if (mobile && (state.focusRegion === "inspector" || state.focusRegion === "activity")) {
+        //
+        // Gate on the RAW request, not the normalized region: on a phone a
+        // workspace region (sessions/chat) normalizes to inspector, so the
+        // Main button's own setFocus("chat") would otherwise land here as an
+        // "inspector" focus and yank the user into diagnostics the instant
+        // they asked for the workspace. Only a focus the caller genuinely
+        // aimed at inspector/activity switches the pane.
+        const requested = state.requestedFocusRegion;
+        if (mobile
+            && (state.focusRegion === "inspector" || state.focusRegion === "activity")
+            && (requested === "inspector" || requested === "activity")) {
             setMobilePane(state.focusRegion);
         }
-    }, [mobile, state.focusRegion]);
+    }, [mobile, state.focusRegion, state.requestedFocusRegion]);
 
     React.useEffect(() => {
         const visibleTabs = getVisibleInspectorTabs(controller);

@@ -9,6 +9,24 @@ import {
     notFoundError,
 } from "./authz.js";
 
+/**
+ * Agent-package copy selector off the wire ({scope, ownerProvider,
+ * ownerSubject}) — which same-named copy an op targets. `scopeless` drops the
+ * scope field for ops where `scope` means something else (setAgentPackageScope's
+ * TARGET). Authorization stays in the registry procs, which re-check the
+ * RESOLVED row against the actor.
+ */
+function packageSelectorParams(params, opts = {}) {
+    const scope = params?.scope === "shared" || params?.scope === "user" ? params.scope : null;
+    const provider = typeof params?.ownerProvider === "string" && params.ownerProvider.trim() ? params.ownerProvider.trim() : null;
+    const subject = typeof params?.ownerSubject === "string" && params.ownerSubject.trim() ? params.ownerSubject.trim() : null;
+    const selector = {
+        ...(!opts.scopeless && scope ? { scope } : {}),
+        ...(provider && subject ? { ownerProvider: provider, ownerSubject: subject } : {}),
+    };
+    return Object.keys(selector).length > 0 ? selector : null;
+}
+
 function normalizeParams(params) {
     return params && typeof params === "object" ? params : {};
 }
@@ -820,11 +838,11 @@ export class PortalRuntime {
             case "listAgentPackages":
                 return this.transport.listAgentPackages(owner, isAdmin);
             case "getAgentPackage":
-                return this.transport.getAgentPackage(safeParams.name, owner, isAdmin);
+                return this.transport.getAgentPackage(safeParams.name, owner, isAdmin, packageSelectorParams(safeParams));
             case "getAgentPackageTree":
-                return this.transport.getAgentPackageTree(safeParams.name, safeParams.semver ?? null, owner, isAdmin);
+                return this.transport.getAgentPackageTree(safeParams.name, safeParams.semver ?? null, owner, isAdmin, packageSelectorParams(safeParams));
             case "getAgentPackageFile":
-                return this.transport.getAgentPackageFile(safeParams.name, safeParams.semver ?? null, safeParams.filePath, owner, isAdmin);
+                return this.transport.getAgentPackageFile(safeParams.name, safeParams.semver ?? null, safeParams.filePath, owner, isAdmin, packageSelectorParams(safeParams));
             case "uploadAgentPackage":
                 return this.transport.uploadAgentPackage(safeParams.files, safeParams.scope, owner, isAdmin);
             case "listAgentWorkerState":
@@ -832,13 +850,18 @@ export class PortalRuntime {
             case "listWorkers":
                 return this.transport.listWorkers();
             case "setAgentPackageScope":
-                return this.transport.setAgentPackageScope(safeParams.name, safeParams.scope, owner, isAdmin);
+                // `scope` here is the TARGET; the copy selector carries only
+                // the optional admin owner override (source scope is derived
+                // from the direction in the transport).
+                return this.transport.setAgentPackageScope(safeParams.name, safeParams.scope, owner, isAdmin, packageSelectorParams(safeParams, { scopeless: true }));
             case "setAgentPackageEnabled":
-                return this.transport.setAgentPackageEnabled(safeParams.name, safeParams.enabled, owner, isAdmin);
+                return this.transport.setAgentPackageEnabled(safeParams.name, safeParams.enabled, owner, isAdmin, packageSelectorParams(safeParams));
             case "pinAgentPackageVersion":
-                return this.transport.pinAgentPackageVersion(safeParams.name, safeParams.semver, owner, isAdmin);
+                return this.transport.pinAgentPackageVersion(safeParams.name, safeParams.semver, owner, isAdmin, packageSelectorParams(safeParams));
             case "deleteAgentPackage":
-                return this.transport.deleteAgentPackage(safeParams.name, owner, isAdmin);
+                return this.transport.deleteAgentPackage(safeParams.name, owner, isAdmin, packageSelectorParams(safeParams));
+            case "republishAgentPackageVersion":
+                return this.transport.republishAgentPackageVersion(safeParams.name, safeParams.semver ?? null, safeParams.targetScope, owner, isAdmin);
             case "sendMessage": {
                 // Canvas actions are CREATOR-only — not shared writers, not
                 // admins. The canvas mutates: two viewers can be looking at

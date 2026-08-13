@@ -90,6 +90,84 @@ function isMissingDehydrateSnapshotError(error: unknown): boolean {
     return /Session state directory not ready during dehydrate/i.test(message);
 }
 
+/**
+ * One loadable copy of a named agent.
+ *
+ * Agent-package scope shadowing means one agent NAME can be served by several
+ * enabled packages at once (a shared copy plus per-user copies). Each copy is
+ * a distinct prompt/descriptor; which one a session gets is decided per
+ * session owner (`pickAgentCopyForOwner`), the same "own copy shadows shared"
+ * rule the registry resolver applies. Non-package (deployment plugin) agents
+ * carry no package fields.
+ */
+export interface AgentCopyEntry {
+    prompt: string;
+    kind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent";
+    descriptor?: import("./prompt-layers.js").PromptLayerDescriptor;
+    packageId?: string;
+    packageScope?: "shared" | "user";
+    packageOwner?: { provider: string; subject: string } | null;
+}
+
+/**
+ * The lookup value for one agent name: a deterministic default copy
+ * (deployment code beats shared package beats user package), plus every copy
+ * when the name is served by more than one.
+ */
+export interface AgentPromptEntry extends AgentCopyEntry {
+    copies?: AgentCopyEntry[];
+}
+
+/** Key under which a package copy's per-agent config (MCP) is registered. */
+export function packageAgentKey(packageId: string, agentName: string): string {
+    return `pkg\u0001${packageId}\u0001${agentName}`;
+}
+
+/** Owner key used to match a session owner against a package copy's owner. */
+export function agentOwnerKey(owner?: { provider?: string | null; subject?: string | null } | null): string | null {
+    return owner?.provider && owner?.subject ? `${owner.provider}\u0001${owner.subject}` : null;
+}
+
+/**
+ * Which copy of an agent name does THIS session get?
+ *
+ * Runs per turn, so enabling/disabling a copy re-resolves exactly like a
+ * republish does — live sessions follow the registry's current answer, they
+ * are not pinned to a copy.
+ *
+ * FAIL CLOSED, matching resolveAgentDefinitionForCaller: a user-scope copy is
+ * PRIVATE to its owner, and the worker holds every tenant's copies at once.
+ * The order is (1) the session owner's OWN user copy, (2) the best copy that
+ * is public by construction — a deployment agent or a shared package. A
+ * user-scope copy owned by someone ELSE is NEVER served, even when it is the
+ * only copy of the name left: returning it would leak that owner's prompt,
+ * MCP grants, and tool handlers into this session (they all follow the copy
+ * picked here). undefined means "no package overlay for this session" — the
+ * same outcome as the agent having been deleted, which is correct.
+ */
+export function pickAgentCopyForOwner(
+    entry: AgentPromptEntry | undefined,
+    ownerKey: string | null,
+): AgentCopyEntry | undefined {
+    if (!entry) return undefined;
+    const copies = entry.copies?.length ? entry.copies : [entry];
+    if (ownerKey) {
+        const own = copies.find(
+            (copy) => copy.packageScope === "user" && agentOwnerKey(copy.packageOwner) === ownerKey,
+        );
+        if (own) return own;
+    }
+    // The best PUBLIC copy, BY RANK not insertion order: a deployment agent
+    // (no packageScope) outranks a shared package, matching the worker's
+    // _finalizeAgentPromptLookup default. copies[] preserves load order, so
+    // picking by find() alone could hand back a shared package while a
+    // deployment agent of the same name exists — the two would disagree about
+    // which copy is the default. Never a foreign private copy, at any rank.
+    return copies.find((copy) => copy.packageScope == null)
+        ?? copies.find((copy) => copy.packageScope === "shared")
+        ?? undefined;
+}
+
 /** Worker-level defaults — applied to every session. */
 export interface WorkerDefaults {
     frameworkBasePrompt?: string;
@@ -99,7 +177,7 @@ export interface WorkerDefaults {
     /** Backward-compatible alias for older code paths/tests. */
     systemMessage?: string;
     /** Raw prompt lookup for named and system agents bound directly to sessions. */
-    agentPromptLookup?: Record<string, { prompt: string; kind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent"; descriptor?: import("./prompt-layers.js").PromptLayerDescriptor }>;
+    agentPromptLookup?: Record<string, AgentPromptEntry>;
     /** Descriptor for the PilotSwarm framework base layer (from system default.agent.md). */
     frameworkBaseDescriptor?: import("./prompt-layers.js").PromptLayerDescriptor;
     /** Descriptor for the app default layer (from app default.agent.md or inline config). */
@@ -139,7 +217,11 @@ export interface WorkerDefaults {
     turnInactivityTimeoutMs?: number;
 }
 
-function buildEffectivePromptLayers(workerDefaults: WorkerDefaults, config: SerializableSessionConfig): PromptLayerDescriptor[] {
+function buildEffectivePromptLayers(
+    workerDefaults: WorkerDefaults,
+    config: SerializableSessionConfig,
+    sessionOwnerKey: string | null = null,
+): PromptLayerDescriptor[] {
     const boundAgentName = config.boundAgentName;
     const layerKind = config.promptLayering?.kind ?? (boundAgentName ? "app-agent" : undefined);
     const isPilotSwarmSystemAgent = layerKind === "pilotswarm-system-agent";
@@ -147,8 +229,8 @@ function buildEffectivePromptLayers(workerDefaults: WorkerDefaults, config: Seri
     if (workerDefaults.frameworkBaseDescriptor) layers.push(workerDefaults.frameworkBaseDescriptor);
     if (!isPilotSwarmSystemAgent && workerDefaults.appDefaultDescriptor) layers.push(workerDefaults.appDefaultDescriptor);
     if (boundAgentName) {
-        const agentDescriptor = workerDefaults.agentPromptLookup?.[boundAgentName]?.descriptor;
-        if (agentDescriptor) layers.push(agentDescriptor);
+        const copy = pickAgentCopyForOwner(workerDefaults.agentPromptLookup?.[boundAgentName], sessionOwnerKey);
+        if (copy?.descriptor) layers.push(copy.descriptor);
     }
     return layers;
 }
@@ -295,6 +377,10 @@ export class SessionManager {
     private sessionConfigs = new Map<string, ManagedSessionConfig>();
     /** Worker-level tool registry — shared reference from PilotSwarmWorker. */
     private toolRegistry = new Map<string, Tool<any>>();
+    /** Per-package tool maps, so a session prefers ITS package's handler on a name collision. */
+    private packageToolRegistry: Map<string, Map<string, Tool<any>>> | null = null;
+    /** Names registered by deployment code — a package tool must never shadow these. */
+    private staticToolNames: Set<string> | null = null;
     /** Worker-level defaults for building blocks. */
     private workerDefaults: WorkerDefaults;
     /** Base directory for local session state files. */
@@ -526,9 +612,21 @@ export class SessionManager {
         };
     }
 
-    /** Set the worker-level tool registry. Called by PilotSwarmWorker. */
-    setToolRegistry(registry: Map<string, Tool<any>>): void {
+    /**
+     * Set the worker-level tool registry. Called by PilotSwarmWorker.
+     *
+     * `opts.byPackage` carries each agent package's own tool map so a session
+     * bound to a package copy resolves colliding tool names to ITS copy's
+     * handler. `opts.staticNames` marks deployment-registered tools, which win
+     * every collision (a package must not shadow deployment code).
+     */
+    setToolRegistry(
+        registry: Map<string, Tool<any>>,
+        opts?: { byPackage?: Map<string, Map<string, Tool<any>>>; staticNames?: Set<string> },
+    ): void {
         this.toolRegistry = registry;
+        this.packageToolRegistry = opts?.byPackage ?? null;
+        this.staticToolNames = opts?.staticNames ?? null;
     }
 
     /** Set the cluster facts store for always-on facts tools. */
@@ -1077,9 +1175,25 @@ export class SessionManager {
         const effectiveSerializableConfig: SerializableSessionConfig = inheritedToolNames.length > 0
             ? { ...serializableConfig, toolNames: inheritedToolNames }
             : serializableConfig;
+        // Which copy of the bound agent does this session get? Owner-aware:
+        // the session owner's own user-scope package copy shadows the shared
+        // one, the same rule the registry resolver applies at create time.
+        // Resolved once here; prompt, descriptor, MCP, and tool-handler picks
+        // below all follow the same copy so a session can never mix copies.
+        const boundAgentEntry = effectiveSerializableConfig.boundAgentName
+            ? this.workerDefaults.agentPromptLookup?.[effectiveSerializableConfig.boundAgentName]
+            : undefined;
+        // A PACKAGE agent (as opposed to a deployment/inline agent) carries a
+        // packageId on its entry or on any of its copies. This is load-bearing
+        // for MCP resolution: a package agent must never fall back to the
+        // bare-name MCP key, which another copy of a shadowed name also wrote.
+        const sessionOwnerKey = effectiveSerializableConfig.boundAgentName
+            ? await this._sessionAgentOwnerKey(sessionId)
+            : null;
+        const boundAgentCopy = pickAgentCopyForOwner(boundAgentEntry, sessionOwnerKey);
         // Resolve tools: merge per-session (setConfig) + registry (toolNames)
         const storedConfig = this.sessionConfigs.get(sessionId);
-        const resolvedTools = this._resolveTools(storedConfig, effectiveSerializableConfig);
+        const resolvedTools = this._resolveTools(storedConfig, effectiveSerializableConfig, boundAgentCopy?.packageId);
 
         const config: ManagedSessionConfig = {
             ...storedConfig,
@@ -1380,16 +1494,32 @@ export class SessionManager {
         config.tools = persistentSessionTools;
 
         // Build system message: worker base + client override
-        const systemMessage = this._buildSystemMessage(sessionId, config);
+        const systemMessage = this._buildSystemMessage(sessionId, config, sessionOwnerKey);
 
         // Per-agent MCP (capability-profiles Phase 1): a session gets the
         // base map (base-agent opt-ins + direct worker-config servers) plus
         // its bound agent's resolved server map — resolved worker-side at the
         // same chokepoint as the agent prompt. The deployment catalog is
         // never applied wholesale.
-        const boundAgentMcpServers = effectiveSerializableConfig.boundAgentName
-            ? this.workerDefaults.agentMcpServers?.[effectiveSerializableConfig.boundAgentName]
-            : undefined;
+        //
+        // Read the MCP map of the copy THIS session actually resolved to.
+        // The worker registers a package agent's MCP under a package-qualified
+        // key only, and reserves the bare name for deployment/inline agents —
+        // so the resolved copy's own packageId is the discriminator:
+        //   • package copy resolved  → its qualified key (never the bare name,
+        //     which another copy of a shadowed name could have written);
+        //   • deployment/inline copy → the bare name (its own MCP);
+        //   • no copy resolved (a foreign-private-only name) → no grants.
+        // Keying off `boundAgentCopy.packageId` rather than "is any copy a
+        // package" is load-bearing: when a deployment agent and a package
+        // share a name and this session resolved the DEPLOYMENT copy, it must
+        // still get the deployment agent's bare-key MCP, not an empty
+        // qualified lookup.
+        const boundAgentMcpServers = !effectiveSerializableConfig.boundAgentName || !boundAgentCopy
+            ? undefined
+            : boundAgentCopy.packageId
+                ? this.workerDefaults.agentMcpServers?.[packageAgentKey(boundAgentCopy.packageId, effectiveSerializableConfig.boundAgentName)]
+                : this.workerDefaults.agentMcpServers?.[effectiveSerializableConfig.boundAgentName];
         const effectiveMcpServers = {
             ...(this.workerDefaults.baseMcpServers ?? {}),
             ...(boundAgentMcpServers ?? {}),
@@ -1969,15 +2099,27 @@ export class SessionManager {
     /**
      * Resolve tools from per-session config + worker-level registry.
      * Per-session tools take precedence over registry tools with the same name.
+     *
+     * `preferredPackageId` is the package copy this session's bound agent
+     * resolved to. On a tool-name collision between two enabled packages
+     * (scope shadowing publishes the same tool name twice), the session gets
+     * ITS copy's handler instead of whichever package loaded last. Deployment
+     * (static) tools still win every collision.
      */
     private _resolveTools(
         storedConfig: ManagedSessionConfig | undefined,
         serializableConfig: SerializableSessionConfig,
+        preferredPackageId?: string | null,
     ): Tool<any>[] {
         const registryTools: Tool<any>[] = [];
+        const packageTools = preferredPackageId
+            ? this.packageToolRegistry?.get(preferredPackageId)
+            : undefined;
         if (serializableConfig.toolNames?.length) {
             for (const name of serializableConfig.toolNames) {
-                const tool = this.toolRegistry.get(name);
+                const tool = (this.staticToolNames?.has(name) ? this.toolRegistry.get(name) : undefined)
+                    ?? packageTools?.get(name)
+                    ?? this.toolRegistry.get(name);
                 if (tool) registryTools.push(tool);
             }
         }
@@ -2090,8 +2232,15 @@ export class SessionManager {
             action: async (currentContent: string) => {
                 const latest = this.sessionConfigs.get(sessionId) ?? initialConfig;
                 const runtimeContext = extractPromptContent(latest.systemMessage);
+                // Owner-aware copy pick, re-resolved here because this action
+                // runs per compose: with scope shadowing one agent name can be
+                // served by several packages, and this session must get the
+                // copy its OWNER resolves to — not whichever loaded last.
                 const activeAgentPrompt = latest.boundAgentName
-                    ? this.workerDefaults.agentPromptLookup?.[latest.boundAgentName]?.prompt
+                    ? pickAgentCopyForOwner(
+                        this.workerDefaults.agentPromptLookup?.[latest.boundAgentName],
+                        await this._sessionAgentOwnerKey(sessionId),
+                    )?.prompt
                     : undefined;
                 const overlay = mergePromptSections([
                     activeAgentPrompt,
@@ -2101,6 +2250,22 @@ export class SessionManager {
                 return mergePromptSections([currentContent, overlay]) ?? currentContent;
             },
         };
+    }
+
+    /**
+     * The session owner's identity key for agent-copy shadowing, or null when
+     * the session is ownerless/system or the owner is unreadable (fail-safe:
+     * no key means no user-scope copy applies, never the wrong one).
+     * Rides the inspect-viewer TTL cache — one CMS read per session per TTL.
+     */
+    private async _sessionAgentOwnerKey(sessionId: string): Promise<string | null> {
+        try {
+            const viewer = await this._resolveInspectViewer(sessionId);
+            if (!viewer?.provider || !viewer?.subject || viewer.isSystemPrincipal) return null;
+            return agentOwnerKey({ provider: viewer.provider, subject: viewer.subject });
+        } catch {
+            return null;
+        }
     }
 
     /**
@@ -2204,6 +2369,7 @@ export class SessionManager {
     private _buildSystemMessage(
         sessionId: string,
         config: SerializableSessionConfig,
+        sessionOwnerKey: string | null = null,
     ): SystemMessageConfig | undefined {
         const frameworkBase = this.workerDefaults.frameworkBasePrompt ?? this.workerDefaults.systemMessage;
         const boundAgentName = config.boundAgentName;
@@ -2215,7 +2381,7 @@ export class SessionManager {
             : { last_instructions: lastInstructions };
 
         const isPilotSwarmSystemAgent = layerKind === "pilotswarm-system-agent";
-        const layerManifest = buildEffectivePromptLayers(this.workerDefaults, config);
+        const layerManifest = buildEffectivePromptLayers(this.workerDefaults, config, sessionOwnerKey);
 
         return composeStructuredSystemMessage({
             frameworkBase,

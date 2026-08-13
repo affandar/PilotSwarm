@@ -244,6 +244,10 @@ Cross-session `[SESSION_MESSAGE ...]` and `[SESSION_MESSAGE_RESPONSE ...]` proto
 
 Named-agent session titles should be displayed with the user-assigned title or uniquifier first, then the agent type, then the agent/persona metadata (for example `M61 Conductor · R2D Train Watcher · Mad-Eye Moody`). Keep this ordering consistent in session rows and chat pane headers so narrow/mobile views expose the useful title first.
 
+Portal `?session=<id>` deep links are explicit navigation. The linked session must become the active, visibly highlighted Sessions row, with ancestors expanded and a transient filter exception when current filters exclude it; prior empty-space deselection must not hide the highlight.
+
+The portal diagnostics column's vertical Inspector/Activity divider must allow either pane to reach zero height so the other fully covers the column, while leaving the divider visible for restoration.
+
 System sessions render with the machinery marker `⚙` in yellow. Leave one text space after the marker in title-bearing rows/headers; the terminal renderer already gives this symbol enough visual width.
 
 System session actions are restart actions. Done prompts for `Complete & Restart`, Cancel prompts for `Terminate & Restart`, and Delete prompts for `Hard Delete & Restart`; all route through `restartSystemSession`. In the portal Sessions pane, the ordinary `Terminate` button becomes `Restart` for system sessions and opens a disposition picker with those three restart choices.

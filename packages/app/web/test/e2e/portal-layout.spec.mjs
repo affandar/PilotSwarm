@@ -99,6 +99,58 @@ test("the page never scrolls horizontally", async ({ page }) => {
     expect(overflows).toBe(false);
 });
 
+test("full-screen canvas moves the normal toolbar actions to the left rail", async ({ page }) => {
+    await openPortal(page);
+    await page.getByRole("button", { name: "Show canvas" }).click();
+    await page.getByRole("button", { name: "Full screen canvas" }).click();
+
+    await expect(page.locator(".ps-toolbar-side.is-left .ps-icon-button")).toHaveCount(4);
+    await expect(page.locator(".ps-toolbar > .ps-toolbar-actions .ps-icon-button")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Restore canvas" })).toBeVisible();
+});
+
+test("vertical diagnostics grid lets either pane fully cover the column", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await openPortal(page);
+
+    const showDiagnostics = page.getByRole("button", { name: "Show diagnostics (inspector and activity)" });
+    if (await showDiagnostics.isVisible()) await showDiagnostics.click();
+
+    const handle = page.getByRole("button", { name: "Resize the inspector and activity panes" });
+    await expect(handle).toHaveCount(1);
+    await expect(handle).toBeVisible();
+    const handlerGeometry = await handle.evaluate((element) => ({
+        columnHeight: element.closest(".ps-workspace-column")?.getBoundingClientRect().height || 0,
+        dividerHeight: element.getBoundingClientRect().height,
+    }));
+    expect(handlerGeometry.columnHeight).toBeGreaterThan(100);
+    expect(handlerGeometry.dividerHeight).toBeGreaterThan(0);
+    const column = handle.locator("xpath=../..");
+    const slots = column.locator(":scope > .ps-workspace-pane-slot");
+    await expect(slots).toHaveCount(2);
+    const applyAdjust = async (adjust) => {
+        await column.evaluate((element, value) => {
+            element.style.gridTemplateRows = `minmax(0px, calc(50% + ${value}px)) var(--ps-resizer-track, 16px) minmax(0px, 1fr)`;
+        }, adjust);
+    };
+
+    let columnBox = await column.boundingBox();
+    await applyAdjust(-(handlerGeometry.columnHeight / 2));
+    let inspectorBox = await slots.nth(0).boundingBox();
+    let activityBox = await slots.nth(1).boundingBox();
+    expect(inspectorBox.height).toBeLessThanOrEqual(1);
+    expect(activityBox.height).toBeGreaterThan(columnBox.height - 22);
+    await expect(handle).toBeVisible();
+
+    columnBox = await column.boundingBox();
+    await applyAdjust((handlerGeometry.columnHeight / 2) - handlerGeometry.dividerHeight);
+    inspectorBox = await slots.nth(0).boundingBox();
+    activityBox = await slots.nth(1).boundingBox();
+    expect(inspectorBox.height).toBeGreaterThan(columnBox.height - 22);
+    expect(activityBox.height).toBeLessThanOrEqual(1);
+    await expect(handle).toBeVisible();
+});
+
 // Every theme, because nobody clicks through twenty of them by hand — and
 // that is exactly where these regressions hide.
 // Current palettes only: light-high-contrast and friends were retired.

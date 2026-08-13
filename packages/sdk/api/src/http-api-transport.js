@@ -1,5 +1,19 @@
 import { ApiClient } from "./api-client.js";
 
+/**
+ * Flatten an agent-package copy selector into wire params.
+ * `scopeless` skips the scope field for ops whose `scope` param already
+ * means something else (setAgentPackageScope's TARGET scope).
+ */
+function selectorParams(selector, opts = {}) {
+    if (!selector || typeof selector !== "object") return {};
+    return {
+        ...(!opts.scopeless && selector.scope ? { scope: selector.scope } : {}),
+        ...(selector.owner?.provider ? { ownerProvider: selector.owner.provider } : {}),
+        ...(selector.owner?.subject ? { ownerSubject: selector.owner.subject } : {}),
+    };
+}
+
 function toIso(value) {
     return value instanceof Date ? value.toISOString() : value;
 }
@@ -75,17 +89,22 @@ export class HttpApiTransport {
     }
 
     // ── Agent packages (docs/proposals/agent-packages.md) ────────
+    // `selector` = { scope, owner: {provider, subject} } — which same-named
+    // copy the op targets (scope shadowing allows several). Optional
+    // everywhere for backward compatibility; name-only falls back to the
+    // registry's own-copy-then-shared walk.
     listAgentPackages() { return this.api.call("listAgentPackages"); }
-    getAgentPackage(name) { return this.api.call("getAgentPackage", { name }); }
-    getAgentPackageTree(name, semver) { return this.api.call("getAgentPackageTree", { name, ...(semver ? { semver } : {}) }); }
-    getAgentPackageFile(name, semver, filePath) { return this.api.call("getAgentPackageFile", { name, filePath, ...(semver ? { semver } : {}) }); }
+    getAgentPackage(name, selector) { return this.api.call("getAgentPackage", { name, ...selectorParams(selector) }); }
+    getAgentPackageTree(name, semver, selector) { return this.api.call("getAgentPackageTree", { name, ...(semver ? { semver } : {}), ...selectorParams(selector) }); }
+    getAgentPackageFile(name, semver, filePath, selector) { return this.api.call("getAgentPackageFile", { name, filePath, ...(semver ? { semver } : {}), ...selectorParams(selector) }); }
     uploadAgentPackage(files, scope) { return this.api.call("uploadAgentPackage", { files, scope }); }
     listAgentWorkerState() { return this.api.call("listAgentWorkerState"); }
     listWorkers() { return this.api.call("listWorkers"); }
-    setAgentPackageScope(name, scope) { return this.api.call("setAgentPackageScope", { name, scope }); }
-    setAgentPackageEnabled(name, enabled) { return this.api.call("setAgentPackageEnabled", { name, enabled }); }
-    pinAgentPackageVersion(name, semver) { return this.api.call("pinAgentPackageVersion", { name, semver }); }
-    deleteAgentPackage(name) { return this.api.call("deleteAgentPackage", { name }); }
+    setAgentPackageScope(name, scope, selector) { return this.api.call("setAgentPackageScope", { name, scope, ...selectorParams(selector, { scopeless: true }) }); }
+    setAgentPackageEnabled(name, enabled, selector) { return this.api.call("setAgentPackageEnabled", { name, enabled, ...selectorParams(selector) }); }
+    pinAgentPackageVersion(name, semver, selector) { return this.api.call("pinAgentPackageVersion", { name, semver, ...selectorParams(selector) }); }
+    deleteAgentPackage(name, selector) { return this.api.call("deleteAgentPackage", { name, ...selectorParams(selector) }); }
+    republishAgentPackageVersion(name, semver, targetScope) { return this.api.call("republishAgentPackageVersion", { name, semver, targetScope }); }
 
     getSessionCreationPolicy() {
         return this.bootstrap?.sessionCreationPolicy || null;

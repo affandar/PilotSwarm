@@ -57,6 +57,16 @@ export function getMaxSessionPaneHeight(totalHeight, bodyHeight) {
     return Math.max(MIN_SESSION_PANE_HEIGHT, Math.min(maxByChatMinimum, maxByWindow));
 }
 
+export function getDiagnosticsSplitAdjustBounds(columnHeight, dividerHeight) {
+    const height = Math.max(0, Number(columnHeight) || 0);
+    const divider = clamp(Math.max(0, Number(dividerHeight) || 0), 0, height);
+    const minAdjust = -(height / 2);
+    return {
+        minAdjust,
+        maxAdjust: Math.max(minAdjust, (height / 2) - divider),
+    };
+}
+
 export function computeLegacyLayout(viewport, paneAdjust = 0, promptRows = 1, sessionPaneAdjust = 0, activityPaneAdjust = 0, fullscreenPane = null) {
     const safeViewport = normalizeViewport(viewport);
     const totalWidth = safeViewport.width;

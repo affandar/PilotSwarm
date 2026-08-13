@@ -118,6 +118,105 @@ describe("agent-package portal ops", () => {
         }
     });
 
+    it("scope shadowing: selectors target the named copy; republish updates an existing shared package; publish-to-shared never no-ops against the user copy", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const transport = await makeTransport(env);
+        const NAME = "shadow-pair";
+        const files = (version) => fixtureFiles({ name: NAME, version, agentName: "shadow-analyst" });
+        try {
+            // Alice keeps a private copy AND a shared copy under ONE name.
+            const userOut = await transport.uploadAgentPackage(files("1.0.0"), "user", ALICE, false);
+            assertEqual(userOut.status, "published");
+
+            // Publishing the IDENTICAL bytes to shared must create the shared
+            // package — the old name-only pre-check resolved Alice's user copy,
+            // saw the same semver+sha there, and silently reported "noop"
+            // without ever touching shared scope.
+            const sharedOut = await transport.uploadAgentPackage(files("1.0.0"), "shared", ALICE, false);
+            assertEqual(sharedOut.status, "published", "publish-to-shared must not dedup against the user copy");
+            // Both copies now declare the same agent name — the publisher says so.
+            assert((sharedOut.warnings ?? []).some((w) => w.code === "AGENT_NAME_COLLISION"),
+                "same agent name across enabled copies must surface an AGENT_NAME_COLLISION warning");
+
+            // Republishing identical bytes into the SAME scope is still a noop.
+            const idempotent = await transport.uploadAgentPackage(files("1.0.0"), "shared", ALICE, false);
+            assertEqual(idempotent.status, "noop");
+
+            // The user copy moves ahead; the shared one stays put.
+            await transport.uploadAgentPackage(files("1.1.0"), "user", ALICE, false);
+            const userCopy = await transport.getAgentPackage(NAME, ALICE, false, { scope: "user" });
+            const sharedCopy = await transport.getAgentPackage(NAME, ALICE, false, { scope: "shared" });
+            assertEqual(userCopy.scope, "user");
+            assertEqual(sharedCopy.scope, "shared");
+            assertEqual(userCopy.versions.length, 2, "user copy has 1.0.0 + 1.1.0");
+            assertEqual(sharedCopy.versions.length, 1, "shared history is its own, not the user copy's");
+            // Bare-name resolution still walks own-copy-first for the owner.
+            const bare = await transport.getAgentPackage(NAME, ALICE, false);
+            assertEqual(bare.scope, "user");
+
+            // Promote cannot update an existing shared package — that is what
+            // republish is for.
+            let taken = null;
+            try {
+                await transport.setAgentPackageScope(NAME, "shared", ALICE, false);
+            } catch (error) { taken = error; }
+            assert(String(taken?.message).includes("AGENT_PACKAGE_NAME_TAKEN"),
+                "promote against an existing shared name must fail legibly");
+
+            // Republish: the tested user version becomes a new version of the
+            // EXISTING shared package, exact bytes.
+            const republished = await transport.republishAgentPackageVersion(NAME, "1.1.0", "shared", ALICE, false);
+            assertEqual(republished.status, "published");
+            const sharedAfter = await transport.getAgentPackage(NAME, ALICE, false, { scope: "shared" });
+            assertEqual(sharedAfter.versions.length, 2, "shared package gained 1.1.0");
+            const sharedActive = sharedAfter.versions.find((v) => v.versionId === sharedAfter.activeVersionId);
+            assertEqual(sharedActive.semver, "1.1.0");
+            // Idempotent: same bytes again → noop, not a conflict.
+            const again = await transport.republishAgentPackageVersion(NAME, "1.1.0", "shared", ALICE, false);
+            assertEqual(again.status, "noop");
+
+            // Pin with a scope selector moves the SHARED pointer and leaves
+            // the user copy alone — the console-rollback bug this fixes.
+            await transport.pinAgentPackageVersion(NAME, "1.0.0", ALICE, false, { scope: "shared" });
+            const sharedPinned = await transport.getAgentPackage(NAME, ALICE, false, { scope: "shared" });
+            const sharedPinnedActive = sharedPinned.versions.find((v) => v.versionId === sharedPinned.activeVersionId);
+            assertEqual(sharedPinnedActive.semver, "1.0.0", "shared rolled back to 1.0.0");
+            const userAfterPin = await transport.getAgentPackage(NAME, ALICE, false, { scope: "user" });
+            const userActive = userAfterPin.versions.find((v) => v.versionId === userAfterPin.activeVersionId);
+            assertEqual(userActive.semver, "1.1.0", "user copy pin unaffected");
+
+            // A DISABLED user copy must not capture name-only mutations made
+            // through the selector path either: pin the shared copy while the
+            // user copy is disabled.
+            await transport.setAgentPackageEnabled(NAME, false, ALICE, false, { scope: "user" });
+            await transport.pinAgentPackageVersion(NAME, "1.1.0", ALICE, false, { scope: "shared" });
+            const sharedRepinned = await transport.getAgentPackage(NAME, ALICE, false, { scope: "shared" });
+            assertEqual(
+                sharedRepinned.versions.find((v) => v.versionId === sharedRepinned.activeVersionId).semver,
+                "1.1.0",
+            );
+
+            // Delete ONLY the selected copy — and the shared copy's BYTES must
+            // survive. user 1.1.0 and shared 1.1.0 are identical bytes → one
+            // content-addressed blob; the pre-fix delete returned that filename
+            // and destroyed it, quarantining the shared package fleet-wide.
+            await transport.deleteAgentPackage(NAME, ALICE, false, { scope: "user" });
+            const sharedSurvives = await transport.getAgentPackage(NAME, ALICE, false, { scope: "shared" });
+            assert(sharedSurvives, "deleting the user copy must not touch the shared package");
+            const userGone = await transport.getAgentPackage(NAME, ALICE, false, { scope: "user" });
+            assert(!userGone, "user copy deleted");
+            // The shared active version's blob must still be FETCHABLE — the
+            // registry row surviving is not enough; the bytes must be there.
+            const sharedActiveVer = sharedAfter.versions.find((v) => v.versionId === sharedAfter.activeVersionId);
+            const file = await transport.getAgentPackageFile(NAME, sharedActiveVer.semver, "plugin.json", ALICE, false, { scope: "shared" });
+            assert(file?.content?.includes(`"${NAME}"`), "shared blob is intact and fetchable after the user copy was deleted");
+
+            await transport.deleteAgentPackage(NAME, ALICE, false, { scope: "shared" });
+        } finally {
+            await closeTransport(transport);
+        }
+    });
+
     it("upload rejects invalid packages, unsafe paths, and reserved names", { timeout: TIMEOUT }, async () => {
         const env = await getEnv();
         const transport = await makeTransport(env);
