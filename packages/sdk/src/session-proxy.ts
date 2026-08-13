@@ -536,13 +536,23 @@ export function createSessionProxy(
                 },
                 affinityKey,
             );
-            // Repo-affinity routing (git-hydration): stamp a `repo:<name>` tag
-            // on the runTurn activity so only a git-repo-worker whose
-            // workerTagFilter includes that tag can dequeue it. Untagged when
-            // config.repo is unset (any default worker may serve).
-            return config.repo && typeof runTurnTask?.withTag === "function"
-                ? runTurnTask.withTag(`repo:${config.repo}`)
-                : runTurnTask;
+            // Routing tag for the runTurn activity (duroxide worker affinity).
+            // Two mutually-exclusive cases, and crucially runTurn is NEVER left
+            // untagged -- an untagged runTurn is served by ANY worker in
+            // `defaultAnd` mode (every git-repo-worker), which would let a repo
+            // fleet steal a repo-less turn and run it inside that repo's
+            // enlistment (leaking its cwd, skills, and MCP servers):
+            //   - config.repo set  -> `repo:<name>`: only a git-repo-worker whose
+            //     workerTagFilter includes that tag can dequeue it (repo affinity).
+            //   - config.repo unset -> `generic`: only the generic worker pool
+            //     (PILOTSWARM_WORKER_TAGS=generic) serves it, so a repo-less
+            //     session runs in a clean, repo-free worker. git-repo-workers
+            //     (`defaultAnd:[repo:<name>]`) reject a `generic`-tagged turn
+            //     because it is tagged (not untagged) and does not match their
+            //     repo. Support activities stay UNTAGGED (below) so any worker
+            //     can serve them -- only the runTurn is pinned.
+            if (typeof runTurnTask?.withTag !== "function") return runTurnTask;
+            return runTurnTask.withTag(config.repo ? `repo:${config.repo}` : "generic");
         },
         dehydrate(reason: string, eventData?: Record<string, unknown>) {
             return ctx.scheduleActivityOnSession(

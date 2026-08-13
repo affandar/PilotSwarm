@@ -182,9 +182,13 @@ export interface SerializableSessionConfig {
      * Target repo enlistment this session must run against (git-hydration).
      * When set, the orchestration stamps a `repo:<repo>` duroxide routing tag
      * on each runTurn activity so only a git-repo-worker that declares that
-     * tag (via `workerTagFilter`) can dequeue the turn. Omitted => generic,
-     * untagged session that any default worker may serve. DNS-safe short name
-     * (e.g. "my-repo", "example-service").
+     * tag (via `workerTagFilter`) can dequeue the turn. When OMITTED, the
+     * orchestration instead stamps a `generic` tag so the runTurn routes to the
+     * dedicated generic worker pool (PILOTSWARM_WORKER_TAGS=generic) rather than
+     * being served by any git-repo-worker in `defaultAnd` mode -- which would
+     * run a repo-less turn inside that repo's enlistment. Either way the runTurn
+     * is tagged; only untagged SUPPORT activities are served by any worker.
+     * DNS-safe short name (e.g. "my-repo", "example-service").
      */
     repo?: string;
     /** Wait threshold in seconds. Waits shorter than this sleep in-process. */
