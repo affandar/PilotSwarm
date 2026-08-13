@@ -76,6 +76,9 @@ param localDeploymentPrincipalId string = ''
 ])
 param localDeploymentPrincipalType string = 'User'
 
+@description('Allow storage-account shared-key (local auth) access on the deployment storage account. Defaults to false: the bicep-orchestrator path is managed-identity only (PILOTSWARM_USE_MANAGED_IDENTITY=1 + DefaultAzureCredential), and tenants enforcing the Safe Secrets Standard / SFI-ID4.2.1 policy deny allowSharedKeyAccess=true. Set to true only for the legacy scripts/deploy-aks.sh connection-string flow in a tenant without that policy.')
+param allowSharedKeyAccess bool = false
+
 @description('Kubernetes namespace hosting the worker + portal service accounts. MUST match the NAMESPACE env-var that drives the Kustomize overlay (deploy/envs/local/<env>/env). Used to build federated identity credential subjects.')
 param serviceAccountNamespace string = 'pilotswarm'
 
@@ -443,6 +446,7 @@ module Storage './storage.bicep' = {
   params: {
     location: location
     storageAccountName: storageAccountName
+    allowSharedKeyAccess: allowSharedKeyAccess
     aksKubeletPrincipalId: Uami.outputs.kubeletIdentityPrincipalId
     workerWorkloadPrincipalId: Uami.outputs.csiIdentityPrincipalId
     localDeploymentPrincipalId: localDeploymentPrincipalId
