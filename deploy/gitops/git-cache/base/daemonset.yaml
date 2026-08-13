@@ -133,7 +133,11 @@ spec:
               memory: "256Mi"
             limits:
               cpu: "1"
-              memory: "1Gi"
+              # Peak is a COLD `git clone --mirror` running index-pack, whose memory
+              # scales with the repo's object/delta graph — tiny for a small repo, but
+              # multiple GB for a large monorepo (DsMainDev OOM-killed at 1Gi). Sized
+              # per-repo via CACHE_MEM_LIMIT in values/<repo>.env (default 1Gi).
+              memory: "__CACHE_MEM_LIMIT__"
       volumes:
         # Node-local mirror store. Survives pod restarts and image redeploys —
         # only a genuinely empty node disk triggers a reseed (section 5). The
