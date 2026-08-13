@@ -169,8 +169,8 @@ export {
 // Skills loader
 export { loadSkills, loadSkillsSync, composeDeclaredSkillsPrompt } from "./skills.js";
 export { loadAgentFiles, systemAgentUUID, systemChildAgentUUID, listBundledAgentNames, agentSupportsDirectStart } from "./agent-loader.js";
-export { loadMcpConfig, loadRepoMcpConfig } from "./mcp-loader.js";
-export type { MCPServerConfig, LoadRepoMcpOptions } from "./mcp-loader.js";
+export { loadMcpConfig, loadRepoMcpConfig, loadDefaultMcpConfig } from "./mcp-loader.js";
+export type { MCPServerConfig, LoadRepoMcpOptions, LoadDefaultMcpOptions } from "./mcp-loader.js";
 export { callerAuthSecretName, storeCallerAuth, resolveCallerAuth } from "./caller-auth.js";
 export type { StoreCallerAuthOptions, CallerAuthInput } from "./caller-auth.js";
 export {

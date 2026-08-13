@@ -254,4 +254,65 @@ await (async () => {
     passed++; console.log("  ok - multiTokenProvider: e2e inject for mapped audience, fast-fail for unmapped");
 })();
 
+await (async () => {
+    // Optional (fleet-default) server whose audience the caller CAN reach:
+    // injected exactly like a normal server, and the `optional` tag is stripped
+    // from the emitted config (Copilot must never see it).
+    const res = await resolveMcpServerAuth({
+        servers: { ado: { type: "http", url: "https://ado.example.com/mcp", optional: true } },
+        getCallerToken: multiTokenProvider({ "aaaaaaaa-1111-2222-3333-444444444444": adoToken }),
+        http: makeHttp(),
+        trace: () => {},
+    });
+    assert.deepEqual(res.injected, ["ado"], "optional server with a matching token is injected");
+    assert.ok(res.servers.ado.headers.Authorization.startsWith("Bearer "), "token injected");
+    assert.ok(!("optional" in res.servers.ado), "optional tag stripped from emitted config");
+    passed++; console.log("  ok - resolve: optional server WITH matching token -> injected + tag stripped");
+})();
+
+await (async () => {
+    // Optional (fleet-default) server whose audience the caller CANNOT reach:
+    // SKIPPED (dropped from the map) so the session still runs -- NOT a fast-fail.
+    const res = await resolveMcpServerAuth({
+        servers: { self: { type: "http", url: "https://self.example.com/mcp", optional: true } },
+        getCallerToken: multiTokenProvider({ "aaaaaaaa-1111-2222-3333-444444444444": adoToken }),
+        http: makeHttp(),
+        trace: () => {},
+    });
+    assert.deepEqual(res.injected, [], "nothing injected");
+    assert.equal(res.servers.self, undefined, "optional server with no matching token is dropped, not thrown");
+    passed++; console.log("  ok - resolve: optional server WITHOUT matching token -> SKIPPED (no fast-fail)");
+})();
+
+await (async () => {
+    // Regression guard: a REPO-declared (non-optional) server with no matching
+    // token STILL fast-fails -- the optional-skip must not weaken repo servers.
+    let threw = null;
+    try {
+        await resolveMcpServerAuth({
+            servers: { self: { type: "http", url: "https://self.example.com/mcp" } },
+            getCallerToken: multiTokenProvider({ "aaaaaaaa-1111-2222-3333-444444444444": adoToken }),
+            http: makeHttp(),
+            trace: () => {},
+        });
+    } catch (e) { threw = e; }
+    assert.ok(threw instanceof McpAuthFastFailError, "non-optional server still fast-fails");
+    passed++; console.log("  ok - resolve: NON-optional server WITHOUT token -> still FAST-FAIL (guard)");
+})();
+
+await (async () => {
+    // Optional tag is stripped even on the pass-through paths (explicit
+    // Authorization present -> left as-is, but the tag is removed).
+    const res = await resolveMcpServerAuth({
+        servers: { preauth: { type: "http", url: "https://self.example.com/mcp", optional: true, headers: { Authorization: "Bearer pre" } } },
+        getCallerToken: multiTokenProvider({ "aaaaaaaa-1111-2222-3333-444444444444": adoToken }),
+        http: makeHttp(),
+        trace: () => {},
+    });
+    assert.deepEqual(res.injected, []);
+    assert.equal(res.servers.preauth.headers.Authorization, "Bearer pre", "explicit auth preserved");
+    assert.ok(!("optional" in res.servers.preauth), "optional tag stripped on pass-through too");
+    passed++; console.log("  ok - resolve: optional tag stripped on explicit-Authorization pass-through");
+})();
+
 console.log(`\n${passed} assertions passed`);

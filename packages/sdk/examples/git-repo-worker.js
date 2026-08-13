@@ -56,7 +56,7 @@ import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { PilotSwarmWorker, horizonConfigFromEnv, installPluginSpecs, fetchKeyVaultSecret, loadRepoMcpConfig } from "pilotswarm-sdk";
+import { PilotSwarmWorker, horizonConfigFromEnv, installPluginSpecs, fetchKeyVaultSecret, loadRepoMcpConfig, loadDefaultMcpConfig } from "pilotswarm-sdk";
 
 // Sentinel value written to KV by the bicep-deploy `seed-secrets` step for
 // optional secrets the user didn't provide (CSI Secret Store requires
@@ -115,6 +115,39 @@ let beforeRunTurn;
 // Repo-stored MCP servers loaded from the enlistment's own .vscode/mcp.json.
 // A repo-pinned worker grants these to every session it runs (see below).
 let repoMcpServers = {};
+
+// Fleet-default MCP servers (DEFAULT_MCP_JSON deploy token): a deploy-time,
+// fleet-level set of REMOTE servers -- canonically the Azure DevOps MCP --
+// injected into every session INDEPENDENT of the target repo's .vscode/mcp.json.
+// Loaded unconditionally (not tied to git-cache): each is marked optional so a
+// session whose caller has no token for its audience silently runs without it.
+// The concrete URL/org live only in the ADO-side deploy value, never here.
+let defaultMcpServers = {};
+try {
+    defaultMcpServers = loadDefaultMcpConfig(process.env.DEFAULT_MCP_JSON, {
+        trace: (m) => console.log(m),
+    });
+    const defaultNames = Object.keys(defaultMcpServers);
+    if (defaultNames.length > 0) {
+        console.log(`[git-repo-worker] fleet-default MCP servers (every-session, optional): ${defaultNames.join(", ")}`);
+    }
+} catch (err) {
+    console.warn(`[git-repo-worker] default MCP load error (continuing): ${err?.message ?? err}`);
+}
+
+// Merge fleet-default servers under repo-declared servers: the repo's own
+// declaration of a same-named server WINS (repo spread last), which lets a repo
+// pin e.g. `ado` with a narrower toolset. Overrides are logged so the swap is
+// visible in `kubectl logs`.
+function mergeMcpServers(defaults, repo) {
+    const merged = { ...defaults, ...repo };
+    for (const name of Object.keys(repo ?? {})) {
+        if (defaults && name in defaults) {
+            console.log(`[git-repo-worker] repo MCP server "${name}" overrides fleet default of the same name`);
+        }
+    }
+    return merged;
+}
 
 if (gitCacheMirror) {
     if (!fs.existsSync(gitCacheMirror)) {
@@ -387,10 +420,12 @@ const worker = new PilotSwarmWorker({
     workerNodeId: podName,
     systemMessage: SYSTEM_MESSAGE,
     pluginDirs,
-    // Repo-stored MCP servers from the enlistment's .vscode/mcp.json. Direct
-    // worker-config mcpServers apply to EVERY session on this (repo-pinned)
-    // worker — exactly the every-session grant this repo's sessions want.
-    mcpServers: repoMcpServers,
+    // Repo-stored MCP servers from the enlistment's .vscode/mcp.json, merged
+    // over the fleet-default servers (DEFAULT_MCP_JSON). Direct worker-config
+    // mcpServers apply to EVERY session on this (repo-pinned) worker. A repo
+    // that declares its OWN server of the same name WINS over the fleet default
+    // (e.g. a repo may pin `ado` with a narrower toolset) -- repo spread last.
+    mcpServers: mergeMcpServers(defaultMcpServers, repoMcpServers),
     // Pre-turn reconcile (git-hydration MVP): sync the local enlistment from
     // the node-local mirror before each job. Undefined unless a mirror is set.
     beforeRunTurn,

@@ -48,6 +48,12 @@
 #   __REPO_MCP_ALLOW__  optional comma-delimited allowlist of MCP server ids (from
 #                       the repo's own .vscode/mcp.json) to load + grant to every
 #                       session on this repo-pinned fleet. Empty = all remote servers.
+#   __DEFAULT_MCP_JSON__  optional inline JSONC { "servers": { ... } } map of REMOTE
+#                       fleet-default MCP servers (e.g. the ADO MCP) injected into
+#                       every session regardless of the repo's .vscode/mcp.json; each
+#                       is optional (skipped, not fast-failed, when the caller lacks a
+#                       token for its audience). URL-free rule: the concrete ADO
+#                       URL/org live in the per-repo .env, never here. Empty = none.
 #   __CALLER_AUTH_KEYVAULT_NAME__  optional Key Vault name where the portal stores a
 #                       caller's delegated bearer (ps-caller-<sessionId>); the worker
 #                       reads it and injects it into repo-declared remote MCP servers
@@ -236,6 +242,17 @@ spec:
             # servers). Loading is on by default; set REPO_MCP_ENABLED=0 to disable.
             - name: REPO_MCP_ALLOW
               value: "__REPO_MCP_ALLOW__"
+            # Fleet-default MCP servers (feature: default MCP servers not checked
+            # into the repo, e.g. ADO): an inline JSONC { "servers": { ... } } map
+            # of REMOTE servers injected into EVERY session regardless of the
+            # target repo's .vscode/mcp.json. Each is treated as OPTIONAL -- a
+            # session whose caller has no token for the server's audience silently
+            # runs without it (no fast-fail). URL-free rule: the concrete ADO
+            # URL/org live ONLY in the ADO-side deploy value, never in this base
+            # manifest. Empty = no fleet defaults. A repo that declares its own
+            # server of the same name overrides the default deterministically.
+            - name: DEFAULT_MCP_JSON
+              value: "__DEFAULT_MCP_JSON__"
             # Delegated caller auth: Key Vault name where the portal persists a
             # caller's delegated bearer at createSession (secret name derived from
             # the session id: ps-caller-<sessionId>). The worker reads it via its
