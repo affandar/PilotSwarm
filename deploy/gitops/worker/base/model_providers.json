@@ -159,6 +159,11 @@
             "apiKey": "env:AZURE_OAI_KEY",
             "models": [
                 {
+                    "name": "gpt-5.6-sol",
+                    "description": "GPT-5.6 Sol via Azure AI Foundry. High-capability GPT-5.6 variant for advanced reasoning and coding. Deployment must be created on the Foundry account (deploy/envs/local/<env>/foundry-deployments.json).",
+                    "cost": "high"
+                },
+                {
                     "name": "gpt-5.4",
                     "description": "GPT-5.4 via Azure AI Foundry. High reasoning effort, advanced multi-turn and coding tasks. Deployment must be created on the Foundry account (deploy/envs/local/<env>/foundry-deployments.json).",
                     "cost": "high"
