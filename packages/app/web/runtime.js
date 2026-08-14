@@ -19,27 +19,40 @@ function normalizeParams(params) {
 // the turn would enqueue with a tag no worker matches and hang forever, so we
 // reject at create time instead.
 //
-// STUB: this allowlist is sourced from the PILOTSWARM_KNOWN_REPOS env var
-// (comma/space-separated repo short-names) so no enlistment names are baked
-// into source. TODO(git-hydration): source it from the deployed
-// git-repo-worker DaemonSets / worker registry (a repo is serviceable iff at
-// least one live worker advertises `repo:<name>`). When unset, no repo is
-// considered serviceable and repo-targeted sessions are rejected at create.
-const KNOWN_REPOS = new Set(
+// The serviceable-repo allowlist is derived at runtime from the live worker
+// registry: a repo is serviceable iff at least one ready worker advertises it
+// (each worker stamps its `repo:<name>` routing tags into its heartbeat, which
+// surfaces as `info.repos` on listWorkers() rows). See PortalRuntime._serviceableRepos.
+//
+// PILOTSWARM_KNOWN_REPOS (comma/space-separated repo short-names) is kept as an
+// optional static SEED that is unioned with the registry-derived set. It lets an
+// operator force a repo serviceable (e.g. during a rollout window before the
+// worker heartbeat lands, or as a break-glass override) without baking enlistment
+// names into source. Leave it unset in steady state — the registry is authoritative.
+const SEED_REPOS = new Set(
     (process.env.PILOTSWARM_KNOWN_REPOS || "")
         .split(/[\s,]+/)
         .map((s) => s.trim().toLowerCase())
         .filter(Boolean),
 );
 
+// How long a derived serviceable-repo set is trusted before the worker registry
+// is re-scanned. Bounds how stale the allowlist can be against a just-rolled-out
+// (or just-drained) repo worker, while keeping create requests off the
+// per-request registry-scan path.
+const REPO_ALLOWLIST_TTL_MS = 30 * 1000;
+
 const REPO_NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
 
 /**
- * Validate an optional `repo` create-param. Returns the normalized repo name
- * (or undefined when unset). Throws INVALID_REQUEST for malformed or unknown
- * repos so an un-routable turn never gets enqueued.
+ * Validate an optional `repo` create-param against a resolved allowlist.
+ * Returns the normalized repo name (or undefined when unset). Throws
+ * INVALID_REQUEST for malformed or unknown repos so an un-routable turn never
+ * gets enqueued. `serviceableRepos` is the Set derived from the worker
+ * registry (see PortalRuntime._serviceableRepos); kept as a pure param so this
+ * stays trivially testable.
  */
-function validateRepoParam(raw) {
+function validateRepoParam(raw, serviceableRepos) {
     if (raw == null || raw === "") return undefined;
     const repo = String(raw).trim().toLowerCase();
     if (!REPO_NAME_RE.test(repo)) {
@@ -48,7 +61,7 @@ function validateRepoParam(raw) {
             { code: "INVALID_REQUEST" },
         );
     }
-    if (!KNOWN_REPOS.has(repo)) {
+    if (!serviceableRepos.has(repo)) {
         throw Object.assign(
             new Error(`repo "${repo}" is not a known git-hydration enlistment`),
             { code: "INVALID_REQUEST" },
@@ -221,6 +234,54 @@ export class PortalRuntime {
         // Last role written per principal, so the sign-in write does not fire
         // on every poll. See noteSignInRole.
         this._signInRoleSeen = new Map(); // key -> { role, at }
+        // TTL-cached serviceable-repo allowlist derived from the worker
+        // registry. See _serviceableRepos. `null` until first resolve.
+        this._repoAllowlist = null; // { at: epochMs, repos: Set<string> }
+    }
+
+    // ── Repo-affinity allowlist ─────────────────────────────────────────
+
+    /**
+     * Resolve the set of git-hydration repos that are currently serviceable,
+     * derived from the live worker registry and unioned with the optional
+     * PILOTSWARM_KNOWN_REPOS seed.
+     *
+     * A repo is serviceable iff at least one ready worker advertises a
+     * `repo:<name>` routing tag; each worker stamps those into its heartbeat,
+     * surfacing as `info.repos` on listWorkers() rows. Draining/starting
+     * workers are ignored — only `ready` workers actually dequeue tagged turns.
+     *
+     * Result is cached for REPO_ALLOWLIST_TTL_MS so the create path does not
+     * scan the worker registry per request. On a registry read failure we fall
+     * back to the last-known-good set (if any) unioned with the seed, so a
+     * transient CMS blip does not spuriously reject every repo-targeted create.
+     */
+    async _serviceableRepos() {
+        const now = Date.now();
+        if (this._repoAllowlist && now - this._repoAllowlist.at < REPO_ALLOWLIST_TTL_MS) {
+            return this._repoAllowlist.repos;
+        }
+        try {
+            const rows = (await this.transport.listWorkers()) ?? [];
+            const repos = new Set(SEED_REPOS);
+            for (const row of rows) {
+                if (row?.phase !== "ready") continue;
+                const advertised = row?.info?.repos;
+                if (!Array.isArray(advertised)) continue;
+                for (const r of advertised) {
+                    if (typeof r === "string" && r) repos.add(r.trim().toLowerCase());
+                }
+            }
+            this._repoAllowlist = { at: now, repos };
+            return repos;
+        } catch (err) {
+            // Registry unavailable: prefer last-known-good, else the bare seed.
+            // Do not cache the fallback — retry on the next request.
+            const fallback = this._repoAllowlist
+                ? new Set([...SEED_REPOS, ...this._repoAllowlist.repos])
+                : new Set(SEED_REPOS);
+            return fallback;
+        }
     }
 
     // ── Sign-in role persistence ────────────────────────────────────────
@@ -871,7 +932,7 @@ export class PortalRuntime {
                 return this.transport.getExecutionHistory(safeParams.sessionId, safeParams.executionId);
             case "createSession": {
                 await this._assertPlacementGroupOwned(safeParams.groupId, authContext, { isAdmin });
-                const repo = validateRepoParam(safeParams.repo);
+                const repo = validateRepoParam(safeParams.repo, await this._serviceableRepos());
                 const callerAuth = validateCallerAuthParam(safeParams.callerAuth);
                 const created = await this.transport.createSession({
                     model: safeParams.model,
@@ -887,7 +948,7 @@ export class PortalRuntime {
             }
             case "createSessionForAgent": {
                 await this._assertPlacementGroupOwned(safeParams.groupId, authContext, { isAdmin });
-                const repo = validateRepoParam(safeParams.repo);
+                const repo = validateRepoParam(safeParams.repo, await this._serviceableRepos());
                 const callerAuth = validateCallerAuthParam(safeParams.callerAuth);
                 const created = await this.transport.createSessionForAgent(safeParams.agentName, {
                     model: safeParams.model,

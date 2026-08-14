@@ -257,6 +257,12 @@ export class PilotSwarmWorker {
     private _workerPhase: "starting" | "ready" | "draining" = "starting";
     /** Write-once registration info; built on the first heartbeat. */
     private _registrarInfo: Record<string, unknown> | null = null;
+    /**
+     * Resolved duroxide activity-routing tag filter (from `workerTagFilter`
+     * option / `PILOTSWARM_WORKER_TAGS`). Captured at runtime start so the
+     * heartbeat can advertise this worker's repo affinity in the registry row.
+     */
+    private _workerTagFilter: PilotSwarmWorkerOptions["workerTagFilter"] | undefined;
     /** Event-loop delay histogram for health reporting (reset each beat). */
     private _eventLoopHist: IntervalHistogram | null = null;
     /** Last refresh failure — carried in heartbeat state until a clean pass. */
@@ -651,6 +657,19 @@ export class PilotSwarmWorker {
         this.sessionManager.setFactStore(this.factStore);
         this.sessionManager.setGraphStore(this.graphStore);
 
+        // Resolve this worker's activity-routing tag filter BEFORE the first
+        // heartbeat below, because refreshAgentPackages({force}) triggers the
+        // write-once registrar info build — which advertises repo affinity
+        // (info.repos / info.routingTags) derived from this filter. Resolving
+        // it afterwards permanently locks repos:null into the registry row.
+        const workerTagFilter = resolveWorkerTagFilter(
+            this.config.workerTagFilter,
+            process.env.PILOTSWARM_WORKER_TAGS,
+        );
+        // Remember the resolved filter so the heartbeat can surface repo
+        // affinity into the workers row (see _buildRegistrarInfo -> info.repos).
+        this._workerTagFilter = workerTagFilter;
+
         // ── Agent packages: initial install AFTER the stores settle (the
         //    first heartbeat writes the worker's write-once capability info,
         //    which reads factStore/graphStore) but BEFORE the runtime exists
@@ -675,11 +694,6 @@ export class PilotSwarmWorker {
         // client; tuner tools are read-only.
         const inspectClient = new Client(this._provider);
         this.sessionManager.setDuroxideClient(inspectClient);
-
-        const workerTagFilter = resolveWorkerTagFilter(
-            this.config.workerTagFilter,
-            process.env.PILOTSWARM_WORKER_TAGS,
-        );
 
         const runtimeOptions = {
             orchestrationConcurrency,
@@ -1177,10 +1191,42 @@ export class PilotSwarmWorker {
         try {
             sdkVersion = require("../package.json").version ?? "unknown";
         } catch { /* packed layouts without a reachable package.json */ }
+        // Advertise this worker's repo affinity so consumers (e.g. the portal's
+        // serviceable-repo allowlist) can derive which repos have live workers
+        // straight from the registry, instead of a hand-maintained env list.
+        //
+        // The affinity lives only as a duroxide activity-routing tag filter
+        // (workerTagFilter: { defaultAnd: ["repo:<name>"] }) built from
+        // PILOTSWARM_WORKER_TAGS at start — it is NOT otherwise persisted.
+        // Flatten it back into the tag strings and pull out the `repo:` ones so
+        // the row carries both the raw tags and a clean `repos` list.
+        //
+        // TODO(worker-registry): this reverse-derivation (filter -> tags ->
+        // repos) is brittle. Prefer threading the *raw* resolved tag list
+        // (pre-filter, from resolveWorkerTagFilter / PILOTSWARM_WORKER_TAGS)
+        // through to here as first-class state, and/or having the runtime
+        // expose the worker's routing tags via a public accessor so we don't
+        // reconstruct them from the duroxide filter shape. A dedicated
+        // `workers.tags` column (vs. stuffing into the free-form `info` JSON)
+        // would also let consumers query affinity without deserializing info.
+        const tagFilter = this._workerTagFilter;
+        const routingTags =
+            tagFilter && typeof tagFilter === "object"
+                ? [
+                    ...("defaultAnd" in tagFilter ? tagFilter.defaultAnd : []),
+                    ...("tags" in tagFilter ? tagFilter.tags : []),
+                ]
+                : [];
+        const repos = routingTags
+            .filter((t) => t.startsWith("repo:"))
+            .map((t) => t.slice("repo:".length))
+            .filter(Boolean);
         this._registrarInfo = {
             sdkVersion,
             orchestrationVersions: DURABLE_SESSION_ORCHESTRATION_REGISTRY.map((r) => r.version),
             consumes: this._agentPackagesCacheDir ? ["agent-packages"] : [],
+            ...(routingTags.length ? { routingTags } : {}),
+            ...(repos.length ? { repos } : {}),
             capabilities: {
                 blobStore: Boolean(this.blobStore),
                 enhancedFacts: Boolean(this.factStore && isEnhancedFactStore(this.factStore)),
