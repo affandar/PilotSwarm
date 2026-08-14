@@ -235,9 +235,6 @@ export class PilotSwarmClient {
                 hooks: resolvedConfig.hooks,
                 waitThreshold: resolvedConfig.waitThreshold ?? this.config.waitThreshold,
                 toolNames: resolvedConfig.toolNames,
-                // Caller-attached per-session MCP servers ride the raw input
-                // for the same reason as `repo`.
-                callerMcpServers: config?.callerMcpServers,
             };
             this.sessionConfigs.set(sessionId, fullConfig);
         }
@@ -335,8 +332,6 @@ export class PilotSwarmClient {
         visibility?: SessionVisibility | null;
         /** Delegated MCP credential — see createSession. */
         callerAuth?: CallerAuthInput | null;
-        /** Caller-attached per-session MCP servers — see createSession / SerializableSessionConfig. */
-        callerMcpServers?: Record<string, any> | null;
     }): Promise<PilotSwarmSession> {
         // Validate the agent exists and is non-system
         const allowed = this._allowedAgentNames;
@@ -353,7 +348,6 @@ export class PilotSwarmClient {
             toolNames: opts?.toolNames,
             repo: opts?.repo,
             callerAuth: opts?.callerAuth ?? null,
-            callerMcpServers: opts?.callerMcpServers ?? undefined,
             onUserInputRequest: opts?.onUserInputRequest,
             agentId: agentName,
             boundAgentName: agentName,
@@ -776,9 +770,6 @@ export class PilotSwarmClient {
             // carry `repo`, so thread the in-memory value through explicitly.
             // A repo persisted on the row (stored) still survives the spread.
             if (fullConfig?.repo != null) merged.repo = fullConfig.repo;
-            // Caller-attached per-session MCP servers are also not carried by
-            // the projection; thread them through the same way.
-            if (fullConfig?.callerMcpServers != null) merged.callerMcpServers = fullConfig.callerMcpServers;
             serializableConfig = merged;
             // A pre-0072 row with no map entry still starts minimal; the
             // worker-side bound-agent backfill remains the safety net there.
