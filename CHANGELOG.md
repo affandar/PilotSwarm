@@ -1,5 +1,63 @@
 # Changelog
 
+## 0.5.40 — 2026-08-14
+
+PilotSwarm gains two high-volume data paths: bulk fact ingestion with
+record-level retry artifacts, and a low-latency live canvas plane that keeps
+rapid dashboard updates out of durable transcript history. Canvas workspaces
+also gain ancestor-authorized multi-writer targeting and constrained share
+links, while the portal editor, pane sizing, and full-screen controls receive a
+focused usability pass.
+
+### Added
+
+- **`bulk_store_facts` for large corpus imports.** Sessions can ingest up to
+  50,000 records from inline JSON or an artifact in bounded chunks. Writes are
+  intentionally non-atomic, failures retain per-record attribution in a
+  retryable artifact, and `intake/` remains reserved for the single-record
+  curation path. PostgreSQL and HorizonDB providers now report the database's
+  actual stored count.
+
+- **A transient live canvas data plane.** Migration 0047 adds a last-value
+  live row per session and canvas slot with atomic sequence numbers and RFC
+  7386 merge patches. PostgreSQL notifications wake a stateless portal relay;
+  WebSocket clients apply contiguous patches, coalesce gap recovery, and fall
+  back cleanly when the plane is unavailable. Durable draws and compatibility
+  ticks remain available during rollout.
+
+- **Multi-writer canvas targeting and share links.** Canvas tools may target an
+  ancestor session under fail-closed authorization and per-target rate limits.
+  The portal can generate view-only links from configured public origins,
+  validates allowed origins, and preserves session access checks across the
+  HTTP and WebSocket paths.
+
+### Changed
+
+- **The portal composer behaves like a native editor.** Cursor movement,
+  selection, undo, auto-growth, expanded editing, mobile keyboard behavior,
+  and per-session drafts now follow browser-native semantics. Chat and
+  inspector content measure their actual pane width instead of inheriting the
+  terminal layout's estimated columns.
+
+- **Canvas guidance favors patches for rapid updates.** Built-in agents and
+  the HTML visuals skill teach bulk facts, patch economy, and shared-dashboard
+  workflows; their authored versions advance with the new behavior.
+
+### Fixed
+
+- **Canvas controls remain readable at narrow and full-screen widths.** Long
+  slot names shrink with ellipsis, and full-screen mode moves normal toolbar
+  actions into the left rail so canvas metadata and controls no longer collide.
+- **Frontend WAF policy stays aligned with the deployed baseline.** The global
+  Front Door template includes the current DRS exclusions and opt-in managed
+  rule-group overrides.
+
+### Verification
+
+- Production builds and all three npm package dry-runs were completed for the
+  release. The full test suite was explicitly skipped at release time by
+  operator request.
+
 ## 0.5.39 — 2026-08-13
 
 Agent packages become safe to shadow. One package name can exist as a shared

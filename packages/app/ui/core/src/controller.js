@@ -4499,8 +4499,41 @@ export class PilotSwarmUiController {
         return true;
     }
 
+    applyCanvasDataEvent(sessionId, event) {
+        this.dispatch({
+            type: "canvas/data",
+            sessionId,
+            slot: Number(event?.data?.slot) || 1,
+            dataRev: Number(event?.data?.dataRev),
+            payload: event?.data?.payload,
+            // Plane-fed ticks (the canvas data plane's live mirror) carry
+            // their own seq lineage and the patch that produced them — the
+            // reducer orders plane ticks by planeSeq and hands the patch to
+            // pages that opt into targeted updates.
+            ...(Number.isFinite(Number(event?.data?.planeSeq)) ? { planeSeq: Number(event.data.planeSeq) } : {}),
+            ...(event?.data?.patch && typeof event.data.patch === "object" ? { patch: event.data.patch } : {}),
+            note: typeof event?.data?.note === "string" ? event.data.note : "",
+        });
+    }
+
     mergeSessionEvent(sessionId, event) {
         if (!sessionId || !event) return false;
+        // Plane-synthesized canvas events are TRANSIENT: they update canvas
+        // state and nothing else. They carry no seq — letting them into
+        // history would corrupt the replay cursor — and they must never
+        // appear in the transcript.
+        if (event.transient === true) {
+            if (event.eventType === "session.canvas_data") {
+                this.applyCanvasDataEvent(sessionId, event);
+            }
+            if (event.eventType === "session.canvas_plane_released") {
+                // The plane died for this session (server error/rollback).
+                // Clear the reducer's takeover so legacy durable ticks — the
+                // fallback path — apply again instead of being dropped.
+                this.dispatch({ type: "canvas/planeReleased", sessionId });
+            }
+            return false;
+        }
         const state = this.getState();
         const existing = state.history.bySessionId.get(sessionId) || { chat: [], activity: [], lastSeq: 0 };
         if (event.seq <= (existing.lastSeq || 0)) return false;
@@ -4561,14 +4594,7 @@ export class PilotSwarmUiController {
             this.applyCanvasPresented(sessionId, event);
         }
         if (event.eventType === "session.canvas_data") {
-            this.dispatch({
-                type: "canvas/data",
-                sessionId,
-                slot: Number(event?.data?.slot) || 1,
-                dataRev: Number(event?.data?.dataRev),
-                payload: event?.data?.payload,
-                note: typeof event?.data?.note === "string" ? event.data.note : "",
-            });
+            this.applyCanvasDataEvent(sessionId, event);
         }
         this.reconcileOutboxAgainstEvent(sessionId, event);
         const derivedModel = extractSessionModelFromEvent(event);

@@ -33,6 +33,8 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "getAgentPackageFile",
     "getAgentPackageTree",
     "getArtifactMetadata",
+    "getCanvasLive",
+    "getCanvasShareLink",
     "getChildOutcome",
     "getCurrentUserProfile",
     "getDefaultModel",
@@ -96,8 +98,10 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "readArtifactBase64",
     "readFacts",
     "regenerateSession",
+    "removeCanvasShareLink",
     "renameSession",
     "republishAgentPackageVersion",
+    "resetCanvasShareLink",
     "restartSystemSession",
     "revokeSessionShare",
     "searchFacts",
@@ -385,6 +389,23 @@ export interface ManagementOps {
     getArtifactMetadata(params: {
         sessionId: string;
         filename: string;
+    }): Promise<any>;
+
+    /**
+     * The canvas data plane's last-value rows: current doc pointer + latest merged tick per slot. Snapshot source for live canvas subscriptions; empty when the deployment predates the plane.
+     * @remarks `GET /management/sessions/:sessionId/canvas-live` — access: `session:read`
+     */
+    getCanvasLive(params: {
+        sessionId: string;
+    }): Promise<any>;
+
+    /**
+     * Whether a public view link exists for this canvas (never the token itself), with created-at/by.
+     * @remarks `GET /management/sessions/:sessionId/canvas-share-link` — access: `session:share`
+     */
+    getCanvasShareLink(params: {
+        sessionId: string;
+        slot?: number;
     }): Promise<any>;
 
     /**
@@ -911,6 +932,15 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Delete the public view link; the canvas returns to unlinked.
+     * @remarks `POST /management/sessions/:sessionId/canvas-share-link/remove` — access: `session:share`
+     */
+    removeCanvasShareLink(params: {
+        sessionId: string;
+        slot?: any;
+    }): Promise<any>;
+
+    /**
      * Rename a session.
      * @remarks `PATCH /management/sessions/:sessionId` — access: `session:manage`
      */
@@ -927,6 +957,15 @@ export interface ManagementOps {
         name: string;
         semver?: any;
         targetScope?: any;
+    }): Promise<any>;
+
+    /**
+     * Mint-or-rotate the ONE public view token for this canvas. Returns the raw token exactly once; the previous link stops working immediately.
+     * @remarks `POST /management/sessions/:sessionId/canvas-share-link/reset` — access: `session:share`
+     */
+    resetCanvasShareLink(params: {
+        sessionId: string;
+        slot?: any;
     }): Promise<any>;
 
     /**
@@ -1219,6 +1258,8 @@ export function createManagementOps(
         getAgentPackageFile: (params: Record<string, unknown> = {}) => callOp("getAgentPackageFile", params),
         getAgentPackageTree: (params: Record<string, unknown> = {}) => callOp("getAgentPackageTree", params),
         getArtifactMetadata: (params: Record<string, unknown> = {}) => callOp("getArtifactMetadata", params),
+        getCanvasLive: (params: Record<string, unknown> = {}) => callOp("getCanvasLive", params),
+        getCanvasShareLink: (params: Record<string, unknown> = {}) => callOp("getCanvasShareLink", params),
         getChildOutcome: (params: Record<string, unknown> = {}) => callOp("getChildOutcome", params),
         getCurrentUserProfile: (params: Record<string, unknown> = {}) => callOp("getCurrentUserProfile", params),
         getDefaultModel: (params: Record<string, unknown> = {}) => callOp("getDefaultModel", params),
@@ -1282,8 +1323,10 @@ export function createManagementOps(
         readArtifactBase64: (params: Record<string, unknown> = {}) => callOp("readArtifactBase64", params),
         readFacts: (params: Record<string, unknown> = {}) => callOp("readFacts", params),
         regenerateSession: (params: Record<string, unknown> = {}) => callOp("regenerateSession", params),
+        removeCanvasShareLink: (params: Record<string, unknown> = {}) => callOp("removeCanvasShareLink", params),
         renameSession: (params: Record<string, unknown> = {}) => callOp("renameSession", params),
         republishAgentPackageVersion: (params: Record<string, unknown> = {}) => callOp("republishAgentPackageVersion", params),
+        resetCanvasShareLink: (params: Record<string, unknown> = {}) => callOp("resetCanvasShareLink", params),
         restartSystemSession: (params: Record<string, unknown> = {}) => callOp("restartSystemSession", params),
         revokeSessionShare: (params: Record<string, unknown> = {}) => callOp("revokeSessionShare", params),
         searchFacts: (params: Record<string, unknown> = {}) => callOp("searchFacts", params),

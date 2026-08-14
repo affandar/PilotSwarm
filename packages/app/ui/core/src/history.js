@@ -1123,7 +1123,11 @@ export function appendEventToHistory(history, event) {
         chat: clampHistoryItems(history?.chat || [], loadedEventLimit),
         activity: clampHistoryItems(history?.activity || [], loadedEventLimit),
         events: nextEvents,
-        lastSeq: event.seq,
+        // The replay cursor. A seq-less event (plane-synthesized canvas
+        // ticks are transient and carry none) must never poison it —
+        // lastSeq=undefined reads as afterSeq 0 on the next sync and the
+        // whole transcript re-merges, duplicated.
+        lastSeq: Number.isFinite(Number(event.seq)) ? event.seq : (history?.lastSeq || 0),
         loadedEventLimit,
         loadedEventCount: Math.max(Number(history?.loadedEventCount || 0), nextEvents.length),
         hasOlderEvents: Boolean(history?.hasOlderEvents),

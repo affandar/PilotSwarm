@@ -2769,6 +2769,8 @@ export function selectCanvasView(state) {
         latestDataRev,
         lastViewedDataRev,
         dataPayload: entry?.dataPayload || null,
+        dataPatch: entry?.dataPatch || null,
+        planeSeq: entry?.planeSeq || 0,
         unseen: exists && (latestRev > lastViewedRev || latestDataRev > lastViewedDataRev) && mode !== "canvas",
     };
 }

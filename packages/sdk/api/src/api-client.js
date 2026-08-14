@@ -63,6 +63,7 @@ export class ApiClient {
         this.sessionSubscribers = new Map();
         this.sessionResubscribeHandlers = new Map();
         this.logSubscribers = new Set();
+        this.canvasSubscribers = new Map();
     }
 
     // ── HTTP ────────────────────────────────────────────────────────────
@@ -193,6 +194,7 @@ export class ApiClient {
         this.socketOpenPromise = null;
         this.sessionSubscribers.clear();
         this.logSubscribers.clear();
+        this.canvasSubscribers.clear();
     }
 
     scheduleReconnect() {
@@ -245,6 +247,25 @@ export class ApiClient {
                     }
                     if (message.type === "logEntry") {
                         for (const handler of this.logSubscribers) handler(message.entry);
+                        return;
+                    }
+                    if (message.type === "canvasLive") {
+                        const handlers = this.canvasSubscribers.get(message.sessionId);
+                        if (handlers) {
+                            for (const handler of handlers) handler(message);
+                        }
+                        return;
+                    }
+                    // A canvas-scope error (plane unavailable, authz change,
+                    // server rollback) releases the mirror's takeover of that
+                    // session — otherwise legacy events would stay suppressed
+                    // against a plane that will never push again: a frozen
+                    // canvas.
+                    if (message.type === "error" && message.scope === "canvas" && message.sessionId) {
+                        const handlers = this.canvasSubscribers.get(message.sessionId);
+                        if (handlers) {
+                            for (const handler of handlers) handler({ kind: "unavailable", sessionId: message.sessionId });
+                        }
                     }
                 } catch {}
             });
@@ -315,6 +336,9 @@ export class ApiClient {
         if (this.logSubscribers.size > 0) {
             this.socketSend({ type: "subscribeLogs" });
         }
+        for (const sessionId of this.canvasSubscribers.keys()) {
+            this.socketSend({ type: "subscribeCanvas", sessionId });
+        }
     }
 
     /**
@@ -358,6 +382,28 @@ export class ApiClient {
                 this.sessionSubscribers.delete(sessionId);
                 this.sessionResubscribeHandlers.delete(sessionId);
                 this.socketSend({ type: "unsubscribeSession", sessionId });
+            }
+        };
+    }
+
+    /**
+     * Canvas-plane pushes for one session: `{slot, seq, kind, patch?}` per
+     * write, straight off the database's NOTIFY — no poll cadence. A server
+     * without the plane answers with an error message the caller treats as
+     * "not supported"; durable events remain the fallback either way.
+     */
+    subscribeCanvasLive(sessionId, handler) {
+        if (!this.canvasSubscribers.has(sessionId)) {
+            this.canvasSubscribers.set(sessionId, new Set());
+        }
+        const handlers = this.canvasSubscribers.get(sessionId);
+        handlers.add(handler);
+        this.announceSubscription({ type: "subscribeCanvas", sessionId });
+        return () => {
+            handlers.delete(handler);
+            if (handlers.size === 0) {
+                this.canvasSubscribers.delete(sessionId);
+                this.socketSend({ type: "unsubscribeCanvas", sessionId });
             }
         };
     }

@@ -1,4 +1,5 @@
 import { ApiClient } from "./api-client.js";
+import { createCanvasLiveMirror } from "./canvas-live-mirror.js";
 
 /**
  * Flatten an agent-package copy selector into wire params.
@@ -378,6 +379,22 @@ export class HttpApiTransport {
         return this.api.call("getSessionEvents", { sessionId, afterSeq, limit, eventTypes });
     }
 
+    async getCanvasLive(sessionId) {
+        return this.api.call("getCanvasLive", { sessionId });
+    }
+
+    async getCanvasShareLink(sessionId, slot) {
+        return this.api.call("getCanvasShareLink", { sessionId, slot });
+    }
+
+    async resetCanvasShareLink(sessionId, slot) {
+        return this.api.call("resetCanvasShareLink", { sessionId, slot: { slot } });
+    }
+
+    async removeCanvasShareLink(sessionId, slot) {
+        return this.api.call("removeCanvasShareLink", { sessionId, slot: { slot } });
+    }
+
     async getSessionEventsBefore(sessionId, beforeSeq, limit, eventTypes) {
         return this.api.call("getSessionEventsBefore", { sessionId, beforeSeq, limit, eventTypes });
     }
@@ -419,7 +436,81 @@ export class HttpApiTransport {
     // ── Streaming ───────────────────────────────────────────────────────
 
     subscribeSession(sessionId, handler) {
-        return this.api.subscribeSession(sessionId, handler);
+        // The canvas data plane rides the SAME subscription: plane pushes
+        // (patch pings off the database's NOTIFY) are mirrored into complete
+        // `session.canvas_data`-shaped events, so every consumer keeps its
+        // whole-state contract at ~30 ms instead of the 500 ms poll floor.
+        // Once a slot is plane-fed, the dual-written legacy tick events for
+        // it are suppressed here — the plane already delivered fresher state
+        // (same writer, written first). Everything degrades: a server
+        // without the plane just never sends canvasLive messages.
+        if (!this._canvasMirror) {
+            this._canvasMirror = createCanvasLiveMirror({
+                fetchSnapshot: (sid) => this.getCanvasLive(sid),
+                emit: (sid, update) => {
+                    const handlers = this._canvasEmitHandlers?.get(sid);
+                    if (!handlers) return;
+                    const event = {
+                        eventType: "session.canvas_data",
+                        sessionId: sid,
+                        // TRANSIENT: no seq, never enters history — canvas
+                        // state only. See controller.mergeSessionEvent.
+                        transient: true,
+                        data: {
+                            slot: update.slot,
+                            dataRev: update.seq,
+                            planeSeq: update.seq,
+                            payload: update.payload,
+                            ...(update.patch ? { patch: update.patch } : {}),
+                            sizeBytes: JSON.stringify(update.payload).length,
+                        },
+                    };
+                    for (const h of handlers) {
+                        try { h(event); } catch { /* consumer's problem */ }
+                    }
+                },
+            });
+            this._canvasEmitHandlers = new Map();
+        }
+        if (!this._canvasEmitHandlers.has(sessionId)) {
+            this._canvasEmitHandlers.set(sessionId, new Set());
+        }
+        this._canvasEmitHandlers.get(sessionId).add(handler);
+        const wrapped = (event) => {
+            if (event?.eventType === "session.canvas_data"
+                && this._canvasMirror.covers(sessionId, Number(event?.data?.slot) || 1)) {
+                return; // plane-fed slot: the mirror already delivered this state
+            }
+            handler(event);
+        };
+        const unsubscribeEvents = this.api.subscribeSession(sessionId, wrapped);
+        const unsubscribeCanvas = this.api.subscribeCanvasLive(sessionId, (message) => {
+            this._canvasMirror.onPing(sessionId, message);
+            if (message?.kind === "unavailable") {
+                // Propagate the release downstream: the reducer holds its own
+                // takeover latch (planeSeq) and must also let legacy events
+                // resume, or the canvas freezes at the last plane state.
+                const handlers = this._canvasEmitHandlers?.get(sessionId);
+                if (handlers) {
+                    const event = { eventType: "session.canvas_plane_released", sessionId, transient: true };
+                    for (const h of handlers) {
+                        try { h(event); } catch { /* consumer's problem */ }
+                    }
+                }
+            }
+        });
+        return () => {
+            unsubscribeEvents();
+            unsubscribeCanvas();
+            const handlers = this._canvasEmitHandlers.get(sessionId);
+            if (handlers) {
+                handlers.delete(handler);
+                if (handlers.size === 0) {
+                    this._canvasEmitHandlers.delete(sessionId);
+                    this._canvasMirror.forget(sessionId);
+                }
+            }
+        };
     }
 
     startLogTail(handler) {

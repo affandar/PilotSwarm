@@ -12,6 +12,8 @@ import {
     canStopSessionTurn,
     computeLegacyLayout,
     createInitialState,
+    buildPortalLinks,
+    formatPortalLinksForCopy,
     createStore,
     AUTO_HISTORY_EVENT_SOFT_CAP,
     formatCompactNumber,
@@ -174,8 +176,21 @@ function buildArtifactLinkUrl(sessionId, filename, { fullscreen = true } = {}) {
     return `${base}&artifact=${encodeURIComponent(filename)}${fullscreen ? "&view=full" : ""}`;
 }
 
+// Multi-origin link generation (PORTAL_LINK_ORIGINS): set once by the host
+// app when the portal config lands. Empty = single-origin behavior. A module
+// singleton, deliberately — links are produced from deep inside component
+// trees and the origin list is global, immutable config.
+let portalLinkOrigins = [];
+export function setPortalLinkOrigins(list) {
+    portalLinkOrigins = Array.isArray(list) ? list : [];
+}
+export function getPortalLinkOrigins() {
+    return portalLinkOrigins;
+}
+
 function copySessionLinkText(url) {
-    if (navigator?.clipboard?.writeText) navigator.clipboard.writeText(url).catch(() => {});
+    const text = formatPortalLinksForCopy(buildPortalLinks(url, portalLinkOrigins));
+    if (navigator?.clipboard?.writeText) navigator.clipboard.writeText(text).catch(() => {});
 }
 
 // Best-effort probe: is this session's deep link openable only by the owner/
@@ -632,6 +647,77 @@ function getPortalInspectorContentWidth(paneWidth, inspectorTab, mobile = false)
     // sideways with its timestamps and STATS header sliced off. Two columns of
     // slack absorb the metric difference.
     return Math.max(20, paneWidth - (mobile ? 6 : 4));
+}
+
+/**
+ * The pane's own truth for content width, in character columns.
+ *
+ * Character-cell panes (chat code fences and tables, the sequence grid, the
+ * stats boxes) were sized from the legacy TUI layout model's split of a
+ * window-level probe — a model that knows nothing about the portal's
+ * draggable grid columns, so its imagined pane widths drift arbitrarily far
+ * from the real ones. Content rendered for the imagined width then spills
+ * out of the real pane (sequence), arrives pre-sliced behind a sideways
+ * scroll (stats), or wraps absurdly narrow (a JSON fence at ~19 columns).
+ *
+ * This hook measures the actual panel node: its content box, and a probe in
+ * its own rendered line font (the same technique as the mobile inspector
+ * clamp below, which proved the window-level probe "able to lie"). Returns
+ * null until the first measurement lands — callers fall back to the legacy
+ * width for that first paint. Re-measures on real size changes, trailing
+ * debounced so a splitter drag re-wraps once at the end, not per tick.
+ */
+function useMeasuredPaneColumns({ slack = 1, debounceMs = 120 } = {}) {
+    const [cols, setCols] = React.useState(null);
+    const stateRef = React.useRef({ node: null, observer: null, timer: null, frame: null });
+    const attachRef = React.useCallback((node) => {
+        const st = stateRef.current;
+        if (st.observer) { st.observer.disconnect(); st.observer = null; }
+        if (st.timer) { window.clearTimeout(st.timer); st.timer = null; }
+        if (st.frame) { cancelAnimationFrame(st.frame); st.frame = null; }
+        st.node = node;
+        if (!node || typeof window === "undefined" || typeof ResizeObserver === "undefined") return;
+        const measure = () => {
+            st.timer = null;
+            if (st.node !== node || !node.isConnected) return;
+            const target = node.querySelector(".ps-line") || node;
+            const cs = window.getComputedStyle(target);
+            const probe = document.createElement("span");
+            probe.style.cssText = "position:absolute;visibility:hidden;white-space:pre;";
+            probe.style.fontFamily = cs.fontFamily;
+            probe.style.fontSize = cs.fontSize;
+            probe.style.fontWeight = cs.fontWeight;
+            probe.style.letterSpacing = cs.letterSpacing;
+            probe.textContent = "0".repeat(100);
+            node.appendChild(probe);
+            const charWidth = (probe.getBoundingClientRect().width / 100) || 0;
+            probe.remove();
+            if (!(charWidth > 0)) return;
+            const panelStyle = window.getComputedStyle(node);
+            const contentPx = node.clientWidth
+                - (parseFloat(panelStyle.paddingLeft) || 0)
+                - (parseFloat(panelStyle.paddingRight) || 0);
+            // A collapsed/hidden pane measures ~0; keep the last good value.
+            if (!(contentPx > 50)) return;
+            const next = Math.max(20, Math.floor(contentPx / charWidth) - slack);
+            setCols((current) => (current === next ? current : next));
+        };
+        const schedule = () => {
+            if (st.timer) window.clearTimeout(st.timer);
+            st.timer = window.setTimeout(measure, debounceMs);
+        };
+        st.frame = requestAnimationFrame(measure);
+        st.observer = new ResizeObserver(schedule);
+        // content-box: a classic (non-overlay) vertical scrollbar appearing
+        // shrinks the content box without touching the border box — observe
+        // the box that actually bounds the text.
+        try {
+            st.observer.observe(node, { box: "content-box" });
+        } catch {
+            st.observer.observe(node);
+        }
+    }, [slack, debounceMs]);
+    return [cols, attachRef];
 }
 
 function normalizeLines(lines) {
@@ -3735,10 +3821,17 @@ function focusRegionForPaneKey(paneKey, override = null) {
     return PANE_KEY_FOCUS_REGIONS[String(paneKey || "")] || null;
 }
 
-function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, lines, stickyLines = [], bottomStickyLines = [], scrollOffset = 0, scrollMode = "top", paneKey, controller, className = "", panelClassName = "", topContent = null, bottomContent = null, structuredBlocks = false, stickyBottom = false, renderBody = null, focusRegion = null }) {
+function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, lines, stickyLines = [], bottomStickyLines = [], scrollOffset = 0, scrollMode = "top", paneKey, controller, className = "", panelClassName = "", topContent = null, bottomContent = null, structuredBlocks = false, stickyBottom = false, renderBody = null, focusRegion = null, panelRef = null }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
     const ref = React.useRef(null);
+    // Mirror the scroll-panel node into the caller's ref too (panes measure
+    // their own content width from it — see useMeasuredPaneColumns).
+    const setPanelNode = React.useCallback((node) => {
+        ref.current = node;
+        if (typeof panelRef === "function") panelRef(node);
+        else if (panelRef) panelRef.current = node;
+    }, [panelRef]);
     const stickyRef = React.useRef(null);
     const syncingHorizontalRef = React.useRef(false);
     const { normalizedLines, onScroll, onWheel, onTouchStart, onTouchMove, onTouchEnd } = useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller, { stickyBottom });
@@ -3828,7 +3921,7 @@ function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, l
                 normalizedSticky.map((line, index) => React.createElement(Line, { key: `sticky:${index}`, line, theme })),
             )
             : null,
-        React.createElement("div", { ref, className: `ps-scroll-panel ${className}${scrollShadow.down ? " is-scrolled-down" : ""}${scrollShadow.up ? " is-scrolled-up" : ""}`.trim(), "data-session-scroll": focusRegion === "sessions" ? "1" : undefined, onScroll: handleBodyScroll, onMouseDown: claimFocus, onTouchStart, onWheel, onTouchMove, onTouchEnd, onTouchCancel: onTouchEnd },
+        React.createElement("div", { ref: setPanelNode, className: `ps-scroll-panel ${className}${scrollShadow.down ? " is-scrolled-down" : ""}${scrollShadow.up ? " is-scrolled-up" : ""}`.trim(), "data-session-scroll": focusRegion === "sessions" ? "1" : undefined, onScroll: handleBodyScroll, onMouseDown: claimFocus, onTouchStart, onWheel, onTouchMove, onTouchEnd, onTouchCancel: onTouchEnd },
             typeof renderBody === "function"
                 ? renderBody(normalizedLines, theme)
                 : structuredBlocks
@@ -5138,15 +5231,24 @@ function SessionLinkModal({ url, warn, onCopyAgain, onClose }) {
     return React.createElement("div", { className: "ps-share-overlay", onClick: onClose },
         React.createElement("div", { className: "ps-link-modal", onClick: stop },
             React.createElement("div", { className: "ps-share-modal-head" },
-                React.createElement("span", null, "Link copied"),
+                React.createElement("span", null, portalLinkOrigins.length >= 2 ? "Session links copied" : "Link copied"),
                 React.createElement("button", { className: "ps-modal-close", onClick: onClose, "aria-label": "Close", title: "Close" }, "✕")),
             React.createElement("div", { className: "ps-share-section-sub" },
-                "Copied to your clipboard — anyone with access can open the session from this link."),
+                portalLinkOrigins.length >= 2
+                    ? "All entry-point links were copied — use the one reachable from the recipient's network."
+                    : "Copied to your clipboard — anyone with access can open the session from this link."),
             React.createElement("div", { className: "ps-link-row" },
-                React.createElement("input", {
-                    ref: inputRef, className: "ps-link-input", readOnly: true, value: url,
-                    onFocus: () => inputRef.current?.select(),
-                }),
+                portalLinkOrigins.length >= 2
+                    ? React.createElement("textarea", {
+                        ref: inputRef, className: "ps-link-input", readOnly: true,
+                        rows: buildPortalLinks(url, portalLinkOrigins).length,
+                        value: formatPortalLinksForCopy(buildPortalLinks(url, portalLinkOrigins)),
+                        onFocus: () => inputRef.current?.select(),
+                    })
+                    : React.createElement("input", {
+                        ref: inputRef, className: "ps-link-input", readOnly: true, value: url,
+                        onFocus: () => inputRef.current?.select(),
+                    }),
                 React.createElement("button", { className: "ps-mini-button", onClick: onCopyAgain }, "Copy")),
             warn
                 ? React.createElement("div", { className: "ps-link-warn" }, SESSION_LINK_PRIVATE_WARNING)
@@ -5790,9 +5892,14 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         viewState.sessionsById,
         viewState.sessionsFlat,
     ]);
+    // Character-cell content (code fences, tables, box art) wraps at the
+    // pane's MEASURED width; the legacy-model width only covers the first
+    // paint, before the panel node exists to measure.
+    const [measuredCols, panelRef] = useMeasuredPaneColumns();
+    const contentWidth = measuredCols ?? viewState.contentWidth;
     const chrome = React.useMemo(
-        () => selectChatPaneChrome(selectorState, { width: viewState.contentWidth }),
-        [selectorState, viewState.contentWidth],
+        () => selectChatPaneChrome(selectorState, { width: contentWidth }),
+        [selectorState, contentWidth],
     );
     const animatedDots = useAnimatedDots(Boolean(chrome.animateTitleRight));
     const titleRight = React.useMemo(
@@ -5809,21 +5916,21 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         && Number(viewState.activeHistory?.loadedEventCount || 0) >= AUTO_HISTORY_EVENT_SOFT_CAP,
     );
     const lines = React.useMemo(
-        () => selectChatLines(selectorState, viewState.contentWidth, { tableMode: "sentinel" }),
-        [selectorState, viewState.contentWidth],
+        () => selectChatLines(selectorState, contentWidth, { tableMode: "sentinel" }),
+        [selectorState, contentWidth],
     );
     const spinnerFrame = useSpinnerFrame(viewState.activeSessionStatus === "running");
     const liveActivityLines = React.useMemo(
-        () => selectLiveActivityLines(selectorState, { spinnerFrame, maxWidth: viewState.contentWidth }),
-        [selectorState, spinnerFrame, viewState.contentWidth],
+        () => selectLiveActivityLines(selectorState, { spinnerFrame, maxWidth: contentWidth }),
+        [selectorState, spinnerFrame, contentWidth],
     );
     // The live-activity line is pinned in the bottom-sticky strip (with the
     // outbox overlay), NOT appended to the transcript — it must stay put while
     // chat content scrolls, and it drops the instant the turn ends.
     const pinnedActivityLines = liveActivityLines;
     const outboxLines = React.useMemo(
-        () => selectOutboxOverlayLines(selectorState, viewState.contentWidth, { tableMode: "sentinel" }),
-        [selectorState, viewState.contentWidth],
+        () => selectOutboxOverlayLines(selectorState, contentWidth, { tableMode: "sentinel" }),
+        [selectorState, contentWidth],
     );
     const stickyBottom = React.useMemo(
         () => (pinnedActivityLines.length > 0 ? [...outboxLines, ...pinnedActivityLines] : outboxLines),
@@ -5894,6 +6001,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         paneKey: "chat",
         className: "is-wrapped",
         panelClassName: "ps-chat-panel",
+        panelRef,
         bottomContent: composer,
         topContent: showLoadOlder
             ? React.createElement("div", { className: "ps-load-older-bar" },
@@ -6256,6 +6364,135 @@ function SessionCanvasMark({ mark }) {
             : null));
 }
 
+/** Chain-link glyph for the canvas share button. */
+function CanvasLinkGlyph() {
+    const stroke = { fill: "none", stroke: "currentColor", strokeWidth: 1.7, strokeLinecap: "round", strokeLinejoin: "round" };
+    return React.createElement("svg", { viewBox: "0 0 20 20", width: 14, height: 14, "aria-hidden": "true" },
+        React.createElement("path", { d: "M8.5 11.5l3-3", ...stroke }),
+        React.createElement("path", { d: "M7 13l-1.8 1.8a2.8 2.8 0 01-4-4l3-3a2.8 2.8 0 014 0", ...stroke }),
+        React.createElement("path", { d: "M13 7l1.8-1.8a2.8 2.8 0 014 4l-3 3a2.8 2.8 0 01-4 0", ...stroke }));
+}
+
+/**
+ * The canvas share dialog: two audiences, one live public token.
+ *
+ * - Session access: a plain deep link; portal sign-in + the existing
+ *   visibility check do the authz. Always available.
+ * - Anyone with link: the ONE public view token for this canvas. Created
+ *   on demand, RESET rotates it (the old link dies instantly), Remove
+ *   returns to unlinked. The raw token appears exactly once, right after
+ *   mint — the server stores only its hash.
+ *
+ * Link management is a session:manage operation server-side; anyone else
+ * sees the server's refusal inline.
+ */
+function CanvasShareDialog({ controller, sessionId, slot, onClose }) {
+    const [info, setInfo] = React.useState(null);        // { exists, createdAt } | null while loading
+    const [freshLink, setFreshLink] = React.useState(null); // the just-minted URL, shown once
+    const [busy, setBusy] = React.useState(false);
+    const [error, setError] = React.useState("");
+    const [copied, setCopied] = React.useState("");
+
+    const transport = controller.transport;
+    const sessionLink = `${window.location.origin}/?session=${encodeURIComponent(sessionId)}&view=canvas&slot=${slot}&max=1`;
+    // Multi-entry-point deployments: ONE text box holding every labeled
+    // variant, ONE copy that takes all of them — the sender does not know
+    // which entry point the recipient can reach, so they paste both. The
+    // token variants all resolve the same hashed row: one token, N doors,
+    // single-switch revocation whichever door the bearer uses.
+    const linkRows = (url, keyPrefix) => {
+        const links = buildPortalLinks(url, portalLinkOrigins);
+        if (links.length <= 1) {
+            return React.createElement("div", { className: "ps-canvas-share-row" },
+                React.createElement("code", { className: "ps-canvas-share-url" }, url),
+                React.createElement("button", {
+                    type: "button", className: "ps-mini-button",
+                    onClick: () => copy(keyPrefix, url),
+                }, copied === keyPrefix ? "Copied" : "Copy"));
+        }
+        const text = formatPortalLinksForCopy(links);
+        return React.createElement("div", { className: "ps-canvas-share-row" },
+            React.createElement("textarea", {
+                className: "ps-link-input",
+                readOnly: true,
+                rows: links.length,
+                value: text,
+                onFocus: (event) => event.currentTarget.select(),
+            }),
+            React.createElement("button", {
+                type: "button", className: "ps-mini-button",
+                onClick: () => copy(keyPrefix, text),
+            }, copied === keyPrefix ? "Copied" : "Copy"));
+    };
+
+    const refresh = React.useCallback(() => {
+        transport.getCanvasShareLink?.(sessionId, slot)
+            .then((state) => setInfo(state || { exists: false }))
+            .catch((err) => { setInfo({ exists: false }); setError(err?.message || String(err)); });
+    }, [transport, sessionId, slot]);
+    React.useEffect(() => { refresh(); }, [refresh]);
+
+    const copy = (label, text) => {
+        navigator.clipboard?.writeText(text)
+            .then(() => { setCopied(label); window.setTimeout(() => setCopied(""), 1500); })
+            .catch(() => setError("Could not reach the clipboard — copy the link manually."));
+    };
+
+    const mint = (isReset) => {
+        setBusy(true); setError("");
+        transport.resetCanvasShareLink(sessionId, slot)
+            .then(({ token }) => {
+                setFreshLink(`${window.location.origin}/?canvasShare=${encodeURIComponent(token)}`);
+                setInfo({ exists: true });
+            })
+            .catch((err) => setError(err?.message || String(err)))
+            .finally(() => setBusy(false));
+        void isReset;
+    };
+
+    const remove = () => {
+        setBusy(true); setError("");
+        transport.removeCanvasShareLink(sessionId, slot)
+            .then(() => { setFreshLink(null); setInfo({ exists: false }); })
+            .catch((err) => setError(err?.message || String(err)))
+            .finally(() => setBusy(false));
+    };
+
+    return React.createElement("div", { className: "ps-canvas-share-overlay", onClick: onClose },
+        React.createElement("div", { className: "ps-canvas-share-dialog", onClick: (e) => e.stopPropagation(), role: "dialog", "aria-label": "Share canvas" },
+            React.createElement("div", { className: "ps-canvas-share-title" },
+                "Share this canvas",
+                React.createElement("button", { type: "button", className: "ps-mini-button", onClick: onClose, "aria-label": "Close" }, "✕")),
+
+            React.createElement("div", { className: "ps-canvas-share-section" },
+                React.createElement("div", { className: "ps-canvas-share-head" }, "Anyone with session access"),
+                React.createElement("div", { className: "ps-canvas-share-sub" }, "Opens the portal signed in, canvas full screen. Session visibility rules apply."),
+                linkRows(sessionLink, "session")),
+
+            React.createElement("div", { className: "ps-canvas-share-section" },
+                React.createElement("div", { className: "ps-canvas-share-head" }, "Anyone with the link"),
+                React.createElement("div", { className: "ps-canvas-share-sub" },
+                    "View only, live, no sign-in. One link at a time — resetting makes the previous link stop working immediately."),
+                info === null
+                    ? React.createElement("div", { className: "ps-canvas-share-sub" }, "Checking…")
+                    : freshLink
+                        ? React.createElement(React.Fragment, null,
+                            linkRows(freshLink, "public"),
+                            React.createElement("div", { className: "ps-canvas-share-sub is-warn" },
+                                "Copy it now — the link is shown only this once."))
+                        : info.exists
+                            ? React.createElement("div", { className: "ps-canvas-share-sub" },
+                                `A link exists${info.createdAt ? ` (created ${new Date(info.createdAt).toLocaleString()})` : ""}. For safety it cannot be re-shown — Reset to get a new one.`)
+                            : React.createElement("div", { className: "ps-canvas-share-sub" }, "No public link yet."),
+                React.createElement("div", { className: "ps-canvas-share-actions" },
+                    React.createElement("button", { type: "button", className: "ps-mini-button", disabled: busy, onClick: () => mint(info?.exists) },
+                        info?.exists ? "Reset link" : "Create link"),
+                    info?.exists
+                        ? React.createElement("button", { type: "button", className: "ps-mini-button", disabled: busy, onClick: remove }, "Remove link")
+                        : null)),
+            error ? React.createElement("div", { className: "ps-canvas-share-error" }, error) : null));
+}
+
 /**
  * The canvas slot controls: a dropdown when the session has more than one
  * drawn canvas, plus prev/next arrows. Hidden entirely with one canvas —
@@ -6322,7 +6559,7 @@ function RestoreGlyph() {
  * loads hidden-but-painted behind the live frame and is promoted on load, so
  * a live redraw is a composite swap of something already drawn.
  */
-function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible = true, focusOnPromote = false, dataRev = 0, dataPayload = null }) {
+function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible = true, focusOnPromote = false, dataRev = 0, dataPayload = null, dataPatch = null }) {
     const [live, setLive] = React.useState(null);       // { url, rev }
     const [staging, setStaging] = React.useState(null); // { url, rev }
     const [loadError, setLoadError] = React.useState(null); // { rev }
@@ -6471,13 +6708,22 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
             liveIframeElRef.current?.contentWindow?.postMessage(
                 { type: "canvas-data", data: dataPayload, dataRev }, "*",
             );
+            // The delta that produced this state, for pages that registered a
+            // canvas-patch listener (targeted DOM updates, transitions). The
+            // whole-state message above ALWAYS accompanies it — applyData
+            // stays the mandatory floor; the patch is the opt-in fast path.
+            if (dataPatch) {
+                liveIframeElRef.current?.contentWindow?.postMessage(
+                    { type: "canvas-patch", patch: dataPatch, dataRev }, "*",
+                );
+            }
         } catch { /* frame mid-teardown */ }
         // On-screen injection = seen; hidden injection leaves the badge lit
         // until the user actually looks (the catch-up below files it then).
         if (controller && sessionId && visibleRef.current) {
             controller.dispatch({ type: "canvas/viewed", sessionId, slot, dataRev });
         }
-    }, [live, dataRev, dataPayload, controller, sessionId]);
+    }, [live, dataRev, dataPayload, dataPatch, controller, sessionId]);
 
     // Catch-up receipt: becoming visible with a live revision on screen IS
     // viewing it — this is what clears a badge earned while hidden.
@@ -6601,6 +6847,7 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
     }, [controller, view.sessionId]);
 
     const zenOn = useControllerSelector(controller, (s) => s?.ui?.canvasZen === true);
+    const [shareOpen, setShareOpen] = React.useState(false);
     const [toolbarSlot, setToolbarSlot] = React.useState(null);
     React.useEffect(() => {
         if (!maximized) { setToolbarSlot(null); return undefined; }
@@ -6683,6 +6930,15 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
                 React.createElement(CanvasSlotControls, { controller, view })),
             React.createElement("span", { className: "ps-artifact-pane-actions" },
                 view.exists ? React.createElement(HtmlZoomControl, { zoom, setZoom }) : null,
+                view.exists
+                    ? React.createElement("button", {
+                        type: "button",
+                        className: "ps-artifact-pane-btn",
+                        onClick: () => setShareOpen(true),
+                        title: "Share this canvas — copy a view link",
+                        "aria-label": "Share canvas",
+                    }, React.createElement(CanvasLinkGlyph))
+                    : null,
                 // Zen: sessions step away, chat becomes a rail, the canvas is
                 // the workbench. The mode for "the work happens on the canvas,
                 // chat is for steering".
@@ -6727,11 +6983,20 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
                 focusOnPromote,
                 dataRev: view.latestDataRev,
                 dataPayload: view.dataPayload,
+                dataPatch: view.dataPatch,
             })
             : React.createElement("div", { className: "ps-canvas-blank" },
                 React.createElement("p", { className: "ps-canvas-blank-title" }, "Nothing on the canvas yet."),
                 React.createElement("p", null,
-                    "Ask the agent to draw — a dashboard, a chart, a diagram — or it will draw when it has something worth showing."))));
+                    "Ask the agent to draw — a dashboard, a chart, a diagram — or it will draw when it has something worth showing."))),
+        shareOpen && view.exists
+            ? React.createElement(CanvasShareDialog, {
+                controller,
+                sessionId: view.sessionId,
+                slot: view.slot,
+                onClose: () => setShareOpen(false),
+            })
+            : null);
 }
 
 function InspectorTabs({ activeTab, controller }) {
@@ -7239,9 +7504,16 @@ function InspectorPane({ controller, mobile = false, panelClassName = "", extraA
     // could pan it — in practice it rendered clipped on BOTH edges (the
     // timestamps and the STATS header sliced off) and read as broken. Fitting
     // to width collapses surplus lanes into "…" instead, which is legible.
+    //
+    // The width itself is the pane's MEASURED column count wherever a
+    // measurement exists — the legacy-model rightWidth imagines a split the
+    // portal's draggable grid does not honor, which is how the sequence grid
+    // used to spill past the pane edge and the stats boxes arrived pre-sliced.
+    const [measuredCols, panelRef] = useMeasuredPaneColumns();
+    const contentWidth = measuredCols ?? viewState.contentWidth;
     const inspector = React.useMemo(() => selectInspector(selectorState, {
-        width: viewState.contentWidth,
-    }), [selectorState, viewState.contentWidth]);
+        width: contentWidth,
+    }), [selectorState, contentWidth]);
     const completionByTurn = React.useMemo(() => {
         const history = viewState.activeSessionId
             ? viewState.historyBySessionId?.get(viewState.activeSessionId) || null
@@ -7391,6 +7663,7 @@ function InspectorPane({ controller, mobile = false, panelClassName = "", extraA
                 : "top",
         stickyBottom: inspector.activeTab === "logs",
         paneKey: "inspector",
+        panelRef,
         className: inspector.activeTab === "history" || inspector.activeTab === "logs" ? "is-wrapped" : "is-preserve",
         panelClassName: `ps-inspector-pane${inspector.activeTab === "sequence" ? " has-preserved-sticky" : ""}${panelClassName ? ` ${panelClassName}` : ""}`.trim(),
     });
@@ -7564,6 +7837,33 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
     const inputRef = React.useRef(null);
     const attachInputRef = React.useRef(null);
     const [dragOver, setDragOver] = React.useState(false);
+    // Expand mode: the same buffer, editor-sized. Web-local view state — the
+    // shared core never needs to know the box got taller.
+    const [expanded, setExpanded] = React.useState(false);
+
+    // Auto-grow: one line idle, sized to the RENDERED content (scrollHeight
+    // sees soft wrap; counting "\n" does not). CSS max-height provides the
+    // cap, after which the textarea scrolls internally. In expand mode the
+    // height belongs to CSS entirely.
+    const growInput = React.useCallback(() => {
+        const node = inputRef.current;
+        if (!node) return;
+        if (expanded) {
+            node.style.height = "";
+            return;
+        }
+        node.style.height = "auto";
+        node.style.height = `${node.scrollHeight + 2}px`;
+    }, [expanded]);
+    React.useLayoutEffect(() => {
+        growInput();
+    }, [growInput, promptState.value]);
+    React.useEffect(() => {
+        // Width changes re-wrap the content; re-measure on viewport resizes
+        // (covers rotation and the on-screen keyboard shrinking the pane).
+        window.addEventListener("resize", growInput);
+        return () => window.removeEventListener("resize", growInput);
+    }, [growInput]);
 
     const canAttachImages = typeof controller.transport?.supportsPromptImageAttachments === "function"
         && controller.transport.supportsPromptImageAttachments()
@@ -7609,16 +7909,31 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
         const inputNode = inputRef.current;
         if (!active || promptState.modalOpen || !promptState.focused || !inputNode) return;
         if (document.activeElement !== inputNode) {
+            // Programmatic focus pops the on-screen keyboard on touch devices;
+            // there, focus only ever comes from the user's own tap.
+            if (mobile) return;
             try {
                 inputNode.focus({ preventScroll: true });
             } catch {
                 inputNode.focus();
             }
         }
-        inputNode.setSelectionRange(promptState.cursor, promptState.cursor);
-    }, [active, promptState.cursor, promptState.focused, promptState.modalOpen]);
+        // Apply the model's caret ONLY when it disagrees with the DOM — that
+        // is a programmatic intervention (pending-message recall, reference
+        // autocomplete insert, draft restore). While the user edits, the DOM
+        // is the source of truth and onSelect/onChange mirror it into state;
+        // unconditionally echoing state back used to collapse in-progress
+        // backward selections (mouse drag right-to-left, Shift+Left, and the
+        // start handle of a touch selection).
+        if (inputNode.value === promptState.value && inputNode.selectionStart !== promptState.cursor) {
+            inputNode.setSelectionRange(promptState.cursor, promptState.cursor);
+        }
+    }, [active, mobile, promptState.cursor, promptState.value, promptState.focused, promptState.modalOpen]);
 
     const sendPrompt = React.useCallback(() => {
+        // Sending collapses expand mode — the tall editor was for composing
+        // THIS message; the reply deserves the transcript space back.
+        setExpanded(false);
         controller.handleCommand(UI_COMMANDS.SEND_PROMPT)
             .catch(() => {})
             .finally(() => {
@@ -7658,7 +7973,7 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
     const selectedReadOnly = selectedQueued || selectedCancelling;
 
     return React.createElement("div", {
-        className: `ps-prompt-shell${mobile ? " is-mobile" : ""}${dragOver ? " is-drag-over" : ""}`,
+        className: `ps-prompt-shell${mobile ? " is-mobile" : ""}${dragOver ? " is-drag-over" : ""}${expanded ? " is-expanded" : ""}`,
         ...(canAttachImages ? {
             onDragOver: (event) => {
                 if (event.dataTransfer?.types?.includes?.("Files")) {
@@ -7720,7 +8035,9 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
         React.createElement("textarea", {
             ref: inputRef,
             className: "ps-prompt-input",
-            rows: mobile ? 2 : Math.max(2, getPromptInputRows(promptState.value)),
+            // One line at rest; a layout effect grows it to the rendered
+            // content and CSS max-height caps it. Never a manual resize grip.
+            rows: 1,
             value: promptState.value,
             readOnly: selectedReadOnly,
             placeholder: promptState.answerMode
@@ -7734,7 +8051,9 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
                     : promptState.hasOutbox
                         ? "Type a message and press Enter to queue it behind the pending batch"
                 : "Type a message and press Enter",
-            enterKeyHint: "send",
+            // On touch, Enter inserts a newline (the chevron sends) — the
+            // keyboard must not advertise a send that will not happen.
+            enterKeyHint: mobile ? "enter" : "send",
             onFocus: () => controller.setFocus("prompt"),
             onSelect: (event) => controller.setPromptCursor(event.currentTarget.selectionStart || 0),
             onChange: (event) => controller.setPrompt(event.currentTarget.value, event.currentTarget.selectionStart || event.currentTarget.value.length),
@@ -7758,14 +8077,14 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
                     event.preventDefault();
                     return;
                 }
-                if (event.key === "ArrowUp" && !event.shiftKey && !event.metaKey && !event.altKey) {
+                // Arrow keys are NOT intercepted: the textarea's native cursor
+                // movement understands soft-wrapped lines and goal columns;
+                // onSelect mirrors every move into the shared model. (The old
+                // hijack routed through the TUI's logical-line cursor and made
+                // Down jump whole paragraphs inside wrapped text.)
+                if (event.key === "Escape" && expanded && !promptState.editingPending) {
                     event.preventDefault();
-                    controller.movePromptCursorVertical(-1);
-                    return;
-                }
-                if (event.key === "ArrowDown" && !event.shiftKey && !event.metaKey && !event.altKey) {
-                    event.preventDefault();
-                    controller.movePromptCursorVertical(1);
+                    setExpanded(false);
                     return;
                 }
                 if (event.key === "Escape" && promptState.editingPending) {
@@ -7784,6 +8103,18 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
             },
         }),
         React.createElement("div", { className: "ps-prompt-actions" },
+            // pointerdown preventDefault on every action keeps focus in the
+            // textarea — on a phone, tapping Send must not collapse the
+            // keyboard between messages.
+            React.createElement("button", {
+                type: "button",
+                className: `ps-mini-button ps-expand-button${expanded ? " is-active" : ""}`,
+                title: expanded ? "Collapse the editor (Esc)" : "Expand into a larger editor",
+                "aria-label": expanded ? "Collapse the editor" : "Expand the editor",
+                "aria-pressed": expanded,
+                onPointerDown: (event) => event.preventDefault(),
+                onClick: () => setExpanded((current) => !current),
+            }, expanded ? "⤡" : "⤢"),
             canAttachImages
                 ? React.createElement(React.Fragment, null,
                     React.createElement("input", {
@@ -7807,6 +8138,7 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
                         className: "ps-mini-button ps-attach-button",
                         title: "Attach images (or paste / drop them into the composer)",
                         "aria-label": "Attach images",
+                        onPointerDown: (event) => event.preventDefault(),
                         onClick: () => attachInputRef.current?.click(),
                     }, "📎"))
                 : null,
@@ -7816,6 +8148,7 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
                     className: "ps-mini-button",
                     title: selectedQueued ? "Delete selected queued prompt" : "Cancel selected pending prompt",
                     "aria-label": selectedQueued ? "Delete selected queued prompt" : "Cancel selected pending prompt",
+                    onPointerDown: (event) => event.preventDefault(),
                     onClick: cancelPending,
                 }, selectedQueued ? "Delete" : "Cancel")
                 : null,
@@ -7826,6 +8159,7 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
                     title: "Stop the current turn (the session stays alive and returns to idle)",
                     "aria-label": "Stop the current turn",
                     disabled: stoppingTurn,
+                    onPointerDown: (event) => event.preventDefault(),
                     onClick: stopTurn,
                 }, "■")
                 : null,
@@ -7842,6 +8176,7 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
                     : promptState.hasOutbox
                         ? "Queue prompt"
                         : "Send prompt",
+                onPointerDown: (event) => event.preventDefault(),
                 onClick: sendPrompt,
             }, sendLabel),
         ),

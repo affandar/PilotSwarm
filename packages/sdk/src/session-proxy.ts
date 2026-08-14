@@ -1561,6 +1561,39 @@ export function registerActivities(
 }
 
 let canvasDrawChain: Promise<void> = Promise.resolve();
+        // Per-slot tick throttle (the plane makes ticks cheap; a runaway
+        // loop must not flood viewers). Execution-scoped, like the chain.
+        // Keys are `${targetSessionId}:${slot}` — a child ticking its own
+        // canvas and its parent's dashboard are separate budgets.
+        const canvasTickClock = new Map<string, number>();
+        const CANVAS_TICK_MIN_INTERVAL_MS = 100;
+        /**
+         * Cross-session canvas targeting: ANCESTORS ONLY. A sub-agent may
+         * draw on its parent's (or grandparent's, or the root's) surface —
+         * never a sibling's, a child's, or a stranger's. Worker-trusted,
+         * the same stance as fromArtifact; the walk is the catalog's parent
+         * chain, capped at the spawn-nesting depth.
+         */
+        const resolveCanvasTarget = async (requested?: unknown): Promise<{ target: string; crossSession: boolean } | { error: string }> => {
+            const requestedId = String(requested ?? "").trim();
+            if (!requestedId || requestedId === input.sessionId) {
+                return { target: input.sessionId, crossSession: false };
+            }
+            let cursor: string | null = input.sessionId;
+            for (let depth = 0; depth < 8 && cursor; depth++) {
+                let row: any;
+                try {
+                    row = await catalog?.getSession?.(cursor);
+                } catch (err: any) {
+                    return { error: `could not verify the session lineage: ${err?.message || String(err)}` };
+                }
+                const parent: string | null = row?.parentSessionId ?? null;
+                if (!parent) break;
+                if (parent === requestedId) return { target: requestedId, crossSession: true };
+                cursor = parent;
+            }
+            return { error: `session_id ${requestedId} is not an ancestor of this session — canvas tools may target only your parent chain (parent, grandparent, root)` };
+        };
 
         const controlToolBridge = {
             /**
@@ -2422,7 +2455,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             // cross-session canvas access here, so a child cannot touch its
             // parent's surface any more than a stranger's.
             ...({
-                drawCanvas: async (args: { html?: string; fromArtifact?: { sessionId?: string; filename: string; expectedSha256?: string }; note?: string; responseContract?: Record<string, any>; slot?: number; name?: string }) => {
+                drawCanvas: async (args: { html?: string; fromArtifact?: { sessionId?: string; filename: string; expectedSha256?: string }; note?: string; responseContract?: Record<string, any>; slot?: number; name?: string; session_id?: string }) => {
                     if (!artifactStore) return { error: "this worker has no artifact store" };
                     if (!catalog) return { error: "canvas requires the CMS catalog" };
                     const slot = normalizeCanvasSlot(args.slot);
@@ -2431,8 +2464,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     if (rawName !== undefined && rawName.length > 60) {
                         return { error: "name must be 60 characters or fewer" };
                     }
+                    const resolved = await resolveCanvasTarget(args.session_id);
+                    if ("error" in resolved) return { error: resolved.error };
+                    const { target, crossSession } = resolved;
                     const run = canvasDrawChain.then(async () => {
-                        const rev = (await latestCanvasRev(catalog, input.sessionId, slot)) + 1;
                         // Source resolution. fromArtifact pulls bytes store-side —
                         // the same trust stance as read_artifact/write_artifact's
                         // cross-session paths (the artifact layer is worker-trusted);
@@ -2493,8 +2528,23 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         }
                         const app = canvasAppCard(extraction.manifest);
                         const note = args.note ? String(args.note) : undefined;
+                        // Atomic rev mint (multi-writer safe), AFTER every
+                        // validation refusal above: the mint writes latest_rev
+                        // into the 0045 cache, and a rev minted for a draw
+                        // that then failed validation would unlock ticks on an
+                        // empty slot (latestCanvasRev is table-first). The
+                        // seed from the table/event read floors legacy
+                        // sessions whose cache row never landed. Residual
+                        // window: an upload/record failure AFTER the mint
+                        // burns a phantom rev — infra-failure only, and the
+                        // next successful draw overwrites it; read_canvas
+                        // stays honest because it is log-first.
+                        const seedRev = await latestCanvasRev(catalog, target, slot);
+                        const rev = typeof (catalog as any).mintCanvasRev === "function"
+                            ? await (catalog as any).mintCanvasRev(target, slot, seedRev)
+                            : seedRev + 1;
                         await artifactStore.uploadArtifact(
-                            input.sessionId, canvasArtifactFilename(slot), html, "text/html",
+                            target, canvasArtifactFilename(slot), html, "text/html",
                             // Pinned on EVERY draw, not just the first: uploads
                             // replace artifact metadata wholesale, so a pin set
                             // once at rev 1 was silently erased by rev 2.
@@ -2506,7 +2556,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         // The response contract rides the event so every
                         // client learns it exactly where it learns the rev —
                         // live push and cold snapshot alike, no extra fetch.
-                        await catalog.recordEvents(input.sessionId, [{
+                        await catalog.recordEvents(target, [{
                             eventType: "session.canvas_updated",
                             data: {
                                 rev,
@@ -2516,6 +2566,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                                 ...(note ? { note } : {}),
                                 ...(effectiveContract ? { responseContract: effectiveContract } : {}),
                                 ...(source ? { source } : {}),
+                                // Attribution: who actually drew this revision.
+                                // Only present on cross-session draws, so the
+                                // portal can badge "drawn by sub-agent X".
+                                ...(crossSession ? { by: input.sessionId } : {}),
                             },
                         }], workerNodeId);
                         // The per-slot cache (migration 0045). Non-fatal on
@@ -2524,8 +2578,19 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         // missing — failing the draw over a cache write would
                         // invert the dependency.
                         try {
-                            await catalog.upsertSessionCanvas?.(input.sessionId, slot, rawName ?? null, rev, sizeBytes);
+                            await catalog.upsertSessionCanvas?.(target, slot, rawName ?? null, rev, sizeBytes);
                         } catch { /* self-heals on the next draw */ }
+                        // The data plane (migration 0047): doc pointer for
+                        // live viewers + RESET of the data mirror — the new
+                        // page starts from its own initial state, never the
+                        // old page's stale ticks. Non-fatal: the plane is the
+                        // acceleration path, the event above is the truth.
+                        try {
+                            if (await (catalog as any).canvasLiveAvailable?.()) {
+                                const sha = createHash("sha256").update(html, "utf8").digest("hex");
+                                await (catalog as any).upsertCanvasLiveDoc?.(target, slot, { rev, sha }, input.sessionId);
+                            }
+                        } catch { /* live viewers resync from events */ }
                         return {
                             rev,
                             slot,
@@ -2540,29 +2605,95 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     canvasDrawChain = run.then(() => undefined, () => undefined);
                     return run;
                 },
-                updateCanvas: async (args: { data: Record<string, any>; note?: string; slot?: number }) => {
+                updateCanvas: async (args: { data?: Record<string, any>; patch?: Record<string, any>; note?: string; slot?: number; session_id?: string }) => {
                     if (!catalog) return { error: "canvas requires the CMS catalog" };
                     const slot = normalizeCanvasSlot(args.slot);
                     if (slot === null) return { error: "slot must be an integer 1-5" };
+                    const resolved = await resolveCanvasTarget(args.session_id);
+                    if ("error" in resolved) return { error: resolved.error };
+                    const { target, crossSession } = resolved;
+                    const isPatch = args.patch !== undefined;
+                    const body = isPatch ? args.patch : args.data;
+                    // Rate limit at the source: the plane makes ticks cheap
+                    // enough that a runaway loop could flood viewers. Applies
+                    // per (target, slot) within this execution.
+                    const now = Date.now();
+                    const tickKey = `${target}:${slot}`;
+                    const lastTick = canvasTickClock.get(tickKey) || 0;
+                    if (now - lastTick < CANVAS_TICK_MIN_INTERVAL_MS) {
+                        return { error: `ticking slot ${slot} faster than ${CANVAS_TICK_MIN_INTERVAL_MS} ms apart — aggregate your changes into fewer, larger ticks` };
+                    }
+                    canvasTickClock.set(tickKey, now);
                     const run = canvasDrawChain.then(async () => {
-                        if ((await latestCanvasRev(catalog, input.sessionId, slot)) === 0) {
+                        if ((await latestCanvasRev(catalog, target, slot)) === 0) {
                             return { error: `no canvas has been drawn in slot ${slot} — draw_canvas first; ticks patch an existing page` };
                         }
-                        const dataRev = (await latestCanvasDataRev(catalog, input.sessionId, slot)) + 1;
-                        const sizeBytes = Buffer.byteLength(JSON.stringify(args.data), "utf8");
-                        // The payload rides the durable event — it IS the
-                        // replay source for cold loads; no artifact write.
-                        await catalog.recordEvents(input.sessionId, [{
-                            eventType: "session.canvas_data",
-                            data: {
-                                dataRev,
-                                slot,
-                                sizeBytes,
-                                payload: args.data,
-                                ...(args.note ? { note: String(args.note) } : {}),
-                            },
-                        }], workerNodeId);
-                        return { dataRev, slot, sizeBytes };
+                        const planeAvailable = await (catalog as any).canvasLiveAvailable?.().catch(() => false);
+                        // The plane is where merges live. Without it (older
+                        // deployment), a patch has no current state to merge
+                        // against — refuse with the actionable alternative
+                        // instead of guessing.
+                        if (isPatch && !planeAvailable) {
+                            return { error: "this deployment predates the canvas data plane — send data (the whole state) instead of patch" };
+                        }
+                        // Whole state after this write, whoever computes it:
+                        // the plane merges patches server-side; a plain PUT is
+                        // its own whole state.
+                        let mergedPayload: Record<string, unknown> = (body ?? {}) as Record<string, unknown>;
+                        let planeSeq: number | undefined;
+                        if (planeAvailable) {
+                            const live = await (catalog as any).upsertCanvasLiveTick(
+                                target, slot,
+                                isPatch ? { patch: body } : { data: body },
+                                input.sessionId,
+                                32_768,
+                            );
+                            if (live?.refused) {
+                                return {
+                                    error: `the merged canvas state would exceed 32768 bytes`
+                                        + (live.currentSizeBytes != null ? ` (currently ${live.currentSizeBytes} bytes)` : "")
+                                        + `. Aggregate the data, remove stale keys (patch with null deletes), or redraw if the shape truly grew.`,
+                                };
+                            }
+                            mergedPayload = live.payload ?? mergedPayload;
+                            planeSeq = live.seq;
+                        }
+                        const sizeBytes = Buffer.byteLength(JSON.stringify(mergedPayload), "utf8");
+                        // Dual-write phase: the durable event carries the
+                        // MERGED whole state so pre-plane readers (older
+                        // portals, cold loads) stay complete. Flipping
+                        // PILOTSWARM_CANVAS_DURABLE_TICKS=0 ends this — only
+                        // after every reader in the environment prefers the
+                        // plane, and the completion checkpoint ships with
+                        // that flip.
+                        let dataRev: number | undefined;
+                        // The flag only silences durable ticks where the
+                        // plane actually took the write. Plane absent =
+                        // today's path stays, whatever the flag says —
+                        // otherwise a PUT would be written NOWHERE and still
+                        // report success.
+                        if (!planeAvailable || process.env.PILOTSWARM_CANVAS_DURABLE_TICKS !== "0") {
+                            dataRev = (await latestCanvasDataRev(catalog, target, slot)) + 1;
+                            await catalog.recordEvents(target, [{
+                                eventType: "session.canvas_data",
+                                data: {
+                                    dataRev,
+                                    slot,
+                                    sizeBytes,
+                                    payload: mergedPayload,
+                                    ...(isPatch ? { patched: true } : {}),
+                                    ...(crossSession ? { by: input.sessionId } : {}),
+                                    ...(args.note ? { note: String(args.note) } : {}),
+                                },
+                            }], workerNodeId);
+                        }
+                        return {
+                            ...(dataRev !== undefined ? { dataRev } : {}),
+                            ...(planeSeq !== undefined ? { seq: planeSeq } : {}),
+                            slot,
+                            sizeBytes,
+                            mode: isPatch ? "patch" : "data",
+                        };
                     }).catch((err: any) => ({ error: err?.message || String(err) }));
                     canvasDrawChain = run.then(() => undefined, () => undefined);
                     return run;
@@ -2571,25 +2702,43 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 // redrawing it: no bytes, no new rev, nothing marked unseen.
                 // The portal routes the event through the same flip guards a
                 // draw uses (active session, freshness, per-slot opt-out).
-                showCanvas: async (args: { slot?: number }) => {
+                showCanvas: async (args: { slot?: number; session_id?: string }) => {
                     if (!catalog) return { error: "canvas requires the CMS catalog" };
                     const slot = normalizeCanvasSlot(args.slot);
                     if (slot === null) return { error: "slot must be an integer 1-5" };
-                    const rev = await latestCanvasRev(catalog, input.sessionId, slot);
+                    const resolved = await resolveCanvasTarget(args.session_id);
+                    if ("error" in resolved) return { error: resolved.error };
+                    const { target, crossSession } = resolved;
+                    const rev = await latestCanvasRev(catalog, target, slot);
                     if (rev === 0) {
                         return { error: `nothing has been drawn in slot ${slot} — draw_canvas first; show_canvas only presents an existing canvas` };
                     }
-                    await catalog.recordEvents(input.sessionId, [{
+                    await catalog.recordEvents(target, [{
                         eventType: "session.canvas_presented",
-                        data: { slot, rev },
+                        data: { slot, rev, ...(crossSession ? { by: input.sessionId } : {}) },
                     }], workerNodeId);
                     return { presented: true, slot, rev };
                 },
-                readCanvas: async (args: { offset?: number; maxBytes?: number; manifestOnly?: boolean; slot?: number }) => {
+                readCanvas: async (args: { offset?: number; maxBytes?: number; manifestOnly?: boolean; includeData?: boolean; slot?: number; session_id?: string }) => {
                     if (!artifactStore) return { error: "this worker has no artifact store" };
                     if (!catalog) return { error: "canvas requires the CMS catalog" };
                     const slot = normalizeCanvasSlot(args.slot);
                     if (slot === null) return { error: "slot must be an integer 1-5" };
+                    const resolved = await resolveCanvasTarget(args.session_id);
+                    if ("error" in resolved) return { error: resolved.error };
+                    const { target } = resolved;
+                    // "What is the page showing right now?" — the plane's
+                    // last-value row, one PK read. Opt-in (the payload can be
+                    // 32 KB of model context) and independent of paging.
+                    const liveState = async () => {
+                        if (!args.includeData) return {};
+                        try {
+                            if (!(await (catalog as any).canvasLiveAvailable?.())) return {};
+                            const rows = await (catalog as any).getCanvasLive?.(target);
+                            const hit = (rows || []).find((r: any) => Number(r.slot) === slot);
+                            return hit ? { live: { seq: hit.seq, data: hit.payload, updatedBy: hit.updatedBy, updatedAt: hit.updatedAt } } : {};
+                        } catch { return {}; }
+                    };
                     try {
                         // Log FIRST: the event log is the single authority on
                         // whether a canvas exists. Orphan bytes from a crashed
@@ -2605,9 +2754,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                             // ARMED contract from the latest draw event — the
                             // pair an inheriting agent needs to interpret
                             // canvas-action messages and author ticks.
-                            const latest = await latestCanvasEventData(catalog, input.sessionId, slot);
+                            const latest = await latestCanvasEventData(catalog, target, slot);
                             if (latest.rev === 0) return { exists: false };
-                            const docText = await artifactStore.downloadArtifactText(input.sessionId, canvasArtifactFilename(slot));
+                            const docText = await artifactStore.downloadArtifactText(target, canvasArtifactFilename(slot));
                             const extraction = extractCanvasAppManifest(docText);
                             const card = canvasAppCard(extraction.manifest);
                             // Events are writable via send_session_event with no
@@ -2622,11 +2771,12 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                                 ...(card ? { app: card } : {}),
                                 ...(armed.contract ? { responseContract: armed.contract } : {}),
                                 ...(extraction.error ? { manifestError: extraction.error } : {}),
+                                ...(await liveState()),
                             };
                         }
-                        const rev = await latestCanvasRev(catalog, input.sessionId, slot);
+                        const rev = await latestCanvasRev(catalog, target, slot);
                         if (rev === 0) return { exists: false };
-                        const text = await artifactStore.downloadArtifactText(input.sessionId, canvasArtifactFilename(slot));
+                        const text = await artifactStore.downloadArtifactText(target, canvasArtifactFilename(slot));
                         const offset = Math.max(0, Math.floor(Number(args.offset) || 0));
                         const maxChars = Math.min(262_144, Math.max(1, Math.floor(Number(args.maxBytes) || 65_536)));
                         const content = text.slice(offset, offset + maxChars);
@@ -2640,6 +2790,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                             offset,
                             content,
                             truncated: offset + content.length < text.length,
+                            ...(await liveState()),
                         };
                     } catch (err: any) {
                         return { error: err?.message || String(err) };

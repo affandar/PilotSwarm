@@ -456,6 +456,12 @@ export interface PilotSwarmManagementClientOptions {
 
 // ─── Management Client ──────────────────────────────────────────
 
+function normalizeShareSlot(slot: unknown): number {
+    const n = Math.floor(Number(slot));
+    if (!Number.isInteger(n) || n < 1 || n > 5) throw new Error("slot must be an integer 1-5");
+    return n;
+}
+
 export class PilotSwarmManagementClient {
     private config!: PilotSwarmManagementClientOptions;
     private _catalog: SessionCatalog | null = null;
@@ -1617,6 +1623,66 @@ export class PilotSwarmManagementClient {
     async getSessionEvents(sessionId: string, afterSeq?: number, limit?: number, eventTypes?: string[]): Promise<import("./cms.js").SessionEvent[]> {
         this._ensureStarted();
         return this._catalog!.getSessionEvents(sessionId, afterSeq, limit, eventTypes);
+    }
+
+    /**
+     * The canvas data plane's last-value rows for one session (migration
+     * 0047): current doc pointer + latest merged tick per slot. The browser's
+     * snapshot source on subscribe and on seq gaps. Empty when the plane is
+     * absent (older deployment) — callers fall back to canvas_data events.
+     */
+    /** Public view link status for one canvas — never the token itself. */
+    async getCanvasShareLink(sessionId: string, slot: number): Promise<{ exists: boolean; createdAt?: string; createdBy?: string }> {
+        this._ensureStarted();
+        const catalog = this._catalog as any;
+        if (typeof catalog?.getCanvasShareLinkInfo !== "function") return { exists: false };
+        return catalog.getCanvasShareLinkInfo(sessionId, normalizeShareSlot(slot));
+    }
+
+    /**
+     * Mint-or-rotate the ONE public view token for a canvas. The raw token
+     * is generated here, returned exactly once, and only its sha256 hash is
+     * stored — a rotate makes the previous link dead the moment the row
+     * lands.
+     */
+    async resetCanvasShareLink(sessionId: string, slot: number, createdBy: string): Promise<{ token: string }> {
+        this._ensureStarted();
+        const catalog = this._catalog as any;
+        if (typeof catalog?.setCanvasShareLink !== "function") {
+            throw new Error("this deployment predates canvas share links");
+        }
+        const { randomBytes, createHash } = await import("node:crypto");
+        const token = randomBytes(32).toString("base64url");
+        const hash = createHash("sha256").update(token, "utf8").digest("hex");
+        await catalog.setCanvasShareLink(sessionId, normalizeShareSlot(slot), hash, createdBy || "");
+        return { token };
+    }
+
+    /**
+     * SERVER-INTERNAL: hash lookup for the token doors (WS subscribe and the
+     * share doc/live routes). Deliberately NOT a wire operation — the raw
+     * resolve must never be callable by clients.
+     */
+    async resolveCanvasShareTokenHash(tokenHash: string): Promise<{ sessionId: string; slot: number } | null> {
+        this._ensureStarted();
+        const catalog = this._catalog as any;
+        if (typeof catalog?.resolveCanvasShareToken !== "function") return null;
+        return catalog.resolveCanvasShareToken(tokenHash);
+    }
+
+    async removeCanvasShareLink(sessionId: string, slot: number): Promise<{ removed: boolean }> {
+        this._ensureStarted();
+        const catalog = this._catalog as any;
+        if (typeof catalog?.removeCanvasShareLink !== "function") return { removed: false };
+        return { removed: await catalog.removeCanvasShareLink(sessionId, normalizeShareSlot(slot)) };
+    }
+
+    async getCanvasLive(sessionId: string): Promise<Array<{ slot: number; seq: number; docRev: number; docSha: string; payload: Record<string, unknown>; updatedBy: string; updatedAt: string }>> {
+        this._ensureStarted();
+        const catalog = this._catalog as any;
+        if (typeof catalog?.getCanvasLive !== "function") return [];
+        if (typeof catalog?.canvasLiveAvailable === "function" && !(await catalog.canvasLiveAvailable())) return [];
+        return catalog.getCanvasLive(sessionId);
     }
 
     /**

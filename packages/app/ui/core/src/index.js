@@ -8,6 +8,7 @@ export * from "./repo-import.js";
 export * from "./session-tree.js";
 export * from "./state.js";
 export * from "./reducer.js";
+export * from "./portal-links.js";
 export * from "./store.js";
 export * from "./selectors.js";
 export * from "./controller.js";

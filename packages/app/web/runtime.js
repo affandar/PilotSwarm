@@ -136,6 +136,18 @@ const BREAK_GLASS_AUDITED = {
 // entirely and writes at once.
 const SIGNIN_ROLE_REFRESH_MS = 5 * 60 * 1000;
 
+function coerceShareSlot(raw) {
+    // POST body params arrive as { slot } objects or bare numbers depending
+    // on the caller; accept both, validate downstream.
+    if (raw && typeof raw === "object" && raw.slot !== undefined) return Number(raw.slot);
+    return Number(raw);
+}
+
+function principalLabel(authContext) {
+    const p = authContext?.principal;
+    return p?.email || p?.displayName || p?.subject || "";
+}
+
 export class PortalRuntime {
     constructor({ store, mode, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser } = {}) {
         this.transport = new NodeSdkTransport({ store, mode, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser });
@@ -1063,6 +1075,14 @@ export class PortalRuntime {
                 return this.transport.getSessionEvents(safeParams.sessionId, safeParams.afterSeq, safeParams.limit, safeParams.eventTypes);
             case "getSessionEventsBefore":
                 return this.transport.getSessionEventsBefore(safeParams.sessionId, safeParams.beforeSeq, safeParams.limit, safeParams.eventTypes);
+            case "getCanvasLive":
+                return this.transport.getCanvasLive(safeParams.sessionId);
+            case "getCanvasShareLink":
+                return this.transport.getCanvasShareLink(safeParams.sessionId, safeParams.slot);
+            case "resetCanvasShareLink":
+                return this.transport.resetCanvasShareLink(safeParams.sessionId, coerceShareSlot(safeParams.slot), principalLabel(authContext));
+            case "removeCanvasShareLink":
+                return this.transport.removeCanvasShareLink(safeParams.sessionId, coerceShareSlot(safeParams.slot));
             case "getTopEventEmitters":
                 return this.transport.getTopEventEmitters(normalizeTopEventEmitterOptions(safeParams));
             case "getLogConfig":
@@ -1160,6 +1180,57 @@ export class PortalRuntime {
 
     subscribeSession(sessionId, handler) {
         return this.transport.subscribeSession(sessionId, handler);
+    }
+
+    /**
+     * The canvas share-token doors. The raw token is hashed HERE (sha256);
+     * only the hash ever reaches the catalog. Returns the canvas the token
+     * views, or null — and null is the only error shape, so the doors leak
+     * nothing about why a token failed.
+     */
+    async resolveCanvasShareToken(rawToken) {
+        const token = String(rawToken || "").trim();
+        if (!token || token.length > 512) return null;
+        if (typeof this.transport.resolveCanvasShareTokenHash !== "function") return null;
+        const { createHash } = await import("node:crypto");
+        const hash = createHash("sha256").update(token, "utf8").digest("hex");
+        try {
+            return await this.transport.resolveCanvasShareTokenHash(hash);
+        } catch {
+            return null;
+        }
+    }
+
+    /** Share door: the canvas document bytes for a validated token. */
+    async getCanvasShareDoc(rawToken) {
+        const scope = await this.resolveCanvasShareToken(rawToken);
+        if (!scope) return null;
+        const filename = scope.slot === 1 ? "canvas.html" : `canvas${scope.slot}.html`;
+        try {
+            // Transport-level fetch, deliberately: the token IS the
+            // authorization here; the runtime's auth-gated wrapper is for
+            // signed-in principals.
+            const artifact = await this.transport.downloadArtifactBinary(scope.sessionId, filename);
+            const body = artifact?.body;
+            if (!body) return null;
+            const html = Buffer.isBuffer(body) ? body.toString("utf8") : String(body);
+            return { ...scope, html };
+        } catch {
+            return null;
+        }
+    }
+
+    /** Share door: the live last-value state for a validated token. */
+    async getCanvasShareLive(rawToken) {
+        const scope = await this.resolveCanvasShareToken(rawToken);
+        if (!scope) return null;
+        try {
+            const rows = await this.transport.getCanvasLive(scope.sessionId);
+            const hit = (rows || []).find((r) => Number(r.slot) === scope.slot) || null;
+            return { slot: scope.slot, live: hit };
+        } catch {
+            return { slot: scope.slot, live: null };
+        }
     }
 
     startLogTail(handler) {

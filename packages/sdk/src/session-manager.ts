@@ -1373,6 +1373,10 @@ export class SessionManager {
             factStore: this.factStore,
             getLineageSessionIds: this._getLineageSessionIds ?? undefined,
             agentIdentity: effectiveSerializableConfig.agentIdentity,
+            // bulk_store_facts reads its records from (and writes its failure
+            // artifact to) the artifact store, so fact bytes never ride the
+            // model's context.
+            artifactStore: this.artifactStore ?? null,
             isCrawler: effectiveSerializableConfig.isCrawler === true || effectiveSerializableConfig.isHarvester === true,
             // Enhanced tools light up only when the store is an EnhancedFactStore.
             // Pass it when EITHER capability is present: search powers

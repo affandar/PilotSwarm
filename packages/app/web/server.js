@@ -5,12 +5,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WS_PATH } from "pilotswarm-sdk/api";
-import { getPortalAssetFile, getPortalConfig } from "./config.js";
+import { getPortalAssetFile, getPortalConfig, parsePortalLinkOrigins } from "./config.js";
 import { authenticateRequest, getAuthConfig } from "./auth.js";
 import { getPublicAuthContext } from "./auth/authz/engine.js";
 import { PortalRuntime } from "./runtime.js";
 import { createApiRouter } from "./api/router.js";
 import { attachWebSockets } from "./api/ws.js";
+import { createCanvasPlane } from "./api/canvas-plane.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST_DIR = path.join(__dirname, "dist");
@@ -70,7 +71,10 @@ export async function startServer(opts = {}) {
         if (v === SEED_SECRETS_UNSET_SENTINEL) delete process.env[k];
     }
 
-    const portalConfig = getPortalConfig();
+    // Fail-loud at startup: a malformed PORTAL_LINK_ORIGINS should stop
+    // the portal visibly, never silently hand out broken links.
+    const linkOrigins = parsePortalLinkOrigins();
+    const portalConfig = { ...getPortalConfig(), ...(linkOrigins.length ? { linkOrigins } : {}) };
     const mode = getPortalMode();
     const useManagedIdentity = ["1", "true", "yes", "on"].includes(
         String(process.env.PILOTSWARM_USE_MANAGED_IDENTITY || "").toLowerCase(),
@@ -166,6 +170,42 @@ export async function startServer(opts = {}) {
         }
     });
 
+    // Canvas share-link doors: token-authenticated, deliberately OUTSIDE
+    // requireAuth — the token IS the capability, scoped to exactly one
+    // canvas's document and live state. Both answer 404 for any failure
+    // (missing, expired-by-reset, malformed) so nothing about link validity
+    // leaks. The doc is served under CSP sandbox: even a direct navigation
+    // renders it with an OPAQUE origin, so agent-authored canvas HTML can
+    // never script against the portal origin.
+    app.get("/api/canvas-share/doc", async (req, res) => {
+        try {
+            const doc = await runtime.getCanvasShareDoc(String(req.query.t || ""));
+            if (!doc) {
+                res.status(404).type("text/plain").send("Not found");
+                return;
+            }
+            res.set("Content-Security-Policy", "sandbox allow-scripts");
+            res.set("Cache-Control", "no-store, max-age=0");
+            res.type("text/html").send(doc.html);
+        } catch {
+            res.status(404).type("text/plain").send("Not found");
+        }
+    });
+
+    app.get("/api/canvas-share/live", async (req, res) => {
+        try {
+            const state = await runtime.getCanvasShareLive(String(req.query.t || ""));
+            if (!state) {
+                res.status(404).json({ ok: false });
+                return;
+            }
+            res.set("Cache-Control", "no-store, max-age=0");
+            res.json({ ok: true, ...state });
+        } catch {
+            res.status(404).json({ ok: false });
+        }
+    });
+
     // The versioned Web API (the supported product surface). The legacy
     // /api/rpc + /portal-ws routes below stay mounted through the same
     // dispatcher during the deprecation window.
@@ -246,12 +286,21 @@ export async function startServer(opts = {}) {
         });
     }
 
+    // The canvas-plane relay: LISTEN → WebSocket fan-out for live canvas
+    // ticks (docs/proposals/canvas-data-plane.md). In-process hosting phase;
+    // the module is deployment-agnostic and lifts out unchanged. Degrades to
+    // "unavailable" (browsers fall back to durable events) without a DB URL.
+    const canvasPlane = createCanvasPlane();
+    runtime.canvasPlane = canvasPlane;
+    canvasPlane.start().catch(() => { /* reconnect loop owns retries */ });
+
     const socketServers = attachWebSockets(server, runtime, [
         { path: "/portal-ws", allowThemeMessages: true },
         { path: WS_PATH },
     ]);
 
     async function shutdown() {
+        await canvasPlane.stop().catch(() => {});
         for (const socketServer of socketServers) {
             for (const client of socketServer.clients) {
                 try {

@@ -1,6 +1,7 @@
 import React from "react";
 import { createPortal } from "react-dom";
-import { createWebPilotSwarmController, PilotSwarmWebApp } from "pilotswarm/ui-react";
+import { createWebPilotSwarmController, PilotSwarmWebApp, setPortalLinkOrigins } from "pilotswarm/ui-react";
+import { jsonMergePatch } from "pilotswarm-sdk/api";
 import { getTheme } from "pilotswarm/ui-core";
 import { selectSessionFilterExceptionNotice, selectStatusBar } from "pilotswarm/ui-core";
 import { BrowserPortalTransport } from "./browser-transport.js";
@@ -53,6 +54,9 @@ function readDeepLinkTargetFromUrl() {
         artifact: artifact || null,
         fullscreen: view === "full",
         canvas: view === "canvas",
+        // ?max=1 with view=canvas: arrive with the canvas COVERING the
+        // workspace — the share-link landing experience.
+        max: params.get("max") === "1",
     };
 }
 
@@ -80,6 +84,7 @@ function parseStashedDeepLinkTarget(raw) {
             artifact: parsed?.artifact ? String(parsed.artifact) : null,
             canvas: Boolean(parsed?.canvas),
             fullscreen: Boolean(parsed?.fullscreen),
+            max: Boolean(parsed?.max),
         };
     } catch {
         return null;
@@ -240,6 +245,18 @@ function useVisualViewportHeight() {
 
         const update = () => {
             setHeight(readHeight());
+            // iOS Safari pans the page to reveal a focused input above the
+            // on-screen keyboard; the shell absorbs that by sizing itself to
+            // height + offsetTop. But Safari sometimes fails to undo the pan
+            // after the keyboard closes, leaving the app stuck half-scrolled.
+            // When the visual viewport is back to (near) full height, any
+            // remaining window scroll is that stale pan — undo it.
+            const viewport = window.visualViewport;
+            const keyboardClosed = !viewport
+                || (window.innerHeight - viewport.height) < 24;
+            if (keyboardClosed && (window.scrollY || window.scrollX)) {
+                window.scrollTo(0, 0);
+            }
         };
 
         const viewport = window.visualViewport;
@@ -649,6 +666,9 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
                 // canvas tab (the same path an agent-driven flip takes).
                 if (deepLinkTarget?.canvas) {
                     controller.dispatch({ type: "canvas/flip", sessionId: initialSessionId });
+                    if (deepLinkTarget?.max) {
+                        controller.dispatch({ type: "ui/canvasMaximized", on: true });
+                    }
                     return null;
                 }
                 if (!deepLinkTarget?.artifact) return null;
@@ -698,6 +718,137 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
     );
 }
 
+/**
+ * The "anyone with link" landing: a full-viewport, read-only canvas viewer.
+ * No portal identity, no workspace — the token in the URL is the whole
+ * capability, honored by exactly two doors (the share doc/live routes and
+ * the share-scoped WebSocket). Steering is impossible by construction:
+ * this page holds no authenticated write path at all, and canvas-action
+ * postMessages from the page are simply dropped here.
+ */
+function CanvasShareView({ token }) {
+    const [doc, setDoc] = React.useState(null);          // { url, docRev }
+    const [status, setStatus] = React.useState("loading"); // loading | live | gone
+    const iframeRef = React.useRef(null);
+    const mirrorRef = React.useRef({ seq: 0, payload: null });
+    const docRevRef = React.useRef(0);
+
+    const postState = React.useCallback((patch) => {
+        const frame = iframeRef.current;
+        const m = mirrorRef.current;
+        if (!frame?.contentWindow || m.payload === null) return;
+        try {
+            frame.contentWindow.postMessage({ type: "canvas-data", data: m.payload, dataRev: m.seq }, "*");
+            if (patch) {
+                frame.contentWindow.postMessage({ type: "canvas-patch", patch, dataRev: m.seq }, "*");
+            }
+        } catch { /* frame mid-load */ }
+    }, []);
+
+    const refetchLive = React.useCallback(async () => {
+        const response = await fetch(`/api/canvas-share/live?t=${encodeURIComponent(token)}`);
+        if (!response.ok) throw new Error("gone");
+        const state = await response.json();
+        const live = state?.live;
+        if (live && typeof live === "object") {
+            mirrorRef.current = { seq: Number(live.seq) || 0, payload: live.payload ?? {} };
+            postState();
+            return Number(live.docRev) || 0;
+        }
+        return 0;
+    }, [token, postState]);
+
+    const refetchDoc = React.useCallback(async () => {
+        const response = await fetch(`/api/canvas-share/doc?t=${encodeURIComponent(token)}`);
+        if (!response.ok) throw new Error("gone");
+        const html = await response.text();
+        const url = URL.createObjectURL(new Blob([html], { type: "text/html" }));
+        setDoc((old) => {
+            if (old?.url) window.setTimeout(() => URL.revokeObjectURL(old.url), 1000);
+            return { url };
+        });
+    }, [token]);
+
+    React.useEffect(() => {
+        let active = true;
+        (async () => {
+            try {
+                docRevRef.current = await refetchLive();
+                await refetchDoc();
+                if (active) setStatus("live");
+            } catch {
+                if (active) setStatus("gone");
+            }
+        })();
+        return () => { active = false; };
+    }, [refetchLive, refetchDoc]);
+
+    // The live feed: a share-scoped WebSocket. Contiguous patches merge
+    // locally; anything else (gap, pointer-only ping, redraw) refetches the
+    // row/doc — the same discipline as the workspace mirror, in miniature.
+    React.useEffect(() => {
+        if (status !== "live") return undefined;
+        let socket = null;
+        let closed = false;
+        let retryMs = 1000;
+        const connect = () => {
+            if (closed) return;
+            const wsUrl = `${window.location.origin.replace(/^http/, "ws")}/api/v1/ws?canvasShare=${encodeURIComponent(token)}`;
+            socket = new WebSocket(wsUrl);
+            socket.addEventListener("open", () => {
+                retryMs = 1000;
+                socket.send(JSON.stringify({ type: "subscribeCanvas" }));
+            });
+            socket.addEventListener("message", (event) => {
+                let message;
+                try { message = JSON.parse(String(event.data || "")); } catch { return; }
+                if (message.type !== "canvasLive") return;
+                if (message.kind === "doc") {
+                    refetchDoc().then(() => refetchLive()).catch(() => setStatus("gone"));
+                    return;
+                }
+                const m = mirrorRef.current;
+                const seq = Number(message.seq);
+                if (message.patch && m.payload !== null && seq === m.seq + 1) {
+                    mirrorRef.current = { seq, payload: jsonMergePatch(m.payload, message.patch) };
+                    postState(message.patch);
+                } else if (!Number.isFinite(seq) || seq !== m.seq) {
+                    refetchLive().catch(() => { /* next ping retries */ });
+                }
+            });
+            socket.addEventListener("close", () => {
+                if (closed) return;
+                window.setTimeout(connect, retryMs);
+                retryMs = Math.min(retryMs * 2, 15_000);
+            });
+        };
+        connect();
+        return () => {
+            closed = true;
+            try { socket?.close(); } catch { /* going away */ }
+        };
+    }, [status, token, refetchDoc, refetchLive, postState]);
+
+    if (status === "gone") {
+        return React.createElement("div", { className: "ps-share-view ps-share-view-gone" },
+            React.createElement("p", null, "This canvas link is no longer valid."),
+            React.createElement("p", { className: "ps-share-view-sub" }, "The owner may have reset or removed it."));
+    }
+    return React.createElement("div", { className: "ps-share-view" },
+        React.createElement("div", { className: "ps-share-view-strip" },
+            React.createElement("span", null, "Shared canvas — live, view only")),
+        doc
+            ? React.createElement("iframe", {
+                ref: iframeRef,
+                className: "ps-share-view-frame",
+                src: doc.url,
+                sandbox: "allow-scripts",
+                title: "Shared canvas",
+                onLoad: () => postState(),
+            })
+            : React.createElement("div", { className: "ps-share-view-loading" }, "Loading canvas..."));
+}
+
 export default function App() {
     const publicConfig = usePortalPublicConfig();
     const auth = usePortalAuth(publicConfig.config?.auth || null);
@@ -712,6 +863,23 @@ export default function App() {
     const shellStyle = appHeight
         ? { "--ps-app-height": `${appHeight}px` }
         : undefined;
+
+    // "Anyone with link": the token IS the identity. Render the read-only
+    // viewer with none of the auth gating — a bearer needs no account, and
+    // showing them a sign-in screen would be wrong twice over.
+    // Multi-origin link generation: hand the configured entry points to the
+    // link builders as soon as the portal config lands.
+    React.useEffect(() => {
+        setPortalLinkOrigins(publicConfig.config?.portal?.linkOrigins || []);
+    }, [publicConfig.config?.portal?.linkOrigins]);
+
+    const canvasShareToken = React.useMemo(() => {
+        if (typeof window === "undefined" || !window.location) return null;
+        return new URLSearchParams(window.location.search).get("canvasShare");
+    }, []);
+    if (canvasShareToken) {
+        return React.createElement(CanvasShareView, { token: canvasShareToken });
+    }
 
     if (publicConfig.loading || auth.loading) {
         return React.createElement(PortalLoadingScreen, {

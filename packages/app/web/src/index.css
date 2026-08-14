@@ -2298,6 +2298,9 @@ body.is-resizing-pane-y iframe {
   display: flex;
   align-items: baseline;
   gap: 8px;
+  /* The hard guarantee for the whole class of bug: NOTHING in the heading
+     may ever paint under the actions cluster, whatever refuses to shrink. */
+  overflow: hidden;
 }
 
 .ps-artifact-pane-name {
@@ -2655,7 +2658,9 @@ body.is-resizing-pane-y iframe {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 8px;
-  align-items: center;
+  /* The input auto-grows: label and actions stay pinned to the send corner
+   * (bottom) instead of floating to the middle of a tall box. */
+  align-items: end;
   padding: 0;
 }
 
@@ -2675,12 +2680,12 @@ body.is-resizing-pane-y iframe {
 }
 
 .ps-prompt-label {
-  padding: 0 4px 0 2px;
+  padding: 0 4px 10px 2px;
   color: var(--ps-muted);
   text-transform: uppercase;
   font-size: 0.82rem;
   letter-spacing: 0.08em;
-  align-self: center;
+  align-self: end;
 }
 
 .ps-prompt-shell.is-mobile .ps-prompt-label {
@@ -2710,9 +2715,42 @@ body.is-resizing-pane-y iframe {
   opacity: 1;
 }
 
+/* The composer input auto-grows to its content from ONE line (a layout
+ * effect sets the height from scrollHeight, which understands soft wrap).
+ * No manual resize grip: a drag would write a sticky inline height that
+ * outlives the content and leaves a huge empty box. The cap is here, and
+ * past it the textarea scrolls internally. */
+.ps-prompt-input {
+  resize: none;
+  overflow-y: auto;
+  min-height: 40px;
+  max-height: 40vh;
+}
+
 .ps-prompt-shell.is-mobile .ps-prompt-input {
   font-size: 1.25rem;
   line-height: 1.25;
+  /* Cap against the VISUAL viewport — the keyboard already took half the
+   * screen; the transcript must keep the rest. --ps-app-height tracks
+   * visualViewport (see useVisualViewportHeight in the portal App). */
+  max-height: calc(var(--ps-app-height, 100vh) * 0.32);
+}
+
+/* Expand mode: the same buffer, editor-sized. Height belongs to CSS here —
+ * the auto-grow effect clears its inline height while expanded. */
+.ps-prompt-shell.is-expanded .ps-prompt-input {
+  height: 55vh;
+  max-height: 55vh;
+}
+
+.ps-prompt-shell.is-mobile.is-expanded .ps-prompt-input {
+  height: calc(var(--ps-app-height, 100vh) * 0.6);
+  max-height: calc(var(--ps-app-height, 100vh) * 0.6);
+}
+
+.ps-expand-button.is-active {
+  color: var(--ps-modal-selected-border);
+  border-color: var(--ps-modal-selected-border);
 }
 
 .ps-prompt-input:focus,
@@ -7361,10 +7399,19 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
   align-items: center;
   gap: 2px;
   margin-left: 6px;
+  /* SHRINKABLE. This cluster sits inside the heading's flex:1 box; a long
+     canvas name in the select used to refuse to shrink, overflow the
+     heading, and paint straight under the actions cluster — the zoom's
+     "100%" rendered inside the select pill. The arrows stay fixed; the
+     select gives. */
+  min-width: 0;
+  flex: 0 1 auto;
 }
 
 .ps-canvas-slot-select {
   max-width: 140px;
+  min-width: 0;
+  flex: 0 1 auto;
   font: inherit;
   font-size: 0.82rem;
   color: var(--ps-foreground);
@@ -7373,6 +7420,7 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
   border-radius: 5px;
   padding: 0 4px;
   height: 20px;
+  text-overflow: ellipsis;
 }
 
 /* The canvas marker on a session row.
@@ -7675,4 +7723,110 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
   align-items: flex-end;
   gap: 1px;
   margin-right: 4px;
+}
+
+/* ── Canvas share: the owner's dialog ─────────────────────────────── */
+.ps-canvas-share-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: color-mix(in srgb, var(--ps-page-background) 55%, transparent);
+  display: grid;
+  place-items: center;
+}
+
+.ps-canvas-share-dialog {
+  width: min(560px, calc(100vw - 32px));
+  background: var(--ps-modal-background, var(--ps-surface));
+  border: 1px solid var(--ps-modal-border, var(--ps-border));
+  border-radius: var(--ps-radius-md);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.4);
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.ps-canvas-share-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 600;
+}
+
+.ps-canvas-share-head { font-weight: 600; font-size: 0.92rem; }
+.ps-canvas-share-sub { color: var(--ps-muted); font-size: 0.84rem; margin-top: 2px; }
+.ps-canvas-share-sub.is-warn { color: var(--ps-warning, #d99c55); }
+
+.ps-canvas-share-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  min-width: 0;
+}
+
+.ps-canvas-share-url {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 1px solid var(--ps-border);
+  border-radius: 5px;
+  padding: 4px 8px;
+  font-size: 0.78rem;
+  background: var(--ps-background);
+}
+
+.ps-canvas-share-actions { display: flex; gap: 8px; margin-top: 8px; }
+.ps-canvas-share-error { color: var(--ps-danger, #e07a7a); font-size: 0.84rem; }
+
+/* ── Canvas share: the token viewer page ──────────────────────────── */
+.ps-share-view {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--ps-page-background);
+  color: var(--ps-page-foreground);
+}
+
+.ps-share-view-strip {
+  flex: none;
+  padding: 6px 12px;
+  font-size: 0.8rem;
+  color: var(--ps-muted);
+  border-bottom: 1px solid var(--ps-border);
+}
+
+.ps-share-view-frame {
+  flex: 1;
+  width: 100%;
+  border: 0;
+  background: #fff;
+}
+
+.ps-share-view-loading,
+.ps-share-view-gone {
+  flex: 1;
+  display: grid;
+  place-content: center;
+  text-align: center;
+  gap: 6px;
+  color: var(--ps-muted);
+}
+
+
+/* The multi-origin link modal swaps its input for a textarea holding one
+   labeled link per line. Parity with the waldemort patch this replaces:
+   pre whitespace so a long link NEVER soft-wraps into a second visual line
+   (which pushed the next origin's link behind the inner scrollbar), plus a
+   floor so two links are fully visible without scrolling. */
+textarea.ps-link-input {
+  resize: vertical;
+  min-height: 5.25rem;
+  line-height: 1.35;
+  white-space: pre;
+  overflow: auto;
 }

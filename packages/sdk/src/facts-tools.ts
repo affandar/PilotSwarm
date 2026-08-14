@@ -1,6 +1,8 @@
 import { defineTool } from "@github/copilot-sdk";
 import type { Tool } from "@github/copilot-sdk";
+import { createHash } from "node:crypto";
 import type { EnhancedFactStore, FactStore } from "./facts-store.js";
+import type { ArtifactStore } from "./session-store.js";
 
 // ─── Knowledge Pipeline Namespace Access Control ────────────────────────────
 const FACTS_MANAGER_AGENT_ID = "facts-manager";
@@ -40,6 +42,153 @@ function checkNamespaceWrite(key: string, agentIdentity?: string): string | null
         }
     }
     return null;
+}
+
+// ─── Bulk ingestion (bulk_store_facts) ──────────────────────────────────────
+// docs/proposals/bulk-facts-ingestion.md. The tool moves fact bytes from an
+// artifact into the store without the model retyping them. NOT atomic: every
+// record either commits or lands in the failure artifact with a reason. The
+// failure artifact is valid input for a retry call — `_error` is written,
+// never read.
+
+const BULK_MAX_BYTES = 32 * 1024 * 1024;
+const BULK_MAX_RECORDS = 50_000;
+const BULK_CHUNK_SIZE = 500;
+const BULK_SAMPLE_LIMIT = 5;
+
+interface BulkRecordFailure {
+    /** The original record, untouched (minus any incoming `_error`). */
+    record: Record<string, unknown>;
+    reason: string;
+    message: string;
+}
+
+function sha256Utf8(text: string): string {
+    return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+function boundedMessage(err: unknown, max = 300): string {
+    const text = String((err as any)?.message ?? err ?? "unknown error");
+    return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+/**
+ * Parse artifact text into candidate records. Throws with a caller-readable
+ * message on anything that makes the WHOLE payload unusable (bad JSON, not an
+ * array, over caps) — per-record problems are the validator's job.
+ */
+function parseBulkRecords(text: string, sourceLabel: string): Array<Record<string, unknown>> {
+    if (Buffer.byteLength(text, "utf8") > BULK_MAX_BYTES) {
+        throw new Error(`${sourceLabel} is larger than the ${Math.floor(BULK_MAX_BYTES / (1024 * 1024))} MB bulk-ingestion cap. Split it into smaller artifacts and ingest each.`);
+    }
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(text);
+    } catch (err) {
+        throw new Error(`${sourceLabel} is not valid JSON: ${boundedMessage(err)}`);
+    }
+    if (!Array.isArray(parsed)) {
+        throw new Error(`${sourceLabel} must be a JSON array of {key, value, tags?, shared?} records.`);
+    }
+    if (parsed.length > BULK_MAX_RECORDS) {
+        throw new Error(`${sourceLabel} holds ${parsed.length} records; the bulk-ingestion cap is ${BULK_MAX_RECORDS} per call. Split it into smaller artifacts.`);
+    }
+    return parsed as Array<Record<string, unknown>>;
+}
+
+/**
+ * Per-record validation, in check order. Returns a failure reason or null.
+ * `_error` on the record is deliberately NOT examined — the failure artifact
+ * of a previous call is valid input, and its annotations are ignored.
+ */
+function validateBulkRecord(
+    record: unknown,
+    opts: { agentIdentity?: string; keyPrefix?: string | null; sessionId?: string | null; seenScopeKeys: Set<string> },
+): { reason: string; message: string } | null {
+    if (record === null || typeof record !== "object" || Array.isArray(record)) {
+        return { reason: "invalid_shape", message: "record is not an object" };
+    }
+    const rec = record as Record<string, unknown>;
+    if (typeof rec.key !== "string" || rec.key.length === 0) {
+        return { reason: "invalid_shape", message: "key is missing or not a non-empty string" };
+    }
+    if (!("value" in rec)) {
+        return { reason: "invalid_shape", message: "value is missing" };
+    }
+    if ("tags" in rec && rec.tags !== undefined && !Array.isArray(rec.tags)) {
+        return { reason: "invalid_shape", message: "tags is present but not an array" };
+    }
+    const key = rec.key;
+    if (key.startsWith("intake/")) {
+        // intake/ is one observation per write BY DESIGN: each shared intake
+        // wakes the Facts Manager for one curator turn, and the key schema
+        // (intake/<topic>/<session-id>) self-overwrites in bulk anyway.
+        // Applies to every intake/ key, shared or not — no edge cases.
+        return {
+            reason: "intake_requires_single_write",
+            message: "intake/ observations are written one at a time with store_fact, never in bulk",
+        };
+    }
+    const nsError = checkNamespaceWrite(key, opts.agentIdentity);
+    if (nsError) {
+        return { reason: "namespace_denied", message: nsError };
+    }
+    if (opts.keyPrefix && !key.startsWith(opts.keyPrefix)) {
+        return { reason: "prefix_violation", message: `key does not start with the required prefix "${opts.keyPrefix}"` };
+    }
+    const shared = rec.shared === true;
+    if (!shared && !opts.sessionId) {
+        return { reason: "missing_session", message: "session-scoped fact with no session id (set shared: true or call from a session)" };
+    }
+    const scopeKey = shared ? `shared:${key}` : `session:${opts.sessionId}:${key}`;
+    if (opts.seenScopeKeys.has(scopeKey)) {
+        // First occurrence wins; later ones fail. Order must never silently
+        // pick a winner, and one PG statement cannot update a row twice.
+        return { reason: "duplicate_key", message: "this scope key already appeared earlier in the input; the first occurrence was kept" };
+    }
+    opts.seenScopeKeys.add(scopeKey);
+    return null;
+}
+
+/**
+ * Write valid records in chunks through the ordinary storeFact path. A chunk
+ * that throws is re-run one record at a time so the error lands on the record
+ * that caused it. Observably identical to writing one at a time; a clean
+ * payload costs records/BULK_CHUNK_SIZE round trips instead of records.
+ */
+async function writeBulkRecords(
+    factStore: FactStore,
+    entries: Array<{ record: Record<string, unknown>; index: number }>,
+    ctx: { sessionId?: string | null; agentId?: string | null },
+): Promise<{ committed: number; failures: Array<BulkRecordFailure & { index: number }> }> {
+    const toInput = (record: Record<string, unknown>) => ({
+        key: record.key as string,
+        value: record.value,
+        tags: (record.tags as string[] | undefined) ?? undefined,
+        shared: record.shared === true,
+        sessionId: ctx.sessionId ?? null,
+        agentId: ctx.agentId ?? null,
+    });
+    let committed = 0;
+    const failures: Array<BulkRecordFailure & { index: number }> = [];
+    for (let start = 0; start < entries.length; start += BULK_CHUNK_SIZE) {
+        const chunk = entries.slice(start, start + BULK_CHUNK_SIZE);
+        try {
+            const result = await factStore.storeFact(chunk.map((entry) => toInput(entry.record)));
+            committed += result.stored;
+        } catch {
+            // Attribute the failure precisely: one record at a time.
+            for (const entry of chunk) {
+                try {
+                    const single = await factStore.storeFact([toInput(entry.record)]);
+                    committed += single.stored;
+                } catch (err) {
+                    failures.push({ record: entry.record, index: entry.index, reason: "db_error", message: boundedMessage(err) });
+                }
+            }
+        }
+    }
+    return { committed, failures };
 }
 
 function patternTouchesPrefix(pattern: string, prefix: string): boolean {
@@ -106,6 +255,12 @@ export function createFactTools(opts: {
     /** Optional hook invoked after a successful shared intake/* write. */
     onSharedIntakeFactStored?: (input: { key: string; sourceSessionId: string | null; agentId: string | null }) => Promise<void>;
     /**
+     * Artifact store for bulk_store_facts (artifact-sourced ingestion and the
+     * failure artifact). Absent ⇒ the tool still registers, but only inline
+     * `facts` work and `to_file` is refused with a clear message.
+     */
+    artifactStore?: ArtifactStore | null;
+    /**
      * When the store is an EnhancedFactStore (search capability), the search
      * tools (`facts_search`, `facts_similar`) and the skills-scoped
      * `search_skills` pull tool are appended (enhancedfactstore 07 P4/§1.6).
@@ -113,7 +268,7 @@ export function createFactTools(opts: {
      */
     enhancedFactStore?: EnhancedFactStore;
 }): Tool<any>[] {
-    const { factStore, getDescendantSessionIds, getLineageSessionIds, agentIdentity, recordEvent, onSharedIntakeFactStored, enhancedFactStore } = opts;
+    const { factStore, getDescendantSessionIds, getLineageSessionIds, agentIdentity, recordEvent, onSharedIntakeFactStored, enhancedFactStore, artifactStore } = opts;
     const isCrawler = opts.isCrawler === true || opts.isHarvester === true;
     const isFactsManager = agentIdentity === FACTS_MANAGER_AGENT_ID;
     const isTuner = agentIdentity === TUNER_AGENT_ID;
@@ -146,7 +301,8 @@ export function createFactTools(opts: {
             "Store one fact or a batch of facts in the facts table for durable structured memory. " +
             "Facts are session-scoped by default, visible to every session in the same spawn tree (ancestors, descendants, siblings, cousins — anything spawned from a common root), and are deleted when the session is deleted. " +
             "Set shared=true to create shared durable memory visible across all sessions globally; shared facts persist until explicitly deleted. " +
-            "For large ingestion, pass facts=[{key,value,tags?,shared?}, ...] instead of a single key/value.",
+            "A small batch may be passed as facts=[{key,value,tags?,shared?}, ...] (all-or-nothing). " +
+            "For LARGE ingestion — hundreds of facts or more, or facts already sitting in an artifact — use bulk_store_facts instead: it reads the records from the artifact so their bytes never pass through your context.",
         parameters: {
             type: "object" as const,
             properties: {
@@ -219,6 +375,218 @@ export function createFactTools(opts: {
             return {
                 stored: result.stored,
                 facts: result.facts.map((fact) => ({ ...fact, scope: fact.shared ? "shared" : "session" })),
+            };
+        },
+    });
+
+    const bulkStoreTool = defineTool("bulk_store_facts", {
+        description:
+            "Bulk-ingest facts from an artifact (or an inline array) with per-record failure accounting. " +
+            "NOT atomic: every record either commits or is written to the failure artifact with a reason — " +
+            "no record is left unexplained. The failure artifact is VALID INPUT for a retry call (its _error " +
+            "annotations are ignored on read), so the retry loop is: ingest apply.json → failures land in " +
+            "to_file → feed that file back → repeat until failed_count stops dropping. Records already " +
+            "committed re-ingest harmlessly (idempotent upsert by key). " +
+            "Records are [{key, value, tags?, shared?}]. intake/* keys are refused per record — observations " +
+            "are written one at a time with store_fact, never in bulk. " +
+            `Caps: ${Math.floor(BULK_MAX_BYTES / (1024 * 1024))} MB / ${BULK_MAX_RECORDS} records per call.`,
+        parameters: {
+            type: "object" as const,
+            properties: {
+                facts: {
+                    type: "array",
+                    items: {
+                        type: "object",
+                        properties: {
+                            key: { type: "string" },
+                            value: {},
+                            tags: { type: "array", items: { type: "string" } },
+                            shared: { type: "boolean" },
+                        },
+                        required: ["key", "value"],
+                    },
+                    description: "Inline records. Use `from` instead whenever the records already live in an artifact.",
+                },
+                from: {
+                    type: "object",
+                    properties: {
+                        filename: { type: "string", description: "Artifact holding the JSON array of records." },
+                        session_id: { type: "string", description: "Session owning the artifact. Defaults to this session." },
+                        expected_sha256: { type: "string", description: "Refuse the whole call (nothing written) if the artifact bytes hash differently. Pass the sha256 write_artifact returned." },
+                    },
+                    required: ["filename"],
+                    description: "Read records from an artifact instead of inline. Exactly one of `facts`/`from`.",
+                },
+                to_file: {
+                    type: "string",
+                    description: "Artifact filename (this session) to write failed records to. Always overwritten — [] when nothing failed. The file is valid input for a retry call.",
+                },
+                key_prefix: {
+                    type: "string",
+                    description: "Every key must start with this prefix; records that do not fail with prefix_violation.",
+                },
+                expected_count: {
+                    type: "number",
+                    description: "Refuse the whole call (nothing written) unless the parsed record count equals this.",
+                },
+            },
+        },
+        handler: async (
+            args: {
+                facts?: Array<Record<string, unknown>>;
+                from?: { filename: string; session_id?: string; expected_sha256?: string };
+                to_file?: string;
+                key_prefix?: string;
+                expected_count?: number;
+            },
+            ctx?: { sessionId?: string; agentId?: string },
+        ) => {
+            // Identity prohibitions are call-level: the tuner may not write
+            // facts at all, and thousands of identical per-record failures
+            // would be noise, not accounting.
+            if (agentIdentity === TUNER_AGENT_ID) {
+                return { error: "Error: agent-tuner sessions are read-only and cannot store facts." };
+            }
+            const hasInline = Array.isArray(args.facts);
+            const hasFrom = args.from != null && typeof args.from === "object";
+            if (hasInline === hasFrom) {
+                return { error: "Error: bulk_store_facts requires exactly one source — inline `facts` or `from: {filename}`." };
+            }
+            if ((hasFrom || args.to_file) && !artifactStore) {
+                return { error: "Error: this deployment has no artifact store; bulk_store_facts can only take inline `facts` without `to_file` here." };
+            }
+            if (args.to_file && !ctx?.sessionId) {
+                return { error: "Error: to_file requires a session context to own the failure artifact." };
+            }
+
+            // ── Acquire the records ─────────────────────────────────
+            let records: Array<Record<string, unknown>>;
+            let source: string;
+            let sha256: string;
+            if (hasFrom) {
+                const from = args.from!;
+                const filename = String(from.filename || "").trim();
+                if (!filename) return { error: "Error: from.filename is required." };
+                // Store-side cross-session read — the same worker-trusted
+                // stance as draw_canvas fromArtifact and read_artifact.
+                const sourceSessionId = String(from.session_id || ctx?.sessionId || "").trim();
+                if (!sourceSessionId) return { error: "Error: from.session_id is required when there is no session context." };
+                let text: string;
+                try {
+                    // Raw bytes, not downloadArtifactText: large apply
+                    // artifacts are legitimately uploaded under a binary
+                    // content type (the text-artifact cap is 1 MB; binary is
+                    // 10 MB, env-tunable) and the text reader refuses those.
+                    // JSON is JSON either way — decode utf8 ourselves.
+                    const result = await artifactStore!.downloadArtifact(sourceSessionId, filename);
+                    const body = Buffer.isBuffer((result as any).body) ? (result as any).body : Buffer.from((result as any).body ?? "");
+                    // Cap on the RAW bytes, before decode and hashing: the
+                    // artifact store admits files far larger than the bulk cap,
+                    // and decoding one to a JS string first would triple the
+                    // peak memory of a call that is about to be refused anyway.
+                    if (body.length > BULK_MAX_BYTES) {
+                        return { error: `Error: artifact ${filename} is ${body.length} bytes, over the ${Math.floor(BULK_MAX_BYTES / (1024 * 1024))} MB bulk-ingestion cap; nothing was written. Split it into smaller artifacts and ingest each.` };
+                    }
+                    text = body.toString("utf8");
+                } catch (err) {
+                    return { error: `Error: could not read artifact ${filename} from session ${sourceSessionId}: ${boundedMessage(err)}` };
+                }
+                sha256 = sha256Utf8(text);
+                if (from.expected_sha256 && sha256 !== from.expected_sha256) {
+                    return { error: `SHA_MISMATCH: artifact ${filename} hashes ${sha256}, expected ${from.expected_sha256}; nothing was written.` };
+                }
+                try {
+                    records = parseBulkRecords(text, `artifact ${filename}`);
+                } catch (err) {
+                    return { error: `Error: ${boundedMessage(err, 500)}` };
+                }
+                source = filename;
+            } else {
+                const inlineText = JSON.stringify(args.facts);
+                sha256 = sha256Utf8(inlineText);
+                try {
+                    records = parseBulkRecords(inlineText, "inline facts");
+                } catch (err) {
+                    return { error: `Error: ${boundedMessage(err, 500)}` };
+                }
+                source = "inline";
+            }
+            if (typeof args.expected_count === "number" && records.length !== args.expected_count) {
+                return { error: `Error: expected_count is ${args.expected_count} but the input holds ${records.length} records; nothing was written.` };
+            }
+
+            // ── Validate per record ─────────────────────────────────
+            const keyPrefix = typeof args.key_prefix === "string" && args.key_prefix.length > 0 ? args.key_prefix : null;
+            const seenScopeKeys = new Set<string>();
+            const valid: Array<{ record: Record<string, unknown>; index: number }> = [];
+            const failures: Array<BulkRecordFailure & { index: number }> = [];
+            records.forEach((record, index) => {
+                const failure = validateBulkRecord(record, {
+                    agentIdentity,
+                    keyPrefix,
+                    sessionId: ctx?.sessionId ?? null,
+                    seenScopeKeys,
+                });
+                if (failure) {
+                    // The failure artifact must be valid input: keep the record
+                    // as written, minus any stale annotation from a prior run.
+                    const { _error: _stale, ...original } = (record && typeof record === "object" && !Array.isArray(record) ? record : { value: record }) as Record<string, unknown>;
+                    failures.push({ record: original, index, reason: failure.reason, message: failure.message });
+                } else {
+                    valid.push({ record, index });
+                }
+            });
+
+            // ── Write ───────────────────────────────────────────────
+            const written = await writeBulkRecords(factStore, valid, {
+                sessionId: ctx?.sessionId ?? null,
+                agentId: ctx?.agentId ?? null,
+            });
+            for (const failure of written.failures) {
+                const { _error: _stale, ...original } = failure.record;
+                failures.push({ ...failure, record: original });
+            }
+            failures.sort((a, b) => a.index - b.index);
+
+            // ── Failure artifact ────────────────────────────────────
+            let failedArtifact: string | null = null;
+            let failedArtifactError: string | undefined;
+            if (args.to_file) {
+                // Compact, and under a BINARY content type: the artifact
+                // store caps text artifacts at 1 MB, while failure sets
+                // legitimately mirror multi-megabyte apply artifacts. The
+                // retry read path above decodes raw bytes itself, so the
+                // loop keeps working at the same sizes it accepts as input.
+                const body = JSON.stringify(
+                    failures.map(({ record, reason, message }) => ({ ...record, _error: { reason, message } })),
+                );
+                try {
+                    await artifactStore!.uploadArtifact(ctx!.sessionId!, args.to_file, body, "application/octet-stream");
+                    failedArtifact = args.to_file;
+                } catch (err) {
+                    // Commits already happened; the receipt must still be
+                    // truthful. Surface the sink failure without failing the call.
+                    failedArtifactError = boundedMessage(err);
+                }
+            }
+
+            return {
+                accepted_count: records.length,
+                committed_count: written.committed,
+                failed_count: failures.length,
+                failed_artifact: failedArtifact,
+                ...(failedArtifactError ? { failed_artifact_error: failedArtifactError } : {}),
+                ...(failures.length > 0
+                    ? {
+                        failed_sample: failures.slice(0, BULK_SAMPLE_LIMIT).map(({ record, reason, message }) => ({
+                            key: typeof record.key === "string" ? record.key : null,
+                            reason,
+                            message,
+                        })),
+                    }
+                    : {}),
+                source,
+                sha256,
             };
         },
     });
@@ -772,7 +1140,9 @@ export function createFactTools(opts: {
         }));
     }
 
-    return [storeTool, readTool, deleteTool, ...managerTools, ...enhancedTools];
+    // bulkStoreTool sits AFTER the original trio: callers (tests included)
+    // destructure this array positionally as [store, read, delete, ...].
+    return [storeTool, readTool, deleteTool, bulkStoreTool, ...managerTools, ...enhancedTools];
 }
 
 function safeParse(s: string): any {

@@ -2111,6 +2111,31 @@ export class NodeSdkTransport {
         return this.mgmt.getSessionEventsBefore(sessionId, beforeSeq, limit, eventTypes);
     }
 
+    async getCanvasLive(sessionId) {
+        if (typeof this.mgmt.getCanvasLive !== "function") return [];
+        return this.mgmt.getCanvasLive(sessionId);
+    }
+
+    async getCanvasShareLink(sessionId, slot) {
+        if (typeof this.mgmt.getCanvasShareLink !== "function") return { exists: false };
+        return this.mgmt.getCanvasShareLink(sessionId, slot);
+    }
+
+    async resetCanvasShareLink(sessionId, slot, createdBy) {
+        if (typeof this.mgmt.resetCanvasShareLink !== "function") throw new Error("canvas share links unavailable");
+        return this.mgmt.resetCanvasShareLink(sessionId, slot, createdBy);
+    }
+
+    async resolveCanvasShareTokenHash(tokenHash) {
+        if (typeof this.mgmt.resolveCanvasShareTokenHash !== "function") return null;
+        return this.mgmt.resolveCanvasShareTokenHash(tokenHash);
+    }
+
+    async removeCanvasShareLink(sessionId, slot) {
+        if (typeof this.mgmt.removeCanvasShareLink !== "function") return { removed: false };
+        return this.mgmt.removeCanvasShareLink(sessionId, slot);
+    }
+
     emitLogEntry(entry) {
         if (!this._logBatch) this._logBatch = [];
         this._logBatch.push(entry);

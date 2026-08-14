@@ -652,13 +652,18 @@ export class PgFactStore implements FactStore {
                 tags: input.tags ?? [],
             };
         });
-        await this.pool.query(
-            `SELECT ${this.sql.fn.storeFact}($1::jsonb)`,
+        const { rows } = await this.pool.query(
+            `SELECT ${this.sql.fn.storeFact}($1::jsonb) AS committed`,
             [JSON.stringify(facts)],
         );
         const storedFacts: StoredFactResult[] = facts.map((fact) => ({ key: fact.key, shared: fact.shared, stored: true }));
         const result = {
-            stored: facts.length,
+            // The database's RETURNING count, not the input length. The upsert
+            // has no WHERE, so today the two always agree — reporting the real
+            // one means a future SQL change that drops rows becomes visible
+            // here instead of being silently papered over by an assertion
+            // about the input. bulk_store_facts' committed_count rides this.
+            stored: Number(rows?.[0]?.committed ?? 0),
             facts: storedFacts,
         };
         return Array.isArray(input) ? result : result.facts[0];

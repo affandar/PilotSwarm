@@ -48,7 +48,7 @@ test("both canvas tools are declared to the model", () => {
 
     const read = declaredTool("read_canvas");
     assert.ok(read, "read_canvas missing from systemToolDefs()");
-    assert.deepEqual(Object.keys(read.parameters.properties).sort(), ["manifestOnly", "maxBytes", "offset", "slot"]);
+    assert.deepEqual(Object.keys(read.parameters.properties).sort(), ["include_data", "manifestOnly", "maxBytes", "offset", "session_id", "slot"]);
 });
 
 test("declaration and handler share one spec object, both tools", () => {
@@ -221,7 +221,14 @@ test("normalizeCanvasResponseContract accepts the canonical grammar and refuses 
 test("update_canvas is declared, root-gated everywhere, and never interrupts", () => {
     const tool = declaredTool("update_canvas");
     assert.ok(tool, "update_canvas missing from systemToolDefs()");
-    assert.deepEqual(tool.parameters.required, ["data"]);
+    // data XOR patch — neither is hard-required; the handler enforces
+    // exclusivity (schema alone cannot express XOR to every model).
+    assert.deepEqual(tool.parameters.required, []);
+    assert.ok(tool.parameters.properties.data, "data param missing");
+    assert.ok(tool.parameters.properties.patch, "patch param missing");
+    assert.match(tool.description, /RFC 7386/i, "the model learns merge-patch semantics from the description");
+    assert.match(tool.description, /null DELETES a key/i, "null-means-delete must be taught loudly");
+    assert.match(MS, /pass exactly one of data .*or patch/i, "handler enforces the XOR");
     assert.match(tool.description, /slot 1-5/i);
     assert.match(tool.description, /no view\s+flip/i, "ticks must advertise they never steal the screen");
     assert.match(tool.description, /DO mark the canvas unseen/i, "and that they light the badge");
@@ -237,7 +244,10 @@ test("the tick rides its own durable event: chained, payload inline, persister s
     assert.match(block, /canvasDrawChain\.then/, "ticks serialize with draws — revs must never interleave");
     assert.match(block, /latestCanvasDataRev/, "dataRev derives from the log, windowed like rev");
     assert.match(block, /eventType: "session\.canvas_data"/);
-    assert.match(block, /payload: args\.data/, "the payload IS the event — it is the cold-load replay source");
+    assert.match(block, /payload: mergedPayload/, "the durable event carries the MERGED whole state — pre-plane readers stay complete");
+    assert.match(block, /upsertCanvasLiveTick/, "the plane row is written first; it is where merges live");
+    assert.match(block, /PILOTSWARM_CANVAS_DURABLE_TICKS/, "the dual-write is flag-gated for the migration flip");
+    assert.match(block, /predates the canvas data plane/, "patch degrades with an actionable error when the plane is absent");
     assert.ok(!/uploadArtifact/.test(block), "no artifact write for a tick");
     assert.match(SP, /"session\.canvas_data",\s*\n\s*\]\);/, "generic persister must skip canvas_data");
     // 32 KB cap enforced at the handler.
@@ -286,7 +296,7 @@ test("the draw tool result is the interface card, never the bytes", () => {
 test("read_canvas manifestOnly returns the card plus the ARMED contract", () => {
     const read = declaredTool("read_canvas");
     assert.ok(read.parameters.properties.manifestOnly, "manifestOnly param missing");
-    assert.match(SP, /latestCanvasEventData\(catalog, input\.sessionId, slot\)/);
+    assert.match(SP, /latestCanvasEventData\(catalog, target, slot\)/);
     // The armed contract re-passes the normalizer (events are writable
     // unvalidated via send_session_event) before riding into context.
     assert.match(SP, /\.\.\.\(armed\.contract \? \{ responseContract: armed\.contract \} : \{\}\)/);
@@ -323,7 +333,7 @@ test("second-pass review fixes: rev reads fail loud, armed contracts renormalize
     // Ticks against a never-drawn canvas refuse instead of badging a blank.
     assert.match(SP, /no canvas has been drawn in slot \$\{slot\} — draw_canvas first/);
     // Arrays are not ticks.
-    assert.match(MS, /data must be a JSON object .+not an array/);
+    assert.match(MS, /must be a JSON object, not an array/);
 });
 
 // ─── show_canvas: present without redrawing ──────────────────────
@@ -353,4 +363,115 @@ test("presenting is a tuner-blocked mutation and a first-class system tool", () 
     for (const src of [MS, SM]) {
         assert.match(/mutatingSystemToolNames = new Set\(\[[^\]]*\]\)/.exec(src)[0], /"show_canvas"/);
     }
+});
+
+// ─── The canvas data plane (migration 0047) wiring pins ─────────────────────
+// SQL behavior (merge semantics, concurrency, caps, NOTIFY) is proven live in
+// test/local/canvas-plane.test.js; these pin the bridge wiring around it.
+
+test("draws touch the plane: doc pointer + sha, payload reset lives in the catalog, non-fatal", () => {
+    const draw = SP.slice(SP.indexOf("drawCanvas: async"), SP.indexOf("updateCanvas: async"));
+    assert.match(draw, /canvasLiveAvailable/, "probe before touching the plane");
+    assert.match(draw, /upsertCanvasLiveDoc/, "doc pointer written for live viewers");
+    assert.match(draw, /createHash\("sha256"\)\.update\(html/, "sha over the final document for cache-by-sha");
+    // The touch must be wrapped so a plane failure never fails a draw.
+    assert.match(draw, /catch \{ \/\* live viewers resync from events \*\/ \}/);
+});
+
+test("ticks are rate limited at the source, per slot", () => {
+    const block = SP.slice(SP.indexOf("updateCanvas: async"), SP.indexOf("readCanvas: async"));
+    assert.match(block, /canvasTickClock/, "per-slot throttle map");
+    assert.match(SP, /CANVAS_TICK_MIN_INTERVAL_MS = 100/, "the documented 100 ms floor");
+    assert.match(block, /aggregate your changes into fewer, larger ticks/i, "refusal teaches the fix");
+});
+
+test("the plane's size refusal names the cap and the remedies", () => {
+    const block = SP.slice(SP.indexOf("updateCanvas: async"), SP.indexOf("readCanvas: async"));
+    assert.match(block, /would exceed 32768 bytes/);
+    assert.match(block, /patch with null deletes/, "the remedy list teaches deletion via patch");
+});
+
+test("read_canvas include_data returns the live state, opt-in, from the plane", () => {
+    const read = SP.slice(SP.indexOf("readCanvas: async"), SP.indexOf("// Cooperative cancellation"));
+    assert.match(read, /includeData/, "bridge accepts the flag");
+    assert.match(read, /getCanvasLive/, "one PK row read");
+    assert.match(read, /liveState\(\)/, "both return paths attach it");
+    // The tool exposes it as include_data and forwards it.
+    assert.match(MS, /includeData: Boolean\(args\?\.include_data\)/);
+});
+
+test("update_canvas result reports the MERGED size and the mode", () => {
+    assert.match(MS, /mode: result\.mode \?\? label/);
+    assert.match(MS, /sizeBytes: result\.sizeBytes \?\? sizeBytes/);
+});
+
+// ─── Multi-writer canvases: ancestor targeting + atomic rev mint ────────────
+
+test("all four canvas tools declare session_id, taught as ancestors-only", () => {
+    for (const name of ["draw_canvas", "update_canvas", "read_canvas", "show_canvas"]) {
+        const tool = declaredTool(name);
+        assert.ok(tool.parameters.properties.session_id, `${name} missing session_id`);
+        assert.match(tool.parameters.properties.session_id.description, /ANCESTOR/i, `${name} must teach the ancestor rule`);
+    }
+});
+
+test("the bridge resolves targets through the parent chain and refuses non-ancestors", () => {
+    assert.match(SP, /resolveCanvasTarget/, "one resolver for all four methods");
+    assert.match(SP, /is not an ancestor of this session/, "the refusal names the rule");
+    assert.match(SP, /parent chain \(parent, grandparent, root\)/, "and the allowed set");
+    // Every canvas bridge method resolves before acting.
+    const canvasBlock = SP.slice(SP.indexOf("drawCanvas: async"), SP.indexOf("// Cooperative cancellation"));
+    const resolves = canvasBlock.match(/await resolveCanvasTarget\(args\.session_id\)/g) || [];
+    assert.equal(resolves.length, 4, "draw, update, read, show all resolve the target");
+});
+
+test("draw revs are minted atomically with the legacy seed floor", () => {
+    const draw = SP.slice(SP.indexOf("drawCanvas: async"), SP.indexOf("updateCanvas: async"));
+    assert.match(draw, /mintCanvasRev/, "atomic mint, not read-then-plus-one");
+    assert.match(draw, /seedRev/, "seeded from the table-first/event-scan read");
+    assert.match(draw, /seedRev \+ 1/, "single-writer fallback when the catalog lacks the mint");
+});
+
+test("cross-session writes carry attribution and per-target rate budgets", () => {
+    const canvasBlock = SP.slice(SP.indexOf("drawCanvas: async"), SP.indexOf("// Cooperative cancellation"));
+    const attributions = canvasBlock.match(/crossSession \? \{ by: input\.sessionId \}/g) || [];
+    assert.ok(attributions.length >= 3, "draw, tick, and present all attribute the writer");
+    assert.match(canvasBlock, /`\$\{target\}:\$\{slot\}`/, "tick throttle keys by (target, slot)");
+});
+
+// ─── Adversarial-round fixes, pinned ────────────────────────────────────────
+
+test("plane absent => the durable tick write survives whatever the kill flag says", () => {
+    const block = SP.slice(SP.indexOf("updateCanvas: async"), SP.indexOf("readCanvas: async"));
+    assert.match(block, /!planeAvailable \|\| process\.env\.PILOTSWARM_CANVAS_DURABLE_TICKS !== "0"/,
+        "a PUT with no plane and flag=0 must never be written nowhere yet report success");
+});
+
+test("draw revs mint AFTER every validation refusal — no phantom rev unlocks ticks on an empty slot", () => {
+    const draw = SP.slice(SP.indexOf("drawCanvas: async"), SP.indexOf("updateCanvas: async"));
+    const mint = draw.indexOf("mintCanvasRev");
+    assert.ok(mint > 0, "mint present");
+    for (const refusal of ["is empty; to clear the canvas", "SHA_MISMATCH", "CANVAS-APP-MANIFEST is broken"]) {
+        const at = draw.indexOf(refusal);
+        assert.ok(at > 0 && at < mint, `refusal '${refusal}' must precede the mint`);
+    }
+});
+
+test("a failed plane probe is never cached — one blip must not disable the plane for the process lifetime", () => {
+    const CMS = readFileSync(fileURLToPath(new URL("../../src/cms.ts", import.meta.url)), "utf8");
+    const probe = CMS.slice(CMS.indexOf("async canvasLiveAvailable"), CMS.indexOf("async upsertCanvasLiveTick"));
+    assert.match(probe, /catch \{\s*\n\s*return false;/, "catch returns without caching");
+    assert.ok(!/catch \{[^}]*canvasLiveProbe = false/.test(probe), "the old permanent-false cache is gone");
+});
+
+test("the notify inline-patch decision measures the FINAL envelope, not the raw patch text", () => {
+    const CMS = readFileSync(fileURLToPath(new URL("../../src/cms.ts", import.meta.url)), "utf8");
+    assert.match(CMS, /octet_length\(m\.with_patch\) <= 7900/, "gate on the built message");
+    assert.ok(!CMS.includes("octet_length($3::text) <= 7000"), "the wrong-string gate is gone");
+});
+
+test("plane-synthesized events are transient: flagged at the source, diverted before history", () => {
+    const TRANSPORT = readFileSync(fileURLToPath(new URL("../../api/src/http-api-transport.js", import.meta.url)), "utf8");
+    assert.match(TRANSPORT, /transient: true/, "synthetic events carry the flag");
+    assert.match(TRANSPORT, /session\.canvas_plane_released/, "plane death propagates a release event");
 });

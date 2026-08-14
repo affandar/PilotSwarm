@@ -69,6 +69,9 @@ const EXPECTED_ALWAYS_ON_TOOL_NAMES = [
     "cancel_agent",
     "delete_agent",
     "store_fact",
+    // Bulk ingestion sits beside store_fact for every session — large fact
+    // sets ride artifacts instead of a store_fact loop.
+    "bulk_store_facts",
     "read_facts",
     "delete_fact",
     "read_agent_events",

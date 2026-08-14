@@ -21,4 +21,5 @@ export {
     evaluateArchiveAccess,
 } from "./src/session-authz.js";
 export { ApiClient } from "./src/api-client.js";
+export { createCanvasLiveMirror, jsonMergePatch } from "./src/canvas-live-mirror.js";
 export { HttpApiTransport } from "./src/http-api-transport.js";

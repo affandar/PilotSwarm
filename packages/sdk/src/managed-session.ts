@@ -166,6 +166,10 @@ const DRAW_CANVAS_TOOL_SPEC = {
                     + "chat pane — act on them and redraw. Omit the contract entirely for a display-only canvas: "
                     + "with no contract, the browser accepts nothing.",
             },
+            session_id: {
+                type: "string",
+                description: "Target an ANCESTOR session's canvas (your parent, grandparent, or the root) instead of your own. Sub-agents use this to draw on the parent's shared dashboard. Siblings, children, and unrelated sessions are refused.",
+            },
         },
         required: [],
     },
@@ -174,21 +178,29 @@ const DRAW_CANVAS_TOOL_SPEC = {
 
 const UPDATE_CANVAS_TOOL_SPEC = {
     description:
-        "Send a JSON data tick to a canvas page WITHOUT replacing the document (slot 1-5, default 1). "
+        "Send a data tick to a canvas page WITHOUT replacing the document (slot 1-5, default 1). "
         + "Use when the canvas's CONTENT changes but its layout does not — dashboards, tickers, watchers: "
-        + "draw the shell once with draw_canvas (declare data.example in the contract and register a message "
-        + "listener calling one idempotent applyData(data)), then tick with update_canvas. The payload arrives "
-        + "in the page as {type:'canvas-data', data, dataRev} via postMessage, and the platform replays the "
-        + "latest payload into any freshly loaded page automatically. Ticks never steal the screen (no view "
-        + "flip) and write no chat line, but they DO mark the canvas unseen — the toggle badges until the user "
-        + "looks. The activity feed records each tick. Cap 32 KB serialized. "
-        + "Layout change = draw_canvas; content change = update_canvas.",
+        + "draw the shell once with draw_canvas, then tick with update_canvas. "
+        + "Pass EXACTLY ONE of data or patch. `data` REPLACES the whole state — use it for the first tick "
+        + "after a draw and for wholesale refreshes. `patch` is an RFC 7386 JSON Merge Patch — the cheap "
+        + "path for every incremental change: send ONLY the subtree you are changing; objects deep-merge "
+        + "into the current state server-side, arrays and scalars replace, and null DELETES a key (omit "
+        + "keys you are not touching — null is deletion, not 'no change'). Patching one gauge costs a few "
+        + "tokens; re-sending a whole dashboard costs thousands. "
+        + "The page's applyData(state) always receives the complete merged state either way. "
+        + "Ticks never steal the screen (no view flip) and write no chat line, but they DO mark the canvas "
+        + "unseen — the toggle badges until the user looks. Cap: 32 KB for the MERGED state. Minimum 100 ms "
+        + "between ticks per slot. Layout change = draw_canvas; content change = update_canvas.",
     parameters: {
         type: "object",
         properties: {
             data: {
                 type: "object",
-                description: "The whole-state payload for the page's applyData(). Keep it matching the data.example declared at draw time.",
+                description: "REPLACE the whole state (exclusive with patch). The complete payload for the page's applyData().",
+            },
+            patch: {
+                type: "object",
+                description: "RFC 7386 merge patch (exclusive with data). Only the changed subtree; null deletes a key; merged into the current state server-side.",
             },
             note: {
                 type: "string",
@@ -198,8 +210,12 @@ const UPDATE_CANVAS_TOOL_SPEC = {
                 type: "number",
                 description: "Which canvas to tick, 1-5. Default 1.",
             },
+            session_id: {
+                type: "string",
+                description: "Target an ANCESTOR session's canvas (your parent, grandparent, or the root) instead of your own. Sub-agents use this to keep a shared dashboard on the parent live. Siblings, children, and unrelated sessions are refused.",
+            },
         },
-        required: ["data"],
+        required: [],
     },
     handler: async () => "stub",
 } as const;
@@ -216,6 +232,10 @@ const SHOW_CANVAS_TOOL_SPEC = {
         type: "object",
         properties: {
             slot: { type: "number", description: "Which canvas to present, 1-5. Default 1." },
+            session_id: {
+                type: "string",
+                description: "Target an ANCESTOR session's canvas (your parent, grandparent, or the root) instead of your own. Sub-agents use this to keep a shared dashboard on the parent live. Siblings, children, and unrelated sessions are refused.",
+            },
         },
         required: [],
     },
@@ -241,6 +261,17 @@ const READ_CANVAS_TOOL_SPEC = {
                     + "ARMED responseContract from the latest draw — without the document bytes. Use this to "
                     + "re-learn an interactive canvas cheaply after context regeneration or when you inherited "
                     + "a canvas you did not draw.",
+            },
+            include_data: {
+                type: "boolean",
+                description:
+                    "Also return the canvas's CURRENT data state (`live`: the latest merged tick, its seq, and "
+                    + "who wrote it). Use it to resync before patching — after a restart, or when another writer "
+                    + "may have ticked the page. The payload can be up to 32 KB; ask only when you need it.",
+            },
+            session_id: {
+                type: "string",
+                description: "Target an ANCESTOR session's canvas (your parent, grandparent, or the root) instead of your own. Sub-agents use this to keep a shared dashboard on the parent live. Siblings, children, and unrelated sessions are refused.",
             },
         },
     },
@@ -1522,7 +1553,7 @@ export class ManagedSession {
         // predicate, so a child neither sees nor can run them.
         const drawCanvasTool = defineTool("draw_canvas", {
             ...DRAW_CANVAS_TOOL_SPEC,
-            handler: async (args: { html?: string; fromArtifact?: { sessionId?: string; filename?: string; expectedSha256?: string }; note?: string; responseContract?: unknown; slot?: number; name?: string }) => {
+            handler: async (args: { html?: string; fromArtifact?: { sessionId?: string; filename?: string; expectedSha256?: string }; note?: string; responseContract?: unknown; slot?: number; name?: string; session_id?: string }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("draw_canvas");
                 if (typeof (controlBridge as any)?.drawCanvas !== "function") {
                     return "Error: the canvas bridge is unavailable on this session.";
@@ -1557,6 +1588,7 @@ export class ManagedSession {
                 if (contractResult.error) return `Error: invalid responseContract: ${contractResult.error}`;
                 const result = await (controlBridge as any).drawCanvas({
                     ...(args?.slot !== undefined ? { slot: args.slot } : {}),
+                    ...(args?.session_id !== undefined ? { session_id: String(args.session_id) } : {}),
                     ...(args?.name !== undefined ? { name: String(args.name) } : {}),
                     ...(html !== undefined ? { html } : {}),
                     ...(fromArtifact ? { fromArtifact: {
@@ -1603,29 +1635,47 @@ export class ManagedSession {
 
         const updateCanvasTool = defineTool("update_canvas", {
             ...UPDATE_CANVAS_TOOL_SPEC,
-            handler: async (args: { data?: unknown; note?: string; slot?: number }) => {
+            handler: async (args: { data?: unknown; patch?: unknown; note?: string; slot?: number; session_id?: string }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("update_canvas");
-                if (Array.isArray(args?.data)) {
-                    return "Error: data must be a JSON object (the page's whole-state payload), not an array — wrap it: { items: [...] }.";
-                }
                 if (typeof (controlBridge as any)?.updateCanvas !== "function") {
                     return "Error: the canvas bridge is unavailable on this session.";
                 }
-                if (!args?.data || typeof args.data !== "object") {
-                    return "Error: data must be a JSON object (the whole-state payload for the page's applyData).";
+                const hasData = args?.data !== undefined;
+                const hasPatch = args?.patch !== undefined;
+                if (hasData === hasPatch) {
+                    return "Error: pass exactly one of data (replace the whole state) or patch (RFC 7386 merge patch — only the changed subtree; null deletes a key).";
                 }
-                const serialized = JSON.stringify(args.data);
+                const body = hasData ? args.data : args.patch;
+                const label = hasData ? "data" : "patch";
+                if (Array.isArray(body)) {
+                    return `Error: ${label} must be a JSON object, not an array — wrap it: { items: [...] }.`;
+                }
+                if (!body || typeof body !== "object") {
+                    return `Error: ${label} must be a JSON object.`;
+                }
+                const serialized = JSON.stringify(body);
                 const sizeBytes = Buffer.byteLength(serialized, "utf8");
+                // The bridge enforces the real cap on the MERGED state; this
+                // is the cheap early refusal for an oversized message body.
                 if (sizeBytes > 32_768) {
-                    return `Error: data tick is ${sizeBytes} bytes serialized; the cap is 32768. Aggregate before sending, or redraw if the shape truly grew.`;
+                    return `Error: ${label} tick is ${sizeBytes} bytes serialized; the cap is 32768. Aggregate before sending, or redraw if the shape truly grew.`;
                 }
                 const note = args?.note ? String(args.note) : undefined;
-                const result = await (controlBridge as any).updateCanvas({ data: args.data, note, ...(args?.slot !== undefined ? { slot: args.slot } : {}) });
+                const result = await (controlBridge as any).updateCanvas({
+                    ...(hasData ? { data: body } : { patch: body }),
+                    note,
+                    ...(args?.slot !== undefined ? { slot: args.slot } : {}),
+                    ...(args?.session_id !== undefined ? { session_id: String(args.session_id) } : {}),
+                });
                 if (result?.error) return `Error: could not update the canvas: ${result.error}`;
                 return JSON.stringify({
                     updated: true,
-                    dataRev: result.dataRev,
-                    sizeBytes,
+                    mode: result.mode ?? label,
+                    ...(result.dataRev !== undefined ? { dataRev: result.dataRev } : {}),
+                    ...(result.seq !== undefined ? { seq: result.seq } : {}),
+                    // The MERGED size — what the whole state weighs after this
+                    // tick, not the size of the message body.
+                    sizeBytes: result.sizeBytes ?? sizeBytes,
                     reminder: "The page received the tick live; it patches itself in place. No chat mention needed.",
                 });
             },
@@ -1633,13 +1683,14 @@ export class ManagedSession {
 
         const showCanvasTool = defineTool("show_canvas", {
             ...SHOW_CANVAS_TOOL_SPEC,
-            handler: async (args: { slot?: number }) => {
+            handler: async (args: { slot?: number; session_id?: string }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("show_canvas");
                 if (typeof (controlBridge as any)?.showCanvas !== "function") {
                     return "Error: the canvas bridge is unavailable on this session.";
                 }
                 const result = await (controlBridge as any).showCanvas({
                     ...(args?.slot !== undefined ? { slot: args.slot } : {}),
+                    ...(args?.session_id !== undefined ? { session_id: String(args.session_id) } : {}),
                 });
                 if (result?.error) return `Error: could not present the canvas: ${result.error}`;
                 return JSON.stringify({ presented: true, slot: result.slot, rev: result.rev,
@@ -1648,7 +1699,7 @@ export class ManagedSession {
         });
         const readCanvasTool = defineTool("read_canvas", {
             ...READ_CANVAS_TOOL_SPEC,
-            handler: async (args: { offset?: number; maxBytes?: number; manifestOnly?: boolean; slot?: number }) => {
+            handler: async (args: { offset?: number; maxBytes?: number; manifestOnly?: boolean; include_data?: boolean; slot?: number; session_id?: string }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("read_canvas");
                 if (typeof (controlBridge as any)?.readCanvas !== "function") {
                     return "Error: the canvas bridge is unavailable on this session.";
@@ -1657,7 +1708,9 @@ export class ManagedSession {
                     offset: args?.offset,
                     maxBytes: args?.maxBytes,
                     manifestOnly: Boolean(args?.manifestOnly),
+                    includeData: Boolean(args?.include_data),
                     ...(args?.slot !== undefined ? { slot: args.slot } : {}),
+                    ...(args?.session_id !== undefined ? { session_id: String(args.session_id) } : {}),
                 });
                 if (result?.error) return `Error: could not read the canvas: ${result.error}`;
                 if (!result?.exists) return "No canvas has been drawn on this session yet.";

@@ -931,6 +931,40 @@ export interface SessionCatalog {
     getSessionCanvases?(sessionId: string): Promise<Array<{ slot: number; name: string; latestRev: number; sizeBytes: number | null; updatedAt: string }>>;
     listSessionCanvasesFor?(sessionIds: string[]): Promise<Map<string, Array<{ slot: number; name: string; latestRev: number; sizeBytes: number | null }>>>;
 
+    /**
+     * The canvas data plane (migration 0047): one UNLOGGED last-value row per
+     * (session, slot), written on every tick and draw, NOTIFY on write. All
+     * optional — absent on catalogs that predate the plane, and the bridge
+     * degrades to the durable-event path when the probe says so.
+     */
+    canvasLiveAvailable?(): Promise<boolean>;
+    /** Atomic next-rev mint on the 0045 cache row; seedRev floors legacy sessions. Multi-writer safe. */
+    mintCanvasRev?(sessionId: string, slot: number, seedRev: number): Promise<number>;
+    /**
+     * A data tick. Exactly one of input.data (replace wholesale) or
+     * input.patch (RFC 7386 merge into the LOCKED current row — concurrent
+     * patches compose). Refused, nothing written, when the resulting payload
+     * would exceed maxBytes. Returns the DB's seq and the MERGED payload —
+     * the dual-write legacy event carries that merged state so old readers
+     * stay whole.
+     */
+    upsertCanvasLiveTick?(sessionId: string, slot: number, input: { data?: Record<string, unknown>; patch?: Record<string, unknown> }, updatedBy: string, maxBytes?: number): Promise<{ seq: number; sizeBytes: number; payload: Record<string, unknown> } | { refused: true; currentSizeBytes: number | null }>;
+    /** A document pointer after a draw. RESETS payload to {} — the new page starts from its own initial state. */
+    upsertCanvasLiveDoc?(sessionId: string, slot: number, doc: { rev: number; sha: string }, updatedBy: string): Promise<{ seq: number } | null>;
+    getCanvasLive?(sessionId: string): Promise<Array<{ slot: number; seq: number; docRev: number; docSha: string; payload: Record<string, unknown>; updatedBy: string; updatedAt: string }>>;
+
+    /**
+     * Canvas share links (migration 0048): one live view token per
+     * (session, slot), stored as a HASH. The raw token never touches the
+     * database. All optional; absent on older catalogs.
+     */
+    getCanvasShareLinkInfo?(sessionId: string, slot: number): Promise<{ exists: boolean; createdAt?: string; createdBy?: string }>;
+    /** Create-or-rotate: the previous token (if any) stops validating the moment this row lands. */
+    setCanvasShareLink?(sessionId: string, slot: number, tokenHash: string, createdBy: string): Promise<void>;
+    removeCanvasShareLink?(sessionId: string, slot: number): Promise<boolean>;
+    /** The token door: hash lookup → which canvas this token views, or null. */
+    resolveCanvasShareToken?(tokenHash: string): Promise<{ sessionId: string; slot: number } | null>;
+
     /** Create schema and tables if they don't exist. */
     initialize(): Promise<void>;
 
@@ -2078,6 +2112,205 @@ export class PgSessionCatalog implements SessionCatalog {
             sizeBytes: r.size_bytes == null ? null : Number(r.size_bytes),
             updatedAt: r.updated_at instanceof Date ? r.updated_at.toISOString() : String(r.updated_at),
         }));
+    }
+
+    /**
+     * Atomically mint the next canvas revision for (session, slot) — the
+     * multi-writer-safe replacement for read-latest-then-plus-one, which
+     * only the single-writer promise chain kept safe. seedRev is the
+     * caller's best knowledge from the event scan: it floors the counter so
+     * a session whose 0045 row was never written (legacy, missed upsert)
+     * cannot mint rev 1 over a live rev-12 canvas.
+     */
+    async mintCanvasRev(sessionId: string, slot: number, seedRev: number): Promise<number> {
+        const s = `"${this.sql.schema}"`;
+        const seed = Math.max(0, Math.floor(Number(seedRev) || 0));
+        const { rows } = await this.pool.query(
+            `INSERT INTO ${s}.session_canvases (session_id, slot, name, latest_rev, size_bytes, updated_at)
+             VALUES ($1, $2, '', $3 + 1, NULL, now())
+             ON CONFLICT (session_id, slot) DO UPDATE SET
+                 latest_rev = GREATEST(${s}.session_canvases.latest_rev, $3::int) + 1,
+                 updated_at = now()
+             RETURNING latest_rev`,
+            [sessionId, slot, seed],
+        );
+        return Number(rows[0].latest_rev);
+    }
+
+    // ── The canvas data plane (migration 0047) ─────────────────────────
+    private canvasLiveProbe: boolean | null = null;
+
+    async canvasLiveAvailable(): Promise<boolean> {
+        if (this.canvasLiveProbe !== null) return this.canvasLiveProbe;
+        try {
+            const { rows } = await this.pool.query(
+                `SELECT to_regclass($1) AS t`,
+                [`"${this.sql.schema}".canvas_live`],
+            );
+            // Cache only a DEFINITIVE answer. A transient query error must
+            // not disable the plane for the process lifetime — return false
+            // for THIS call and let the next one re-probe.
+            this.canvasLiveProbe = Boolean(rows?.[0]?.t);
+            return this.canvasLiveProbe;
+        } catch {
+            return false;
+        }
+    }
+
+    async upsertCanvasLiveTick(
+        sessionId: string,
+        slot: number,
+        input: { data?: Record<string, unknown>; patch?: Record<string, unknown> },
+        updatedBy: string,
+        maxBytes = 32_768,
+    ): Promise<{ seq: number; sizeBytes: number; payload: Record<string, unknown> } | { refused: true; currentSizeBytes: number | null }> {
+        const s = `"${this.sql.schema}"`;
+        const isPatch = input.patch !== undefined;
+        const body = JSON.stringify(isPatch ? input.patch : input.data);
+        // One statement: candidate size gates BOTH paths, the merge runs
+        // against the LOCKED row inside DO UPDATE (concurrent patches
+        // serialize on the row lock and compose), and the NOTIFY fires only
+        // when a row was actually written. The channel is global; the payload
+        // carries the schema so multi-schema deployments (and test suites)
+        // never cross-talk.
+        const { rows } = await this.pool.query(
+            `WITH up AS (
+                INSERT INTO ${s}.canvas_live (session_id, slot, seq, doc_rev, doc_sha, payload, updated_by, updated_at)
+                SELECT $1, $2, 1, 0, '',
+                       CASE WHEN $4::boolean THEN ${s}.jsonb_merge_patch('{}'::jsonb, $3::jsonb) ELSE $3::jsonb END,
+                       $5, now()
+                WHERE octet_length((CASE WHEN $4::boolean THEN ${s}.jsonb_merge_patch('{}'::jsonb, $3::jsonb) ELSE $3::jsonb END)::text) <= $6
+                ON CONFLICT (session_id, slot) DO UPDATE SET
+                    seq = ${s}.canvas_live.seq + 1,
+                    payload = CASE WHEN $4::boolean THEN ${s}.jsonb_merge_patch(${s}.canvas_live.payload, $3::jsonb) ELSE $3::jsonb END,
+                    updated_by = $5,
+                    updated_at = now()
+                WHERE octet_length((CASE WHEN $4::boolean THEN ${s}.jsonb_merge_patch(${s}.canvas_live.payload, $3::jsonb) ELSE $3::jsonb END)::text) <= $6
+                RETURNING seq, payload
+            )
+            SELECT up.seq, up.payload, octet_length(up.payload::text) AS size_bytes,
+                   pg_notify('pilotswarm_canvas_live',
+                       -- The patch rides the ping when the FINAL message fits
+                       -- (pg_notify hard-errors at 8000 bytes, and that error
+                       -- would roll back the row write in this statement).
+                       -- Gate on the built envelope itself — jsonb re-renders
+                       -- with extra whitespace and the envelope adds ~150
+                       -- bytes, so measuring the raw patch text under-counts.
+                       -- Too big (or a PUT): pointer only — the relay's
+                       -- subscribers snapshot from the row instead.
+                       (SELECT CASE WHEN m.with_patch IS NOT NULL AND octet_length(m.with_patch) <= 7900
+                               THEN m.with_patch ELSE m.pointer END
+                        FROM (SELECT
+                            CASE WHEN $4::boolean THEN json_build_object(
+                                'schema', $7::text, 'sessionId', $1::text, 'slot', $2::int, 'seq', up.seq,
+                                'kind', 'data', 'patch', $3::jsonb)::text END AS with_patch,
+                            json_build_object(
+                                'schema', $7::text, 'sessionId', $1::text, 'slot', $2::int, 'seq', up.seq,
+                                'kind', 'data')::text AS pointer) m))
+            FROM up`,
+            [sessionId, slot, body, isPatch, updatedBy, maxBytes, this.sql.schema],
+        );
+        if (rows.length > 0) {
+            return {
+                seq: Number(rows[0].seq),
+                sizeBytes: Number(rows[0].size_bytes),
+                payload: rows[0].payload ?? {},
+            };
+        }
+        // Refused by the size gate. Report the CURRENT row's size so the
+        // error can say what the merged result was up against (null when the
+        // very first write was itself oversized — no row exists yet).
+        const { rows: current } = await this.pool.query(
+            `SELECT octet_length(payload::text) AS size_bytes FROM ${s}.canvas_live WHERE session_id = $1 AND slot = $2`,
+            [sessionId, slot],
+        );
+        return { refused: true, currentSizeBytes: current.length > 0 ? Number(current[0].size_bytes) : null };
+    }
+
+    async upsertCanvasLiveDoc(sessionId: string, slot: number, doc: { rev: number; sha: string }, updatedBy: string): Promise<{ seq: number } | null> {
+        const s = `"${this.sql.schema}"`;
+        const { rows } = await this.pool.query(
+            `WITH up AS (
+                INSERT INTO ${s}.canvas_live (session_id, slot, seq, doc_rev, doc_sha, payload, updated_by, updated_at)
+                VALUES ($1, $2, 1, $3, $4, '{}'::jsonb, $5, now())
+                ON CONFLICT (session_id, slot) DO UPDATE SET
+                    seq = ${s}.canvas_live.seq + 1,
+                    doc_rev = EXCLUDED.doc_rev,
+                    doc_sha = EXCLUDED.doc_sha,
+                    payload = '{}'::jsonb,
+                    updated_by = EXCLUDED.updated_by,
+                    updated_at = now()
+                RETURNING seq
+            )
+            SELECT up.seq, pg_notify('pilotswarm_canvas_live', json_build_object(
+                       'schema', $6::text, 'sessionId', $1::text, 'slot', $2::int, 'seq', up.seq, 'kind', 'doc')::text)
+            FROM up`,
+            [sessionId, slot, doc.rev, doc.sha, updatedBy, this.sql.schema],
+        );
+        return rows.length > 0 ? { seq: Number(rows[0].seq) } : null;
+    }
+
+    async getCanvasLive(sessionId: string): Promise<Array<{ slot: number; seq: number; docRev: number; docSha: string; payload: Record<string, unknown>; updatedBy: string; updatedAt: string }>> {
+        const { rows } = await this.pool.query(
+            `SELECT slot, seq, doc_rev, doc_sha, payload, updated_by, updated_at
+             FROM "${this.sql.schema}".canvas_live
+             WHERE session_id = $1
+             ORDER BY slot`,
+            [sessionId],
+        );
+        return rows.map((r: any) => ({
+            slot: Number(r.slot),
+            seq: Number(r.seq),
+            docRev: Number(r.doc_rev) || 0,
+            docSha: String(r.doc_sha || ""),
+            payload: r.payload ?? {},
+            updatedBy: String(r.updated_by || ""),
+            updatedAt: r.updated_at instanceof Date ? r.updated_at.toISOString() : String(r.updated_at),
+        }));
+    }
+
+    // ── Canvas share links (migration 0048) ────────────────────────────
+    async getCanvasShareLinkInfo(sessionId: string, slot: number): Promise<{ exists: boolean; createdAt?: string; createdBy?: string }> {
+        const { rows } = await this.pool.query(
+            `SELECT created_at, created_by FROM "${this.sql.schema}".canvas_share_links WHERE session_id = $1 AND slot = $2`,
+            [sessionId, slot],
+        );
+        if (rows.length === 0) return { exists: false };
+        return {
+            exists: true,
+            createdAt: rows[0].created_at instanceof Date ? rows[0].created_at.toISOString() : String(rows[0].created_at),
+            createdBy: String(rows[0].created_by || ""),
+        };
+    }
+
+    async setCanvasShareLink(sessionId: string, slot: number, tokenHash: string, createdBy: string): Promise<void> {
+        await this.pool.query(
+            `INSERT INTO "${this.sql.schema}".canvas_share_links (session_id, slot, token_hash, created_at, created_by)
+             VALUES ($1, $2, $3, now(), $4)
+             ON CONFLICT (session_id, slot) DO UPDATE SET
+                 token_hash = EXCLUDED.token_hash,
+                 created_at = now(),
+                 created_by = EXCLUDED.created_by`,
+            [sessionId, slot, tokenHash, createdBy],
+        );
+    }
+
+    async removeCanvasShareLink(sessionId: string, slot: number): Promise<boolean> {
+        const { rowCount } = await this.pool.query(
+            `DELETE FROM "${this.sql.schema}".canvas_share_links WHERE session_id = $1 AND slot = $2`,
+            [sessionId, slot],
+        );
+        return (rowCount ?? 0) > 0;
+    }
+
+    async resolveCanvasShareToken(tokenHash: string): Promise<{ sessionId: string; slot: number } | null> {
+        const hash = String(tokenHash || "").trim();
+        if (!hash) return null;
+        const { rows } = await this.pool.query(
+            `SELECT session_id, slot FROM "${this.sql.schema}".canvas_share_links WHERE token_hash = $1`,
+            [hash],
+        );
+        return rows.length > 0 ? { sessionId: String(rows[0].session_id), slot: Number(rows[0].slot) } : null;
     }
 
     async getSessionEvents(sessionId: string, afterSeq?: number, limit?: number, eventTypes?: string[]): Promise<SessionEvent[]> {

@@ -245,6 +245,16 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "agent_package_delete_blob_refcount",
             sql: migration_0046_agent_package_delete_blob_refcount(schema),
         },
+        {
+            version: "0047",
+            name: "canvas_live_plane",
+            sql: migration_0047_canvas_live_plane(schema),
+        },
+        {
+            version: "0048",
+            name: "canvas_share_links",
+            sql: migration_0048_canvas_share_links(schema),
+        },
     ];
 }
 
@@ -9200,5 +9210,99 @@ BEGIN
          );
 END;
 $$ LANGUAGE plpgsql;
+`;
+}
+
+/**
+ * 0047 — the canvas data plane: canvas_live + jsonb_merge_patch.
+ *
+ * One UNLOGGED row per (session, slot) holding the LATEST canvas state:
+ * the last data tick (merged whole state) and the current document pointer.
+ * update_canvas ticks stop being durable events — they overwrite this row
+ * and NOTIFY; the relay LISTENs and fans out. UNLOGGED is deliberate:
+ * no WAL cost, survives relay restarts, truncated only on a PG crash —
+ * and ticks are whole-state, so the next tick heals the surface.
+ *
+ * doc_rev/doc_sha and payload are SEPARATE columns: a redraw must not wipe
+ * the data mirror's shape, and the subscribe-time burst needs both. A draw
+ * DOES reset payload to {} — the new document starts from its own initial
+ * state and the stale mirror of the old page must not replay into it.
+ *
+ * jsonb_merge_patch is RFC 7386: objects deep-merge, null DELETES a key,
+ * arrays and scalars replace. plpgsql (not sql) so recursion is legal.
+ * The merge runs inside the UPSERT's DO UPDATE against the LOCKED row —
+ * concurrent patches serialize on the row lock and compose instead of
+ * clobbering.
+ */
+function migration_0047_canvas_live_plane(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+CREATE UNLOGGED TABLE IF NOT EXISTS ${s}.canvas_live (
+    session_id  TEXT     NOT NULL REFERENCES ${s}.sessions(session_id) ON DELETE CASCADE,
+    slot        SMALLINT NOT NULL CHECK (slot BETWEEN 1 AND 5),
+    seq         BIGINT   NOT NULL DEFAULT 1,
+    doc_rev     INTEGER  NOT NULL DEFAULT 0,
+    doc_sha     TEXT     NOT NULL DEFAULT '',
+    payload     JSONB    NOT NULL DEFAULT '{}'::jsonb,
+    updated_by  TEXT     NOT NULL DEFAULT '',
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (session_id, slot)
+);
+
+CREATE OR REPLACE FUNCTION ${s}.jsonb_merge_patch(target JSONB, patch JSONB)
+RETURNS JSONB LANGUAGE plpgsql IMMUTABLE AS $fn$
+DECLARE
+    result JSONB;
+    k TEXT;
+    v JSONB;
+BEGIN
+    -- RFC 7386: a non-object patch replaces the target wholesale.
+    IF patch IS NULL OR jsonb_typeof(patch) <> 'object' THEN
+        RETURN COALESCE(patch, 'null'::jsonb);
+    END IF;
+    result := CASE
+        WHEN target IS NOT NULL AND jsonb_typeof(target) = 'object' THEN target
+        ELSE '{}'::jsonb
+    END;
+    FOR k, v IN SELECT key, value FROM jsonb_each(patch) LOOP
+        IF jsonb_typeof(v) = 'null' THEN
+            result := result - k;
+        ELSIF jsonb_typeof(v) = 'object' THEN
+            result := jsonb_set(result, ARRAY[k], ${s}.jsonb_merge_patch(result -> k, v), true);
+        ELSE
+            result := jsonb_set(result, ARRAY[k], v, true);
+        END IF;
+    END LOOP;
+    RETURN result;
+END
+$fn$;
+`;
+}
+
+/**
+ * 0048 — canvas share links: ONE live view token per (session, slot).
+ *
+ * "Anyone with link can view": the URL carries a random capability token;
+ * this table stores its HASH. Exactly one row per canvas — minting again
+ * (reset) replaces the row and the old link dies the moment the new one
+ * exists; remove deletes the row. Token bearers are validated by hash
+ * lookup at exactly two doors (the canvas WS subscribe and the share doc
+ * fetch) and hold no other capability. Durable (NOT unlogged): a link
+ * must survive restarts and failovers.
+ */
+function migration_0048_canvas_share_links(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+CREATE TABLE IF NOT EXISTS ${s}.canvas_share_links (
+    session_id  TEXT     NOT NULL REFERENCES ${s}.sessions(session_id) ON DELETE CASCADE,
+    slot        SMALLINT NOT NULL CHECK (slot BETWEEN 1 AND 5),
+    token_hash  TEXT     NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_by  TEXT     NOT NULL DEFAULT '',
+    PRIMARY KEY (session_id, slot)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS canvas_share_links_token_hash
+    ON ${s}.canvas_share_links (token_hash);
 `;
 }

@@ -1570,6 +1570,39 @@ export function appReducer(state, action) {
             if (previousActiveId && previousActiveId !== action.sessionId) {
                 savedChatScroll[previousActiveId] = Number(state.ui.scroll?.chat) || 0;
             }
+            // Per-session prompt drafts: a half-written message belongs to the
+            // session it was written in. Stash the outgoing draft (text +
+            // staged attachments) and restore the incoming one, exactly like
+            // the chat-scroll memory above. Exception: while editing a pending
+            // outbox message the composer text lives in that outbox item, not
+            // in a draft — leave the item alone, drop the edit latch, and give
+            // the incoming session its own draft back.
+            const switchingSession = previousActiveId !== action.sessionId;
+            const savedDrafts = { ...(state.ui.promptDraftBySession || {}) };
+            let nextPrompt = state.ui.prompt;
+            let nextPromptCursor = state.ui.promptCursor;
+            let nextPromptAttachments = state.ui.promptAttachments;
+            let nextPromptEdit = state.ui.promptEdit ?? null;
+            if (switchingSession) {
+                const editingPending = Boolean(state.ui.promptEdit);
+                if (!editingPending && previousActiveId) {
+                    const outgoing = {
+                        prompt: String(state.ui.prompt || ""),
+                        attachments: Array.isArray(state.ui.promptAttachments) ? state.ui.promptAttachments : [],
+                    };
+                    if (outgoing.prompt || outgoing.attachments.length > 0) {
+                        savedDrafts[previousActiveId] = outgoing;
+                    } else {
+                        delete savedDrafts[previousActiveId];
+                    }
+                }
+                const incoming = action.sessionId ? savedDrafts[action.sessionId] : null;
+                delete savedDrafts[action.sessionId];
+                nextPrompt = incoming?.prompt || "";
+                nextPromptCursor = nextPrompt.length;
+                nextPromptAttachments = Array.isArray(incoming?.attachments) ? incoming.attachments : [];
+                nextPromptEdit = null;
+            }
             // Manual navigation to a different session releases the deep-link
             // latch and its transient filter exception.
             const releasesNavigationLatch = Boolean(
@@ -1588,6 +1621,12 @@ export function appReducer(state, action) {
                 ui: {
                     ...state.ui,
                     chatScrollBySession: savedChatScroll,
+                    promptDraftBySession: savedDrafts,
+                    prompt: nextPrompt,
+                    promptCursor: nextPromptCursor,
+                    promptRows: getPromptInputRows(nextPrompt),
+                    promptAttachments: nextPromptAttachments,
+                    promptEdit: nextPromptEdit,
                     // Status notices are per-moment, usually per-session (send
                     // refusals, access hints) — a stale one must not follow the
                     // user to the next session.
@@ -1861,6 +1900,8 @@ export function appReducer(state, action) {
             for (const id of ids) delete nextOutbox[id];
             const nextChatScroll = { ...(state.ui.chatScrollBySession || {}) };
             for (const id of ids) delete nextChatScroll[id];
+            const nextDrafts = { ...(state.ui.promptDraftBySession || {}) };
+            for (const id of ids) delete nextDrafts[id];
             return {
                 ...state,
                 history: {
@@ -1874,6 +1915,7 @@ export function appReducer(state, action) {
                 ui: {
                     ...state.ui,
                     chatScrollBySession: nextChatScroll,
+                    promptDraftBySession: nextDrafts,
                 },
             };
         }
@@ -2953,7 +2995,20 @@ export function appReducer(state, action) {
             const dataRev = Number(action.dataRev);
             if (!sessionId || !Number.isFinite(dataRev) || dataRev <= 0) return state;
             const existing = state.canvas.bySessionId[key] || {};
-            if ((existing.latestDataRev || 0) >= dataRev) return state;
+            const planeSeq = Number(action.planeSeq);
+            const isPlane = Number.isFinite(planeSeq) && planeSeq > 0;
+            // Plane takeover: once a slot has seen ONE plane-fed tick, that
+            // lineage owns the slot. Plane ticks order by planeSeq (their
+            // numbering restarts relative to legacy dataRev, so the numeric
+            // guard below would wrongly starve them); legacy dual-written
+            // events for a plane-owned slot are strictly staler copies of
+            // state the plane already delivered — drop them.
+            if (isPlane) {
+                if ((existing.planeSeq || 0) >= planeSeq) return state;
+            } else {
+                if (existing.planeSeq) return state;
+                if ((existing.latestDataRev || 0) >= dataRev) return state;
+            }
             return {
                 ...state,
                 canvas: {
@@ -2962,12 +3017,43 @@ export function appReducer(state, action) {
                         ...state.canvas.bySessionId,
                         [key]: {
                             ...existing,
-                            latestDataRev: dataRev,
+                            // The DISPLAYED tick number stays monotonic across
+                            // the takeover: viewed-marking and badges compare
+                            // against it, and a smaller number would replay
+                            // as "already seen".
+                            latestDataRev: Math.max(dataRev, existing.latestDataRev || 0),
+                            ...(isPlane ? { planeSeq } : {}),
                             dataPayload: action.payload && typeof action.payload === "object" ? action.payload : null,
+                            // The patch that produced this state, for pages
+                            // that opt into targeted updates. Whole-state
+                            // ticks clear it — there is no delta to hand out.
+                            dataPatch: isPlane && action.patch && typeof action.patch === "object" ? action.patch : null,
                         },
                     },
                 },
             };
+        }
+
+        case "canvas/planeReleased": {
+            // The plane died for this session: release the takeover on every
+            // slot so legacy durable ticks resume applying. Displayed tick
+            // numbers (latestDataRev) survive, so stale legacy dupes still
+            // drop by ordinary ordering while fresh ones flow.
+            const sessionId = String(action.sessionId || "").trim();
+            if (!sessionId) return state;
+            let changed = false;
+            const nextBySession = { ...state.canvas.bySessionId };
+            for (let slot = 1; slot <= 5; slot++) {
+                const key = canvasKey(sessionId, slot);
+                const entry = nextBySession[key];
+                if (entry && entry.planeSeq) {
+                    const { planeSeq: _released, ...rest } = entry;
+                    nextBySession[key] = rest;
+                    changed = true;
+                }
+            }
+            if (!changed) return state;
+            return { ...state, canvas: { ...state.canvas, bySessionId: nextBySession } };
         }
 
         case "canvas/snapshot": {

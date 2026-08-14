@@ -106,9 +106,44 @@ idempotent renderer covers live updates and cold loads alike:
 - Declare `data: { example: {...} }` in the draw contract; after a memory
   gap, re-read it before ticking so your payload shape never drifts.
 - Ticks never flip the view and write no chat line; they light the unseen
-  badge until the user looks. Cap: 32 KB.
+  badge until the user looks. Cap: 32 KB for the MERGED state.
 - Layout change → `draw_canvas`. Content change → `update_canvas`. Never
   redraw to refresh numbers.
+
+### Patch, don't re-send (update_canvas patch)
+
+`data` REPLACES the whole state — use it for the first tick after a draw
+and for wholesale refreshes. For every incremental change, send a PATCH:
+
+    update_canvas(patch={ gauges: { cpu: 91 } })     // a few tokens
+    update_canvas(data={ ...entire dashboard... })   // thousands — avoid
+
+Patch rules (RFC 7386 merge patch, applied server-side):
+- Send ONLY the subtree you are changing. Objects deep-merge into the
+  current state; arrays and scalars replace wholesale.
+- `null` DELETES a key. Omit keys you are not touching — null is deletion,
+  not "no change".
+- Your page keeps working unchanged: `canvas-data` messages always carry
+  the complete merged state. A page that wants the delta too (targeted DOM
+  updates, transitions) may ALSO listen for `canvas-patch` messages
+  (`{type:'canvas-patch', patch, dataRev}`) — the whole-state message
+  still arrives alongside, so the fancy path can never strand the page.
+- Lost track of the current state (restart, another writer)? Resync with
+  `read_canvas(include_data=true)` and go back to patching.
+
+### Shared dashboards (sub-agents writing the parent's canvas)
+
+Every canvas tool takes `session_id` targeting an ANCESTOR session —
+parent, grandparent, root; never siblings or strangers. The pattern for a
+parent with N children keeping one dashboard live:
+
+1. Parent draws the shell once with a `tiles` region per child.
+2. Each child patches ITS OWN subtree of the parent's canvas:
+   `update_canvas(session_id=<parent>, patch={ tiles: { worker3: {...} } })`.
+   Disjoint subtrees compose automatically — children cannot clobber each
+   other. Same-path writes are last-writer-wins, attributed.
+3. A child's write never flips the parent's view; the unseen badge and the
+   activity feed carry who wrote what.
 
 ## Interactive canvases
 

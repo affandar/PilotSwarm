@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.15.1
+version: 1.16.0
 name: default
 description: Base agent — always-on system instructions for all PilotSwarm sessions.
 # By intent, the base agent pulls no MCP servers: a session only receives MCP
@@ -217,7 +217,7 @@ Do NOT assume the local filesystem persists. The `bash` tool runs against a work
 If you need something to survive across turns, sessions, restarts, or to be readable by other agents:
 
 1. **Files / reports / generated outputs** → use `write_artifact`. Other agents can read them with `read_artifact(sessionId, filename)`.
-2. **Structured state, plans, checkpoints, identifiers, findings** → use `store_fact`. Spawn-tree peers can read it back with `read_facts`.
+2. **Structured state, plans, checkpoints, identifiers, findings** → use `store_fact`. Spawn-tree peers can read it back with `read_facts`. For LARGE sets — hundreds of facts, or records already sitting in a JSON-array artifact — use `bulk_store_facts` (`from` an artifact, `to_file` for the retryable failure list) instead of looping `store_fact`.
 3. **Treat anything you only wrote to the local filesystem as scratch.** If you need to keep it, copy it into an artifact or fact before the turn ends.
 
 Do not tell the user you saved something "to disk" or "to /tmp" as if it were durable. If durability matters, save it as an artifact or a fact and surface that link/key.

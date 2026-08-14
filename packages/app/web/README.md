@@ -196,3 +196,31 @@ pilotswarm             (the app package; this dir is its web/ tree)
 `pilotswarm-cli` rather than importing monorepo-relative source files. That
 keeps the publishable package graph explicit and lets the portal reuse the same
 Node transport and plugin-config behavior as the TUI.
+
+## Multi-origin links (PORTAL_LINK_ORIGINS)
+
+A deployment reachable through several entry points (a public edge and a
+private/VPN hostname, say) sets:
+
+```
+PORTAL_LINK_ORIGINS="Corporate=https://corp.example.com,Private/VPN=https://vpn.example.com"
+```
+
+With two or more entries, every link-producing surface — the session
+copy-link, artifact links, and the canvas share dialog (both the
+session-access and the public-token link) — offers one labeled variant per
+origin, and copy puts all of them on the clipboard as labeled lines. Token
+links all resolve the same stored hash, so a reset revokes every variant at
+once. Unset (or empty) means single-origin behavior, unchanged.
+
+Validation is fail-loud at portal startup: 2-6 entries, `Label=Origin`
+pairs, unique labels and origins, bare https origins (http allowed only for
+localhost). A single entry is refused as a probable mistake.
+
+Note: configured origins are served on the pre-auth /api/portal-config
+payload (the same visibility the waldemort patch had, which baked both
+hostnames into the public JS bundle) — treat entry-point hostnames as
+non-secret.
+
+This replaces the waldemort `patch-pilotswarm-dual-session-links.mjs`
+deploy patch: set the env var, delete the patch.

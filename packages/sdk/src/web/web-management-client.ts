@@ -197,6 +197,29 @@ export class WebPilotSwarmManagementClient {
         return this._api.call("getSessionEventsBefore", { sessionId, beforeSeq, limit, eventTypes });
     }
 
+    async getCanvasLive(sessionId: string): Promise<Array<{ slot: number; seq: number; docRev: number; docSha: string; payload: Record<string, unknown>; updatedBy: string; updatedAt: string }>> {
+        return this._api.call("getCanvasLive", { sessionId });
+    }
+
+    async getCanvasShareLink(sessionId: string, slot: number): Promise<{ exists: boolean; createdAt?: string; createdBy?: string }> {
+        return this._api.call("getCanvasShareLink", { sessionId, slot });
+    }
+
+    async resetCanvasShareLink(sessionId: string, slot: number, _createdBy?: string): Promise<{ token: string }> {
+        // createdBy is resolved SERVER-side from the authenticated principal;
+        // the parameter exists only for surface parity with the PG client.
+        return this._api.call("resetCanvasShareLink", { sessionId, slot: { slot } });
+    }
+
+    async removeCanvasShareLink(sessionId: string, slot: number): Promise<{ removed: boolean }> {
+        return this._api.call("removeCanvasShareLink", { sessionId, slot: { slot } });
+    }
+
+    /** Server-internal token door — deliberately NEVER a wire operation. */
+    resolveCanvasShareTokenHash(): never {
+        throw webModeUnsupported("resolveCanvasShareTokenHash", "the share-token resolve is a server-internal door; tokens are validated only where the doors live");
+    }
+
     async getTopEventEmitters(opts: { since: Date; limit?: number }): Promise<any[]> {
         return this._api.call("getTopEventEmitters", { since: toIso(opts.since), limit: opts.limit });
     }

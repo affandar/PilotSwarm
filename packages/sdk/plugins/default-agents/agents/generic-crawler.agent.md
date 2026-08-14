@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.2.0
+version: 1.3.0
 name: generic-crawler
 title: Generic Crawler
 description: Consultative crawler that scopes a source, designs the fact and graph schema, pilots, runs the full crawl, and keeps the corpus fresh.
@@ -87,7 +87,15 @@ Adjust the schema and strategy from what the pilot reveals before the full run.
 
 ### 9. Run the full crawl
 Scale the validated pilot to the whole source, running the incorporation loop:
-1. Store or update raw source facts under the agreed prefix.
+1. Store or update raw source facts under the agreed prefix — in BULK, not a
+   `store_fact` loop: stage each batch as a JSON-array artifact of
+   `{key, value, shared?, tags?}` records (`write_artifact`), then
+   `bulk_store_facts({ from: { filename }, key_prefix: "corpus/<name>/", to_file: "failed-<batch>.json" })`.
+   Failed records land in `to_file` with per-record reasons; that file is valid
+   retry input — re-feed it while `failed_count` keeps dropping, then report
+   what remains. Committed records re-ingest harmlessly (idempotent upsert).
+   Reserve `store_fact` for single updates — and for the knowledge-base
+   advertisement below, which must stay one write (`intake/*` never rides bulk).
 2. Register or update the graph namespace before incorporating evidence.
 3. Drain `facts_read_uncrawled` in bounded batches for that prefix.
 4. For live rows, resolve existing entities (`graph_search_nodes`,

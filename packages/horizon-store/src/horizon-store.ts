@@ -241,12 +241,15 @@ export class HorizonDBFactStore implements EnhancedFactStore {
                 tags: input.tags ?? [],
             };
         });
-        await withDbRetry("facts_store", () => this.pool.query(
-            `SELECT ${this.s}.facts_store($1::jsonb)`,
+        const { rows } = await withDbRetry<{ rows: any[] }>("facts_store", () => this.pool.query(
+            `SELECT ${this.s}.facts_store($1::jsonb) AS committed`,
             [JSON.stringify(facts)],
         ));
         const storedFacts: StoredFactResult[] = facts.map((fact) => ({ key: fact.key, shared: fact.shared, stored: true }));
-        const result = { stored: facts.length, facts: storedFacts };
+        // The database's RETURNING count (facts_store RETURNS INT), not the
+        // input length — same contract as PgFactStore.storeFact. Equal today
+        // by construction; diverges loudly if the SQL ever drops rows.
+        const result = { stored: Number(rows?.[0]?.committed ?? 0), facts: storedFacts };
         return Array.isArray(input) ? result : result.facts[0];
     }
 
