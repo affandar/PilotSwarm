@@ -177,7 +177,6 @@ export class PilotSwarmClient {
                 hooks: config.hooks,
                 waitThreshold: config.waitThreshold ?? this.config.waitThreshold,
                 toolNames: config.toolNames,
-                callerMcpServers: config.callerMcpServers,
             };
             this.sessionConfigs.set(sessionId, fullConfig);
         }
@@ -259,8 +258,6 @@ export class PilotSwarmClient {
         visibility?: SessionVisibility | null;
         /** Delegated MCP credential — see createSession. */
         callerAuth?: CallerAuthInput | null;
-        /** Caller-attached per-session MCP servers — see createSession / SerializableSessionConfig. */
-        callerMcpServers?: Record<string, any> | null;
     }): Promise<PilotSwarmSession> {
         // Validate the agent exists and is non-system
         const allowed = this._allowedAgentNames;
@@ -277,7 +274,6 @@ export class PilotSwarmClient {
             toolNames: opts?.toolNames,
             repo: opts?.repo,
             callerAuth: opts?.callerAuth ?? null,
-            callerMcpServers: opts?.callerMcpServers ?? undefined,
             onUserInputRequest: opts?.onUserInputRequest,
             agentId: agentName,
             boundAgentName: agentName,
@@ -631,10 +627,6 @@ export class PilotSwarmClient {
             promptLayering: fullConfig?.promptLayering,
             childContract: fullConfig?.childContract,
             toolNames: allNames.length ? allNames : undefined,
-            // Caller-attached per-session MCP servers ride the durable input so
-            // the worker merges them into the session's effective MCP map (works
-            // for repo-less generic sessions and stacks on repo-bound ones).
-            callerMcpServers: fullConfig?.callerMcpServers,
         };
 
         trace(`[client] ensureOrchestrationAndSend start session=${sessionId} active=${this.activeOrchestrations.has(sessionId)}`);

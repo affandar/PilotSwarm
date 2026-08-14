@@ -103,55 +103,6 @@ function validateCallerAuthParam(raw) {
     return out;
 }
 
-const CALLER_MCP_MAX_SERVERS = 16;
-const CALLER_MCP_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9 _.-]{0,63}$/;
-
-/**
- * Validate/normalize the optional `callerMcpServers` create param: a map of
- * server name -> server config object (`{ type, url, tools?, headers?, … }`,
- * the Copilot MCP shape). Returns undefined when absent, or a sanitized map.
- * The inner config shape is validated worker-side by the Copilot SDK; here we
- * only enforce that it is a bounded object-of-objects with sane names so a
- * caller cannot smuggle a non-object or an unbounded map into the durable
- * orchestration input. NOTE: this rides the durable history — callers should
- * present bearer credentials via `callerAuth` (delegated), not embed them here.
- */
-function validateCallerMcpServersParam(raw) {
-    if (raw == null) return undefined;
-    if (typeof raw !== "object" || Array.isArray(raw)) {
-        throw Object.assign(
-            new Error("callerMcpServers must be an object mapping server name -> config"),
-            { code: "INVALID_REQUEST" },
-        );
-    }
-    const entries = Object.entries(raw);
-    if (entries.length === 0) return undefined;
-    if (entries.length > CALLER_MCP_MAX_SERVERS) {
-        throw Object.assign(
-            new Error(`callerMcpServers may contain at most ${CALLER_MCP_MAX_SERVERS} servers`),
-            { code: "INVALID_REQUEST" },
-        );
-    }
-    const out = {};
-    for (const [name, cfg] of entries) {
-        const serverName = typeof name === "string" ? name.trim() : "";
-        if (!CALLER_MCP_NAME_RE.test(serverName)) {
-            throw Object.assign(
-                new Error(`callerMcpServers server name "${name}" is invalid ([A-Za-z0-9 _.-], <=64 chars)`),
-                { code: "INVALID_REQUEST" },
-            );
-        }
-        if (cfg == null || typeof cfg !== "object" || Array.isArray(cfg)) {
-            throw Object.assign(
-                new Error(`callerMcpServers["${serverName}"] must be a config object`),
-                { code: "INVALID_REQUEST" },
-            );
-        }
-        out[serverName] = cfg;
-    }
-    return out;
-}
-
 function clampInteger(value, defaultValue, min, max) {
     if (value == null) return defaultValue;
     const numeric = Number(value);
@@ -922,7 +873,6 @@ export class PortalRuntime {
                 await this._assertPlacementGroupOwned(safeParams.groupId, authContext, { isAdmin });
                 const repo = validateRepoParam(safeParams.repo);
                 const callerAuth = validateCallerAuthParam(safeParams.callerAuth);
-                const callerMcpServers = validateCallerMcpServersParam(safeParams.callerMcpServers);
                 const created = await this.transport.createSession({
                     model: safeParams.model,
                     reasoningEffort: safeParams.reasoningEffort,
@@ -932,7 +882,6 @@ export class PortalRuntime {
                     visibility: normalizeVisibility(safeParams.visibility, this.authz.defaultVisibility),
                     ...(repo ? { repo } : {}),
                     ...(callerAuth ? { callerAuth } : {}),
-                    ...(callerMcpServers ? { callerMcpServers } : {}),
                 });
                 return this._ensureCreatedPlacement(created, safeParams.groupId, authContext, isAdmin);
             }
@@ -940,7 +889,6 @@ export class PortalRuntime {
                 await this._assertPlacementGroupOwned(safeParams.groupId, authContext, { isAdmin });
                 const repo = validateRepoParam(safeParams.repo);
                 const callerAuth = validateCallerAuthParam(safeParams.callerAuth);
-                const callerMcpServers = validateCallerMcpServersParam(safeParams.callerMcpServers);
                 const created = await this.transport.createSessionForAgent(safeParams.agentName, {
                     model: safeParams.model,
                     reasoningEffort: safeParams.reasoningEffort,
@@ -955,7 +903,6 @@ export class PortalRuntime {
                     visibility: normalizeVisibility(safeParams.visibility, this.authz.defaultVisibility),
                     ...(repo ? { repo } : {}),
                     ...(callerAuth ? { callerAuth } : {}),
-                    ...(callerMcpServers ? { callerMcpServers } : {}),
                 });
                 return this._ensureCreatedPlacement(created, safeParams.groupId, authContext, isAdmin);
             }

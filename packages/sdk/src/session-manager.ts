@@ -1277,21 +1277,9 @@ export class SessionManager {
         const boundAgentMcpServers = effectiveSerializableConfig.boundAgentName
             ? this.workerDefaults.agentMcpServers?.[effectiveSerializableConfig.boundAgentName]
             : undefined;
-        // Caller-attached, per-session MCP servers (createSession `callerMcpServers`).
-        // Applied LAST so a lightweight repo-less session can bring its own tools,
-        // and a repo-bound session can stack custom servers on top of its
-        // repo/default set; a caller name that collides with a worker default
-        // overrides it. Remote servers here flow through the same delegated-auth
-        // discovery below as repo-declared ones (their audience is probed and the
-        // caller bearer injected only on an `aud` match).
-        const callerMcpServers = (effectiveSerializableConfig.callerMcpServers
-            && typeof effectiveSerializableConfig.callerMcpServers === "object")
-            ? effectiveSerializableConfig.callerMcpServers
-            : undefined;
         let effectiveMcpServers = {
             ...(this.workerDefaults.baseMcpServers ?? {}),
             ...(boundAgentMcpServers ?? {}),
-            ...(callerMcpServers ?? {}),
         };
 
         // Delegated MCP access (repo-stored config + caller-delegated auth):

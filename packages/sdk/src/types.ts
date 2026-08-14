@@ -223,25 +223,6 @@ export interface SerializableSessionConfig {
     isCrawler?: boolean;
     /** @deprecated Use `isCrawler`; accepted as a compatibility alias. */
     isHarvester?: boolean;
-    /**
-     * Caller-attached, per-session MCP servers supplied at createSession time,
-     * keyed by server name -> server config (`{ type, url, tools?, headers? }`,
-     * the Copilot MCP shape). Independent of the repo: works for a lightweight
-     * repo-less generic session AND stacks on top of a repo-bound session's
-     * declared/default servers. Merged into the session's effective MCP map on
-     * the worker AFTER the worker-level base/default/agent (and, for a
-     * git-repo-worker, the repo `.vscode/mcp.json`) servers, so a caller server
-     * that reuses a name overrides the worker default. Rides the durable
-     * orchestration input so it survives dehydration and warm-session reuse.
-     *
-     * Auth: for a remote server whose upstream requires a bearer, present the
-     * credential via `callerAuth` (delegated, resolved worker-side per turn and
-     * never carried here) — do NOT embed audience/OAuth bearer tokens in this
-     * config, which is persisted in the durable history. A static per-server
-     * header (e.g. a third-party API key) may be supplied for servers that use
-     * one, with the same durability caveat.
-     */
-    callerMcpServers?: Record<string, any>;
 }
 
 /** Full config — includes non-serializable fields (tools, hooks). Stays in memory. */
