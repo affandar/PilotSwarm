@@ -70,11 +70,27 @@ data:
       log "WARN no ADO_PAT set -> assuming an unauthenticated/anonymous remote"
     fi
 
+    # Transport hardening for large ADO mirror transfers. DsMainDev is big
+    # enough that a single pack transfer runs for many minutes, and ADO's
+    # gateway resets long-lived HTTP/2 streams -> the classic
+    #   curl 56 Recv failure: Connection reset by peer
+    #   fetch-pack: unexpected disconnect / fatal: early EOF
+    #   fatal: fetch-pack: invalid index-pack output
+    # These -c flags force HTTP/1.1 and give curl generous buffers plus a
+    # fail-fast-on-stall threshold, WITHOUT changing what git downloads (still
+    # a COMPLETE clone/fetch -> the .ready sentinel stays correct):
+    #   http.version=HTTP/1.1 : avoid ADO's HTTP/2 long-stream resets (primary)
+    #   http.postBuffer=2g    : no mid-negotiation buffer flush on big packs
+    #   lowSpeedLimit/Time    : abort a truly stalled socket after 120s so the
+    #                           caller RETRIES instead of hanging the interval
+    GIT_NET_OPTS="-c http.version=HTTP/1.1 -c http.postBuffer=2147483648 -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=120"
+
     run_git() {
+      # shellcheck disable=SC2086  # GIT_NET_OPTS is intentionally word-split
       if [ -n "$AUTH_B64" ]; then
-        git -c "http.extraHeader=AUTHORIZATION: Basic $AUTH_B64" "$@"
+        git $GIT_NET_OPTS -c "http.extraHeader=AUTHORIZATION: Basic $AUTH_B64" "$@"
       else
-        git "$@"
+        git $GIT_NET_OPTS "$@"
       fi
     }
 
@@ -138,26 +154,56 @@ data:
     }
 
     # --- 1) initial mirror (the expensive, frontloaded step) ---------------
+    # Full mirror clone into $TMP_DIR with bounded exponential backoff, so a
+    # transient ADO reset/EOF is retried in SECONDS instead of deferring to the
+    # next hourly fetch loop (which left cold nodes 0/1 for hours). Returns 0
+    # only when a COMPLETE mirror sits in $TMP_DIR; the CALLER still owns
+    # gc.auto + the atomic mv + the .ready sentinel, so completeness/readiness
+    # semantics are identical to before.
+    CLONE_MAX_ATTEMPTS="${CLONE_MAX_ATTEMPTS:-6}"
+    CLONE_BACKOFF_SECONDS="${CLONE_BACKOFF_SECONDS:-15}"
+    CLONE_BACKOFF_CAP_SECONDS="${CLONE_BACKOFF_CAP_SECONDS:-300}"
+
+    clone_mirror() {
+      attempt=1
+      delay="$CLONE_BACKOFF_SECONDS"
+      while :; do
+        rm -rf "$TMP_DIR"
+        log "clone attempt $attempt/$CLONE_MAX_ATTEMPTS: --mirror $REPO_URL -> $TMP_DIR"
+        cs="$(date +%s)"
+        if run_git clone --mirror "$REPO_URL" "$TMP_DIR"; then
+          log "clone attempt $attempt COMPLETE in $(( $(date +%s) - cs ))s"
+          return 0
+        fi
+        log "clone attempt $attempt FAILED after $(( $(date +%s) - cs ))s"
+        rm -rf "$TMP_DIR"
+        if [ "$attempt" -ge "$CLONE_MAX_ATTEMPTS" ]; then
+          log "clone exhausted $CLONE_MAX_ATTEMPTS attempts -> deferring to next fetch loop"
+          return 1
+        fi
+        log "backing off ${delay}s before clone retry"
+        sleep "$delay"
+        delay=$(( delay * 2 ))
+        [ "$delay" -gt "$CLONE_BACKOFF_CAP_SECONDS" ] && delay="$CLONE_BACKOFF_CAP_SECONDS"
+        attempt=$(( attempt + 1 ))
+      done
+    }
+
     mkdir -p "$CACHE_ROOT"
     if [ -d "$MIRROR_DIR" ]; then
       log "mirror already present at $MIRROR_DIR (surviving hostPath) -> skipping initial clone"
     else
-      rm -rf "$TMP_DIR"
       log "==== INITIAL CLONE starting ===="
-      log "cloning --mirror $REPO_URL -> $MIRROR_DIR"
       clone_start="$(date +%s)"
-      if run_git clone --mirror "$REPO_URL" "$TMP_DIR"; then
-        clone_end="$(date +%s)"
+      if clone_mirror; then
         # Disable auto-GC: keep the mirror append-only so a borrowing worker
         # clone can never race a repack (see AKS-GIT-HYDRATION.md section 5).
         git --git-dir="$TMP_DIR" config gc.auto 0
         mv "$TMP_DIR" "$MIRROR_DIR"
         size="$(du -sh "$MIRROR_DIR" 2>/dev/null | cut -f1)"
-        log "==== INITIAL CLONE COMPLETE in $((clone_end - clone_start))s (size=${size:-unknown}) ===="
+        log "==== INITIAL CLONE COMPLETE in $(( $(date +%s) - clone_start ))s (size=${size:-unknown}) ===="
       else
-        clone_end="$(date +%s)"
-        log "==== INITIAL CLONE FAILED after $((clone_end - clone_start))s -> will retry next loop ===="
-        rm -rf "$TMP_DIR"
+        log "==== INITIAL CLONE FAILED after $(( $(date +%s) - clone_start ))s -> will retry next loop ===="
       fi
     fi
 
@@ -180,11 +226,10 @@ data:
 
       cycle=$((cycle + 1))
       if [ ! -d "$MIRROR_DIR" ]; then
-        # Initial clone previously failed; retry it inline.
+        # Initial clone previously exhausted its inline retries; try again now.
         log "mirror missing at fetch #$cycle -> retrying INITIAL CLONE"
-        rm -rf "$TMP_DIR"
         rc_start="$(date +%s)"
-        if run_git clone --mirror "$REPO_URL" "$TMP_DIR"; then
+        if clone_mirror; then
           git --git-dir="$TMP_DIR" config gc.auto 0
           mv "$TMP_DIR" "$MIRROR_DIR"
           : > "$READY_SENTINEL"
@@ -192,7 +237,6 @@ data:
           mark_node_ready
         else
           log "retry clone FAILED after $(( $(date +%s) - rc_start ))s"
-          rm -rf "$TMP_DIR"
         fi
         continue
       fi
