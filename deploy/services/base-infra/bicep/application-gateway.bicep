@@ -61,6 +61,7 @@ param frontDoorId string = ''
 // ---------------------------------------------------------------------------
 // Priority bands:
 //   * 90-92  — reserved for the auto-seeded VPN guard rules below.
+//   * 93-99  — reserved for platform-invariant rules (see platformSeedRules).
 //   * >= 100 — operator-supplied rules via APPGW_WAF_CUSTOM_RULES_FILE.
 //
 // Auto-seeded guard semantics when vpnGatewayEnabled=true:
@@ -139,7 +140,62 @@ var autoSeedRules = vpnGatewayEnabled ? [
     ]
   }
 ] : []
-var mergedCustomRules = concat(autoSeedRules, appgwWafCustomRules)
+
+// Platform-invariant custom rules — applied unconditionally on EVERY stamp
+// (VPN or not), independent of vpnGatewayEnabled and of any operator
+// APPGW_WAF_CUSTOM_RULES_FILE. Same class as the committed managed-rule
+// exclusions: false-positive workarounds that belong in source, not per-env
+// override files, so fresh instances self-heal.
+//
+// Priority 95 sits in the 93-99 platform-invariant band (between the 90-92 VPN
+// guards and the >= 100 operator band). On VPN stamps the 92 catch-all Block is
+// evaluated first, so this rule never opens a hole past BlockOther; it only
+// takes effect on non-VPN stamps where autoSeedRules is empty.
+//
+//   * AllowMcpMessagesPath (prio 95): the MCP transport POSTs freeform prompt
+//     bodies to `/messages`, which trips OWASP SQLi/XSS anomaly scoring. A
+//     path-scoped Allow custom rule short-circuits before managed rules — the
+//     documented remedy for body-scan false positives on a known-safe endpoint.
+//
+// HACK / TODO (tracked: docs/bugreports/caller-mcp-url-in-body-triggers-waf.md):
+// Blunt workaround, not a real fix. A path-scoped Allow disables ALL managed-rule
+// inspection for `/messages` — for EVERY caller — which is far broader than
+// "ignore false positives on known-safe prompt text". Tolerated today only
+// because the endpoint is behind Entra auth and the block is a pure false
+// positive. Replace with proper support when able: exclude only the specific DRS
+// rule IDs that fire on the prompt body (RequestBodyPostArgNames/Values), or move
+// prompt bodies off a WAF-inspected request body — instead of allow-listing the
+// whole path.
+// REVISIT ON OBO: under On-Behalf-Of auth `/messages` carries per-user delegated
+// context and MUST regain real request-body inspection; a blanket Allow here
+// would let a hostile caller bypass the WAF for that path. Re-scope (per-identity
+// / rule-ID exclusion) as part of the OBO cutover — do not ship OBO with this
+// path-wide Allow in place.
+var platformSeedRules = [
+  {
+    name: 'AllowMcpMessagesPath'
+    priority: 95
+    ruleType: 'MatchRule'
+    action: 'Allow'
+    state: 'Enabled'
+    matchConditions: [
+      {
+        matchVariables: [
+          {
+            variableName: 'RequestUri'
+          }
+        ]
+        operator: 'Contains'
+        negationConditon: false
+        matchValues: [
+          '/messages'
+        ]
+        transforms: []
+      }
+    ]
+  }
+]
+var mergedCustomRules = concat(platformSeedRules, autoSeedRules, appgwWafCustomRules)
 
 // ---------------------------------------------------------------------------
 // WAF policy
