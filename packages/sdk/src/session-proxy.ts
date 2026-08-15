@@ -9,7 +9,7 @@ import { evaluateRoleObservation } from "../api/src/session-authz.js";
 import { parseAgentFqn } from "./agent-fqn.js";
 import { decideSessionControl } from "./agent-manager-tools.js";
 import type { StorageConfig } from "./storage-config.js";
-import { SESSION_STATE_MISSING_PREFIX, sanitizePromptAttachmentRefs, IMAGE_ATTACHMENT_CONTENT_TYPES, ATTACHMENT_MAX_BYTES, ATTACHMENTS_MAX_TOTAL_BYTES, type AbortTurnResult, type PromptAttachmentRef, type SerializableSessionConfig, type TurnResult, type OrchestrationInput } from "./types.js";
+import { SESSION_STATE_MISSING_PREFIX, sanitizePromptAttachmentRefs, IMAGE_ATTACHMENT_CONTENT_TYPES, ATTACHMENT_MAX_BYTES, ATTACHMENTS_MAX_TOTAL_BYTES, type AbortTurnResult, type PromptAttachmentRef, type SerializableSessionConfig, type TurnResult, type OrchestrationInput, type GitWorkspaceState } from "./types.js";
 import type { ArtifactStore } from "./session-store.js";
 import type { AgentConfig } from "./agent-loader.js";
 import { systemChildAgentUUID } from "./agent-loader.js";
@@ -970,11 +970,55 @@ export function registerActivities(
         if (beforeRunTurn && !wasResident) {
             const reconcileStartMs = Date.now();
             try {
+                // Read the session's durable git pointer (§8.5) so the hook can
+                // target the PINNED base rather than live mirror HEAD. On turn 0
+                // this reads back the unpinned shape and the hook pins baseSha.
+                // A missing catalog (non-CMS worker) yields undefined, and the
+                // hook falls back to its legacy moving-ref behaviour.
+                let gitState: GitWorkspaceState | undefined;
+                let persistGitState: ((state: GitWorkspaceState) => Promise<void>) | undefined;
+                if (catalog && typeof catalog.getSessionGitState === "function") {
+                    gitState = await cmsRetryBestEffort(
+                        `runTurn.getSessionGitState session=${input.sessionId}`,
+                        () => catalog!.getSessionGitState(input.sessionId),
+                        (msg) => activityCtx.traceInfo(msg),
+                    ) ?? undefined;
+                    // Hydration observability (§8.5): surface the durable pointer
+                    // the session is about to reconcile onto. `pinned` distinguishes
+                    // a resume onto a frozen base (baseSha set) from turn 0 where the
+                    // hook will freeze it. This single line lets `kubectl logs`
+                    // answer "which commit did this pod hydrate the session to?".
+                    activityCtx.traceInfo(
+                        `[runTurn][git] hydrate pointer read session=${input.sessionId} turn=${input.turnIndex ?? 0} ` +
+                        `pinned=${gitState?.baseSha ? "yes" : "no"} base=${gitState?.baseSha ? gitState.baseSha.slice(0, 12) : "(unpinned)"} ` +
+                        `head=${gitState?.headSha ? gitState.headSha.slice(0, 12) : "(none)"} branch=${gitState?.branch ?? "(default)"} epoch=${gitState?.epoch ?? 0}`,
+                    );
+                    // Durability commit point: persisting the pin / dehydrate
+                    // pointer must be reliable, so use the critical retry policy.
+                    persistGitState = (state: GitWorkspaceState) => {
+                        activityCtx.traceInfo(
+                            `[runTurn][git] persist pointer session=${input.sessionId} turn=${input.turnIndex ?? 0} ` +
+                            `base=${state?.baseSha ? state.baseSha.slice(0, 12) : "(null)"} head=${state?.headSha ? state.headSha.slice(0, 12) : "(none)"} ` +
+                            `branch=${state?.branch ?? "(default)"} epoch=${state?.epoch ?? 0}`,
+                        );
+                        return cmsRetryCritical(
+                            `runTurn.setSessionGitState session=${input.sessionId}`,
+                            () => catalog!.setSessionGitState(input.sessionId, state).then(() => undefined),
+                            (msg) => activityCtx.traceInfo(msg),
+                        );
+                    };
+                } else {
+                    activityCtx.traceInfo(
+                        `[runTurn][git] no catalog git-state accessor — reconcile falls back to live mirror ref (unpinned) session=${input.sessionId}`,
+                    );
+                }
                 await beforeRunTurn({
                     sessionId: input.sessionId,
                     turnIndex: input.turnIndex,
                     config: input.config,
                     trace: (m: string) => activityCtx.traceInfo(m),
+                    gitState,
+                    persistGitState,
                 });
                 reconcileMs = Date.now() - reconcileStartMs;
                 activityCtx.traceInfo(`[runTurn] enlistment reconcile complete (cold acquisition) session=${input.sessionId} turn=${input.turnIndex ?? 0} reconcile=${reconcileMs}ms`);

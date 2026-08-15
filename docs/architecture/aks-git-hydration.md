@@ -318,10 +318,189 @@ nodes leave the buffer at once, with the buffer controller topping up the rest.
 - **Exact-SHA guarantee:** always `fetch` then `checkout` the specific ref at
   claim time. The pre-warmed base may be slightly stale; the delta makes it
   exact. The warm tree is trusted for *speed*, never for *correctness*.
+  **Across a session's lifetime that ref is pinned once at turn 0 and never
+  moves** — see [§8.5](#85-git-state-durability--base-commit-pinning).
 - **Single-writer workspace:** the tree's one checkout is mutated by the root
   session only; parallel code-mutating sub-agents are deferred (see §10).
 - **Readiness gating:** jobs only land on pods that have signalled a
   materialized repo, so a job never blocks on a clone.
+
+---
+
+## 8.5 Git-state durability & base-commit pinning
+
+§8's **Exact-SHA guarantee** ("always `fetch` then `checkout` the specific ref")
+is correct for the *first* turn, but the ref it checks out is a **moving target**
+across a session's lifetime. This section makes the working tree **durable** and
+**stable** for the whole session, and is the concrete realization of the git-aware
+`VersionedSnapshotStore` sketched in [§10 item 4](#10-future-work-explicitly-out-of-mvp)
+("Kill the fat snapshot").
+
+### 8.5.1 The moving-ref bug
+
+The pod-side materializer (`git-repo-worker.js`) reconciles a session's tree on
+every **cold** turn (a turn that lands on a pod where the tree is not already
+resident). Today `resolveTargetRef()` returns either a configured enlistment ref
+**or** re-resolves `symbolic-ref refs/remotes/origin/HEAD` — a **moving** ref —
+and `reconcileEnlistment()` then does:
+
+```
+git fetch --prune
+git rev-parse <ref>                 # ← re-reads live mirror HEAD every time
+git checkout --force --detach <sha>
+git reset --hard <sha>
+```
+
+So a session's base **tracks live mirror HEAD**, not a fixed point. Two hazards:
+
+1. **Silent forward-jump.** `reset --hard` moves the tree to whatever the mirror
+   now points at, with **no conflict marker** — in-flight session work on the old
+   base is simply gone.
+2. **Real corruption under durability replay.** Once we reapply a session's
+   uncommitted edits as a patch (below), `git apply --3way` against a **moved**
+   base is a genuine 3-way merge that can conflict or mis-apply. This is the
+   "a major upstream change syncs to the pod and a massive merge conflict
+   corrupts the resumed session" scenario.
+
+### 8.5.2 The invariant: pin the base at turn 0
+
+**A session's base commit is chosen once, at session create (turn 0), and never
+moves unless the session explicitly advances it.**
+
+- Turn 0 resolves the target ref **once**, `rev-parse`s it to a concrete `sha`,
+  and **persists** it on the session row as `git_base_sha`.
+- Every subsequent reconcile targets **the pinned sha**, never re-reading
+  `origin/HEAD`. Reconcile becomes **idempotent**: replaying it lands the tree on
+  the same commit every time.
+
+Reconcile splits into two phases with different freshness rules:
+
+| Phase | Operation | Freshness | Rationale |
+|---|---|---|---|
+| **A — object fetch** | `git fetch --prune` | **always latest** | Populating the local object store is harmless and keeps *explicit advance* cheap. Fetching objects never moves the working tree. |
+| **B — working-tree checkout** | `checkout --force --detach <pinned>` + `reset --hard <pinned>` | **pinned only** | The tree is placed on the session's pinned base, regardless of how far the mirror has moved. |
+
+The git-worker is thus *always reconciling objects to the latest mirror* (Phase A),
+but *only ever checks out the session's pinned commit* (Phase B).
+
+### 8.5.3 Where state lives
+
+Two stores, split by ownership:
+
+1. **Session-row scalars (CMS / Postgres, `sessions` table).** The durable pointer:
+   - `git_base_sha`   — the pinned base commit (turn-0 capture).
+   - `git_head_sha`   — the session branch tip (the session's own commits).
+   - `git_branch`     — the session's working branch name.
+   - `git_state_epoch`— monotonic counter; bumped on every dehydrate so hydrate
+     can detect/ignore a stale blob set.
+   These ride the same per-session scalar precedent as
+   `users.github_copilot_key` — dedicated `cms_get_session_git_state` /
+   `cms_set_session_git_state` procs, not a widening of the shared
+   `cms_get_session` read shape.
+
+2. **Working-tree delta blobs (Azure Blob, `copilot-sessions` container).**
+   Platform-owned, **never pushed to the customer remote** — this is internal
+   platform implementation, not the customer's branch history. Stable,
+   overwrite-in-place keys (one set per session, no epoch fan-out):
+   - `${sessionId}.git.bundle`    — `git bundle create` of `base..HEAD` (the
+     session's committed work, as objects the target pod may not have).
+   - `${sessionId}.git.patch`     — `git diff` of uncommitted tracked changes +
+     a manifest of untracked files (the dirty working tree).
+   - `${sessionId}.git.meta.json` — `{ baseSha, headSha, branch, epoch }`,
+     the self-describing header the hydrate path validates against the session row.
+
+### 8.5.4 Resume cases
+
+| Case | Condition | Action |
+|---|---|---|
+| **Turn 0** | session create | Resolve ref once → pin `git_base_sha`; tree already at base; no blobs yet. |
+| **Warm, same pod** | tree resident (`wasResident`) | **No reconcile.** The hook is gated on `!wasResident` (session-proxy `beforeRunTurn` call site) — the live tree is authoritative. |
+| **Cold, cross-pod** | tree not resident | Full **hydrate** (below): Phase A fetch → Phase B checkout/reset to **pinned** base → replay committed work → replay uncommitted work. |
+
+### 8.5.5 Dehydrate / hydrate protocol
+
+**Dehydrate** (end of a cold-eligible turn, or on eviction) — capture, then persist:
+
+```
+1. git bundle create <bundle> <base_sha>..HEAD     # committed session work
+2. git diff <tracked>            > <patch>          # uncommitted tracked edits
+   (enumerate untracked → manifest, tar into patch/side-blob)
+3. write meta.json { baseSha, headSha, branch, epoch+1 }
+4. upload bundle, patch, meta   (overwrite-in-place)
+5. UPDATE sessions SET git_head_sha, git_branch, git_state_epoch=epoch+1
+```
+
+Order matters: **blobs first, row last.** If the crash window hits between 4 and
+5, hydrate sees a row epoch *older* than the blob and simply ignores the blob
+(treats it as a not-yet-committed dehydrate). The row is the commit point.
+
+**Hydrate** (cold acquisition, inside the `beforeRunTurn` hook):
+
+```
+1. read git_base_sha, git_head_sha, git_branch, git_state_epoch from session row
+2. git fetch --prune                                   # Phase A (objects)
+3. git checkout --force --detach <git_base_sha>        # Phase B (pinned tree)
+   git reset --hard <git_base_sha>
+4. if meta.epoch == row.epoch:                         # blob set is current
+     git bundle unbundle <bundle>                      # committed objects
+     git checkout -B <git_branch> <git_head_sha>       # session branch + commits
+     git apply --3way <patch>                          # uncommitted edits
+     restore untracked from manifest
+   else: skip blobs (row is base-only; nothing uncommitted to replay)
+```
+
+Because the tree is reset to the **pinned** base before the patch is applied,
+`apply --3way` is applying the session's own edits onto the session's own base —
+a **no-op 3-way**, never a merge against moved upstream. That is what removes the
+corruption class.
+
+### 8.5.6 Explicit advance (the escape hatch) is transactional
+
+A session may **choose** to move onto newer upstream (e.g. the user wants the
+latest mirror, or a rebase). This is the *only* path that changes `git_base_sha`,
+and it must be **all-or-nothing**:
+
+```
+1. fetch; identify new base N (e.g. current origin/HEAD)
+2. merge/rebase session work onto N in the live tree
+3. ── if conflicts ── surface to the agent/user; DO NOT persist anything.
+      The session stays pinned to the old base; retry is safe & idempotent.
+4. ── only after the merge is committed clean ──
+      re-cut bundle (N..HEAD), re-diff uncommitted, bump epoch,
+      UPDATE sessions SET git_base_sha = N, git_head_sha, git_state_epoch
+      (all in one CMS write).
+```
+
+A half-advanced pointer is never persisted: either the session is fully on the
+new base with matching blobs, or it is still fully on the old base. A merge
+conflict during advance is a **recoverable, retryable** event, not corruption.
+
+### 8.5.7 Base reachability & graceful degradation
+
+The pinned base `B` must remain reachable in the pod's mirror:
+
+- **Within a node's mirror lifetime** `--prune` drops *refs*, not *objects*, so
+  `B` survives even after upstream moves.
+- **A fresh mirror on a new node** re-fetches from origin and may lack `B` if it
+  was orphaned upstream (force-push + upstream GC). Detect on hydrate
+  (`git cat-file -e <B>` fails) and **degrade loudly**: re-seed the base to
+  current `origin/HEAD`, emit a prominent warning trace, and treat it as an
+  implicit advance (the session's committed work still replays from the bundle,
+  which is self-contained).
+
+### 8.5.8 Blob lifecycle & cleanup
+
+The delta blobs are **lifecycle-driven, not TTL-driven** — a session paused for
+weeks must hydrate perfectly, so blobs are **never** reaped on a timer.
+
+⚠️ **Leak warning:** `blob-store.ts` `deleteAllEpochs()` is deliberately
+**fail-closed** — it only removes names matching the epoch pattern (`.e*`) and
+"leaves unparseable names alone." The git blobs (`${sessionId}.git.bundle`,
+`.patch`, `.meta.json`) do **not** match that pattern, so they are **not** swept
+by the existing epoch cleanup. They must be explicitly deleted in the session
+`delete()` path (and any idle-session sweeper) or they leak indefinitely. Because
+the keys are stable overwrite-in-place (no epoch fan-out), deletion is a fixed
+three-key removal per session.
 
 ---
 
@@ -390,6 +569,8 @@ Listed roughly in the order we'd add them.
    only the session's edits — snapshots shrink from **GB → edits-only**, and
    re-activation hits the same warm cache as cold activation. Also resolves the
    "snapshot rename-replaces the dir and clobbers a pre-clone" collision.
+   **The concrete base-pinning + dehydrate/hydrate realization of this is now
+   specified in [§8.5](#85-git-state-durability--base-commit-pinning).**
 5. **Repo-affinity scheduling at cluster scale.** Advertise which nodes hold
    which repos; prefer placing both jobs and standby pods onto already-warm
    nodes so "ready" always means "clone-fast."

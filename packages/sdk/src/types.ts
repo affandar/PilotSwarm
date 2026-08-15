@@ -733,12 +733,45 @@ export interface SessionPolicy {
  * Throwing fails THIS turn cleanly (before any model/tool work) rather than
  * running a job against a stale or half-synced enlistment. Off by default.
  */
+/**
+ * Durable git pointer for a session (git-hydration §8.5).
+ *
+ * Persisted in the CMS catalog and read back by the worker's pre-turn
+ * reconcile hook so a resumed session re-hydrates onto the SAME base commit
+ * it started on, independent of where the shared mirror's HEAD has since
+ * moved.
+ *
+ * - `baseSha` is pinned once at turn 0 and never moves unless the session is
+ *   explicitly regenerated (which bumps `epoch`).
+ * - `headSha` / `branch` describe the session's own committed work, recorded
+ *   on each dehydrate.
+ * - An unpinned (turn-0) session reads back
+ *   `{ baseSha: null, headSha: null, branch: null, epoch: 0 }`.
+ */
+export interface GitWorkspaceState {
+    baseSha: string | null;
+    headSha: string | null;
+    branch: string | null;
+    epoch: number;
+}
+
 export type BeforeRunTurnHook = (ctx: {
     sessionId: string;
     turnIndex?: number;
     config: SerializableSessionConfig;
     /** Activity-scoped trace sink (maps to duroxide `traceInfo`). */
     trace: (message: string) => void;
+    /**
+     * Durable git pointer (§8.5) the session should reconcile onto, when a CMS
+     * catalog exposing git-state accessors is present. `undefined` for a
+     * non-CMS worker, in which case the hook falls back to live mirror HEAD.
+     */
+    gitState?: GitWorkspaceState;
+    /**
+     * Persist the durable git pointer: pin `baseSha` at turn 0 and record
+     * `headSha`/`branch`/`epoch` on dehydrate. Absent for a non-CMS worker.
+     */
+    persistGitState?: (state: GitWorkspaceState) => Promise<void>;
 }) => void | Promise<void>;
 
 export interface PilotSwarmWorkerOptions {

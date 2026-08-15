@@ -235,6 +235,16 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "list_sessions_page_ms_cursor",
             sql: migration_0044_list_sessions_page_ms_cursor(schema),
         },
+        {
+            version: "0045",
+            name: "session_git_state_pinning",
+            sql: migration_0045_session_git_state_pinning(schema),
+        },
+        {
+            version: "0046",
+            name: "fix_session_git_state_setter",
+            sql: migration_0046_fix_session_git_state_setter(schema),
+        },
     ];
 }
 
@@ -9080,5 +9090,139 @@ RETURNS TABLE(
      WHERE p.enabled
      ORDER BY p.name, p.scope, p.owner_provider, p.owner_subject;
 $$ LANGUAGE sql;
+`;
+}
+
+// ─── Migration 0045: session git-state pinning ───────────────────
+//
+// Durable git working-tree state for pod hydration. Pins a session's base
+// commit at turn 0 so cold cross-pod resumes never track a moving mirror HEAD
+// (which silently forward-jumps the tree or corrupts a 3-way patch replay).
+// See docs/architecture/aks-git-hydration.md §8.5. Columns are additive; the
+// scalar get/set procs follow the users.github_copilot_key precedent (0010)
+// rather than widening the shared cms_get_session read shape.
+
+function migration_0045_session_git_state_pinning(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- 0045_session_git_state_pinning:
+--   - git_base_sha    TEXT: the pinned base commit, captured once at turn 0.
+--                     All future reconciles target this, never origin/HEAD.
+--   - git_head_sha    TEXT: the session branch tip (session's own commits).
+--   - git_branch      TEXT: the session's working branch name.
+--   - git_state_epoch BIGINT: monotonic; bumped on every dehydrate so hydrate
+--                     can detect/ignore a stale delta-blob set (row is the
+--                     commit point — blobs written first, row last).
+
+ALTER TABLE ${s}.sessions ADD COLUMN IF NOT EXISTS git_base_sha    TEXT;
+ALTER TABLE ${s}.sessions ADD COLUMN IF NOT EXISTS git_head_sha    TEXT;
+ALTER TABLE ${s}.sessions ADD COLUMN IF NOT EXISTS git_branch      TEXT;
+ALTER TABLE ${s}.sessions ADD COLUMN IF NOT EXISTS git_state_epoch BIGINT NOT NULL DEFAULT 0;
+
+-- ── cms_get_session_git_state ────────────────────────────────────
+-- Internal read for the pod-side materializer / hydrate path. Returns the
+-- durable git pointer for a session, or an all-NULL/zero row when unpinned.
+CREATE OR REPLACE FUNCTION ${s}.cms_get_session_git_state(
+    p_session_id TEXT
+) RETURNS TABLE (
+    git_base_sha    TEXT,
+    git_head_sha    TEXT,
+    git_branch      TEXT,
+    git_state_epoch BIGINT
+) AS $$
+DECLARE
+    v_session_id TEXT := NULLIF(BTRIM(p_session_id), '');
+BEGIN
+    IF v_session_id IS NULL THEN
+        RETURN;
+    END IF;
+
+    RETURN QUERY
+    SELECT
+        se.git_base_sha,
+        se.git_head_sha,
+        se.git_branch,
+        COALESCE(se.git_state_epoch, 0)::bigint
+    FROM ${s}.sessions se
+    WHERE se.session_id = v_session_id;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── cms_set_session_git_state ────────────────────────────────────
+-- Transactional write of the durable git pointer. Used both for the turn-0
+-- base pin and for the "explicit advance" escape hatch (which is the only
+-- path that moves git_base_sha). All four scalars are set in one UPDATE so a
+-- half-advanced pointer is never persisted. Callers pass the already-computed
+-- next epoch (dehydrate bumps it; a pure base pin may leave it unchanged).
+-- Returns TRUE when the session row exists and was updated.
+CREATE OR REPLACE FUNCTION ${s}.cms_set_session_git_state(
+    p_session_id TEXT,
+    p_base_sha   TEXT,
+    p_head_sha   TEXT,
+    p_branch     TEXT,
+    p_epoch      BIGINT
+) RETURNS BOOLEAN AS $$
+DECLARE
+    v_session_id TEXT := NULLIF(BTRIM(p_session_id), '');
+    v_rows       INTEGER;
+BEGIN
+    IF v_session_id IS NULL THEN
+        RETURN FALSE;
+    END IF;
+
+    UPDATE ${s}.sessions
+    SET git_base_sha    = NULLIF(BTRIM(p_base_sha), ''),
+        git_head_sha    = NULLIF(BTRIM(p_head_sha), ''),
+        git_branch      = NULLIF(BTRIM(p_branch),   ''),
+        git_state_epoch = COALESCE(p_epoch, git_state_epoch, 0),
+        updated_at      = now()
+    WHERE session_id = v_session_id;
+
+    GET DIAGNOSTICS v_rows = ROW_COUNT;
+    RETURN v_rows > 0;
+END;
+$$ LANGUAGE plpgsql;
+`;
+}
+
+// ─── Migration 0046: fix cms_set_session_git_state result var type ──────────
+//
+// 0045 shipped cms_set_session_git_state with `v_found BOOLEAN`, then did
+// `GET DIAGNOSTICS v_found = ROW_COUNT` (an INTEGER) and `RETURN v_found > 0`.
+// On PostgreSQL that raises `operator does not exist: boolean > integer` at
+// call time (surfaced as "beforeRunTurn reconcile failed"), so the turn-0 base
+// pin never persisted. This is a forward-only, idempotent CREATE OR REPLACE that
+// repairs the function on DBs already advanced past 0045; fresh DBs get the
+// corrected body directly from 0045.
+function migration_0046_fix_session_git_state_setter(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+CREATE OR REPLACE FUNCTION ${s}.cms_set_session_git_state(
+    p_session_id TEXT,
+    p_base_sha   TEXT,
+    p_head_sha   TEXT,
+    p_branch     TEXT,
+    p_epoch      BIGINT
+) RETURNS BOOLEAN AS $$
+DECLARE
+    v_session_id TEXT := NULLIF(BTRIM(p_session_id), '');
+    v_rows       INTEGER;
+BEGIN
+    IF v_session_id IS NULL THEN
+        RETURN FALSE;
+    END IF;
+
+    UPDATE ${s}.sessions
+    SET git_base_sha    = NULLIF(BTRIM(p_base_sha), ''),
+        git_head_sha    = NULLIF(BTRIM(p_head_sha), ''),
+        git_branch      = NULLIF(BTRIM(p_branch),   ''),
+        git_state_epoch = COALESCE(p_epoch, git_state_epoch, 0),
+        updated_at      = now()
+    WHERE session_id = v_session_id;
+
+    GET DIAGNOSTICS v_rows = ROW_COUNT;
+    RETURN v_rows > 0;
+END;
+$$ LANGUAGE plpgsql;
 `;
 }

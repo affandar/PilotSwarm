@@ -541,6 +541,13 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
             if (isLegacyEpoch(epoch)) {
                 await this.containerClient.getBlockBlobClient(`${sessionId}.tar.gz`).deleteIfExists();
                 await this.containerClient.getBlockBlobClient(`${sessionId}.meta.json`).deleteIfExists();
+                // Session-scoped git-workspace blobs (§8.5) live in the same
+                // container but are NOT epoch-versioned — stable overwrite-in-
+                // place keys owned by the whole session. Collect them ONLY here,
+                // on the whole-session delete path, never in the per-epoch branch
+                // (an epoch reset / idle eviction must preserve resumable git
+                // state).
+                await this.deleteGitWorkspaceBlobs(sessionId);
             } else {
                 // One blob per epoch chain, no meta.json mirror — nothing else to collect.
                 await this.containerClient.getBlockBlobClient(epochSnapshotBlobName(sessionId, epoch!)).deleteIfExists();
@@ -577,6 +584,35 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
                 continue;
             }
             await this.containerClient.getBlockBlobClient(blob.name).deleteIfExists();
+        }
+    }
+
+    /**
+     * Delete the session's platform-owned git-workspace blobs (§8.5 git
+     * workspace hydration): the bundle (session-authored commits), the
+     * working-tree patch (uncommitted changes), and the meta pointer
+     * ({branch, baseSha, headSha, epoch}). These share the session container
+     * but are session-scoped stable keys — overwritten in place on each
+     * dehydrate, never epoch-versioned and never pushed to the customer
+     * remote — so they leak unless removed on whole-session teardown.
+     * Best-effort per blob; a single failure is logged, not fatal.
+     */
+    private async deleteGitWorkspaceBlobs(sessionId: string): Promise<void> {
+        const names = [
+            `${sessionId}.git.bundle`,
+            `${sessionId}.git.patch`,
+            `${sessionId}.git.meta.json`,
+        ];
+        for (const name of names) {
+            try {
+                await this.containerClient.getBlockBlobClient(name).deleteIfExists();
+            } catch (error: unknown) {
+                logBlobStore("warn", sessionId, "git workspace blob delete failed", {
+                    container: this.containerName,
+                    blob: name,
+                    error: errorMessage(error),
+                });
+            }
         }
     }
 

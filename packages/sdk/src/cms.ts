@@ -10,7 +10,7 @@
 
 import { randomUUID } from "crypto";
 import { runCmsMigrations } from "./cms-migrator.js";
-import type { SessionOwnerInfo, SessionSummaryState } from "./types.js";
+import type { SessionOwnerInfo, SessionSummaryState, GitWorkspaceState } from "./types.js";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -487,6 +487,25 @@ export interface UserRoleInfo {
     role: UserRoleValue | null;
     seenAt: Date | null;
 }
+
+/**
+ * Durable git working-tree pointer for a session, used by the pod-side
+ * hydration path (see docs/architecture/aks-git-hydration.md §8.5).
+ *
+ * This is a persistence-layer alias of the platform's canonical
+ * {@link GitWorkspaceState} (declared in `types.ts`) so the hook contract and
+ * the CMS accessors share a single shape.
+ *
+ * - `baseSha` is pinned once at turn 0 and never moves unless the session
+ *   explicitly advances it; all reconciles target it (never live mirror HEAD).
+ * - `headSha` / `branch` describe the session's own committed work.
+ * - `epoch` is a monotonic counter bumped on every dehydrate so hydrate can
+ *   ignore a stale delta-blob set (the row is the commit point).
+ *
+ * An unpinned session reads back `{ baseSha: null, headSha: null,
+ * branch: null, epoch: 0 }`.
+ */
+export type SessionGitState = GitWorkspaceState;
 
 /** Narrow unknown role text to the stored vocabulary. Anything else is no privilege. */
 export function normalizeUserRole(value: unknown): UserRoleValue | null {
@@ -1256,6 +1275,22 @@ export interface SessionCatalog {
     setUserGitHubCopilotKey(principal: UserPrincipal, key: string | null): Promise<UserProfile>;
 
     /**
+     * Read the durable git working-tree pointer for a session (see
+     * docs/architecture/aks-git-hydration.md §8.5). Returns
+     * `{ baseSha: null, headSha: null, branch: null, epoch: 0 }` for an
+     * unknown or never-pinned session.
+     */
+    getSessionGitState(sessionId: string): Promise<SessionGitState>;
+
+    /**
+     * Persist the durable git working-tree pointer for a session. Called by
+     * the worker's hydration hooks: once at turn 0 to pin `baseSha`, and on
+     * every dehydrate to record `headSha`/`branch` and bump `epoch`. The base
+     * only moves via an explicit-advance transaction.
+     */
+    setSessionGitState(sessionId: string, state: SessionGitState): Promise<SessionGitState>;
+
+    /**
      * Read the last-observed authorization role for a principal.
      *
      * Returns `{ role: null }` for an unknown principal, which callers must
@@ -1379,6 +1414,8 @@ function sqlForSchema(schema: string) {
             getUserGitHubCopilotKey:    `${s}.cms_get_user_github_copilot_key`,
             setUserProfileSettings:     `${s}.cms_set_user_profile_settings`,
             setUserGitHubCopilotKey:    `${s}.cms_set_user_github_copilot_key`,
+            getSessionGitState:         `${s}.cms_get_session_git_state`,
+            setSessionGitState:         `${s}.cms_set_session_git_state`,
             getUserRole:                `${s}.cms_get_user_role`,
             setUserRole:                `${s}.cms_set_user_role`,
             upsertSessionMetricSummary: `${s}.cms_upsert_session_metric_summary`,
@@ -2524,6 +2561,50 @@ export class PgSessionCatalog implements SessionCatalog {
             throw new Error("setUserGitHubCopilotKey: failed to read back the user profile after write");
         }
         return profile;
+    }
+
+    async getSessionGitState(sessionId: string): Promise<SessionGitState> {
+        const id = typeof sessionId === "string" ? sessionId.trim() : "";
+        const empty: SessionGitState = { baseSha: null, headSha: null, branch: null, epoch: 0 };
+        if (!id) return empty;
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.getSessionGitState}($1)`,
+            [id],
+        );
+        const row = rows[0];
+        if (!row) return empty;
+        const norm = (v: unknown): string | null => {
+            if (v == null) return null;
+            const t = String(v).trim();
+            return t.length === 0 ? null : t;
+        };
+        return {
+            baseSha: norm(row.git_base_sha),
+            headSha: norm(row.git_head_sha),
+            branch: norm(row.git_branch),
+            epoch: Number(row.git_state_epoch ?? 0) || 0,
+        };
+    }
+
+    async setSessionGitState(sessionId: string, state: SessionGitState): Promise<SessionGitState> {
+        const id = typeof sessionId === "string" ? sessionId.trim() : "";
+        if (!id) {
+            throw new Error("setSessionGitState: sessionId is required");
+        }
+        const norm = (v: string | null | undefined): string | null => {
+            if (typeof v !== "string") return null;
+            const t = v.trim();
+            return t.length === 0 ? null : t;
+        };
+        const epoch = Number.isFinite(state?.epoch) ? Math.trunc(state.epoch as number) : 0;
+        const { rows } = await this.pool.query(
+            `SELECT ${this.sql.fn.setSessionGitState}($1, $2, $3, $4, $5) AS ok`,
+            [id, norm(state?.baseSha), norm(state?.headSha), norm(state?.branch), epoch],
+        );
+        if (rows[0]?.ok !== true) {
+            throw new Error(`setSessionGitState: session not found: ${id}`);
+        }
+        return this.getSessionGitState(id);
     }
 
     async getUserRole(principal: UserPrincipal): Promise<UserRoleInfo> {
