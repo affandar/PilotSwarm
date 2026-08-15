@@ -17,7 +17,7 @@ running session.
 | R3 | Pools **nest**, and every chain roots at a provider credential's pool. A child may narrow its parent, never widen it. |
 | R4 | **Admins own quotas** on shared pools. Users subdivide their own allocation however they like. |
 | R5 | Admins **create pools and open them** to selected users or to everyone. |
-| R6 | Users **see the pools they can use**, set a default, and choose a pool per session. |
+| R6 | Users **see the pools they can use** and set a default. The model picker only offers providers they can pay for; choosing a specific pool is optional. |
 | R7 | Enforcement runs at **turn boundaries**: warn at 70%, pause at 100%, auto-resume at the reset. |
 | R8 | A refusal says **which pool and which rule** bound it, and when it clears. |
 | R9 | **No existing session breaks.** Migration is phased, additive, and dark-launched before it enforces. |
@@ -303,27 +303,46 @@ default is how a user ends up spending from a pool they were removed from.
 The model default follows the pool: the pool's provider's default model, or the
 cluster `DEFAULT_MODEL` when it belongs to that provider.
 
-### The create flow gains a first step
+### The create flow keeps its shape
+
+Pools do not become a step. The flow stays what it is today — model provider and
+model, then reasoning, context, agent — with one change: **the provider list is
+filtered to providers the user has a usable pool for.**
 
 ```
-today:   model -> reasoning -> context -> agent
-becomes: POOL  -> model -> reasoning -> context -> agent
+today:    model provider + model -> reasoning -> context -> agent
+becomes:  the same, with providers filtered to what the user can pay for
+          + an optional "Pool" tab in the same dialog
 ```
 
-Because a pool roots at exactly one provider instance, choosing the pool
-**filters the model list** to that provider's models. The step is additive, not
-a rewrite: `openNewSessionFlow` gains a pool picker at the head of the chain,
-and the existing model/reasoning/context/agent pickers are unchanged.
+Two things fall out of the filter. A user with no Copilot pool never sees
+Copilot models, so the picker stops offering what the user cannot pay for — the
+same class of fix as no longer offering what workers cannot run. And the common
+case gains zero clicks: most people have one pool per provider and never open
+the tab.
 
-The picker itself stays as it is today. The only change is the group heading:
-where it currently shows the model provider id, it shows the **pool friendly
-name**. A user picking a model should be thinking about which budget it spends,
-not which vendor integration serves it.
+The pool tab is for the case where someone has several pools on the same
+provider and cares which one pays — a crawler budget versus an interactive one.
+It shows the usable pools for the currently chosen provider, with the resolved
+default marked, and it is skipped entirely when there is only one.
 
-Skip rules keep the flow short: if the user has exactly one usable pool, the
-step is skipped silently. If their default is set and the create was not started
-with "choose pool", it is skipped too, and the chosen pool is shown on the
-create confirmation so it is never a surprise.
+### Which pool pays
+
+The chosen model determines the provider instance, and a pool can only pay for
+its own instance. So resolution is the default order, filtered to that set:
+
+```
+among the user's usable pools rooted at the chosen model's provider instance:
+  1. the pool chosen in the dialog's Pool tab
+  2. the user's default pool     (only if it is in that set)
+  3. the cluster default pool    (only if it is in that set)
+  4. that provider instance's root pool
+```
+
+Step 2's constraint is the one worth getting right: a default pool on Azure
+OpenAI cannot pay for a Copilot model. Falling through to the next candidate,
+rather than failing or silently charging the wrong pool, is what keeps the
+common case invisible.
 
 ### Where users see this
 
@@ -788,8 +807,9 @@ after E   would-have-blocked log is empty of surprises for a full week
   deprecate, never delete.
 - **Admins open pools to selected users or to everyone**; users pick a default
   and a per-session pool.
-- **The create flow is pool → model → reasoning → context → agent**, with the
-  picker grouped by pool friendly name rather than provider id.
+- **The create flow is unchanged** — provider and model as today, with the
+  provider list filtered to what the user has a pool for, and pool choice as an
+  optional tab in the same dialog.
 - **Migration is phased and dark-launched.** Enforcement only flips to `block`
   after a full window of would-have-blocked evidence.
 
