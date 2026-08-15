@@ -56,7 +56,7 @@ import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { PilotSwarmWorker, horizonConfigFromEnv, installPluginSpecs, fetchKeyVaultSecret, loadRepoMcpConfig, loadDefaultMcpConfig } from "pilotswarm-sdk";
+import { PilotSwarmWorker, horizonConfigFromEnv, installPluginSpecs, fetchKeyVaultSecret, loadRepoMcpConfig, loadDefaultMcpConfig, hydrateGitWorkspace, dehydrateGitWorkspace } from "pilotswarm-sdk";
 
 // Sentinel value written to KV by the bicep-deploy `seed-secrets` step for
 // optional secrets the user didn't provide (CSI Secret Store requires
@@ -111,6 +111,9 @@ const gitCacheMirror = process.env.GIT_CACHE_MIRROR
 // beforeRunTurn reconcile hook — wired into the worker config below only when a
 // mirror is configured. Plain (non-git-cache) deployments leave it undefined.
 let beforeRunTurn;
+// afterRunTurn dehydrate hook — the post-turn half of the §8.5 durable
+// git-workspace protocol. Assigned alongside beforeRunTurn when a mirror is set.
+let afterRunTurn;
 
 // Repo-stored MCP servers loaded from the enlistment's own .vscode/mcp.json.
 // A repo-pinned worker grants these to every session it runs (see below).
@@ -325,9 +328,50 @@ if (gitCacheMirror) {
         }
     }
 
-    // The SDK invokes this at the top of every runTurn, before the session
-    // touches the working directory — the brief "unavailable" reconcile window.
-    beforeRunTurn = async ({ trace }) => { await reconcileEnlistment(trace); };
+    // The SDK invokes beforeRunTurn at the top of every runTurn (before the
+    // session touches the working directory) and afterRunTurn at the end of
+    // every turn. When the SDK supplies durable git-workspace IO
+    // (ctx.gitStateIO + ctx.gitBlobs — the CMS-backed pointer row + blob store),
+    // we run the full §8.5 dehydrate/hydrate protocol so a user's uncommitted
+    // work (unpushed local commits, tracked edits, untracked files) survives a
+    // hard cross-pod session move. When that IO is absent (legacy / non-CMS
+    // deployments) we fall back to the moving-ref reconcile: sync the enlistment
+    // to the target ref and discard the working tree.
+    beforeRunTurn = async ({ trace, gitStateIO, gitBlobs }) => {
+        if (gitStateIO && gitBlobs) {
+            await withEnlistmentLock(async () => {
+                const log = (m) => { console.log(m); if (trace) trace(m); };
+                const res = await hydrateGitWorkspace({
+                    enlistmentDir,
+                    blobs: gitBlobs,
+                    state: gitStateIO,
+                    targetRef: resolveTargetRef(),
+                    trace,
+                });
+                log(`[git-repo-worker] hydrated (${res.mode}) base=${res.baseSha.slice(0, 12)} head=${res.headSha.slice(0, 12)} epoch=${res.epoch}`);
+            });
+            return;
+        }
+        await reconcileEnlistment(trace);
+    };
+
+    // Post-turn dehydrate: capture unpushed commits (bundle) + tracked/untracked
+    // working-tree changes (patch) into durable blobs and advance the pointer
+    // row (the commit point, written last). Runs on every turn under the
+    // enlistment lock. No-op without durable IO (legacy fallback).
+    afterRunTurn = async ({ trace, gitStateIO, gitBlobs }) => {
+        if (!gitStateIO || !gitBlobs) return;
+        await withEnlistmentLock(async () => {
+            const log = (m) => { console.log(m); if (trace) trace(m); };
+            const res = await dehydrateGitWorkspace({
+                enlistmentDir,
+                blobs: gitBlobs,
+                state: gitStateIO,
+                trace,
+            });
+            log(`[git-repo-worker] dehydrated epoch=${res.epoch} head=${res.headSha.slice(0, 12)} base=${res.baseSha.slice(0, 12)}`);
+        });
+    };
 
     console.log(`[git-repo-worker] git-cache mirror: ${gitCacheMirror}`);
     console.log(`[git-repo-worker] enlistment: ${enlistmentDir} (reconcile-before-job; clean=${cleanEachJob})`);
@@ -429,6 +473,9 @@ const worker = new PilotSwarmWorker({
     // Pre-turn reconcile (git-hydration MVP): sync the local enlistment from
     // the node-local mirror before each job. Undefined unless a mirror is set.
     beforeRunTurn,
+    // Post-turn dehydrate: persist uncommitted git work to durable blobs so it
+    // survives a hard cross-pod session move (§8.5). Paired with beforeRunTurn.
+    afterRunTurn,
     useManagedIdentity: ["1", "true", "yes", "on"].includes(
         (process.env.PILOTSWARM_USE_MANAGED_IDENTITY || "").trim().toLowerCase(),
     ),
