@@ -11,6 +11,7 @@ import { decideSessionControl } from "./agent-manager-tools.js";
 import type { StorageConfig } from "./storage-config.js";
 import { SESSION_STATE_MISSING_PREFIX, sanitizePromptAttachmentRefs, IMAGE_ATTACHMENT_CONTENT_TYPES, ATTACHMENT_MAX_BYTES, ATTACHMENTS_MAX_TOTAL_BYTES, type AbortTurnResult, type PromptAttachmentRef, type SerializableSessionConfig, type TurnResult, type OrchestrationInput, type GitWorkspaceState } from "./types.js";
 import type { ArtifactStore } from "./session-store.js";
+import type { SessionBlobStore } from "./blob-store.js";
 import type { AgentConfig } from "./agent-loader.js";
 import { systemChildAgentUUID } from "./agent-loader.js";
 import { PilotSwarmClient } from "./client.js";
@@ -876,6 +877,19 @@ export function registerActivities(
      * See {@link import("./types.js").BeforeRunTurnHook}.
      */
     beforeRunTurn?: import("./types.js").BeforeRunTurnHook,
+    /**
+     * Session-scoped blob store — backs the durable git-workspace blob IO
+     * (bundle / patch / meta) that hydrate/dehydrate read and write. Present
+     * only for a CMS-backed worker with a blob store; when absent the git hooks
+     * fall back to legacy moving-ref behavior.
+     */
+    blobStore?: SessionBlobStore | null,
+    /**
+     * Post-turn dehydrate hook (git-hydration §8.5) — invoked at the END of the
+     * `runTurn` activity on EVERY turn, best-effort. See
+     * {@link import("./types.js").AfterRunTurnHook}.
+     */
+    afterRunTurn?: import("./types.js").AfterRunTurnHook,
 ) {
     // Shared config for every activity-layer internal PilotSwarmClient /
     // PilotSwarmManagementClient. Carries the FULL facts/CMS target (07 P3) so
@@ -949,6 +963,61 @@ export function registerActivities(
         const acquireMode = wasResident ? "warm" : "cold";
         activityCtx.traceInfo(`[runTurn] turn dispatched session=${input.sessionId} turn=${input.turnIndex ?? 0} epoch=${input.transcriptEpoch ?? 0} mode=${acquireMode} worker=${workerNodeId ?? "(unset)"}`);
 
+        // ── Shared durable git-IO (git-hydration §8.5) ───────────────────
+        // Build ONE durable IO object per turn, reused by BOTH the pre-turn
+        // hydrate hook (beforeRunTurn, cold only) and the post-turn dehydrate
+        // hook (afterRunTurn, every turn). It bridges the protocol module's
+        // storage-agnostic GitBlobIO/GitStateIO contracts onto the worker's
+        // real backends:
+        //   • blobs → the session-scoped SessionBlobStore (bundle/patch/meta)
+        //   • state → the CMS git-state row (the durable commit point)
+        // Present only when BOTH a CMS catalog and a session blob store exist;
+        // otherwise the git hooks fall back to their legacy moving-ref path.
+        let gitDurableIo:
+            | { state: import("./git-workspace.js").GitStateIO; blobs: import("./git-workspace.js").GitBlobIO }
+            | null = null;
+        if (
+            (beforeRunTurn || afterRunTurn) &&
+            catalog &&
+            typeof catalog.getSessionGitState === "function" &&
+            typeof catalog.setSessionGitState === "function" &&
+            blobStore &&
+            typeof blobStore.getGitWorkspaceBlob === "function" &&
+            typeof blobStore.putGitWorkspaceBlob === "function"
+        ) {
+            const sid = input.sessionId;
+            gitDurableIo = {
+                state: {
+                    // Fresh CRITICAL read: hydrate/dehydrate depend on a truthful
+                    // pinned pointer. A stale/omitted read would make dehydrate
+                    // compute a wrong bundle base (base==HEAD → no bundle → the
+                    // session's unpushed local commits are LOST).
+                    get: () =>
+                        cmsRetryCritical(
+                            `runTurn.getSessionGitState session=${sid}`,
+                            () => catalog!.getSessionGitState(sid),
+                            (msg: string) => activityCtx.traceInfo(msg),
+                        ).then((row) => row ?? null),
+                    set: (next) => {
+                        activityCtx.traceInfo(
+                            `[runTurn][git] persist pointer session=${sid} turn=${input.turnIndex ?? 0} ` +
+                            `base=${next?.baseSha ? next.baseSha.slice(0, 12) : "(null)"} head=${next?.headSha ? next.headSha.slice(0, 12) : "(none)"} ` +
+                            `branch=${next?.branch ?? "(default)"} epoch=${next?.epoch ?? 0}`,
+                        );
+                        return cmsRetryCritical(
+                            `runTurn.setSessionGitState session=${sid}`,
+                            () => catalog!.setSessionGitState(sid, next).then(() => undefined),
+                            (msg: string) => activityCtx.traceInfo(msg),
+                        );
+                    },
+                },
+                blobs: {
+                    get: (kind) => blobStore!.getGitWorkspaceBlob(sid, kind),
+                    put: (kind, data) => blobStore!.putGitWorkspaceBlob(sid, kind, data),
+                },
+            };
+        }
+
         // ── Hydration-scoped reconcile hook (git-hydration) ──────────────
         // A collocated git-repo-worker uses this to sync its reused local
         // enlistment against the node-local git-cache mirror when a session is
@@ -1019,6 +1088,10 @@ export function registerActivities(
                     trace: (m: string) => activityCtx.traceInfo(m),
                     gitState,
                     persistGitState,
+                    // §8.5 durable IO — the new hydrate hook prefers these over
+                    // the legacy gitState/persistGitState moving-ref accessors.
+                    gitStateIO: gitDurableIo?.state,
+                    gitBlobs: gitDurableIo?.blobs,
                 });
                 reconcileMs = Date.now() - reconcileStartMs;
                 activityCtx.traceInfo(`[runTurn] enlistment reconcile complete (cold acquisition) session=${input.sessionId} turn=${input.turnIndex ?? 0} reconcile=${reconcileMs}ms`);
@@ -3089,6 +3162,40 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             };
 
         const bodyResult = await executeTurnBody();
+
+        // ── Post-turn dehydrate (git-hydration §8.5) ────────────────────
+        // Persist the session's uncommitted git work (unpushed local commits +
+        // tracked/untracked edits) to durable storage at the END of EVERY turn,
+        // cold or warm. Runs under the run-turn lock (single-writer safe with
+        // concurrency=1 + repo-affinity pinning). A hard pod kill deletes the
+        // emptyDir workspace with no graceful drain, so a turn's git work must
+        // already be durable the moment the turn finishes — a later graceful
+        // dehydrateSession activity would never run after an eviction. Best-
+        // effort: a dehydrate failure is logged loudly but MUST NOT fail an
+        // otherwise-successful turn. Only fires when the durable IO exists
+        // (CMS catalog + session blob store both present).
+        if (afterRunTurn && gitDurableIo) {
+            const dehydrateStartMs = Date.now();
+            try {
+                await afterRunTurn({
+                    sessionId: input.sessionId,
+                    turnIndex: input.turnIndex,
+                    config: input.config,
+                    trace: (m: string) => activityCtx.traceInfo(m),
+                    result: bodyResult,
+                    gitStateIO: gitDurableIo.state,
+                    gitBlobs: gitDurableIo.blobs,
+                });
+                activityCtx.traceInfo(
+                    `[runTurn][git] dehydrate complete session=${input.sessionId} turn=${input.turnIndex ?? 0} dehydrate=${Date.now() - dehydrateStartMs}ms`,
+                );
+            } catch (err) {
+                activityCtx.traceInfo(
+                    `[runTurn][git] dehydrate FAILED (best-effort, turn result preserved) session=${input.sessionId} ` +
+                    `turn=${input.turnIndex ?? 0}: ${err instanceof Error ? err.message : String(err)}`,
+                );
+            }
+        }
 
         // ── Session lifecycle protocol commit (proposal §3.2) ───────────
         // The turn and its snapshot durability are one activity completion:

@@ -59,6 +59,19 @@ export type {
 export { SessionManager } from "./session-manager.js";
 export { ManagedSession } from "./managed-session.js";
 export { SessionBlobStore, createSessionBlobStore } from "./blob-store.js";
+// Git-workspace dehydrate/hydrate protocol (§8.5) — the worker's
+// beforeRunTurn/afterRunTurn hooks call these to make a session's uncommitted
+// git work durable and portable across a cold cross-pod resume.
+export { hydrateGitWorkspace, dehydrateGitWorkspace } from "./git-workspace.js";
+export type {
+    GitBlobIO,
+    GitStateIO,
+    GitWorkspaceMeta,
+    HydrateOptions,
+    HydrateResult,
+    DehydrateOptions,
+    DehydrateResult,
+} from "./git-workspace.js";
 export { FilesystemSessionStore, FilesystemArtifactStore } from "./session-store.js";
 export { PgFactStore, createFactStoreForUrl, createGraphStoreForUrl, resolveFactsTarget, isEnhancedFactStore, EnhancedFactsUnsupportedError } from "./facts-store.js";
 // Convenience: map HORIZON_* env vars to worker enhanced-facts/graph config.
@@ -136,6 +149,7 @@ export type {
     PilotSwarmClientOptions,
     PilotSwarmWorkerOptions,
     BeforeRunTurnHook,
+    AfterRunTurnHook,
     ManagedSessionConfig,
     PilotSwarmSessionStatus,
     PilotSwarmSessionInfo,

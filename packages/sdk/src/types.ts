@@ -4,6 +4,10 @@ import type { SessionStateStore } from "./session-store.js";
 import type { ReasoningEffort } from "./model-providers.js";
 import type { EmbeddingEndpointConfig } from "./facts-store.js";
 import type { StorageConfig } from "./storage-config.js";
+// Canonical durable git-IO contracts live in the protocol module; the hooks
+// carry them so the worker's beforeRunTurn/afterRunTurn are thin callers of
+// hydrate/dehydrate. Type-only import (erased at compile) — no runtime cycle.
+import type { GitBlobIO, GitStateIO } from "./git-workspace.js";
 
 export const SESSION_STATE_MISSING_PREFIX = "SESSION_STATE_MISSING:";
 
@@ -772,6 +776,44 @@ export type BeforeRunTurnHook = (ctx: {
      * `headSha`/`branch`/`epoch` on dehydrate. Absent for a non-CMS worker.
      */
     persistGitState?: (state: GitWorkspaceState) => Promise<void>;
+    /**
+     * Durable git-state accessor (§8.5) — a fresh CMS read/write of the
+     * session's pinned pointer. Preferred over `gitState`/`persistGitState`:
+     * `hydrateGitWorkspace` reads the pinned base through this at hydrate time.
+     * Present only when the worker has a CMS catalog. When present the hook
+     * should call `hydrateGitWorkspace({ state: gitStateIO, blobs: gitBlobs })`.
+     */
+    gitStateIO?: GitStateIO;
+    /**
+     * Durable, session-scoped blob accessor for the git-workspace artifacts
+     * (bundle / patch / meta). Present only when the worker has a session blob
+     * store. Backs the replay half of `hydrateGitWorkspace`.
+     */
+    gitBlobs?: GitBlobIO;
+}) => void | Promise<void>;
+
+/**
+ * Post-turn dehydrate hook (git-hydration §8.5) — invoked at the END of the
+ * `runTurn` activity on EVERY turn (cold and warm), after the turn body has
+ * finished mutating the working tree. The git-repo-worker sets it to call
+ * `dehydrateGitWorkspace`, persisting the session's uncommitted git work
+ * (unpushed commits + tracked/untracked edits) to durable blobs + the CMS
+ * pointer so a hard pod kill after any turn preserves it for a cross-pod
+ * resume. Best-effort: a dehydrate failure never fails an otherwise-successful
+ * turn. Only fires when a CMS catalog + session blob store are both present.
+ */
+export type AfterRunTurnHook = (ctx: {
+    sessionId: string;
+    turnIndex?: number;
+    config: SerializableSessionConfig;
+    /** Activity-scoped trace sink (maps to duroxide `traceInfo`). */
+    trace: (message: string) => void;
+    /** The turn's result, for observability (the hook does not consume it). */
+    result?: TurnResult;
+    /** Durable git-state accessor — fresh CMS read/write of the pinned pointer. */
+    gitStateIO: GitStateIO;
+    /** Durable git-workspace blob accessor (bundle / patch / meta). */
+    gitBlobs: GitBlobIO;
 }) => void | Promise<void>;
 
 export interface PilotSwarmWorkerOptions {
@@ -799,6 +841,13 @@ export interface PilotSwarmWorkerOptions {
      * for jobs (guaranteed idle because worker concurrency is pinned to 1).
      */
     beforeRunTurn?: BeforeRunTurnHook;
+    /**
+     * Post-turn dehydrate hook (git-hydration §8.5). See {@link AfterRunTurnHook}.
+     * Off by default; the git-repo-worker entrypoint sets it to persist the
+     * session's uncommitted git work to durable storage at the end of every
+     * turn, so a hard pod kill preserves it for a cross-pod resume.
+     */
+    afterRunTurn?: AfterRunTurnHook;
     /**
      * Activity routing filter (git-hydration repo affinity). Restricts which
      * duroxide activities this worker will dequeue. The git-repo-worker sets

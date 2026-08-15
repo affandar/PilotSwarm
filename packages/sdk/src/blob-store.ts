@@ -82,6 +82,19 @@ export function epochSnapshotBlobName(sessionId: string, epoch: number): string 
     return `${sessionId}.e${epoch}.tar.br`;
 }
 
+/** The three platform-owned git-workspace artifacts persisted per session (§8.5). */
+export type GitWorkspaceBlobKind = "bundle" | "patch" | "meta";
+
+/**
+ * Stable, session-scoped blob key for a git-workspace artifact (§8.5). Unlike
+ * snapshot keys these are NOT epoch-versioned — they overwrite in place and are
+ * owned by the whole session (bundle = base..HEAD commits, patch = uncommitted
+ * tracked + untracked manifest, meta = { branch, baseSha, headSha, epoch }).
+ */
+export function gitWorkspaceBlobName(sessionId: string, kind: GitWorkspaceBlobKind): string {
+    return kind === "meta" ? `${sessionId}.git.meta.json` : `${sessionId}.git.${kind}`;
+}
+
 /**
  * Snapshot-blob metadata for a CAS commit, written atomically with the
  * content by single-shot Put Blob. Epoch chains additionally carry
@@ -598,12 +611,9 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
      * Best-effort per blob; a single failure is logged, not fatal.
      */
     private async deleteGitWorkspaceBlobs(sessionId: string): Promise<void> {
-        const names = [
-            `${sessionId}.git.bundle`,
-            `${sessionId}.git.patch`,
-            `${sessionId}.git.meta.json`,
-        ];
-        for (const name of names) {
+        const kinds: Array<GitWorkspaceBlobKind> = ["bundle", "patch", "meta"];
+        for (const kind of kinds) {
+            const name = gitWorkspaceBlobName(sessionId, kind);
             try {
                 await this.containerClient.getBlockBlobClient(name).deleteIfExists();
             } catch (error: unknown) {
@@ -613,6 +623,48 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
                     error: errorMessage(error),
                 });
             }
+        }
+    }
+
+    /**
+     * Upload one platform-owned git-workspace artifact (§8.5 git workspace
+     * hydration), overwrite-in-place under the session-scoped stable key.
+     * Called by the worker's dehydrate hook for each of `bundle` (session
+     * commits, base..HEAD), `patch` (uncommitted tracked + untracked manifest)
+     * and `meta` ({ branch, baseSha, headSha, epoch }). The protocol writes ALL
+     * blobs BEFORE the `sessions` row is updated — the row is the commit point,
+     * so a crash mid-upload leaves the row epoch older than the (partial) blob
+     * set and hydrate simply ignores it.
+     */
+    async putGitWorkspaceBlob(sessionId: string, kind: GitWorkspaceBlobKind, data: Buffer): Promise<void> {
+        const name = gitWorkspaceBlobName(sessionId, kind);
+        logBlobStore("info", sessionId, "git workspace blob put", {
+            container: this.containerName,
+            blob: name,
+            bytes: data.length,
+        });
+        await this.containerClient.getBlockBlobClient(name).uploadData(data);
+    }
+
+    /**
+     * Download one git-workspace artifact (§8.5), returning `null` when the
+     * blob is absent — a base-only session that never dehydrated uncommitted
+     * work has no bundle/patch/meta. Called by the worker's hydrate hook inside
+     * `beforeRunTurn`; the caller epoch-matches `meta` against the session row
+     * before trusting `bundle`/`patch`.
+     */
+    async getGitWorkspaceBlob(sessionId: string, kind: GitWorkspaceBlobKind): Promise<Buffer | null> {
+        const name = gitWorkspaceBlobName(sessionId, kind);
+        try {
+            return await this.containerClient.getBlockBlobClient(name).downloadToBuffer();
+        } catch (error: unknown) {
+            if ((error as { statusCode?: number })?.statusCode === 404) return null;
+            logBlobStore("warn", sessionId, "git workspace blob get failed", {
+                container: this.containerName,
+                blob: name,
+                error: errorMessage(error),
+            });
+            throw error;
         }
     }
 

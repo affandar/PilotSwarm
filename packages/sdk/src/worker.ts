@@ -761,6 +761,9 @@ export class PilotSwarmWorker {
             this.config.workerNodeId,
             this.artifactStore,
             this.config.beforeRunTurn,
+            // Durable git-workspace blob store + post-turn dehydrate hook (§8.5).
+            this.blobStore,
+            this.config.afterRunTurn,
         );
 
         for (const registration of DURABLE_SESSION_ORCHESTRATION_REGISTRY) {
