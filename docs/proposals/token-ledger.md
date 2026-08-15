@@ -4,6 +4,28 @@ Status: PROPOSAL (2026-08-15). Design agreed in discussion; nothing built yet
 except step 1a (real `agent_id` on turn metrics, already landed).
 Companion visual: the "Token Ledger" artifact page (same diagrams, rendered)
 
+## What we are building
+
+A **token quota system for the cluster**: every token spent is attributed, every
+pool has a budget, and budgets hold at turn boundaries without breaking a
+running session.
+
+| | Requirement |
+|---|---|
+| R1 | Every token spent is attributed to a provider **credential**, a model, a user, an agent, and a pool. |
+| R2 | Budgets are set per pool, counted in **tokens**, over calendar windows (day/week/month), optionally scoped to a single model. A pool may carry several windows at once. |
+| R3 | Pools **nest**, and every chain roots at a provider credential's pool. A child may narrow its parent, never widen it. |
+| R4 | **Admins own quotas** on shared pools. Users subdivide their own allocation however they like. |
+| R5 | Admins **create pools and open them** to selected users or to everyone. |
+| R6 | Users **see the pools they can use**, set a default, and choose a pool per session. |
+| R7 | Enforcement runs at **turn boundaries**: warn at 70%, pause at 100%, auto-resume at the reset. |
+| R8 | A refusal says **which pool and which rule** bound it, and when it clears. |
+| R9 | **No existing session breaks.** Migration is phased, additive, and dark-launched before it enforces. |
+
+Out of scope for the first build: cost-based budgets (cost is recorded for
+dashboards only), rate limiting (designed as token buckets, deferred), and
+cross-provider pools.
+
 ## The problem today
 
 Three separate gaps, each of which blocks the next thing you would want to build.
@@ -242,7 +264,74 @@ Bob is starved by Alice, and that is the intended consequence. The error he sees
 must name the **root** pool as the binding rule, not his own. Otherwise he
 stares at a meter reading 10% and files a bug.
 
-## 6. Windows and resets
+## 6. Choosing a pool
+
+### Who can use which pool
+
+Admins create pools and open them up. A grant targets **selected users** or
+**everyone**, so a shared team pool does not need N individual grants and does
+not become a maintenance chore as people join.
+
+```
+pool_grants(pool_id, user_id, role)          -- a named user
+pool_grants(pool_id, user_id = NULL, role)   -- everyone (the all-users grant)
+```
+
+A user's usable set is: pools granted to them, pools granted to everyone, pools
+they own, and the root pool of any provider instance they own (their own BYOK
+key). Everything else is invisible to them.
+
+Every pool carries a **friendly name** — "Azure OpenAI · shared", "Crawlers",
+"Alice's Copilot" — because pool ids are never what someone wants to read.
+
+### Defaults
+
+A user picks a default pool from their usable set, stored in
+`users.profile_settings` alongside the other per-user preferences. Resolution
+for a new session, first match wins:
+
+```
+1. the pool explicitly chosen in the create flow
+2. the user's default pool          (if still accessible — grants can be revoked)
+3. the cluster's admin-configured default pool
+4. the root pool of the provider that owns DEFAULT_MODEL
+```
+
+Step 2 must re-check access every time. A revoked grant that still resolves as a
+default is how a user ends up spending from a pool they were removed from.
+
+The model default follows the pool: the pool's provider's default model, or the
+cluster `DEFAULT_MODEL` when it belongs to that provider.
+
+### The create flow gains a first step
+
+```
+today:   model -> reasoning -> context -> agent
+becomes: POOL  -> model -> reasoning -> context -> agent
+```
+
+Because a pool roots at exactly one provider instance, choosing the pool
+**filters the model list** to that provider's models. The step is additive, not
+a rewrite: `openNewSessionFlow` gains a pool picker at the head of the chain,
+and the existing model/reasoning/context/agent pickers are unchanged.
+
+The picker itself stays as it is today. The only change is the group heading:
+where it currently shows the model provider id, it shows the **pool friendly
+name**. A user picking a model should be thinking about which budget it spends,
+not which vendor integration serves it.
+
+Skip rules keep the flow short: if the user has exactly one usable pool, the
+step is skipped silently. If their default is set and the create was not started
+with "choose pool", it is skipped too, and the chosen pool is shown on the
+create confirmation so it is never a surprise.
+
+### Where users see this
+
+The admin console's Usage section, which non-admins can also open, listing only
+their usable pools: friendly name, what it is rooted at, their current
+consumption against each rule, and a control to set the default.
+
+## 7. Windows and resets
 
 A pool carries as many rules as it needs, and each rule is one window. A daily
 ceiling and a weekly ceiling on the same pool are simply two rows. Both are
@@ -297,7 +386,7 @@ evaluated against each counter's own window.
 Cascading resets would be wrong: a child could bank headroom it never earned by
 exhausting its daily slice and waiting for the parent's monthly reset.
 
-## 7. Windows now, buckets later
+## 8. Windows now, buckets later
 
 "How much this month" and "how fast right now" are different questions with
 different storage. **Only the first ships.** `quota_rules` carries a `kind`
@@ -342,7 +431,7 @@ The bucket is also allowed to go negative, which is how it absorbs an
 overspending turn: the debt drains at the refill rate and throttles the next
 turns automatically.
 
-## 8. The exceed ramp
+## 9. The exceed ramp
 
 Three stages on period budgets. Rate rules, when they land, skip the ramp — a
 bucket at 70% is instantaneous and noisy, and warning on it would fire
@@ -396,7 +485,7 @@ expected to reason about it. That means a typed payload, not a message string.
 `level` is what prevents the support ticket. It tells Bob the binding rule was
 an ancestor he does not own, so his own 10%-full meter is not the problem.
 
-## 9. Enforcement at the turn boundary
+## 10. Enforcement at the turn boundary
 
 ```mermaid
 sequenceDiagram
@@ -441,7 +530,7 @@ budget, because dropped usage means overspend. It has to become an idempotent
 increment on a durable path, keyed by `(session_id, turn_index)` so a retry
 cannot double-count.
 
-## 10. Token Manager system agent
+## 11. Token Manager system agent
 
 A system agent that owns the ledger conversationally. Every tool below exists to
 make its refresh loop a single call, rather than the 61-call grind that cost
@@ -514,7 +603,7 @@ The regen distiller is unaffected: `regen-worker.ts` spins an ephemeral Copilot
 subprocess rather than a CMS session under the root, so it never matches this
 predicate.
 
-## 11. Admin console — Usage
+## 12. Admin console — Usage
 
 The console is already a left nav with section bodies (`ghcp`, `packages`, and
 an admin-only `workers`, built in `packages/app/ui/core/src/selectors.js`).
@@ -558,7 +647,7 @@ Rules the view has to follow:
 - **Actions live where the problem is:** set a quota from a pool row, release a
   hold from a paused row.
 
-## 12. What lands in the CMS
+## 13. What lands in the CMS
 
 | Table | Carries | Notes |
 |---|---|---|
@@ -580,7 +669,7 @@ codebase with **zero callers**, and `session_turn_metrics` has grown unbounded
 ever since. Do not repeat that here — wire the prune into the sweeper when the
 table lands.
 
-## 13. Build order
+## 14. Build order
 
 Each stage is useful on its own, and each is a prerequisite for the next.
 
@@ -591,12 +680,95 @@ Each stage is useful on its own, and each is a prerequisite for the next.
 | **3 · Batch read** | `get_usage_report`; admin console Usage section | Dashboards stop costing millions of tokens |
 | **4 · Pools** | Tree, grants, session binding, durable idempotent counters | Accounting per pool, no enforcement yet |
 | **5 · Enforcement** | Period rules, warn/pause ramp, typed errors, Token Manager | Budgets hold at the turn boundary |
+| **5b · Migration** | Phases A-E on each stamp, dark-launched before enforcing | Existing sessions keep running throughout (R9) |
 | **6 · OTel** | Metrics SDK, OTLP export, Collector | Kusto analytics off the same labels (see `runtime-metrics.md`) |
 
 Stage 1a is already done: `session_turn_metrics.agent_id` was hardcoded `null`
 and now carries the session's resolved agent identity.
 
-## 14. Settled
+## 15. Migration
+
+The hard requirement is R9: **no existing session breaks.** Every phase below is
+additive and reversible, and enforcement is dark-launched before it bites —
+the same pattern `AUTHZ_ENFORCE_OWNERSHIP` already uses in this codebase.
+
+### What a live stamp looks like today (waldemortchk)
+
+```
+providers   azure-openai      cluster credential, SHARED
+                              base catalog + per-stamp model-provider-additions.json
+                              (gpt-5.6-luna / -sol / -terra added on chk)
+            github-copilot    BYOK per user. GITHUB_TOKEN is EMPTY and the KV
+                              github-token is a sentinel — there is NO cluster
+                              credential for it on chk
+default     DEFAULT_MODEL=azure-openai:gpt-5.4
+sessions    carry `model`; some qualified, some bare. No pool. ~61 live.
+users       users + session_owners. "system" owns the machinery sessions.
+```
+
+### Phases
+
+**A — schema only.** Create the reference, pool and quota tables. Add nullable
+`sessions.pool_id` and the new `session_turn_metrics` columns. Nothing reads
+them. Zero behavior change; safe to deploy on its own.
+
+**B — import and backfill, still nothing reads.**
+
+1. Import providers and models from the base catalog **merged with the
+   per-stamp additions file**. Missing the merge is the most likely way to
+   break chk: `gpt-5.6-luna/-sol/-terra` live only in
+   `model-provider-additions.json`, and they are the models actually in use.
+2. Create `provider_instances`: one per **shared** provider with a cluster
+   credential, and one per user who already holds a BYOK key.
+3. Create a root pool per instance, plus per-user sub-pools if cluster config
+   says so.
+4. Backfill `sessions.pool_id` for every existing session by resolving
+   `model -> provider -> instance -> root pool`.
+5. Backfill recent `session_turn_metrics` rows best-effort. Older rows keep
+   NULLs and reports show "unattributed" before the cutover date. An honest gap
+   beats a guessed backfill.
+
+**C — dual read.** Portal and workers read the catalog from the CMS, falling
+back to the file when the CMS is empty. The acceptance test is boring on
+purpose: *the model picker shows exactly the same list as before.*
+
+**D — pool selection.** The pool picker, defaults, and the Usage view. Sessions
+start recording `pool_id` from their own choice rather than the backfill.
+Still no enforcement.
+
+**E — dark-launch enforcement.** Quota rules exist with `action = 'alert'`.
+The engine evaluates every rule and logs what it *would* have blocked, without
+blocking. Watch a full window — a week, so the weekly rules get exercised —
+and read the would-have-blocked list. Only then flip actions to `block`.
+
+Rollback: A and B are additive (drop the columns, drop the tables). C has a
+fallback flag. D is feature-flagged. E is one column flip back to `alert`.
+
+### The specific ways this breaks, and the guard for each
+
+| Risk | Guard |
+|---|---|
+| **Per-stamp additions missed on import** — chk loses its three real models | Import merges base + `MODEL_PROVIDER_ADDITIONS_FILE`; assert the post-import model count matches what the picker offered before |
+| **A cluster instance created for github-copilot on chk**, whose credential is a sentinel — every session bound to it fails at runtime | Only create a cluster instance when the provider has a *real* cluster credential. On chk, `github-copilot` gets provider + models but **no cluster instance** |
+| **Bare vs qualified model names** in existing rows — `gpt-5.4` and `azure-openai:gpt-5.4` both appear | Resolve bare names through the catalog. If a bare name matches two providers, **fail the migration loudly** rather than guess. chk has no collision today; a future stamp might |
+| **Sessions bound to a retired model** | Pool resolution goes through the *provider*, so it succeeds even when the model row is deprecated |
+| **BYOK holders missed** — their sessions lose their credential | Enumerate existing key holders in phase B and create an instance for each. Count them before and after |
+| **System sessions unpooled when enforcement flips** — the sweeper pauses | Assign the system pool in phase B and mark it warn-only *before* phase E |
+| **A user with no pool** (joined after config, before grants) | Falls back to the provider root pool, per the default resolution order |
+| **Counters wrong on day one** because the usage writeback is best-effort | Make the increment idempotent and durable in phase D, before anything enforces on it |
+
+### Verification at each gate
+
+```
+after A   schema present; sessions still create and run; picker unchanged
+after B   every session has a pool_id; instance count == shared providers
+          with real creds + BYOK holders; model count matches the picker
+after C   picker list identical to the pre-migration list (diff it)
+after D   new sessions record the pool the user chose; defaults resolve
+after E   would-have-blocked log is empty of surprises for a full week
+```
+
+## 16. Settled
 
 - Budgets count **tokens**. Cost is recorded for dashboards, never enforced.
 - **UTC everywhere**, stamped in the column names.
@@ -614,6 +786,12 @@ and now carries the session's resolved agent identity.
 - **Machinery hides by root parentage**, not by the system flag.
 - **The JSON is a catalog and template**, reconciled on deploy; removals
   deprecate, never delete.
+- **Admins open pools to selected users or to everyone**; users pick a default
+  and a per-session pool.
+- **The create flow is pool → model → reasoning → context → agent**, with the
+  picker grouped by pool friendly name rather than provider id.
+- **Migration is phased and dark-launched.** Enforcement only flips to `block`
+  after a full window of would-have-blocked evidence.
 
 ## Related
 
