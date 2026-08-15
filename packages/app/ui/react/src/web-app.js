@@ -193,6 +193,53 @@ function copySessionLinkText(url) {
     if (navigator?.clipboard?.writeText) navigator.clipboard.writeText(text).catch(() => {});
 }
 
+/**
+ * One box per entry point, each independently copyable, plus a "Copy all"
+ * that takes every labeled line at once.
+ *
+ * The single shared textarea this replaced forced the sender to hand over
+ * both URLs even when they knew which network the recipient was on, and a
+ * partial selection out of a monospace blob is fiddly. A sender who knows
+ * copies one; a sender who doesn't copies all.
+ *
+ * Single-origin deployments render exactly one unlabeled row — no labels, no
+ * Copy all, nothing to explain.
+ */
+function MultiOriginLinkRows({ url, keyPrefix, copied, onCopy }) {
+    const links = buildPortalLinks(url, portalLinkOrigins);
+    const selectOnFocus = (event) => event.currentTarget.select();
+    if (links.length <= 1) {
+        return React.createElement("div", { className: "ps-link-row" },
+            React.createElement("input", {
+                className: "ps-link-input", readOnly: true, value: url, onFocus: selectOnFocus,
+            }),
+            React.createElement("button", {
+                type: "button", className: "ps-mini-button", onClick: () => onCopy(keyPrefix, url),
+            }, copied === keyPrefix ? "Copied" : "Copy"));
+    }
+    const allKey = `${keyPrefix}:all`;
+    return React.createElement("div", { className: "ps-link-origins" },
+        links.map((link, index) => {
+            const key = `${keyPrefix}:${index}`;
+            return React.createElement("div", { className: "ps-link-origin", key },
+                React.createElement("div", { className: "ps-link-origin-label" }, link.label),
+                React.createElement("div", { className: "ps-link-row" },
+                    React.createElement("input", {
+                        className: "ps-link-input", readOnly: true, value: link.url,
+                        "aria-label": `${link.label} link`, onFocus: selectOnFocus,
+                    }),
+                    React.createElement("button", {
+                        type: "button", className: "ps-mini-button",
+                        onClick: () => onCopy(key, link.url),
+                    }, copied === key ? "Copied" : "Copy")));
+        }),
+        React.createElement("div", { className: "ps-link-copy-all" },
+            React.createElement("button", {
+                type: "button", className: "ps-mini-button",
+                onClick: () => onCopy(allKey, formatPortalLinksForCopy(links)),
+            }, copied === allKey ? "Copied all" : "Copy all")));
+}
+
 // Best-effort probe: is this session's deep link openable only by the owner/
 // admins right now (private, with no targeted grants)? Used to warn in the
 // copy-link dialog. Failure resolves false (no warning).
@@ -5222,34 +5269,27 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
 // (selectable), confirms the copy, and warns when the link points at a private
 // session no one else can open yet.
 function SessionLinkModal({ url, warn, onCopyAgain, onClose }) {
-    const inputRef = React.useRef(null);
-    React.useEffect(() => {
-        const node = inputRef.current;
-        if (node) { node.focus(); node.select(); }
-    }, []);
+    const [copied, setCopied] = React.useState("");
+    const multi = buildPortalLinks(url, portalLinkOrigins).length > 1;
+    const copy = React.useCallback((key, text) => {
+        // onCopyAgain owns the single-origin clipboard write (and its status
+        // line); the per-origin buttons write their own one URL.
+        if (key === "session" && !multi) { onCopyAgain?.(); }
+        else if (navigator?.clipboard?.writeText) navigator.clipboard.writeText(text).catch(() => {});
+        setCopied(key);
+        window.setTimeout(() => setCopied(""), 1500);
+    }, [multi, onCopyAgain]);
     const stop = (e) => e.stopPropagation();
     return React.createElement("div", { className: "ps-share-overlay", onClick: onClose },
         React.createElement("div", { className: "ps-link-modal", onClick: stop },
             React.createElement("div", { className: "ps-share-modal-head" },
-                React.createElement("span", null, portalLinkOrigins.length >= 2 ? "Session links copied" : "Link copied"),
+                React.createElement("span", null, multi ? "Session links copied" : "Link copied"),
                 React.createElement("button", { className: "ps-modal-close", onClick: onClose, "aria-label": "Close", title: "Close" }, "✕")),
             React.createElement("div", { className: "ps-share-section-sub" },
-                portalLinkOrigins.length >= 2
-                    ? "All entry-point links were copied — use the one reachable from the recipient's network."
+                multi
+                    ? "All entry-point links were copied. Copy just the one your recipient's network can reach, or take both."
                     : "Copied to your clipboard — anyone with access can open the session from this link."),
-            React.createElement("div", { className: "ps-link-row" },
-                portalLinkOrigins.length >= 2
-                    ? React.createElement("textarea", {
-                        ref: inputRef, className: "ps-link-input", readOnly: true,
-                        rows: buildPortalLinks(url, portalLinkOrigins).length,
-                        value: formatPortalLinksForCopy(buildPortalLinks(url, portalLinkOrigins)),
-                        onFocus: () => inputRef.current?.select(),
-                    })
-                    : React.createElement("input", {
-                        ref: inputRef, className: "ps-link-input", readOnly: true, value: url,
-                        onFocus: () => inputRef.current?.select(),
-                    }),
-                React.createElement("button", { className: "ps-mini-button", onClick: onCopyAgain }, "Copy")),
+            React.createElement(MultiOriginLinkRows, { url, keyPrefix: "session", copied, onCopy: copy }),
             warn
                 ? React.createElement("div", { className: "ps-link-warn" }, SESSION_LINK_PRIVATE_WARNING)
                 : null));
@@ -6273,6 +6313,71 @@ function MobileArtifactOverlay({ controller }) {
         })));
 }
 
+// How much visual-viewport height must vanish before we call it a keyboard.
+// Smaller drops (URL-bar churn, iOS toolbars settling) stay under this.
+const KEYBOARD_TAKEOVER_MIN_SHRINK_PX = 140;
+
+/**
+ * Pure decision for the keyboard takeover, split out for tests. Returns the
+ * next {baseline, takeover}. The keyboard signal is a visual-viewport height
+ * drop from the tallest height seen at the current width; a width change is
+ * a rotation and resets the baseline. window.innerHeight is NOT a usable
+ * baseline: Android's interactive-widget=resizes-content shrinks it together
+ * with the keyboard, which would read as "no shrink".
+ */
+export function evaluateKeyboardTakeover(baseline, viewportWidth, viewportHeight, composerFocused) {
+    let nextBaseline = baseline;
+    if (!baseline || Math.abs(viewportWidth - baseline.width) > 2) {
+        nextBaseline = { width: viewportWidth, height: viewportHeight };
+    } else if (viewportHeight > baseline.height) {
+        nextBaseline = { width: baseline.width, height: viewportHeight };
+    }
+    const shrunk = viewportHeight <= nextBaseline.height - KEYBOARD_TAKEOVER_MIN_SHRINK_PX;
+    return { baseline: nextBaseline, takeover: shrunk && composerFocused };
+}
+
+/**
+ * True while the on-screen keyboard is up AND the chat composer summoned it.
+ * Both conditions matter: height alone would fire for a modal's text field
+ * and collapse the workspace behind the modal; focus alone would fire for
+ * hardware keyboards that shrink nothing. State-driven on the keyboard
+ * itself, so it reverts the moment the keyboard goes away — including the
+ * iOS swipe-dismiss that closes the keyboard without blurring the input.
+ */
+function useKeyboardTakeover(enabled) {
+    const [takeover, setTakeover] = React.useState(false);
+    React.useEffect(() => {
+        if (!enabled || typeof window === "undefined" || !window.visualViewport) {
+            setTakeover(false);
+            return undefined;
+        }
+        const viewport = window.visualViewport;
+        let baseline = { width: viewport.width, height: viewport.height };
+        let frame = 0;
+        const evaluate = () => {
+            frame = 0;
+            const composerFocused = Boolean(document.activeElement?.classList?.contains("ps-prompt-input"));
+            const next = evaluateKeyboardTakeover(baseline, viewport.width, viewport.height, composerFocused);
+            baseline = next.baseline;
+            setTakeover(next.takeover);
+        };
+        // rAF-deferred: focusout fires while activeElement is mid-transition,
+        // and visualViewport resize storms during the keyboard animation.
+        const schedule = () => { if (!frame) frame = requestAnimationFrame(evaluate); };
+        evaluate();
+        viewport.addEventListener("resize", schedule);
+        window.addEventListener("focusin", schedule);
+        window.addEventListener("focusout", schedule);
+        return () => {
+            if (frame) cancelAnimationFrame(frame);
+            viewport.removeEventListener("resize", schedule);
+            window.removeEventListener("focusin", schedule);
+            window.removeEventListener("focusout", schedule);
+        };
+    }, [enabled]);
+    return enabled ? takeover : false;
+}
+
 /**
  * The phone's Main pane, in one of three layouts cycled by the Main toolbar
  * button: split (sessions + chat), chat only, sessions only (list + the
@@ -6386,6 +6491,13 @@ function CanvasLinkGlyph() {
  * Link management is a session:manage operation server-side; anyone else
  * sees the server's refusal inline.
  */
+// Tab labels name the AUDIENCE, not the mechanism — the sharer is choosing
+// who should be able to open this, not which token scheme to use.
+const CANVAS_SHARE_TABS = [
+    { id: "session", label: "Session access" },
+    { id: "public", label: "Anyone with link" },
+];
+
 function CanvasShareDialog({ controller, sessionId, slot, onClose }) {
     const [info, setInfo] = React.useState(null);        // { exists, createdAt } | null while loading
     const [freshLink, setFreshLink] = React.useState(null); // the just-minted URL, shown once
@@ -6393,37 +6505,19 @@ function CanvasShareDialog({ controller, sessionId, slot, onClose }) {
     const [error, setError] = React.useState("");
     const [copied, setCopied] = React.useState("");
 
+    // Which kind of link the dialog is showing. Two tabs rather than two
+    // stacked sections: the choice between "people who already have session
+    // access" and "anyone holding this token" is the decision the sharer is
+    // making, and stacking them put a destructive Reset next to an innocuous
+    // deep link. Mirrors the Manage-session dialog's General/Access tabs.
+    const [tab, setTab] = React.useState("session");
     const transport = controller.transport;
     const sessionLink = `${window.location.origin}/?session=${encodeURIComponent(sessionId)}&view=canvas&slot=${slot}&max=1`;
-    // Multi-entry-point deployments: ONE text box holding every labeled
-    // variant, ONE copy that takes all of them — the sender does not know
-    // which entry point the recipient can reach, so they paste both. The
-    // token variants all resolve the same hashed row: one token, N doors,
+    // The token variants all resolve the same hashed row: one token, N doors,
     // single-switch revocation whichever door the bearer uses.
-    const linkRows = (url, keyPrefix) => {
-        const links = buildPortalLinks(url, portalLinkOrigins);
-        if (links.length <= 1) {
-            return React.createElement("div", { className: "ps-canvas-share-row" },
-                React.createElement("code", { className: "ps-canvas-share-url" }, url),
-                React.createElement("button", {
-                    type: "button", className: "ps-mini-button",
-                    onClick: () => copy(keyPrefix, url),
-                }, copied === keyPrefix ? "Copied" : "Copy"));
-        }
-        const text = formatPortalLinksForCopy(links);
-        return React.createElement("div", { className: "ps-canvas-share-row" },
-            React.createElement("textarea", {
-                className: "ps-link-input",
-                readOnly: true,
-                rows: links.length,
-                value: text,
-                onFocus: (event) => event.currentTarget.select(),
-            }),
-            React.createElement("button", {
-                type: "button", className: "ps-mini-button",
-                onClick: () => copy(keyPrefix, text),
-            }, copied === keyPrefix ? "Copied" : "Copy"));
-    };
+    const linkRows = (url, keyPrefix) => React.createElement(MultiOriginLinkRows, {
+        url, keyPrefix, copied, onCopy: copy,
+    });
 
     const refresh = React.useCallback(() => {
         transport.getCanvasShareLink?.(sessionId, slot)
@@ -6464,32 +6558,55 @@ function CanvasShareDialog({ controller, sessionId, slot, onClose }) {
                 "Share this canvas",
                 React.createElement("button", { type: "button", className: "ps-mini-button", onClick: onClose, "aria-label": "Close" }, "✕")),
 
-            React.createElement("div", { className: "ps-canvas-share-section" },
-                React.createElement("div", { className: "ps-canvas-share-head" }, "Anyone with session access"),
-                React.createElement("div", { className: "ps-canvas-share-sub" }, "Opens the portal signed in, canvas full screen. Session visibility rules apply."),
-                linkRows(sessionLink, "session")),
+            React.createElement("div", { className: "ps-manage-tabs", role: "tablist" },
+                CANVAS_SHARE_TABS.map((t) => React.createElement("button", {
+                    key: t.id,
+                    type: "button",
+                    role: "tab",
+                    "aria-selected": tab === t.id ? "true" : "false",
+                    className: `ps-manage-tab${tab === t.id ? " is-active" : ""}`,
+                    onClick: () => setTab(t.id),
+                }, t.label))),
 
-            React.createElement("div", { className: "ps-canvas-share-section" },
-                React.createElement("div", { className: "ps-canvas-share-head" }, "Anyone with the link"),
-                React.createElement("div", { className: "ps-canvas-share-sub" },
-                    "View only, live, no sign-in. One link at a time — resetting makes the previous link stop working immediately."),
-                info === null
-                    ? React.createElement("div", { className: "ps-canvas-share-sub" }, "Checking…")
-                    : freshLink
-                        ? React.createElement(React.Fragment, null,
-                            linkRows(freshLink, "public"),
-                            React.createElement("div", { className: "ps-canvas-share-sub is-warn" },
-                                "Copy it now — the link is shown only this once."))
-                        : info.exists
-                            ? React.createElement("div", { className: "ps-canvas-share-sub" },
-                                `A link exists${info.createdAt ? ` (created ${new Date(info.createdAt).toLocaleString()})` : ""}. For safety it cannot be re-shown — Reset to get a new one.`)
-                            : React.createElement("div", { className: "ps-canvas-share-sub" }, "No public link yet."),
-                React.createElement("div", { className: "ps-canvas-share-actions" },
-                    React.createElement("button", { type: "button", className: "ps-mini-button", disabled: busy, onClick: () => mint(info?.exists) },
-                        info?.exists ? "Reset link" : "Create link"),
-                    info?.exists
-                        ? React.createElement("button", { type: "button", className: "ps-mini-button", disabled: busy, onClick: remove }, "Remove link")
-                        : null)),
+            // Both panels are always rendered, stacked in one grid cell, with
+            // the inactive one held at visibility:hidden. It still occupies
+            // its space, so the dialog is always as tall as the TALLER tab and
+            // switching tabs never resizes the box. Sizing this way (rather
+            // than a min-height guess) also stays correct when the panels grow:
+            // one link box on a single-origin deployment, two plus Copy all on
+            // a multi-origin one. visibility:hidden also takes the hidden
+            // panel's inputs and buttons out of the tab order and the
+            // accessibility tree, so nothing offscreen is reachable.
+            React.createElement("div", { className: "ps-canvas-share-panels" },
+                React.createElement("div", {
+                    className: `ps-canvas-share-panel${tab === "session" ? " is-active" : ""}`,
+                    role: "tabpanel", "aria-hidden": tab === "session" ? undefined : "true",
+                },
+                    React.createElement("div", { className: "ps-canvas-share-sub" }, "Opens the portal signed in, canvas full screen. Session visibility rules apply."),
+                    linkRows(sessionLink, "session")),
+                React.createElement("div", {
+                    className: `ps-canvas-share-panel${tab === "public" ? " is-active" : ""}`,
+                    role: "tabpanel", "aria-hidden": tab === "public" ? undefined : "true",
+                },
+                    React.createElement("div", { className: "ps-canvas-share-sub" },
+                        "View only, live, no sign-in. One link at a time — resetting makes the previous link stop working immediately."),
+                    info === null
+                        ? React.createElement("div", { className: "ps-canvas-share-sub" }, "Checking…")
+                        : freshLink
+                            ? React.createElement(React.Fragment, null,
+                                linkRows(freshLink, "public"),
+                                React.createElement("div", { className: "ps-canvas-share-sub is-warn" },
+                                    "Copy it now — the link is shown only this once."))
+                            : info.exists
+                                ? React.createElement("div", { className: "ps-canvas-share-sub" },
+                                    `A link exists${info.createdAt ? ` (created ${new Date(info.createdAt).toLocaleString()})` : ""}. For safety it cannot be re-shown — Reset to get a new one.`)
+                                : React.createElement("div", { className: "ps-canvas-share-sub" }, "No public link yet."),
+                    React.createElement("div", { className: "ps-canvas-share-actions" },
+                        React.createElement("button", { type: "button", className: "ps-mini-button", disabled: busy, onClick: () => mint(info?.exists) },
+                            info?.exists ? "Reset link" : "Create link"),
+                        info?.exists
+                            ? React.createElement("button", { type: "button", className: "ps-mini-button", disabled: busy, onClick: remove }, "Remove link")
+                            : null))),
             error ? React.createElement("div", { className: "ps-canvas-share-error" }, error) : null));
 }
 
@@ -10992,6 +11109,25 @@ export function PilotSwarmWebApp({ controller }) {
     const effectivePromptRows = readOnlyChatPane ? 0 : state.promptRows;
 
     useKeyboardShortcuts(controller, mobile);
+
+    // Keyboard takeover (phone): while the on-screen keyboard is up and the
+    // composer summoned it, the conversation owns the visual viewport — the
+    // portal header, toolbar and session list fold away via a body class and
+    // the transcript snaps to newest. The chat pane's own header stays as the
+    // context strip (session title · status · model), and tapping anywhere
+    // outside the composer dismisses the keyboard and restores everything.
+    const keyboardTakeover = useKeyboardTakeover(mobile && mobilePane === "workspace" && !state.adminVisible);
+    React.useEffect(() => {
+        if (typeof document === "undefined") return undefined;
+        document.body.classList.toggle("ps-kb-takeover", keyboardTakeover);
+        return () => document.body.classList.remove("ps-kb-takeover");
+    }, [keyboardTakeover]);
+    React.useEffect(() => {
+        if (!keyboardTakeover) return;
+        // Typing means replying to the newest message; a transcript left
+        // scrolled to last week would have the user typing blind.
+        controller.applyPaneVisualScrollOffset?.("chat", 0, { followBottom: true });
+    }, [keyboardTakeover, controller]);
 
     // The agent-driven canvas flip, phone edition. The desktop column follows
     // ui.rightPaneMode by itself; the phone's pane lives in local tab state,

@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.5.42 — 2026-08-15
+
+The phone keyboard stops burying the conversation, share links become
+individually copyable per entry point, model switches become visible, and turn
+metrics finally record which agent produced them.
+
+### Added
+
+- **Keyboard takeover on phones.** While the on-screen keyboard is up and the
+  composer summoned it, the portal header, toolbar and session list fold away
+  so the conversation keeps the visible viewport, and the transcript snaps to
+  the newest message. It is driven by the keyboard state itself — a
+  visual-viewport shrink plus composer focus — so it reverts the moment the
+  keyboard goes, including the iOS swipe-dismiss that never blurs the input.
+  There is no mode that can get stuck.
+
+- **One copyable box per entry point.** Deployments configured with several
+  `PORTAL_LINK_ORIGINS` now render a labelled, independently copyable field per
+  origin plus a single "Copy all", instead of one textarea holding every URL.
+  A sender who knows the recipient's network copies one link; a sender who does
+  not copies both.
+
+- **The canvas share dialog is tabbed.** "Session access" and "Anyone with
+  link" become tabs, matching the Manage-session dialog. Both panels occupy one
+  grid cell so the dialog is sized to the taller tab and switching never
+  resizes it — and the destructive Reset link no longer sits directly under the
+  innocuous deep link.
+
+### Fixed
+
+- **Model switches are visible again.** `session.model_changed` has always
+  carried the old and new model, but the sequence pane dropped the event
+  entirely (its renderer had no case, and the default returns null) and the
+  activity feed printed a bare grey `[session.model_changed]` with no body,
+  because the event carries structured data and no message text. Both now
+  render `model <old> → <new>`, with the reasoning effort when it changed.
+
+- **Turn metrics record their agent.** `session_turn_metrics.agent_id` was
+  hardcoded `null` on every row ever written. Per-agent attribution reported
+  nothing, fleet rollups papered over it by coalescing back through `sessions`,
+  and the hourly-bucket query's `p_agent_id` filter silently matched no rows.
+  Rows now carry the session's resolved agent identity. Existing rows stay
+  null — this fixes attribution going forward, not retroactively.
+
+### Docs
+
+- **`docs/proposals/token-ledger.md`** — usage accounting, token pools rooted
+  at provider credentials, and windowed token budgets enforced at the turn
+  boundary, plus the Token Manager system agent and the admin Usage console.
+
 ## 0.5.41 — 2026-08-14
 
 A mobile follow-up to the 0.5.40 portal work. The composer's expand mode is

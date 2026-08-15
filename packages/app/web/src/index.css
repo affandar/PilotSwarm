@@ -855,6 +855,42 @@ button {
   max-height: min(14vh, 96px);
 }
 
+/* ─── Keyboard takeover (phone) ──────────────────────────────────────
+ * While the on-screen keyboard is up and the chat composer summoned it, the
+ * conversation owns the visual viewport: the portal header, the toolbar and
+ * the session list fold away, and the composer's growth cap tightens. The
+ * body class is driven by the keyboard state itself (visualViewport shrink +
+ * composer focus, see useKeyboardTakeover) and vanishes with the keyboard —
+ * there is no mode to get stuck in. The chat pane's own header stays,
+ * carrying session title · status · model as context. */
+body.ps-kb-takeover .portal-header,
+body.ps-kb-takeover .ps-toolbar.is-mobile {
+  display: none;
+}
+
+body.ps-kb-takeover .ps-mobile-session-pane {
+  max-height: 0;
+  min-height: 0;
+  opacity: 0;
+  margin: 0;
+  padding: 0;
+  border-width: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+body.ps-kb-takeover .ps-prompt-shell.is-mobile .ps-prompt-input {
+  /* The keyboard already halved the screen; past a quarter of what is left
+   * the textarea scrolls internally and the transcript keeps the rest. */
+  max-height: calc(var(--ps-app-height, 100vh) * 0.25);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .ps-mobile-session-pane {
+    transition: max-height 180ms ease, opacity 140ms ease;
+  }
+}
+
 .ps-mobile-session-pane .ps-action-list {
   min-height: 0;
 }
@@ -3705,6 +3741,41 @@ body.is-resizing-pane-y iframe {
   background: var(--ps-background);
   border: 1px solid var(--ps-border);
   border-radius: var(--ps-radius-sm);
+}
+
+/* One labeled, independently copyable box per entry point, with a Copy all
+   underneath. Replaces the single shared textarea that made the sender hand
+   over every URL even when they knew which one the recipient needed. */
+.ps-link-origins {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+  min-width: 0;
+}
+
+.ps-link-origins .ps-link-row {
+  margin-top: 0;
+}
+
+.ps-link-origin-label {
+  font-size: 0.82rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ps-muted);
+  margin-bottom: 4px;
+}
+
+.ps-link-copy-all {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 2px;
+  border-top: 1px solid var(--ps-border);
+  margin-top: 2px;
+}
+
+.ps-link-copy-all .ps-mini-button {
+  margin-top: 8px;
 }
 
 .ps-link-warn {
@@ -7764,6 +7835,27 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
 }
 
 .ps-canvas-share-actions { display: flex; gap: 8px; margin-top: 8px; }
+
+/* Tab panels share ONE grid cell, so the container is always as tall as the
+   taller panel and switching tabs never resizes the dialog. The inactive
+   panel keeps its space (visibility, not display) — which is the whole
+   mechanism — while dropping out of the tab order and the a11y tree. */
+.ps-canvas-share-panels {
+  display: grid;
+  min-width: 0;
+}
+
+.ps-canvas-share-panels > .ps-canvas-share-panel {
+  grid-area: 1 / 1;
+  min-width: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.ps-canvas-share-panels > .ps-canvas-share-panel.is-active {
+  visibility: visible;
+  pointer-events: auto;
+}
 .ps-canvas-share-error { color: var(--ps-danger, #e07a7a); font-size: 0.84rem; }
 
 /* ── Canvas share: the token viewer page ──────────────────────────── */

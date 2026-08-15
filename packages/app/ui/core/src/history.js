@@ -1,4 +1,4 @@
-import { formatHumanDurationSeconds, formatTimestamp, shortSessionId, stripTerminalMarkupTags, summarizeJson } from "./formatting.js";
+import { formatHumanDurationSeconds, formatTimestamp, shortModelName, shortSessionId, stripTerminalMarkupTags, summarizeJson } from "./formatting.js";
 import { isCanvasActionContent, parseCanvasActionContent } from "./canvas-actions.js";
 import { formatCompactionActivityRuns } from "./context-usage.js";
 import { canonicalSystemTitle } from "./system-titles.js";
@@ -692,6 +692,7 @@ function formatEventSnippet(event, maxLen = 96) {
     return body || "";
 }
 
+
 function formatToolActivityRuns(time, event, phase = "start") {
     const toolCallId = typeof event?.data?.toolCallId === "string" ? event.data.toolCallId : "";
     const requestId = typeof event?.data?.requestId === "string" ? event.data.requestId : "";
@@ -946,6 +947,29 @@ function formatActivity(event) {
                 `/${event?.data?.cmd || "?"} ok${body ? ` ${body}` : ""}`,
             );
             break;
+
+        case "session.model_changed": {
+            // Structured data only — messageTextFromEvent finds nothing, so
+            // without this case the generic fallback printed a bare
+            // "[session.model_changed]" that named neither model.
+            const from = shortModelName(event?.data?.oldModel) || "default";
+            const to = shortModelName(event?.data?.newModel) || "default";
+            const effort = event?.data?.newReasoningEffort;
+            const effortChanged = effort && effort !== event?.data?.oldReasoningEffort;
+            const tier = event?.data?.newContextTier;
+            const tierChanged = tier && tier !== event?.data?.oldContextTier && tier !== "default";
+            const extras = [
+                ...(effortChanged ? [`effort ${effort}`] : []),
+                ...(tierChanged ? [`context ${tier}`] : []),
+            ];
+            runs = buildLabeledActivityRuns(
+                time,
+                "[model]",
+                "cyan",
+                `${from} → ${to}${extras.length ? ` (${extras.join(", ")})` : ""}`,
+            );
+            break;
+        }
 
         case "session.compaction_start":
         case "session.compaction_complete":

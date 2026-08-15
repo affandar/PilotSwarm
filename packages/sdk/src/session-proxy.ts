@@ -3308,7 +3308,16 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     `runTurn.postTurn completeTurnWriteback state=${updates.state} session=${input.sessionId}`,
                     () => catalog!.completeTurnWriteback({
                         sessionId: input.sessionId,
-                        agentId: null,
+                        // The session's bound agent. This was hardcoded null,
+                        // which left session_turn_metrics.agent_id empty on
+                        // every row ever written: fleet rollups papered over it
+                        // by COALESCE-ing back through `sessions`, the hourly
+                        // bucket proc's p_agent_id filter silently matched
+                        // nothing, and per-agent attribution in dashboards read
+                        // "not reported". runConfig carries the resolved
+                        // identity (including the catalog self-heal for older
+                        // sessions created before agentIdentity existed).
+                        agentId: runConfig.agentIdentity ?? fallbackAgentIdentity ?? null,
                         model: turnTelemetry.observedModel ?? input.config.model ?? null,
                         reasoningEffort: input.config.reasoningEffort ?? null,
                         turnIndex: input.turnIndex ?? 0,

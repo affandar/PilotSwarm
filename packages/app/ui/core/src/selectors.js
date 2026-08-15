@@ -4590,6 +4590,7 @@ const SEQUENCE_ORCHESTRATOR_TYPES = new Set([
     "spawn",
     "cmd_recv",
     "cmd_done",
+    "model",
 ]);
 
 function isSequenceOrchestratorType(type) {
@@ -4723,6 +4724,20 @@ function mapEventToSequenceEntry(event) {
             return { ...base, type: "compaction", color: "gray", detail: "compaction…" };
         case "session.compaction_complete":
             return { ...base, type: "compaction", color: "gray", detail: "compacted" };
+        case "session.model_changed": {
+            // The switch itself already appears as /set_model command rows;
+            // this row is the one that says what actually changed.
+            const from = shortModelName(event?.data?.oldModel) || "default";
+            const to = shortModelName(event?.data?.newModel) || "default";
+            const effort = event?.data?.newReasoningEffort;
+            const effortChanged = effort && effort !== event?.data?.oldReasoningEffort;
+            return {
+                ...base,
+                type: "model",
+                color: "cyan",
+                detail: `model ${from} → ${to}${effortChanged ? `:${effort}` : ""}`,
+            };
+        }
         case "session.error":
             return { ...base, type: "error", color: "red", detail: preview || "error" };
         default:
