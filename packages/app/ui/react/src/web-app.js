@@ -6882,6 +6882,15 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
                 React.createElement("span", { className: "ps-artifact-pane-type", title: view.note || undefined },
                     view.exists ? `${view.name ? `${view.name} \u00b7 ` : ""}rev ${view.latestRev}` : ""),
                 React.createElement(CanvasSlotControls, { controller, view, compact: true }),
+                view.exists
+                    ? React.createElement("button", {
+                        type: "button",
+                        className: "ps-canvas-max-btn",
+                        onClick: () => setShareOpen(true),
+                        title: "Share this canvas — copy a view link",
+                        "aria-label": "Share canvas",
+                    }, React.createElement(CanvasLinkGlyph))
+                    : null,
                 onToggleMaximized
                     ? React.createElement("button", {
                         type: "button",
@@ -7837,24 +7846,19 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
     const inputRef = React.useRef(null);
     const attachInputRef = React.useRef(null);
     const [dragOver, setDragOver] = React.useState(false);
-    // Expand mode: the same buffer, editor-sized. Web-local view state — the
-    // shared core never needs to know the box got taller.
-    const [expanded, setExpanded] = React.useState(false);
 
     // Auto-grow: one line idle, sized to the RENDERED content (scrollHeight
     // sees soft wrap; counting "\n" does not). CSS max-height provides the
-    // cap, after which the textarea scrolls internally. In expand mode the
-    // height belongs to CSS entirely.
+    // cap, after which the textarea scrolls internally. The measurement
+    // zeroes the height first — NOT "auto": iOS Safari keeps a textarea's
+    // scrollHeight at its high-water mark under "auto", so a box that grew
+    // never shrank back after the text was sent or deleted.
     const growInput = React.useCallback(() => {
         const node = inputRef.current;
         if (!node) return;
-        if (expanded) {
-            node.style.height = "";
-            return;
-        }
-        node.style.height = "auto";
+        node.style.height = "0px";
         node.style.height = `${node.scrollHeight + 2}px`;
-    }, [expanded]);
+    }, []);
     React.useLayoutEffect(() => {
         growInput();
     }, [growInput, promptState.value]);
@@ -7931,9 +7935,6 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
     }, [active, mobile, promptState.cursor, promptState.value, promptState.focused, promptState.modalOpen]);
 
     const sendPrompt = React.useCallback(() => {
-        // Sending collapses expand mode — the tall editor was for composing
-        // THIS message; the reply deserves the transcript space back.
-        setExpanded(false);
         controller.handleCommand(UI_COMMANDS.SEND_PROMPT)
             .catch(() => {})
             .finally(() => {
@@ -7973,7 +7974,7 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
     const selectedReadOnly = selectedQueued || selectedCancelling;
 
     return React.createElement("div", {
-        className: `ps-prompt-shell${mobile ? " is-mobile" : ""}${dragOver ? " is-drag-over" : ""}${expanded ? " is-expanded" : ""}`,
+        className: `ps-prompt-shell${mobile ? " is-mobile" : ""}${dragOver ? " is-drag-over" : ""}`,
         ...(canAttachImages ? {
             onDragOver: (event) => {
                 if (event.dataTransfer?.types?.includes?.("Files")) {
@@ -8082,11 +8083,6 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
                 // onSelect mirrors every move into the shared model. (The old
                 // hijack routed through the TUI's logical-line cursor and made
                 // Down jump whole paragraphs inside wrapped text.)
-                if (event.key === "Escape" && expanded && !promptState.editingPending) {
-                    event.preventDefault();
-                    setExpanded(false);
-                    return;
-                }
                 if (event.key === "Escape" && promptState.editingPending) {
                     event.preventDefault();
                     if (selectedReadOnly) {
@@ -8106,15 +8102,6 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
             // pointerdown preventDefault on every action keeps focus in the
             // textarea — on a phone, tapping Send must not collapse the
             // keyboard between messages.
-            React.createElement("button", {
-                type: "button",
-                className: `ps-mini-button ps-expand-button${expanded ? " is-active" : ""}`,
-                title: expanded ? "Collapse the editor (Esc)" : "Expand into a larger editor",
-                "aria-label": expanded ? "Collapse the editor" : "Expand the editor",
-                "aria-pressed": expanded,
-                onPointerDown: (event) => event.preventDefault(),
-                onClick: () => setExpanded((current) => !current),
-            }, expanded ? "⤡" : "⤢"),
             canAttachImages
                 ? React.createElement(React.Fragment, null,
                     React.createElement("input", {

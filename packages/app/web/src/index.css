@@ -2736,22 +2736,6 @@ body.is-resizing-pane-y iframe {
   max-height: calc(var(--ps-app-height, 100vh) * 0.32);
 }
 
-/* Expand mode: the same buffer, editor-sized. Height belongs to CSS here —
- * the auto-grow effect clears its inline height while expanded. */
-.ps-prompt-shell.is-expanded .ps-prompt-input {
-  height: 55vh;
-  max-height: 55vh;
-}
-
-.ps-prompt-shell.is-mobile.is-expanded .ps-prompt-input {
-  height: calc(var(--ps-app-height, 100vh) * 0.6);
-  max-height: calc(var(--ps-app-height, 100vh) * 0.6);
-}
-
-.ps-expand-button.is-active {
-  color: var(--ps-modal-selected-border);
-  border-color: var(--ps-modal-selected-border);
-}
 
 .ps-prompt-input:focus,
 .ps-modal-input:focus {

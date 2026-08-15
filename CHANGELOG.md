@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.5.41 — 2026-08-14
+
+A mobile follow-up to the 0.5.40 portal work. The composer's expand mode is
+removed outright, the composer now shrinks back after its text is cleared on
+iOS, and the canvas share button reaches the phone header.
+
+### Fixed
+
+- **The composer expand mode is gone.** The ⤢ toggle grew the input to half
+  the viewport, hid the conversation behind it, and on mobile could not be
+  reverted reliably. The composer now only auto-grows with its content.
+
+- **The composer shrinks after send on iOS.** Height measurement resets the
+  textarea to zero height before reading `scrollHeight`; `height: auto` left
+  iOS Safari reporting the high-water mark, so the input stayed tall after the
+  text was sent or deleted.
+
+- **The canvas share button reaches the mobile header.** The phone-width
+  canvas header (the revision strip) now carries the same share-link button as
+  the desktop toolbar, so view-only canvas links can be minted from a phone.
+
+- **The cron-contracts test pin follows the base agent.** 0.5.40 bumped
+  `default.agent.md` to 1.16.0 without moving the version pin in
+  `system-agent-cron-contracts.test.js`, leaving the full suite red on a
+  stale assertion. The pin now matches.
+
 ## 0.5.40 — 2026-08-14
 
 PilotSwarm gains two high-volume data paths: bulk fact ingestion with

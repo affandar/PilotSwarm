@@ -62,7 +62,7 @@ describe("system agent cron contracts", () => {
         assertIncludes(defaultAgent, "Every finite delegation", "default agent should require material-change wakes for finite work");
         assertIncludes(defaultAgent, "ordinary final reply leaves it alive and idle", "default agent should distinguish a task reply from terminal lifecycle completion");
         assertIncludes(defaultAgent, "Do not create a `wait` or `cron` schedule whose only purpose is calling `check_agents`", "default agent should forbid timer-only child polling");
-        assertIncludes(defaultAgent, "version: 1.15.1", "default agent should version the finite delegation wake contract");
+        assertIncludes(defaultAgent, "version: 1.16.0", "default agent should version the finite delegation wake contract");
         assert(!defaultAgent.includes("Continue your poll/summarize loop"), "default agent should not require a polling loop for child coordination");
         assert(!defaultAgent.includes("Preferred**: Poll with `wait` + `check_agents`"), "default agent should not prefer wait-based child polling");
 

@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.40** — Bulk fact ingestion adds retryable per-record failures, the live canvas data plane keeps rapid dashboard ticks out of durable transcripts, and multi-writer canvas targeting and constrained share links ship with a more capable portal editor and full-screen layout.
+> **Latest release: v0.5.41** — Mobile portal fixes for the 0.5.40 canvas features: the composer expand mode is gone, the iOS composer shrinks back after send, and the canvas share button reaches the phone header.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 
