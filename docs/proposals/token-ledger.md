@@ -815,6 +815,9 @@ after E   would-have-blocked log is empty of surprises for a full week
 
 ## Related
 
+- `token-ledger-user-guide.md` — the same system described as capabilities, for
+  users and admins. Written early on purpose: a capability that reads badly
+  there is cheaper to change now than after it ships.
 - `runtime-metrics.md` — the OTel metrics pipeline (stage 6). Its token counters
   are labelled `agent_id` + `model` only; they need `provider` and the corrected
   identity from stage 1 before they mean anything.
