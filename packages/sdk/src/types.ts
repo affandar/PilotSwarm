@@ -195,6 +195,19 @@ export interface SerializableSessionConfig {
      * DNS-safe short name (e.g. "my-repo", "example-service").
      */
     repo?: string;
+    /**
+     * Non-default branch this session's agent lives on (git-hydration). When
+     * set, turn-0 pins the git-workspace base to THIS branch's tip instead of
+     * the repo's default branch (origin/HEAD). Accepts a bare branch name
+     * ("dev/alice/feature"), a remote-tracking ref ("origin/feature"), a
+     * fully-qualified ref ("refs/heads/feature"), or a raw commit SHA; the
+     * worker normalizes a bare name to the enlistment's `origin/<branch>`
+     * remote-tracking ref before resolving. Once turn 0 pins the base, the
+     * branch is frozen durably in the git-workspace pointer row, so later cold
+     * cross-pod resumes replay onto the same branch. Wins over the worker-wide
+     * `GIT_ENLISTMENT_REF`. Omit to use the repo's default branch.
+     */
+    gitRef?: string;
     /** Wait threshold in seconds. Waits shorter than this sleep in-process. */
     waitThreshold?: number;
     /** Internal: name of the bound agent definition whose prompt should be layered into this session. */

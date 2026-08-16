@@ -174,6 +174,7 @@ export class PilotSwarmClient {
                 tools: config.tools,
                 workingDirectory: config.workingDirectory,
                 repo: config.repo,
+                gitRef: config.gitRef,
                 hooks: config.hooks,
                 waitThreshold: config.waitThreshold ?? this.config.waitThreshold,
                 toolNames: config.toolNames,
@@ -253,6 +254,8 @@ export class PilotSwarmClient {
         initialPrompt?: string;
         /** Repo-affinity routing: target repo enlistment for this session. */
         repo?: string;
+        /** Non-default branch this session's agent lives on (git-hydration). */
+        gitRef?: string;
         owner?: SessionOwnerInfo | null;
         groupId?: string | null;
         visibility?: SessionVisibility | null;
@@ -273,6 +276,7 @@ export class PilotSwarmClient {
             contextTier: opts?.contextTier,
             toolNames: opts?.toolNames,
             repo: opts?.repo,
+            gitRef: opts?.gitRef,
             callerAuth: opts?.callerAuth ?? null,
             onUserInputRequest: opts?.onUserInputRequest,
             agentId: agentName,
@@ -622,6 +626,10 @@ export class PilotSwarmClient {
             // orchestration input so the worker's session-proxy stamps the
             // `repo:<name>` tag on each runTurn activity.
             repo: fullConfig?.repo,
+            // Per-session non-default branch (git-hydration): rides the durable
+            // orchestration input so the worker's beforeRunTurn hook pins the
+            // git-workspace base to this branch's tip at turn 0.
+            gitRef: fullConfig?.gitRef,
             waitThreshold: fullConfig?.waitThreshold ?? this.config.waitThreshold,
             boundAgentName: fullConfig?.boundAgentName,
             promptLayering: fullConfig?.promptLayering,

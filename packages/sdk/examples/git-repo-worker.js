@@ -182,10 +182,27 @@ if (gitCacheMirror) {
         env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
     }).trim();
 
-    // Resolve the ref every job resets to. Explicit override wins; otherwise the
-    // mirror's default branch (origin/HEAD), falling back to main/master.
-    const resolveTargetRef = () => {
-        if (process.env.GIT_ENLISTMENT_REF) return process.env.GIT_ENLISTMENT_REF;
+    // Normalize a caller-supplied ref to something the enlistment can resolve.
+    // The enlistment's `origin` remote is the node-local git-cache mirror, whose
+    // branches land as `origin/<branch>` remote-tracking refs. A bare branch
+    // name ("main", "dev/alice/x") won't rev-parse on its own, so map it onto
+    // its remote-tracking ref. Already-qualified refs (origin/*, refs/*) and raw
+    // SHAs pass through untouched.
+    const normalizeRef = (ref) => {
+        const r = String(ref).trim();
+        if (!r) return r;
+        if (/^(origin\/|refs\/)/.test(r)) return r;
+        if (/^[0-9a-f]{7,40}$/i.test(r)) return r;
+        return `origin/${r}`;
+    };
+
+    // Resolve the ref a job resets to. A per-session branch (config.gitRef) wins,
+    // then the worker-wide GIT_ENLISTMENT_REF override, then the mirror's default
+    // branch (origin/HEAD), falling back to main/master.
+    const resolveTargetRef = (sessionGitRef) => {
+        const explicit = (sessionGitRef && String(sessionGitRef).trim())
+            || (process.env.GIT_ENLISTMENT_REF && process.env.GIT_ENLISTMENT_REF.trim());
+        if (explicit) return normalizeRef(explicit);
         try {
             // e.g. "origin/main" -> the tracking ref we reset onto.
             return runGit(enlistmentDir, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
@@ -264,8 +281,8 @@ if (gitCacheMirror) {
         return run;
     };
 
-    const reconcileEnlistment = (trace) => withEnlistmentLock(() => {
-        const ref = resolveTargetRef();
+    const reconcileEnlistment = (trace, sessionGitRef) => withEnlistmentLock(() => {
+        const ref = resolveTargetRef(sessionGitRef);
         const log = (m) => { console.log(m); if (trace) trace(m); };
         log(`[git-repo-worker] reconciling ${enlistmentDir} -> ${ref} (worker UNAVAILABLE)`);
         const t0 = Date.now();
@@ -337,7 +354,8 @@ if (gitCacheMirror) {
     // hard cross-pod session move. When that IO is absent (legacy / non-CMS
     // deployments) we fall back to the moving-ref reconcile: sync the enlistment
     // to the target ref and discard the working tree.
-    beforeRunTurn = async ({ trace, gitStateIO, gitBlobs }) => {
+    beforeRunTurn = async ({ trace, gitStateIO, gitBlobs, config }) => {
+        const sessionGitRef = config?.gitRef;
         if (gitStateIO && gitBlobs) {
             await withEnlistmentLock(async () => {
                 const log = (m) => { console.log(m); if (trace) trace(m); };
@@ -345,14 +363,14 @@ if (gitCacheMirror) {
                     enlistmentDir,
                     blobs: gitBlobs,
                     state: gitStateIO,
-                    targetRef: resolveTargetRef(),
+                    targetRef: resolveTargetRef(sessionGitRef),
                     trace,
                 });
-                log(`[git-repo-worker] hydrated (${res.mode}) base=${res.baseSha.slice(0, 12)} head=${res.headSha.slice(0, 12)} epoch=${res.epoch}`);
+                log(`[git-repo-worker] hydrated (${res.mode}) base=${res.baseSha.slice(0, 12)} head=${res.headSha.slice(0, 12)} epoch=${res.epoch} ref=${resolveTargetRef(sessionGitRef)}`);
             });
             return;
         }
-        await reconcileEnlistment(trace);
+        await reconcileEnlistment(trace, sessionGitRef);
     };
 
     // Post-turn dehydrate: capture unpushed commits (bundle) + tracked/untracked

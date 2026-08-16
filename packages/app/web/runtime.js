@@ -70,6 +70,34 @@ function validateRepoParam(raw, serviceableRepos) {
     return repo;
 }
 
+// A git ref (branch/tag/commit-ish) permitted for a session's target
+// enlistment. Unlike `repo` (a routing tag validated against the serviceable
+// allowlist), `gitRef` is a free-form ref string consumed by the worker at
+// turn-0 pin time. We keep it to a conservative, injection-safe charset so a
+// malformed value can never smuggle git option flags or path traversal into
+// the worker's `git rev-parse`/`checkout`.
+const GIT_REF_RE = /^[A-Za-z0-9][A-Za-z0-9._\/-]{0,199}$/;
+
+/**
+ * Validate the optional `gitRef` create-param — the non-default branch/tag/SHA
+ * a session should pin its git enlistment to. Returns the trimmed ref (or
+ * undefined when unset). Throws INVALID_REQUEST for a malformed ref so a bad
+ * value never reaches the worker. Does NOT resolve the ref (the worker
+ * normalizes bare branch names to `origin/<ref>` and rev-parses at pin time).
+ */
+function validateGitRefParam(raw) {
+    if (raw == null || raw === "") return undefined;
+    const ref = String(raw).trim();
+    if (ref === "") return undefined;
+    if (ref.includes("..") || !GIT_REF_RE.test(ref)) {
+        throw Object.assign(
+            new Error("gitRef must be a valid branch/tag/commit ref ([A-Za-z0-9._/-], no '..', <=200 chars)"),
+            { code: "INVALID_REQUEST" },
+        );
+    }
+    return ref;
+}
+
 /**
  * Validate/normalize the optional `callerAuth` create param: delegated MCP
  * credentials `{ audienceTokens: { <aud>: <token>, … }, allowedServers?, ttlSeconds? }`.
@@ -933,6 +961,7 @@ export class PortalRuntime {
             case "createSession": {
                 await this._assertPlacementGroupOwned(safeParams.groupId, authContext, { isAdmin });
                 const repo = validateRepoParam(safeParams.repo, await this._serviceableRepos());
+                const gitRef = validateGitRefParam(safeParams.gitRef);
                 const callerAuth = validateCallerAuthParam(safeParams.callerAuth);
                 const created = await this.transport.createSession({
                     model: safeParams.model,
@@ -942,6 +971,7 @@ export class PortalRuntime {
                     owner,
                     visibility: normalizeVisibility(safeParams.visibility, this.authz.defaultVisibility),
                     ...(repo ? { repo } : {}),
+                    ...(gitRef ? { gitRef } : {}),
                     ...(callerAuth ? { callerAuth } : {}),
                 });
                 return this._ensureCreatedPlacement(created, safeParams.groupId, authContext, isAdmin);
@@ -949,6 +979,7 @@ export class PortalRuntime {
             case "createSessionForAgent": {
                 await this._assertPlacementGroupOwned(safeParams.groupId, authContext, { isAdmin });
                 const repo = validateRepoParam(safeParams.repo, await this._serviceableRepos());
+                const gitRef = validateGitRefParam(safeParams.gitRef);
                 const callerAuth = validateCallerAuthParam(safeParams.callerAuth);
                 const created = await this.transport.createSessionForAgent(safeParams.agentName, {
                     model: safeParams.model,
@@ -963,6 +994,7 @@ export class PortalRuntime {
                     isAdmin,
                     visibility: normalizeVisibility(safeParams.visibility, this.authz.defaultVisibility),
                     ...(repo ? { repo } : {}),
+                    ...(gitRef ? { gitRef } : {}),
                     ...(callerAuth ? { callerAuth } : {}),
                 });
                 return this._ensureCreatedPlacement(created, safeParams.groupId, authContext, isAdmin);
