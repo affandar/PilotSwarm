@@ -502,6 +502,44 @@ by the existing epoch cleanup. They must be explicitly deleted in the session
 the keys are stable overwrite-in-place (no epoch fan-out), deletion is a fixed
 three-key removal per session.
 
+### 8.5.9 Non-default branch selection (`gitRef`)
+
+By default a session pins its turn-0 base to the mirror's default branch tip
+(`origin/HEAD`). A session may instead target **any branch, tag, or commit** of
+the repo by supplying an optional **`gitRef`** at create time. This is the only
+knob that changes *which commit* turn-0 pins — everything downstream (§8.5.2)
+is unchanged: once pinned, the base never moves.
+
+**End-to-end path.** `gitRef` rides the create request the same way `repo` does:
+
+```
+SubmitRequest(git_ref=…)                       # Python SDK
+  → POST /sessions[/for-agent]  body.gitRef    # protocol.js declares it
+  → runtime.js  validateGitRefParam(gitRef)     # trim, reject "..", GIT_REF_RE
+  → NodeSdkTransport.createSession({…gitRef})   # forwarded, not dropped
+  → client.ts  fullConfig.gitRef → durable input config.gitRef
+  → git-repo-worker.js  beforeRunTurn: config.gitRef
+  → resolveTargetRef(gitRef) → hydrateGitWorkspace({ targetRef })
+  → turn-0 pin: rev-parse(targetRef) → git_base_sha
+```
+
+- **Validation** (`runtime.js validateGitRefParam`): trims, rejects `..`
+  (path-traversal / ref-spec abuse), and enforces
+  `GIT_REF_RE = /^[A-Za-z0-9][A-Za-z0-9._\/-]{0,199}$/`. Unlike `repo`, `gitRef`
+  is **free-form** (no allowlist) — any branch/tag/sha the mirror can resolve.
+- **Ref normalization** (worker `normalizeRef`): `origin/*` and `refs/*` pass
+  through as-is; a raw `[0-9a-f]{7,40}` SHA passes through; a **bare** name
+  (`my-branch`) is qualified to `origin/my-branch` (the enlistment origin is the
+  node-local git-cache mirror, so the branch must exist in the mirror).
+- **Turn-0 only.** `gitRef` is consumed exactly once, at the base pin. Later
+  turns reset to the stored `git_base_sha` and ignore `gitRef` entirely — a
+  session cannot silently drift onto a moving branch tip. To move the base, use
+  the explicit-advance escape hatch (§8.5.6).
+- **Brand-new branch caveat.** The ref must be present in the node-local mirror
+  at pin time. A branch created after the mirror's last refresh (per-repo
+  refresh interval, §5) resolves only after the claim-time `fetch` picks it up —
+  same failure mode as §12 "Ref not in the warm base."
+
 ---
 
 ## 9. Cloning as the session creator (MVP: PAT)

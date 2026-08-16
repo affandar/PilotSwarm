@@ -289,7 +289,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Create a session. Owner is the authenticated principal; visibility defaults to the deployment default. Optional repo pins the session to a git-hydration repo enlistment (routes turns only to matching git-repo-workers).
+     * Create a session. Owner is the authenticated principal; visibility defaults to the deployment default. Optional repo pins the session to a git-hydration repo enlistment (routes turns only to matching git-repo-workers). Optional gitRef pins the session's git enlistment to a non-default branch/tag/commit (bare branch names are resolved against origin; defaults to origin/HEAD). Optional callerAuth ({ audienceTokens: { <aud>: <token> }, allowedServers?, ttlSeconds? }) supplies delegated per-audience bearers presented to repo-declared remote MCP servers as the caller.
      * @remarks `POST /sessions` — access: `session:create`
      */
     createSession(params: {
@@ -299,10 +299,12 @@ export interface ManagementOps {
         groupId?: any;
         visibility?: any;
         repo?: any;
+        gitRef?: any;
+        callerAuth?: any;
     }): Promise<any>;
 
     /**
-     * Create a session bound to a named agent. Optional repo pins the session to a git-hydration repo enlistment.
+     * Create a session bound to a named agent. Optional repo pins the session to a git-hydration repo enlistment. Optional gitRef pins the session's git enlistment to a non-default branch/tag/commit. Optional callerAuth ({ audienceTokens }) supplies delegated per-audience bearers for repo-declared remote MCP servers.
      * @remarks `POST /sessions/for-agent` — access: `session:create`
      */
     createSessionForAgent(params: {
@@ -317,6 +319,8 @@ export interface ManagementOps {
         groupId?: any;
         visibility?: any;
         repo?: any;
+        gitRef?: any;
+        callerAuth?: any;
     }): Promise<any>;
 
     /**

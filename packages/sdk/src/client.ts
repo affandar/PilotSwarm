@@ -220,18 +220,10 @@ export class PilotSwarmClient {
         };
         if (config || resolved) {
             const fullConfig: ManagedSessionConfig = {
-                model: resolvedConfig.model,
-                reasoningEffort: resolvedConfig.reasoningEffort,
-                contextTier: resolvedConfig.contextTier,
-                systemMessage: resolvedConfig.systemMessage,
-                boundAgentName: resolvedConfig.boundAgentName,
-                promptLayering: resolvedConfig.promptLayering,
-                childContract: resolvedConfig.childContract,
-                tools: resolvedConfig.tools,
-                workingDirectory: resolvedConfig.workingDirectory,
                 // Repo-affinity (git-hydration) rides the raw input: the
                 // upstream `resolvedConfig` projection does not carry `repo`.
                 repo: config?.repo,
+                gitRef: config?.gitRef,
                 hooks: resolvedConfig.hooks,
                 waitThreshold: resolvedConfig.waitThreshold ?? this.config.waitThreshold,
                 toolNames: resolvedConfig.toolNames,
@@ -327,6 +319,8 @@ export class PilotSwarmClient {
         initialPrompt?: string;
         /** Repo-affinity routing: target repo enlistment for this session. */
         repo?: string;
+        /** Non-default branch this session's agent lives on (git-hydration). */
+        gitRef?: string;
         owner?: SessionOwnerInfo | null;
         groupId?: string | null;
         visibility?: SessionVisibility | null;
@@ -347,6 +341,7 @@ export class PilotSwarmClient {
             contextTier: opts?.contextTier,
             toolNames: opts?.toolNames,
             repo: opts?.repo,
+            gitRef: opts?.gitRef,
             callerAuth: opts?.callerAuth ?? null,
             onUserInputRequest: opts?.onUserInputRequest,
             agentId: agentName,
@@ -770,6 +765,9 @@ export class PilotSwarmClient {
             // carry `repo`, so thread the in-memory value through explicitly.
             // A repo persisted on the row (stored) still survives the spread.
             if (fullConfig?.repo != null) merged.repo = fullConfig.repo;
+        // Per-session non-default git ref (git-hydration): same projection gap
+        // as repo; thread the in-memory value so the worker pins to it.
+        if (fullConfig?.gitRef != null) merged.gitRef = fullConfig.gitRef;
             serializableConfig = merged;
             // A pre-0072 row with no map entry still starts minimal; the
             // worker-side bound-agent backfill remains the safety net there.
