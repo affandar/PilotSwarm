@@ -621,6 +621,20 @@ function hasStoredDesktopPanes(settings) {
 }
 
 /**
+ * Whether this profile has ever expressed a "Mobile" (touch-scale) preference
+ * for the PHONE slot specifically.
+ *
+ * Only `touchScaleMobile` counts. A profile written before the per-device split
+ * carries a single `touchScale`, which IS the desktop slot; a phone inherits it
+ * as a fallback (see materializeProfileSettings) but that is not a choice ABOUT
+ * phones, so it must not suppress the phone default below.
+ */
+function hasStoredMobileTouchScale(settings) {
+    if (!settings || typeof settings !== "object") return false;
+    return hasOwn(settings, "touchScaleMobile");
+}
+
+/**
  * The widths the two optional columns OPEN at, in pixels. 2:1 — the canvas is
  * the thing being looked at; diagnostics is a readout beside it.
  *
@@ -5341,6 +5355,21 @@ function PlusGlyph() {
     React.createElement("line", { x1: "5", y1: "12", x2: "19", y2: "12" }));
 }
 
+// New session, but ASK first (model → effort → context tier → agent). It sits
+// next to the plain plus, so it cannot just be another plus: the plus stays the
+// verb and the small cog says "and let me choose". Deliberately a sparse cog —
+// a full-toothed one turns to mush beside a plus at 16px.
+function PlusCogGlyph() {
+    return React.createElement(Glyph, null,
+    React.createElement("line", { x1: "9", y1: "4", x2: "9", y2: "14" }),
+    React.createElement("line", { x1: "4", y1: "9", x2: "14", y2: "9" }),
+    React.createElement("circle", { cx: "17", cy: "17", r: "3" }),
+    React.createElement("line", { x1: "17", y1: "12.6", x2: "17", y2: "13.8" }),
+    React.createElement("line", { x1: "17", y1: "20.2", x2: "17", y2: "21.4" }),
+    React.createElement("line", { x1: "12.6", y1: "17", x2: "13.8", y2: "17" }),
+    React.createElement("line", { x1: "20.2", y1: "17", x2: "21.4", y2: "17" }));
+}
+
 // Theme picker. Deliberately a contrast disc rather than a sun/moon: the picker
 // offers DOOM, WinAMP, win95 and friends, not a light/dark binary.
 function ContrastGlyph() {
@@ -8452,6 +8481,11 @@ function Toolbar({ controller, mobile, canvasPaneOpen = false, onToggleCanvasPan
         setHeaderSlot(!mobile ? document.getElementById("ps-header-toolbar-slot") : null);
     }, [mobile]);
     const adminVisible = useControllerSelector(controller, (state) => Boolean(state.admin?.visible));
+    // Opt-in second new-session button. See the buttonDefs entry below.
+    const newSessionWithSettings = useControllerSelector(
+        controller,
+        (state) => state?.portalUi?.newSessionWithSettings === true,
+    );
     const canvasView = useControllerSelector(controller, selectCanvasView, shallowEqualObject);
     const diagnosticsOpen = useControllerSelector(controller, (s) => s?.ui?.diagnosticsOpen === true);
     const canvasMaximized = useControllerSelector(controller, (s) => s?.ui?.canvasMaximized === true);
@@ -8463,16 +8497,45 @@ function Toolbar({ controller, mobile, canvasPaneOpen = false, onToggleCanvasPan
     // Icon-first toolbar: the glyph is the affordance, the label rides a
     // tooltip (desktop hover via title; mobile long-press via IconButton).
     const buttonDefs = [
-        // ONE new-session button, and it opens the chooser. The plain "＋"
-        // (default model, generic agent) and "＋⚙" (choose model, then agent)
-        // were two buttons for one intent, and the pair cost a slot the phone
-        // toolbar could not spare.
+        // The "＋" means different things either side of the split, and BOTH
+        // halves have to be gated or this stops being opt-in.
+        //
+        //   split OFF (default)  one button, and it opens the chooser — exactly
+        //                        what every deployment had before the split
+        //                        existed. It is the only way in, so it cannot
+        //                        become "start immediately".
+        //   split ON             "＋⚙" beside it owns the chooser, so this one
+        //                        starts a session on the deployment's defaults:
+        //                        default model, its default reasoning effort
+        //                        and context tier, generic agent.
+        //
+        // Gating only the second button would silently change the first one's
+        // behaviour everywhere — and on a phone, where the Shift+M shortcut
+        // does not exist, it would leave no route to the chooser at all.
         {
             key: "new",
             icon: React.createElement(PlusGlyph),
-            label: "New session — choose model and agent",
-            onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_MODEL_PICKER).catch(() => {}),
+            label: newSessionWithSettings ? "New session" : "New session — choose model and agent",
+            onClick: () => controller.handleCommand(
+                newSessionWithSettings ? UI_COMMANDS.NEW_SESSION : UI_COMMANDS.OPEN_MODEL_PICKER,
+            ).catch(() => {}),
         },
+        // "＋⚙" is the old single button's behaviour, moved here: pick the
+        // model, then effort, then context tier, then the agent.
+        //
+        // Off unless a deployment asks for it. These were once two buttons and
+        // were merged into one because the pair cost a toolbar slot; splitting
+        // them again is a choice a deployment makes about its own audience, so
+        // it rides on portal.ui.newSessionWithSettings rather than coming back
+        // for everyone. Shown on BOTH device classes when enabled.
+        ...(newSessionWithSettings
+            ? [{
+                key: "new-with-settings",
+                icon: React.createElement(PlusCogGlyph),
+                label: "New session — choose model and agent",
+                onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_MODEL_PICKER).catch(() => {}),
+            }]
+            : []),
         {
             key: "filter",
             icon: React.createElement(FunnelGlyph),
@@ -10963,7 +11026,7 @@ function AdminGhcpSection({ view, draftRef, onBeginEdit, onCancelEdit, onClear, 
                     }, view.loading ? "Refreshing..." : "Refresh")));
 }
 
-export function createWebPilotSwarmController({ transport, mode = "remote", branding = null, docs = null } = {}) {
+export function createWebPilotSwarmController({ transport, mode = "remote", branding = null, docs = null, portalUi = null } = {}) {
     clearBrowserPreferenceCache();
     // Rich prose is the right default on a desktop transcript; on a phone the
     // terminal view fits far more per screen and does not reflow wide content.
@@ -10976,6 +11039,7 @@ export function createWebPilotSwarmController({ transport, mode = "remote", bran
         mode,
         branding,
         docs,
+        portalUi,
     }));
     return new PilotSwarmUiController({ store, transport });
 }
@@ -11260,11 +11324,25 @@ export function PilotSwarmWebApp({ controller }) {
                 const wantsDefaultCanvas = !hasStoredDesktopPanes(remoteNormalized)
                     && !isNarrowViewport()
                     && window.innerWidth >= PORTAL_CANVAS_DEFAULT_MIN_VIEWPORT_PX;
+                // First visit on a phone: turn the "Mobile" zoom ON. The portal's
+                // default type and hit targets are sized for a pointer, and in a
+                // 390px column they are too small to use comfortably — so the
+                // phone should look right before anyone finds the theme picker.
+                //
+                // Same rule as the canvas above: only when NOTHING is stored for
+                // the phone slot. Unchecking it stores `touchScaleMobile: false`,
+                // which is a choice and wins from then on.
+                const wantsDefaultMobileZoom = isNarrowViewport()
+                    && !hasStoredMobileTouchScale(remoteNormalized);
                 const settings = materializeProfileSettings(
                     profile?.profileSettings,
                     defaultProfileSettingsRef.current,
                 );
                 if (wantsDefaultCanvas) settings.desktopPanes = { canvasOpen: true, diagnosticsOpen: false };
+                // `touchScale` is the in-state name for whichever slot this
+                // device owns; materializeProfileSettings has already mapped the
+                // phone's `touchScaleMobile` onto it.
+                if (wantsDefaultMobileZoom) settings.touchScale = true;
                 const settingsJson = JSON.stringify(settings);
                 const currentSettingsBeforeApply = profileSettingsFromViewState(
                     controller.getState(), otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current,

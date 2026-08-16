@@ -239,7 +239,7 @@ export function normalizeStoredActiveSessionId(value) {
     return id ? id : null;
 }
 
-export function createInitialState({ mode = "local", branding = null, docs = null, themeId = null, sessionOwnerFilter = null, layoutAdjustments = null, pinnedSessionIds = null, collapsedSessionIds = null, activeSessionId = null, sessionOrder = null, rightPaneMode = null, desktopPanes: storedDesktopPanes = null, canvasPrefs = null } = {}) {
+export function createInitialState({ mode = "local", branding = null, docs = null, portalUi = null, themeId = null, sessionOwnerFilter = null, layoutAdjustments = null, pinnedSessionIds = null, collapsedSessionIds = null, activeSessionId = null, sessionOrder = null, rightPaneMode = null, desktopPanes: storedDesktopPanes = null, canvasPrefs = null } = {}) {
     const desktopPanes = normalizeStoredDesktopPanes(
         storedDesktopPanes,
         normalizeStoredRightPaneMode(rightPaneMode),
@@ -259,6 +259,16 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
         docs: {
             agentPackageGuideUrl: docs?.agentPackageGuideUrl
                 || "https://github.com/affandar/PilotSwarm/blob/main/docs/building-agent-packages.md",
+        },
+        // Optional portal chrome a deployment can turn on for its own audience.
+        // Everything here is OFF by default, so a deployment that says nothing
+        // gets exactly the UI it got before the option existed.
+        portalUi: {
+            // Splits the toolbar's "＋" in two: plain "＋" starts a session on
+            // the defaults, "＋⚙" opens the model/agent chooser. Worth it where
+            // most sessions are the same shape and picking four things every
+            // time is friction; not worth the toolbar slot elsewhere.
+            newSessionWithSettings: portalUi?.newSessionWithSettings === true,
         },
         auth: {
             principal: null,

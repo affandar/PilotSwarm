@@ -638,7 +638,10 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
         // A layered deployment ships its own agent-authoring guide; the link
         // in the Add/Update package dialog follows it.
         docs: portal?.docs || null,
-    }), [portal?.branding?.splash, portal?.branding?.splashMobile, portal?.branding?.title, portal?.docs, transport]);
+        // Optional portal chrome this deployment has turned on (plugin.json →
+        // portal.ui). Everything in here is off unless asked for.
+        portalUi: portal?.ui || null,
+    }), [portal?.branding?.splash, portal?.branding?.splashMobile, portal?.branding?.title, portal?.docs, portal?.ui, transport]);
     const statusText = usePortalControllerStatusText(controller);
     const themeIcon = useThemeIcon(controller);
     // Dismissing hides the mobile status row until a *different* message

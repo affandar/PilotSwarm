@@ -259,6 +259,12 @@ export function resolvePortalConfigBundleFromPluginDirs(pluginDirs = []) {
                 ui: {
                     loadingMessage: firstNonEmptyString(portalUi.loadingMessage, portal.loadingMessage, defaults.ui.loadingMessage) || defaults.ui.loadingMessage,
                     loadingCopy: firstNonEmptyString(portalUi.loadingCopy, portal.loadingCopy, defaults.ui.loadingCopy) || defaults.ui.loadingCopy,
+                    // Second toolbar button: plain "＋" starts a session on the
+                    // defaults, "＋⚙" opens the model/agent chooser. Strictly
+                    // opt-in — `=== true` so a missing key, a string, or any
+                    // other truthy value cannot switch it on by accident.
+                    newSessionWithSettings: portalUi.newSessionWithSettings === true
+                        || portal.newSessionWithSettings === true,
                 },
                 docs: {
                     agentPackageGuideUrl: firstNonEmptyString(
