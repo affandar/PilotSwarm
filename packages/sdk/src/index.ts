@@ -205,6 +205,7 @@ export {
     resolveMcpServerAuth,
     discoverServerAudience,
     parseWwwAuthenticate,
+    buildWwwAuthenticate,
     appIdUriFromScope,
     normalizeAudience,
     decodeJwtAudiences,
@@ -215,6 +216,7 @@ export {
 } from "./mcp-auth-discovery.js";
 export type {
     WwwAuthenticate,
+    BearerChallenge,
     ProtectedResourceMetadata,
     DiscoveredAudience,
     HttpDeps,

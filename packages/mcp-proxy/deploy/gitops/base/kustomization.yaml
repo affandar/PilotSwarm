@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Base tree for the pilotswarm-mcp-proxy deployable. The `pilotswarm`
+# namespace is owned by the worker/portal bases; an overlay sets the
+# kustomize-level `namespace:` field (matching the worker overlay pattern)
+# and replaces `__IMAGE__` in deployment.yaml with the built image ref.
+#
+# Deliberately self-contained and NOT wired into deploy/services/*/deploy.json
+# yet — this is the proposal artifact for WI 5537695. Integrating it into the
+# bicep/image pipeline (a deploy.json with kind=app, image.dockerfile pointing
+# at packages/mcp-proxy/deploy/Dockerfile, and a gitops overlay) is a follow-up.
+
+resources:
+  - deployment.yaml
+  - service.yaml
+  - networkpolicy.yaml

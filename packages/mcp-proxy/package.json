@@ -1,0 +1,38 @@
+{
+    "name": "pilotswarm-mcp-proxy",
+    "version": "0.5.37",
+    "description": "Generic in-cluster HTTP MCP auth proxy (delegated / caller-credential only) with a pluggable upstream adapter. Ships a Kusto adapter.",
+    "type": "module",
+    "license": "MIT",
+    "private": true,
+    "engines": {
+        "node": ">=24"
+    },
+    "bin": {
+        "pilotswarm-mcp-proxy": "./dist/index.js"
+    },
+    "files": [
+        "dist/**/*",
+        "README.md"
+    ],
+    "scripts": {
+        "build": "tsc",
+        "dev": "tsc --watch",
+        "lint": "tsc --noEmit",
+        "clean": "rm -rf dist",
+        "start": "node dist/index.js",
+        "test": "node ../../node_modules/vitest/vitest.mjs run"
+    },
+    "dependencies": {
+        "@modelcontextprotocol/sdk": "^1.28.0",
+        "express": "^5.1.0",
+        "pilotswarm-sdk": "0.5.37",
+        "zod": "^4.0.0"
+    },
+    "devDependencies": {
+        "@types/express": "^5.0.0",
+        "@types/node": "^22.0.0",
+        "typescript": "^5.0.0",
+        "vitest": "^4.1.0"
+    }
+}
