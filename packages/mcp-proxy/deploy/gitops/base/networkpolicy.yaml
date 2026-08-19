@@ -1,0 +1,47 @@
+# NetworkPolicy (#3 — advisory hardening, safe to apply).
+#
+# The proxy is a bearer-forwarder reachable only in-cluster (ClusterIP). This
+# policy narrows its blast radius:
+#   - Ingress: only PilotSwarm worker pods may reach :8080.
+#   - Egress:  only DNS (53) + HTTPS (443, to reach Kusto) are allowed.
+#
+# Requires a NetworkPolicy-enforcing CNI (Azure CNI Overlay + Cilium, or
+# Calico). On a cluster whose CNI does NOT enforce NetworkPolicy this object is
+# inert (no-op) — it never *loosens* anything, so it is safe to include
+# unconditionally. Tighten the egress `to:` block to the Kusto cluster's egress
+# IPs once known for defense-in-depth.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: pilotswarm-mcp-proxy
+  labels:
+    app.kubernetes.io/name: pilotswarm
+    app.kubernetes.io/component: mcp-proxy
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: pilotswarm
+      app.kubernetes.io/component: mcp-proxy
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: pilotswarm
+              app.kubernetes.io/component: worker
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    # DNS
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # HTTPS to Kusto (and any other https upstream an adapter targets).
+    - ports:
+        - protocol: TCP
+          port: 443

@@ -73,6 +73,40 @@ export function parseWwwAuthenticate(headerValue: string): WwwAuthenticate {
     return out;
 }
 
+/** Inputs to {@link buildWwwAuthenticate} — the EMIT side of the RFC 6750
+ * challenge grammar this module also PARSES. Keeping emit + parse in one place
+ * guarantees an MCP server/proxy and the worker never drift on the header shape. */
+export interface BearerChallenge {
+    /** Non-standard `resource_id` (audience) advertised INLINE so a client can
+     * mint a token WITHOUT following an https PRM document. Prefer this (plus
+     * `scope`) for plain-HTTP in-cluster servers. */
+    resourceId?: string;
+    /** Full OAuth `scope` advertised inline, e.g. `https://kusto.kusto.windows.net/.default`. */
+    scope?: string;
+    /** RFC 9728 `resource_metadata` URL. OMIT for plain-HTTP servers — the
+     * worker refuses to fetch a non-`https` PRM (SSRF guard), so emitting one
+     * makes audience discovery return null and no token is injected. */
+    resourceMetadata?: string;
+    error?: string;
+    errorDescription?: string;
+}
+
+/**
+ * Build a `WWW-Authenticate: Bearer …` header value that {@link parseWwwAuthenticate}
+ * round-trips exactly. An MCP server/proxy emits its 401 challenge with this;
+ * the worker parses it with `parseWwwAuthenticate`. Both live in this module so
+ * the two sides are one source of truth (a round-trip test locks them together).
+ */
+export function buildWwwAuthenticate(c: BearerChallenge): string {
+    const parts: string[] = [];
+    if (c.resourceId) parts.push(`resource_id="${c.resourceId}"`);
+    if (c.scope) parts.push(`scope="${c.scope}"`);
+    if (c.resourceMetadata) parts.push(`resource_metadata="${c.resourceMetadata}"`);
+    if (c.error) parts.push(`error="${c.error}"`);
+    if (c.errorDescription) parts.push(`error_description="${c.errorDescription}"`);
+    return `Bearer ${parts.join(", ")}`;
+}
+
 // ─── Protected Resource Metadata (RFC 9728) ─────────────────────
 
 export interface ProtectedResourceMetadata {

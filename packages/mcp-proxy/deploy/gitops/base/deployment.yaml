@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pilotswarm-mcp-proxy
+  labels:
+    app.kubernetes.io/name: pilotswarm
+    app.kubernetes.io/component: mcp-proxy
+spec:
+  # Stateless bearer-forwarder — scale horizontally; 2 replicas for HA.
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pilotswarm
+      app.kubernetes.io/component: mcp-proxy
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pilotswarm
+        app.kubernetes.io/component: mcp-proxy
+        # NOTE: `azure.workload.identity/use` is intentionally ABSENT. This pod
+        # must have NO Azure identity of its own — it only forwards the caller's
+        # delegated bearer to Kusto. Adding a workload identity here would break
+        # the security model (the proxy could then call Kusto as itself).
+    spec:
+      # Default ServiceAccount (no federated identity). Do not bind a
+      # workload-identity-annotated SA to this Deployment.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mcp-proxy
+          image: __IMAGE__
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: KUSTO_DEFAULT_CLUSTER
+              value: "https://help.kusto.windows.net"
+            - name: KUSTO_DEFAULT_DATABASE
+              value: "Samples"
+            # Delegated-only: app/managed-identity tokens are rejected. Flip to
+            # "true" ONLY if a customer-supplied managed identity path is added.
+            - name: ALLOW_APP_TOKENS
+              value: "false"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+      restartPolicy: Always
