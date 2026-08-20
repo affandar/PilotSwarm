@@ -174,6 +174,23 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
       );
       log("info", `[${moduleName}] granting Storage Blob Data Contributor to ${localPrincipal.label} via Bicep`);
     }
+    // Per-stamp governance overrides for subscriptions that restrict certain
+    // base-infra resources. Passed as `--parameters` (not via the fail-closed
+    // params template) so they stay zero-impact on stamps that don't set them:
+    //   * POSTGRES_LOCATION       -> provision Postgres in a different region
+    //     when the sub is region-restricted from PG Flexible Server (main.bicep
+    //     `postgresLocation`).
+    //   * APPGW_EXISTS_OVERRIDE   -> skip the `check-appgw-exists` deployment
+    //     script when a subscription security policy denies its shared-key
+    //     storage account (main.bicep `appGwExistsOverride`).
+    if (env.POSTGRES_LOCATION) {
+      baseArgs.push("--parameters", `postgresLocation=${env.POSTGRES_LOCATION}`);
+      log("info", `[${moduleName}] postgresLocation override = ${env.POSTGRES_LOCATION}`);
+    }
+    if (env.APPGW_EXISTS_OVERRIDE) {
+      baseArgs.push("--parameters", `appGwExistsOverride=${env.APPGW_EXISTS_OVERRIDE}`);
+      log("info", `[${moduleName}] appGwExistsOverride = ${env.APPGW_EXISTS_OVERRIDE} (skipping check-appgw-exists script)`);
+    }
     // Foundry deployments: when FOUNDRY_ENABLED=true the orchestrator
     // threads the per-stamp deployments JSON file in via
     // `--parameters foundryDeployments=@<file>`. The file lives under

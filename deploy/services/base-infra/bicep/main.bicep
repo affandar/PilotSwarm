@@ -65,6 +65,12 @@ param logAnalyticsRetentionDays int = 30
 ])
 param edgeMode string = 'afd'
 
+@description('Optional override for the Postgres Flexible Server location. Empty (default) provisions Postgres in the stamp `location`. Set to a different Azure region (e.g. `westus2`) when the subscription is governance-restricted from provisioning PostgreSQL Flexible Server in the stamp region — Postgres uses public network access + "allow Azure services" firewall (no VNet integration), so a cross-region control-plane DB works. Backward-compatible: empty = prior behavior.')
+param postgresLocation string = ''
+
+@description('Optional override for the AppGw existence probe. Empty (default) runs the `check-appgw-exists` deployment script to detect a prior AppGw (for AGIC config preservation). Set to `false`/`true` to skip that script and assert existence directly — required on subscriptions where a security policy denies the deployment-script storage account ("Local authentication methods are not allowed"). Backward-compatible: empty = prior behavior.')
+param appGwExistsOverride string = ''
+
 @description('Optional principal ID (AAD object ID) for the local-deploy identity to receive Storage Blob Data Contributor on the deployment storage account. Defaults to empty for the enterprise production path. Local `npm run deploy` populates this with the signed-in AAD user.')
 param localDeploymentPrincipalId string = ''
 
@@ -219,7 +225,7 @@ module ApproverRgReaderRbac './approver-rg-reader-rbac.bicep' = {
 // mode — there is no AppGw.
 // ==============================================================================
 
-module ApplicationGatewayExistsCheck './check-appgw-exists.bicep' = if (edgeMode == 'afd') {
+module ApplicationGatewayExistsCheck './check-appgw-exists.bicep' = if (edgeMode == 'afd' && empty(appGwExistsOverride)) {
   name: '${resourceNamePrefix}-check-appgw-${dTime}'
   params: {
     location: location
@@ -248,7 +254,7 @@ module AppGateway './application-gateway.bicep' = if (edgeMode == 'afd') {
     wafMode: wafMode
     availabilityZones: availabilityZones
     userAssignedIdentityId: Uami.outputs.appGwIdentityResourceId
-    appGwExists: ApplicationGatewayExistsCheck!.outputs.exists
+    appGwExists: empty(appGwExistsOverride) ? ApplicationGatewayExistsCheck!.outputs.exists : (toLower(appGwExistsOverride) == 'true')
     logAnalyticsWorkspaceResourceId: LogAnalytics.outputs.workspaceId
     appgwWafCustomRules: appgwWafCustomRules
     vpnGatewayEnabled: vpnGatewayEnabled
@@ -461,7 +467,7 @@ module Storage './storage.bicep' = {
 module Postgres './postgres.bicep' = {
   name: '${resourceNamePrefix}-pg-${dTime}'
   params: {
-    location: location
+    location: empty(postgresLocation) ? location : toLower(postgresLocation)
     serverName: postgresServerName
     aadAdminPrincipalId: Uami.outputs.csiIdentityPrincipalId
     aadAdminPrincipalName: Uami.outputs.csiIdentityName
