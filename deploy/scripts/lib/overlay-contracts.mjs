@@ -83,6 +83,9 @@ const SHARED_COMPOSED_ENV_KEYS = Object.freeze([
   "PILOTSWARM_CMS_FACTS_DATABASE_URL",
   "PILOTSWARM_DB_AAD_USER",
   "DATABASE_URL",
+  // Composed from KV_NAME by compose-env.mjs. The vault the portal writes
+  // delegated caller credentials into (and workers read from).
+  "CALLER_AUTH_KEYVAULT_NAME",
 ]);
 
 // Per-overlay contracts.
