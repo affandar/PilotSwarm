@@ -194,6 +194,41 @@ var platformSeedRules = [
       }
     ]
   }
+  // Session-submit API (POST /api/v1/sessions). Same false-positive class as
+  // /messages: the body is the session envelope whose `payload` string wraps
+  // freeform agent prompt/systemPrompt text (natural language + code + KQL/SQL +
+  // backtick-wrapped tool and cluster ids), which OWASP scores as
+  // SQLi/RCE. RequestArgNames/RequestBodyJsonArgNames exclusions do NOT reliably
+  // suppress the inbound-anomaly-score block (verified on the Front Door DRS 2.1
+  // edge), so both edges use the same path-scoped Allow that already works for
+  // /messages — both must agree or the block just moves from AFD to AppGw.
+  // HACK/TODO/REVISIT-ON-OBO: all AllowMcpMessagesPath caveats above apply
+  // verbatim — this disables managed-rule inspection for the whole
+  // /api/v1/sessions path for every caller; acceptable only because the endpoint
+  // is behind Entra auth and the block is a pure false positive. Under OBO this
+  // path MUST regain real body inspection; do not ship OBO with this Allow.
+  {
+    name: 'AllowSessionSubmitPath'
+    priority: 96
+    ruleType: 'MatchRule'
+    action: 'Allow'
+    state: 'Enabled'
+    matchConditions: [
+      {
+        matchVariables: [
+          {
+            variableName: 'RequestUri'
+          }
+        ]
+        operator: 'Contains'
+        negationConditon: false
+        matchValues: [
+          '/api/v1/sessions'
+        ]
+        transforms: []
+      }
+    ]
+  }
 ]
 var mergedCustomRules = concat(platformSeedRules, autoSeedRules, appgwWafCustomRules)
 
