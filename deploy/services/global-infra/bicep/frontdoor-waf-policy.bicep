@@ -24,7 +24,7 @@ param location string = 'global'
 @description('Operator-supplied custom WAF rules merged into properties.customRules.rules AFTER the always-applied platformCustomRules below. Defaults to []. Populate via --parameters customRules=@<file.json> (e.g. corpnet allow-list rules) without checking values into source. Operator rules must use priority >= 100 — priorities 93-99 are reserved for platform-invariant rules (see platformCustomRules).')
 param customRules array = []
 
-@description('Managed rule sets applied to every request. Defaults to Microsoft DefaultRuleSet 2.1 + BotManager 1.1, matching the reference deployment. The DefaultRuleSet exclusions cover request attributes that carry opaque structured payloads (bearer JWTs, MSAL state cookies, portal UI-state cookies) whose base64 / JSON content routinely matches OWASP SQLi/XSS rules and produces false-positive blocks. Token validation (issuer / audience / signature) happens at the portal via JWKS — there is no security benefit to scanning these.')
+@description('Managed rule sets applied to every request. Defaults to Microsoft DefaultRuleSet 2.1 + BotManager 1.1, matching the reference deployment. The DefaultRuleSet exclusions cover request attributes that carry opaque structured payloads (bearer JWTs, MSAL state cookies, portal UI-state cookies) whose base64 / JSON content routinely matches OWASP SQLi/XSS rules and produces false-positive blocks. Token validation (issuer / audience / signature) happens at the portal via JWKS — there is no security benefit to scanning these. NOTE: freeform prompt bodies on the MCP + session-submit APIs are a separate false-positive class handled by the path-scoped Allow custom rules below, NOT by managed-rule exclusions: RequestBodyJsonArgNames exclusions were tried against DRS 2.1 and empirically do NOT suppress the inbound-anomaly-score block (949110) even when the matched arg name equals the exclusion selector.')
 param managedRuleSets array = [
   {
     ruleSetType: 'Microsoft_DefaultRuleSet'
@@ -121,6 +121,40 @@ var platformCustomRules = [
         negateCondition: false
         matchValue: [
           '/messages'
+        ]
+        transforms: []
+      }
+    ]
+  }
+  // Session-submit API (POST /api/v1/sessions). Same false-positive class as
+  // /messages: the request body is the session envelope whose `payload` string
+  // wraps freeform agent prompt/systemPrompt text (natural language + code +
+  // KQL/SQL + backtick-wrapped tool and cluster ids). DRS 2.1 scores
+  // this as SQLi/RCE and the inbound-anomaly-score rule (949110) blocks it.
+  // RequestBodyJsonArgNames exclusions were tried and DO NOT suppress the score
+  // on Front Door DRS 2.1 (verified: rules still fire under the excluded arg
+  // names), so we use the same path-scoped Allow that already works for
+  // /messages. HACK/TODO/REVISIT-ON-OBO: all caveats on AllowMcpMessagesPath
+  // above apply verbatim — this disables managed-rule inspection for the whole
+  // /api/v1/sessions path for every caller; it is acceptable only because the
+  // endpoint is behind Entra auth and the block is a pure false positive. Under
+  // On-Behalf-Of auth this path MUST regain real body inspection (re-scope to
+  // per-identity / rule-ID exclusion); do not ship OBO with this Allow in place.
+  {
+    name: 'AllowSessionSubmitPath'
+    priority: 96
+    enabledState: 'Enabled'
+    ruleType: 'MatchRule'
+    rateLimitDurationInMinutes: 0
+    rateLimitThreshold: 0
+    action: 'Allow'
+    matchConditions: [
+      {
+        matchVariable: 'RequestUri'
+        operator: 'Contains'
+        negateCondition: false
+        matchValue: [
+          '/api/v1/sessions'
         ]
         transforms: []
       }
