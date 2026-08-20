@@ -66,4 +66,19 @@ export function composeDerivedEnv(env) {
       `postgresql://${encodeURIComponent(env.PILOTSWARM_DB_AAD_USER)}@${env.POSTGRES_FQDN}:5432/${pgDb}?sslmode=require`;
     log("info", `Composed PILOTSWARM_CMS_FACTS_DATABASE_URL (passwordless AAD URL) for CMS + facts.`);
   }
+
+  // CALLER_AUTH_KEYVAULT_NAME — the Key Vault the portal writes delegated
+  // caller credentials into (delegated-MCP upstream auth), and per-repo
+  // git-repo-worker daemonsets read them back from. Mirrors KV_NAME on
+  // every stamp today; kept as a distinct env key so a future split (a
+  // dedicated caller-credential vault) is a one-line change here rather
+  // than a schema change. Consumed by packages/sdk/src/client.ts
+  // (createSession) + session-manager.ts, and projected into the
+  // portal-env ConfigMap via the portal overlay .env. Without it the
+  // portal returns 500 "CALLER_AUTH_KEYVAULT_NAME is not configured" the
+  // moment a caller submits delegated credentials.
+  if (!env.CALLER_AUTH_KEYVAULT_NAME && env.KV_NAME) {
+    env.CALLER_AUTH_KEYVAULT_NAME = env.KV_NAME;
+    log("info", `Composed CALLER_AUTH_KEYVAULT_NAME for overlay from KV_NAME.`);
+  }
 }
