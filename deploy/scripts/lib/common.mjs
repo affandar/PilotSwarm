@@ -281,6 +281,11 @@ export function run(name, args, opts = {}) {
     env: env ?? process.env,
     stdio: capture ? ["ignore", "pipe", "pipe"] : "inherit",
     encoding: "utf8",
+    // Default maxBuffer is 1 MiB; captured `az` calls (e.g. Foundry deployment
+    // validation, `az provider show`) routinely emit multi-MiB JSON and overflow
+    // it, surfacing as `spawnSync cmd.exe ENOBUFS`. Raise to 64 MiB so large
+    // captured output never aborts a deploy step.
+    maxBuffer: 64 * 1024 * 1024,
     ...spawnOpts,
   });
   if (result.error) {
