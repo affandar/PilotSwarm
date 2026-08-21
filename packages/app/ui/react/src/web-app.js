@@ -13,7 +13,6 @@ import {
     computeLegacyLayout,
     createInitialState,
     createStore,
-    AUTO_HISTORY_EVENT_SOFT_CAP,
     formatCompactNumber,
     formatCronTimestampForClient,
     formatHumanDurationSeconds,
@@ -5695,14 +5694,17 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         [animatedDots, chrome.animateTitleRight, chrome.titleRight],
     );
     const [loadingOlder, setLoadingOlder] = React.useState(false);
-    // Scroll-up expands the transcript automatically until the soft cap, then
-    // refuses — and the portal had no control to ask for more, so a busy
-    // session's history became unreachable from the browser. Surface the
-    // control exactly when the automatic path has given up.
-    const showLoadOlder = Boolean(
-        viewState.activeHistory?.hasOlderEvents
-        && Number(viewState.activeHistory?.loadedEventCount || 0) >= AUTO_HISTORY_EVENT_SOFT_CAP,
-    );
+    // Cold-open loads only the newest DEFAULT_HISTORY_EVENT_LIMIT (300) raw
+    // events, so any session with more than that (a busy multi-turn run emits
+    // hundreds of tool/status events) opens showing only the tail — the
+    // original prompt and early turns sit below the window. Scroll-to-top
+    // auto-expands, but that path is invisible: nothing tells the reader more
+    // history exists, and gating this button on the soft cap meant it never
+    // appeared for ordinary sessions (loadedEventCount 300 « 3000). Surface it
+    // whenever there IS older history to reach, so the head is always one
+    // discoverable click away — clicking pages backward (and the button
+    // persists until the oldest event is loaded).
+    const showLoadOlder = Boolean(viewState.activeHistory?.hasOlderEvents);
     const lines = React.useMemo(
         () => selectChatLines(selectorState, viewState.contentWidth, { tableMode: "sentinel" }),
         [selectorState, viewState.contentWidth],

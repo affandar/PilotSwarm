@@ -1107,6 +1107,11 @@ export function buildHistoryModel(events = [], options = {}) {
         loadedEventLimit: requestedLimit,
         loadedEventCount: storedEvents.length,
         hasOlderEvents: storedEvents.length >= requestedLimit,
+        // Marks history produced by a bulk window load (server page), which is
+        // the only path that can compute hasOlderEvents authoritatively. The
+        // live path (appendEventToHistory) leaves this false, so callers can
+        // tell a live-only seed (head unreachable) apart from a real hydrate.
+        bulkHydrated: true,
     };
 }
 
@@ -1127,6 +1132,10 @@ export function appendEventToHistory(history, event) {
         loadedEventLimit,
         loadedEventCount: Math.max(Number(history?.loadedEventCount || 0), nextEvents.length),
         hasOlderEvents: Boolean(history?.hasOlderEvents),
+        // A live append never turns a live-only seed into a real hydrate:
+        // carry the prior flag so a history built solely from the event stream
+        // stays bulkHydrated:false until a bulk window load runs.
+        bulkHydrated: Boolean(history?.bulkHydrated),
         // clientMessageIds whose turn was user-stopped mid-flight. Carried
         // across appends so a prompt stays flagged even as the transcript
         // clamps/reloads.

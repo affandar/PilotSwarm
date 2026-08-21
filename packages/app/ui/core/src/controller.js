@@ -2659,8 +2659,13 @@ export class PilotSwarmUiController {
         // older history (and its cursor) survives switching sessions. Fall
         // back to a full window reload when the delta hits the server's
         // 1000-row page clamp (too far behind to append reliably).
+        //
+        // Only bulk-hydrated history may take this forward-only shortcut. A
+        // live-only seed (bulkHydrated:false) has an unreachable head and an
+        // unset hasOlderEvents, so it MUST fall through to the full window load
+        // below — which rebuilds via buildHistoryModel and reaches the start.
         const catchUpFrom = Number(existingHistory?.lastSeq) || 0;
-        if (force && catchUpFrom > 0 && Array.isArray(existingHistory?.events) && existingHistory.events.length > 0) {
+        if (force && existingHistory?.bulkHydrated && catchUpFrom > 0 && Array.isArray(existingHistory?.events) && existingHistory.events.length > 0) {
             const caughtUp = await this.catchUpSessionHistory(sessionId, existingHistory, catchUpFrom);
             if (caughtUp) return caughtUp;
         }
@@ -4462,7 +4467,13 @@ export class PilotSwarmUiController {
     async syncSessionEvents(sessionId) {
         if (!sessionId || typeof this.transport.getSessionEvents !== "function") return;
         const existing = this.getState().history.bySessionId.get(sessionId);
-        if (!existing?.events) {
+        // A history with no events, OR one seeded solely by the live event
+        // stream (bulkHydrated:false), has an unreachable head: paging forward
+        // from lastSeq would never backfill the original prompt and would leave
+        // hasOlderEvents unset (disabling both the "load older" button and the
+        // scroll-to-top auto-expand). Force a real bulk hydrate instead, which
+        // rebuilds via buildHistoryModel and sets hasOlderEvents correctly.
+        if (!existing?.events || !existing.bulkHydrated) {
             await this.ensureSessionHistory(sessionId, { force: true });
             return;
         }
@@ -8227,6 +8238,10 @@ export class PilotSwarmUiController {
                         loadedEventLimit: combinedEvents.length,
                         loadedEventCount: combinedEvents.length,
                         hasOlderEvents: olderEvents.length >= pageLimit && Number(olderEvents[0]?.seq || 0) > 1,
+                        // Backward paging only runs on already-hydrated history;
+                        // keep the marker so a re-entry catch-up doesn't mistake
+                        // the expanded window for a live-only seed and reload it.
+                        bulkHydrated: true,
                     };
                     if (!history.hasOlderEvents) break;
                 }
