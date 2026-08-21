@@ -725,26 +725,49 @@ export class NodeSdkTransport {
     /**
      * Enforce user-scope visibility at create time and admit package agents
      * into the client's live allowlist. Baked agents pass through untouched.
+     *
+     * `repo` (optional): when the create targets a repository, an unregistered
+     * agent name may be a REPO-DISCOVERED agent shipped in that repo's checkout
+     * as `.github/agents/<name>.agent.md` (which the portal has no checkout to
+     * see). In that case the name is ADMITTED and the hydrated repo worker
+     * resolves it against config discovery (or rejects it) — the worker binds
+     * persona + workspace-relative MCP via `sessionConfig.agent`. Without a repo
+     * there is no workspace to resolve against, so the 403 stands.
      */
-    async _authorizePackageAgentCreate(agentName, owner, isAdmin) {
+    async _authorizePackageAgentCreate(agentName, owner, isAdmin, { repo } = {}) {
         const normalized = normalizeAgentName(agentName);
         const baked = this.creatableAgents.find((agent) => normalizeAgentName(agent.name) === normalized);
         if (baked) return baked.name;
         const registry = await this._listRegistryCreatableAgents(owner, isAdmin);
         const match = registry.find((entry) => normalizeAgentName(entry.name) === normalized);
-        if (!match) {
-            // Either the agent doesn't exist or it is a user-scope package the
-            // caller can't see — same answer either way (no existence oracle).
-            const err = new Error(`agent "${agentName}" is not available to you`);
-            err.code = "FORBIDDEN";
-            throw err;
+        if (match) {
+            // Client holds this.allowedAgentNames BY REFERENCE (live getter) —
+            // pushing here makes the delegated create pass client validation.
+            if (this.allowedAgentNames.length > 0 && !this.allowedAgentNames.includes(match.name)) {
+                this.allowedAgentNames.push(match.name);
+            }
+            return match.name;
         }
-        // Client holds this.allowedAgentNames BY REFERENCE (live getter) —
-        // pushing here makes the delegated create pass client validation.
-        if (this.allowedAgentNames.length > 0 && !this.allowedAgentNames.includes(match.name)) {
-            this.allowedAgentNames.push(match.name);
+        if (repo) {
+            // Repo-affinity create for an agent the portal can't see: trust the
+            // hydrated worker to resolve `<repo>/.github/agents/<name>.agent.md`
+            // (or reject at bind time). Admit the RAW name so the CMS row and the
+            // worker resolver agree, and register it so client validation passes.
+            if (this.allowedAgentNames.length > 0 && !this.allowedAgentNames.includes(agentName)) {
+                this.allowedAgentNames.push(agentName);
+            }
+            const repoLabel = typeof repo === "string" ? repo : (repo?.url || repo?.name || JSON.stringify(repo));
+            console.log(
+                `[transport] admitting unregistered agent "${agentName}" for repo-affinity create ` +
+                `(repo=${repoLabel}); worker resolves against .github/agents`,
+            );
+            return agentName;
         }
-        return match.name;
+        // Either the agent doesn't exist or it is a user-scope package the
+        // caller can't see — same answer either way (no existence oracle).
+        const err = new Error(`agent "${agentName}" is not available to you`);
+        err.code = "FORBIDDEN";
+        throw err;
     }
 
     /**
@@ -1482,7 +1505,7 @@ export class NodeSdkTransport {
         // resolve the union, enforce user-scope ownership, then delegate the
         // CANONICAL catalog name (the client's allowlist and the CMS row use
         // exact names; only the worker resolver is fuzzy).
-        const canonicalName = await this._authorizePackageAgentCreate(agentName, owner ?? null, isAdmin ?? false);
+        const canonicalName = await this._authorizePackageAgentCreate(agentName, owner ?? null, isAdmin ?? false, { repo });
         const effectiveModel = await this.assertSessionModelCreatable({ model, owner });
         const session = await this.client.createSessionForAgent(canonicalName, {
             ...(effectiveModel ? { model: effectiveModel } : {}),

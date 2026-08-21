@@ -31,6 +31,7 @@ import { readSnapshotMarker, supportsVersionedSnapshots, writeSnapshotMarker } f
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { parse as parseYaml } from "yaml";
 
 const DEFAULT_SESSION_STATE_DIR = path.join(os.homedir(), ".copilot", "session-state");
 const DEHYDRATE_STORE_MAX_RETRIES = 1;
@@ -38,6 +39,20 @@ const DEHYDRATE_STORE_RETRY_BASE_DELAY_MS = 0;
 const SESSION_LOCK_BACKOFF_MS = [5_000, 10_000, 20_000] as const;
 const SESSION_LOCK_MAX_WAIT_MS = 120_000;
 export const SESSION_LOCK_ACQUIRE_TIMEOUT_CODE = "PILOTSWARM_SESSION_LOCK_ACQUIRE_TIMEOUT";
+
+/**
+ * A repo-shipped `.github/agents/<name>.agent.md` agent parsed into the shape
+ * the Copilot SDK expects for an injected `customAgents` entry. Mirrors the
+ * inline element type of `SerializableSessionConfig.customAgents`.
+ */
+interface RepoAgentDefinition {
+    name: string;
+    prompt: string;
+    description?: string;
+    tools?: string[] | null;
+    skills?: string[];
+    mcpServers?: Record<string, unknown>;
+}
 
 export class SessionLockAcquireTimeoutError extends Error {
     readonly code = SESSION_LOCK_ACQUIRE_TIMEOUT_CODE;
@@ -1397,6 +1412,68 @@ export class SessionManager {
             ...(Object.keys(effectiveMcpServers).length > 0 && { mcpServers: effectiveMcpServers }),
         };
 
+        // ── Repo-discovered agent binding (Impl 2: customAgents injection) ───
+        // A bound agent that is NOT a worker-plugin agent may be a repo agent
+        // shipped in the hydrated enlistment as `.github/agents/<name>.agent.md`.
+        // The Copilot runtime's config discovery
+        // (enableConfigDiscovery) loads `.mcp.json`, skills, and instructions —
+        // but it does NOT register `.github/agents/*.agent.md` as SELECTABLE
+        // custom agents. So handing that file's name straight to the CLI as the
+        // session's active agent (`sessionConfig.agent`) fails hard with
+        // "Custom agent '<name>' not found".
+        //
+        // The only working path is to PARSE the agent file ourselves and inject
+        // it as an explicit `customAgents` entry (persona body → prompt, plus its
+        // declared tools / mcp-servers / skills), then activate it by name. The
+        // runtime resolves `agent` against the injected customAgents, so the
+        // persona actually binds and the portal shows the real agent instead of
+        // "agent: --". Worker-plugin agents keep their own binding path
+        // (agentPromptLookup + agentMcpServers, applied above) and are skipped.
+        //
+        // GUARD: `sessionConfig.agent` is set ONLY after the customAgent is
+        // confirmed present in the array — never point `agent` at an unresolved
+        // name (that is exactly the 404 regression this replaces).
+        const repoAgentDef = this._resolveRepoAgentDefinition(
+            effectiveSerializableConfig.boundAgentName,
+            // The git-hydration worker chdir's into the hydrated enlistment and
+            // leaves sessionConfig.workingDirectory UNSET (the CLI then uses
+            // process.cwd()), so `.github/agents` lives at process.cwd() — mirror
+            // the diagnostics' effWorkingDir fallback chain exactly.
+            sessionConfig.workingDirectory ?? config.workingDirectory ?? process.cwd(),
+        );
+        if (repoAgentDef) {
+            // Clone rather than mutate: sessionConfig.customAgents may be the
+            // SAME array reference spread from workerDefaults.customAgents, which
+            // is shared across every session on this worker.
+            const existingCustomAgents = Array.isArray(sessionConfig.customAgents)
+                ? sessionConfig.customAgents
+                : [];
+            const wantedName = repoAgentDef.name.toLowerCase();
+            const alreadyPresent = existingCustomAgents.some(
+                (a: { name?: string }) => typeof a?.name === "string" && a.name.toLowerCase() === wantedName,
+            );
+            const mergedCustomAgents = alreadyPresent
+                ? existingCustomAgents
+                : [...existingCustomAgents, repoAgentDef];
+            sessionConfig.customAgents = mergedCustomAgents;
+            const injected = mergedCustomAgents.some(
+                (a: { name?: string }) => typeof a?.name === "string" && a.name.toLowerCase() === wantedName,
+            );
+            if (injected) {
+                sessionConfig.agent = repoAgentDef.name;
+                emitSessionManagerTrace(
+                    sessionId,
+                    `[bind] injected repo agent "${repoAgentDef.name}" as customAgent and activated it ` +
+                        `(boundAgentName="${effectiveSerializableConfig.boundAgentName}", ` +
+                        `promptChars=${repoAgentDef.prompt.length}, ` +
+                        `mcpServers=${repoAgentDef.mcpServers ? Object.keys(repoAgentDef.mcpServers).length : 0}, ` +
+                        `skills=${repoAgentDef.skills?.length ?? 0}, ` +
+                        `customAgentsCount=${mergedCustomAgents.length}, alreadyPresent=${alreadyPresent})`,
+                    { trace },
+                );
+            }
+        }
+
         // ── GHCP SDK session-config diagnostics ──────────────────────────────
         // Log the exact parameters that govern WHERE the Copilot CLI looks for
         // skills/instructions/agents, plus on-disk existence probes for the
@@ -1441,6 +1518,8 @@ export class SessionManager {
                     skillDirectoriesCount: skillDirsProbe.length,
                     skillDirectories: skillDirsProbe,
                     customAgentsCount: Array.isArray(sessionConfig.customAgents) ? sessionConfig.customAgents.length : 0,
+                    boundAgentName: effectiveSerializableConfig.boundAgentName ?? "(unset)",
+                    activeAgent: sessionConfig.agent ?? "(unset -> default/generic)",
                     mcpServerNames: Object.keys(effectiveMcpServers),
                     githubProbeWorkingDir: probeGithub(effWorkingDir),
                     githubProbeCwd: probeGithub(process.cwd()),
@@ -2073,6 +2152,102 @@ export class SessionManager {
                 return mergePromptSections([currentContent, askBlock, skillBlock, graphBlock]) ?? currentContent;
             },
         };
+    }
+
+    /**
+     * Parse a repo-discovered agent (`<workspace>/.github/agents/<file>.agent.md`)
+     * into a `customAgents` entry (name, persona prompt, description, tools,
+     * mcp-servers, skills) that can be injected into the session config and
+     * activated by name. This is the only way to bind a `.github/agents` agent:
+     * the Copilot runtime's config discovery does NOT register those files as
+     * selectable custom agents, so they must be materialized explicitly.
+     *
+     * Returns undefined — leaving the session on its normal path — when:
+     *   - no agent is bound;
+     *   - the bound name is a worker-plugin agent (that path owns binding via
+     *     agentPromptLookup / agentMcpServers, applied at the create chokepoint);
+     *   - there is no working directory to search;
+     *   - no `.github/agents` file matches the bound name.
+     *
+     * Matching is case-insensitive against BOTH the file slug and the frontmatter
+     * `name:`, so a caller may pass either "my-agent" (slug) or "My-Agent"
+     * (declared name). The returned `name` prefers the declared frontmatter name
+     * (what we then hand to `sessionConfig.agent`), falling back to the slug.
+     *
+     * The frontmatter key `mcp-servers` (hyphenated, as authored) is mapped to
+     * the wire `mcpServers` shape; each server object is passed through as-is
+     * (type/command/args/env/cwd/tools). NOTE: agent files authored for Windows
+     * hosts may carry Windows-style commands/paths that won't spawn on the Linux
+     * worker — they are injected verbatim for a faithful bind and fixed later.
+     */
+    private _resolveRepoAgentDefinition(
+        boundAgentName: string | undefined,
+        workingDirectory: string | undefined,
+    ): RepoAgentDefinition | undefined {
+        if (!boundAgentName) return undefined;
+        // Worker-plugin agents own their own binding path — never override it.
+        if (this.workerDefaults.agentPromptLookup?.[boundAgentName]) return undefined;
+        if (!workingDirectory) return undefined;
+        const agentsDir = path.join(workingDirectory, ".github", "agents");
+        let entries: string[];
+        try {
+            entries = fs.readdirSync(agentsDir);
+        } catch {
+            // No `.github/agents` in this workspace (or not hydrated yet).
+            return undefined;
+        }
+        const wanted = boundAgentName.trim().toLowerCase();
+        const SUFFIX = ".agent.md";
+        for (const entry of entries) {
+            if (!entry.toLowerCase().endsWith(SUFFIX)) continue;
+            const slug = entry.slice(0, -SUFFIX.length);
+            let content: string;
+            try {
+                content = fs.readFileSync(path.join(agentsDir, entry), "utf-8");
+            } catch {
+                continue;
+            }
+            const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+            if (!fmMatch) {
+                // No frontmatter — slug-only match with the whole file as prompt.
+                if (slug.toLowerCase() === wanted) {
+                    const body = content.trim();
+                    if (body) return { name: slug, prompt: body };
+                }
+                continue;
+            }
+            let fm: Record<string, unknown>;
+            try {
+                const parsed = parseYaml(fmMatch[1]);
+                fm = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+            } catch {
+                fm = {};
+            }
+            const declaredName = typeof fm.name === "string" ? fm.name.trim() : undefined;
+            if (slug.toLowerCase() !== wanted && declaredName?.toLowerCase() !== wanted) continue;
+
+            const name = declaredName || slug;
+            const body = content.slice(fmMatch[0].length).trim();
+            const description = typeof fm.description === "string" ? fm.description : undefined;
+            // CustomAgentConfig requires a non-empty prompt; fall back to the
+            // description (then the name) if the file has no body.
+            const prompt = body || description || name;
+
+            const def: RepoAgentDefinition = { name, prompt };
+            if (description) def.description = description;
+            if (Array.isArray(fm.tools)) def.tools = fm.tools.map((t) => String(t));
+            // Frontmatter authors the map under the hyphenated `mcp-servers` key;
+            // accept a camelCase spelling too for robustness.
+            const mcp = (fm["mcp-servers"] ?? (fm as Record<string, unknown>).mcpServers) as
+                | Record<string, unknown>
+                | undefined;
+            if (mcp && typeof mcp === "object") {
+                def.mcpServers = mcp as Record<string, unknown>;
+            }
+            if (Array.isArray(fm.skills)) def.skills = fm.skills.map((s) => String(s));
+            return def;
+        }
+        return undefined;
     }
 
     private _buildLastInstructionsSection(
