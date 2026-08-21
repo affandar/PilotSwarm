@@ -5096,6 +5096,27 @@ export class PilotSwarmUiController {
         const sessionPolicy = typeof this.transport.getSessionCreationPolicy === "function"
             ? this.transport.getSessionCreationPolicy()
             : null;
+        const repos = Array.isArray(sessionPolicy?.repos)
+            ? sessionPolicy.repos.filter((repo) => typeof repo === "string" && repo.trim())
+            : [];
+        // A deployment that can service repo-bound git workers gets a repo
+        // step first: pick a repo (or the generic default) before the rest of
+        // the flow. With no serviceable repos the picker is pointless, so we
+        // fall straight through to the generic path — the common case.
+        if (repos.length > 0) {
+            this.openRepoPicker(options, repos);
+            return;
+        }
+        await this._resumeGenericNewSession(options);
+    }
+
+    // The pre-repo new-session behavior, reused when "No repo" is chosen (or
+    // when no repos are serviceable): allowGeneric short-circuits to a generic
+    // create; otherwise the model/agent chain drives the choice.
+    async _resumeGenericNewSession(options = {}) {
+        const sessionPolicy = typeof this.transport.getSessionCreationPolicy === "function"
+            ? this.transport.getSessionCreationPolicy()
+            : null;
         const allowGeneric = sessionPolicy?.creation?.allowGeneric ?? true;
         if (allowGeneric) {
             await this.createSession(options);
@@ -5106,6 +5127,206 @@ export class PilotSwarmUiController {
             return;
         }
         await this.openSessionAgentPicker(options);
+    }
+
+    // Repo step of the new-session flow (repo-bound worker deployments only).
+    // "No repo" resumes the generic path; any repo advances to the branch step.
+    openRepoPicker(options = {}, repos = [], previousFocusOverride = null) {
+        const previousFocus = previousFocusOverride ?? this.getState().ui.focusRegion;
+        const repoItems = repos.map((repo) => ({
+            id: `repo:${repo}`,
+            kind: "repo",
+            repo,
+            label: repo,
+            description: "Start on a git worker enlisted in this repo.",
+        }));
+        const items = [
+            {
+                id: "__no_repo__",
+                kind: "generic",
+                repo: null,
+                label: "No repo (generic worker)",
+                description: "Open-ended session with no repo enlistment.",
+            },
+            ...repoItems,
+        ];
+        this.dispatch({
+            type: "ui/modal",
+            modal: {
+                type: "repoPicker",
+                title: "Select a repo for the new session",
+                items,
+                selectedIndex: 0,
+                previousFocus,
+                sessionOptions: options,
+            },
+        });
+        this.dispatch({ type: "ui/status", text: "Select a repo and press Enter" });
+    }
+
+    // Branch step: free-text gitRef for the chosen repo. Empty = the repo's
+    // default branch (the server resolves origin/HEAD), so the field starts
+    // empty with a placeholder rather than pre-filling a guessed ref. The repo
+    // picker is replaced in one dispatch, so previousFocus is threaded through.
+    openRepoBranchInput(repo, sessionOptions = {}, previousFocus = null) {
+        this.dispatch({
+            type: "ui/modal",
+            modal: {
+                type: "repoBranchInput",
+                title: `Branch for ${repo}`,
+                repo,
+                value: "",
+                cursorIndex: 0,
+                maxLength: 200,
+                previousFocus,
+                sessionOptions,
+            },
+        });
+        this.dispatch({ type: "ui/status", text: "Enter a branch (blank = default) and press Enter" });
+    }
+
+    // Agent step: optional free-text name of a repo-checked-in agent. Repo
+    // agents are declared in the enlistment, not the registry, so they are not
+    // enumerable — this is a name field, not a picker. Blank = generic session
+    // on the repo worker.
+    openRepoAgentInput(repo, gitRef, sessionOptions = {}, previousFocus = null) {
+        this.dispatch({
+            type: "ui/modal",
+            modal: {
+                type: "repoAgentInput",
+                title: `Agent for ${repo}`,
+                repo,
+                gitRef: gitRef || null,
+                value: "",
+                cursorIndex: 0,
+                maxLength: 200,
+                previousFocus,
+                sessionOptions,
+            },
+        });
+        this.dispatch({ type: "ui/status", text: "Enter a repo agent name (blank = generic) and press Enter" });
+    }
+
+    updateRepoBranchInputModal(updater) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "repoBranchInput") return null;
+        const nextModal = typeof updater === "function" ? updater(modal) : updater;
+        if (!nextModal) return null;
+        this.dispatch({ type: "ui/modal", modal: { ...modal, ...nextModal } });
+        return this.getState().ui.modal;
+    }
+
+    setRepoBranchInputValue(value, cursorIndex = String(value || "").length) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "repoBranchInput") return;
+        const safeValue = clampRenameSessionValue(value, modal.maxLength || 200);
+        const safeCursor = clampPromptCursor(safeValue, cursorIndex);
+        this.updateRepoBranchInputModal({ value: safeValue, cursorIndex: safeCursor });
+    }
+
+    updateRepoAgentInputModal(updater) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "repoAgentInput") return null;
+        const nextModal = typeof updater === "function" ? updater(modal) : updater;
+        if (!nextModal) return null;
+        this.dispatch({ type: "ui/modal", modal: { ...modal, ...nextModal } });
+        return this.getState().ui.modal;
+    }
+
+    setRepoAgentInputValue(value, cursorIndex = String(value || "").length) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "repoAgentInput") return;
+        const safeValue = clampRenameSessionValue(value, modal.maxLength || 200);
+        const safeCursor = clampPromptCursor(safeValue, cursorIndex);
+        this.updateRepoAgentInputModal({ value: safeValue, cursorIndex: safeCursor });
+    }
+
+    // Terminal (ink) callers edit the two repo text modals one keypress at a
+    // time, so they need the same insert/delete/cursor surface the rename and
+    // group-name modals expose. Each delegates to the setter above.
+    insertRepoBranchText(text) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "repoBranchInput") return;
+        const next = insertPromptTextAtCursor(modal.value || "", modal.cursorIndex || 0, clampRenameSessionValue(text, modal.maxLength || 200));
+        this.setRepoBranchInputValue(next.prompt, next.cursor);
+    }
+
+    deleteRepoBranchChar() {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "repoBranchInput") return;
+        const next = deletePromptCharBackward(modal.value || "", modal.cursorIndex || 0);
+        this.setRepoBranchInputValue(next.prompt, next.cursor);
+    }
+
+    moveRepoBranchCursor(delta) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "repoBranchInput") return;
+        this.setRepoBranchInputValue(modal.value || "", clampPromptCursor(modal.value || "", (modal.cursorIndex || 0) + delta));
+    }
+
+    moveRepoBranchCursorToBoundary(kind) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "repoBranchInput") return;
+        this.setRepoBranchInputValue(modal.value || "", kind === "start" ? 0 : String(modal.value || "").length);
+    }
+
+    insertRepoAgentText(text) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "repoAgentInput") return;
+        const next = insertPromptTextAtCursor(modal.value || "", modal.cursorIndex || 0, clampRenameSessionValue(text, modal.maxLength || 200));
+        this.setRepoAgentInputValue(next.prompt, next.cursor);
+    }
+
+    deleteRepoAgentChar() {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "repoAgentInput") return;
+        const next = deletePromptCharBackward(modal.value || "", modal.cursorIndex || 0);
+        this.setRepoAgentInputValue(next.prompt, next.cursor);
+    }
+
+    moveRepoAgentCursor(delta) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "repoAgentInput") return;
+        this.setRepoAgentInputValue(modal.value || "", clampPromptCursor(modal.value || "", (modal.cursorIndex || 0) + delta));
+    }
+
+    moveRepoAgentCursorToBoundary(kind) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "repoAgentInput") return;
+        this.setRepoAgentInputValue(modal.value || "", kind === "start" ? 0 : String(modal.value || "").length);
+    }
+
+    async confirmRepoBranchInputModal() {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "repoBranchInput") return;
+        const gitRef = String(modal.value || "").trim();
+        // Branch chosen — advance to the optional agent step. The overlay is
+        // replaced in one dispatch by openRepoAgentInput, so it never blinks.
+        this.openRepoAgentInput(modal.repo, gitRef || null, modal.sessionOptions || {}, modal.previousFocus);
+    }
+
+    async confirmRepoAgentInputModal() {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "repoAgentInput") return;
+        const agentName = String(modal.value || "").trim();
+        const previousFocus = modal.previousFocus;
+        const sessionOptions = modal.sessionOptions || {};
+        const repo = modal.repo;
+        const gitRef = modal.gitRef || null;
+        this.dispatch({ type: "ui/modal", modal: null });
+        if (previousFocus) this.setFocus(previousFocus);
+        const createOptions = {
+            ...sessionOptions,
+            repo,
+            ...(gitRef ? { gitRef } : {}),
+        };
+        // A named repo agent starts via createSessionForAgent; blank keeps the
+        // repo worker but with no agent boundary (generic-on-repo).
+        if (agentName) {
+            await this.createSessionForAgent(agentName, createOptions);
+            return;
+        }
+        await this.createSession(createOptions);
     }
 
     // previousFocus rides along the whole chain: each step is left on screen
@@ -6630,6 +6851,30 @@ export class PilotSwarmUiController {
         }
         if (modal.type === "sessionGroupName") {
             await this.confirmSessionGroupNameModal();
+            return;
+        }
+        if (modal.type === "repoPicker") {
+            const item = modal.items?.[modal.selectedIndex || 0];
+            const previousFocus = modal.previousFocus;
+            const sessionOptions = modal.sessionOptions || {};
+            if (!item || item.kind === "generic") {
+                // "No repo" — close the picker and resume the generic flow.
+                this.dispatch({ type: "ui/modal", modal: null });
+                if (previousFocus) this.setFocus(previousFocus);
+                await this._resumeGenericNewSession(sessionOptions);
+                return;
+            }
+            // A repo — advance to the branch step. It replaces this modal in
+            // one dispatch, so previousFocus is threaded rather than read back.
+            this.openRepoBranchInput(item.repo, sessionOptions, previousFocus);
+            return;
+        }
+        if (modal.type === "repoBranchInput") {
+            await this.confirmRepoBranchInputModal();
+            return;
+        }
+        if (modal.type === "repoAgentInput") {
+            await this.confirmRepoAgentInputModal();
             return;
         }
         if (modal.type === "sessionOwnerFilter") {

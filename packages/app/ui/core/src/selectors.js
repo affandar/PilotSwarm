@@ -5874,6 +5874,121 @@ export function selectSessionGroupNameModal(state, maxWidth = 76) {
     };
 }
 
+export function selectRepoPickerModal(state, maxWidth = 76) {
+    const modal = state.ui.modal;
+    if (!modal || modal.type !== "repoPicker") return null;
+
+    const items = Array.isArray(modal.items) ? modal.items : [];
+    const selectedIndex = Math.max(0, Number(modal.selectedIndex) || 0);
+    const contentWidth = Math.max(24, maxWidth - 4);
+
+    const rows = items.map((item, index) => {
+        const isSelected = index === selectedIndex;
+        const isGeneric = item?.kind === "generic";
+        const labelRuns = fitRuns([
+            { text: isGeneric ? "○ " : "· ", color: "gray" },
+            { text: String(item?.label || item?.id || "repo"), color: "white", bold: true },
+        ], contentWidth);
+        return isSelected
+            ? buildActiveHighlightLine(labelRuns.map((run) => run.text).join("").padEnd(contentWidth, " "))
+            : labelRuns;
+    });
+
+    const selectedItem = items[selectedIndex] || null;
+    const detailsLines = selectedItem
+        ? [
+            [{ text: selectedItem.label || selectedItem.id || "repo", color: "white", bold: true }],
+            [{ text: "", color: "gray" }],
+            [{ text: selectedItem.description || "Start on this repo.", color: "white" }],
+            ...(selectedItem.kind === "repo"
+                ? [[{ text: "Next: choose a branch, then an optional repo agent.", color: "gray" }]]
+                : [[{ text: "No repo enlistment — a generic worker handles it.", color: "gray" }]]),
+        ]
+        : [[{ text: "No repo selected.", color: "gray" }]];
+
+    return {
+        title: modal.title || "Select a repo",
+        rows,
+        selectedRowIndex: selectedIndex,
+        detailsTitle: "Repo",
+        detailsLines,
+        idealWidth: Math.min(
+            Math.max(
+                50,
+                rows.reduce((max, row) => {
+                    if (Array.isArray(row)) return Math.max(max, flattenRunsLength(row));
+                    return Math.max(max, String(row?.text || "").length);
+                }, 0) + 4,
+            ),
+            maxWidth,
+        ),
+    };
+}
+
+export function selectRepoBranchInputModal(state, maxWidth = 76) {
+    const modal = state.ui.modal;
+    if (!modal || modal.type !== "repoBranchInput") return null;
+
+    const value = String(modal.value || "");
+    const repo = String(modal.repo || "");
+    const previewRef = value.trim() || "default branch";
+    return {
+        title: modal.title || `Branch for ${repo}`,
+        value,
+        cursorIndex: Math.max(0, Math.min(Number(modal.cursorIndex) || 0, value.length)),
+        placeholder: "Branch or ref (blank = default branch)",
+        helpTitle: "Branch",
+        helpLines: [
+            [
+                { text: "Enter", color: "cyan", bold: true },
+                { text: " continue  ", color: "gray" },
+                { text: "Esc", color: "cyan", bold: true },
+                { text: " cancel", color: "gray" },
+            ],
+            [{ text: "", color: "gray" }],
+            [{ text: "Leave blank to use the repo's default branch.", color: "gray" }],
+        ],
+        detailsLines: [
+            [{ text: "Repo: ", color: "gray" }, { text: repo || "(repo)", color: "white", bold: true }],
+            [{ text: "Branch: ", color: "gray" }, { text: previewRef, color: "white", bold: true }],
+        ],
+        idealWidth: Math.min(Math.max(56, displayLength(repo) + 18, displayLength(previewRef) + 18), maxWidth),
+    };
+}
+
+export function selectRepoAgentInputModal(state, maxWidth = 76) {
+    const modal = state.ui.modal;
+    if (!modal || modal.type !== "repoAgentInput") return null;
+
+    const value = String(modal.value || "");
+    const repo = String(modal.repo || "");
+    const gitRef = String(modal.gitRef || "").trim();
+    const previewAgent = value.trim() || "generic (no agent)";
+    return {
+        title: modal.title || `Agent for ${repo}`,
+        value,
+        cursorIndex: Math.max(0, Math.min(Number(modal.cursorIndex) || 0, value.length)),
+        placeholder: "Repo agent name (blank = generic session)",
+        helpTitle: "Repo Agent",
+        helpLines: [
+            [
+                { text: "Enter", color: "cyan", bold: true },
+                { text: " start  ", color: "gray" },
+                { text: "Esc", color: "cyan", bold: true },
+                { text: " cancel", color: "gray" },
+            ],
+            [{ text: "", color: "gray" }],
+            [{ text: "Name an agent checked into the repo, or leave blank for a generic session.", color: "gray" }],
+        ],
+        detailsLines: [
+            [{ text: "Repo: ", color: "gray" }, { text: repo || "(repo)", color: "white", bold: true }],
+            [{ text: "Branch: ", color: "gray" }, { text: gitRef || "default branch", color: "white", bold: true }],
+            [{ text: "Agent: ", color: "gray" }, { text: previewAgent, color: "white", bold: true }],
+        ],
+        idealWidth: Math.min(Math.max(56, displayLength(repo) + 18, displayLength(previewAgent) + 18), maxWidth),
+    };
+}
+
 export function selectArtifactUploadModal(state, maxWidth = 82) {
     const modal = state.ui.modal;
     if (!modal || modal.type !== "artifactUpload") return null;

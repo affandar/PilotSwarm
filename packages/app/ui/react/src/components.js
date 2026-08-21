@@ -24,6 +24,9 @@ import {
     selectModelPickerModal,
     selectReasoningEffortPickerModal,
     selectContextTierPickerModal,
+    selectRepoPickerModal,
+    selectRepoBranchInputModal,
+    selectRepoAgentInputModal,
     selectRenameSessionModal,
     selectSessionAgentPickerModal,
     selectShareSessionModal,
@@ -1177,6 +1180,188 @@ function ContextTierPickerModalContainer({ controller }) {
         },
     }), shallowEqualObject);
     return React.createElement(ContextTierPickerModal, { state });
+}
+
+function RepoPickerModal({ state }) {
+    const platform = useUiPlatform();
+    const modal = selectRepoPickerModal(state);
+    if (!modal) return null;
+
+    const viewport = typeof platform.getViewport === "function"
+        ? platform.getViewport()
+        : { width: 120, height: 40 };
+    const width = Math.max(50, Math.min(modal.idealWidth || 72, (viewport.width || 120) - 16));
+    const listHeight = Math.max(8, Math.min(modal.rows.length + 2, 14, (viewport.height || 40) - 16));
+    const detailsHeight = Math.max(6, Math.min(8, (viewport.height || 40) - listHeight - 10));
+    const lines = modal.rows.length > 0
+        ? modal.rows
+        : [{ text: "No repositories available.", color: "gray" }];
+    const contentRows = Math.max(1, listHeight - 2);
+    const scrollOffset = Math.max(0, modal.selectedRowIndex - Math.floor(contentRows / 2));
+
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Column, { width },
+            React.createElement(platform.Panel, {
+                title: modal.title,
+                color: "cyan",
+                focused: false,
+                width,
+                height: listHeight,
+                lines,
+                scrollOffset,
+                scrollMode: "top",
+                marginBottom: 1,
+                fillColor: "surface",
+            }),
+            React.createElement(platform.Panel, {
+                title: modal.detailsTitle || "Repository",
+                color: "cyan",
+                focused: false,
+                width,
+                height: detailsHeight,
+                lines: modal.detailsLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                fillColor: "surface",
+            }),
+        ));
+}
+
+function RepoPickerModalContainer({ controller }) {
+    const state = useControllerSelector(controller, (rootState) => ({
+        ui: {
+            modal: rootState.ui.modal,
+        },
+    }), shallowEqualObject);
+    return React.createElement(RepoPickerModal, { state });
+}
+
+function RepoBranchInputModal({ state }) {
+    const platform = useUiPlatform();
+    const modal = selectRepoBranchInputModal(state);
+    if (!modal) return null;
+
+    const viewport = typeof platform.getViewport === "function"
+        ? platform.getViewport()
+        : { width: 120, height: 40 };
+    const width = Math.max(56, Math.min(modal.idealWidth || 72, (viewport.width || 120) - 12));
+    const detailsHeight = Math.max(5, Math.min(6, (modal.detailsLines?.length || 0) + 2, (viewport.height || 40) - 14));
+    const helpHeight = Math.max(6, Math.min(7, (viewport.height || 40) - detailsHeight - 8));
+
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Column, { width },
+            React.createElement(platform.Panel, {
+                title: modal.title,
+                color: "cyan",
+                focused: false,
+                width,
+                height: 3,
+                lines: [[
+                    { text: "> ", color: "cyan", bold: true },
+                    { text: modal.value || modal.placeholder || "", color: modal.value ? "white" : "gray" },
+                ]],
+                scrollOffset: 0,
+                scrollMode: "top",
+                marginBottom: 1,
+                fillColor: "surface",
+            }),
+            React.createElement(platform.Panel, {
+                title: "Preview",
+                color: "cyan",
+                focused: false,
+                width,
+                height: detailsHeight,
+                lines: modal.detailsLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                marginBottom: 1,
+                fillColor: "surface",
+            }),
+            React.createElement(platform.Panel, {
+                title: modal.helpTitle || "Help",
+                color: "cyan",
+                focused: false,
+                width,
+                height: helpHeight,
+                lines: modal.helpLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                fillColor: "surface",
+            }),
+        ));
+}
+
+function RepoBranchInputModalContainer({ controller }) {
+    const state = useControllerSelector(controller, (rootState) => ({
+        ui: {
+            modal: rootState.ui.modal,
+        },
+    }), shallowEqualObject);
+    return React.createElement(RepoBranchInputModal, { state });
+}
+
+function RepoAgentInputModal({ state }) {
+    const platform = useUiPlatform();
+    const modal = selectRepoAgentInputModal(state);
+    if (!modal) return null;
+
+    const viewport = typeof platform.getViewport === "function"
+        ? platform.getViewport()
+        : { width: 120, height: 40 };
+    const width = Math.max(56, Math.min(modal.idealWidth || 72, (viewport.width || 120) - 12));
+    const detailsHeight = Math.max(5, Math.min(6, (modal.detailsLines?.length || 0) + 2, (viewport.height || 40) - 14));
+    const helpHeight = Math.max(6, Math.min(7, (viewport.height || 40) - detailsHeight - 8));
+
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Column, { width },
+            React.createElement(platform.Panel, {
+                title: modal.title,
+                color: "cyan",
+                focused: false,
+                width,
+                height: 3,
+                lines: [[
+                    { text: "> ", color: "cyan", bold: true },
+                    { text: modal.value || modal.placeholder || "", color: modal.value ? "white" : "gray" },
+                ]],
+                scrollOffset: 0,
+                scrollMode: "top",
+                marginBottom: 1,
+                fillColor: "surface",
+            }),
+            React.createElement(platform.Panel, {
+                title: "Preview",
+                color: "cyan",
+                focused: false,
+                width,
+                height: detailsHeight,
+                lines: modal.detailsLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                marginBottom: 1,
+                fillColor: "surface",
+            }),
+            React.createElement(platform.Panel, {
+                title: modal.helpTitle || "Help",
+                color: "cyan",
+                focused: false,
+                width,
+                height: helpHeight,
+                lines: modal.helpLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                fillColor: "surface",
+            }),
+        ));
+}
+
+function RepoAgentInputModalContainer({ controller }) {
+    const state = useControllerSelector(controller, (rootState) => ({
+        ui: {
+            modal: rootState.ui.modal,
+        },
+    }), shallowEqualObject);
+    return React.createElement(RepoAgentInputModal, { state });
 }
 
 function SessionAgentPickerModal({ state }) {
@@ -2397,6 +2582,9 @@ export function SharedPilotSwarmApp({ controller, versionLabel = null }) {
         React.createElement(ModelPickerModalContainer, { controller }),
         React.createElement(ReasoningEffortPickerModalContainer, { controller }),
         React.createElement(ContextTierPickerModalContainer, { controller }),
+        React.createElement(RepoPickerModalContainer, { controller }),
+        React.createElement(RepoBranchInputModalContainer, { controller }),
+        React.createElement(RepoAgentInputModalContainer, { controller }),
         React.createElement(ThemePickerModalContainer, { controller }),
         React.createElement(SessionAgentPickerModalContainer, { controller }),
         React.createElement(SessionGroupPickerModalContainer, { controller }),

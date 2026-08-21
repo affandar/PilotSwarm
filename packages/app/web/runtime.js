@@ -312,6 +312,28 @@ export class PortalRuntime {
         }
     }
 
+    /**
+     * The session-creation policy the transport reports, augmented with the
+     * set of repos this deployment can currently service (sorted). Clients
+     * render the new-session repo picker from `policy.repos`; an empty list
+     * means "generic sessions only" and the picker step is skipped. `repos`
+     * is advisory for the UI — validateRepoParam stays the enforcement point
+     * on create, so a stale list can never widen what the server accepts.
+     */
+    async _sessionCreationPolicyWithRepos() {
+        const base = typeof this.transport.getSessionCreationPolicy === "function"
+            ? this.transport.getSessionCreationPolicy()
+            : null;
+        let repos = [];
+        try {
+            repos = [...(await this._serviceableRepos())].sort();
+        } catch {
+            repos = [];
+        }
+        if (!base && repos.length === 0) return null;
+        return { ...(base || {}), repos };
+    }
+
     // ── Sign-in role persistence ────────────────────────────────────────
 
     /**
@@ -734,9 +756,11 @@ export class PortalRuntime {
                 // viewer-scoped union per open via the listCreatableAgents op.
                 ? await this.transport.listCreatableAgents(null, false)
                 : [],
-            sessionCreationPolicy: typeof this.transport.getSessionCreationPolicy === "function"
-                ? this.transport.getSessionCreationPolicy()
-                : null,
+            // Serviceable-repo list rides along the policy so the portal can
+            // render the new-session repo picker straight from bootstrap
+            // (getSessionCreationPolicy is synchronous on the client and reads
+            // this cached payload).
+            sessionCreationPolicy: await this._sessionCreationPolicyWithRepos(),
             // Ownership/visibility posture (security model) so clients (portal,
             // MCP, TUI) can explain why a session isn't listed or a send was
             // refused, and default the share UI correctly.
@@ -1002,7 +1026,7 @@ export class PortalRuntime {
             case "listCreatableAgents":
                 return this.transport.listCreatableAgents(owner, isAdmin);
             case "getSessionCreationPolicy":
-                return this.transport.getSessionCreationPolicy();
+                return this._sessionCreationPolicyWithRepos();
 
             // ── Agent packages (docs/proposals/agent-packages.md) ────
             // access "authed" + creator-or-admin enforcement in the registry
