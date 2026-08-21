@@ -9380,7 +9380,7 @@ function Toolbar({ controller, mobile, moa = null, canvasPaneOpen = false, onTog
             key: "new",
             icon: React.createElement(PlusGlyph),
             label: "New session — choose model and agent",
-            onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_MODEL_PICKER).catch(() => {}),
+            onClick: () => controller.handleCommand(UI_COMMANDS.NEW_SESSION).catch(() => {}),
         },
         {
             key: "filter",
