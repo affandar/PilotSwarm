@@ -70,7 +70,7 @@ data:
       log "WARN no ADO_PAT set -> assuming an unauthenticated/anonymous remote"
     fi
 
-    # Transport hardening for large ADO mirror transfers. DsMainDev is big
+    # Transport hardening for large ADO mirror transfers. A large monorepo is big
     # enough that a single pack transfer runs for many minutes, and ADO's
     # gateway resets long-lived HTTP/2 streams -> the classic
     #   curl 56 Recv failure: Connection reset by peer

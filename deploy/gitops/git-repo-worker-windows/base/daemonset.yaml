@@ -1,0 +1,219 @@
+# -----------------------------------------------------------------------------
+# PilotSwarm git-repo-worker DaemonSet — WINDOWS analog of
+# deploy/gitops/git-repo-worker. A headless worker collocated 1:1 with the
+# Windows git-cache mirror DaemonSet on a per-repo Windows node pool.
+#
+# Same AKS git-hydration lifecycle as the Linux fleet (co-schedule with the
+# mirror daemon from boot; an init gate blocks the worker process until this
+# node's mirror sentinel exists; then keep ONE reused enlistment fetched+reset
+# before each job). Windows deltas vs. the Linux git-repo-worker DaemonSet:
+#   * nodeSelector kubernetes.io/os=windows.
+#   * The wait-for-mirror init container uses the worker image (__IMAGE__) + a
+#     pwsh wait loop instead of busybox `sh` (a Windows pod can't run a Linux
+#     init container). The Linux init-copilot-home chown step is dropped —
+#     Windows doesn't use uid ownership; hostPath ACLs cover write access.
+#   * C:\ hostPaths + emptyDir; a pwsh readiness probe.
+#   * securityContext.windowsOptions instead of runAsUser/runAsGroup.
+#   * safe.directory is baked into the image's SYSTEM git config
+#     (deploy/Dockerfile.worker-base.windows), same as the Linux image.
+#
+# URL-free generic — placeholder tokens (identical set + meaning to the Linux
+# git-repo-worker DaemonSet) are filled per-repo by the out-of-repo deploy
+# scripts. See docs/proposals/windows-worker-image-followup.md.
+# -----------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: copilot-runtime-git-worker-__REPO_NAME__-windows
+  namespace: pilotswarm
+  labels:
+    app.kubernetes.io/name: pilotswarm
+    app.kubernetes.io/component: git-repo-worker
+    pilotswarm.io/git-cache-repo: __REPO_NAME__
+    kubernetes.io/os: windows
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pilotswarm
+      app.kubernetes.io/component: git-repo-worker
+      pilotswarm.io/git-cache-repo: __REPO_NAME__
+      kubernetes.io/os: windows
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: __WORKER_MAX_UNAVAILABLE__
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pilotswarm
+        app.kubernetes.io/component: git-repo-worker
+        pilotswarm.io/git-cache-repo: __REPO_NAME__
+        kubernetes.io/os: windows
+        azure.workload.identity/use: "true"
+    spec:
+      serviceAccountName: copilot-runtime-worker
+      nodeSelector:
+        kubernetes.io/os: windows
+        pilotswarm.io/git-cache-repo: __REPO_NAME__
+      tolerations:
+        - key: pilotswarm.io/cache-not-ready
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+        - key: os
+          operator: Equal
+          value: windows
+          effect: NoSchedule
+        - key: kubernetes.azure.com/scalesetpriority
+          operator: Equal
+          value: spot
+          effect: NoSchedule
+      securityContext:
+        windowsOptions:
+          # ContainerAdministrator so the worker can write the persistent
+          # enlistment hostPath. (ContainerUser hardening is a follow-up once
+          # the host enlistment/copilot dirs are pre-ACL'd for the low-priv SID.)
+          runAsUserName: "ContainerAdministrator"
+      initContainers:
+        # Job-acceptance gate: block the worker process from starting until the
+        # git-cache daemon on THIS node has finished the initial mirror and
+        # written the sentinel. Uses the worker image (pwsh) — the Windows analog
+        # of the Linux busybox wait-for-mirror init container.
+        - name: wait-for-mirror
+          image: __IMAGE__
+          imagePullPolicy: IfNotPresent
+          command:
+            - pwsh
+            - -NoProfile
+            - -Command
+            - |
+              $sent = "C:\git-cache\__REPO_NAME__.ready"
+              Write-Host "[wait-for-mirror] waiting for $sent (git-cache initial clone) ..."
+              $t = 0
+              while (-not (Test-Path $sent)) {
+                Start-Sleep -Seconds 2; $t += 2
+                if ($t % 30 -eq 0) { Write-Host "[wait-for-mirror] still waiting after ${t}s ..." }
+              }
+              Write-Host "[wait-for-mirror] mirror ready after ${t}s -> starting worker"
+          volumeMounts:
+            - name: git-cache
+              mountPath: C:\git-cache
+              readOnly: true
+      containers:
+        - name: git-repo-worker
+          image: __IMAGE__
+          imagePullPolicy: IfNotPresent
+          command: ["node", "packages/sdk/examples/git-repo-worker.js"]
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: RUST_LOG
+              value: "info"
+            - name: PS_MODEL_PROVIDERS_PATH
+              value: "C:\\app\\config\\model_providers.json"
+            # One PilotSwarm job per pod: the single job slot is the mutex that
+            # makes reconcile-before-job race-free (see git-repo-worker.js).
+            - name: PILOTSWARM_WORKER_CONCURRENCY
+              value: "1"
+            # Repo-affinity routing: this fleet serves only repo:<name> runTurns.
+            - name: PILOTSWARM_WORKER_TAGS
+              value: "repo:__REPO_NAME__"
+            # git-cache collocation (node-local mirror; read-only mount below).
+            - name: GIT_CACHE_ROOT
+              value: "C:\\git-cache"
+            - name: GIT_CACHE_REPO
+              value: "__REPO_NAME__"
+            - name: GIT_CACHE_MIRROR
+              value: "C:\\git-cache\\__REPO_NAME__.git"
+            # Reused working enlistment (writable node-local hostPath). Cloned
+            # once from the mirror, then fetch + hard-reset before each job.
+            - name: GIT_ENLISTMENT_ROOT
+              value: "C:\\enlistment"
+            # Readiness sentinel (pod-scoped emptyDir) — MUST match the probe.
+            - name: WORKER_READY_FILE
+              value: "C:\\copilot-home\\worker.ready"
+            # PluginSpec: ;-delimited external plugin repos the worker downloads
+            # at startup (URL-free here; concrete value from the per-repo .env).
+            - name: PLUGIN_SPEC
+              value: "__PLUGIN_SPEC__"
+            - name: ADO_PAT_KEYVAULT_SECRET_URI
+              value: "__ADO_PAT_KV_SECRET_URI__"
+            # Delegated MCP (repo-stored .vscode/mcp.json) allowlist.
+            - name: REPO_MCP_ALLOW
+              value: "__REPO_MCP_ALLOW__"
+            # Fleet-default REMOTE MCP servers injected into every session.
+            # Double-quoted: the deploy script pre-escapes the JSON's double
+            # quotes as \" (and backslashes as \\), matching a double-quoted YAML
+            # scalar. Single quotes would keep those backslashes literal and
+            # corrupt the JSON. Keep in sync with the Linux base.
+            - name: DEFAULT_MCP_JSON
+              value: "__DEFAULT_MCP_JSON__"
+            # Delegated caller auth Key Vault name (ps-caller-<sessionId>).
+            - name: CALLER_AUTH_KEYVAULT_NAME
+              value: "__CALLER_AUTH_KEYVAULT_NAME__"
+          envFrom:
+            - configMapRef:
+                name: worker-env
+            - secretRef:
+                name: copilot-worker-secrets
+          resources:
+            requests:
+              cpu: "500m"
+              # Windows containers idle heavier than Linux; raise the floor.
+              memory: "2Gi"
+            limits:
+              cpu: "2000m"
+              memory: "4Gi"
+          readinessProbe:
+            # Truthful readiness: the worker writes this sentinel only after
+            # worker.start() resolves (enlistment synced + polling PG) and
+            # removes it on drain. pwsh Test-Path is the Windows analog of the
+            # Linux `test -f`.
+            exec:
+              command:
+                - pwsh
+                - -NoProfile
+                - -Command
+                - if (Test-Path "C:\copilot-home\worker.ready") { exit 0 } else { exit 1 }
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            failureThreshold: 1000
+          volumeMounts:
+            - name: copilot-home
+              mountPath: C:\copilot-home
+            - name: enlistment
+              mountPath: C:\enlistment
+            - name: model-providers
+              mountPath: C:\app\config
+              readOnly: true
+            - name: git-cache
+              mountPath: C:\git-cache
+              readOnly: true
+      volumes:
+        - name: copilot-home
+          emptyDir: {}
+        # Reused working enlistment — node-local hostPath sibling of the mirror
+        # (survives pod restarts / node reboots; a restarted worker skips the
+        # one-time clone and just fetch+reset-reconciles).
+        - name: enlistment
+          hostPath:
+            path: __CACHE_HOSTPATH__-enlistment
+            type: DirectoryOrCreate
+        - name: model-providers
+          configMap:
+            name: copilot-worker-model-providers
+            items:
+              - key: model_providers.json
+                path: model_providers.json
+        # Same node-local hostPath the Windows git-cache DaemonSet seeds; mounted
+        # read-only. __CACHE_HOSTPATH__ MUST match the git-cache CACHE_HOSTPATH.
+        - name: git-cache
+          hostPath:
+            path: __CACHE_HOSTPATH__
+            type: DirectoryOrCreate
+      restartPolicy: Always
+      # Must exceed PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS so graceful drain can
+      # finish in-flight turns before the pod is killed.
+      terminationGracePeriodSeconds: 90

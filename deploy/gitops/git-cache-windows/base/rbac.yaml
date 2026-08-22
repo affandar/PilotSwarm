@@ -1,0 +1,46 @@
+# -----------------------------------------------------------------------------
+# PilotSwarm git-cache — shared ServiceAccount + node-patch RBAC.
+#
+# Identical in intent to deploy/gitops/git-cache-linux/base/rbac.yaml (the Linux pool):
+# the mirror daemon patches its OWN node (adds the <repo>=ready label and tries
+# to clear the cache-not-ready taint) once the mirror materializes, which needs
+# cluster-scoped get/list/patch on nodes. The SA name (pilotswarm-git-cache) is
+# shared by the Linux and Windows git-cache DaemonSets, so apply this once per
+# cluster regardless of which OS pools run a mirror.
+# -----------------------------------------------------------------------------
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pilotswarm-git-cache
+  namespace: pilotswarm
+  labels:
+    app.kubernetes.io/name: pilotswarm
+    app.kubernetes.io/component: git-cache
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pilotswarm-git-cache-node-patcher
+  labels:
+    app.kubernetes.io/name: pilotswarm
+    app.kubernetes.io/component: git-cache
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: pilotswarm-git-cache-node-patcher
+  labels:
+    app.kubernetes.io/name: pilotswarm
+    app.kubernetes.io/component: git-cache
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: pilotswarm-git-cache-node-patcher
+subjects:
+  - kind: ServiceAccount
+    name: pilotswarm-git-cache
+    namespace: pilotswarm

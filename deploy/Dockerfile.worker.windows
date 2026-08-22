@@ -1,0 +1,85 @@
+# escape=`
+# =============================================================================
+# PilotSwarm Windows worker image (THIN layer — the fast inner loop).
+#
+# FROM the cached base (servercore + Node + MinGit + pwsh + MSVC runtime; see
+# deploy/Dockerfile.worker-base.windows). This layer only runs `npm ci` and
+# `COPY dist/`, so a rebuild after a code change is minutes — not the 10-20 min
+# a from-servercore build costs. The COPY manifest mirrors
+# deploy/Dockerfile.worker 1:1 so the Linux and Windows workers ship the same
+# runtime layout (only the OS base and the git/pwsh provisioning differ).
+#
+# Build context stays a few MB: .dockerignore excludes node_modules/.git and
+# node_modules is built IN-IMAGE by `npm ci` — never shipped in the context.
+# (A pre-staged node_modules made the first Windows context 646 MB / ~40k files
+# and dominated the build; do not reintroduce it.)
+#
+# Build (two phases):
+#   1) base once →  az acr build --platform windows --image pilotswarm-worker-base:<btag> `
+#                     --file deploy/Dockerfile.worker-base.windows .
+#   2) worker →     az acr build --platform windows --image pilotswarm-worker-win:<tag> `
+#                     --file deploy/Dockerfile.worker.windows `
+#                     --build-arg WORKER_BASE_IMAGE=<acr>/pilotswarm-worker-base:<btag> .
+# =============================================================================
+ARG WORKER_BASE_IMAGE
+FROM ${WORKER_BASE_IMAGE}
+
+SHELL ["powershell", "-NoProfile", "-Command", "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue';"]
+
+WORKDIR C:\app
+
+# Workspace root + package manifests first (same order as Dockerfile.worker for
+# layer-cache reuse). The horizon-store manifest MUST be present before `npm ci`
+# so npm creates the node_modules/@pilotswarm/horizon-store workspace symlink
+# the SDK's dynamic import("@pilotswarm/horizon-store") resolves at runtime.
+COPY package.json package-lock.json ./
+COPY packages/sdk/package.json ./packages/sdk/
+COPY packages/app/package.json ./packages/app/
+COPY packages/horizon-store/package.json ./packages/horizon-store/
+COPY scripts/postinstall.js ./scripts/
+
+# `npm ci` enforces the committed lockfile so Windows rebuilds from a SHA are
+# reproducible. NPM_REGISTRY lets a build behind a proxy that can't reach
+# registry.npmjs.org install from a mirror (defaults to the public registry, so
+# an unset arg behaves exactly as before). Matches deploy/Dockerfile.worker.
+ARG NPM_REGISTRY=https://registry.npmjs.org/
+ENV npm_config_registry=${NPM_REGISTRY}
+RUN npm ci --omit=dev --force
+
+# Built SDK dist + bundled plugins, worker entrypoints, app plugins.
+COPY packages/sdk/dist/ ./packages/sdk/dist/
+COPY packages/sdk/plugins/ ./packages/sdk/plugins/
+COPY packages/sdk/examples/worker.js ./packages/sdk/examples/
+# git-repo-worker entrypoint (AKS git-hydration): selected via a `command:`
+# override in the Windows git-repo-worker DaemonSet; harmless otherwise.
+COPY packages/sdk/examples/git-repo-worker.js ./packages/sdk/examples/
+# git-cache-daemon: the cross-platform Node port of the Linux git-cache shell
+# ConfigMap. The Windows git-cache DaemonSet runs THIS worker image with a
+# `command: [node, packages/sdk/examples/git-cache-daemon.js]` override (a
+# Windows pod can't run the alpine/git + busybox shell the Linux pool uses).
+COPY packages/sdk/examples/git-cache-daemon.js ./packages/sdk/examples/
+COPY packages/app/tui/plugins/ ./packages/app/tui/plugins/
+
+# api-client (plain ESM) — dist/web/api-connection.js imports it at load time,
+# so it must be present even though workers use direct { store } mode.
+COPY packages/sdk/api/index.js packages/sdk/api/index.d.ts ./packages/sdk/api/
+COPY packages/sdk/api/src/ ./packages/sdk/api/src/
+
+# horizon-store built output + runtime-read migrations (the migrator reads the
+# numbered migrations/*.sql relative to dist/; the sibling layout matters).
+COPY packages/horizon-store/dist/ ./packages/horizon-store/dist/
+COPY packages/horizon-store/migrations/ ./packages/horizon-store/migrations/
+
+# Model providers config (if present).
+COPY .model_providers.json* ./
+
+# Least-privilege runtime: run as the built-in low-privilege ContainerUser
+# (the Windows analog of the Linux image's non-root `node` user). All build
+# steps above ran as the default ContainerAdministrator; runtime writes go to
+# the k8s-mounted C:\ hostPaths (enlistment / git-cache / copilot-home), not
+# C:\app. The Windows pod's run-as identity is set in the DaemonSet via
+# securityContext.windowsOptions.runAsUserName, mirroring how the Linux pod sets
+# runAsUser — this USER is the image default when no override is given.
+USER ContainerUser
+
+ENTRYPOINT ["node", "packages/sdk/examples/worker.js"]

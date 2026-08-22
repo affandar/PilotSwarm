@@ -30,7 +30,7 @@
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: git-cache-__REPO_NAME__
+  name: git-cache-__REPO_NAME__-linux
   namespace: pilotswarm
   labels:
     app.kubernetes.io/name: pilotswarm
@@ -135,7 +135,7 @@ spec:
               cpu: "1"
               # Peak is a COLD `git clone --mirror` running index-pack, whose memory
               # scales with the repo's object/delta graph — tiny for a small repo, but
-              # multiple GB for a large monorepo (DsMainDev OOM-killed at 1Gi). Sized
+              # multiple GB for a large monorepo (which OOM-killed at 1Gi). Sized
               # per-repo via CACHE_MEM_LIMIT in values/<repo>.env (default 1Gi).
               memory: "__CACHE_MEM_LIMIT__"
       volumes:

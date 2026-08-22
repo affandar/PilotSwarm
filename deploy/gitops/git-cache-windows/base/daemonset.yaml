@@ -1,0 +1,131 @@
+# -----------------------------------------------------------------------------
+# PilotSwarm git-cache DaemonSet — WINDOWS analog of deploy/gitops/git-cache.
+#
+# Windows deltas vs. the Linux git-cache DaemonSet:
+#   * Image + command: a Windows pod can't run the Linux pool's `alpine/git`
+#     container + POSIX shell ConfigMap, so it runs the SAME Node-based worker
+#     image (__IMAGE__) with a command override that starts the cross-platform
+#     Node port `git-cache-daemon.js` (which uses git + the Node https module,
+#     so it needs no runtime curl/jq install).
+#   * nodeSelector kubernetes.io/os=windows pins it to a Windows Server node
+#     pool (in addition to the per-repo git-cache label).
+#   * C:\ hostPaths and a pwsh readiness probe.
+#   * securityContext.windowsOptions (Windows pods have no runAsUser/uid).
+#
+# URL-free generic — __TOKENS__ are filled per-repo by the out-of-repo deploy
+# scripts, exactly like the Linux base. See docs/proposals/windows-worker-image-followup.md.
+#
+# Tokens (same set as the Linux git-cache DaemonSet):
+#   __REPO_NAME__ __REPO_URL__ __IMAGE__ __FETCH_INTERVAL_SECONDS__
+#   __FETCH_JITTER_SECONDS__ __CACHE_HOSTPATH__ (Windows path, e.g. C:\git-cache)
+#   __CACHE_MAX_UNAVAILABLE__ __CACHE_MEM_LIMIT__
+# -----------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: git-cache-__REPO_NAME__-windows
+  namespace: pilotswarm
+  labels:
+    app.kubernetes.io/name: pilotswarm
+    app.kubernetes.io/component: git-cache
+    pilotswarm.io/git-cache-repo: __REPO_NAME__
+    kubernetes.io/os: windows
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pilotswarm
+      app.kubernetes.io/component: git-cache
+      pilotswarm.io/git-cache-repo: __REPO_NAME__
+      kubernetes.io/os: windows
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: __CACHE_MAX_UNAVAILABLE__
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pilotswarm
+        app.kubernetes.io/component: git-cache
+        pilotswarm.io/git-cache-repo: __REPO_NAME__
+        kubernetes.io/os: windows
+    spec:
+      serviceAccountName: pilotswarm-git-cache
+      nodeSelector:
+        kubernetes.io/os: windows
+        pilotswarm.io/git-cache-repo: __REPO_NAME__
+      tolerations:
+        - key: pilotswarm.io/cache-not-ready
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+        # Tolerate the OS taint AKS puts on Windows pools + common spot/control
+        # taints so the mirror can seed on any node in the pool.
+        - key: os
+          operator: Equal
+          value: windows
+          effect: NoSchedule
+        - operator: Exists
+          effect: NoSchedule
+      securityContext:
+        windowsOptions:
+          # ContainerAdministrator writes the node-local hostPath mirror and runs
+          # `git clone --mirror`. (ContainerUser hardening is a follow-up once the
+          # host mirror dir is pre-ACL'd for the low-priv SID.)
+          runAsUserName: "ContainerAdministrator"
+      containers:
+        - name: git-cache
+          image: __IMAGE__
+          imagePullPolicy: IfNotPresent
+          command: ["node", "packages/sdk/examples/git-cache-daemon.js"]
+          env:
+            - name: REPO_NAME
+              value: "__REPO_NAME__"
+            - name: REPO_URL
+              value: "__REPO_URL__"
+            - name: CACHE_ROOT
+              value: "C:\\git-cache"
+            - name: FETCH_INTERVAL_SECONDS
+              value: "__FETCH_INTERVAL_SECONDS__"
+            - name: FETCH_JITTER_SECONDS
+              value: "__FETCH_JITTER_SECONDS__"
+            - name: CACHE_NOT_READY_TAINT_KEY
+              value: "pilotswarm.io/cache-not-ready"
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: ADO_PAT
+              valueFrom:
+                secretKeyRef:
+                  name: pilotswarm-git-cache-ado-pat
+                  key: ADO_PAT
+                  optional: true
+          volumeMounts:
+            - name: git-cache
+              mountPath: C:\git-cache
+          readinessProbe:
+            # READY only once the mirror sentinel exists (pwsh Test-Path — the
+            # Windows analog of the Linux `test -f`).
+            exec:
+              command:
+                - pwsh
+                - -NoProfile
+                - -Command
+                - if (Test-Path "$env:CACHE_ROOT\$env:REPO_NAME.ready") { exit 0 } else { exit 1 }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 1000
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              # Peak is a COLD `git clone --mirror` (index-pack); sized per-repo.
+              # Windows containers idle heavier than Linux, hence the higher floor.
+              memory: "__CACHE_MEM_LIMIT__"
+      volumes:
+        - name: git-cache
+          hostPath:
+            path: __CACHE_HOSTPATH__
+            type: DirectoryOrCreate

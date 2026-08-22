@@ -1,0 +1,137 @@
+# escape=`
+# =============================================================================
+# PilotSwarm Windows worker BASE image (cached; rebuilt on its own cadence).
+#
+# Two-image split — see docs/proposals/windows-worker-image-followup.md.
+#   * THIS base = servercore + Node + MinGit + PowerShell 7 + the MSVC v14x
+#     runtime (vc_redist.x64). It is slow to build — a multi-GB servercore
+#     base pull plus high per-file Windows layer-commit overhead — so it is
+#     built ONCE and pushed to ACR. Day-to-day worker rebuilds are then
+#     `FROM <this-base>` + a thin `npm ci` + `COPY dist/`
+#     (deploy/Dockerfile.worker.windows), which keeps the inner loop to minutes
+#     instead of the 10-20 min a from-servercore build costs every iteration.
+#
+# Why servercore (not nanoserver): the duroxide-windows-x64 prebuild links the
+# MSVC v14x runtime. servercore does NOT ship it by default (the ltsc2022 base
+# has no vcruntime140*.dll / msvcp140.dll in System32 — validated 2026-08-21),
+# so we install the VC++ redistributable below. nanoserver is avoided because it
+# lacks the full servicing stack the redist installer and native addons expect.
+# ltsc2022 pairs with an AKS Windows Server 2022 node pool (kubernetes.io/os=windows).
+#
+# Pinned tools: Windows has no floating `node:24` base image, so every tool is
+# fetched and PINNED here. Bump these ARGs when the Linux base
+# (deploy/Dockerfile.worker `node:24-trixie-slim`) or duroxide/pwsh move; the
+# base's whole point is that this happens on its OWN cadence, not per worker
+# change. Verify the exact patch versions exist before building — a wrong URL
+# fails the (slow) base build.
+# =============================================================================
+ARG WINDOWS_TAG=ltsc2022
+FROM mcr.microsoft.com/windows/servercore:${WINDOWS_TAG}
+
+# NODE_VERSION should track the Linux base's Node 24 line; PWSH_VERSION matches
+# the Linux image's pwsh 7.4.6 so skills see the same PowerShell Core on both.
+ARG NODE_VERSION=24.8.0
+ARG GIT_VERSION=2.47.1
+ARG PWSH_VERSION=7.4.6
+ARG GIT_LFS_VERSION=3.5.1
+
+# All RUN steps below are PowerShell; fail fast and drop the progress UI (the
+# progress renderer is very slow / noisy in a non-interactive build).
+SHELL ["powershell", "-NoProfile", "-Command", "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue';"]
+
+# Long-path support: deep node_modules trees blow past MAX_PATH (260). Enable
+# the Win32 long-path opt-in at the machine level so `npm ci` and git can create
+# long paths in this image (and in derived worker images / running containers).
+RUN New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' `
+      -Name 'LongPathsEnabled' -Value 1 -PropertyType DWORD -Force | Out-Null
+
+# --- Node 24 (official Windows zip) -----------------------------------------
+RUN Invoke-WebRequest -UseBasicParsing `
+      -Uri ('https://nodejs.org/dist/v{0}/node-v{0}-win-x64.zip' -f $env:NODE_VERSION) `
+      -OutFile C:\node.zip; `
+    Expand-Archive C:\node.zip -DestinationPath C:\; `
+    Rename-Item ('C:\node-v{0}-win-x64' -f $env:NODE_VERSION) C:\node; `
+    Remove-Item C:\node.zip
+
+# --- MinGit (git-for-windows minimal build) ---------------------------------
+# git-repo-worker.js shells out to `git` (clone/fetch/reset the node-local
+# mirror). MinGit is the smallest git that still runs those plumbing commands.
+RUN Invoke-WebRequest -UseBasicParsing `
+      -Uri ('https://github.com/git-for-windows/git/releases/download/v{0}.windows.1/MinGit-{0}-64-bit.zip' -f $env:GIT_VERSION) `
+      -OutFile C:\mingit.zip; `
+    Expand-Archive C:\mingit.zip -DestinationPath C:\mingit; `
+    Remove-Item C:\mingit.zip
+
+# --- Git LFS ----------------------------------------------------------------
+# MinGit's system gitconfig ships the `[filter "lfs"]` stanza with
+# `filter.lfs.required=true` (process=`git-lfs filter-process`), but MinGit does
+# NOT bundle the git-lfs binary. Some large repos track files with
+# LFS, so `git checkout` invokes `git-lfs filter-process`; without the binary the
+# checkout dies with `git-lfs: command not found` / "remote end hung up" and the
+# worker's one-time enlistment clone fails with exit 1. Install the git-lfs.exe
+# binary onto the git PATH dir so the required filter resolves. The node-local
+# git-cache mirror is a bare `--mirror` clone that carries NO LFS blobs (and the
+# worker has no ADO LFS-endpoint credentials), so GIT_LFS_SKIP_SMUDGE=1 (below)
+# makes the smudge a no-op that writes the pointer files — a fast, network-free
+# checkout. Agent tasks that need a specific blob can `git lfs pull -I <path>`.
+RUN Invoke-WebRequest -UseBasicParsing `
+      -Uri ('https://github.com/git-lfs/git-lfs/releases/download/v{0}/git-lfs-windows-amd64-v{0}.zip' -f $env:GIT_LFS_VERSION) `
+      -OutFile C:\git-lfs.zip; `
+    Expand-Archive C:\git-lfs.zip -DestinationPath C:\git-lfs-extract; `
+    $exe = Get-ChildItem C:\git-lfs-extract -Recurse -Filter git-lfs.exe | Select-Object -First 1; `
+    if (-not $exe) { throw 'git-lfs.exe not found in downloaded archive' }; `
+    Copy-Item $exe.FullName C:\mingit\cmd\git-lfs.exe -Force; `
+    Remove-Item C:\git-lfs.zip; Remove-Item C:\git-lfs-extract -Recurse -Force
+
+# Skip LFS blob download on checkout (mirror carries no LFS objects; worker has
+# no LFS creds). git-lfs still runs as the required filter, but writes pointer
+# files instead of hydrating — checkout succeeds without network.
+ENV GIT_LFS_SKIP_SMUDGE=1
+
+# --- PowerShell 7 (Core) — matches the Linux image's pwsh 7.4.6 --------------
+# servercore already has Windows PowerShell 5.1, but skills invoke `pwsh` (7+);
+# install it so both OS images expose the same PowerShell Core.
+RUN Invoke-WebRequest -UseBasicParsing `
+      -Uri ('https://github.com/PowerShell/PowerShell/releases/download/v{0}/PowerShell-{0}-win-x64.zip' -f $env:PWSH_VERSION) `
+      -OutFile C:\pwsh.zip; `
+    Expand-Archive C:\pwsh.zip -DestinationPath C:\pwsh; `
+    Remove-Item C:\pwsh.zip
+
+# Put node, git, and pwsh on the MACHINE PATH so every later layer and the
+# running container (any user) resolves them.
+RUN $p = [Environment]::GetEnvironmentVariable('PATH','Machine'); `
+    [Environment]::SetEnvironmentVariable('PATH', ('C:\node;C:\mingit\cmd;C:\pwsh;{0}' -f $p), 'Machine')
+
+# git config: the worker reads a read-only node-local mirror written by the
+# git-cache daemon, so trust all repo paths (dubious-ownership guard) and enable
+# long paths. safe.directory is honored ONLY from system/global config (never
+# from -c / GIT_CONFIG_* env), so it must be baked into the image — same reason
+# as deploy/Dockerfile.worker.
+RUN git config --system --add safe.directory '*'; `
+    git config --system core.longpaths true
+
+# Fail the base build loudly if any tool is missing/mislinked.
+RUN node --version; npm --version; git --version; git-lfs --version; pwsh --version
+
+# --- MSVC v14x runtime (REQUIRED by the duroxide native addon) ---------------
+# duroxide-windows-x64 ships duroxide.win32-x64-msvc.node, a Rust/MSVC-linked
+# native addon that dlopens vcruntime140.dll / vcruntime140_1.dll / msvcp140.dll.
+# The ltsc2022 servercore base does NOT include these (only pwsh's private
+# vcruntime140_cor3.dll exists), so `require('duroxide')` fails at runtime with
+# ERR_DLOPEN_FAILED "The specified module could not be found" — the missing
+# module is a *dependent DLL*, not the .node itself. Install the VC++ redist so
+# the worker can load duroxide. (git-cache never requires duroxide, which is why
+# only the worker container crashed without this.)
+RUN Invoke-WebRequest -UseBasicParsing `
+      -Uri 'https://aka.ms/vs/17/release/vc_redist.x64.exe' -OutFile C:\vc_redist.x64.exe; `
+    $proc = Start-Process -FilePath C:\vc_redist.x64.exe -ArgumentList '/quiet','/norestart' -Wait -PassThru; `
+    if ($proc.ExitCode -ne 0 -and $proc.ExitCode -ne 3010) { throw ('vc_redist.x64 install failed with exit code ' + $proc.ExitCode) }; `
+    Remove-Item C:\vc_redist.x64.exe
+
+# Fail the (slow) base build immediately if the runtime DLLs did not land, so a
+# broken base is never pushed and the worker crash cannot recur silently.
+RUN foreach ($dll in 'vcruntime140.dll','vcruntime140_1.dll','msvcp140.dll') { `
+      if (-not (Test-Path (Join-Path $env:WINDIR ('System32\' + $dll)))) { throw ('MSVC runtime missing after redist install: ' + $dll) } `
+    }
+
+WORKDIR C:\app

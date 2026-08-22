@@ -7,12 +7,24 @@ FROM node:24-trixie-slim
 #   ca-certificates  HTTPS
 #   git              git-repo-worker.js shells out to clone/fetch/reset the
 #                    enlistment from the node-local mirror (git-cache collocation).
+#   git-lfs          some large repos track files with LFS; without the
+#                    binary `git checkout` aborts on the required lfs filter.
+#                    GIT_LFS_SKIP_SMUDGE=1 (below) writes pointer files instead of
+#                    hydrating blobs (the mirror carries no LFS objects).
 #   curl             fetch the PowerShell tarball below (slim has no curl).
 #   libicu-dev       PowerShell's globalization runtime dependency (pulls the
 #                    correct libicu soname for this Debian release).
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates git curl libicu-dev \
- && rm -rf /var/lib/apt/lists/*
+ && apt-get install -y --no-install-recommends ca-certificates git git-lfs curl libicu-dev \
+ && rm -rf /var/lib/apt/lists/* \
+ && git lfs install --system --skip-repo
+
+# Skip LFS blob download on checkout — the node-local git-cache mirror is a bare
+# `--mirror` clone that carries no LFS objects and the worker has no ADO
+# LFS-endpoint credentials, so hydrating would fail. git-lfs still runs as the
+# required filter but writes the pointer files (fast, network-free checkout).
+# Matches deploy/Dockerfile.worker-base.windows.
+ENV GIT_LFS_SKIP_SMUDGE=1
 
 # The node-local git-cache mirror this worker clones/fetches from is written by
 # the git-cache daemon (root) and mounted read-only; the worker runs as the

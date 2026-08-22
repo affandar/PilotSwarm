@@ -62,7 +62,7 @@
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: git-repo-worker-__REPO_NAME__
+  name: copilot-runtime-git-worker-__REPO_NAME__-linux
   namespace: pilotswarm
   labels:
     app.kubernetes.io/name: pilotswarm
