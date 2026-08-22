@@ -79,10 +79,14 @@ spec:
           resources:
             requests:
               cpu: "250m"
-              memory: "256Mi"
+              memory: "512Mi"
             limits:
               cpu: "2"
-              memory: "1Gi"
+              # Raised 1Gi -> 4Gi: the portal loads session/event data on
+              # boot/first request and was OOMKilled (exit 137) at 1Gi when the
+              # session_events backlog grew large. 4Gi gives headroom; the
+              # unbounded-load pattern is tracked separately for a paging fix.
+              memory: "4Gi"
           # Base mounts the auth-provider secrets-store volume (always
           # needed) and the portal-tls-secret Secret (mounts the
           # kubernetes.io/tls Secret containing tls.crt + tls.key). The
