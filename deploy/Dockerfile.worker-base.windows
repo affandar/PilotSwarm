@@ -134,4 +134,39 @@ RUN foreach ($dll in 'vcruntime140.dll','vcruntime140_1.dll','msvcp140.dll') { `
       if (-not (Test-Path (Join-Path $env:WINDIR ('System32\' + $dll)))) { throw ('MSVC runtime missing after redist install: ' + $dll) } `
     }
 
+# --- .NET 10 SDK (provides `dotnet dnx` — the on-the-fly .NET tool runner) ----
+# A repo-declared stdio MCP server can launch a .NET tool via
+# `${ProgramFiles}\dotnet\dotnet.exe dnx <tool> …`, so the worker image must ship
+# the .NET SDK at the CANONICAL C:\Program Files\dotnet — the exact path such a
+# server's declaration typically hardcodes. `dnx` ships with the .NET
+# 10 SDK (LTS). Pin the version like every other tool in this base and bump it on
+# its own cadence. Feed CREDENTIALS are NOT baked here: the worker writes a
+# user-level NuGet.Config at runtime from a Key Vault PAT (see git-repo-worker.js
+# writeNuGetAuthConfig), mirroring how PluginSpec authenticates git clones.
+ARG DOTNET_SDK_VERSION=10.0.400
+RUN Invoke-WebRequest -UseBasicParsing `
+      -Uri ('https://builds.dotnet.microsoft.com/dotnet/Sdk/{0}/dotnet-sdk-{0}-win-x64.zip' -f $env:DOTNET_SDK_VERSION) `
+      -OutFile C:\dotnet.zip; `
+    Expand-Archive C:\dotnet.zip -DestinationPath 'C:\Program Files\dotnet'; `
+    Remove-Item C:\dotnet.zip
+
+# Put dotnet on the MACHINE PATH so every later layer, the running container, and
+# the spawned MCP stdio child resolve it (any user).
+RUN $p = [Environment]::GetEnvironmentVariable('PATH','Machine'); `
+    [Environment]::SetEnvironmentVariable('PATH', ('C:\Program Files\dotnet;{0}' -f $p), 'Machine')
+
+# Quiet, reproducible CLI (no telemetry / first-run restore noise in build logs)
+# and pin DOTNET_ROOT to the install dir a repo MCP server declaration expects.
+ENV DOTNET_CLI_TELEMETRY_OPTOUT=1 `
+    DOTNET_NOLOGO=1 `
+    DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 `
+    DOTNET_ROOT="C:\Program Files\dotnet"
+
+# Fail the (slow) base build immediately if dotnet is missing or is not the .NET
+# 10 line (which is what bundles the `dnx` muxer command).
+RUN $v = (& 'C:\Program Files\dotnet\dotnet.exe' --version); `
+    if ($LASTEXITCODE -ne 0) { throw 'dotnet --version failed' }; `
+    if (-not $v.StartsWith('10.')) { throw ('unexpected dotnet SDK version (need 10.x for dnx): ' + $v) }; `
+    Write-Host ('dotnet SDK ' + $v + ' installed at C:\Program Files\dotnet (dnx available)')
+
 WORKDIR C:\app

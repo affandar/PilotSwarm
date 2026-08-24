@@ -360,8 +360,68 @@ export interface LoadRepoMcpOptions {
      * than all of them. Empty/undefined = load all (subject to remoteOnly).
      */
     allow?: string[];
+    /**
+     * Private NuGet feed URLs the worker has credentialed via the user-level
+     * `NuGet.Config` (`packageSourceCredentials`). A repo stdio server launched
+     * through `dotnet dnx` commonly pins its feed with a `--source <URL>`
+     * argument. .NET's tool-restore path treats
+     * that command-line override as an isolated source and does NOT apply
+     * `packageSourceCredentials`, so an authenticated feed still 401s and the
+     * tool exposes zero MCP tools. For each URL listed here, a matching
+     * `--source <URL>` / `--source=<URL>` (also `-s` / `--add-source`) pair is
+     * stripped from a loaded stdio server's args so `dnx` falls back to the
+     * credentialed config default source and authenticates. Empty/undefined =
+     * no rewriting.
+     */
+    credentialedNuGetFeeds?: string[];
     /** Optional trace sink for per-server load decisions (defaults to no-op). */
     trace?: (message: string) => void;
+}
+
+/** Normalize a feed URL for tolerant matching (case- and trailing-slash-insensitive). */
+function normalizeFeedUrl(url: string): string {
+    return String(url).trim().replace(/\/+$/, "").toLowerCase();
+}
+
+/**
+ * Remove `--source <URL>` argument pairs that point at a credentialed private
+ * NuGet feed, so a `dnx`-launched stdio server authenticates via the worker's
+ * user-level `NuGet.Config` instead of an uncredentialed command-line override.
+ * Handles `--source URL` (two tokens), `--source=URL` (one token), and the
+ * `-s` / `--add-source` aliases. Non-matching sources are left untouched.
+ */
+function stripCredentialedSourceArgs(
+    args: string[],
+    feeds: string[],
+    serverName: string,
+    trace: (message: string) => void,
+): string[] {
+    const feedSet = new Set(feeds.map(normalizeFeedUrl).filter(Boolean));
+    if (feedSet.size === 0) return args;
+    const flags = new Set(["--source", "-s", "--add-source"]);
+    const out: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (typeof a === "string") {
+            const eq = a.match(/^(--source|--add-source|-s)=(.+)$/);
+            if (eq && feedSet.has(normalizeFeedUrl(eq[2]))) {
+                trace(`[mcp-loader] repo server "${serverName}": stripped credentialed "${a}" (dnx uses config feed creds)`);
+                continue;
+            }
+            if (
+                flags.has(a) &&
+                i + 1 < args.length &&
+                typeof args[i + 1] === "string" &&
+                feedSet.has(normalizeFeedUrl(args[i + 1]))
+            ) {
+                trace(`[mcp-loader] repo server "${serverName}": stripped credentialed "${a} ${args[i + 1]}" (dnx uses config feed creds)`);
+                i++;
+                continue;
+            }
+        }
+        out.push(a);
+    }
+    return out;
 }
 
 /**
@@ -467,6 +527,14 @@ export function loadRepoMcpConfig(
                 expanded.cwd = path.resolve(workspaceFolder, expanded.cwd);
             }
             if (!Array.isArray(expanded.args)) expanded.args = [];
+            if (opts.credentialedNuGetFeeds && opts.credentialedNuGetFeeds.length > 0) {
+                expanded.args = stripCredentialedSourceArgs(
+                    expanded.args,
+                    opts.credentialedNuGetFeeds,
+                    name,
+                    trace,
+                );
+            }
         }
 
         result[name] = expanded as MCPServerConfig;

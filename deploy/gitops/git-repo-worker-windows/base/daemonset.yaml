@@ -143,6 +143,15 @@ spec:
             # Delegated MCP (repo-stored .vscode/mcp.json) allowlist.
             - name: REPO_MCP_ALLOW
               value: "__REPO_MCP_ALLOW__"
+            # Windows fleets may also load repo-declared STDIO servers (this image
+            # ships .NET/dnx + local toolchains); empty keeps the default
+            # remote-only. Only the Windows base carries these two placeholders.
+            - name: REPO_MCP_REMOTE_ONLY
+              value: "__REPO_MCP_REMOTE_ONLY__"
+            # Private ADO Artifacts feed(s) a repo stdio server `dnx`-restores a
+            # .NET tool from; the worker writes a credentialed NuGet.Config at boot.
+            - name: ADO_NUGET_FEED_URLS
+              value: "__ADO_NUGET_FEED_URLS__"
             # Fleet-default REMOTE MCP servers injected into every session.
             # Double-quoted: the deploy script pre-escapes the JSON's double
             # quotes as \" (and backslashes as \\), matching a double-quoted YAML

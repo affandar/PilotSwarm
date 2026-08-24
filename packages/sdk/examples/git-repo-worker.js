@@ -332,6 +332,17 @@ if (gitCacheMirror) {
                     .split(",")
                     .map((s) => s.trim())
                     .filter(Boolean),
+                // Feeds we credential in NuGet.Config at boot (writeNuGetAuthConfig).
+                // A `dnx`-launched repo stdio server that
+                // pins its feed with `--source <URL>` bypasses those creds and
+                // 401s; strip a matching override so dnx uses the credentialed
+                // config source instead. Windows-only (matches NuGet auth wiring).
+                credentialedNuGetFeeds: process.platform === "win32"
+                    ? (process.env.ADO_NUGET_FEED_URLS || "")
+                        .split(/[;,]/)
+                        .map((s) => s.trim())
+                        .filter(Boolean)
+                    : [],
                 trace: (m) => console.log(m),
             });
             const names = Object.keys(repoMcpServers);
@@ -414,20 +425,13 @@ console.log(`[git-repo-worker] Store: ${process.env.DATABASE_URL?.replace(/\/\/.
 // downloaded to local pod storage and appended to pluginDirs, so the GHCP
 // SDK loads its agents/skills like any other plugin dir. Per-entry failures are
 // quarantined and never block worker startup. Accepts PLUGIN_SPEC or PluginSpec.
-const pluginSpec = process.env.PLUGIN_SPEC ?? process.env.PluginSpec;
-if (pluginSpec && pluginSpec.trim()) {
-    const cacheDir = process.env.PLUGIN_SPEC_CACHE_DIR
-        || path.join(process.env.HOME || "/home/node", ".copilot", "plugin-spec");
-    console.log(`[git-repo-worker] PluginSpec: loading external plugins (cacheDir=${cacheDir})`);
-    const t0 = Date.now();
-
-    // ADO clones need a Code:Read credential. Prefer a direct ADO_PAT env; else
-    // fetch it straight from the same Key Vault the git-cache seeds from, using
-    // the worker's managed identity (no PAT ever stored in a k8s Secret). The
-    // vault + secret are named by ADO_PAT_KEYVAULT_SECRET_URI, e.g.
-    // https://<vault>.vault.azure.net/secrets/<name>.
-    let adoPat = process.env.ADO_PAT?.trim() || undefined;
-    if (!adoPat) {
+// ADO PAT (Code:Read + Packaging:Read) — resolved ONCE at boot from a direct
+// ADO_PAT env, else from Key Vault via the worker's managed identity (no PAT in
+// a k8s Secret). Reused by BOTH PluginSpec ADO git clones and the NuGet feed
+// auth below.
+async function resolveAdoPat() {
+    let pat = process.env.ADO_PAT?.trim() || undefined;
+    if (!pat) {
         const kvUri = process.env.ADO_PAT_KEYVAULT_SECRET_URI?.trim();
         if (kvUri) {
             try {
@@ -435,14 +439,95 @@ if (pluginSpec && pluginSpec.trim()) {
                 const vaultName = u.hostname.split(".")[0];
                 const secretName = decodeURIComponent((u.pathname.match(/\/secrets\/([^/]+)/) || [])[1] || "");
                 if (!vaultName || !secretName) throw new Error(`malformed ADO_PAT_KEYVAULT_SECRET_URI: ${kvUri}`);
-                adoPat = await fetchKeyVaultSecret({ vaultName, secretName, trace: (m) => console.log(m) });
-                console.log(`[git-repo-worker] PluginSpec: ADO PAT resolved from Key Vault ${vaultName}/${secretName}`);
+                pat = await fetchKeyVaultSecret({ vaultName, secretName, trace: (m) => console.log(m) });
+                console.log(`[git-repo-worker] ADO PAT resolved from Key Vault ${vaultName}/${secretName}`);
             } catch (err) {
-                console.warn(`[git-repo-worker] PluginSpec: Key Vault PAT fetch failed (continuing without ADO auth): ${err?.message ?? err}`);
+                console.warn(`[git-repo-worker] Key Vault PAT fetch failed (continuing without ADO auth): ${err?.message ?? err}`);
             }
         }
     }
+    return pat;
+}
 
+// NuGet feed auth (Windows only): some repo-declared stdio MCP servers launch a
+// .NET tool via `dnx` that restores from
+// a PRIVATE Azure DevOps Artifacts feed. `dnx` reads NuGet credentials from the
+// user-level NuGet.Config, so — mirroring how PluginSpec authenticates git
+// clones — write that file at boot with the same ADO PAT (never baked into the
+// image). Feed URL(s) come from ADO_NUGET_FEED_URLS (';'- or ','-delimited).
+//
+// LOCAL_NUGET_SOURCE_DIRS (';'- or ','-delimited absolute paths) additionally
+// registers local FOLDER package sources. A directory source needs no
+// credentials, so these are honored even without a feed or PAT — letting an
+// operator sideload a locally-built .NET tool (a `.nupkg` staged on the image
+// or a mounted volume) for validation without publishing it to a feed. An
+// unpinned `dnx <tool>` then resolves the highest version across all sources,
+// so a locally-staged build with a higher version wins over the feed.
+//
+// No-op off Windows, or when neither ADO_NUGET_FEED_URLS nor
+// LOCAL_NUGET_SOURCE_DIRS is set.
+async function writeNuGetAuthConfig(pat) {
+    if (process.platform !== "win32") return;
+    const feeds = (process.env.ADO_NUGET_FEED_URLS || "")
+        .split(/[;,]/).map((s) => s.trim()).filter(Boolean);
+    const localDirs = (process.env.LOCAL_NUGET_SOURCE_DIRS || "")
+        .split(/[;,]/).map((s) => s.trim()).filter(Boolean);
+    if (feeds.length === 0 && localDirs.length === 0) return;
+    const credentialedFeeds = pat ? feeds : [];
+    if (feeds.length > 0 && !pat) {
+        console.warn("[git-repo-worker] NuGet auth: ADO_NUGET_FEED_URLS set but no ADO PAT resolved — credentialed feeds skipped");
+    }
+    const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    const sources = [];
+    const creds = [];
+    credentialedFeeds.forEach((url, i) => {
+        const key = `ado_feed_${i}`;
+        sources.push(`    <add key="${key}" value="${esc(url)}" />`);
+        creds.push(`    <${key}>\n      <add key="Username" value="pat" />\n      <add key="ClearTextPassword" value="${esc(pat)}" />\n    </${key}>`);
+    });
+    localDirs.forEach((dir, i) => {
+        sources.push(`    <add key="local_src_${i}" value="${esc(dir)}" />`);
+    });
+    const credsXml = creds.length > 0
+        ? `  <packageSourceCredentials>\n${creds.join("\n")}\n  </packageSourceCredentials>\n`
+        : "";
+    const xml = `<?xml version="1.0" encoding="utf-8"?>\n<configuration>\n  <packageSources>\n${sources.join("\n")}\n  </packageSources>\n${credsXml}</configuration>\n`;
+    const cfgDir = path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "NuGet");
+    const cfgPath = path.join(cfgDir, "NuGet.Config");
+    try {
+        fs.mkdirSync(cfgDir, { recursive: true });
+        fs.writeFileSync(cfgPath, xml);
+        console.log(`[git-repo-worker] NuGet auth: wrote ${credentialedFeeds.length} credentialed feed(s)`
+            + (localDirs.length ? ` + ${localDirs.length} local source(s)` : "") + ` to ${cfgPath}`);
+    } catch (err) {
+        console.warn(`[git-repo-worker] NuGet auth: failed to write ${cfgPath} (continuing): ${err?.message ?? err}`);
+    }
+}
+
+// Resolve the ADO PAT once, then wire NuGet feed auth (Windows worker + a
+// configured private feed) so repo stdio MCP servers that `dnx`-restore a .NET
+// tool from that feed can authenticate.
+const adoPat = await resolveAdoPat();
+await writeNuGetAuthConfig(adoPat);
+
+// Repo-declared stdio MCP servers authenticate to Azure DevOps via the standard
+// `az devops` CLI variable (AZURE_DEVOPS_EXT_PAT). Surface the already-resolved
+// PAT under that name so such a server, spawned as a child of this worker, can
+// authenticate non-interactively. Windows-only (matches the NuGet auth wiring
+// above); no-op when no PAT resolved.
+if (process.platform === "win32" && adoPat) {
+    process.env.AZURE_DEVOPS_EXT_PAT = adoPat;
+}
+
+const pluginSpec = process.env.PLUGIN_SPEC ?? process.env.PluginSpec;
+if (pluginSpec && pluginSpec.trim()) {
+    const cacheDir = process.env.PLUGIN_SPEC_CACHE_DIR
+        || path.join(process.env.HOME || "/home/node", ".copilot", "plugin-spec");
+    console.log(`[git-repo-worker] PluginSpec: loading external plugins (cacheDir=${cacheDir})`);
+    const t0 = Date.now();
+
+    // ADO clones need a Code:Read credential — resolved once at boot into adoPat
+    // (direct env or Key Vault via the worker's managed identity).
     try {
         const { pluginDirs: specDirs, results } = await installPluginSpecs({
             spec: pluginSpec,
