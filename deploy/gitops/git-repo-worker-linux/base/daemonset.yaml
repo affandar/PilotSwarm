@@ -277,7 +277,11 @@ spec:
               memory: "1Gi"
             limits:
               cpu: "1000m"
-              memory: "2Gi"
+              # Deploy-time tunable. A tool-heavy turn can buffer large artifacts
+              # in memory (e.g. multi-hundred-MB test dumps fetched by an MCP
+              # tool), OOM-killing the pod at a low cap. Raise per fleet via the
+              # deploy value; the renderer defaults this token to "2Gi".
+              memory: "__WORKER_MEM_LIMIT__"
           readinessProbe:
             # Truthful readiness: the worker writes this sentinel only AFTER
             # worker.start() resolves — enlistment cloned/synced AND polling PG
